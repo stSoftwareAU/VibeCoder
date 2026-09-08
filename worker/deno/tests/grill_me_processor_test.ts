@@ -38,7 +38,6 @@ import {
   GRILL_ME_ROUND_MARKER,
   hasGrillMeRoundAwaitingReply,
   hasReadyMarkerBeenPosted,
-  isAwaitingDeveloperReply,
   isNonWorkerRemovalAfterRound,
   processGrillMe,
   synthesiseRoundComment,
@@ -179,7 +178,7 @@ Deno.test("countGrillMeRounds - returns 0 with no prior rounds", () => {
   const comments: GitHubComment[] = [
     makeComment({ author: "user1", body: "Initial issue" }),
   ];
-  assertEquals(countGrillMeRounds(comments, "testbot"), 0);
+  assertEquals(countGrillMeRounds(comments), 0);
 });
 
 Deno.test("countGrillMeRounds - counts 1 prior worker round", () => {
@@ -189,7 +188,7 @@ Deno.test("countGrillMeRounds - counts 1 prior worker round", () => {
       body: `${GRILL_ME_ROUND_MARKER}1\n\nTL;DR ...`,
     }),
   ];
-  assertEquals(countGrillMeRounds(comments, "testbot"), 1);
+  assertEquals(countGrillMeRounds(comments), 1);
 });
 
 Deno.test("countGrillMeRounds - counts 3 prior worker rounds", () => {
@@ -212,7 +211,7 @@ Deno.test("countGrillMeRounds - counts 3 prior worker rounds", () => {
       body: `${GRILL_ME_ROUND_MARKER}3`,
     }),
   ];
-  assertEquals(countGrillMeRounds(comments, "testbot"), 3);
+  assertEquals(countGrillMeRounds(comments), 3);
 });
 
 Deno.test("countGrillMeRounds - counts the final-confirmation comment", () => {
@@ -222,7 +221,7 @@ Deno.test("countGrillMeRounds - counts the final-confirmation comment", () => {
       body: `${GRILL_ME_FINAL_MARKER}\n\nTL;DR confirmed`,
     }),
   ];
-  assertEquals(countGrillMeRounds(comments, "testbot"), 1);
+  assertEquals(countGrillMeRounds(comments), 1);
 });
 
 // Issue #1560: counting is author-agnostic. This test previously asserted
@@ -238,7 +237,7 @@ Deno.test(
         body: `${GRILL_ME_ROUND_MARKER}1`,
       }),
     ];
-    assertEquals(countGrillMeRounds(comments, "testbot"), 1);
+    assertEquals(countGrillMeRounds(comments), 1);
   },
 );
 
@@ -258,7 +257,27 @@ Deno.test(
         body: `${GRILL_ME_ROUND_MARKER}2`,
       }),
     ];
-    assertEquals(countGrillMeRounds(comments, "testbot"), 2);
+    assertEquals(countGrillMeRounds(comments), 2);
+  },
+);
+
+Deno.test(
+  "countGrillMeRounds - ignores a round quoted in a developer reply (Issue #1560)",
+  () => {
+    // GitHub's "Quote reply" prefixes every quoted line with `> `.
+    const comments: GitHubComment[] = [
+      makeComment({
+        id: 1,
+        author: "stservice",
+        body: `${GRILL_ME_ROUND_MARKER}1`,
+      }),
+      makeComment({
+        id: 2,
+        author: "user1",
+        body: `> ${GRILL_ME_ROUND_MARKER}1\n\nAnswers: 1a, 2c`,
+      }),
+    ];
+    assertEquals(countGrillMeRounds(comments), 1);
   },
 );
 
@@ -269,7 +288,7 @@ Deno.test(
       makeComment({ author: "user1", body: "Answers: 1a, 2c" }),
       makeComment({ author: "testbot", body: "heartbeat" }),
     ];
-    assertEquals(countGrillMeRounds(comments, "testbot"), 0);
+    assertEquals(countGrillMeRounds(comments), 0);
   },
 );
 
@@ -456,7 +475,7 @@ Deno.test("hasReadyMarkerBeenPosted - false with no Ready comment", () => {
     }),
     makeComment({ author: "user1", body: "1a, 2c" }),
   ];
-  assertEquals(hasReadyMarkerBeenPosted(comments, "testbot"), false);
+  assertEquals(hasReadyMarkerBeenPosted(comments), false);
 });
 
 Deno.test("hasReadyMarkerBeenPosted - true when worker posted Ready marker", () => {
@@ -466,136 +485,37 @@ Deno.test("hasReadyMarkerBeenPosted - true when worker posted Ready marker", () 
       body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
     }),
   ];
-  assertEquals(hasReadyMarkerBeenPosted(comments, "testbot"), true);
+  assertEquals(hasReadyMarkerBeenPosted(comments), true);
 });
 
+// Issue #1560: the check is author-agnostic — grilling has converged whichever
+// fleet identity posted the Ready comment. This test previously asserted that
+// another author's Ready counted false, which sent a peer's Ready down the
+// awaiting-reply branch and told the developer to answer questions that were
+// never asked.
 Deno.test(
-  "hasReadyMarkerBeenPosted - ignores Ready marker posted by another author",
+  "hasReadyMarkerBeenPosted - true when a peer worker identity posted Ready (Issue #1560)",
   () => {
     const comments: GitHubComment[] = [
       makeComment({
-        author: "impersonator",
-        body: `${GRILL_ME_READY_MARKER}\n\nfake`,
+        author: "stservice",
+        body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
       }),
     ];
-    assertEquals(hasReadyMarkerBeenPosted(comments, "testbot"), false);
-  },
-);
-
-// ============================================================================
-// isAwaitingDeveloperReply (Issue #1876)
-// ============================================================================
-
-Deno.test("isAwaitingDeveloperReply - false on empty comment list", () => {
-  assertEquals(isAwaitingDeveloperReply([], "testbot"), false);
-});
-
-Deno.test(
-  "isAwaitingDeveloperReply - false when no worker round has been posted",
-  () => {
-    const comments: GitHubComment[] = [
-      makeComment({ author: "user1", body: "Some comment" }),
-    ];
-    assertEquals(isAwaitingDeveloperReply(comments, "testbot"), false);
+    assertEquals(hasReadyMarkerBeenPosted(comments), true);
   },
 );
 
 Deno.test(
-  "isAwaitingDeveloperReply - true when latest worker comment is Round N and no developer reply follows",
+  "hasReadyMarkerBeenPosted - ignores a Ready marker quoted in a reply (Issue #1560)",
   () => {
     const comments: GitHubComment[] = [
       makeComment({
-        author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}3\n\nQuestions...`,
+        author: "user1",
+        body: `> ${GRILL_ME_READY_MARKER}\n\nNot yet — one more thing.`,
       }),
     ];
-    assertEquals(isAwaitingDeveloperReply(comments, "testbot"), true);
-  },
-);
-
-Deno.test(
-  "isAwaitingDeveloperReply - false when developer comment follows the latest round",
-  () => {
-    const comments: GitHubComment[] = [
-      makeComment({
-        author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}1`,
-      }),
-      makeComment({ author: "user1", body: "1a, 2c" }),
-    ];
-    assertEquals(isAwaitingDeveloperReply(comments, "testbot"), false);
-  },
-);
-
-Deno.test(
-  "isAwaitingDeveloperReply - skips worker heartbeat/claim comments and finds Round N",
-  () => {
-    const comments: GitHubComment[] = [
-      makeComment({
-        author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}3\n\nQuestions...`,
-      }),
-      makeComment({
-        author: "testbot",
-        body: "<!-- VIBE_CODER_HEARTBEAT:host-99-abc:0 --> <!-- cleared -->",
-      }),
-      makeComment({
-        author: "testbot",
-        body: "<!-- CLAIM_LOCK:testbot-12345 -->\nClaimed by `testbot-12345`",
-      }),
-    ];
-    assertEquals(isAwaitingDeveloperReply(comments, "testbot"), true);
-  },
-);
-
-Deno.test(
-  "isAwaitingDeveloperReply - false when Ready marker is the latest worker round",
-  () => {
-    // Ready marker should be handled by hasReadyMarkerBeenPosted, not this
-    // function — this function only fires for Round N markers.
-    const comments: GitHubComment[] = [
-      makeComment({
-        author: "testbot",
-        body: `${GRILL_ME_READY_MARKER}\n\nReady.`,
-      }),
-    ];
-    assertEquals(isAwaitingDeveloperReply(comments, "testbot"), false);
-  },
-);
-
-Deno.test(
-  "isAwaitingDeveloperReply - returns true after multiple rounds with no recent developer reply",
-  () => {
-    const comments: GitHubComment[] = [
-      makeComment({
-        author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}1`,
-      }),
-      makeComment({ author: "user1", body: "1a, 2c" }),
-      makeComment({
-        author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}2`,
-      }),
-      makeComment({ author: "user1", body: "more answers" }),
-      makeComment({
-        author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}3`,
-      }),
-    ];
-    assertEquals(isAwaitingDeveloperReply(comments, "testbot"), true);
-  },
-);
-
-Deno.test(
-  "isAwaitingDeveloperReply - ignores Round markers from other authors",
-  () => {
-    const comments: GitHubComment[] = [
-      makeComment({
-        author: "impersonator",
-        body: `${GRILL_ME_ROUND_MARKER}3`,
-      }),
-    ];
-    assertEquals(isAwaitingDeveloperReply(comments, "testbot"), false);
+    assertEquals(hasReadyMarkerBeenPosted(comments), false);
   },
 );
 
@@ -703,6 +623,25 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "hasGrillMeRoundAwaitingReply - false when the developer quote-replied to the round (Issue #1560)",
+  () => {
+    const comments: GitHubComment[] = [
+      makeComment({
+        id: 1,
+        author: "stservice",
+        body: `${GRILL_ME_ROUND_MARKER}1\n\nQuestions...`,
+      }),
+      makeComment({
+        id: 2,
+        author: "user1",
+        body: `> ${GRILL_ME_ROUND_MARKER}1\n\nAnswers: 1a, 2c`,
+      }),
+    ];
+    assertEquals(hasGrillMeRoundAwaitingReply(comments, "testbot"), false);
+  },
+);
+
 // ============================================================================
 // findLatestWorkerRoundTimestamp (Issue #1878)
 // ============================================================================
@@ -711,7 +650,7 @@ Deno.test("findLatestWorkerRoundTimestamp - null when no worker round", () => {
   const comments: GitHubComment[] = [
     makeComment({ author: "user1", body: "Some comment" }),
   ];
-  assertEquals(findLatestWorkerRoundTimestamp(comments, "testbot"), null);
+  assertEquals(findLatestWorkerRoundTimestamp(comments), null);
 });
 
 Deno.test(
@@ -739,7 +678,7 @@ Deno.test(
       }),
     ];
     assertEquals(
-      findLatestWorkerRoundTimestamp(comments, "testbot"),
+      findLatestWorkerRoundTimestamp(comments),
       "2026-05-09T08:14:53Z",
     );
   },
@@ -763,7 +702,7 @@ Deno.test(
       }),
     ];
     assertEquals(
-      findLatestWorkerRoundTimestamp(comments, "testbot"),
+      findLatestWorkerRoundTimestamp(comments),
       "2026-05-09T09:00:00Z",
     );
   },
@@ -781,7 +720,7 @@ Deno.test(
       }),
     ];
     assertEquals(
-      findLatestWorkerRoundTimestamp(comments, "testbot"),
+      findLatestWorkerRoundTimestamp(comments),
       "2026-09-07T21:30:00Z",
     );
   },
@@ -883,6 +822,46 @@ Deno.test(
         "testbot",
       ),
       false,
+    );
+  },
+);
+
+Deno.test(
+  "isNonWorkerRemovalAfterRound - false when a peer fleet identity removed the label (Issue #1560)",
+  () => {
+    // `verifyOperationalLabels` strips `needs-human` under whichever identity
+    // is scanning — a peer's strip is a fleet action, not a developer signal.
+    const removeInfo = {
+      removedAt: Math.floor(Date.parse("2026-05-09T09:00:00Z") / 1000),
+      removedBy: "stservice",
+    };
+    assertEquals(
+      isNonWorkerRemovalAfterRound(
+        removeInfo,
+        "2026-05-09T08:00:00Z",
+        "testbot",
+        ["stservice"],
+      ),
+      false,
+    );
+  },
+);
+
+Deno.test(
+  "isNonWorkerRemovalAfterRound - a maintainer's removal still counts with fleet logins supplied (Issue #1560)",
+  () => {
+    const removeInfo = {
+      removedAt: Math.floor(Date.parse("2026-05-09T09:00:00Z") / 1000),
+      removedBy: "maintainer",
+    };
+    assertEquals(
+      isNonWorkerRemovalAfterRound(
+        removeInfo,
+        "2026-05-09T08:00:00Z",
+        "testbot",
+        ["stservice"],
+      ),
+      true,
     );
   },
 );
@@ -1089,7 +1068,141 @@ Deno.test(
     // Round 1 came from the peer, so this run is Round 2.
     assertEquals(result.value.roundNumber, 2);
     assertStringIncludes(capturedPrompt, "Round 2");
-    assert(fetchCallCount >= 2);
+  },
+);
+
+Deno.test(
+  "processGrillMe - a peer identity's needs-human strip is not a developer signal (Issue #1560)",
+  async () => {
+    // `verifyOperationalLabels` strips `needs-human` under whichever identity
+    // is scanning. Treating a peer's strip as the developer's "proceed" signal
+    // would re-open the gate this issue closes, so the run must still skip.
+    const ctx = makeContext({
+      config: makeConfig({ fleetPrAuthors: ["stservice"] }),
+    });
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () =>
+        Promise.resolve([
+          makeComment({
+            id: 1,
+            author: "stservice",
+            body: `${GRILL_ME_ROUND_MARKER}1\n\nQuestions...`,
+            createdAt: "2026-09-07T21:30:00Z",
+          }),
+        ]),
+    });
+
+    // The peer identity removed `needs-human` after its own round.
+    const timelineJson = JSON.stringify([
+      {
+        event: "unlabeled",
+        label: { name: "needs-human" },
+        actor: { login: "stservice" },
+        created_at: "2026-09-07T21:35:00Z",
+      },
+    ]);
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "ok", exitCode: 0, timedOut: false },
+          });
+        },
+      },
+      github: {
+        runGhCommand: () => Promise.resolve(timelineJson),
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(
+      claudeInvoked,
+      false,
+      "A fleet peer's label strip must not be read as the developer's go-ahead",
+    );
+    assertStringIncludes(result.value.summary, "awaiting developer reply");
+  },
+);
+
+Deno.test(
+  "processGrillMe - a peer identity's Ready marker takes the Ready path (Issue #1560)",
+  async () => {
+    // Grilling has converged whichever identity posted Ready: remove
+    // `grill-me` and wait for a next-phase label, rather than telling the
+    // developer to answer questions the last round never asked.
+    const ctx = makeContext();
+    const removedLabels: string[] = [];
+    const postedBodies: string[] = [];
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () =>
+        Promise.resolve([
+          makeComment({
+            id: 1,
+            author: "stservice",
+            body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
+            createdAt: "2026-09-07T21:30:00Z",
+          }),
+        ]),
+      removeLabel: (_r, _n, label) => {
+        removedLabels.push(label);
+        return Promise.resolve();
+      },
+      postComment: (_r, _n, body) => {
+        postedBodies.push(body);
+        return Promise.resolve(undefined);
+      },
+    });
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "ok", exitCode: 0, timedOut: false },
+          });
+        },
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(claudeInvoked, false);
+    assertStringIncludes(result.value.summary, "Ready already posted");
+    assertEquals(removedLabels.includes("grill-me"), true);
+    // Never the awaiting-reply escalation, which asks the developer to answer
+    // questions that were never asked.
+    for (const body of postedBodies) {
+      assertEquals(
+        body.includes("still waiting for your reply"),
+        false,
+        `Unexpected awaiting-reply escalation: ${body}`,
+      );
+    }
   },
 );
 
@@ -3121,12 +3234,12 @@ Deno.test("synthesiseRoundComment - builds a ready comment carrying the Ready ma
 Deno.test("synthesiseRoundComment - synthesised comment satisfies countGrillMeRounds", () => {
   const c = synthesiseRoundComment("round", 1, "testbot");
   // Drop into a list and confirm the count helper picks it up.
-  assertEquals(countGrillMeRounds([c], "testbot"), 1);
+  assertEquals(countGrillMeRounds([c]), 1);
 });
 
 Deno.test("synthesiseRoundComment - synthesised comment satisfies hasReadyMarkerBeenPosted", () => {
   const c = synthesiseRoundComment("ready", 1, "testbot");
-  assert(hasReadyMarkerBeenPosted([c], "testbot"));
+  assert(hasReadyMarkerBeenPosted([c]));
 });
 
 // ============================================================================
