@@ -176,6 +176,133 @@ Deno.test("preparePrBranch - passes cwd to every git command", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Held branch — released from this host's own lane worktree (Issue #1677)
+// ---------------------------------------------------------------------------
+
+const HELD_BY_LANE = "fatal: 'issue-171-fix' is already used by worktree at " +
+  "'/home/vibe/auto-issue-work/worktrees/s1/NEAT-AI-Ockham'";
+
+/**
+ * A git runner whose `checkout <branch>` is refused until the named worktree
+ * has been detached, recording every call so the order can be asserted.
+ */
+function heldBranchRunner(
+  refusal: string,
+  options: { detachSucceeds: boolean },
+): {
+  runGitCommand: GitDeps["runGitCommand"];
+  calls: string[][];
+  cwds: (string | undefined)[];
+} {
+  const calls: string[][] = [];
+  const cwds: (string | undefined)[] = [];
+  let released = false;
+  const runGitCommand = ((args: string[], opts?: { cwd?: string }) => {
+    calls.push(args);
+    cwds.push(opts?.cwd);
+    if (args[0] === "checkout" && args[1] === "--detach") {
+      released = options.detachSucceeds;
+      return Promise.resolve({
+        ok: true as const,
+        value: {
+          code: options.detachSucceeds ? 0 : 128,
+          stdout: "",
+          stderr: options.detachSucceeds ? "" : "fatal: not a git repository",
+        },
+      });
+    }
+    if (args[0] === "checkout" && !released) {
+      return Promise.resolve({
+        ok: true as const,
+        value: { code: 128, stdout: "", stderr: refusal },
+      });
+    }
+    return Promise.resolve({
+      ok: true as const,
+      value: { code: 0, stdout: "", stderr: "" },
+    });
+  }) as unknown as GitDeps["runGitCommand"];
+  return { runGitCommand, calls, cwds };
+}
+
+Deno.test("preparePrBranch - a branch held by one of this host's lane worktrees is released and checked out (Issue #1677)", async () => {
+  const { runGitCommand, calls, cwds } = heldBranchRunner(HELD_BY_LANE, {
+    detachSucceeds: true,
+  });
+
+  const outcome = await preparePrBranch("issue-171-fix", {
+    logger: makeSilentLogger(),
+    git: { runGitCommand },
+    cwd: "/work/NEAT-AI-Ockham",
+  });
+  assertEquals(outcome, { ok: true });
+
+  // The holder was detached, in its own directory, between the refused
+  // checkout and the one that succeeded.
+  const detachAt = calls.findIndex((c) =>
+    c[0] === "checkout" && c[1] === "--detach"
+  );
+  assert(detachAt > 0, "the lane worktree must be detached");
+  assertEquals(
+    cwds[detachAt],
+    "/home/vibe/auto-issue-work/worktrees/s1/NEAT-AI-Ockham",
+    "detach runs in the holding worktree",
+  );
+  const checkouts = calls.filter((c) =>
+    c[0] === "checkout" && c[1] !== "--detach"
+  );
+  assertEquals(checkouts.length, 2, "one refused checkout, one retry");
+  assert(calls.some((c) => c[0] === "pull"), "the retry went on to pull");
+});
+
+Deno.test("preparePrBranch - a branch held by a worktree that is not a lane worktree is reported as branch_held and left alone (Issue #1677)", async () => {
+  const { runGitCommand, calls } = heldBranchRunner(
+    "fatal: 'issue-171-fix' is already used by worktree at '/home/dev/checkouts/NEAT-AI-Ockham'",
+    { detachSucceeds: true },
+  );
+
+  const outcome = await preparePrBranch("issue-171-fix", {
+    logger: makeSilentLogger(),
+    git: { runGitCommand },
+    cwd: "/work/NEAT-AI-Ockham",
+  });
+  assertEquals(outcome.ok, false);
+  if (!outcome.ok) {
+    assertEquals(outcome.reason, "branch_held");
+    assert(outcome.detail.includes("/home/dev/checkouts/NEAT-AI-Ockham"));
+  }
+  assertEquals(
+    calls.some((c) => c[0] === "checkout" && c[1] === "--detach"),
+    false,
+    "a worktree outside <work root>/worktrees/<lane>/<repo> is never detached",
+  );
+  assertEquals(calls.some((c) => c[0] === "pull"), false);
+});
+
+Deno.test("preparePrBranch - a lane worktree that cannot be detached leaves the branch held (branch_held), not checkout_failed (Issue #1677)", async () => {
+  const { runGitCommand, calls } = heldBranchRunner(HELD_BY_LANE, {
+    detachSucceeds: false,
+  });
+
+  const outcome = await preparePrBranch("issue-171-fix", {
+    logger: makeSilentLogger(),
+    git: { runGitCommand },
+    cwd: "/work/NEAT-AI-Ockham",
+  });
+  assertEquals(outcome.ok, false);
+  if (!outcome.ok) assertEquals(outcome.reason, "branch_held");
+  // One detach was tried; the checkout was not retried after it failed.
+  assertEquals(
+    calls.filter((c) => c[0] === "checkout" && c[1] === "--detach").length,
+    1,
+  );
+  assertEquals(
+    calls.filter((c) => c[0] === "checkout" && c[1] !== "--detach").length,
+    1,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // readPrResponseMessage
 // ---------------------------------------------------------------------------
 

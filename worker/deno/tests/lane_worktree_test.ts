@@ -19,6 +19,7 @@ import {
   detachLaneWorktreeHead,
   ensureLaneWorktree,
   LANE_WORKTREE_ROOT,
+  laneWorktreeHoldingBranch,
   laneWorktreePath,
   PR_BRANCH_UPDATE_LANE_ID,
   worktreeAddFailureDetail,
@@ -412,4 +413,72 @@ Deno.test("worktreeAddFailureDetail - keeps every line git wrote bar the preambl
   });
   assertStringIncludes(detail, "warning: something unfamiliar");
   assertStringIncludes(detail, "fatal: could not create directory");
+});
+
+// ---------------------------------------------------------------------------
+// laneWorktreeHoldingBranch (Issue #1564, Issue #1677)
+// ---------------------------------------------------------------------------
+
+Deno.test("laneWorktreeHoldingBranch - names the lane worktree git says holds the branch", () => {
+  assertEquals(
+    laneWorktreeHoldingBranch(
+      "fatal: 'issue-171-fix' is already used by worktree at " +
+        "'/home/vibe/auto-issue-work/worktrees/s1/NEAT-AI-Ockham'",
+    ),
+    "/home/vibe/auto-issue-work/worktrees/s1/NEAT-AI-Ockham",
+  );
+});
+
+Deno.test("laneWorktreeHoldingBranch - only a <work root>/worktrees/<lane>/<repo> path qualifies", () => {
+  // A developer's own worktree: reported, never wrenched away.
+  assertEquals(
+    laneWorktreeHoldingBranch(
+      "fatal: 'x' is already used by worktree at '/home/dev/checkouts/NEAT-AI-Ockham'",
+    ),
+    undefined,
+  );
+  // The lane root in the wrong position does not qualify either.
+  assertEquals(
+    laneWorktreeHoldingBranch(
+      `fatal: 'x' is already used by worktree at '/work/${LANE_WORKTREE_ROOT}/demo'`,
+    ),
+    undefined,
+  );
+  // The path the module itself builds does.
+  const own = laneWorktreePath("/work", "owner/demo", "s2");
+  assertEquals(
+    laneWorktreeHoldingBranch(
+      `fatal: 'x' is already used by worktree at '${own}'`,
+    ),
+    own,
+  );
+});
+
+Deno.test("laneWorktreeHoldingBranch - any other refusal is not a held branch", () => {
+  assertEquals(laneWorktreeHoldingBranch(""), undefined);
+  assertEquals(
+    laneWorktreeHoldingBranch(
+      "error: pathspec 'issue-1' did not match any file(s) known to git",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detachLaneWorktreeHead - detaches through the runner it is given (Issue #1677)", async () => {
+  const calls: { args: string[]; cwd?: string }[] = [];
+  const run = ((args: string[], options?: { cwd?: string }) => {
+    calls.push({ args, cwd: options?.cwd });
+    return Promise.resolve({
+      ok: true as const,
+      value: { code: 0, stdout: "", stderr: "" },
+    });
+  }) as unknown as typeof runGitCommand;
+
+  assertEquals(
+    await detachLaneWorktreeHead("/work/worktrees/s1/demo", run),
+    true,
+  );
+  assertEquals(calls, [
+    { args: ["checkout", "--detach"], cwd: "/work/worktrees/s1/demo" },
+  ]);
 });

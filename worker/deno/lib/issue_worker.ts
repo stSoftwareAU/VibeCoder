@@ -20,6 +20,7 @@
 
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { stopHeartbeat } from "./heartbeat.ts";
+import { detachLaneWorktreeHead } from "./lane_worktree.ts";
 import { startPhaseProgress } from "./phase_progress.ts";
 import { recordStepDuration } from "./cycle_timings.ts";
 import { summariseCallbackTelemetry } from "./run_callback_telemetry.ts";
@@ -188,6 +189,18 @@ export async function workOnIssue(
     // release comment states it even before the claim-release path runs.
     if (state.heartbeatHandle) {
       await stopHeartbeat(state.heartbeatHandle, outcome);
+    }
+    // Issue #1677: release the lane worktree's hold on the feature branch.
+    // Branches are shared between the worktrees of one clone, and a lane
+    // that stays parked on the branch it just pushed blocks every pass that
+    // wants that branch in the shared clone — the CI-fix pass for the very
+    // PR this run raised was refused on every cycle for four hours on
+    // NEAT-AI-Ockham#184, because the host was under the disk floor and the
+    // lane was never reused. The local ref and any checkpointed work stay;
+    // only `HEAD` moves. Best-effort, same as the PR-branch-update lane's
+    // detach (Issue #394); the shared clone (no lane id) is left as it is.
+    if (ctx.laneId !== undefined && state.repoPath !== "") {
+      await detachLaneWorktreeHead(state.repoPath, deps.git.runGitCommand);
     }
   }
 }

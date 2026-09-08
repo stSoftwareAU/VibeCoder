@@ -288,3 +288,65 @@ Deno.test("checkoutPrBranchAtRemoteHead - unpushed commits are still refused, ne
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("checkoutPrBranchAtRemoteHead - releases a branch this host's own lane worktree holds, then checks it out (Issue #1677)", async () => {
+  const branch = "issue-1677-held";
+  const { tmp, sibling, worker } = await makeFixture("prco_held_", branch);
+  try {
+    // The issue lane raised the PR from its worktree and stayed parked on
+    // the branch — the shape that blocked NEAT-AI-Ockham#184's CI fix for
+    // four hours. The path must have the lane shape
+    // `<work root>/worktrees/<lane>/<repo>` to qualify for release.
+    const lane = `${tmp}/worktrees/s1/worker`;
+    await Deno.mkdir(`${tmp}/worktrees/s1`, { recursive: true });
+    await runGit(["fetch", "origin", `${branch}:${branch}`], worker);
+    const added = await runGit(["worktree", "add", lane, branch], worker);
+    assertEquals(added.code, 0, added.stderr);
+
+    // Sanity: git itself refuses the shared clone the branch while it is held.
+    const refused = await runGit(["checkout", branch], worker);
+    assertStringIncludes(refused.stderr, "already used by worktree");
+
+    const result = await checkoutPrBranchAtRemoteHead(branch, { cwd: worker });
+    assert(result.ok, result.ok ? "" : result.error.message);
+
+    const remote = await runGit(["rev-parse", `refs/heads/${branch}`], sibling);
+    const local = await runGit(["rev-parse", "HEAD"], worker);
+    assertEquals(local.stdout.trim(), remote.stdout.trim());
+    const onBranch = await runGit(
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      worker,
+    );
+    assertEquals(onBranch.stdout.trim(), branch);
+
+    // The lane worktree still exists, detached, at the same commit.
+    const laneHead = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], lane);
+    assertEquals(laneHead.stdout.trim(), "HEAD");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("checkoutPrBranchAtRemoteHead - a branch held by a worktree that is not a lane worktree is refused in git's words, not detached (Issue #1677)", async () => {
+  const branch = "issue-1677-foreign";
+  const { tmp, worker } = await makeFixture("prco_foreign_", branch);
+  try {
+    const other = `${tmp}/somebody-elses-checkout`;
+    await runGit(["fetch", "origin", `${branch}:${branch}`], worker);
+    const added = await runGit(["worktree", "add", other, branch], worker);
+    assertEquals(added.code, 0, added.stderr);
+
+    const result = await checkoutPrBranchAtRemoteHead(branch, { cwd: worker });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, "already used by worktree");
+    }
+    const otherHead = await runGit(
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      other,
+    );
+    assertEquals(otherHead.stdout.trim(), branch, "left exactly as it was");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});

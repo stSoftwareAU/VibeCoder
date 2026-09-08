@@ -360,6 +360,87 @@ Deno.test("processCiFailure - increments retry count", async () => {
   }
 });
 
+Deno.test("processCiFailure - a PR branch another worktree holds spends no retry and is skipped as branch_held (Issue #1677)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    let claudeRuns = 0;
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() => {
+        claudeRuns++;
+        return Promise.resolve({
+          ok: true,
+          value: { output: "Fixed", exitCode: 0, timedOut: false },
+        });
+      }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: { runGhCommand: () => Promise.resolve("") },
+      git: {
+        // The holder is not one of this host's lane worktrees, so nothing
+        // is detached and the branch stays held for this cycle.
+        runGitCommand: ((args: string[]) => {
+          if (args[0] === "checkout") {
+            return Promise.resolve({
+              ok: true,
+              value: {
+                code: 128,
+                stdout: "",
+                stderr:
+                  "fatal: 'issue-42-fix-bug' is already used by worktree at '/home/dev/other'",
+              },
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as unknown as GitDeps["runGitCommand"],
+      },
+    });
+
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir,
+      workDir: tmpDir,
+      // Required since this branch made `workRoot` part of CiProcessorDeps:
+      // the lane worktree's parent, which for this fixture is the temp root.
+      // Matches the other call site in this file (`workRoot: tmpDir`).
+      workRoot: tmpDir,
+      maxCiRetries: 3,
+    };
+
+    // Three cycles of a held branch …
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const result = await processCiFailure(makeInput(), processorDeps);
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertEquals(result.value.processed, false);
+        assertEquals(result.value.retryCount, 0);
+        assertEquals(
+          result.value.summary.includes("branch_held"),
+          true,
+          result.value.summary,
+        );
+      }
+    }
+    assertEquals(claudeRuns, 0, "the agent never ran on the wrong branch");
+    // … and the retry budget is untouched: no counter was ever written.
+    let counter: string | undefined;
+    try {
+      counter = await Deno.readTextFile(`${stateDir}/org_repo_67890.retries`);
+    } catch {
+      counter = undefined;
+    }
+    assertEquals(counter, undefined, "a refused checkout is not an attempt");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 // ============================================================================
 // Heartbeat lifecycle — startHeartbeat/stopHeartbeat (Issue #1204)
 // ============================================================================
