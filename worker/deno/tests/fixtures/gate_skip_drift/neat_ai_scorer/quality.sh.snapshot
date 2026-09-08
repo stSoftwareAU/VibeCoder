@@ -1,0 +1,21 @@
+# Snapshot excerpt of stSoftwareAU/NEAT-AI-scorer quality.sh (Issue #1597).
+# Taken from the gate as it stood before #1595 baked bats into the image.
+# Not executed — read as data by gate_skip_drift_scanner.ts.
+echo "📝 Running codespell preflight (mirrors CI spell-check job)..."
+if ! ./scripts/spell-check.sh; then
+  echo "spell-check: FAILED — fix the typos above or update .codespellrc (see README)."
+  exit 1
+fi
+
+echo "🧰 Running bash helper tests (bats)..."
+if command -v bats &>/dev/null; then
+  # Only execute the bats suites we ship under tests/scripts — keeps runtime
+  # scoped to shell helpers and avoids pulling in unrelated directories.
+  if [ -d "tests/scripts" ]; then
+    bats tests/scripts
+  fi
+else
+  echo "⚠️  bats not installed — skipping shell helper tests"
+  echo "   Install with: brew install bats-core  (or your package manager)"
+fi
+

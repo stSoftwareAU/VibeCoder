@@ -35,4 +35,5 @@ export const IDLE_TASK_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "private-repo-reference-audit",
   "duplicated-knowledge",
   "retro",
+  "gate-skip-drift",
 ]);

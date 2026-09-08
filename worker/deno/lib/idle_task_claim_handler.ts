@@ -91,6 +91,7 @@ import "./idle_task_templates/workflow_annotation_scan_template.ts";
 import "./idle_task_templates/private_repo_reference_template.ts";
 import "./idle_task_templates/duplicated_knowledge_template.ts";
 import "./idle_task_templates/retro_template.ts";
+import "./idle_task_templates/gate_skip_drift_template.ts";
 
 // ---------------------------------------------------------------------------
 // Public types

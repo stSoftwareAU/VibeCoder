@@ -58,7 +58,7 @@ list a maintainer must remember to update.
 | **Scan** | Its latest template carries a `Stable finding ID recipe` section — it sweeps a repository, dedupes findings against filed issues, and files one issue per surviving finding | `prompts/best_practices/`, `prompts/dead_code/`, `prompts/deprecated_api/`, `prompts/doc_coverage/`, `prompts/documentation_audit/`, `prompts/duplicated_knowledge/`, `prompts/format_drift/`, `prompts/github_actions_audit/`, `prompts/orphan_deps/`, `prompts/private_repo_reference_audit/`, `prompts/retro/`, `prompts/security_scan/`, `prompts/supply_chain_detection/`, `prompts/supply_chain_readiness/`, `prompts/test_audit/` |
 | **Interactive** | It drives one worker turn against one named target — an issue, a PR, or a repository set-up task — and produces changes or a reply rather than a sweep of findings | `prompts/ci_fix/`, `prompts/grill-me/`, `prompts/issue/`, `prompts/merge_conflict/`, `prompts/planning/`, `prompts/planning_critique/`, `prompts/pr_feedback/`, `prompts/question/`, `prompts/quorum/`, `prompts/quorum_judge/`, `prompts/spelling_fix/`, `prompts/workflow_setup/` |
 | **Injected fragment** | It is substituted into another template rather than run on its own | `prompts/coding_guidelines/`, `prompts/coding_guidelines_claude/` |
-| **Lightweight audit** | It reports on a narrow surface and files nothing, so it owns none of the filing sections | `prompts/alert_feed/`, `prompts/bash_script_refs/`, `prompts/bash_syntax_audit/`, `prompts/workflow_annotation_scan/` |
+| **Lightweight audit** | It reports on a narrow surface and files nothing, so it owns none of the filing sections | `prompts/alert_feed/`, `prompts/bash_script_refs/`, `prompts/bash_syntax_audit/`, `prompts/gate_skip_drift/`, `prompts/workflow_annotation_scan/` |
 
 The scan family is currently **15** directories. Membership is a property of the
 template text, so a sixteenth scan is in the family the day its template lands —
@@ -116,12 +116,13 @@ Applies to the twelve interactive directories in [Families](#families).
   (`prompts/doc_coverage/`) are banned: they describe today's placement rather
   than the house one, and each sweep that leaves them standing keeps a second
   place a maintainer must look. At the baseline eleven of the seventeen
-  placeholder-carrying templates already held it under `## Inputs`. Four —
+  placeholder-carrying templates already held it under `## Inputs`. Five —
   `prompts/alert_feed/`, `prompts/bash_script_refs/`,
-  `prompts/bash_syntax_audit/` and `prompts/workflow_annotation_scan/` — have no
+  `prompts/bash_syntax_audit/`, `prompts/gate_skip_drift/` and
+  `prompts/workflow_annotation_scan/` — have no
   `## Inputs` section at all, and Issue #841 settled that they never need one:
   they are wrapper issue bodies, so the worker substitutes the footer as it
-  files and there is no Inputs section for the prose to cite. Those four stay
+  files and there is no Inputs section for the prose to cite. Those five stay
   outside this row. The rule is about the **source named**, so citing any other
   source is the same drift: `` from `<attribution_footer>` `` (the XML tag the
   Inputs section wraps it in) and "from the input above" were swept to the

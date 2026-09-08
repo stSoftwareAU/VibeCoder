@@ -1,0 +1,76 @@
+# Snapshot excerpt of stSoftwareAU/NEAT-AI-core .github/workflows/ci.yml
+# (Issue #1597): the scripts-and-spelling job that installs and runs the
+# tools the local gate skips.
+name: CI
+on: [pull_request]
+jobs:
+  scripts-and-spelling:
+    name: Scripts & spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # shellcheck + bats + codespell
+    if: github.event_name == 'pull_request'
+    needs: [version-increment]
+    # Issue #311 — least-privilege GITHUB_TOKEN. This job only reads the repo
+    # (checkout, shellcheck, bash -n, codespell); it never pushes, so it must
+    # not inherit the repository's broad default write scopes.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        # actions/checkout@v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # ShellCheck Lint — upstream project: https://github.com/koalaman/shellcheck
+      # We install the apt package (which ships koalaman/shellcheck) and scan all *.sh files
+      # under the repository, mirroring the local quality.sh gate.
+      - name: Install shellcheck (koalaman/shellcheck)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck --version
+
+      - name: Run shellcheck (koalaman/shellcheck)
+        run: |
+          set -euo pipefail
+          failed=0
+          while IFS= read -r script; do
+            shellcheck -s bash "$script" || failed=1
+          done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
+          exit "$failed"
+
+      - name: Check bash script syntax (bash -n)
+        run: |
+          set -euo pipefail
+          exit_code=0
+          while IFS= read -r script; do
+            bash -n "$script" || exit_code=1
+          done < <(find . -name "*.sh" -not -path "./target/*" -not -path "./.git/*")
+          exit "$exit_code"
+
+      # Bash helper tests (bats) — mirrors the local quality.sh gate so that
+      # public-safety regressions (e.g. Issue #397: perf sources naming the
+      # private trainer's internal scripts) fail on the PR rather than only on
+      # a contributor's machine.
+      - name: Install bats
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y bats
+          bats --version
+
+      - name: Run bats (tests/scripts)
+        run: bats tests/scripts
+
+      - name: Run codespell
+        # codespell-project/actions-codespell@v2.2
+        uses: codespell-project/actions-codespell@8f01853be192eb0f849a5c7d721450e7a467c579
+        with:
+          check_filenames: true
+          check_hidden: true
+          skip: "./target,./.git"
+          ignore_words_list: renderD,mape,froms,indx

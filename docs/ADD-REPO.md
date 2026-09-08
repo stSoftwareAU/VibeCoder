@@ -4,7 +4,7 @@ The **add-repo** feature lets an authorised human onboard a new repository to
 the worker's monitored set by filing a single GitHub issue — no shell access,
 no manual `.config.json` edit, no redeploy step. The worker validates access,
 records the slug, syncs the full canonical GitHub label set so issues can be
-scheduled immediately, and seeds the eighteen idle-task scans so the new repo is
+scheduled immediately, and seeds the nineteen idle-task scans so the new repo is
 brought up to standard over the coming idle cycles.
 
 This is the operator manual: how to trigger it, what the worker does, the
@@ -136,7 +136,7 @@ The command then runs seven steps:
    **Non-fatal:** a configuration failure is reported in the summary, **not
    swallowed**, but does not abort onboarding; the idempotent setup-time
    `branch-protection-sync` will reconcile.
-6. **Seed all eighteen idle-task wrappers** — file one wrapper issue per
+6. **Seed all nineteen idle-task wrappers** — file one wrapper issue per
    registered idle-task template in the **target** repo; the authoritative list
    is the [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry).
    This bypasses the normal one-wrapper-per-tick random pick and the cross-repo
@@ -165,7 +165,7 @@ flowchart TD
     G --> H["Append slug to<br/>.config.json repos[]<br/>(idempotent)"]
     H --> S["Sync canonical labels<br/>(idempotent, non-fatal)"]
     S --> P["Configure default-branch<br/>protection (visibility-aware,<br/>idempotent, non-fatal)"]
-    P --> I["Seed all eighteen<br/>idle-task wrappers<br/>(idempotent)"]
+    P --> I["Seed all nineteen<br/>idle-task wrappers<br/>(idempotent)"]
     I --> J["Success comment<br/>+ close issue"]
     J --> K["Next config reload /<br/>worker restart:<br/>repo becomes active"]
 ```
@@ -262,7 +262,7 @@ syncs that `setup.sh` performs at deploy time — the workflow sync,
 `.gitignore`/`.gitattributes` sync, and collaborator precheck. Re-running those
 syncs per add-repo issue would spend API budget for no benefit.
 
-Best-practice setup is instead **delegated to the eighteen idle tasks**. The seeded
+Best-practice setup is instead **delegated to the nineteen idle tasks**. The seeded
 `security-scan`, `best-practices`, `test-audit`, `github-actions-audit`, and
 `supply-chain-readiness` wrappers bring a newly added repo up to standard over
 the coming idle cycles — they file findings for missing CI gates, unpinned
@@ -271,7 +271,7 @@ GitHub Actions, supply-chain gaps, and the rest, which a human then triages.
 ## Visibility gating
 
 The add-repo flow **detects** visibility but does **not** gate on it. Which of
-the eighteen idle tasks fire — and which individual checks within them run — on a
+the nineteen idle tasks fire — and which individual checks within them run — on a
 private repo is governed at **runtime** by the templates themselves (per
 ). For example, the supply-chain-readiness scan confirms repo
 visibility
@@ -318,7 +318,7 @@ applied to any issue by the flow.
 - [`worker/deno/commands/process_add_repo.ts`](../worker/deno/commands/process_add_repo.ts)
   — the orchestrating `process-add-repo` command.
 - [`worker/deno/lib/create_all_idle_task_wrappers.ts`](../worker/deno/lib/create_all_idle_task_wrappers.ts)
-  — seeds all eighteen idle-task wrappers in the target repo.
+  — seeds all nineteen idle-task wrappers in the target repo.
 - [`worker/deno/setup/label_sync.ts`](../worker/deno/setup/label_sync.ts) —
   `syncLabelsForRepo`, the canonical label sync (over
   [`label_definitions.ts`](../worker/deno/setup/label_definitions.ts))

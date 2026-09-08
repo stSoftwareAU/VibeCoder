@@ -1391,7 +1391,8 @@ repository's entire idle-task supply. The operator's standing goal is to keep
 every worker slot busy, so this is a direct throughput kill — and a silent one,
 because a suppressed wrapper produces no error and no log line.
 
-- **The control.** The lookup moved out of the eighteen templates into one
+- **The control.** The lookup moved out of the eighteen then-registered templates
+  into one
   module,
   [`idle_task_wrapper_dedup.ts`](worker/deno/lib/idle_task_wrapper_dedup.ts),
   which requests `author` alongside the title and keeps only the matches

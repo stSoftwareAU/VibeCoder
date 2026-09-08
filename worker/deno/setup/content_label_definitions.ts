@@ -155,6 +155,12 @@ const SCAN_CATEGORY_LABELS: readonly LabelDefinition[] = [
     category: "content",
   },
   {
+    name: "gate-skip-drift",
+    colour: "b60205",
+    description: "The local quality gate skips a tool this repo's CI enforces",
+    category: "content",
+  },
+  {
     name: "bash-syntax-audit",
     colour: "b60205",
     description: "Bash syntax audit finding",

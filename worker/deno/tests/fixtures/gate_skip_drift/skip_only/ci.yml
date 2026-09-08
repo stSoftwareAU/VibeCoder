@@ -1,0 +1,10 @@
+# Synthetic workflow (Issue #1597): CI runs the test suite only — nothing here
+# enforces the tool the gate above skips.
+name: CI
+on: [pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run tests
+        run: cargo test --all
