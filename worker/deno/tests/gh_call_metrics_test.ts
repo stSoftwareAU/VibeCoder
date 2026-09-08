@@ -729,3 +729,35 @@ Deno.test("gh_call_metrics - formatGraphQLSummary names derived priority buckets
   assertStringIncludes(summary, "priority:issue-scanning=2");
   assertStringIncludes(summary, "timeline-batch=1");
 });
+
+/**
+ * The derived bucket inherits the priority axis, so it must inherit its
+ * async scoping too (Issue #1586, the shape Issue #213 fixed): two priority
+ * lanes running at once must not credit each other's GraphQL calls.
+ */
+Deno.test("gh_call_metrics - concurrent priority lanes do not cross-credit derived buckets", async () => {
+  resetGhCallMetrics();
+
+  // Bounded rendezvous, never a sleep: a lane that never arrives fails the
+  // assertion below rather than hanging the suite.
+  const meeting = createRendezvous(2);
+
+  const scanning = withPriorityContext("Issue Scanning", async () => {
+    // Suspend inside the priority, exactly as an awaited `gh` spawn does.
+    assertEquals(await meeting.arrive(), 2);
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+  });
+
+  const merging = withPriorityContext("Auto Merge", async () => {
+    await Promise.resolve();
+    recordGhCall(["pr", "list", "--repo", "o/r"]);
+    assertEquals(await meeting.arrive(), 2);
+  });
+
+  await Promise.all([scanning, merging]);
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlTotal, 2);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 1);
+  assertEquals(snap.graphqlBySource["priority:auto-merge"], 1);
+});

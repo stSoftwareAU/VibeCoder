@@ -85,9 +85,8 @@ const state = {
 
 /**
  * Prefix marking a GraphQL bucket derived from the active priority rather
- * than an explicit `enterGraphQLSource()` (Issue #1586). It keeps a derived
- * bucket distinguishable from an explicit one, so a priority named the same
- * as a source cannot silently merge with it.
+ * than an explicit source (Issue #1586). See `recordGhCall` for the
+ * resolution order it is applied in.
  */
 const PRIORITY_SOURCE_PREFIX = "priority:";
 
@@ -538,15 +537,11 @@ export function formatGhCallsByPrioritySummary(): string {
  *   `graphql-calls: 245 total, pr-linkage=110, milestone-health=45,
  *   check-runs=30`
  *
- * Each call is attributed by the four-step resolution in `recordGhCall`:
- * the explicit `enterGraphQLSource()` stack, else the async-scoped
- * `withGraphQLSource()` context, else the active priority — emitted with a
- * `priority:` prefix (Issue #1586) so a derived bucket is never confused with
- * an explicit source — else `unattributed`. Since #1586 the ordinary
- * `issue list` / `pr list` / `issue view` traffic lands under its priority,
- * so `unattributed` is an anomaly signal: a call issued outside both a source
- * and a priority context, i.e. a pass that forgot to wrap itself. The buckets
- * sum exactly to the total.
+ * Each call is attributed by the resolution order in `recordGhCall`, so since
+ * Issue #1586 the ordinary `issue list` / `pr list` / `issue view` traffic
+ * lands under its priority as `priority:<name>`. `unattributed` is therefore
+ * an anomaly signal rather than the normal case: a call issued outside both a
+ * source and a priority context, i.e. a pass that forgot to wrap itself.
  */
 export function formatGraphQLSummary(): string {
   const snap = getGhCallMetrics();
