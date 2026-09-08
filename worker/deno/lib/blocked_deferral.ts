@@ -29,6 +29,7 @@ import { extractDependencyReferencesDetailed } from "./issue_dependencies.ts";
 import { expectedNoPrOutcome, type RunOutcome } from "./run_outcome.ts";
 import { releaseClaim as defaultReleaseClaim } from "./claim_release.ts";
 import { assertWorkerCanApplyLabel } from "./worker_label_guard.ts";
+import { upsertWorkerRecordLine } from "./worker_record_block.ts";
 import type { GitHubClient, Logger, Result } from "../types.ts";
 
 /** Label applied when the dependency line cannot be written to the body. */
@@ -188,9 +189,12 @@ async function recordDependencyInBody(
     });
     return true;
   }
-  const separator = body.trim().length > 0 ? "\n\n" : "";
+  // Issue #1631: the line goes inside the machine-owned record block, which
+  // the content-approval gate strips before hashing. Appending it as loose
+  // prose made the fleet's own bookkeeping write look like content changed
+  // after approval, and the gate escalated on every deferral.
   await ghClient.editIssue(repo, issueNumber, {
-    body: `${body.trimEnd()}${separator}${line}\n`,
+    body: upsertWorkerRecordLine(body, line),
   });
   return true;
 }
