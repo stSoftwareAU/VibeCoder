@@ -212,13 +212,18 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   and it does not copy one of this repository's own `.sh`/`.ps1` scripts into a
   temporary tree and spawn it. That last clause is the boundary the code draws:
   `isIntegrationTestSource` claims any test that builds a path to a repository
-  script, and a claimed file is an integration test.
+  script, and a claimed file is an integration test — including the three the
+  gate runs anyway (Issue #1598). Being run by the gate does not make a suite a
+  unit test: the classifier decides what a file is, and the exception decides
+  only where it runs.
 - **Fast** — it finishes within 10 seconds, and that is a **target, not a
   kill**. Nothing times a unit test at run
   time, so the rule is enforced by shape rather than by stopwatch: a wall-clock
   sleep, a retry loop against the real clock, a polling wait or a spawned
   script is a `test-audit` finding (check 13) whatever the test happens to cost
-  on your machine.
+  on your machine — unless the file is **declared**, in the integration
+  manifest or in `IN_GATE_SCRIPT_SUITES`, where the spawn is the point and its
+  cost is recorded beside it.
 - **Parallel-safe** — it does not mutate process-wide state (`Deno.env.set`,
   `Deno.env.delete`, `Deno.chdir`, or a module-level singleton the rest of the
   suite reads). Take the value as a parameter or an injected seam instead.

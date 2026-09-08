@@ -12,7 +12,9 @@
  *
  * What this file pins is the half a manifest cannot state on its own:
  *
- * - the three `run.ps1` suites are in the gate's path, not in its `--ignore`;
+ * - every suite that drives `run.ps1` is in the gate's path, not in its
+ *   `--ignore` — read off the tree, never off the manifest, so re-excluding
+ *   one and dropping its `IN_GATE_SCRIPT_SUITES` entry together still fails;
  * - every other suite that starts a PowerShell interpreter is placed
  *   deliberately rather than left wherever it happened to be; and
  * - a host without PowerShell **fails** here rather than letting those
@@ -50,10 +52,31 @@ const TESTS_DIR = new URL(".", import.meta.url).pathname;
 const POWERSHELL_INTERPRETER =
   /\b(resolvePowerShell|POWERSHELL_LAUNCHER|PWSH)\b/;
 
+/**
+ * Naming the launcher this issue is about.
+ *
+ * Paired with {@link POWERSHELL_INTERPRETER} it reads "starts PowerShell to
+ * drive `run.ps1`", which is the set Issue #1598 brought into the gate. It is
+ * taken from the tree rather than from `IN_GATE_SCRIPT_SUITES` on purpose:
+ * an assertion that only checks what the manifest names is one a change can
+ * satisfy by deleting the entry it was meant to protect.
+ */
+const RUN_PS1 = /run\.ps1/;
+
 /** Whether `file` starts a PowerShell interpreter. */
 async function drivesPowerShell(file: string): Promise<boolean> {
   const source = await Deno.readTextFile(`${TESTS_DIR}/${file}`);
   return POWERSHELL_INTERPRETER.test(source);
+}
+
+/** Every test file that starts PowerShell to drive `run.ps1`, right now. */
+async function runPs1Suites(): Promise<string[]> {
+  const found: string[] = [];
+  for (const file of await powerShellSuites()) {
+    const source = await Deno.readTextFile(`${TESTS_DIR}/../${file}`);
+    if (RUN_PS1.test(source)) found.push(file);
+  }
+  return found;
 }
 
 /** Every test file that starts a PowerShell interpreter, right now. */
@@ -68,43 +91,39 @@ async function powerShellSuites(): Promise<string[]> {
   return found.sort();
 }
 
-Deno.test("pwsh suites - the run.ps1 launcher suites are in the gate (Issue #1598)", async () => {
-  // Named from the manifest rather than restated, so the entry and the
-  // assertion cannot disagree about which suites the gate took back.
-  const claimed = [...IN_GATE_SCRIPT_SUITES.keys()].sort();
+Deno.test("pwsh suites - every run.ps1 suite is in the gate (Issue #1598)", async () => {
+  // The set comes off the tree, so the exclusion returning fails here even
+  // if the manifest entry that named the suite goes with it. Both readings
+  // of "excluded" are checked: the list, and the `--ignore` argument
+  // `quality_gate.ts` actually passes.
+  const suites = await runPs1Suites();
+  assert(
+    suites.length >= 3,
+    "no suite in tests/ starts PowerShell to drive run.ps1 any more — this " +
+      "file has outlived what it records, or the suites were deleted",
+  );
   const excluded = new Set(INTEGRATION_TEST_FILES);
-  const stillOut = claimed.filter((file) => excluded.has(file));
+  const ignored = new Set(integrationTestIgnoreArg().split(","));
+  const stillOut = suites.filter((file) =>
+    excluded.has(file) || ignored.has(file)
+  );
   assertEquals(
     stillOut,
     [],
-    "these are named as suites the gate runs, and are excluded from it:\n" +
-      stillOut.join("\n"),
-  );
-  // Every one of them starts an interpreter — an entry for a suite that
-  // does not is an exception nobody needed.
-  const drives = await powerShellSuites();
-  const idle = claimed.filter((file) => !drives.includes(file));
-  assertEquals(
-    idle,
-    [],
-    "these carry an in-gate exception but start no PowerShell " +
-      "interpreter — drop the entry:\n" + idle.join("\n"),
+    "these drive run.ps1 and the gate excludes them, so the Windows " +
+      "containment boundary is verified only in a CI job that cannot block " +
+      "a merge (Issue #1598):\n" + stillOut.join("\n"),
   );
 });
 
-Deno.test("pwsh suites - the gate's own --ignore does not name them (Issue #1598)", () => {
-  // Taken from the argument `quality_gate.ts` actually passes rather than
-  // from the list behind it: an `--ignore` that still names these would
-  // exclude them however the manifest reads.
-  const ignored = new Set(integrationTestIgnoreArg().split(","));
-  const silenced = [...IN_GATE_SCRIPT_SUITES.keys()].filter((file) =>
-    ignored.has(file)
-  );
+Deno.test("pwsh suites - the manifest names exactly those suites (Issue #1598)", async () => {
+  // The manifest is what carries the reason and the measured cost, so it
+  // has to agree with the tree in both directions: an entry for a suite
+  // that drives nothing is an exception nobody needed, and a run.ps1 suite
+  // with no entry is one the gate pays for with no reason recorded.
   assertEquals(
-    silenced,
-    [],
-    "the gate's `deno test --ignore` names these, so its unit stage skips " +
-      "them:\n" + silenced.join("\n"),
+    [...IN_GATE_SCRIPT_SUITES.keys()].sort(),
+    await runPs1Suites(),
   );
 });
 

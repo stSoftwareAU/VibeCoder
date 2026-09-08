@@ -73,31 +73,20 @@ Deno.test("integration manifest - the two lists are disjoint (Issue #935)", () =
   assertEquals(both, [], "listed as both an integration test and a unit test");
 });
 
-Deno.test("integration manifest - the in-gate exceptions are excluded from nothing (Issue #1598)", () => {
-  // A file in both lists would carry a note saying the gate runs it while
-  // the gate's own `--ignore` skips it — the exception silently undone.
-  const excluded = new Set(INTEGRATION_TEST_FILES);
-  const ignored = new Set(integrationTestIgnoreArg().split(","));
-  const contradicted = [...IN_GATE_SCRIPT_SUITES.keys()].filter((f) =>
-    excluded.has(f) || ignored.has(f)
-  );
-  assertEquals(
-    contradicted,
-    [],
-    "named as suites the gate runs, and excluded from it:\n" +
-      contradicted.join("\n"),
-  );
-});
-
 Deno.test("integration manifest - no file carries two placements (Issue #1598)", () => {
-  const both = [...IN_GATE_SCRIPT_SUITES.keys()].filter((f) =>
-    SCRIPT_READING_UNIT_TESTS.has(f)
+  // Each pairing is a contradiction of its own: excluded *and* run by the
+  // gate is the exception silently undone, and read-only *and* run by the
+  // gate means one of the two reasons is wrong. `pwsh_suites_in_the_gate_
+  // test.ts` asserts the same for the `--ignore` the gate actually passes,
+  // which is derived from INTEGRATION_TEST_FILES.
+  const clashes = [...IN_GATE_SCRIPT_SUITES.keys()].filter((f) =>
+    INTEGRATION_TEST_FILES.includes(f) || SCRIPT_READING_UNIT_TESTS.has(f)
   );
   assertEquals(
-    both,
+    clashes,
     [],
-    "exempted as read-only and named as a suite the gate runs — one of the " +
-      "two reasons is wrong:\n" + both.join("\n"),
+    "named as a suite the gate runs and placed in another list too:\n" +
+      clashes.join("\n"),
   );
 });
 
