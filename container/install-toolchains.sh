@@ -65,6 +65,14 @@ if [[ ! -f "${MANIFEST}" ]]; then
     exit 1
 fi
 
+# Parse it once, up front. Without this an unreadable manifest — invalid JSON,
+# or no jq on PATH — would reach the per-id query below and be reported as
+# "not pinned with a fragment", sending the reader to the wrong file.
+if ! jq -e 'has("toolchains")' "${MANIFEST}" > /dev/null 2>&1; then
+    echo "Toolchain manifest ${MANIFEST} is not readable JSON with a toolchains[] array (is jq present?)." >&2
+    exit 1
+fi
+
 # Split on commas. Empty entries survive the split (IFS is not whitespace), so
 # "a,,b" is rejected below rather than silently collapsing.
 ids=()

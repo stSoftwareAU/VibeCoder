@@ -1554,6 +1554,39 @@ Deno.test("findToolchainInstallViolations - reports a missing, unverified or sel
   );
 });
 
+// ---------------------------------------------------------------------------
+// The committed fragment directory
+// ---------------------------------------------------------------------------
+
+Deno.test("container/ - every committed fragment is a selectable toolchain id", async () => {
+  const ids: string[] = [];
+  for await (
+    const entry of Deno.readDir(new URL("container/toolchains", REPO_ROOT))
+  ) {
+    if (!entry.isFile) continue;
+    assert(
+      entry.name.endsWith(".sh"),
+      `container/toolchains/${entry.name} is not a fragment — the build ` +
+        `lists this directory to report the available toolchain ids`,
+    );
+    const id = entry.name.slice(0, -".sh".length);
+    assert(
+      /^[a-z][a-z0-9-]*$/.test(id),
+      `container/toolchains/${entry.name} is not selectable: "${id}" is not ` +
+        `a lower-case toolchain id`,
+    );
+    ids.push(id);
+  }
+  assert(
+    ids.length > 0,
+    "container/toolchains must ship at least one fragment",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A fragment resolves every pin it needs before it downloads anything
+// ---------------------------------------------------------------------------
+
 Deno.test("container/ - the committed toolchain layer is fragment-driven and pinned", async () => {
   const manifest = parseContainerManifest(
     await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),

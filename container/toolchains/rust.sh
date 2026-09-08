@@ -53,8 +53,13 @@ esac
 
 # One pinned checksum per component package, keyed as the manifest records it.
 checksum_for() {
-    jq -er --arg id "${TOOLCHAIN_ID}" --arg key "$1" \
-        '.toolchains[] | select(.id == $id) | .sha256[$key]' "${MANIFEST}"
+    local key="$1" value
+    if ! value="$(jq -er --arg id "${TOOLCHAIN_ID}" --arg key "${key}" \
+        '.toolchains[] | select(.id == $id) | .sha256[$key]' "${MANIFEST}")"; then
+        echo "[${TOOLCHAIN_ID}] ${MANIFEST} pins no sha256 for \"${key}\"" >&2
+        return 1
+    fi
+    printf '%s' "${value}"
 }
 
 echo "[${TOOLCHAIN_ID}] Installing ${version} for ${manifest_arch}"
@@ -77,9 +82,18 @@ install_rust_pkg() {
     rm -rf "${archive}" "${workdir:?}/${dir}"
 }
 
-install_rust_pkg rust "$(checksum_for "${manifest_arch}")" --without=rust-docs
-install_rust_pkg rustfmt "$(checksum_for "rustfmt_${manifest_arch}")"
-install_rust_pkg clippy "$(checksum_for "clippy_${manifest_arch}")"
+# Resolve all three pins first, as standalone assignments: a command
+# substitution in *argument* position does not trip `set -e`, so a missing key
+# would pass jq's literal "null" to the installer and only surface far away, as
+# an unformatted-checksum error from sha256sum. Assigning first fails here,
+# naming the key that is not pinned.
+rust_sha="$(checksum_for "${manifest_arch}")"
+rustfmt_sha="$(checksum_for "rustfmt_${manifest_arch}")"
+clippy_sha="$(checksum_for "clippy_${manifest_arch}")"
+
+install_rust_pkg rust "${rust_sha}" --without=rust-docs
+install_rust_pkg rustfmt "${rustfmt_sha}"
+install_rust_pkg clippy "${clippy_sha}"
 
 # Prove every installed command runs in this image rather than assuming it
 # does; cargo is the version the manifest reports the toolchain by.

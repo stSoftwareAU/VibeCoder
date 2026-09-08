@@ -95,13 +95,16 @@ async function runInstaller(
     stdin: "null",
   }).output();
 
+  // No log means no fragment ran, which is what the error cases assert on.
+  // Only that one cause may be read as "nothing ran": any other read failure
+  // would otherwise make those assertions pass for the wrong reason.
   let installed: string[] = [];
   try {
     installed = (await Deno.readTextFile(log)).split("\n").filter((l) =>
       l !== ""
     );
-  } catch {
-    installed = [];
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
 
   return {
@@ -208,6 +211,22 @@ Deno.test("install-toolchains - an id the manifest does not pin aborts", async (
   }
 });
 
+Deno.test("install-toolchains - an unreadable manifest is reported as such, not as an unpinned id", async () => {
+  // Invalid JSON reaching the per-id query would be reported as "not pinned
+  // with a fragment", sending the reader to container/tools.json's toolchains
+  // list rather than to the file that is actually broken.
+  const dir = await fragmentDir(["rust"]);
+  try {
+    await Deno.writeTextFile(`${dir}/tools.json`, "{ this is not json");
+    const run = await runInstaller("rust", dir);
+    assert(run.code !== 0, "an unreadable manifest must abort the build");
+    assertStringIncludes(run.stderr, "not readable JSON");
+    assertEquals(run.installed, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("install-toolchains - a missing manifest aborts rather than installing unpinned", async () => {
   const dir = await fragmentDir(["shellcheck"]);
   try {
@@ -293,29 +312,74 @@ Deno.test("install-toolchains - a fragment that fails aborts, naming the toolcha
   }
 });
 
-// ---------------------------------------------------------------------------
-// The committed fragment directory
-// ---------------------------------------------------------------------------
+Deno.test("container/toolchains/rust.sh - a missing component pin aborts before downloading", async () => {
+  // rust.sh is the one fragment needing several checksums (rustc/cargo,
+  // rustfmt and clippy are separate packages). Resolving a pin in *argument*
+  // position would not trip `set -e`: jq's literal "null" would reach the
+  // installer and only surface later as an unformatted-checksum error naming
+  // no pin. Drop the checksum this architecture needs and the fragment must
+  // stop at the lookup instead.
+  const arch = new Deno.Command("uname", { args: ["-m"], stdout: "piped" });
+  const machine = new TextDecoder().decode((await arch.output()).stdout).trim();
+  const key = machine === "aarch64" ? "clippy_arm64" : "clippy_amd64";
 
-Deno.test("container/ - every committed fragment is a selectable toolchain id", async () => {
-  const ids: string[] = [];
-  for await (const entry of Deno.readDir(`${REPO_ROOT}/container/toolchains`)) {
-    if (!entry.isFile) continue;
-    assert(
-      entry.name.endsWith(".sh"),
-      `container/toolchains/${entry.name} is not a fragment — the build ` +
-        `lists this directory to report the available toolchain ids`,
+  const dir = await Deno.makeTempDir();
+  try {
+    const manifest = JSON.parse(
+      await Deno.readTextFile(`${REPO_ROOT}/container/tools.json`),
     );
-    const id = entry.name.slice(0, -".sh".length);
-    assert(
-      /^[a-z][a-z0-9-]*$/.test(id),
-      `container/toolchains/${entry.name} is not selectable: "${id}" is not ` +
-        `a lower-case toolchain id`,
+    const rust = manifest.toolchains.find((t: { id: string }) =>
+      t.id === "rust"
     );
-    ids.push(id);
+    assert(rust !== undefined, "container/tools.json must pin rust");
+    assert(key in rust.sha256, `rust must pin ${key} before it is removed`);
+    delete rust.sha256[key];
+    await Deno.writeTextFile(
+      `${dir}/tools.json`,
+      JSON.stringify(manifest, null, 2),
+    );
+
+    // A curl that records being called, so "did it download?" is observable
+    // rather than assumed. It exits 0, so only the fragment's own guard can
+    // stop the run.
+    await Deno.mkdir(`${dir}/bin`);
+    await Deno.writeTextFile(
+      `${dir}/bin/curl`,
+      `#!/bin/sh\necho called >> "${dir}/curl.log"\nexit 0\n`,
+    );
+    await Deno.chmod(`${dir}/bin/curl`, 0o755);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/rust.sh`],
+      env: {
+        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        TOOLCHAIN_MANIFEST: `${dir}/tools.json`,
+        CURL_RETRY: "",
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assertEquals(result.code, 1, "an unpinned component must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      `pins no sha256 for "${key}"`,
+    );
+
+    let downloaded = true;
+    try {
+      await Deno.stat(`${dir}/curl.log`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      downloaded = false;
+    }
+    assert(
+      !downloaded,
+      "the fragment downloaded before resolving its pins — a missing pin must " +
+        "stop it at the lookup, naming the key",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
-  assert(
-    ids.length > 0,
-    "container/toolchains must ship at least one fragment",
-  );
 });
