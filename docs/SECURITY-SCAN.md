@@ -699,8 +699,8 @@ is then written in whichever of these two shapes its modules put it in:
 
 The title's `N` counts **only the never-recorded chunks**. A recorded,
 unchanged tree is listed for the reader but is already covered, so counting
-it would re-report an audited tree as unaudited — which is exactly what the
-#1608 tracker did to roughly a thousand recorded modules. The stopping rule
+it would re-report an audited tree as unaudited — which is exactly what
+the #1608 tracker did to roughly a thousand recorded modules. The stopping rule
 drops previously-swept-and-unchanged chunks first for the same reason: the
 budget is better spent on a chunk no record covers. When every unswept chunk
 is recorded, `N` is zero and no tracker is filed for the stopping rule
