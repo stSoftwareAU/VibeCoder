@@ -85,45 +85,30 @@ export interface RepoLanguages {
 // ---------------------------------------------------------------------------
 
 /**
- * Default command runner using Deno.Command with optional gh config.
+ * Create the default command runner.
  *
- * Issue #1227: the binary is named by `cmd[0]`, and every production caller
- * passes `["gh", "api", …]` — a direct `gh` spawn the literal-matching
- * chokepoint gate could not see. A `gh` command is delegated to the shared
- * chokepoint so it is allowlist-checked, timed out and journalled; any other
- * binary is spawned directly.
+ * Issue #1378: this module only ever runs `gh`, so the runner is the shared
+ * chokepoint (`spawnGh`) rather than a `Deno.Command` built from `cmd[0]` —
+ * an indirection that skipped the write-repo allowlist and the audit journal
+ * while the quality gate's literal-string scan saw nothing. Any other binary
+ * is refused loudly rather than spawned outside the chokepoint.
  */
 function createDefaultRunCommand(
   ghConfigDir?: string,
 ): (cmd: string[]) => Promise<CommandOutput> {
-  const extraEnv = ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : undefined;
+  const env = ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : undefined;
   return async (cmd: string[]): Promise<CommandOutput> => {
-    if (cmd[0] === "gh") {
-      const result = await spawnGh(
-        cmd.slice(1),
-        extraEnv ? { env: extraEnv } : {},
+    if (cmd[0] !== "gh") {
+      throw new Error(
+        `language_detector only spawns gh through the chokepoint; ` +
+          `refusing to run "${cmd[0] ?? ""}"`,
       );
-      return {
-        success: result.success,
-        stdout: result.stdout.trim(),
-        stderr: result.stderr.trim(),
-      };
     }
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    });
-    const output = await command.output();
-    const decoder = new TextDecoder();
+    const result = await spawnGh(cmd.slice(1), env ? { env } : {});
     return {
-      success: output.success,
-      stdout: decoder.decode(output.stdout).trim(),
-      stderr: decoder.decode(output.stderr).trim(),
+      success: result.success,
+      stdout: result.stdout.trim(),
+      stderr: result.stderr.trim(),
     };
   };
 }

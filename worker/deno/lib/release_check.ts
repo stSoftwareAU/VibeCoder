@@ -39,9 +39,11 @@ import {
 import { compareSemver, parseSemver } from "./software_updates.ts";
 import {
   EXTENDED_SUBPROCESS_TIMEOUT_MS,
-  runWithTimeout,
   type SubprocessResult,
 } from "./subprocess_timeout.ts";
+import { spawnGh } from "./gh_spawn.ts";
+import { TIMEOUT_EXIT_CODE as GH_TIMEOUT_EXIT_CODE } from "./gh_wrapper.ts";
+import { isGitTimeout, runGitCommand } from "./git_timeout.ts";
 
 /** Timeout for one `gh`/`git` call made by this module. */
 export const RELEASE_CHECK_TIMEOUT_MS = EXTENDED_SUBPROCESS_TIMEOUT_MS;
@@ -375,7 +377,13 @@ export async function releaseToolVersions(
 }
 
 /**
- * The real deps: `gh` and `git` bounded by the shared timeout helper.
+ * The real deps: `gh` and `git` through their shared chokepoints.
+ *
+ * Issue #1378: both calls used to go through `runWithTimeout("gh"/"git", …)`,
+ * a generic wrapper with no binary-specific routing, so they reached the
+ * binary outside the write-repo allowlist, the audit journal and the quality
+ * gate's literal-string scan. `runGitCommand` and `spawnGh` own those
+ * controls — and the timeout each call still needs.
  *
  * @param repoDir - The worker checkout whose `origin` names the repository.
  * @param timeoutMs - Per-call timeout; the shared default otherwise.
@@ -386,13 +394,12 @@ export function createDefaultReleaseCheckDeps(
 ): ReleaseCheckDeps {
   return {
     resolveRepo: async () => {
-      const origin = await runWithTimeout(
-        "git",
-        ["remote", "get-url", "origin"],
-        { cwd: repoDir, timeoutMs },
-      );
+      const origin = await runGitCommand(["remote", "get-url", "origin"], {
+        cwd: repoDir,
+        timeoutSeconds: Math.ceil(timeoutMs / 1000),
+      });
       if (!origin.ok) return origin;
-      if (origin.value.timedOut) {
+      if (isGitTimeout(origin.value.code)) {
         return refuse(`git remote get-url origin timed out in ${repoDir}.`);
       }
       if (origin.value.code !== 0) {
@@ -409,6 +416,42 @@ export function createDefaultReleaseCheckDeps(
       }
       return { ok: true, value: repo };
     },
-    runGh: (args) => runWithTimeout("gh", [...args], { timeoutMs }),
+    runGh: async (args) => {
+      try {
+        const result = await spawnGh([...args], {
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        return {
+          ok: true,
+          value: {
+            success: result.success,
+            code: result.code,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            timedOut: false,
+          },
+        };
+      } catch (err) {
+        if (
+          err instanceof DOMException &&
+          (err.name === "AbortError" || err.name === "TimeoutError")
+        ) {
+          return {
+            ok: true,
+            value: {
+              success: false,
+              code: GH_TIMEOUT_EXIT_CODE,
+              stdout: "",
+              stderr: `Timed out after ${timeoutMs}ms`,
+              timedOut: true,
+            },
+          };
+        }
+        return {
+          ok: false,
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+      }
+    },
   };
 }

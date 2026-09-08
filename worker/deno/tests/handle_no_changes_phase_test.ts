@@ -19,6 +19,7 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { ISSUE_RUN_STATS_MARKER } from "../lib/issue_run_stats_comment.ts";
+import { findImageReferences } from "../lib/untrusted_image_signal.ts";
 
 // Side-effect import: register the security-scan template so its
 // title and body fingerprint are visible to the suppression check.
@@ -445,8 +446,13 @@ Deno.test(
 // emit into its final summary — the tail of which both branches publish.
 const LEAKY_TAIL = [
   "Here is the environment I was given:",
+  // Fixture credentials, not real ones — this is the text the redaction test
+  // asserts never reaches a comment. nosemgrep keeps the SAST stage on the
+  // finding it is for, following `unfenced_untrusted_text_test.ts`.
+  // nosemgrep: generic.secrets.security.detected-github-token.detected-github-token
   "GH_TOKEN=ghp_0123456789abcdefghijklmnopqrstuvwxyz",
   "ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123",
+  // nosemgrep: generic.secrets.security.detected-github-token.detected-github-token
   "remote: https://x-access-token:ghs_abcdefghijklmnopqrstuvwxyz0123456789@github.com/org/repo.git",
 ].join("\n");
 
@@ -678,3 +684,67 @@ Deno.test(
     );
   },
 );
+
+// -------------------------------------------------------------------------
+// Issue #1385 — an untrusted image withholds the already-resolved close
+// -------------------------------------------------------------------------
+
+Deno.test("handle_no_changes_phase - an untrusted image withholds the already-resolved close (Issue #1385)", async () => {
+  // The exploit this closes: an image tells the agent to report the issue as
+  // already fixed AND to withhold its own suspicious-image marker, so the
+  // only detector is the party under attack. The image reference cannot be
+  // suppressed that way — the worker parsed it before the agent saw
+  // anything — so the close is refused and the issue goes to a human.
+  const calls = makeStubGhCalls();
+  const body = "Broken login — see ![repro](https://example.test/shot.png)";
+  const ctx = makeContext({
+    issueBody: body,
+    untrustedImages: findImageReferences(body),
+  });
+  const state = makeState({
+    claudeOutput: "A".repeat(200) +
+      "\nThis has already been fixed. No code change was required.\n" +
+      '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+      'verified="read the code on the default branch" -->',
+  });
+  const deps = createMockDeps({
+    github: { createClient: () => makeStubGhClient(calls) },
+  });
+
+  const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+  assertEquals(calls.closeIssue.length, 0, "must NOT close the issue");
+  assertEquals(
+    (result as { reason: string }).reason,
+    "analysis_only_handed_off",
+  );
+  assert(
+    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    "must hand the issue to a human instead of closing it",
+  );
+});
+
+Deno.test("handle_no_changes_phase - a trusted author's issue still closes on the same evidence (Issue #1385)", async () => {
+  // The gate is conjunctive: no observed untrusted image, no withholding.
+  // A control that fires on ordinary work is one somebody switches off.
+  const calls = makeStubGhCalls();
+  const ctx = makeContext({
+    issueBody: "Broken login — see ![repro](https://example.test/shot.png)",
+    // A trusted author's images are never observed, so the field is empty.
+    untrustedImages: [],
+  });
+  const state = makeState({
+    claudeOutput: "A".repeat(200) +
+      "\nThis has already been fixed. No code change was required.\n" +
+      '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+      'verified="read the code on the default branch" -->',
+  });
+  const deps = createMockDeps({
+    github: { createClient: () => makeStubGhClient(calls) },
+  });
+
+  const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+  assertEquals((result as { reason: string }).reason, "already_complete");
+  assertEquals(calls.closeIssue.length, 1);
+});

@@ -2668,10 +2668,10 @@ export async function runClaudeWithRetry(
       ) {
         const rejectedId = currentOptions.sessionResumeState.sessionId;
         currentOptions.logger?.warn(
-          `Claude CLI rejected the session id "${rejectedId}" ` +
-            `("Invalid session ID") and exited ${exitCode} without running. ` +
+          `Claude CLI rejected the session flags for "${rejectedId}" ` +
+            `and exited ${exitCode} without running. ` +
             `Retrying once without --session-id/--resume — this run loses CLI ` +
-            `session continuity (Issue #204).`,
+            `session continuity (Issues #204, #1580).`,
         );
         currentOptions.logger?.security?.(
           "INVALID_SESSION_ID",

@@ -14,6 +14,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
+import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import {
   isMilestoneSyncBranch,
@@ -173,7 +174,7 @@ Deno.test(
         result.ok,
         `expected a successful sync: ${!result.ok && result.error.message}`,
       );
-      assertStringIncludes(result.value, "lib/fleet_health.ts");
+      assertStringIncludes(result.value.message, "lib/fleet_health.ts");
 
       const tree = await gitOk(
         ["ls-tree", "-r", "--name-only", "milestone/1048"],
@@ -190,11 +191,13 @@ Deno.test(
 );
 
 Deno.test(
-  "syncMilestoneBranchWithDefault - a genuine content conflict still takes the default branch's side",
+  "syncMilestoneBranchWithDefault - a content conflict neither side contains is left for a human (Issue #1559)",
   async () => {
+    // Business-logic change (Issue #1559): this case used to take the default
+    // branch's side wholesale, which is a decision nobody made. Two designs
+    // for the same problem now reach a human, and the branch is untouched.
     const fx = await setupDeletedOnMain();
     try {
-      // Both sides edit the same file: the ordinary conflict, unchanged.
       await gitOk(["checkout", "main"], fx.clone);
       await Deno.writeTextFile(`${fx.clone}/shared.txt`, "main side\n");
       await gitOk(["add", "shared.txt"], fx.clone);
@@ -202,6 +205,53 @@ Deno.test(
       await gitOk(["push", "origin", "main"], fx.clone);
       await gitOk(["checkout", "milestone/1048"], fx.clone);
       await Deno.writeTextFile(`${fx.clone}/shared.txt`, "milestone side\n");
+      await gitOk(["add", "shared.txt"], fx.clone);
+      await gitOk(["commit", "-m", "milestone edits shared"], fx.clone);
+      await gitOk(["push", "origin", "milestone/1048"], fx.clone);
+      const published = (await gitOk(["rev-parse", "milestone/1048"], fx.clone))
+        .trim();
+
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1048",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+      );
+
+      assert(!result.ok, "a conflict only a human can settle is not resolved");
+      assert(isConflictEscalation(result.error));
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        published,
+        "the merge is aborted, so the branch is exactly as it was",
+      );
+      assertEquals(
+        await Deno.readTextFile(`${fx.clone}/shared.txt`),
+        "milestone side\n",
+        "the branch's own version survives an escalated conflict",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a conflict the default branch subsumes still resolves and lands (Issue #1559)",
+  async () => {
+    const fx = await setupDeletedOnMain();
+    try {
+      await gitOk(["checkout", "main"], fx.clone);
+      await Deno.writeTextFile(
+        `${fx.clone}/shared.txt`,
+        "shared line\nmain adds a line\n",
+      );
+      await gitOk(["add", "shared.txt"], fx.clone);
+      await gitOk(["commit", "-m", "main edits shared"], fx.clone);
+      await gitOk(["push", "origin", "main"], fx.clone);
+      await gitOk(["checkout", "milestone/1048"], fx.clone);
+      await Deno.writeTextFile(`${fx.clone}/shared.txt`, "shared line\n");
       await gitOk(["add", "shared.txt"], fx.clone);
       await gitOk(["commit", "-m", "milestone edits shared"], fx.clone);
       await gitOk(["push", "origin", "milestone/1048"], fx.clone);
@@ -213,14 +263,23 @@ Deno.test(
         undefined,
         passingGate,
       );
+
       assert(
         result.ok,
         `expected a successful sync: ${!result.ok && result.error.message}`,
       );
       assertEquals(
         await Deno.readTextFile(`${fx.clone}/shared.txt`),
-        "main side\n",
+        "shared line\nmain adds a line\n",
+        "the side that keeps every line of the other is taken",
       );
+      assertEquals(result.value.conflict?.resolution, "auto");
+      const reasoning = await gitOk(
+        ["log", "-1", "--format=%B", "milestone/1048"],
+        fx.clone,
+      );
+      assertStringIncludes(reasoning, "shared.txt");
+      assertStringIncludes(reasoning, "superset");
     } finally {
       await fx.cleanup();
     }

@@ -352,7 +352,10 @@ Deno.test("syncMilestoneBranches - a second cycle with unchanged milestones issu
         return await ghFn(args);
       },
       syncBranchFn: () =>
-        Promise.resolve({ ok: true as const, value: "up to date" }),
+        Promise.resolve({
+          ok: true as const,
+          value: { message: "up to date" },
+        }),
       log: () => {},
       cooldownSeconds: 0,
       lastSyncTimes: new Map(),
@@ -409,7 +412,7 @@ Deno.test("syncMilestoneBranches - a milestone that gains a closed issue syncs o
       repos: ["owner/repo"],
       ghCommandFn,
       syncBranchFn: () =>
-        Promise.resolve({ ok: true as const, value: "merged" }),
+        Promise.resolve({ ok: true as const, value: { message: "merged" } }),
       log: () => {},
       cooldownSeconds: 0,
       lastSyncTimes: new Map(),
@@ -468,7 +471,7 @@ Deno.test("syncMilestoneBranches - a milestone that loses its last closed issue 
       repos: ["owner/repo"],
       ghCommandFn,
       syncBranchFn: () =>
-        Promise.resolve({ ok: true as const, value: "merged" }),
+        Promise.resolve({ ok: true as const, value: { message: "merged" } }),
       log: () => {},
       cooldownSeconds: 0,
       lastSyncTimes: new Map(),
@@ -576,7 +579,10 @@ Deno.test("syncMilestoneBranches - syncs active milestones across repos", async 
       _defaultBranch: string,
     ) => {
       syncedMilestones.push(milestoneBranch);
-      return { ok: true as const, value: `Synced ${milestoneBranch}` };
+      return {
+        ok: true as const,
+        value: { message: `Synced ${milestoneBranch}` },
+      };
     },
     log: (msg: string) => logs.push(msg),
     cooldownSeconds: 3600,
@@ -686,7 +692,10 @@ Deno.test("syncMilestoneBranches - returns empty result for no repos", async () 
   const deps: MilestoneBranchSyncDeps = {
     repos: [],
     ghCommandFn: async () => "[]",
-    syncBranchFn: async () => ({ ok: true as const, value: "done" }),
+    syncBranchFn: async () => ({
+      ok: true as const,
+      value: { message: "done" },
+    }),
     log: () => {},
     cooldownSeconds: 3600,
     lastSyncTimes: new Map(),
@@ -733,7 +742,7 @@ Deno.test("syncMilestoneBranches - handles multiple repos", async () => {
       _defaultBranch: string,
     ) => {
       syncedMilestones.push(`${repo}:${milestoneBranch}`);
-      return { ok: true as const, value: "synced" };
+      return { ok: true as const, value: { message: "synced" } };
     },
     log: () => {},
     cooldownSeconds: 3600,
@@ -774,7 +783,10 @@ Deno.test("syncMilestoneBranches - updates lastSyncTimes after successful sync",
       }
       return "[]";
     },
-    syncBranchFn: async () => ({ ok: true as const, value: "synced" }),
+    syncBranchFn: async () => ({
+      ok: true as const,
+      value: { message: "synced" },
+    }),
     log: () => {},
     cooldownSeconds: 3600,
     lastSyncTimes,
@@ -867,7 +879,7 @@ Deno.test("syncMilestoneBranches - continues processing after one repo fails", a
     syncBranchFn: async (repo: string, branch: string) => {
       callCount++;
       syncedMilestones.push(`${repo}:${branch}`);
-      return { ok: true as const, value: "synced" };
+      return { ok: true as const, value: { message: "synced" } };
     },
     log: () => {},
     cooldownSeconds: 3600,
@@ -958,7 +970,7 @@ Deno.test("syncMilestoneBranches - uses injected defaultBranchFn when provided",
     },
     syncBranchFn: async (_repo, branch) => {
       syncedMilestones.push(branch);
-      return { ok: true as const, value: "synced" };
+      return { ok: true as const, value: { message: "synced" } };
     },
     log: () => {},
     cooldownSeconds: 3600,
@@ -985,7 +997,10 @@ Deno.test("syncMilestoneBranches - skips repo when defaultBranchFn errors", asyn
     ghCommandFn: ghFn,
     defaultBranchFn: () =>
       Promise.resolve({ ok: false as const, error: new Error("network down") }),
-    syncBranchFn: async () => ({ ok: true as const, value: "synced" }),
+    syncBranchFn: async () => ({
+      ok: true as const,
+      value: { message: "synced" },
+    }),
     log: () => {},
     cooldownSeconds: 3600,
     lastSyncTimes: new Map(),
@@ -1081,7 +1096,10 @@ Deno.test("syncMilestoneBranches - skips repo when localCloneExistsFn returns fa
       if (repo === "owner/not-cloned") {
         throw new Error("syncBranchFn must not run for uncloned repo");
       }
-      return { ok: true as const, value: `Synced ${milestoneBranch}` };
+      return {
+        ok: true as const,
+        value: { message: `Synced ${milestoneBranch}` },
+      };
     },
     log: (msg: string) => logs.push(msg),
     cooldownSeconds: 3600,
@@ -1151,7 +1169,10 @@ Deno.test("syncMilestoneBranches - an empty branch-probe answer reads as missing
       _defaultBranch: string,
     ) => {
       syncedMilestones.push(milestoneBranch);
-      return { ok: true as const, value: `Synced ${milestoneBranch}` };
+      return {
+        ok: true as const,
+        value: { message: `Synced ${milestoneBranch}` },
+      };
     },
     log: (msg: string) => logs.push(msg),
     cooldownSeconds: 3600,

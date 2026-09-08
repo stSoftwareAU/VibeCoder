@@ -112,7 +112,7 @@ a section without a marker, fails `deno test`.
 | [Session Persistence Allowlist](#session-persistence-allowlist) | ✅ | ❌ | ❌ | ✅ | Nothing of Codex's or Gemini's is copied, so there is nothing to filter |
 | [Milestone-Aware Session Branching](#milestone-aware-session-branching) | ✅ | ❌ | ❌ | ✅ | One CLI state per container for Codex and Gemini — no milestone branch, no copy-on-first-use |
 | [Session Compaction](#session-compaction) | ✅ | ❌ | ❌ | ✅ | Codex's and Gemini's state is outside `.claude-sessions/` and is bounded only by the container's lifetime |
-| [Session Resume](#session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Different mechanism: `codex exec resume --last` and `--resume latest`. DeepSeek takes Claude's `--session-id` + `--resume`, but out of its own `CLAUDE_CONFIG_DIR`, so the two transcripts never cross |
+| [Session Resume](#session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Different mechanism: `codex exec resume --last` and `--resume latest`. DeepSeek takes Claude's `--session-id` / `--resume <id>`, but out of its own `CLAUDE_CONFIG_DIR`, so the two transcripts never cross |
 | [Issue Claiming](#issue-claiming) | ✅ | ✅ | ✅ | ✅ | — |
 | [Heartbeat Tracking](#heartbeat-tracking) | ✅ | ✅ | ✅ | ✅ | — |
 | [Processing Phases](#processing-phases) | ✅ | ⚠️ | ⚠️ | ✅ | The pipeline is shared; for Codex and Gemini the system prompt is folded into one prompt string and no `.claude/` session is restored |
@@ -1516,7 +1516,7 @@ Implementation:
 
 ### Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one worker-level switch and phase count drives all four, but the mechanism differs: Claude takes `--session-id <uuid>` plus `--resume`, Codex resumes with `codex exec resume --last`, and Gemini with `--resume latest`. DeepSeek takes Claude's `--session-id <uuid>` plus `--resume` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a Claude transcript is never replayed into a DeepSeek run and back.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one worker-level switch and phase count drives all four, but the mechanism differs: Claude starts a phase under `--session-id <uuid>` and continues it with `--resume <uuid>`, Codex resumes with `codex exec resume --last`, and Gemini with `--resume latest`. DeepSeek takes Claude's `--session-id <uuid>` / `--resume <uuid>` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a Claude transcript is never replayed into a DeepSeek run and back.
 
 While [per-repository session persistence](#per-repository-session-persistence)
 preserves the `.claude/` directory between invocations (file-system-level
@@ -1533,7 +1533,14 @@ flags:
 | Phase | CLI Flags | Effect |
 |-------|-----------|--------|
 | **First phase** (e.g., clarification) | `--session-id <id>` | Creates a new named session |
-| **Subsequent phases** (e.g., implementation, quality) | `--session-id <id> --resume` | Resumes the existing session |
+| **Subsequent phases** (e.g., implementation, quality) | `--resume <id>` | Resumes the existing session |
+
+The two flags name two different things: `--session-id` is the id a **new**
+conversation is created under, `--resume <id>` continues an existing one.
+Pairing them (`--session-id <id> --resume`) asks the CLI for a fork, and
+Claude Code 2.1.261 refuses it at start-up unless `--fork-session` is also
+given — every resumed phase died 0.1 s after spawn until the worker sent the
+continuation form (Issue #1580).
 
 #### Session ID — a UUID (Issue #204)
 

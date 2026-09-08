@@ -1279,8 +1279,8 @@ network hiccups, and even its own mistakes:
   human is ever flagged.
 - **Cross-identity round verification for grill-me** — the same multi-account
   fleet means a peer (`Vibecoderbot`) can post `## Grill-Me Round N` moments
-  before another identity (`stsvcbot`) claims the issue. `countGrillMeRounds` /
-  `hasReadyMarkerBeenPosted` only see the current identity's comments, so the
+  before another identity (`stsvcbot`) claims the issue. Every check was keyed
+  to the current identity's own comments at the time, so the
   post-run verification declared a false
   `## Grill-Me Failed — Claude did not post a Grill-Me round comment`
   immediately below the round it could not see (incident). Before posting that
@@ -1290,6 +1290,26 @@ network hiccups, and even its own mistakes:
   marker-not-account keying as the failure-marker fix. A round that is still
   unanswered makes the run a no-op success; once a human has replied to it the
   round really is missing and the failure is still reported loudly.
+- **Cross-identity awaiting-reply gate for grill-me** — the pre-Claude gate had
+  the same author-keyed blind spot, so the fix above only cleaned up after the
+  event: `stservice` posted Round 1 on an issue and six minutes later, with no
+  developer reply in between, `VibeCoderST` claimed it and invoked Claude on
+  the unanswered round (incident). The gate now calls the author-agnostic
+  `hasGrillMeRoundAwaitingReply()` before invoking Claude, so a peer's
+  unanswered round stops the invocation instead of costing one wasted run per
+  scan. `countGrillMeRounds()` and `findLatestWorkerRoundTimestamp()` count
+  markers from **any** identity for the same reason — `ROUND_NUMBER` continues
+  from the peer's round rather than restarting at 1, and the Issue #1878
+  override still recognises a developer's explicit `needs-human` removal as
+  their "proceed" signal when the pending round came from a peer. Two
+  boundaries keep the widened keying safe: a marker counts only when it heads a
+  line, so a developer answering with GitHub's "Quote reply" does not re-assert
+  the round they just answered; and the #1878 override excludes removals by any
+  fleet login (`resolveSuppressionExcludedLogins`), because
+  `verifyOperationalLabels` strips `needs-human` under whichever identity is
+  scanning — a peer's strip is a fleet action, not consent. `hasReadyMarkerBeenPosted`
+  is fleet-wide too, so a peer's Ready marker takes the Ready path rather than
+  asking the developer to answer questions the last round never posed.
 - **Crash cleanup** — trap handler (Deno `crash-cleanup` command) cleans up
   heartbeat files and unassigns the worker from claimed issues on unexpected
   exit, closing the crash window between claim and heartbeat recording.
@@ -2930,6 +2950,91 @@ gate derives from the same authority the answer does, so a skipped cycle cannot
 act on a stale view. Observations live in `milestone_activity.json` in the work
 directory; a missing or corrupt file simply costs one query per milestone.
 
+#### ⏱️ The merge-down happens on closure, and a conflict is reported that day
+
+Divergence cost grows superlinearly: one day of drift is a fast-forward, three
+days is a merge, a week is an archaeology exercise because by then the two
+sides have solved the same problem twice. Two behaviours keep the window
+narrow (Issue #1558).
+
+**Cadence.** The sync runs every cycle at priority 1.72 and, ordinarily, honours
+`milestone_sync_cooldown_seconds`. A milestone whose REST `closed_issues` count
+has **moved** since the previous cycle skips that cooldown — something just
+closed, which means a sub-issue PR merged, which is precisely the moment both
+sides have moved. The signal is the same cheap listing the closed-issue gate
+above already fetches, so the extra cadence costs no additional API calls.
+
+**Conflict triage.** A conflicting merge is triaged file by file
+([milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)
+decides, [milestone_conflict_git.ts](../worker/deno/lib/milestone_conflict_git.ts)
+reads the sides and applies the decision), not resolved towards the default
+branch on sight (Issue #1559). Taking one side wholesale is a decision nobody
+made — the branch's version of every conflicting file is replaced — and
+escalating the whole merge asks a person to choose between two changes they did
+not write. Three rules decide what is mechanical:
+
+- **One side subsumes the other** — every line of the smaller side survives in
+  the larger, so the larger is taken. Checked first: it needs no evidence about
+  either side's tests.
+- **The same fix landed twice** — both sides' commits touching the file cite
+  the same `Fixes #NNNN`, or this fleet's `(Issue #N)` **subject** stamp, as
+  #1270 and #1264 did. The side whose cases *for that issue* are a superset is
+  kept, and the reason names what was dropped. Scoping to the issue matters: a
+  comparison over every case either branch added is dominated by unrelated
+  churn and answers "incomparable" every time. Prose that merely mentions an
+  issue number is not read as a claim to have fixed it, or two unrelated
+  commits discussing #1216 would look like one fix landing twice.
+- **Two designs for the same problem** — `IndirectSpawnRules` (#1378) against
+  `scanContentForVariableBinarySpawn` (#1227) — neither contains the other, so
+  the merge is **aborted** and a human chooses. The escalation carries the
+  preparation, not the compiler output #1542 was a wall of: what each side
+  exports, what each side tests, and which cases exist on one side only.
+
+**No resolution may reduce test coverage.** A conflicted test file is resolved
+by taking a side only when that side already keeps every case *and* every line
+of the other; otherwise it is merged as a **union** (`git merge-file --union`,
+both sides' hunks kept) and the result is checked case by case before it is
+staged. A union that would lose a case escalates. Equal case names are not
+enough to take a side, because an assertion changed inside a case with the same
+name is exactly the silent loss (three of the four test files in PR #1557 would
+have lost real coverage by side-taking, one of them silently).
+
+**Every automatic resolution is verified before it is pushed**
+([milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)):
+the merged tree must pass the repository's own Issue #974 type check — reused,
+fallback and all, rather than reimplemented — its `check:manifests` task and
+its unit suite, inside one 15-minute budget so a sync cannot block the event
+loop. A red tree is reset to the pre-merge commit and escalated with **both**
+halves: what the verification said and both sides prepared. A tree with no type
+check or no unit suite verified nothing and is refused the same way — a
+resolution that cannot be verified is not a resolution. What the triage
+decided, and why, is recorded on the merge commit and reported with the outcome
+([milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts));
+a resolution the worker made and verified is a report, never a `needs-human`
+issue. A clean merge is pushed without ceremony and raises nothing.
+
+```mermaid
+flowchart TD
+    A[Sub-issue PR merges → closed count moves] --> B[Cooldown skipped: merge default down now]
+    B --> C{Conflicts?}
+    C -- no --> D[Push, no issue, no comment]
+    C -- yes --> T{"Every file decidable?<br/>superset / duplicate fix /<br/>test-file union"}
+    T -- no --> X["Abort — nothing pushed —<br/>escalate with both sides'<br/>exports, cases and the difference"]
+    T -- yes --> V["Commit the reasoning, then verify:<br/>#974 type check + check:manifests + unit suite"]
+    V -- red or unverifiable --> R[Reset to the pre-merge commit and escalate]
+    V -- green --> P[Push]
+    P --> F["Report the same cycle:<br/>decisions + both sides' commits"]
+    F --> G{Milestone has a tracking issue?}
+    G -- yes --> H[Comment on it]
+    G -- no --> I["File a diagnostic issue,<br/>titled per branch and conflicting commit"]
+```
+
+The report is deduped on the default-branch commit that conflicted
+(`conflictEscalatedSha` in the streak file), so the same conflict is reported
+once while a conflict against a **new** commit is reported again. Only a report
+that actually went out is remembered — an escalation that failed to post is
+retried next cycle rather than marked done.
+
 #### 🚦 The merged tree is type-checked before it is pushed
 
 Git reporting no conflict says only that each side of the merge is internally
@@ -3498,6 +3603,10 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |
 |                             | [milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)                                       | Gates the sync's closed-issue query on the cheap REST `closed_issues` count, so an unchanged milestone costs no GraphQL call                                                          |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
+|                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
+|                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union — and prepares both sides for a human when no rule can settle it                                    |
+|                             | [milestone_conflict_git.ts](../worker/deno/lib/milestone_conflict_git.ts)                                         | Reads both sides out of the conflicted index, gathers the per-issue test evidence, union-merges a test file and stages what the triage decided                                        |
+|                             | [milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)                                   | Verifies a resolution the worker made itself against the repo's own check, manifest check and unit suite before it can be pushed                                                      |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |
 |                             | [resurrected_file_check.ts](../worker/deno/lib/resurrected_file_check.ts)                                         | Detects files the default branch deleted that a milestone branch still carries, naming the commit that deleted each                                                                  |

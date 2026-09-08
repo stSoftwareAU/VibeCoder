@@ -40,6 +40,12 @@ failure so it can be scripted. Both writes are idempotent: adding a repository
 already present, or removing one that is not listed, changes nothing and says
 so.
 
+For `--add-repo`, "already present" is judged **case-insensitively**, because
+GitHub repository names are (Issue #1546): `--add-repo owner/My-Repo` beside a
+monitored `owner/my-repo` is a no-op that names the spelling already in the
+list, rather than a second entry whose every scan runs twice. `--remove-repo`
+still matches the slug exactly — pass the spelling `--list-repos` shows.
+
 `--remove-repo` also drops the repository's `repo_config` entry, so settings do
 not accumulate for repositories nobody monitors. It does **not** touch open PRs,
 branches or issues in that repository — it only stops the worker looking at it.
@@ -105,7 +111,8 @@ The command then runs seven steps:
 3. **Append to the monitored list** — idempotently add the slug to the `repos`
    array in the per-machine `.config.json`. The whole config object is read,
    merged, and written back so unknown keys (phase overrides, idle-task
-   weights, etc.) are preserved. A slug already present is a no-op.
+   weights, etc.) are preserved. A slug already present is a no-op — including
+   one present under a different casing (Issue #1546).
 4. **Sync the canonical label set** — create/update the full
    canonical GitHub label set on the target repo so a human can schedule and
    queue issues (apply `work-on`, `top-priority`, `grill-me`, etc.)

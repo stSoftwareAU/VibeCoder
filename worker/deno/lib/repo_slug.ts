@@ -83,3 +83,118 @@ export function assertValidRepoSlugs(
   }
   return valid;
 }
+
+/** One `repos` entry dropped as a case-variant, and the entry it duplicates. */
+export interface DuplicateRepoSlug {
+  /** The spelling that was kept — the first occurrence, in list order. */
+  kept: string;
+  /** The later spelling that was ignored. */
+  dropped: string;
+}
+
+/** Outcome of {@link dedupeRepoSlugs}. */
+export interface RepoSlugDedupResult {
+  /** The de-duplicated list, in input order, in the first-seen spelling. */
+  repos: string[];
+  /** Every dropped entry, in input order. Callers must report these. */
+  duplicates: DuplicateRepoSlug[];
+}
+
+/**
+ * De-duplicate a `repos` list case-insensitively (Issue #1546).
+ *
+ * GitHub repository names are case-insensitive, so `owner/Repo` and
+ * `owner/repo` are one repository. A `.config.json` listing both ran every
+ * per-repository scan twice and let the two slots of one worker race each
+ * other for the same issue, while anything keyed by the configured spelling
+ * — watermarks, caches, the write-repo allowlist — forked into two states
+ * that could disagree.
+ *
+ * The first spelling wins, because it is the one the operator's file already
+ * established elsewhere. Dropped entries are returned rather than swallowed:
+ * the operator's file has a defect worth naming.
+ *
+ * @param repos - The configured slugs, in file order.
+ */
+export function dedupeRepoSlugs(
+  repos: readonly string[],
+): RepoSlugDedupResult {
+  const kept: string[] = [];
+  const duplicates: DuplicateRepoSlug[] = [];
+  const seen = new Map<string, string>();
+
+  for (const repo of repos) {
+    const key = repo.trim().toLowerCase();
+    const first = seen.get(key);
+    if (first !== undefined) {
+      duplicates.push({ kept: first, dropped: repo });
+      continue;
+    }
+    seen.set(key, repo);
+    kept.push(repo);
+  }
+
+  return { repos: kept, duplicates };
+}
+
+/**
+ * The operator-facing sentence for one dropped duplicate.
+ *
+ * Both spellings are rendered inert ({@link renderInertRepoSlug}) because the
+ * warning is written to logs and to setup output, and a `repos` entry is
+ * operator-supplied text.
+ */
+export function duplicateRepoSlugWarning(
+  duplicate: DuplicateRepoSlug,
+): string {
+  const dropped = renderInertRepoSlug(duplicate.dropped);
+  const kept = renderInertRepoSlug(duplicate.kept);
+  // An identical entry is the same defect with a different cause, and
+  // "duplicates itself" would misdescribe it.
+  if (dropped === kept) {
+    return `repos: "${kept}" is listed twice — ignoring the second`;
+  }
+  return `repos: "${dropped}" duplicates "${kept}" (GitHub repository names ` +
+    "are case-insensitive) — ignoring the second";
+}
+
+/**
+ * Every sentence a set of dropped duplicates owes the operator.
+ *
+ * One line per duplicate, plus a second line whenever `repo_config` is keyed
+ * to the spelling that was dropped: the orphan prune matches
+ * case-insensitively so that block survives the rewrite, but per-repo
+ * settings are looked up by the exact configured slug, so it is never read
+ * again. Losing per-repo settings without a word is the silent failure this
+ * names (Issue #1546).
+ *
+ * @param duplicates - The dropped entries, from {@link dedupeRepoSlugs}.
+ * @param repoConfigKeys - The `repo_config` keys the same config carries.
+ */
+export function duplicateRepoSlugWarnings(
+  duplicates: readonly DuplicateRepoSlug[],
+  repoConfigKeys: readonly string[] = [],
+): string[] {
+  const warnings: string[] = [];
+  for (const duplicate of duplicates) {
+    warnings.push(duplicateRepoSlugWarning(duplicate));
+
+    // An identical entry keys repo_config the same way the kept one does,
+    // so nothing is orphaned by dropping it.
+    if (duplicate.dropped.trim() === duplicate.kept.trim()) continue;
+
+    const droppedKey = duplicate.dropped.trim().toLowerCase();
+
+    const orphaned = repoConfigKeys.some((key) =>
+      key.trim().toLowerCase() === droppedKey && key !== duplicate.kept
+    );
+    if (!orphaned) continue;
+
+    warnings.push(
+      `repo_config is keyed to "${renderInertRepoSlug(duplicate.dropped)}", ` +
+        "the spelling just dropped, so its per-repo settings are no longer " +
+        `read — re-key it to "${renderInertRepoSlug(duplicate.kept)}"`,
+    );
+  }
+  return warnings;
+}

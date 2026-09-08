@@ -23,6 +23,7 @@ import type { PreservedWip } from "./preserved_wip_branch.ts";
 // Lost in the 1f2c10e merge into this milestone branch, leaving `deno check`
 // red on a type this file still uses (added by Issue #806).
 import type { CallbackRunTelemetry } from "./run_callbacks.ts";
+import type { ImageReference } from "./untrusted_image_signal.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -55,6 +56,21 @@ export interface IssueContext {
    * as "nothing attributable", never as "nothing to check".
    */
   issueCommentRows?: readonly IssueComment[];
+  /**
+   * Image references an **untrusted** author put in the issue body
+   * (Issue #1385), observed in TypeScript before the agent saw any of it.
+   *
+   * The agent's suspicious-image self-check asks the injection target to
+   * report itself, and an image can instruct it to stay quiet; this cannot be
+   * suppressed that way, so it is what `image_conclusion_gate.ts` withholds a
+   * privileged conclusion on. Both routes into `workOnIssue` set it — the
+   * `work-on-issue` command and the main loop's `processIssue` — because a
+   * gate is only a control on the routes that observe. Empty for a trusted
+   * author and for a body with no images; absent where nothing classified the
+   * body (the label-route processors, tests), which a phase must read as
+   * "not observed", never as "observed none".
+   */
+  untrustedImages?: readonly ImageReference[];
   githubUser: string;
   milestoneTitle?: string;
   /** Milestone number (API ID) for session branching (Issue #1322). */

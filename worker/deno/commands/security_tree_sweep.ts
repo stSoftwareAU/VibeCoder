@@ -214,6 +214,12 @@ export function createSecurityTreeSweepCommand(
           (r.lineStart !== null ? `:${r.lineStart}` : "")
         ),
         ...result.filed.map((f) => `Filed: #${f.number} ${f.id}`),
+        // Issue #1518: a tracked cluster is an open `security` issue, not a
+        // clean result — name each one, on a green run and a red one alike,
+        // so the class is never invisible on the CLI.
+        ...result.trackedRows.map((r) =>
+          `Tracked: ${r.id} ${r.severity} ${r.family} (#${r.issue})`
+        ),
         ...result.staleEntries.map((k) => `Stale baseline entry: ${k}`),
       ].join("\n");
 

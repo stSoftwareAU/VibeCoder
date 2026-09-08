@@ -12,7 +12,6 @@ import type { Result } from "../types.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import type { RepoLanguages } from "./language_detector.ts";
 import { getRepoVisibility, type RepoVisibility } from "./repo_visibility.ts";
-import { runWithTimeout } from "./subprocess_timeout.ts";
 import {
   getWorkflowsForLanguagesAndVisibility,
   type WorkflowSpec,
@@ -94,58 +93,30 @@ export interface WorkflowAuditResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Bound on a non-`gh` audit spawn (Issue #1228).
+ * Create the default command runner.
  *
- * Sixty seconds matches the extended subprocess budget used elsewhere for
- * network-facing calls; the audit reads workflow listings, never clones.
- */
-export const AUDITOR_COMMAND_TIMEOUT_MS = 60_000;
-
-/**
- * Default command runner using Deno.Command with optional gh config.
- *
- * Issue #1227: the binary is named by `cmd[0]`, and every production caller
- * passes `["gh", "api", …]` — a direct `gh` spawn the literal-matching
- * chokepoint gate could not see. A `gh` command is delegated to the shared
- * chokepoint so it is allowlist-checked, timed out and journalled; any other
- * binary is spawned directly — under {@link AUDITOR_COMMAND_TIMEOUT_MS}, so
- * no spawn here is unbounded (Issue #1228).
+ * Issue #1378: this module only ever runs `gh`, so the runner is the shared
+ * chokepoint (`spawnGh`) rather than a `Deno.Command` built from `cmd[0]` —
+ * an indirection that skipped the write-repo allowlist and the audit journal
+ * while the quality gate's literal-string scan saw nothing. Any other binary
+ * is refused loudly rather than spawned outside the chokepoint.
  */
 export function createDefaultRunCommand(
   ghConfigDir?: string,
-  runFn: typeof runWithTimeout = runWithTimeout,
 ): (cmd: string[]) => Promise<CommandOutput> {
-  const extraEnv = ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : undefined;
+  const env = ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : undefined;
   return async (cmd: string[]): Promise<CommandOutput> => {
-    if (cmd[0] === "gh") {
-      const result = await spawnGh(
-        cmd.slice(1),
-        extraEnv ? { env: extraEnv } : {},
-      );
-      return {
-        success: result.success,
-        stdout: result.stdout.trim(),
-        stderr: result.stderr.trim(),
-      };
-    }
-    // Issue #1228: the non-`gh` branch spawns whatever binary the caller
-    // names, over the network or a working tree. It is bounded here —
-    // `spawnGh` owns the bound on the branch above. `env` entries are merged
-    // into the inherited environment by Deno.Command, so naming
-    // GH_CONFIG_DIR alone is enough.
-    const result = await runFn(cmd[0]!, cmd.slice(1), {
-      timeoutMs: AUDITOR_COMMAND_TIMEOUT_MS,
-      ...(extraEnv ? { env: extraEnv } : {}),
-    });
-    if (!result.ok) {
+    if (cmd[0] !== "gh") {
       throw new Error(
-        `failed to run "${cmd[0]}": ${result.error.message}`,
+        `workflow_auditor only spawns gh through the chokepoint; ` +
+          `refusing to run "${cmd[0] ?? ""}"`,
       );
     }
+    const result = await spawnGh(cmd.slice(1), env ? { env } : {});
     return {
-      success: result.value.success,
-      stdout: result.value.stdout.trim(),
-      stderr: result.value.stderr.trim(),
+      success: result.success,
+      stdout: result.stdout.trim(),
+      stderr: result.stderr.trim(),
     };
   };
 }

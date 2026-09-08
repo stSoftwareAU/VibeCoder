@@ -13,6 +13,7 @@
 
 import {
   applyServiceAccountDefault,
+  dedupeConfigRepos,
   loadExistingConfig,
   mergeNonInteractive,
   pruneOrphanRepoConfig,
@@ -122,10 +123,19 @@ export async function runConfigSetup(
   try {
     const existing = await loadExistingConfig(configPath);
     const merged = mergeNonInteractive(existing, env);
+    // Issue #1546: one repository listed under two casings is one
+    // repository. Collapse it before anything downstream keys off the
+    // spelling, and name the entry that was dropped.
+    const { config: deduped, warnings: duplicateWarnings } = dedupeConfigRepos(
+      merged,
+    );
+    const warnings = [...duplicateWarnings];
     // Issue #4033: drop dead per-repo config, reporting every removal.
-    const { config: pruned, removed } = pruneOrphanRepoConfig(merged);
-    const warnings = removed.map((repo) =>
-      `Removed repo_config entry for '${repo}' — not in repos`
+    const { config: pruned, removed } = pruneOrphanRepoConfig(deduped);
+    warnings.push(
+      ...removed.map((repo) =>
+        `Removed repo_config entry for '${repo}' — not in repos`
+      ),
     );
 
     // Issue #4030: never leave the #3528 identity guard inactive. Resolve the

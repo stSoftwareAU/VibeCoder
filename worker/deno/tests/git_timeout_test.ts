@@ -93,6 +93,35 @@ Deno.test("git timeout - runGitCommand returns non-zero for invalid command", as
   }
 });
 
+Deno.test("git timeout - runGitCommand reports a killed call as a timeout (Issue #1378)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "git-timeout-" });
+  try {
+    await runGitCommand(["init", "--quiet"], { cwd: dir });
+    // `core.fsmonitor` points at a sleeping hook, so `git status` blocks on
+    // it. Aborting the signal kills the child instead of throwing, so the
+    // call resolves with git's signal exit code — it must still be reported
+    // as a timeout, not as a plain non-zero failure.
+    const hook = `${dir}/slow-fsmonitor.sh`;
+    await Deno.writeTextFile(hook, "#!/bin/sh\nsleep 2\n");
+    await Deno.chmod(hook, 0o755);
+    await runGitCommand(["config", "core.fsmonitor", hook], { cwd: dir });
+
+    const result = await runGitCommand(["status", "--porcelain"], {
+      cwd: dir,
+      timeoutSeconds: 1,
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.code, TIMEOUT_EXIT_CODE);
+      assertEquals(isGitTimeout(result.value.code), true);
+      assertStringIncludes(result.value.stderr, "timed out after 1s");
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // runGitCommandChecked
 // ---------------------------------------------------------------------------

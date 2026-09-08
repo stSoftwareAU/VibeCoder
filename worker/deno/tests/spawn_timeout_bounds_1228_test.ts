@@ -31,10 +31,7 @@ import {
   createDefaultRunner,
   SWEEP_SCANNER_TIMEOUT_MS,
 } from "../lib/security_tree_sweep.ts";
-import {
-  AUDITOR_COMMAND_TIMEOUT_MS,
-  createDefaultRunCommand,
-} from "../lib/workflow_auditor.ts";
+import { createDefaultRunCommand } from "../lib/workflow_auditor.ts";
 
 /** One recorded call to the injected subprocess runner. */
 interface RecordedCall {
@@ -176,32 +173,27 @@ Deno.test("a timed-out sweep scanner surfaces exit 124, not an empty clean resul
   assert(outcome.stderr.includes("Timed out"));
 });
 
-Deno.test("workflow auditor's non-gh spawn is bounded", async () => {
-  const { calls, run } = fakeRunner({ success: true, stdout: "ok\n" });
-  const output = await createDefaultRunCommand("/tmp/gh-config", run)([
-    "curl",
-    "https://example.invalid/workflows",
-  ]);
+Deno.test("workflow auditor refuses a non-gh spawn outright (Issues #1228, #1378)", async () => {
+  // Issue #1228 bounded the auditor's non-`gh` fallback so it could not hang.
+  // Issue #1378 removed the fallback entirely: the module only ever runs
+  // `gh`, and it does so through the shared chokepoint, so the allowlist and
+  // the audit journal see every call. There is no unbounded spawn left to
+  // bound, and the two tests that asserted the bound and its timeout
+  // behaviour are replaced by this stronger guarantee — a refusal, not a
+  // timed-out subprocess.
+  await assertRejects(
+    () =>
+      createDefaultRunCommand("/tmp/gh-config")([
+        "curl",
+        "https://example.invalid/workflows",
+      ]),
+    Error,
+    "refusing to run",
+  );
 
-  assertEquals(output.success, true);
-  assertEquals(output.stdout, "ok");
-  assertEquals(calls.length, 1);
-  assertEquals(calls[0]!.executable, "curl");
-  assertEquals(calls[0]!.args, ["https://example.invalid/workflows"]);
-  assertEquals(calls[0]!.options?.env, { GH_CONFIG_DIR: "/tmp/gh-config" });
-  assertBounded(calls[0]!.options);
-  assertEquals(calls[0]!.options?.timeoutMs, AUDITOR_COMMAND_TIMEOUT_MS);
-});
-
-Deno.test("workflow auditor reports a timed-out spawn as a failure", async () => {
-  const { run } = fakeRunner({
-    success: false,
-    code: 124,
-    timedOut: true,
-    stderr: "Timed out after 60000ms",
-  });
-  const output = await createDefaultRunCommand(undefined, run)(["curl", "-s"]);
-
-  assertEquals(output.success, false);
-  assert(output.stderr.includes("Timed out"));
+  await assertRejects(
+    () => createDefaultRunCommand()(["curl", "-s"]),
+    Error,
+    "workflow_auditor only spawns gh through the chokepoint",
+  );
 });

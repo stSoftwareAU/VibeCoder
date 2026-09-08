@@ -1662,7 +1662,17 @@ function Invoke-VibeSetupMain {
     # Prompt interactively when running in a terminal (Issue #583).
     $answers = Read-VibeInteractiveConfig
 
-    # Write config from VIBE_* env vars, then merge the interactive answers.
+    # The repositories answer goes in through VIBE_REPOS so the TypeScript
+    # writer owns it (Issue #1546): it validates every slug (Issue #1291) and
+    # collapses case-variant duplicates, naming each entry it drops. Merging
+    # the raw answer afterwards, as the other keys are merged, would write the
+    # duplicate list straight back over the de-duplicated one.
+    if ($answers.Contains("repos")) {
+        $env:VIBE_REPOS = ($answers.repos -join ",")
+        $answers.Remove("repos")
+    }
+
+    # Write config from VIBE_* env vars, then merge the remaining answers.
     Invoke-VibeSetupCliOrExit -Arguments @("config")
     Write-VibeInteractiveConfig -Answers $answers
 

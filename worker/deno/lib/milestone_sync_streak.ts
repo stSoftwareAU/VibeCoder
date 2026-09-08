@@ -33,6 +33,21 @@ export interface SyncStreakEntry {
    * type check refused — the silence this gate exists to end.
    */
   gateEscalated?: boolean;
+  /**
+   * The default-branch commit whose conflicting merge has already been
+   * reported (Issue #1558). Kept across a successful sync — unlike the
+   * failure count — so the same conflict is reported once, while a conflict
+   * against a NEW default-branch commit is reported again.
+   */
+  conflictEscalatedSha?: string;
+  /**
+   * The default-branch commit whose *unresolvable* conflict has already been
+   * escalated with the prepared analysis (Issue #1559). Tracked apart from
+   * {@link conflictEscalatedSha} — which records a conflict the worker
+   * resolved and merely reported — so a report about the same commit never
+   * suppresses the "only a human can settle this" escalation, or the reverse.
+   */
+  analysisEscalatedSha?: string;
 }
 
 /** Streak state keyed by "owner/repo|milestone-branch". */
@@ -55,10 +70,18 @@ export async function loadSyncStreaks(path: string): Promise<SyncStreaks> {
           typeof (value as SyncStreakEntry).count === "number" &&
           Number.isFinite((value as SyncStreakEntry).count)
         ) {
+          const sha = (value as SyncStreakEntry).conflictEscalatedSha;
+          const analysisSha = (value as SyncStreakEntry).analysisEscalatedSha;
           streaks[key] = {
             count: Math.max(0, Math.floor((value as SyncStreakEntry).count)),
             escalated: (value as SyncStreakEntry).escalated === true,
             gateEscalated: (value as SyncStreakEntry).gateEscalated === true,
+            ...(typeof sha === "string" && sha
+              ? { conflictEscalatedSha: sha }
+              : {}),
+            ...(typeof analysisSha === "string" && analysisSha
+              ? { analysisEscalatedSha: analysisSha }
+              : {}),
           };
         }
       }

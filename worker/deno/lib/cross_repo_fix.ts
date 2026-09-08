@@ -37,6 +37,11 @@
 import type { Result } from "../types.ts";
 import { REPO_SLUG_PATTERN } from "./config.ts";
 import {
+  assertSafeRefComponent,
+  buildCheckoutNewBranchArgs,
+  buildPushArgs,
+} from "./git_ref_args.ts";
+import {
   type ManifestFile,
   parseDenoManifest,
   parseNpmManifest,
@@ -473,6 +478,11 @@ async function resolveDefaultBranch(
  * caller's fix → stage → commit → push → `gh pr create --repo …`. The PR URL
  * printed by `gh` is surfaced back so the consuming run can cross-link it.
  *
+ * The branch name is validated through `git_ref_args.ts` before anything is
+ * spawned (Issue #1548): it lands as a positional on both `checkout -b` and
+ * `push`, where a dash-leading value would be parsed as an option rather than
+ * a ref, and `git push --receive-pack=<cmd>` is remote command execution.
+ *
  * Any failed step returns an error `Result` (never throws), so the caller can
  * fall back to the deferral path. The default-branch guard enforces the
  * read-only invariant (Issue #2584): the worker never pushes directly to a
@@ -495,6 +505,18 @@ export async function openCrossRepoFixPr(
     return {
       ok: false,
       error: new Error("A feature branch name is required."),
+    };
+  }
+  // The branch reaches git as a positional on both `checkout -b` and `push`,
+  // so a dash-leading name would be parsed as an option — `--receive-pack=…`
+  // on a push is remote command execution (Issue #1548, CWE-88). Validated
+  // through the shared ref helpers before any subprocess is spawned.
+  try {
+    assertSafeRefComponent(req.branch, "cross-repo fix branch");
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
     };
   }
 
@@ -538,9 +560,7 @@ export async function openCrossRepoFixPr(
     "git",
     "-C",
     repoDir,
-    "checkout",
-    "-b",
-    req.branch,
+    ...buildCheckoutNewBranchArgs(req.branch),
   ]);
   if (!checkout.success) {
     return {
@@ -591,10 +611,7 @@ export async function openCrossRepoFixPr(
     "git",
     "-C",
     repoDir,
-    "push",
-    "-u",
-    "origin",
-    req.branch,
+    ...buildPushArgs("origin", req.branch, { setUpstream: true }),
   ]);
   if (!push.success) {
     return {

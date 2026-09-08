@@ -1192,7 +1192,9 @@ prompt_interactive_config() {
 # Write interactive values directly into .config.json after TS setup runs.
 # This merges ssh_key_path and gh_config_dir into the config file.
 write_interactive_config() {
-    if [[ -z "${INTERACTIVE_REPOS:-}" && -z "${INTERACTIVE_ALLOWED_AUTHORS:-}" && -z "${INTERACTIVE_SERVICE_ACCOUNTS:-}" && -z "${INTERACTIVE_SSH_KEY_PATH:-}" && -z "${INTERACTIVE_GH_CONFIG_DIR:-}" && -z "${INTERACTIVE_IMGBB_API_KEY:-}" ]]; then
+    # INTERACTIVE_REPOS is deliberately absent: it reaches .config.json through
+    # VIBE_REPOS and the TypeScript writer, never through this merge (#1546).
+    if [[ -z "${INTERACTIVE_ALLOWED_AUTHORS:-}" && -z "${INTERACTIVE_SERVICE_ACCOUNTS:-}" && -z "${INTERACTIVE_SSH_KEY_PATH:-}" && -z "${INTERACTIVE_GH_CONFIG_DIR:-}" && -z "${INTERACTIVE_IMGBB_API_KEY:-}" ]]; then
         return 0
     fi
 
@@ -1207,10 +1209,6 @@ write_interactive_config() {
 
     local config
     config=$(cat "$CONFIG_FILE")
-
-    if [[ -n "${INTERACTIVE_REPOS:-}" ]]; then
-        config=$(echo "$config" | jq --arg v "$INTERACTIVE_REPOS" '. + {repos: ($v | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))}')
-    fi
 
     if [[ -n "${INTERACTIVE_ALLOWED_AUTHORS:-}" ]]; then
         config=$(echo "$config" | jq --arg v "$INTERACTIVE_ALLOWED_AUTHORS" '. + {allowed_authors: ($v | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))}')
@@ -1530,7 +1528,19 @@ main() {
     # Prompt interactively when running in a terminal (Issue #583)
     prompt_interactive_config
 
-    # Write config from VIBE_* env vars, then merge interactive values
+    # The repositories answer goes in through VIBE_REPOS so the TypeScript
+    # writer owns it (Issue #1546): it validates every slug (Issue #1291) and
+    # collapses case-variant duplicates, naming each entry it drops. Merging
+    # the raw answer afterwards, as write_interactive_config does for the
+    # other keys, would write the duplicate list straight back over the
+    # de-duplicated one — the operator would read the warning and still be
+    # left with the defect.
+    if [[ -n "${INTERACTIVE_REPOS:-}" ]]; then
+        export VIBE_REPOS="$INTERACTIVE_REPOS"
+    fi
+
+    # Write config from VIBE_* env vars, then merge the remaining interactive
+    # values.
     run_setup_cli config
     write_interactive_config
 

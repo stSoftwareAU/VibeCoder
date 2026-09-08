@@ -33,6 +33,7 @@ import {
 } from "./issue_edit_actor.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
+import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
 import {
   getLabelColour,
   getLabelDescription,
@@ -688,9 +689,42 @@ export async function resolveContentIntegrity(
           `needed. If it is not acceptable, revert the change (or remove ` +
           `\`${approvalLabel}\`) before removing ` +
           `\`${config.needsHumanLabel}\`.`,
+        // Issue #1562: without a `dedupKey` the helper's dedup step is
+        // inactive, so this posted a fresh comment on **every scan** of an
+        // issue that stays blocked — NEAT-AI-core#593 collected 45 identical
+        // comments in 24 minutes. That is an unusable issue and a standing
+        // drain on the GraphQL quota the fleet shares across 19 repositories.
+        //
+        // The key names the *edit* being escalated, not merely the issue, so
+        // silence is scoped to the thing already reported: a genuinely new
+        // untrusted edit after review still raises its own comment. The
+        // helper's 24-hour window then re-posts at most once a day while the
+        // issue stays untouched, which reads as a reminder rather than a
+        // flood.
+        //
+        // Deduping the comment never softens the decision: the `needs-human`
+        // label is added in the step above this one, and the gate still
+        // returns "blocked".
+        dedupKey: `content-modified-${issueNumber}-${
+          untrustedEditors[0]?.editedAt ?? editor?.editedAt ?? "unknown"
+        }`,
         deps: {
           github: {
             ensureLabelExists: ensureLabelExistsViaGhFn(ghFn),
+          },
+          // The marker lives in a comment body anyone may write, so the
+          // author is the authenticated half of the match (Issue #1216). The
+          // fleet is resolved from the config that is already in hand rather
+          // than re-read from the environment.
+          dedupAuthors: {
+            fleetAuthors: resolveFleetMaintenanceAuthorSet({
+              // This host's own login is not on the config; the fleet's
+              // service accounts and sibling logins are, and an empty entry
+              // is dropped by the resolver.
+              githubUser: "",
+              serviceAccounts: config.serviceAccounts,
+              fleetPrAuthors: config.fleetPrAuthors,
+            }),
           },
         },
         logger: defaultLogger,
