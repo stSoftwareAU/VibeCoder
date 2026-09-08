@@ -98,9 +98,10 @@ Deno.test("agent provider - Claude descriptor produces the invocation the worker
     "stream-json",
     "--system-prompt",
     "SYSTEM",
-    "--session-id",
-    "repo-42-7",
+    // A resumed phase continues by id (Issue #1580); `--session-id` is for a
+    // new conversation and pairing it with `--resume` is refused by the CLI.
     "--resume",
+    "repo-42-7",
     "-p",
     "PROMPT",
   ]);
