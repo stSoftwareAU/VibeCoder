@@ -1646,6 +1646,28 @@ Helper functions let callers distinguish timeouts from other failures. This
 prevents a single hung `git push` or `gh api` call from blocking the entire
 worker run.
 
+`runGitArgv()` is the adapter for the worker's **generic argv pass-through
+runners** — the injected runners that take a full `["git", …]` argv, binary
+included, and spawn its head (Issue #1553). Those runners are handed argv built
+in other modules, so the `git spawn chokepoint` quality check cannot tell from
+the file whether `git` reaches them; it therefore fails the build on any
+argv-head spawn (`new Deno.Command(cmd[0]!, { args: cmd.slice(1) })`) in a
+module that does not import `git_timeout.ts`. Delegating is one line:
+
+```ts
+if (cmd[0] === "git") return await runGitArgv(cmd);
+```
+
+```mermaid
+flowchart LR
+    C["Caller argv<br/>(built in another module)"] --> R["Generic runner<br/>cmd[0] + cmd.slice(1)"]
+    R -->|"cmd[0] === 'git'"| G["runGitArgv → runGitCommand"]
+    R -->|"cmd[0] === 'gh'"| H["spawnGh"]
+    R -->|other binary| D["Deno.Command"]
+    G --> T["timeout · audit journal · work-volume fault"]
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ### 🚦 Rate-limit aware retry (`worker/deno/lib/retry.ts`)
 
 [retry.ts](../worker/deno/lib/retry.ts) provides intelligent retry logic:
