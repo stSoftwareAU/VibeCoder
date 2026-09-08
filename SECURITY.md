@@ -400,6 +400,31 @@ sink still owes its own explicit `redactSecrets()` call, and a body-producing
 call site should still redact its own untrusted text so the masking is visible
 where the text is assembled.
 
+### The inbound side — text entering the model's context
+
+The standard above is about bytes **leaving** the process. Redaction that only
+fires on the way out does not stop a credential reaching the model in the first
+place: a token quoted in an issue comment, left in a `CLAUDE.md` on the branch
+under work, or fed back from a prior run's log excerpt was masked in the
+published comment but had already been read as context, where it can still
+influence behaviour or be echoed through a path no sink covers
+([#1424](https://github.com/stSoftwareAU/VibeCoder/issues/1424)).
+
+`sanitiseDelimiterPatterns()`
+([`worker/deno/lib/prompt_delimiter.ts`](worker/deno/lib/prompt_delimiter.ts))
+is the ingestion chokepoint every prompt builder already routes untrusted text
+through — issue titles, bodies and labels, comment bodies, repository guidance
+documents, the generated codebase map, recent-activity summaries, PR review
+comments — so it **redacts before it scrubs**. Redaction first, because the
+scrub substitutes fullwidth characters mid-string and could otherwise split a
+secret across a signature-rule boundary; and it is idempotent, so a call site
+that already redacted its own text (`fenceQualityOutput`,
+`formatConflictIssueContextSection`, the CI-failure issue body) is unaffected.
+
+This is defence-in-depth, not a replacement: an outbound sink still owes its own
+`redactSecrets()` call, because most sink text never passes through the prompt
+path at all.
+
 **Redact before you truncate.** A sink that trims output to a size limit must
 run `redactSecrets()` *first*: cutting first can split a secret — most
 damagingly a PEM block, whose END marker falls past the cut — leaving a
