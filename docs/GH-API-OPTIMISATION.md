@@ -390,7 +390,11 @@ from the one flag-aware classifier in `worker/deno/lib/gh_argv.ts`
 flags** (`-f`, `-F`, `--field`, `--raw-field`, `-H`, `--header`, `-X`,
 `--method`, `-q`, `--jq`, `-t`, `--template`, `--input`, `-R`,
 `--repo`, `--cache`, `-p`, `--preview`, `--hostname`) before reading
-the endpoint token. Before that, `classifyGhArgs` read
+the endpoint token. argv is normalised by `normaliseGhArgs`
+(`worker/deno/lib/gh_flag_parser.ts`, Issue #3867/#1219) first, so a
+pflag shorthand group — `gh api -iXPOST graphql`, which is
+`-i -X POST graphql` — cannot hide the endpoint token either. Before
+that, `classifyGhArgs` read
 `["api", "-f", "query=…", "graphql"]` as REST `api` while the latch
 read it as GraphQL, and the latch's `args.includes("graphql")` matched
 the token anywhere in argv — including as a flag value.

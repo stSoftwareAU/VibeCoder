@@ -29,6 +29,16 @@ Deno.test("gh_argv - ghPositionalArgs drops flags and their values", () => {
     "api",
     "graphql",
   ]);
+  // A pflag shorthand group is expanded before the walk, so a value carried
+  // inside or after the group is never read as a positional token.
+  assertEquals(ghPositionalArgs(["api", "-iX", "POST", "graphql"]), [
+    "api",
+    "graphql",
+  ]);
+  assertEquals(ghPositionalArgs(["api", "-iXPOST", "graphql"]), [
+    "api",
+    "graphql",
+  ]);
   // `--` ends flag processing.
   assertEquals(ghPositionalArgs(["run", "--", "--not-a-flag"]), [
     "run",
@@ -46,7 +56,15 @@ Deno.test("gh_argv - ghPositionalArgs handles empty and flag-only argv", () => {
 Deno.test("gh_argv - classifyGhCall names the budget each invocation spends", () => {
   assertEquals(classifyGhCall(["api", "graphql", "-f", "q=1"]), "api-graphql");
   assertEquals(classifyGhCall(["api", "-f", "q=1", "graphql"]), "api-graphql");
+  assertEquals(
+    classifyGhCall(["api", "-iX", "POST", "graphql"]),
+    "api-graphql",
+  );
   assertEquals(classifyGhCall(["api", "/repos/o/r/issues"]), "api-rest");
+  assertEquals(
+    classifyGhCall(["--paginate", "api", "/repos/o/r/issues"]),
+    "api-rest",
+  );
   assertEquals(classifyGhCall(["api", "/search/issues?q=graphql"]), "api-rest");
   assertEquals(
     classifyGhCall(["api", "repos/o/r/labels", "--jq", "graphql"]),

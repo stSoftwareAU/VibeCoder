@@ -25,6 +25,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { normaliseGhArgs } from "./gh_flag_parser.ts";
+
 /**
  * `gh` flags that consume the following argv token as their value.
  *
@@ -67,15 +69,22 @@ const VALUE_TAKING_FLAGS: ReadonlySet<string> = new Set([
  * `--` ends flag processing: every token after it is positional, which is how
  * `gh` itself reads argv.
  *
+ * argv is first run through `normaliseGhArgs` so a pflag shorthand group
+ * carrying an attached value — `gh api -iXPOST graphql`, which is
+ * `-i -X POST graphql` — is expanded to its separated form. Without that, the
+ * group reads as one boolean flag and `POST` is taken for the endpoint token,
+ * which would classify a real GraphQL call as REST and let it past the latch.
+ *
  * @param args - Argument list passed to the `gh` binary.
  */
 export function ghPositionalArgs(args: readonly string[]): string[] {
+  const normalised = normaliseGhArgs(args);
   const positionals: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const token = args[i];
+  for (let i = 0; i < normalised.length; i++) {
+    const token = normalised[i];
     if (token === undefined) break;
     if (token === "--") {
-      positionals.push(...args.slice(i + 1));
+      positionals.push(...normalised.slice(i + 1));
       break;
     }
     if (token.startsWith("-") && token !== "-") {
@@ -96,8 +105,9 @@ export function ghPositionalArgs(args: readonly string[]): string[] {
  *   core REST quota.
  * - `sub-command` — every other `gh` sub-command (`issue list`, `pr view`,
  *   `search …`); all of them are GraphQL-backed.
- * - `unknown` — no positional token at all (`gh --version`, `gh`), which
- *   issues no API request.
+ * - `unknown` — no positional token at all (`gh --version`, `gh`). Not a
+ *   REST `api` call, so the latch bills it like any other non-REST
+ *   invocation rather than waving it through.
  */
 export type GhCallKind = "api-graphql" | "api-rest" | "sub-command" | "unknown";
 

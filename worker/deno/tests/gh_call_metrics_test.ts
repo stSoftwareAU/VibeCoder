@@ -50,6 +50,12 @@ Deno.test("gh_call_metrics - classifyGhArgs skips leading flags", () => {
     classifyGhArgs(["--version", "issue", "list"]),
     "issue list",
   );
+  // Issue #1588: a value-taking flag's value is not the verb — before the
+  // shared classifier this bucketed as `issue o/r`.
+  assertEquals(
+    classifyGhArgs(["issue", "--repo", "o/r", "list"]),
+    "issue list",
+  );
 });
 
 Deno.test("gh_call_metrics - classifyGhArgs handles unknown / empty", () => {
@@ -783,6 +789,10 @@ const GH_ARGV_ROWS: ReadonlyArray<
   { argv: ["api", "-f", "query=…", "graphql"], graphql: true },
   // A method or header before the endpoint must not hide it either.
   { argv: ["api", "-X", "POST", "graphql", "-f", "query=…"], graphql: true },
+  // …nor may a pflag shorthand group, whose value is the rest of the token
+  // or the token after it (`-iX POST` is `-i -X POST`).
+  { argv: ["api", "-iX", "POST", "graphql"], graphql: true },
+  { argv: ["api", "-iXPOST", "graphql"], graphql: true },
   // Plain REST paths.
   { argv: ["api", "/repos/o/r/issues"], graphql: false },
   { argv: ["api", "rate_limit", "--jq", ".resources"], graphql: false },
@@ -791,6 +801,8 @@ const GH_ARGV_ROWS: ReadonlyArray<
   // …and so is a flag *value* that is exactly `graphql`.
   { argv: ["api", "repos/o/r/labels", "--jq", "graphql"], graphql: false },
   { argv: ["api", "-f", "q=graphql", "/search/issues"], graphql: false },
+  // A global flag before the sub-command does not hide the head token.
+  { argv: ["--paginate", "api", "/repos/o/r/issues"], graphql: false },
   // Every non-`api` sub-command is GraphQL-backed.
   { argv: ["issue", "list", "--limit", "500"], graphql: true },
   { argv: ["pr", "view", "42"], graphql: true },
@@ -824,9 +836,17 @@ Deno.test("gh_call_metrics - the api-graphql bucket equals the recorded api grap
   const sequence = [...GH_ARGV_ROWS, ...GH_ARGV_ROWS];
   for (const { argv } of sequence) recordGhCall(argv);
 
-  const expected = sequence.filter(({ argv }) => isApiGraphQLCall(argv)).length;
+  // What the shared classifier calls an `api graphql` invocation…
+  const classified = sequence.filter(({ argv }) => isApiGraphQLCall(argv));
+  // …independently cross-checked against the table's own literals, so this
+  // cannot pass by both sides delegating to the same code.
+  const declared = sequence.filter(({ argv, graphql }) =>
+    graphql && classifyGhArgs(argv).startsWith("api")
+  );
+  assertEquals(classified.length, declared.length);
+
   const snap = getGhCallMetrics();
-  assertEquals(snap.bySubCommand["api graphql"], expected);
+  assertEquals(snap.bySubCommand["api graphql"], classified.length);
   // The REST rows are the rest of the `api` traffic, and none of them is
   // billed against the GraphQL quota.
   assertEquals(
