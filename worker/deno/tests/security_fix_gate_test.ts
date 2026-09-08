@@ -199,6 +199,61 @@ Deno.test("citedTestIdentifierInDiff - matches the Deno object-form test name", 
   assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, objectForm), true);
 });
 
+Deno.test("citedTestIdentifierInDiff - matches a name that deno fmt wrapped onto the line after Deno.test( (Issue #1581)", () => {
+  const wrapped = `+Deno.test(
++  "handle_no_changes_phase - an untrusted image withholds the close",
++  async () => {
++    assertEquals(1, 1);
++  },
++);`;
+  const summary =
+    'Added `tests/handle_no_changes_phase_test.ts::"handle_no_changes_phase - an untrusted image withholds the close"` as the regression test.';
+  assertEquals(citedTestIdentifierInDiff(summary, wrapped), true);
+});
+
+Deno.test("citedTestIdentifierInDiff - matches the wrapped forms of it( / test( and of the object form's name: (Issue #1581)", () => {
+  const jest = `+it(
++  "rejects_injection",
++  async () => {},
++);`;
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, jest), true);
+
+  const bareTest = `+test(
++  'rejects_injection',
++  () => {},
++);`;
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, bareTest), true);
+
+  const objectWrapped = `+Deno.test({
++  name:
++    "rejects_injection",
++  fn: () => {},
++});`;
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, objectWrapped), true);
+});
+
+Deno.test("citedTestIdentifierInDiff - a string on its own line counts only directly after an opener (Issue #1581)", () => {
+  // The cited name appears as a string literal line, but nothing opened a
+  // test declaration on the line before it — an assertion message, say.
+  const stray = `+Deno.test("unrelated name", () => {
++  assertEquals(
++    result,
++    "rejects_injection",
++  );
++});`;
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, stray), false);
+
+  // An opener followed by something other than the name is not a declaration
+  // of that later string either.
+  const openerThenCode = `+Deno.test(
++  makeName(),
++  () => {
++    const s = "rejects_injection";
++  },
++);`;
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, openerThenCode), false);
+});
+
 // --- evaluateSecurityFixGate: inactive --------------------------------------
 
 Deno.test("evaluateSecurityFixGate - inactive for non-security PR", () => {
