@@ -17,8 +17,11 @@ report "ignored" while the gate reports green. Closes #1598.
   `run.ps1` off the tree, so the exclusion returning fails it even if the
   manifest entry that named the suite goes with it.
 - CI is unchanged as enforcement: `validate-scripts.yml` still fails loud
-  without `pwsh`, and the required `validate (tests N/4)` shards — which now run
-  these suites — check for it too.
+  without `pwsh`. The required `validate (tests N/4)` shards run the same unit
+  passes, so a runner without PowerShell fails them on
+  `pwsh_suites_in_the_gate_test.ts` itself — the workflow file is deliberately
+  untouched, because this run's token has no `workflow` scope and the test is
+  the stronger enforcement anyway.
 - The `setup.ps1` suites stay integration tests. Two of their cases fail inside
   the image because the suite inherits the ambient `CONFIG_PATH`; that is
   stSoftwareAU/VibeCoder#1656.
@@ -92,7 +95,7 @@ Red-capable, both criteria, before/after:
   is now read off the tree, and that escape was observed failing.
 - **met** — keep `validate-scripts.yml` as the CI enforcement and note the
   change wherever the exclusion is documented — evidence:
-  `.github/workflows/validate-scripts.yml:488`, `CODING-STANDARDS.md:210-330`,
+  `.github/workflows/validate-scripts.yml` unchanged, `CODING-STANDARDS.md:210-330`,
   `CONTRIBUTING.md:103`, `docs/CONTAINER.md:128`, `container/tools.json`,
   `worker/deno/lib/pr_check_contexts.ts`, `.github/scripts/deno-test-shard.sh` —
   reviewer: met
@@ -102,11 +105,13 @@ Red-capable, both criteria, before/after:
   list, so removing the three from `INTEGRATION_TEST_FILES` with no third
   placement fails `integration_test_manifest_test.ts`. The reason and cost are
   what make the exception reviewable.
-- **unrequested** — a `pwsh` availability step in the `validate (tests N/4)`
-  shard job — reviewer: unrequested — reason: those shards run the same unit
-  passes, so they now run these suites; without the step a runner lacking `pwsh`
-  would skip them silently, which is the failure mode the issue's second
-  criterion is about.
+- **unrequested** — a `pwsh` availability step was added to the
+  `validate (tests N/4)` shard job and then removed — reviewer: unrequested —
+  reason: the reviewer was right that the issue asked only to *keep*
+  `validate-scripts.yml`, and the push confirmed it: this run's token carries no
+  `workflow` scope. The shards enforce the prerequisite through
+  `pwsh_suites_in_the_gate_test.ts`, which fails loud in the same job, so
+  nothing is lost.
 - **unrequested** — rewriting `unit_test_passes_test.ts`'s Issue #940 overlap
   guard onto injected lists — reviewer: unrequested — reason: that test asserted
   `both.length > 0` against the real manifests, and `run_ps1_launcher_test.ts`
@@ -144,7 +149,8 @@ Red-capable, both criteria, before/after:
   `worker/deno/lib/pr_check_contexts.ts:66-73` — reason: fixed here.
 - **violation** — the shard script's header said the integration suites "now run
   in the `integration tests` job", true of all but three — evidence:
-  `.github/scripts/deno-test-shard.sh:12-18` — reason: fixed here.
+  `.github/scripts/deno-test-shard.sh:12-19` — reason: fixed here; it now names
+  the exception and the test that fails the shard when `pwsh` is absent.
 - **violation** — the `test-audit` check-13 and best-practices check-26
   carve-outs named only the integration manifest, so both scans would re-file
   this decision as a finding — evidence: `docs/TEST-AUDIT-SCAN.md:130`,
@@ -168,9 +174,8 @@ Red-capable, both criteria, before/after:
 - **violation** — `docs/archive/pr-summaries/pr-summary-1598.md` was missing —
   evidence: this file — reason: fixed here; it was written after the diff the
   reviewer read.
-- **clean** — Australian English throughout; fail-loud (the shard step uses
-  `set -euo pipefail` and exits 1 with a named remedy; the skip became a loud
-  failure); commit safety (only allowlisted `.github/**` hidden paths staged, no
+- **clean** — Australian English throughout; fail-loud (the skip became a loud
+  failure with a named remedy); commit safety (only allowlisted `.github/**` hidden paths staged, no
   credentials, no `git add -f`, no `--no-verify`); `Vibe-Coder-Run-Id` trailer
   and issue reference on both commits; parallel-safety (the two suites entering
   the parallel pass mutate no process state, `run_ps1_launcher_test.ts` stays in

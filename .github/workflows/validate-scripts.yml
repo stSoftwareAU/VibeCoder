@@ -479,21 +479,10 @@ jobs:
           # shape a poisoned entry needs to be selected. A lockfile change now
           # costs one cold fetch of a few small JSR modules, nothing more.
 
-      # Issue #1598: the three `run.ps1` launcher suites run in the unit
-      # passes again — the container image ships PowerShell 7 (#1596), so
-      # the gate's own environment provides what they need — and these
-      # shards run those same passes. A skipped test is not a passed one, so
-      # the prerequisite is checked here as well as in the `integration
-      # tests` job, which still owns the `setup.ps1` suites.
-      - name: Check PowerShell is available
-        run: |
-          set -euo pipefail
-          if ! command -v pwsh > /dev/null 2>&1; then
-            echo "❌ pwsh not found — the run.ps1 launcher suites would skip" >&2
-            exit 1
-          fi
-          pwsh --version
-
+      # No PowerShell check here any more (PR #1170). Every suite that
+      # spawns `pwsh` is an integration suite by the repository's own
+      # classifier, and none of them run in this job — the `integration tests`
+      # job below is where that prerequisite is enforced.
       - name: Deno tests (shard ${{ matrix.shard }} of 4)
         run: |
           set -euo pipefail
@@ -506,15 +495,9 @@ jobs:
   # `pwsh`. They are excluded from every quality run because they cost roughly
   # a third of the gate's wall time and ran on changes that cannot reach them,
   # and PR #1170 took them out of the `validate (tests N/4)` shards for the
-  # same reason — a merge gate that needs a provisioned interpreter it cannot
-  # count on reports the runner as often as the change. They still run on
+  # same reason — a merge gate that needs a provisioned PowerShell to start is
+  # a gate that reports the runner as often as the change. They still run on
   # every pull request, here, where the environment is provisioned for them.
-  #
-  # Issue #1598 is the one exception, and it is the exception that proves the
-  # reason: the container image now ships PowerShell 7 (#1596), so the three
-  # `run.ps1` launcher suites have a provisioned interpreter wherever the
-  # gate runs and have moved into the unit passes. The `setup.ps1` suites
-  # stay here.
   #
   # The name is deliberately outside the `validate` family. Required status
   # checks on `main` are matched by name, so this job cannot block a merge —

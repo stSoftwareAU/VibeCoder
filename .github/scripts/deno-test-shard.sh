@@ -16,8 +16,9 @@
 #     quality run for exactly that cost. They now run in the
 #     `integration tests` job, which is not a required check — all but the
 #     three `run.ps1` launcher suites, which the image provisions an
-#     interpreter for and the gate runs, so this job checks for `pwsh`
-#     before the shards start (Issues #1596, #1598).
+#     interpreter for and the gate runs, so these shards need `pwsh` and
+#     fail loud without it, on `pwsh_suites_in_the_gate_test.ts`
+#     (Issues #1596, #1598).
 #   * The files in PARALLEL_UNSAFE_TEST_FILES (#880, #940) ran in the same
 #     invocation as everything else. They are listed because they mutate
 #     process state, measure a real elapsed reading, or race a real
