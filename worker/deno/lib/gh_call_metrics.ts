@@ -13,7 +13,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { classifyGhCall, ghPositionalArgs } from "./gh_argv.ts";
+import { ghCallKindOf, ghPositionalArgs } from "./gh_argv.ts";
 import { isQuotaExemptGhCall } from "./primary_quota_latch.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -196,7 +196,7 @@ export function classifyGhArgs(args: readonly string[]): string {
   // bySubCommand bucket and downstream telemetry can distinguish the
   // 5000-point/hour GraphQL quota from the 5000-call/hour REST quota.
   if (head === "api") {
-    return classifyGhCall(args) === "api-graphql" ? "api graphql" : "api";
+    return ghCallKindOf(positionals) === "api-graphql" ? "api graphql" : "api";
   }
 
   // For two-word sub-commands (issue/pr/repo/etc.), include the verb.

@@ -28,39 +28,71 @@
 import { normaliseGhArgs } from "./gh_flag_parser.ts";
 
 /**
- * `gh` flags that consume the following argv token as their value.
+ * Long `gh` flags that consume the following argv token as their value.
  *
  * Anything not listed here is treated as a boolean flag, so a missing entry
  * lets that flag's value be read as a positional token. The list is a
- * superset of the flags named in Issue #1588: it also covers the remaining
- * value-taking `gh api` and global flags (`--cache`, `--preview`,
+ * superset of the long flags named in Issue #1588: it also covers the
+ * remaining value-taking `gh api` and global flags (`--cache`, `--preview`,
  * `--hostname`), because those are the ones that can precede the `graphql`
  * endpoint token and would otherwise let a real GraphQL call be classified as
  * REST — the direction the latch must never be wrong in.
  *
  * `--flag=value` needs no entry: it is one token and consumes nothing.
  */
-const VALUE_TAKING_FLAGS: ReadonlySet<string> = new Set([
-  "-f",
-  "-F",
+const VALUE_TAKING_LONG_FLAGS: ReadonlySet<string> = new Set([
   "--field",
   "--raw-field",
-  "-H",
   "--header",
-  "-X",
   "--method",
-  "-q",
   "--jq",
-  "-t",
   "--template",
   "--input",
-  "-R",
   "--repo",
   "--cache",
-  "-p",
   "--preview",
   "--hostname",
 ]);
+
+/**
+ * Shorthand letters that consume the following argv token as their value:
+ * `-f`, `-F`, `-H`, `-X`, `-q`, `-t`, `-R`, `-p`, matching the long flags
+ * above.
+ *
+ * This is deliberately *not* `gh_flag_parser.ts`'s `GH_VALUE_SHORTHANDS`, and
+ * the two must not be merged: that set is intentionally over-inclusive
+ * (any letter that takes a value under *any* subcommand) because ending a
+ * shorthand-group walk too late is its fail-closed direction. Here the
+ * asymmetry is the other way round — treating a boolean letter as
+ * value-taking would swallow the endpoint token and classify a GraphQL call
+ * as REST — so this set lists only the letters that genuinely take a value,
+ * and it is complete for `gh api`'s own value-taking shorthands.
+ */
+const VALUE_TAKING_SHORTHANDS: ReadonlySet<string> = new Set(
+  ["f", "F", "H", "X", "q", "t", "R", "p"],
+);
+
+/**
+ * Whether a shorthand token takes the *following* argv token as its value.
+ *
+ * pflag reads `-iq .data` as `-i -q .data`: boolean letters are walked past,
+ * and the first value-taking letter ends the group. If that letter is last,
+ * its value is the next argv token; if anything follows it in the same token,
+ * that remainder is the value and nothing further is consumed (`-iq.data`).
+ *
+ * `normaliseGhArgs` already expands the groups whose value the `gh` guards
+ * read (`-R`, `-l`, `-X`, `-f`, `-F`); this covers the rest, so a group like
+ * `gh api -iq .data graphql` cannot hide the endpoint token.
+ */
+function shorthandTakesNextToken(token: string): boolean {
+  for (let i = 1; i < token.length; i++) {
+    const letter = token[i]!;
+    // Boolean here; pflag moves on to the next letter in the group.
+    if (!VALUE_TAKING_SHORTHANDS.has(letter)) continue;
+    return i === token.length - 1;
+  }
+  return false;
+}
 
 /**
  * The positional tokens of a `gh` argument list, in order, with flags and
@@ -71,9 +103,7 @@ const VALUE_TAKING_FLAGS: ReadonlySet<string> = new Set([
  *
  * argv is first run through `normaliseGhArgs` so a pflag shorthand group
  * carrying an attached value — `gh api -iXPOST graphql`, which is
- * `-i -X POST graphql` — is expanded to its separated form. Without that, the
- * group reads as one boolean flag and `POST` is taken for the endpoint token,
- * which would classify a real GraphQL call as REST and let it past the latch.
+ * `-i -X POST graphql` — is expanded to its separated form.
  *
  * @param args - Argument list passed to the `gh` binary.
  */
@@ -81,15 +111,18 @@ export function ghPositionalArgs(args: readonly string[]): string[] {
   const normalised = normaliseGhArgs(args);
   const positionals: string[] = [];
   for (let i = 0; i < normalised.length; i++) {
-    const token = normalised[i];
-    if (token === undefined) break;
+    const token = normalised[i]!;
     if (token === "--") {
       positionals.push(...normalised.slice(i + 1));
       break;
     }
-    if (token.startsWith("-") && token !== "-") {
+    if (token.startsWith("--")) {
       // `--flag=value` carries its value in the same token.
-      if (!token.includes("=") && VALUE_TAKING_FLAGS.has(token)) i++;
+      if (!token.includes("=") && VALUE_TAKING_LONG_FLAGS.has(token)) i++;
+      continue;
+    }
+    if (token.startsWith("-") && token !== "-") {
+      if (shorthandTakesNextToken(token)) i++;
       continue;
     }
     positionals.push(token);
@@ -112,24 +145,29 @@ export function ghPositionalArgs(args: readonly string[]): string[] {
 export type GhCallKind = "api-graphql" | "api-rest" | "sub-command" | "unknown";
 
 /**
- * Classify a `gh` argument list by which API budget it spends (Issue #1588).
+ * Classify already-extracted positional tokens (Issue #1588).
+ *
+ * Exposed so a caller that has parsed argv once — `classifyGhArgs`, which
+ * also needs the sub-command verb — does not parse it a second time to ask
+ * the same question.
  *
  * `graphql` counts only as the positional token immediately after `api`, so a
  * REST path or a flag value containing the word — `gh api
  * /search/issues?q=graphql`, `gh api repos/o/r/labels --jq graphql` — is REST,
  * not GraphQL.
- *
- * @param args - Argument list passed to the `gh` binary.
  */
-export function classifyGhCall(args: readonly string[]): GhCallKind {
-  const positionals = ghPositionalArgs(args);
+export function ghCallKindOf(positionals: readonly string[]): GhCallKind {
   const head = positionals[0];
   if (head === undefined) return "unknown";
   if (head !== "api") return "sub-command";
   return positionals[1] === "graphql" ? "api-graphql" : "api-rest";
 }
 
-/** Whether `args` is an explicit `gh api graphql …` invocation (#1588). */
-export function isApiGraphQLCall(args: readonly string[]): boolean {
-  return classifyGhCall(args) === "api-graphql";
+/**
+ * Classify a `gh` argument list by which API budget it spends (Issue #1588).
+ *
+ * @param args - Argument list passed to the `gh` binary.
+ */
+export function classifyGhCall(args: readonly string[]): GhCallKind {
+  return ghCallKindOf(ghPositionalArgs(args));
 }

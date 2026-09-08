@@ -389,20 +389,24 @@ from the one flag-aware classifier in `worker/deno/lib/gh_argv.ts`
 (`classifyGhCall`), which skips flags **and the values of value-taking
 flags** (`-f`, `-F`, `--field`, `--raw-field`, `-H`, `--header`, `-X`,
 `--method`, `-q`, `--jq`, `-t`, `--template`, `--input`, `-R`,
-`--repo`, `--cache`, `-p`, `--preview`, `--hostname`) before reading
-the endpoint token. argv is normalised by `normaliseGhArgs`
-(`worker/deno/lib/gh_flag_parser.ts`, Issue #3867/#1219) first, so a
-pflag shorthand group — `gh api -iXPOST graphql`, which is
-`-i -X POST graphql` — cannot hide the endpoint token either. Before
-that, `classifyGhArgs` read
+`--repo`, `--cache`, `-p`, `--preview`, `--hostname` — every
+value-taking flag `gh api` itself has) before reading the endpoint
+token. argv is normalised by `normaliseGhArgs`
+(`worker/deno/lib/gh_flag_parser.ts`, Issue #3867/#1219) first and
+pflag shorthand groups are then read the way pflag reads them, so
+neither `gh api -iXPOST graphql` nor `gh api -iq .data graphql` — both
+`-i` plus a value-taking shorthand — can hide the endpoint token behind
+a flag value. Before that, `classifyGhArgs` read
 `["api", "-f", "query=…", "graphql"]` as REST `api` while the latch
 read it as GraphQL, and the latch's `args.includes("graphql")` matched
 the token anywhere in argv — including as a flag value.
 
 Only a positively-classified REST `gh api <path>` is exempt from the
-latch; anything the classifier cannot place as REST stays
-GraphQL-billed, so tightening the token test cannot let a real GraphQL
-call escape the latch.
+latch; anything the classifier cannot place as REST — a sub-command, an
+`api` call with no endpoint token, an argv with no positional at all —
+stays GraphQL-billed. That is the safe direction for the tightening:
+the flag list would have to gain a *false* entry, not miss one, for a
+real GraphQL call to be waved through as REST.
 
 Because every `withGraphQLSource` call site wraps exactly one
 `gh api graphql` spawn, the **explicitly-sourced** buckets (steps 1–2

@@ -5,8 +5,8 @@
 import { assertEquals } from "@std/assert";
 import {
   classifyGhCall,
+  ghCallKindOf,
   ghPositionalArgs,
-  isApiGraphQLCall,
 } from "../lib/gh_argv.ts";
 
 Deno.test("gh_argv - ghPositionalArgs drops flags and their values", () => {
@@ -29,20 +29,38 @@ Deno.test("gh_argv - ghPositionalArgs drops flags and their values", () => {
     "api",
     "graphql",
   ]);
-  // A pflag shorthand group is expanded before the walk, so a value carried
-  // inside or after the group is never read as a positional token.
-  assertEquals(ghPositionalArgs(["api", "-iX", "POST", "graphql"]), [
-    "api",
-    "graphql",
-  ]);
-  assertEquals(ghPositionalArgs(["api", "-iXPOST", "graphql"]), [
-    "api",
-    "graphql",
-  ]);
   // `--` ends flag processing.
   assertEquals(ghPositionalArgs(["run", "--", "--not-a-flag"]), [
     "run",
     "--not-a-flag",
+  ]);
+});
+
+Deno.test("gh_argv - ghPositionalArgs reads pflag shorthand groups", () => {
+  // The group's value is the following token (`-iX POST` is `-i -X POST`).
+  assertEquals(ghPositionalArgs(["api", "-iX", "POST", "graphql"]), [
+    "api",
+    "graphql",
+  ]);
+  // …or attached to the group itself.
+  assertEquals(ghPositionalArgs(["api", "-iXPOST", "graphql"]), [
+    "api",
+    "graphql",
+  ]);
+  // A value-taking letter `normaliseGhArgs` does not expand is read here.
+  assertEquals(ghPositionalArgs(["api", "-iq", ".data", "graphql"]), [
+    "api",
+    "graphql",
+  ]);
+  // An attached value in such a group consumes nothing further.
+  assertEquals(ghPositionalArgs(["api", "-iq.data", "graphql"]), [
+    "api",
+    "graphql",
+  ]);
+  // An all-boolean group must not swallow the token after it.
+  assertEquals(ghPositionalArgs(["api", "-is", "graphql"]), [
+    "api",
+    "graphql",
   ]);
 });
 
@@ -79,8 +97,11 @@ Deno.test("gh_argv - classifyGhCall names the budget each invocation spends", ()
   assertEquals(classifyGhCall(["--version"]), "unknown");
 });
 
-Deno.test("gh_argv - isApiGraphQLCall is true only for an explicit api graphql", () => {
-  assertEquals(isApiGraphQLCall(["api", "graphql"]), true);
-  assertEquals(isApiGraphQLCall(["api", "rate_limit"]), false);
-  assertEquals(isApiGraphQLCall(["issue", "list"]), false);
+Deno.test("gh_argv - ghCallKindOf classifies already-parsed positionals", () => {
+  assertEquals(ghCallKindOf(["api", "graphql"]), "api-graphql");
+  assertEquals(ghCallKindOf(["api", "rate_limit"]), "api-rest");
+  // `gh api` with no endpoint: not GraphQL, and it issues no request.
+  assertEquals(ghCallKindOf(["api"]), "api-rest");
+  assertEquals(ghCallKindOf(["issue", "list"]), "sub-command");
+  assertEquals(ghCallKindOf([]), "unknown");
 });

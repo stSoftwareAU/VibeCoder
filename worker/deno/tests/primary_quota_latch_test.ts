@@ -62,6 +62,10 @@ Deno.test("isQuotaExemptGhCall - the endpoint token decides, not a flag value (I
   // the sub-command bucket now names it the same way.
   assert(!isQuotaExemptGhCall(["api", "-f", "query=...", "graphql"]));
   assert(!isQuotaExemptGhCall(["api", "-X", "POST", "graphql", "-f", "q=1"]));
+  // …including inside a pflag shorthand group, whose value is the rest of the
+  // token or the token after it.
+  assert(!isQuotaExemptGhCall(["api", "-iX", "POST", "graphql"]));
+  assert(!isQuotaExemptGhCall(["api", "-iq", ".data", "graphql"]));
   // A REST path or a flag value merely containing — or equal to — `graphql`
   // is a REST call, and stays callable while the latch is held.
   assert(isQuotaExemptGhCall(["api", "/search/issues?q=graphql"]));
