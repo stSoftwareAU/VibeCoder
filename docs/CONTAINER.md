@@ -78,7 +78,7 @@ weight.
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
 | `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
-| `pwsh` 7.6.5 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites, which `validate-scripts.yml` fails loud without              |
+| `pwsh` 7.6.5 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites — the gate runs the `run.ps1` ones and fails loud without it  |
 | `bats-core` 1.14.0                                  | `bats`                                    | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it       |
 | `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
@@ -125,14 +125,17 @@ Six consequences worth knowing:
   `.github/workflows/gitleaks.yml`; the local half of that claim is enforced —
   `container_manifest_test.ts` fails the gate when the manifest pin and that
   workflow's `GITLEAKS_VERSION` / `GITLEAKS_SHA256` drift apart.
-- **`pwsh` is the one user-directed exception to "the gate runs it and CI
-  enforces it".** This repo's `run.ps1`, `setup.ps1` and `loop.ps1` suites are
-  excluded from the local gate (Issue #971,
-  `worker/deno/tests/pwsh_suites_outside_the_gate_test.ts`), but
-  `.github/workflows/validate-scripts.yml` fails loud without PowerShell and
-  runs them — so the CI half holds and the local half does not. Wiring those
-  suites into the local gate is separate work, not part of baking the
-  toolchain in. The image sets `POWERSHELL_UPDATECHECK=Off` and
+- **`pwsh` is what let the gate take the `run.ps1` suites back.** Baking the
+  interpreter in removed the reason they were excluded — a suite that needs an
+  interpreter the gate cannot count on fails for reasons no change of its own
+  could affect — so the three `run.ps1` launcher suites now run in the local
+  gate (Issue #1598, `IN_GATE_SCRIPT_SUITES` in
+  `worker/deno/lib/integration_test_manifest.ts`), and
+  `worker/deno/tests/pwsh_suites_in_the_gate_test.ts` fails the gate on a host
+  without PowerShell rather than letting them report "ignored". The `setup.ps1`
+  suites stay integration tests, enforced by
+  `.github/workflows/validate-scripts.yml`, which fails loud without
+  PowerShell. The image sets `POWERSHELL_UPDATECHECK=Off` and
   `POWERSHELL_TELEMETRY_OPTOUT=1`: no update nag and no telemetry round trip
   from an unattended container, the same reasoning as
   `SEMGREP_ENABLE_VERSION_CHECK`. No apt step either — the runtime libraries

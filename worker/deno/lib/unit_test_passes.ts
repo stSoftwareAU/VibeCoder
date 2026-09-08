@@ -19,9 +19,11 @@
  * The halves are built from the two manifests rather than written out, so
  * dropping a file from `PARALLEL_UNSAFE_TEST_FILES` moves it from the slow
  * pass to the fast one and nothing else has to change. Both passes exclude
- * `INTEGRATION_TEST_FILES` (#907): every suite that spawns `pwsh` is an
- * integration suite, and CI runs those where the environment is provisioned
- * for them.
+ * `INTEGRATION_TEST_FILES` (#907), which CI runs where the environment is
+ * provisioned for them. The three `run.ps1` launcher suites are the named
+ * exception (#1598): the image ships PowerShell 7 (#1596), so the gate's own
+ * environment provides what they need and `IN_GATE_SCRIPT_SUITES` keeps them
+ * in the passes rather than in the exclusion.
  *
  * That exclusion used to be described here as what "keeps the 32 pre-existing
  * pwsh failures out of the verdict". There are no such failures to keep out,
@@ -242,7 +244,9 @@ export function unitTestPasses(
   // ~12 of the gate's ~36 minutes and ran on every change, including changes
   // that cannot reach them — #891 was found exactly that way, by a diff
   // touching only `prompts/**`. CI runs them, where sharding absorbs the
-  // cost; the worker's gate does not. Both passes exclude them.
+  // cost; the worker's gate does not. Both passes exclude them — except the
+  // `run.ps1` launcher suites, which the manifest keeps out of this list
+  // because the image provisions their interpreter (#1596, #1598).
   const integrationIgnore = integrationTestIgnoreArg(integrationFiles);
 
   const parallelIgnore = [

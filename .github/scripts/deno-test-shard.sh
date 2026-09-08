@@ -12,10 +12,13 @@
 #
 #   * The 27 integration suites (INTEGRATION_TEST_FILES, #907) were in the
 #     merge gate. They copy the repository's own `.sh`/`.ps1` into a temp
-#     tree and spawn `bash` or `pwsh` — which is why every shard job had to
-#     install PowerShell before it could start — and they are excluded from
-#     every quality run for exactly that cost. They now run in the
-#     `integration tests` job, which is not a required check.
+#     tree and spawn `bash` or `pwsh`, and they are excluded from every
+#     quality run for exactly that cost. They now run in the
+#     `integration tests` job, which is not a required check — all but the
+#     three `run.ps1` launcher suites, which the image provisions an
+#     interpreter for and the gate runs, so these shards need `pwsh` and
+#     fail loud without it, on `pwsh_suites_in_the_gate_test.ts`
+#     (Issues #1596, #1598).
 #   * The files in PARALLEL_UNSAFE_TEST_FILES (#880, #940) ran in the same
 #     invocation as everything else. They are listed because they mutate
 #     process state, measure a real elapsed reading, or race a real

@@ -656,7 +656,11 @@ Flag:
   manifest (`integration_test_manifest.ts`, or the equivalent list this
   repository maintains). Those files are integration tests **by
   declaration**: spawning a script and waiting on it is what they are
-  for, and reporting them would bury the real findings;
+  for, and reporting them would bury the real findings. A manifest entry
+  that instead names such a suite as one the every-change suite runs
+  **deliberately**, with a reason recorded beside it, is the same
+  declaration reached by the opposite decision — equally silent, because
+  the cost was weighed and written down rather than overlooked;
 - the wait is against an **injected** clock, timer or scheduler that the
   test advances itself — no wall-clock time passes, so the shape is
   fast;

@@ -20,6 +20,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  IN_GATE_SCRIPT_SUITES,
   INTEGRATION_TEST_FILES,
   integrationTestIgnoreArg,
   isIntegrationTestSource,
@@ -47,15 +48,18 @@ Deno.test("integration manifest - no script-driving test is missing from it (Iss
   // paying for a script-driving suite nobody decided to keep.
   const listed = new Set(INTEGRATION_TEST_FILES);
   const missing = (await detected()).filter((f) =>
-    !listed.has(f) && !SCRIPT_READING_UNIT_TESTS.has(f)
+    !listed.has(f) && !SCRIPT_READING_UNIT_TESTS.has(f) &&
+    !IN_GATE_SCRIPT_SUITES.has(f)
   );
   assertEquals(
     missing,
     [],
     "these tests name one of the repository's own scripts but appear in " +
-      "neither INTEGRATION_TEST_FILES nor SCRIPT_READING_UNIT_TESTS. Add " +
-      "them to the first if they run the script, or to the second — with a " +
-      "reason — if they only read it:\n" + missing.join("\n"),
+      "none of INTEGRATION_TEST_FILES, SCRIPT_READING_UNIT_TESTS or " +
+      "IN_GATE_SCRIPT_SUITES. Add them to the first if they run the " +
+      "script, to the second — with a reason — if they only read it, or to " +
+      "the third — with a reason — if the gate should run them anyway " +
+      "(Issue #1598):\n" + missing.join("\n"),
   );
 });
 
@@ -67,6 +71,48 @@ Deno.test("integration manifest - the two lists are disjoint (Issue #935)", () =
     listed.has(f)
   );
   assertEquals(both, [], "listed as both an integration test and a unit test");
+});
+
+Deno.test("integration manifest - no file carries two placements (Issue #1598)", () => {
+  // Each pairing is a contradiction of its own: excluded *and* run by the
+  // gate is the exception silently undone, and read-only *and* run by the
+  // gate means one of the two reasons is wrong. `pwsh_suites_in_the_gate_
+  // test.ts` asserts the same for the `--ignore` the gate actually passes,
+  // which is derived from INTEGRATION_TEST_FILES.
+  const clashes = [...IN_GATE_SCRIPT_SUITES.keys()].filter((f) =>
+    INTEGRATION_TEST_FILES.includes(f) || SCRIPT_READING_UNIT_TESTS.has(f)
+  );
+  assertEquals(
+    clashes,
+    [],
+    "named as a suite the gate runs and placed in another list too:\n" +
+      clashes.join("\n"),
+  );
+});
+
+Deno.test("integration manifest - every in-gate exception is still claimed (Issue #1598)", async () => {
+  // The stale direction, as for the read-only list: a suite that stopped
+  // driving a script needs no exception, and one left behind is an entry
+  // nobody re-reads.
+  const found = new Set(await detected());
+  const stale = [...IN_GATE_SCRIPT_SUITES.keys()].filter((f) => !found.has(f));
+  assertEquals(
+    stale,
+    [],
+    "these are named as script-driving suites the gate runs, but drive no " +
+      "repository script any more — drop the entry:\n" + stale.join("\n"),
+  );
+});
+
+Deno.test("integration manifest - every in-gate exception gives a reason (Issue #1598)", () => {
+  // The gate pays for these on every change, so the entry costs a sentence
+  // saying what that buys.
+  for (const [file, reason] of IN_GATE_SCRIPT_SUITES) {
+    assert(
+      reason.trim().length > 0,
+      `${file} runs in the gate with no reason given`,
+    );
+  }
 });
 
 Deno.test("integration manifest - every read-only exemption is still claimed (Issue #935)", async () => {
