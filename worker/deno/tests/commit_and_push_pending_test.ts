@@ -19,6 +19,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { commitAndPushPending } from "../lib/git_push.ts";
 import { RUN_ID_TRAILER_KEY } from "../lib/run_id.ts";
+import { capturingWarningsAsync } from "./support/warnings.ts";
 
 /**
  * Run id stamped on every commit these tests make (Issue #963).
@@ -470,23 +471,6 @@ async function plantWorkerStateFiles(dir: string): Promise<void> {
   }
 }
 
-/** Run `body` with `console.warn` captured rather than printed. */
-async function withCapturedWarnings(
-  body: () => Promise<void>,
-): Promise<string[]> {
-  const warnings: string[] = [];
-  const original = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(args.map((a) => String(a)).join(" "));
-  };
-  try {
-    await body();
-  } finally {
-    console.warn = original;
-  }
-  return warnings;
-}
-
 Deno.test("commitAndPushPending - unstages worker state files and still commits the real change (Issue #1661)", async () => {
   const branch = "issue-1661-worker-state";
   const { tmp, downstream } = await makeUpstreamAndDownstream(
@@ -498,7 +482,7 @@ Deno.test("commitAndPushPending - unstages worker state files and still commits 
     await Deno.writeTextFile(`${downstream}/feature.txt`, "feature work\n");
 
     let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
-    const warnings = await withCapturedWarnings(async () => {
+    const warnings = await capturingWarningsAsync(async () => {
       result = await commitAndPush(
         branch,
         "Auto-commit pending changes (Issue #1661)",
@@ -565,7 +549,7 @@ Deno.test("commitAndPushPending - still refuses a staged secret when worker stat
     await Deno.writeTextFile(`${downstream}/.env`, "API_KEY=leak\n");
 
     let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
-    await withCapturedWarnings(async () => {
+    await capturingWarningsAsync(async () => {
       result = await commitAndPush(
         branch,
         "Auto-commit pending changes",
@@ -613,7 +597,7 @@ Deno.test("commitAndPushPending - makes no commit when only worker state is pend
     const headBefore = await runGit(["rev-parse", "HEAD"], downstream);
 
     let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
-    await withCapturedWarnings(async () => {
+    await capturingWarningsAsync(async () => {
       result = await commitAndPush(
         branch,
         "Auto-commit pending changes",

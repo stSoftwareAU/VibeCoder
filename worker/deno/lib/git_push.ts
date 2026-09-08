@@ -611,9 +611,11 @@ export async function commitAndPushPending(
       return { ok: false, error: unstageResult.error };
     }
 
-    // Everything pending was worker state — there is no real change to
-    // commit. Say so honestly rather than inventing an empty commit or
-    // failing on git's "nothing added to commit".
+    // Commit only when something real survived the unstaging. When
+    // everything pending was worker state the index is now empty, so the
+    // gates and the commit are skipped and the result reports "nothing
+    // committed" honestly — rather than inventing an empty commit or failing
+    // on git's "nothing added to commit".
     if (unstageResult.value.remainingStaged > 0) {
       // Pre-commit safety gate (Issue #1758) — refuse to commit any
       // hidden or secret-bearing file. On violation, unstage everything
