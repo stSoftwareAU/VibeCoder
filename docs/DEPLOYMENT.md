@@ -576,7 +576,6 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_MCP_CONFIG_DIR` | Directory for `.mcp.json` (default: script directory) |
 | `VIBE_SCREENSHOT_DIR` | Directory name for screenshots (default: `docs/evidence`) |
 | `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile-<user>`, per-account since Issue #1242). Must be an **absolute** path outside the checkout — a relative or inside-the-checkout value is refused (Issue #1293) |
-| `VIBE_BROWSER_ALLOWED_HOSTS` | Extra hosts the Playwright MCP **server process** may connect to, comma-separated `host` or `host:port` (Issue #1386). Adds to the loopback default `PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS`; it never replaces it |
 | `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 
 **Testing/CI environment variables:**
@@ -1008,22 +1007,21 @@ claude "Take a screenshot of http://localhost:3000"
 > kept in `worker/deno/setup/screenshot.ts` (`PLAYWRIGHT_MCP_VERSION`);
 > Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades.
 
-> **The server's own egress is host-scoped (Issue #1386).** `--allow-net` is
-> never granted bare: the generated config emits
-> `--allow-net=127.0.0.1,localhost,[::1]` — loopback, which is where
-> `playwright-core` reaches the browser it launched and where the prompts tell
-> the agent to serve a local page from. `npm:` module resolution is gated by
-> Deno's import permissions, not `--allow-net`, so no registry host is needed.
-> The hosts are the canonical knob `PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS` in
-> `worker/deno/setup/screenshot.ts`, and an operator who needs one more (a CI
-> preview URL, a dev server on a non-loopback address) *adds* to it with
-> `VIBE_BROWSER_ALLOWED_HOSTS` (comma-separated `host` or `host:port`) — the
-> knob can never replace the list or widen it to everything. Like every Deno
-> permission this binds the server process only: Chromium is spawned under
-> `--allow-run` and does its own networking, so a prompt-injected
-> `browser_navigate` is bounded by `--blocked-origins` below and the
-> container's egress boundary. What the scoping removes is the MCP server
-> process itself as a general-purpose exfiltration channel.
+> **The server process cannot reach cloud metadata (Issue #1386).** The
+> generated config grants the MCP server `--allow-net` and then takes the
+> metadata endpoints back off it with
+> `--deny-net=169.254.169.254,169.254.170.2,[fd00:ec2::254],metadata.google.internal,metadata.goog,100.100.100.100`
+> — Deno's deny list beats its allow list. The allow side cannot be scoped:
+> `@playwright/mcp` binds a browser server on a unix socket whose name carries
+> a fresh guid (`$TMPDIR/pw-<user-hash>/browser/browser@<guid>.sock`), and Deno
+> scopes a unix socket by its exact absolute path only — a host allowlist
+> failed every `browser_navigate` with `NotCapable: … Requires net access to
+> "unix:/tmp/pw-…/browser@….sock"`. The hosts are the canonical knob
+> `PLAYWRIGHT_MCP_BLOCKED_HOSTS` in `worker/deno/setup/screenshot.ts`, shared
+> with `--blocked-origins` below. Like every Deno permission this binds the
+> server process only: Chromium is spawned under `--allow-run` and does its
+> own networking, so a prompt-injected `browser_navigate` is bounded by
+> `--blocked-origins` and the container's egress boundary.
 
 > **Cloud metadata is blocked (Issue #1292).** The server defaults to
 > allowing every origin, and the navigation target comes from issue and PR
