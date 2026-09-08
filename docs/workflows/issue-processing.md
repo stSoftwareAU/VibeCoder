@@ -964,8 +964,9 @@ claimable issue in the fleet went untouched. Two behaviours close the loop:
   at `WARNING`, no failure tracking or circuit-breaker counting occurs, and
   `WORKER_SUMMARY`'s `issues_processed` does not count the bounce.
 
-A merged PR that *did* land still does not always mean the issue is finished.
-Two guards sit ahead of the close:
+A merged PR does not always mean the issue is finished. Two guards run before
+the close is even attempted — ahead of the landing check above, so they fire on
+an orphaned merge too:
 
 - **Unpublished work (Issue #174).** An issue with commits on a pushed branch
   nobody has raised a PR for is not closed — the run resumes that branch.
@@ -980,9 +981,12 @@ Two guards sit ahead of the close:
   grilled to Ready and given `top-priority` at 00:21 and closed at 00:41 on a PR
   merged at 22:49 the night before; re-opening by hand achieved nothing, because
   the pre-check runs on every claim. Once the re-approved run's own PR merges,
-  its merge is newer than the approval and the ordinary close path resumes. An
-  unverifiable approval time — no `mergedAt`, or a timeline lookup that fails —
-  is stated at `WARNING` and keeps the close.
+  its merge is newer than the approval and the ordinary close path resumes. The
+  approval is by definition the newest label event, so the check reads the
+  **complete** timeline (`fetchCompleteTimeline`), not the page-1 slice a busy
+  issue outgrows. An unverifiable approval time — no or unparseable `mergedAt`,
+  or a timeline read that fails or exceeds the page cap — is stated at
+  `WARNING` and keeps the close.
 
 ```mermaid
 flowchart TD

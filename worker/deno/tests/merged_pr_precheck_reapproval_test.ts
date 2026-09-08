@@ -124,7 +124,8 @@ function projectJsonFields(
  */
 function makeGh(handlers: {
   prView?: (prNumber: number) => Record<string, unknown>;
-  timeline?: () => string;
+  /** Answers one timeline page; `page` is the 1-based page requested. */
+  timeline?: (page: number) => string;
   timelineThrows?: boolean;
 }): {
   runGhCommand: (args: string[]) => Promise<string>;
@@ -145,7 +146,11 @@ function makeGh(handlers: {
       if (handlers.timelineThrows) {
         return Promise.reject(new Error("timeline API unavailable"));
       }
-      return Promise.resolve(handlers.timeline ? handlers.timeline() : "[]");
+      const pageMatch = String(args[1]).match(/[?&]page=(\d+)/);
+      const page = pageMatch ? parseInt(pageMatch[1]!, 10) : 1;
+      return Promise.resolve(
+        handlers.timeline ? handlers.timeline(page) : "[]",
+      );
     }
     if (args[0] === "issue" && args[1] === "view") {
       return Promise.resolve(
@@ -436,5 +441,74 @@ Deno.test(
     const warned = warnings.find((w) => w.message.includes("merge time"));
     assertEquals(warned !== undefined, true);
     assertStringIncludes(warned!.message, "merge time");
+  },
+);
+
+Deno.test(
+  "merged-pr-precheck - an unparseable mergedAt warns and still closes",
+  async () => {
+    const warnings: Array<
+      { message: string; context?: Record<string, unknown> }
+    > = [];
+    const gh = makeGh({
+      prView: () => ({ ...MERGED_PR_WITH_TIME, mergedAt: "last Tuesday" }),
+      timeline: () =>
+        timelineWith([
+          { label: "top-priority", actor: "trusted-human", at: AFTER_MERGE },
+        ]),
+    });
+
+    const result = await workOnIssueMergedPrPrecheck(
+      makeContext(),
+      makeState(),
+      makeDeps(gh, warnings),
+    );
+
+    assertEquals(result.status, "early_exit");
+    assertEquals(closeAttempted(gh.calls), true);
+    const warned = warnings.find((w) => w.message.includes("merge time"));
+    assertEquals(warned?.context?.mergedAt, "last Tuesday");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A busy issue — the approval is the newest event, so page 1 is not enough
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "merged-pr-precheck - an approval beyond timeline page 1 still skips the close",
+  async () => {
+    const warnings: Array<
+      { message: string; context?: Record<string, unknown> }
+    > = [];
+    // A full first page (100 events) of unrelated label activity, with the
+    // re-approval on page 2 — the #1562 shape, grilled to Ready over many
+    // rounds. A page-1-only read cannot see it.
+    const filler = Array.from({ length: 100 }, () => ({
+      label: "documentation",
+      actor: "trusted-human",
+      at: BEFORE_MERGE,
+    }));
+    const gh = makeGh({
+      timeline: (page) =>
+        page === 1 ? timelineWith(filler) : timelineWith([
+          { label: "top-priority", actor: "trusted-human", at: AFTER_MERGE },
+        ]),
+    });
+
+    const result = await workOnIssueMergedPrPrecheck(
+      makeContext(),
+      makeState(),
+      makeDeps(gh, warnings),
+    );
+
+    assertEquals(result, { status: "continue" });
+    assertEquals(closeAttempted(gh.calls), false);
+    assertEquals(
+      warnings.some((w) =>
+        w.message.includes("NOT closing — approval post-dates merge")
+      ),
+      true,
+    );
   },
 );

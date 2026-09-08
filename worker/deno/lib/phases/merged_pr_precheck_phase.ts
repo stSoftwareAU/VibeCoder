@@ -9,7 +9,8 @@
  *
  * Behaviour:
  * - Looks up an existing PR for the issue via `deps.pr.findExistingPrForIssue`.
- * - If a PR URL is returned, reads the PR state via `gh pr view --json state`.
+ * - If a PR URL is returned, reads the PR state and merge time via
+ *   `gh pr view --json state,mergedAt`.
  * - When the PR is merged, calls `ensureIssueClosedIfPrMerged` to close the
  *   issue (idempotent — no-op if already closed) and returns `early_exit`.
  * - Except when a trusted author re-approved the issue *after* that merge
@@ -32,7 +33,7 @@ import { ensureIssueClosedIfPrMerged } from "../issue_lifecycle.ts";
 import { isAuthorTrusted } from "../content_approval_tracker.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
-  fetchTimelineWithCache,
+  fetchCompleteTimeline,
   lastAddInfoFromTimeline,
 } from "../issue_query.ts";
 import { repairOrphanedMilestoneMerge } from "../orphaned_rollup.ts";
@@ -287,8 +288,9 @@ interface PostMergeApproval {
  * review.
  *
  * Fail-safe: an unverifiable approval time — no or unparseable `mergedAt`, a
- * timeline lookup that throws — is logged at `WARNING` and returns `null`, so
- * the pre-check keeps today's close behaviour rather than silently skipping it.
+ * timeline lookup that throws or exceeds the page cap — is logged at `WARNING`
+ * and returns `null`, so the pre-check keeps today's close behaviour rather
+ * than silently skipping it.
  *
  * @returns the qualifying approval, or `null` when there is none
  */
@@ -325,15 +327,19 @@ async function findPostMergeApproval(
   });
 
   // One read answers every label (Issue #1617 exported the seam for exactly
-  // this). No timeline cache is plumbed into the phases; the page-1 read is
-  // acceptable because a miss only preserves today's behaviour. `null` here
-  // is a *failed* read — an issue with no label events is an empty array —
-  // so it is reported rather than passing as "nobody re-approved".
-  const timeline = await fetchTimelineWithCache(
+  // this). The *complete* timeline, not the page-1 slice: a re-approval is by
+  // definition the newest `labeled` event, and #1562 — grilled to Ready over
+  // many rounds — is exactly the >100-event issue whose newest event falls off
+  // page 1. No timeline cache is plumbed into the phases, so this always
+  // paginates. A throw (page cap, API error) and a `null` (unparseable
+  // response) are both *failed* reads — an issue with no label events is an
+  // empty array — so they are reported rather than passing as "nobody
+  // re-approved".
+  const timeline = await fetchCompleteTimeline(
     repo,
     issueNumber,
     deps.github.runGhCommand,
-  );
+  ).catch(() => null);
   if (timeline === null) {
     deps.logger.warn(
       "Merged PR pre-check: approval-time lookup failed, so a later " +
