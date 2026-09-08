@@ -14,10 +14,12 @@
  *   - `getIssueComments` — REST API list (`GET /repos/.../issues/N/comments`),
  *                          paged at 100 per request up to 10 pages (1 000
  *                          comments). GitHub's default page is the **oldest
- *                          30**, and it ignores `sort`/`direction` on this
- *                          endpoint, so the newest comments — where
- *                          `escalateToHuman`'s dedup marker always is — are
- *                          only reachable by paging (Issue #1619). Pages are
+ *                          30**, and asking this endpoint for `direction=desc`
+ *                          returned the same ascending order when checked live
+ *                          (NEAT-AI-core#593, 2026-09-08), so the newest
+ *                          comments — where `escalateToHuman`'s dedup marker
+ *                          always is — are reliably reachable only by paging
+ *                          (Issue #1619). Pages are
  *                          concatenated oldest-first, the order the dedup
  *                          scan's `slice(-50)` tail expects.
  *

@@ -133,6 +133,9 @@ Deno.test("escalateToHuman via the gh shim - an un-paged fetch of the same issue
   // It records the fault being fixed — that an un-paged read of this very
   // issue cannot see the marker — so the contrast with the test above is
   // the paging, not the fixture.
+  // Only `getIssueComments` is replaced below — `postComment` and `addLabel`
+  // stay the real shim's, so the duplicate this test asserts on is one the
+  // production comment-posting path actually wrote.
   const unpagedClient = createGhEscalationClient(ghFn);
   const preFixComments = await ghFn([
     "api",
