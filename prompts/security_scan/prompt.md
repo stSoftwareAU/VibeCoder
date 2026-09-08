@@ -1828,8 +1828,8 @@ reconcile pass has nothing to repaint.
    counts only the never-recorded chunks — a recorded chunk is listed for
    the reader but is already covered, so counting it would re-report a
    swept tree as unaudited. When every unswept chunk is recorded, `N` is
-   zero and no tracker is filed for the stopping rule alone. The
-   tracker body also
+   zero and no tracker is filed for the stopping rule alone. The tracker
+   body also
    ends with the attribution footer line from the Inputs section.
 
 5. **Zero surviving findings = file nothing.** Do not file an "all clear"
@@ -1849,8 +1849,8 @@ label:
 
 Re-read every issue this run filed before exiting, and confirm: one
 `gh issue create` per surviving finding (capped at 6, plus one overflow
-tracker when more than 6 survived, or when the stopping rule left chunks
-unswept); every filed issue carries
+tracker when more than 6 survived, or when the stopping rule left
+never-recorded chunks unswept); every filed issue carries
 `security`, exactly one `severity:*`, and exactly one `confidence:*` label,
 and no operational label; no suppressed or known-open id was filed; every
 body whose finding was assigned a CWE in Phase 3 step 8 carries its

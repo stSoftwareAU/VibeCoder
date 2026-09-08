@@ -688,9 +688,10 @@ visible in the filed output rather than silent.
 Phase 1 inventories what earlier sweeps already recorded —
 `docs/audits/security-sweep-*.md`, a sweep coverage ledger, closed
 `security-scan-overflow` issues — and dates each record with
-`git log -1 --format=%H -- <record>`, so `git diff --name-only <commit>
-HEAD -- <tree>` says which of its modules moved since. Each unswept chunk
-is then written in whichever of these two shapes its modules put it in:
+`git log -1 --format=%H -- <record>`, so
+`git diff --name-only <commit> HEAD -- <tree>` says which of its modules
+moved since. Each unswept chunk is then written in whichever of these two
+shapes its modules put it in:
 
 ```text
 - <n>. <chunk name> (exposure: <band>) — never recorded
@@ -700,11 +701,11 @@ is then written in whichever of these two shapes its modules put it in:
 The title's `N` counts **only the never-recorded chunks**. A recorded,
 unchanged tree is listed for the reader but is already covered, so counting
 it would re-report an audited tree as unaudited — which is exactly what
-the #1608 tracker did to roughly a thousand recorded modules. The stopping rule
-drops previously-swept-and-unchanged chunks first for the same reason: the
-budget is better spent on a chunk no record covers. When every unswept chunk
-is recorded, `N` is zero and no tracker is filed for the stopping rule
-alone.
+the #1608 tracker did to roughly a thousand recorded modules. The stopping
+rule drops previously-swept-and-unchanged chunks first for the same reason:
+the budget is better spent on a chunk no record covers. When every unswept
+chunk is recorded, `N` is zero and no tracker is filed for the stopping
+rule alone.
 
 **Title and label.** The tracker issue is titled
 `security-scan-overflow: N unfiled findings`, where `N` is the size of
