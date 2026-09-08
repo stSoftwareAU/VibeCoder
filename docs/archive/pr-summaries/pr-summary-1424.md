@@ -97,7 +97,7 @@ No existing test was modified or removed. The full suite passes under
 - `SECURITY.md` — new **The inbound side — text entering the model's context**
   subsection under the redaction standard, stating the ordering rule and that
   outbound sinks still owe their own call.
-- `docs/THREAT-MODEL.md` — control **C31** (inbound secret redaction) added and
+- `docs/THREAT-MODEL.md` — control **C32** (inbound secret redaction) added and
   cited from attack path **AP-13**.
 - `worker/deno/lib/secret_redaction.ts` — module docstring now names the inbound
   chokepoint alongside the outbound ones.
