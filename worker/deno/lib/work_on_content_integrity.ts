@@ -26,7 +26,11 @@ import {
   verifyContentUnchanged,
 } from "./content_approval_tracker.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
-import { getLabelLastAddInfo } from "./issue_query.ts";
+import {
+  fetchTimelineWithCache,
+  lastAddInfoFromTimeline,
+  lastRemoveInfoFromTimeline,
+} from "./issue_query.ts";
 import {
   type IssueEditActor,
   resolveLastIssueEditor,
@@ -299,6 +303,138 @@ function buildUntrustedEditorPhrase(untrusted: IssueEditActor[]): string {
     parts.push("an actor GitHub does not attribute (no recorded editor)");
   }
   return parts.join(" and ");
+}
+
+/**
+ * A trusted signal that re-approves the content as it stands (Issue #1617).
+ *
+ * Two signals count, and both mean the same thing: a trusted human looked at
+ * the current content after it was edited and said "go".
+ */
+interface TrustedReapproval {
+  /** `label-add` — the approval label was re-applied; `needs-human-removed` —
+   * the escalation label the gate itself adds was cleared. */
+  kind: "label-add" | "needs-human-removed";
+  /** Unix seconds at which the signal was recorded. */
+  at: number;
+  /** The trusted human who made it. */
+  by: string;
+}
+
+/** Render a re-approval signal for the audit log. */
+function describeReapproval(
+  signal: TrustedReapproval,
+  approvalLabel: string,
+  needsHumanLabel: string,
+): string {
+  return signal.kind === "label-add"
+    ? `\`${approvalLabel}\` re-added by \`${signal.by}\``
+    : `\`${needsHumanLabel}\` removed by \`${signal.by}\``;
+}
+
+/**
+ * Find a trusted re-approval of the current content (Issues #1561, #3868,
+ * #1617).
+ *
+ * Reads the timeline **once** and answers both questions from it:
+ *
+ * - `label-add`: the approval label's last `labeled` event, by a trusted
+ *   author, post-dating both the snapshot and the newest edit.
+ * - `needs-human-removed`: the escalation label's last `unlabeled` event,
+ *   under the same timing rule, by a trusted author who is **not** a fleet
+ *   login. The escalation comment this gate posts asks a human to remove
+ *   `needs-human`, so honouring the removal is what makes that instruction do
+ *   what it says. Fleet logins are excluded because a removal made *by the
+ *   fleet* is label maintenance, not review: it must never read as a human's
+ *   re-approval, whichever worker path performs it.
+ *
+ * A signal that post-dates the snapshot but predates the newest edit is
+ * genuine but stale — it cannot bless content the approver never saw — and is
+ * logged under `[REAPPROVAL_PREDATES_EDIT]` when `warnOnStale` is set. The
+ * uncached re-read passes `false` so the same stale signal is not reported
+ * twice in one pass.
+ *
+ * @returns the newest qualifying signal, or null when there is none
+ */
+async function findTrustedReapproval(args: {
+  repo: string;
+  issueNumber: number;
+  approvalLabel: string;
+  config: WorkerConfig;
+  /** Fleet-owned logins whose `needs-human` removals are worker maintenance. */
+  fleetAuthors: string[];
+  ghFn: (args: string[]) => Promise<string>;
+  timelineCache?: TimelineCache;
+  /** When the approval baseline being verified was captured (unix seconds). */
+  capturedAt: number;
+  /** Newest recorded edit (unix seconds), or null when GitHub records none. */
+  newestEditAt: number | null;
+  warnOnStale: boolean;
+}): Promise<TrustedReapproval | null> {
+  const timeline = await fetchTimelineWithCache(
+    args.repo,
+    args.issueNumber,
+    args.ghFn,
+    args.timelineCache,
+  );
+  if (timeline === null) return null;
+
+  const signals: TrustedReapproval[] = [];
+
+  const addInfo = lastAddInfoFromTimeline(timeline, args.approvalLabel);
+  if (
+    addInfo !== null && addInfo.addedAt > args.capturedAt &&
+    isAuthorTrusted(addInfo.addedBy, args.config.allowedAuthors)
+  ) {
+    signals.push({
+      kind: "label-add",
+      at: addInfo.addedAt,
+      by: addInfo.addedBy,
+    });
+  }
+
+  const removeInfo = lastRemoveInfoFromTimeline(
+    timeline,
+    args.config.needsHumanLabel,
+  );
+  if (
+    removeInfo !== null && removeInfo.removedAt > args.capturedAt &&
+    isAuthorTrusted(removeInfo.removedBy, args.config.allowedAuthors) &&
+    !isAuthorTrusted(removeInfo.removedBy, args.fleetAuthors)
+  ) {
+    signals.push({
+      kind: "needs-human-removed",
+      at: removeInfo.removedAt,
+      by: removeInfo.removedBy,
+    });
+  }
+
+  const qualifying = signals
+    .filter((s) => args.newestEditAt === null || s.at >= args.newestEditAt)
+    .sort((a, b) => b.at - a.at);
+  const newest = qualifying[0];
+  if (newest) return newest;
+
+  if (args.warnOnStale) {
+    for (const stale of signals) {
+      // Greppable marker for the case this gate exists to catch: the signal
+      // is genuine but stale, so the edit falls through to the editor-trust
+      // check rather than riding it.
+      console.warn(
+        `[SECURITY] [REAPPROVAL_PREDATES_EDIT] ` +
+          `${
+            describeReapproval(
+              stale,
+              args.approvalLabel,
+              args.config.needsHumanLabel,
+            )
+          } on ${args.repo}#${args.issueNumber} at ${stale.at}, before the ` +
+          `most recent edit at ${args.newestEditAt} — the approval cannot ` +
+          `bless content the approver never saw`,
+      );
+    }
+  }
+  return null;
 }
 
 /**
@@ -580,50 +716,62 @@ export async function resolveContentIntegrity(
       // post-dated the stored snapshot (a `low-priority` → `work-on`
       // promotion, a requeue, or the re-approval this module's own escalation
       // asks for) auto-blessed every later untrusted edit indefinitely.
-      const labelInfo = await getLabelLastAddInfo(
+      // Issue #1617: the fleet's own logins are resolved once — the
+      // re-approval scan uses them to refuse the worker's own `needs-human`
+      // removals, and the escalation below uses them to recognise its own
+      // prior comment.
+      const fleetAuthors = resolveFleetMaintenanceAuthorSet({
+        // This host's own login is not on the config; the fleet's service
+        // accounts and sibling logins are, and an empty entry is dropped by
+        // the resolver.
+        githubUser: "",
+        serviceAccounts: config.serviceAccounts,
+        fleetPrAuthors: config.fleetPrAuthors,
+      });
+
+      // No edit record at all means there is no edit a re-approval could
+      // post-date; a recorded edit must not be newer than the re-approval.
+      const newestEditAt = editor?.editedAt ?? null;
+      const reapprovalArgs = {
         repo,
         issueNumber,
         approvalLabel,
+        config,
+        fleetAuthors,
         ghFn,
         timelineCache,
-      );
-      const approvalPostDatesSnapshot = labelInfo !== null &&
-        labelInfo.addedAt > verification.capturedAt;
-      // No edit record at all means there is no edit the approval could
-      // post-date; a recorded edit must not be newer than the approval.
-      const approvalPostDatesEdit = editor === null ||
-        (labelInfo !== null && labelInfo.addedAt >= editor.editedAt);
-      const adderTrusted = labelInfo !== null &&
-        isAuthorTrusted(labelInfo.addedBy, config.allowedAuthors);
+        capturedAt: verification.capturedAt,
+        newestEditAt,
+      };
 
-      if (approvalPostDatesSnapshot && adderTrusted) {
-        if (approvalPostDatesEdit) {
-          console.warn(
-            `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION] Trusted author ` +
-              `${labelInfo?.addedBy} re-added ${approvalLabel} on ` +
-              `${repo}#${issueNumber} after prior snapshot — refreshing snapshot`,
-          );
-          return await captureBaselineOrBlock({
-            stateDir,
-            repo,
-            issueNumber,
-            title: currentTitle,
-            body: currentBody,
-            author: issueAuthor,
-            contentDeps,
-            diag,
-          });
-        }
-        // Greppable marker for the case this gate exists to catch: the
-        // approval is genuine but stale, so the edit falls through to the
-        // editor-trust check below rather than riding the approval.
+      const reBaselineOnReapproval = (
+        signal: TrustedReapproval,
+        suffix: string,
+      ) => {
         console.warn(
-          `[SECURITY] [REAPPROVAL_PREDATES_EDIT] ${approvalLabel} on ` +
-            `${repo}#${issueNumber} was last added at ${labelInfo?.addedAt}, ` +
-            `before the most recent edit at ${editor?.editedAt} — the ` +
-            `approval cannot bless content the approver never saw`,
+          `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION] ` +
+            `${
+              describeReapproval(signal, approvalLabel, config.needsHumanLabel)
+            } on ${repo}#${issueNumber} after prior snapshot — refreshing ` +
+            `snapshot${suffix}`,
         );
-      }
+        return captureBaselineOrBlock({
+          stateDir,
+          repo,
+          issueNumber,
+          title: currentTitle,
+          body: currentBody,
+          author: issueAuthor,
+          contentDeps,
+          diag,
+        });
+      };
+
+      const reapproval = await findTrustedReapproval({
+        ...reapprovalArgs,
+        warnOnStale: true,
+      });
+      if (reapproval) return await reBaselineOnReapproval(reapproval, "");
 
       if (untrustedEditors.length === 0) {
         // Every editor in the window is trusted — warn but proceed, recapturing
@@ -645,6 +793,24 @@ export async function resolveContentIntegrity(
           contentDeps,
           diag,
         });
+      }
+
+      // Issue #1617: the timeline read above may have been served from the
+      // file-backed cache (300 s TTL), so a re-approval made minutes ago can
+      // be invisible to it — NEAT-AI-core#593 blocked at 01:53:34 on a
+      // `work-on` re-add made at 01:46:51. Blocking is the expensive,
+      // human-visible outcome, so buy one live read before paying it: drop
+      // the cached entry and evaluate once more. With no cache supplied the
+      // first read was already live, so there is nothing to re-read.
+      if (timelineCache) {
+        await timelineCache.invalidate(repo, issueNumber);
+        const fresh = await findTrustedReapproval({
+          ...reapprovalArgs,
+          warnOnStale: false,
+        });
+        if (fresh) {
+          return await reBaselineOnReapproval(fresh, " (uncached re-read)");
+        }
       }
 
       // At least one untrusted (or unattributable) editor in the window —
@@ -716,16 +882,7 @@ export async function resolveContentIntegrity(
           // author is the authenticated half of the match (Issue #1216). The
           // fleet is resolved from the config that is already in hand rather
           // than re-read from the environment.
-          dedupAuthors: {
-            fleetAuthors: resolveFleetMaintenanceAuthorSet({
-              // This host's own login is not on the config; the fleet's
-              // service accounts and sibling logins are, and an empty entry
-              // is dropped by the resolver.
-              githubUser: "",
-              serviceAccounts: config.serviceAccounts,
-              fleetPrAuthors: config.fleetPrAuthors,
-            }),
-          },
+          dedupAuthors: { fleetAuthors },
         },
         logger: defaultLogger,
       });

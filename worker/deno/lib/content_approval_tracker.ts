@@ -42,6 +42,17 @@ export interface ContentSnapshot {
    * existed — see {@link candidateEncodings}.
    */
   encoding?: string;
+  /**
+   * Lower-cased refs of the exact-form `Depends on <ref>` lines the body
+   * carried at capture (Issue #1616).
+   *
+   * The v3 digest is computed over the body with those lines removed, so an
+   * *added* deferral line leaves the digest untouched — which is the point.
+   * That alone would also bless a *removal*, so the refs present at capture
+   * are recorded and must still be present for the content to verify as
+   * unchanged. Absent on snapshots written before v3.
+   */
+  dependsOn?: string[];
 }
 
 /** All stored snapshots, keyed by "repo|issueNumber". */
@@ -143,6 +154,31 @@ export const CONTENT_HASH_ENCODING_V1 = "content-approval/v1";
 export const CONTENT_HASH_ENCODING_V2 = "content-approval/v2";
 
 /**
+ * The v2 layout over a body with the worker's machine-owned record block
+ * removed (Issues #1616, #1631).
+ *
+ * The worker's own blocked-deferral path records `Depends on owner/repo#N` in
+ * an approved body as `stservice`, which the gate then judged an untrusted
+ * edit on every scan. `stservice` cannot be trusted — a compromised agent runs
+ * as that login — so the tolerance lives in **what is hashed** rather than in
+ * who is trusted.
+ *
+ * What is taken out is the delimited block, and only when every line inside
+ * it matches the machine grammar (see `worker_record_block.ts`): anyone may
+ * write the delimiters, so the rule is author-blind, and nothing but a
+ * dependency line can ever be hidden from the digest.
+ *
+ * **Note on the tag.** The milestone branch that introduced `v3` gave it a
+ * different meaning — the v2 layout over a body with dependency lines removed
+ * wherever they appeared, which is a wider exemption. That branch never ran
+ * outside its own CI, so no snapshot carries the older sense of this tag; a
+ * stray one would fail its digest, fall to the legacy candidates below, and
+ * be re-baselined, which is a safe failure rather than a silent
+ * mis-verification.
+ */
+export const CONTENT_HASH_ENCODING_V3 = "content-approval/v3";
+
+/**
  * Encoding new snapshots are captured under (Issues #3878, #3963).
  *
  * Bumping this no longer invalidates the store: every snapshot records the
@@ -151,13 +187,103 @@ export const CONTENT_HASH_ENCODING_V2 = "content-approval/v2";
  * tag to {@link computeContentHash} when bumping, or every existing snapshot
  * becomes unverifiable.
  */
-export const CURRENT_CONTENT_HASH_ENCODING = CONTENT_HASH_ENCODING_V2;
+export const CURRENT_CONTENT_HASH_ENCODING = CONTENT_HASH_ENCODING_V3;
 
 /** Encodings a stored digest may legitimately have been computed under. */
 const KNOWN_HASH_ENCODINGS: readonly string[] = [
+  CONTENT_HASH_ENCODING_V3,
   CONTENT_HASH_ENCODING_V2,
   CONTENT_HASH_ENCODING_V1,
 ];
+
+/**
+ * A whole line of the exact form `Depends on owner/repo#N` or `Depends on #N`
+ * (Issue #1616) — precisely what `buildDependencyLine` in
+ * `blocked_outcome.ts` writes and `recordDependencyInBody` appends.
+ *
+ * Deliberately narrower than the dependency gate's own case-insensitive
+ * reader (`extractDependencyReferencesDetailed` in `issue_dependencies.ts`):
+ * anything an editor could hide extra meaning in — prose around the ref, a
+ * second ref, a different case — stays inside the signed content. `\s*$`
+ * swallows a trailing `\r` so a CRLF body normalises identically.
+ */
+const DEPENDS_ON_LINE =
+  /^Depends on (?:[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+)?#\d+\s*$/;
+
+/**
+ * The body as it is signed: exact-form `Depends on` lines removed, trailing
+ * whitespace trimmed (Issue #1616).
+ *
+ * `recordDependencyInBody` writes `${body.trimEnd()}\n\n<line>\n`, so
+ * dropping those lines and trimming the end returns the approved body
+ * byte-for-byte. The title is never normalised.
+ */
+export function normaliseBodyForApproval(body: string): string {
+  return body
+    .split("\n")
+    .filter((line) => !DEPENDS_ON_LINE.test(line))
+    .join("\n")
+    .trimEnd();
+}
+
+/**
+ * The lower-cased refs of the exact-form `Depends on` lines in `body`
+ * (Issue #1616). Lower-cased because GitHub logins and repository names are
+ * case-insensitive, so `Depends on Owner/Repo#7` and `owner/repo#7` name the
+ * same dependency.
+ */
+export function extractApprovalDependsOnRefs(body: string): string[] {
+  return body
+    .split("\n")
+    .filter((line) => DEPENDS_ON_LINE.test(line))
+    .map((line) => line.trim().slice("Depends on ".length).toLowerCase());
+}
+
+/**
+ * Whether every dependency ref recorded at capture is still present
+ * (Issue #1616).
+ *
+ * The v3 digest ignores these lines, so without this check removing one would
+ * verify as unchanged — text deleted from an approved body must still count
+ * as a change.
+ */
+function recordedDependenciesIntact(
+  snapshot: ContentSnapshot,
+  body: string,
+): boolean {
+  const recorded = Array.isArray(snapshot.dependsOn) ? snapshot.dependsOn : [];
+  if (recorded.length === 0) return true;
+
+  // Counted, not a set: an issue approved with the same ref on two lines must
+  // still report `changed` when one of them is deleted.
+  const present = new Map<string, number>();
+  for (const ref of extractApprovalDependsOnRefs(body)) {
+    present.set(ref, (present.get(ref) ?? 0) + 1);
+  }
+  for (const ref of recorded) {
+    const remaining = present.get(ref.toLowerCase()) ?? 0;
+    if (remaining === 0) return false;
+    present.set(ref.toLowerCase(), remaining - 1);
+  }
+  return true;
+}
+
+/**
+ * Bodies a pre-v3 snapshot's approved content may have been (Issue #1616).
+ *
+ * `recordDependencyInBody` writes `${body.trimEnd()}\n\n<line>\n`, so the
+ * trailing whitespace the approved body carried — GitHub bodies routinely end
+ * in `\n` or `\r\n` — is destroyed by the append and cannot be recovered from
+ * what is on the page now. A pre-v3 digest covers those bytes, so matching the
+ * trimmed body alone would leave exactly the field case this issue was filed
+ * for failing closed. The candidates are the trimmed body plus the endings the
+ * append could have eaten; v3 tolerates trailing whitespace anyway, so trying
+ * them widens nothing the current encoding does not already allow.
+ */
+function legacyApprovedBodyCandidates(body: string): string[] {
+  const trimmed = normaliseBodyForApproval(body);
+  return [trimmed, `${trimmed}\n`, `${trimmed}\r\n`, `${trimmed}\n\n`];
+}
 
 /**
  * Compute a SHA-256 hex digest of the issue title and body (Issue #3878).
@@ -216,10 +342,26 @@ export async function computeContentHash(
     return await sha256Hex(encoder.encode(`${title}\n${body}`));
   }
 
+  // v3 keeps the v2 layout and hashes the body it is handed, unchanged.
+  //
+  // The milestone branch normalised the body *here*, dropping every
+  // exact-form `Depends on` line wherever it appeared. `main` instead strips
+  // a delimited machine-owned block at the call site
+  // (`stripWorkerRecordBlocks`), which is the narrower and author-blind rule.
+  // Composing the two would have applied both normalisations to every v3
+  // digest — a wider exemption than either side chose, granting bare
+  // dependency lines a permanent pass rather than only the legacy bodies that
+  // predate the block. The normalisation therefore stays at the call site,
+  // and the wider legacy form is offered only to pre-v3 snapshots by
+  // `legacyApprovedBodyCandidates` in `verifyContentUnchanged`.
   const titleBytes = encoder.encode(title);
   const bodyBytes = encoder.encode(body);
   const header = encoder.encode(
-    `${CONTENT_HASH_ENCODING_V2}\n` +
+    `${
+      encoding === CONTENT_HASH_ENCODING_V3
+        ? CONTENT_HASH_ENCODING_V3
+        : CONTENT_HASH_ENCODING_V2
+    }\n` +
       `title:${titleBytes.length}\n` +
       `body:${bodyBytes.length}\n`,
   );
@@ -765,6 +907,9 @@ export async function captureContentSnapshot(
     // Issue #3963: stamp the encoding so a later bump can re-verify this
     // digest instead of writing it off as a content change.
     encoding: CURRENT_CONTENT_HASH_ENCODING,
+    // Issue #1616: the digest ignores exact-form dependency lines, so the ones
+    // approved here are recorded — removing one is still a content change.
+    dependsOn: extractApprovalDependsOnRefs(body),
   };
 
   const loaded = await loadStateForWrite(stateDir, deps);
@@ -861,8 +1006,24 @@ export async function verifyContentUnchanged(
     const candidateBodies = candidateApprovalBodies(currentBody);
 
     for (const encoding of encodings.value) {
+      // The union of the two mechanisms this merge reconciles.
+      //
+      // `candidateBodies` (Issue #1631) is the narrow, author-blind form: the
+      // body as it stands, and the body with the delimited machine-owned
+      // block removed. That is what current baselines are captured over.
+      //
+      // A **pre-v3** snapshot predates the block, so a bare `Depends on` line
+      // the worker appended after approval sits outside any delimiters and
+      // breaks its digest — the live misfires on NEAT-AI-core#592 and #593 are
+      // exactly that shape. For those snapshots only, the legacy
+      // normalisation (Issue #1616) is also tried, and a match re-baselines
+      // under v3 so the issue converts to the narrow scheme by itself. Current
+      // snapshots never get the wider exemption.
       let matched = false;
-      for (const candidate of candidateBodies) {
+      const bodies = encoding === CURRENT_CONTENT_HASH_ENCODING
+        ? candidateBodies
+        : [...candidateBodies, ...legacyApprovedBodyCandidates(currentBody)];
+      for (const candidate of bodies) {
         const hash = await computeContentHash(
           currentTitle,
           candidate,
@@ -874,6 +1035,15 @@ export async function verifyContentUnchanged(
         }
       }
       if (!matched) continue;
+
+      // Issue #1616: every accepted form has the dependency lines taken out of
+      // it one way or another, so a match alone cannot tell a *removed* line
+      // from one that was never written. Adding a line is a denial the gate
+      // tolerates; deleting one would let an issue be worked before its
+      // prerequisite landed, which is the direction that matters. The refs
+      // approved with the snapshot must therefore still all be present.
+      if (!recordedDependenciesIntact(snapshot, currentBody)) break;
+
       // A snapshot with no stamp is re-baselined too: an unstamped digest
       // stays ambiguous until it is rewritten with its encoding recorded.
       return snapshot.encoding === CURRENT_CONTENT_HASH_ENCODING
