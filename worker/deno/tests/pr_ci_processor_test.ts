@@ -406,6 +406,10 @@ Deno.test("processCiFailure - a PR branch another worktree holds spends no retry
       deps,
       stateDir,
       workDir: tmpDir,
+      // Required since this branch made `workRoot` part of CiProcessorDeps:
+      // the lane worktree's parent, which for this fixture is the temp root.
+      // Matches the other call site in this file (`workRoot: tmpDir`).
+      workRoot: tmpDir,
       maxCiRetries: 3,
     };
 
