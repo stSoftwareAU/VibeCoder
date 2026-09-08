@@ -309,6 +309,32 @@ function apiResponse(
     return JSON.stringify({ workflow_runs: [] });
   }
 
+  // Issue #1579: routing reads the step that failed inside the Actions job,
+  // so each check run resolves to a job whose failing step names its tool.
+  const checkRunById = /^check-runs\/(\d+)$/.exec(rest);
+  if (checkRunById) {
+    return JSON.stringify({
+      app: { slug: "github-actions" },
+      details_url: `https://github.com/${REPO}/actions/runs/1/job/${
+        checkRunById[1]
+      }`,
+    });
+  }
+
+  const actionsJob = /^actions\/jobs\/(\d+)$/.exec(rest);
+  if (actionsJob) {
+    // The job id mirrors the check id, so the step is named after whichever
+    // of the fixture's two checks it belongs to.
+    const id = Number(actionsJob[1]);
+    const spelling = FIXTURE_PRS.some((pr) => spellingCheckId(pr) === id);
+    return JSON.stringify({
+      steps: [{
+        name: spelling ? "Run codespell" : "Run quality checks",
+        conclusion: "failure",
+      }],
+    });
+  }
+
   const comments = /^(?:issues|pulls)\/(\d+)\/comments/.exec(rest);
   if (comments) {
     const pr = prByNumber(Number(comments[1]));

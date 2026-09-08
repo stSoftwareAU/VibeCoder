@@ -85,9 +85,9 @@ monitor the PR — author is sufficient.
   the configured GitHub user** has unprocessed feedback (comment with thumbs-up
   or from authorised commenter, or CHANGES_REQUESTED review **from an
   authorised commenter**). (1.5)
-  Spelling/quality — such a PR has a failed check: **spelling** (e.g. spell,
-  cspell, typo, codespell) or **quality** (e.g. shellcheck, Deno quality checks)
-  — fixed automatically. (1.6) Branch updates — the PR branch is behind base or
+  Spelling/quality — such a PR has a failed check: **spelling** (a
+  spelling-named check whose failing step is codespell, cspell or typos) or
+  **quality** (e.g. shellcheck, Deno quality checks) — fixed automatically. (1.6) Branch updates — the PR branch is behind base or
   has merge conflicts. (1.65) Auto-merge — the PR exists but auto-merge is not
   enabled (and the PR is mergeable).
 - **Actors:** The worker (one per hostname, often sharing one GitHub user);
@@ -191,7 +191,10 @@ The worker **proactively** fixes spelling and quality failures on all its PRs �
 no user request needed. This applies to:
 
 - **Spelling** — Failed check runs whose name indicates spelling (e.g. spell,
-  cspell, typo, codespell). Obtain annotations, apply fixes (code or
+  cspell, typo, codespell) **and** whose failing Actions step is a spelling
+  tool (codespell, cspell, typos). A bundled job such as `Scripts & spelling`
+  that failed in a bats step goes to the CI-fix route instead (Issue #1579,
+  see [ci-fix.md](ci-fix.md)). Obtain annotations, apply fixes (code or
   dictionary), commit and push, comment on PR.
 - **Quality** — Failed checks such as **shellcheck**, **deno lint**, or **deno
   test** (and other configured quality gates). The worker runs the same quality
