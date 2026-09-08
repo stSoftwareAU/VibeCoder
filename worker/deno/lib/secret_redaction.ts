@@ -12,6 +12,13 @@
  * (see `logger.ts`) so redaction is defence-in-depth: it applies regardless
  * of which caller produced the string.
  *
+ * It also guards the **inbound** side (Issue #1424): the untrusted-text
+ * ingestion chokepoint `sanitiseDelimiterPatterns` (see `prompt_delimiter.ts`)
+ * redacts before it scrubs, so a credential quoted in an issue body, a
+ * comment, a repository guidance document or the codebase map is masked
+ * before it becomes part of the model's context — not only before the
+ * model's own output reaches a sink.
+ *
  * Design notes:
  *  - Patterns are deliberately specific (fixed prefixes, minimum lengths,
  *    structural anchors like `user:pass@host`) so ordinary log text — issue

@@ -1322,7 +1322,7 @@ between the registered templates, so every template shares the same trigger
 pipeline and the same per-repo dedup and cooldown gates. The authoritative
 enumeration — and the size of the uniform draw — lives in
 [Idle-task framework](#idle-task-framework); it is deliberately not
-repeated here, so registering an eighteenth template updates one passage rather
+repeated here, so registering a nineteenth template updates one passage rather
 than two that can drift apart.
 
 **Bucket-scoped, LLM-only review.** A single run targets one bucket — one of
@@ -2234,7 +2234,7 @@ and claim handler.
 - [`worker/deno/lib/idle_task_claim_handler.ts`](worker/deno/lib/idle_task_claim_handler.ts)
   — Routes claimed `idle-task` issues to the template's `runTask()`.
 - [`worker/deno/lib/idle_task_templates/`](worker/deno/lib/idle_task_templates/)
-  — Per-template implementations. Eighteen production templates:
+  — Per-template implementations. Nineteen production templates:
   `security_scan_template.ts` (#1, security audit), `best_practices_template.ts`
   (#2, bucket-scoped best-practices review — see
   [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md)),
@@ -2285,9 +2285,15 @@ and claim handler.
   closed, its commits, and its review and check feedback — and files at most one
   suggestion-only issue proposing improvements to the **environment** the agent
   worked in, never to the code that run wrote — see
-  [`docs/RETRO-SCAN.md`](docs/RETRO-SCAN.md)).
-  The idle-task filer picks uniformly at random (1/18 each) between the
-  eighteen on every idle pass.
+  [`docs/RETRO-SCAN.md`](docs/RETRO-SCAN.md));
+  and `gate_skip_drift_template.ts` (#19, native weekly audit that compares a
+  repository's own `quality.sh` with its own CI and files one issue naming every
+  tool the gate skips with a warning while CI installs and runs it — the drift
+  that let NEAT-AI-core PR 597 pass locally and fail in CI; suppressed for a
+  tool `container/tools.json` already pins for that repository — see
+  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md)).
+  The idle-task filer picks uniformly at random (1/19 each) between the
+  nineteen on every idle pass.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
@@ -2303,7 +2309,7 @@ claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
 `.config.json` (a forbidden-to-commit secrets file — never committed), syncs the
 full canonical GitHub label set to the target repo, configures the
-default-branch protection "wall", seeds all eighteen idle-task wrappers
+default-branch protection "wall", seeds all nineteen idle-task wrappers
 in the target repo, then comments and closes the add-repo issue.
 
 - **Timing.** The monitored-list change takes effect on the next config reload /
@@ -2332,7 +2338,7 @@ in the target repo, then comments and closes the add-repo issue.
   (through `escalateToHuman`), and the repo is **not** added.
 - **Deliberate skips.** The remaining one-off setup syncs (workflows,
   `.gitignore`, collaborator precheck) are **not** re-run — best-practice setup
-  is delegated to the eighteen idle tasks. Visibility gating (which idle checks fire
+  is delegated to the nineteen idle tasks. Visibility gating (which idle checks fire
   on private repos) is handled at runtime per.
 - **Labels.** No new worker-applied label behaviour: the flow relies on the
   existing `idle-task` self-apply (via the wrappers) and `needs-human` (only
@@ -2449,7 +2455,14 @@ A blocked run is now **deferred**:
 - `Depends on owner/repo#N` is recorded in the body — the exact form
   `isDependencyBlocked` reads — so the dependency gate skips the issue on every
   scan until that dependency closes (the `blocked` label is the fallback when
-  the body cannot be edited);
+  the body cannot be edited). The line goes inside a delimited, machine-owned
+  block (`<!-- vibe-worker-record-start -->` … `<!-- vibe-worker-record-end -->`)
+  that the content-approval gate strips before hashing, so the fleet's own
+  bookkeeping write no longer reads as content changed after approval
+  (Issue #1631). The exemption is scoped to the **edit**, never the author: a
+  block is ignored only while every line inside it matches
+  `Depends on [owner/repo]#N`, so nothing else can be smuggled past the gate,
+  and a compromised agent running as the worker's own login gains nothing;
 - the claim is released with the outcome `deferred: depends on owner/repo#N`,
   which the release comment states.
 

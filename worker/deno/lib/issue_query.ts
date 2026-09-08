@@ -1745,8 +1745,13 @@ export async function getLabelLastAddInfo(
  * Extract the most-recent `labeled` event for `labelName` from an already
  * fetched timeline. Shared by {@link getLabelLastAddInfo} (page-1, best
  * effort) and {@link getLabelLastAddInfoComplete} (exhaustive).
+ *
+ * Issue #1617: exported so a caller that needs *both* the last add and the
+ * last remove — the content-approval gate, which counts a trusted
+ * `needs-human` removal as re-approval — can answer both from a single
+ * {@link fetchTimelineWithCache} call rather than fetching the timeline twice.
  */
-function lastAddInfoFromTimeline(
+export function lastAddInfoFromTimeline(
   timeline: TimelineLabelEventJson[],
   labelName: string,
 ): LabelLastAddInfo | null {
@@ -1841,7 +1846,21 @@ export async function getLabelLastRemoveInfo(
     cache,
   );
   if (timeline === null) return null;
+  return lastRemoveInfoFromTimeline(timeline, labelName);
+}
 
+/**
+ * Extract the most-recent `unlabeled` event for `labelName` from an already
+ * fetched timeline (Issue #1617).
+ *
+ * The mirror of {@link lastAddInfoFromTimeline}, extracted from
+ * {@link getLabelLastRemoveInfo} so both questions can be answered from one
+ * fetched timeline.
+ */
+export function lastRemoveInfoFromTimeline(
+  timeline: TimelineLabelEventJson[],
+  labelName: string,
+): LabelLastRemoveInfo | null {
   const labelEvents = timeline.filter(
     (e) => e.event === "unlabeled" && e.label?.name === labelName,
   );

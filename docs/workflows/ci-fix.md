@@ -52,14 +52,14 @@ flowchart TD
 ## 📏 Preconditions / invariants
 
 - The PR is authored by the configured GitHub user.
-- The failed check is not a spelling check (those are handled at priority 1.5).
+- The failed check is not a genuine spelling failure — one whose failing *step* is codespell, cspell or typos (those are handled at priority 1.5). A non-spelling step inside a spelling-named job, such as a bats failure in a bundled `Scripts & spelling` job, stays on this route (Issue #1579).
 - Exactly one host works a given PR's CI failure at a time — the cross-host PR lock is acquired before the heartbeat, before Claude and before any push.
 - The retry count for this specific check run has not exceeded `CI_CHECK_MAX_RETRIES` (default: 3).
 - The worker has the PR branch checked out and synced with the base branch before invoking Claude.
 
 ## ✅ Happy path
 
-1. **Detect** — `find_failed_ci_checks()` scans all open PRs authored by the configured GitHub user. For each PR, it queries the GitHub API for check runs with `conclusion == "failure"`, filtering out spelling checks.
+1. **Detect** — `find_failed_ci_checks()` scans all open PRs authored by the configured GitHub user. For each PR, it queries the GitHub API for check runs with `conclusion == "failure"`, filtering out only those whose failing step is a spelling tool.
 2. **Extract annotations** — Failure annotations (file path, line number, error message) are extracted from the check run and encoded as base64 JSON for safe transport through shell.
 3. **Checkout** — The worker checks out the PR branch, fetches the latest changes, and syncs with the base branch (rebase) to prevent merge conflicts.
 4. **Run pre-setup** — If the repository has a configured `pre_setup_command`, it is executed before Claude starts.
@@ -156,7 +156,7 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last 1
 ## 🔀 Decision points and exceptions
 
 - **No CI failures found:** Skip; no side effects.
-- **Spelling failure detected:** Excluded — handled at priority 1.5 by the spelling fix workflow.
+- **Spelling failure detected:** Excluded — handled at priority 1.5 by the spelling fix workflow. The test is the failing *step*, not the job name (Issue #1579).
 - **Max retries exceeded:** Post a comment on the PR and skip the check on future runs. The operator should investigate manually.
 - **Rate limit exhaustion:** After `MAX_RATE_LIMIT_RETRIES` (default: 2) with exponential backoff, the worker exits with code 2 and posts a comment.
 - **Claude makes no changes:** The worker posts a classifier-aware comment explaining the most likely failure category (test, build, lint, infrastructure, transient) and recommended next step rather than a generic "transient or infrastructure" message.

@@ -203,7 +203,13 @@ A `top-priority` issue is **not** automatically picked just because the label is
 2. **Open PR blocking** — [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) skips an issue when the **fleet** already has an open PR targeting the same branch (default branch for non-milestone issues, `milestone/<name>` for milestone issues). Enforces "one PR per work stream" so consecutive work serialises cleanly. Only push-capable fleet accounts (`github_user` + `fleet_pr_authors`) count: a human's open PR never blocks issue pickup — the developer manages their own PR.
 3. **Recently-closed PR cooldown** — [`fetchRecentlyClosedPRsByUser`](../../worker/deno/lib/issue_query.ts) plus [`isBlockedByRecentlyClosedPR`](../../worker/deno/lib/issue_query.ts) suppress candidates whose target branch was the subject of a worker-closed (un-merged) PR inside the cooldown window.: prevents the worker from immediately re-opening a PR that was just closed (e.g. a reviewer rejected the approach) before a human has had time to react.
 4. **Dependency blocking** — [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts) and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues) from the issue body and skip the candidate if any referenced issue is still open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails open on API errors so a transient outage cannot stall the worker.
-5. **Content modified after approval** — [`verifyWorkOnContentIntegrity`](../../worker/deno/lib/work_on_content_integrity.ts), backed by [`content_approval_tracker.ts`](../../worker/deno/lib/content_approval_tracker.ts), compares a SHA-256 hash of the issue title + body against the snapshot captured when an allowed author added `work-on`.: if the issue content has been edited by an untrusted author after approval, the candidate is suppressed and the label is removed — TOCTOU protection so a mutated issue body cannot ride a stale approval.
+5. **Content modified after approval** — [`verifyWorkOnContentIntegrity`](../../worker/deno/lib/work_on_content_integrity.ts), backed by [`content_approval_tracker.ts`](../../worker/deno/lib/content_approval_tracker.ts), compares a SHA-256 hash of the issue title + body against the snapshot captured when an allowed author added `work-on`: if the issue content has been edited by an untrusted author after approval, the candidate is suppressed and `needs-human` is added. The approval label itself is left in place (Issue #3964) — stripping it destroyed the record of who had approved what. TOCTOU protection, so a mutated issue body cannot ride a stale approval.
+
+   **Two signals count as re-approval** (Issues #1561, #1617). A trusted author re-adding the approval label is one; a **trusted human removing `needs-human`** is the other — the escalation comment asks for exactly that, so honouring it makes the instruction do what it says. Either signal must post-date **both** the snapshot and the newest recorded edit; an older signal is genuine but stale (`[REAPPROVAL_PREDATES_EDIT]`) and the block stands. A `needs-human` removal by a fleet login (`service_accounts` / `fleet_pr_authors`) is label maintenance rather than review, and never reads as a human's re-approval. A counted re-approval logs `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION]`, re-baselines the snapshot onto the current content, and proceeds; a later untrusted edit blocks again with its own fresh comment.
+
+   **The block path re-reads the timeline uncached once** (Issue #1617). The re-approval scan is served by the file-backed [`timeline_cache.ts`](../../worker/deno/lib/timeline_cache.ts) (300 s TTL by default), so a re-approval made minutes ago can be invisible to it — NEAT-AI-core#593 blocked at 01:53:34 on a `work-on` re-add made at 01:46:51. Immediately before escalating, and only when a cache is configured, the gate invalidates that issue's entry and evaluates the two signals once more against a live read; a re-approval found this way logs `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION] … (uncached re-read)` and proceeds. The pass paths cost nothing extra: unchanged content never reads the timeline, and a cached read that already shows re-approval never invalidates. Only the block path pays — at most one extra live read per scan of an issue that is about to be escalated, which is the cheap half of that trade.
+
+   **Exact-form `Depends on` lines are outside the signed content** (Issue #1616). The worker's own blocked-deferral path appends `Depends on owner/repo#N` to an approved body as the fleet login, which this gate read as an untrusted edit on every scan. The digest (`content-approval/v3`) is therefore taken over the body with whole lines of exactly the form `Depends on owner/repo#N` / `Depends on #N` removed, so adding one verifies as `unchanged` whoever made the edit — no label change and no comment. Nothing wider is tolerated: prose around the ref, a second ref on the line, a different case, a changed title or any other added or altered text is still `changed`, and so is *removing* a dependency line that was present at approval, because the refs approved with the snapshot are recorded alongside the digest. Snapshots stamped `content-approval/v2` (or unstamped) are re-checked against the normalised body as well, so a host holding a pre-fix snapshot migrates silently on its next scan rather than needing a fleet-wide re-baseline.
 
 ### Blocked configured-label suppresses `work-on` in the same repo + milestone
 
@@ -529,7 +535,7 @@ gitGraph
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
-- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
+- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
 - **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
@@ -589,9 +595,13 @@ flowchart TD
 
 **What the worker does not do:** it never self-applies `top-priority`, `work-on`, `low-priority`, `refine-issue`, `planning`, `question`, `best-model`, or the deprecated `help wanted` / `claude` / `needs-clarification` / `skip-clarification` / `answered` labels as an escalation signal. Those are human-scheduling or internal-state labels, not escalation. The single label the Vibe Coder may self-apply is `idle-task`. `needs-human` is the worker's **only** way to hand an issue back to a person.
 
+**Comment dedup:** a caller that passes a `dedupKey` gets one hand-off comment per key per 24 hours — [`escalateToHuman`](../../worker/deno/lib/needs_human_escalation.ts) tags its comment with `<!-- needs-human-escalation: <key> -->` and skips the duplicate when a fleet-authored comment already carries that marker inside the window (the label is still re-applied). The scan reads the **newest 50** comments: [`gh_escalation_client.ts`](../../worker/deno/lib/gh_escalation_client.ts) fetches every page at 100 per request (capped at 1 000 comments) because GitHub's default page is the oldest 30 and a `direction=desc` request against this endpoint came back in the same ascending order when checked live, so on a busy issue the marker would otherwise never be fetched and the escalation would repeat every scan (Issue #1619).
+
 **Discovery behaviour:** [issue_filter.ts](../../worker/deno/lib/issue_filter.ts) and [issue_finder.ts](../../worker/deno/lib/issue_finder.ts) exclude any issue whose labels include `config.needsHumanLabel`, with a `"needs-human"` skip reason recorded via `diag.logIssueSkipped(...)`. `needs-human` is also part of `OPERATIONAL_LABEL_NAMES` in [label_security.ts](../../worker/deno/lib/label_security.ts) so the timeline check ignores it if a non-trusted user adds it.
 
 **To resume work:** a human resolves the blocker (e.g. grants the missing scope), removes the `needs-human` label, and the worker picks the issue up on the next scan cycle.
+
+**Removing `needs-human` is also a re-approval** (Issue #1617). When the label was added by the content-approval gate ([`work_on_content_integrity.ts`](../../worker/deno/lib/work_on_content_integrity.ts)) because the issue was edited after approval, a **trusted human's** removal that post-dates the newest edit re-baselines the approval snapshot onto the current content and the issue proceeds — the label is not re-added on the next scan. A removal by a fleet login is worker maintenance and does not count, and neither does one that predates the edit. Before blocking, that gate drops the cached timeline for the issue and re-reads it live once, so a removal made minutes earlier is never hidden behind the 300-second cache.
 
 For user-facing guidance, see [USAGE.md — Worker escalation via `needs-human`](../USAGE.md#-worker-escalation-via-needs-human). For the config key, see [CONFIGURATION.md — `needs_human_label`](../CONFIGURATION.md#-configuration-defaults).
 
@@ -956,9 +966,35 @@ claimable issue in the fleet went untouched. Two behaviours close the loop:
   at `WARNING`, no failure tracking or circuit-breaker counting occurs, and
   `WORKER_SUMMARY`'s `issues_processed` does not count the bounce.
 
+A merged PR does not always mean the issue is finished. Two guards run before
+the close is even attempted — ahead of the landing check above, so they fire on
+an orphaned merge too:
+
+- **Unpublished work (Issue #174).** An issue with commits on a pushed branch
+  nobody has raised a PR for is not closed — the run resumes that branch.
+- **Re-approval after the merge (Issue #1618).** The linker matches a PR by the
+  issue number in its title, so a PR that merged last night can be found against
+  an issue a human re-approved this morning. When an approval label still on the
+  issue (`top-priority` or `work-on`) was last added by a trusted author —
+  `allowed_authors` minus the fleet's own push-capable logins — **after** the
+  PR's `mergedAt`, the pre-check logs `Merged PR pre-check: NOT closing —
+  approval post-dates merge` with the issue, PR, label, adder and both
+  timestamps, and continues so the run works the re-approved scope. #1562 was
+  grilled to Ready and given `top-priority` at 00:21 and closed at 00:41 on a PR
+  merged at 22:49 the night before; re-opening by hand achieved nothing, because
+  the pre-check runs on every claim. Once the re-approved run's own PR merges,
+  its merge is newer than the approval and the ordinary close path resumes. The
+  approval is by definition the newest label event, so the check reads the
+  **complete** timeline (`fetchCompleteTimeline`), not the page-1 slice a busy
+  issue outgrows. An unverifiable approval time — no or unparseable `mergedAt`,
+  or a timeline read that fails or exceeds the page cap — is stated at
+  `WARNING` and keeps the close.
+
 ```mermaid
 flowchart TD
-  Pre["Merged-PR pre-check"] --> Landed{"Merge reachable from<br/>the default branch?"}
+  Pre["Merged-PR pre-check"] --> Reapp{"Trusted approval label<br/>added after mergedAt?"}
+  Reapp -->|"Yes — re-approved"| Work["Continue the run:<br/>WARNING, no close"]
+  Reapp -->|No| Landed{"Merge reachable from<br/>the default branch?"}
   Landed -->|Yes| Close["Close the issue<br/>(success)"]
   Landed -->|"No — orphaned"| Heal["Raise / confirm a rollup PR<br/>milestone branch → default"]
   Heal --> Bounce["Expected skip:<br/>cooldown + WARNING,<br/>not counted as processed"]
@@ -968,11 +1004,12 @@ flowchart TD
   style Close fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Heal fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Bounce fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
+  style Work fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
 **Implementation:** [orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts)
 (the repair), [phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
-(detect → self-heal → bounce), `isExpectedSkipResult` in
+(detect → self-heal → bounce, and the re-approval skip), `isExpectedSkipResult` in
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
 

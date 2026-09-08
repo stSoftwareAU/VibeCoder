@@ -73,6 +73,11 @@ export const GIT_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
   wrapperPattern: /\brunWithTimeout\s*\(\s*["'`]git["'`]/,
   argvHeadPattern: /\(\s*\[?\s*["'`]git["'`]\s*,/,
   chokepointImportPattern: /from\s+["'`][^"'`]*git_timeout\.ts["'`]/,
+  // Issue #1553: a generic pass-through runner never names the binary — its
+  // argv is built by callers in other modules — so `argvHeadPattern` cannot
+  // see it. `resolve_cross_repo_dep.ts` spawned real `git` that way while
+  // this gate reported a clean tree.
+  flagArgvHeadSpawn: true,
 };
 
 /**
@@ -98,6 +103,43 @@ export const GIT_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
  */
 export const GIT_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>([
   "worker/deno/setup/prerequisite_install_plan.ts",
+]);
+
+/**
+ * Modules exempt from the **pass-through** rule only (Issue #1553).
+ *
+ * The rule asks a generic argv-head spawn to delegate `git`, because its
+ * callers are invisible to a per-file scan. Every entry below is the case the
+ * rule cannot distinguish: the argv head is built inside the module from
+ * literals, so no caller can make it `git`. Each is a false positive with its
+ * reason recorded, never a licence to spawn `git` — a literal or wrapper
+ * spawn in these files is still a violation.
+ *
+ * `quality_gate_phase.ts` spawns the **repository's own** quality command,
+ * wrapped by `asUntrustedUser` and run under a built environment with
+ * `clearEnv` (Issues #571, #572). Routing it through `runGitCommand` would
+ * drop that isolation, which is a worse outcome than the timeout it would
+ * gain — and the argv is the repo's script, never the worker's `git`.
+ *
+ * `quality_helpers.ts` spawns a locally-built `timeout … bash -c <command>`
+ * argv; the head is `timeout` or `bash`, chosen a few lines above the spawn.
+ *
+ * `quality_gate.ts` runs the gate's own tools (`deno`, `bash`, `find`), each
+ * argv assembled in that module, and its `env` option is a whole-environment
+ * replacement (`clearEnv`, Issue #1098) that the chokepoint does not offer.
+ * Its second match is prose inside this check's own failure message.
+ *
+ * `software_updates.ts` runs the update tools (`brew`, `claude`, `deno`,
+ * `npm`, `which`) under a caller-supplied `AbortSignal`, again from
+ * module-local literals; `gh` is already delegated there by name.
+ */
+export const GIT_PASS_THROUGH_KNOWN_GAPS: ReadonlySet<string> = new Set<
+  string
+>([
+  "worker/deno/lib/quality_gate.ts",
+  "worker/deno/lib/quality_gate_phase.ts",
+  "worker/deno/lib/software_updates.ts",
+  "worker/deno/commands/quality_helpers.ts",
 ]);
 
 /**
@@ -140,5 +182,6 @@ export function scanDirectoriesForGitSpawn(
     excludeTests: true,
     rules: GIT_INDIRECT_SPAWN_RULES,
     indirectExempt: GIT_INDIRECT_KNOWN_GAPS,
+    passThroughExempt: GIT_PASS_THROUGH_KNOWN_GAPS,
   });
 }

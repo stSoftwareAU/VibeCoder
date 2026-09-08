@@ -1,0 +1,8 @@
+# Synthetic gate (Issue #1597): the tool CI enforces is required locally too —
+# the gate exits non-zero instead of printing a skip, so there is no drift.
+echo "Running shellcheck on bash scripts..."
+if ! command -v shellcheck &>/dev/null; then
+    echo "shellcheck is required — install: https://github.com/koalaman/shellcheck#installing"
+    exit 1
+fi
+shellcheck ./*.sh

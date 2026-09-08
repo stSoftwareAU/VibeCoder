@@ -141,6 +141,7 @@
         "worker/deno/lib/run_housekeeping.ts",
         "worker/deno/lib/run_worker.ts",
         "worker/deno/lib/security_fix_gate_feedback.ts",
+        "worker/deno/lib/security_fix_gate_retry.ts",
         "worker/deno/lib/self_heal_events.ts",
         "worker/deno/lib/session_compaction.ts",
         "worker/deno/lib/session_manager.ts",
@@ -866,6 +867,40 @@
       "paths": [
         "worker/deno/lib/gh_body_file_io.ts",
         "worker/deno/lib/gh_timeout.ts"
+      ]
+    },
+    {
+      "issue": 1443,
+      "chunk": "12g",
+      "title": "top-up: the reused-tree ignored clean added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1443-ignored-path-clean.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12f recorded their coverage: ignored_path_clean.ts (#1443)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/ignored_path_clean.ts"
+      ]
+    },
+    {
+      "issue": 1631,
+      "chunk": "12h",
+      "title": "top-up: the machine-owned record block added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1631-worker-record-block.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12g recorded their coverage: worker_record_block.ts (#1631)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/worker_record_block.ts"
+      ]
+    },
+    {
+      "issue": 1597,
+      "chunk": "12i",
+      "title": "top-up: the gate-skip drift audit added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1597-gate-skip-drift.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12h recorded their coverage: gate_skip_drift_scanner.ts and idle_task_templates/gate_skip_drift_template.ts (#1597)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/gate_skip_drift_scanner.ts",
+        "worker/deno/lib/idle_task_templates/gate_skip_drift_template.ts"
       ]
     }
   ]

@@ -9,9 +9,13 @@
  *
  * Behaviour:
  * - Looks up an existing PR for the issue via `deps.pr.findExistingPrForIssue`.
- * - If a PR URL is returned, reads the PR state via `gh pr view --json state`.
+ * - If a PR URL is returned, reads the PR state and merge time via
+ *   `gh pr view --json state,mergedAt`.
  * - When the PR is merged, calls `ensureIssueClosedIfPrMerged` to close the
  *   issue (idempotent — no-op if already closed) and returns `early_exit`.
+ * - Except when a trusted author re-approved the issue *after* that merge
+ *   (Issue #1618): the remaining scope was blessed by a human who could see
+ *   the merged PR, so the close is skipped and the run continues.
  * - Any other PR state, or no PR at all, returns `continue`.
  * - Any error is logged as a warning and falls through to `continue`
  *   (non-fatal — the normal pipeline handles recovery).
@@ -26,6 +30,12 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { ensureIssueClosedIfPrMerged } from "../issue_lifecycle.ts";
+import { isAuthorTrusted } from "../content_approval_tracker.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
+import {
+  fetchCompleteTimeline,
+  lastAddInfoFromTimeline,
+} from "../issue_query.ts";
 import { repairOrphanedMilestoneMerge } from "../orphaned_rollup.ts";
 import {
   describeStrandedBranches,
@@ -96,8 +106,11 @@ export async function workOnIssueMergedPrPrecheck(
   }
   const prNumber = parseInt(prNumberMatch[1]!, 10);
 
-  // Look up the PR state. Non-fatal on error.
+  // Look up the PR state and merge time. Non-fatal on error. `mergedAt` is
+  // what the re-approval check below compares an approval label against
+  // (Issue #1618).
   let prState: string;
+  let mergedAt: string;
   try {
     const output = await deps.github.runGhCommand([
       "pr",
@@ -106,10 +119,14 @@ export async function workOnIssueMergedPrPrecheck(
       "--repo",
       repo,
       "--json",
-      "state",
+      "state,mergedAt",
     ]);
-    const parsed = JSON.parse(output) as { state?: string };
+    const parsed = JSON.parse(output) as {
+      state?: string;
+      mergedAt?: string | null;
+    };
     prState = parsed.state ?? "";
+    mergedAt = parsed.mergedAt ?? "";
   } catch (err) {
     logger.warn("Merged PR pre-check: PR state lookup errored (non-fatal)", {
       repo,
@@ -121,6 +138,32 @@ export async function workOnIssueMergedPrPrecheck(
   }
 
   if (prState !== "MERGED") {
+    return { status: "continue" };
+  }
+
+  // Issue #1618: a trusted author who re-approved the issue AFTER this PR
+  // merged has blessed the scope that is left. #1562 was grilled to Ready and
+  // given `top-priority` at 00:21; twenty minutes later this pre-check found
+  // PR #1567 — matched only by the issue number in its title — merged at 22:49
+  // the night before, and closed it. Re-opening by hand achieved nothing:
+  // the pre-check runs on every claim.
+  const reapproval = await findPostMergeApproval(ctx, mergedAt, prNumber, deps);
+  if (reapproval) {
+    logger.warn(
+      "Merged PR pre-check: NOT closing — approval post-dates merge",
+      {
+        repo,
+        issueNumber,
+        prNumber,
+        label: reapproval.label,
+        addedBy: reapproval.addedBy,
+        addedAt: reapproval.addedAt,
+        mergedAt,
+      },
+    );
+    // Continue rather than early-exit: the run works the re-approved scope
+    // and raises its own PR. That PR's merge is newer than the approval, so
+    // the next claim closes the issue by the ordinary path.
     return { status: "continue" };
   }
 
@@ -220,6 +263,102 @@ export async function workOnIssueMergedPrPrecheck(
   }
 
   return { status: "early_exit", reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON };
+}
+
+/**
+ * A trusted approval label added after the linked PR merged (Issue #1618).
+ */
+interface PostMergeApproval {
+  /** The approval label whose add post-dates the merge. */
+  label: string;
+  /** The trusted login that added it. */
+  addedBy: string;
+  /** When it was added (unix seconds). */
+  addedAt: number;
+}
+
+/**
+ * Find a trusted approval label whose most recent add post-dates the linked
+ * PR's merge (Issue #1618).
+ *
+ * Only labels **still on the issue at claim time** are considered, so a
+ * historical add of a label since removed cannot resurrect the issue. The
+ * adder must be a trusted human: `allowedAuthors` minus the fleet's own
+ * push-capable logins, because a label the fleet applied is maintenance, not
+ * review.
+ *
+ * Fail-safe: an unverifiable approval time — no or unparseable `mergedAt`, a
+ * timeline lookup that throws or exceeds the page cap — is logged at `WARNING`
+ * and returns `null`, so the pre-check keeps today's close behaviour rather
+ * than silently skipping it.
+ *
+ * @returns the qualifying approval, or `null` when there is none
+ */
+async function findPostMergeApproval(
+  ctx: IssueContext,
+  mergedAt: string,
+  prNumber: number,
+  deps: WorkerDeps,
+): Promise<PostMergeApproval | null> {
+  const { repo, issueNumber, config } = ctx;
+
+  // Only labels the issue still carries can express an approval that stands.
+  const present = new Set(ctx.issueLabels);
+  const approvalLabels = [
+    ...new Set([...config.issueLabels, config.workOnLabel]),
+  ]
+    .filter((label) => present.has(label));
+  if (approvalLabels.length === 0) return null;
+
+  const mergedAtSeconds = Date.parse(mergedAt) / 1000;
+  if (!Number.isFinite(mergedAtSeconds)) {
+    deps.logger.warn(
+      "Merged PR pre-check: cannot read the PR's merge time, so a later " +
+        "approval cannot be detected — closing as before",
+      { repo, issueNumber, prNumber, mergedAt },
+    );
+    return null;
+  }
+
+  const fleetAuthors = resolveFleetMaintenanceAuthorSet({
+    githubUser: ctx.githubUser,
+    serviceAccounts: config.serviceAccounts ?? [],
+    fleetPrAuthors: config.fleetPrAuthors ?? [],
+  });
+
+  // One read answers every label (Issue #1617 exported the seam for exactly
+  // this). The *complete* timeline, not the page-1 slice: a re-approval is by
+  // definition the newest `labeled` event, and #1562 — grilled to Ready over
+  // many rounds — is exactly the >100-event issue whose newest event falls off
+  // page 1. No timeline cache is plumbed into the phases, so this always
+  // paginates. A throw (page cap, API error) and a `null` (unparseable
+  // response) are both *failed* reads — an issue with no label events is an
+  // empty array — so they are reported rather than passing as "nobody
+  // re-approved".
+  const timeline = await fetchCompleteTimeline(
+    repo,
+    issueNumber,
+    deps.github.runGhCommand,
+  ).catch(() => null);
+  if (timeline === null) {
+    deps.logger.warn(
+      "Merged PR pre-check: approval-time lookup failed, so a later " +
+        "approval cannot be detected — closing as before",
+      { repo, issueNumber, prNumber, labels: approvalLabels },
+    );
+    return null;
+  }
+
+  for (const label of approvalLabels) {
+    const info = lastAddInfoFromTimeline(timeline, label);
+    if (info === null) continue;
+    if (info.addedAt <= mergedAtSeconds) continue;
+    if (!isAuthorTrusted(info.addedBy, config.allowedAuthors)) continue;
+    if (isAuthorTrusted(info.addedBy, fleetAuthors)) continue;
+    return { label, addedBy: info.addedBy, addedAt: info.addedAt };
+  }
+
+  return null;
 }
 
 /**

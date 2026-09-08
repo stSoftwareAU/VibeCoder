@@ -8,6 +8,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { redactSecrets } from "./secret_redaction.ts";
+
 /**
  * A set of randomised delimiters for a single prompt invocation.
  *
@@ -92,19 +94,42 @@ export function createPromptDelimiters(boundaryId?: string): PromptDelimiters {
 }
 
 /**
- * Sanitise untrusted content by escaping delimiter-like patterns.
+ * Sanitise untrusted content: mask secrets, then escape delimiter-like
+ * patterns.
  *
  * Replaces characters in patterns that resemble prompt delimiters
  * with visually similar but structurally different Unicode characters,
  * rendering them inert as boundary markers.
  *
+ * **Inbound redaction (Issue #1424).** This is the one function every path
+ * that feeds externally-sourced text into a prompt already routes through —
+ * issue titles, bodies and labels, comment bodies, repository guidance
+ * documents, the generated codebase map, recent-activity summaries, PR review
+ * comments. `redactSecrets` was wired into output-side sinks only (the logger,
+ * `gh` body publication, captured subprocess tails), so the redaction boundary
+ * sat *after* the model had already read the text. A credential quoted in a
+ * comment, left in a working-tree file, or fed back from a prior run's log
+ * excerpt therefore entered the model's context unmasked, where it could still
+ * influence behaviour or be echoed through a path no output sink covers.
+ * Masking here moves that boundary to where untrusted text is ingested, and it
+ * is defence-in-depth rather than a replacement: every outbound sink still owes
+ * its own `redactSecrets()` call (SECURITY.md).
+ *
+ * Redaction runs **before** the delimiter scrub, matching
+ * `fenceQualityOutput` and `formatConflictIssueContextSection`: the scrub
+ * substitutes fullwidth characters mid-string, which could otherwise split a
+ * secret across a signature-rule boundary and leave it readable. Redaction is
+ * idempotent — the placeholder matches no rule — so a caller that already
+ * redacted its own text is unaffected.
+ *
  * @param content - The untrusted content to sanitise
- * @returns Sanitised content with delimiter-like patterns escaped
+ * @returns Sanitised content with secrets masked and delimiter-like patterns
+ *          escaped
  */
 export function sanitiseDelimiterPatterns(content: string): string {
   if (!content) return content;
 
-  let result = content;
+  let result = redactSecrets(content);
 
   // Replace angle-bracket delimiters: <<< → ＜＜＜ (fullwidth less-than).
   // An attacker can construct delimiter-shaped markers well beyond the live

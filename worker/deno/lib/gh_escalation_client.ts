@@ -11,7 +11,22 @@
  *   - `addLabel`         — REST API (`POST /repos/.../issues/N/labels`)
  *                          with `gh issue edit --add-label` fallback.
  *   - `postComment`      — REST API (`POST /repos/.../issues/N/comments`).
- *   - `getIssueComments` — REST API list (`GET /repos/.../issues/N/comments`).
+ *   - `getIssueComments` — REST API list (`GET /repos/.../issues/N/comments`),
+ *                          paged at 100 per page up to 10 pages (Issue #1619).
+ *
+ * **Comment window.** The un-paged endpoint returns the API default — the
+ * **oldest 30** comments — so on a busy issue `escalateToHuman`'s dedup scan
+ * never saw the marker it had itself written and posted a duplicate
+ * escalation (NEAT-AI-core#593: 46 comments, the marker in comment 47). The
+ * shim therefore fetches every page at `per_page=100` up to a cap of 10 pages
+ * (1 000 comments) and concatenates them oldest-first, so the helper's
+ * `comments.slice(-50)` tail scans the newest 50. Three things cut the read
+ * short — a page that fails, a page whose body is not a JSON array, and a
+ * thread that outruns the cap — and each degrades to a partial scan, the
+ * best-effort contract this shim has always had, but never silently: all
+ * three warn. `sort`/`direction` are not used: GitHub ignores them on the
+ * per-issue comments endpoint (verified live against NEAT-AI-core#593 on
+ * 2026-09-08 — the same ascending order came back with and without them).
  *
  * Issues and PRs share `/issues/<number>` endpoints in the GitHub API, so the
  * same shim works for both `target.kind: "issue"` and `target.kind: "pr"`.
@@ -23,23 +38,60 @@
  */
 
 import type { GitHubClient, GitHubComment } from "../types.ts";
+import {
+  buildIssueCommentsPageArgs,
+  COMMENTS_PER_PAGE,
+} from "./issue_comment_pages.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 type GhFn = (args: string[]) => Promise<string>;
 
 /**
- * Best-effort parser for the REST `GET /comments` response. Returns the
- * recent comments in the shape the dedup scan needs (body + createdAt).
- * Unknown shapes degrade to an empty list rather than throwing — the dedup
- * scan treats absence as "no prior marker" and still posts the comment.
+ * Page cap for the dedup read, so a pathological thread cannot spend the run
+ * on paging.
+ *
+ * Deliberately its own constant rather than `issue_comment_pages.ts`'s
+ * `MAX_COMMENT_PAGES` (20): that helper throws on the cap, because a
+ * truncated thread must never be mistaken for a full one. This shim cannot —
+ * its whole contract is best effort, and throwing would lose the escalation
+ * itself rather than the marker. So it truncates, and says so on stderr:
+ * degrading is allowed here, degrading silently is not.
  */
-function parseCommentsJson(raw: string): GitHubComment[] {
+const MAX_DEDUP_COMMENT_PAGES = 10;
+
+/** One page's worth of parsed comments, and whether the body made sense. */
+interface ParsedPage {
+  comments: GitHubComment[];
+  /**
+   * How many entries the page carried before parsing dropped any. This — not
+   * `comments.length` — decides whether the page was full: an entry the
+   * parser skips would otherwise make a full page look short and stop the
+   * paging mid-thread, which is the blind spot being fixed.
+   */
+  rawCount: number;
+  /** True when a non-empty body was neither JSON nor a JSON array. */
+  malformed: boolean;
+}
+
+/**
+ * Best-effort parser for the REST `GET /comments` response. Returns the
+ * comments in the shape the dedup scan needs (body + createdAt). Unknown
+ * shapes degrade to an empty page rather than throwing — the dedup scan
+ * treats absence as "no prior marker" and still posts the comment — but the
+ * degrade is flagged so the caller can report it. An empty body is an empty
+ * page, not a malformed one: that is how the API answers a page past the end.
+ */
+function parseCommentsJson(raw: string): ParsedPage {
+  if (raw.trim() === "") return { comments: [], rawCount: 0, malformed: false };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return [];
+    return { comments: [], rawCount: 0, malformed: true };
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) {
+    return { comments: [], rawCount: 0, malformed: true };
+  }
   const out: GitHubComment[] = [];
   for (const entry of parsed) {
     if (typeof entry !== "object" || entry === null) continue;
@@ -57,7 +109,7 @@ function parseCommentsJson(raw: string): GitHubComment[] {
       reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
     });
   }
-  return out;
+  return { comments: out, rawCount: parsed.length, malformed: false };
 }
 
 /**
@@ -66,7 +118,11 @@ function parseCommentsJson(raw: string): GitHubComment[] {
  * scan is requested) `getIssueComments`. All other methods throw at
  * runtime — they are never called by escalateToHuman.
  */
-export function createGhEscalationClient(ghFn: GhFn): GitHubClient {
+export function createGhEscalationClient(
+  ghFn: GhFn,
+  warn: (message: string) => void = (message) =>
+    console.warn(redactSecrets(message)),
+): GitHubClient {
   const notImplemented = (method: string) =>
     Promise.reject<never>(
       new Error(
@@ -81,15 +137,49 @@ export function createGhEscalationClient(ghFn: GhFn): GitHubClient {
       repo: string,
       issueNumber: number,
     ): Promise<GitHubComment[]> {
-      try {
-        const raw = await ghFn([
-          "api",
-          `repos/${repo}/issues/${issueNumber}/comments`,
-        ]);
-        return parseCommentsJson(raw);
-      } catch {
-        return [];
+      const all: GitHubComment[] = [];
+      for (let page = 1; page <= MAX_DEDUP_COMMENT_PAGES; page++) {
+        let raw: string;
+        try {
+          raw = await ghFn(
+            buildIssueCommentsPageArgs(repo, issueNumber, page),
+          );
+        } catch (err) {
+          // Best effort: keep the pages already fetched rather than
+          // discarding them — a partial scan still finds most markers — but
+          // never let the shortfall pass unreported.
+          warn(
+            `createGhEscalationClient: comment page ${page} of ` +
+              `${repo}#${issueNumber} failed (${
+                err instanceof Error ? err.message : String(err)
+              }) — scanning the ${all.length} comments already fetched`,
+          );
+          return all;
+        }
+        const parsed = parseCommentsJson(raw);
+        all.push(...parsed.comments);
+        if (parsed.malformed) {
+          // A body that is neither JSON nor an array is a failed read wearing
+          // a success's clothes — it must not be mistaken for the last page.
+          warn(
+            `createGhEscalationClient: comment page ${page} of ` +
+              `${repo}#${issueNumber} was not a JSON array — scanning the ` +
+              `${all.length} comments already fetched`,
+          );
+          return all;
+        }
+        // A short page is the last page.
+        if (parsed.rawCount < COMMENTS_PER_PAGE) return all;
       }
+      // Every page was full at the cap, so the thread is longer than this
+      // read. Truncation is the best-effort contract; silence is not.
+      warn(
+        `createGhEscalationClient: ${repo}#${issueNumber} has at least ` +
+          `${MAX_DEDUP_COMMENT_PAGES * COMMENTS_PER_PAGE} comments — the ` +
+          `dedup scan reads the newest of the first ` +
+          `${MAX_DEDUP_COMMENT_PAGES} pages only`,
+      );
+      return all;
     },
     async addLabel(
       repo: string,

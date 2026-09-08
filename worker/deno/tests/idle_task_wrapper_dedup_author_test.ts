@@ -44,6 +44,7 @@ import { createDocCoverageTemplate } from "../lib/idle_task_templates/doc_covera
 import { createDocumentationAuditTemplate } from "../lib/idle_task_templates/documentation_audit_template.ts";
 import { createDuplicatedKnowledgeTemplate } from "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import { createFormatDriftTemplate } from "../lib/idle_task_templates/format_drift_template.ts";
+import { createGateSkipDriftTemplate } from "../lib/idle_task_templates/gate_skip_drift_template.ts";
 import { createGitHubActionsAuditTemplate } from "../lib/idle_task_templates/github_actions_audit_template.ts";
 import { createOrphanDepsTemplate } from "../lib/idle_task_templates/orphan_deps_template.ts";
 import { createPrivateRepoReferenceTemplate } from "../lib/idle_task_templates/private_repo_reference_template.ts";
@@ -122,6 +123,19 @@ const FACTORIES = new Map<string, Factory>([
     "github-actions-audit",
     (gh, d) =>
       createGitHubActionsAuditTemplate({ ghCommandFn: gh, dedupAuthors: d }),
+  ],
+  [
+    "gate-skip-drift",
+    (gh, d) =>
+      createGateSkipDriftTemplate({
+        ghCommandFn: gh,
+        dedupAuthors: d,
+        // `shouldFile` never reaches the scanner; throwing rather than
+        // stubbing keeps a future change that does reach it loud.
+        scanFn: () => {
+          throw new Error("the wrapper dedup must not run the scanner");
+        },
+      }),
   ],
   [
     "orphan-deps",

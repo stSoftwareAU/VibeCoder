@@ -532,6 +532,7 @@ async function buildHostFixture(
     image: context.image,
     containerName: `vibe-containment-${token}`,
     watchdogSeconds: 11_400,
+    buildCommit: "0123456789abcdef0123456789abcdef01234567",
     hostPaths,
     volumes,
     customPromptPaths: [customPromptFile],
@@ -1243,6 +1244,7 @@ function samplePlan(): ContainerLaunchPlan {
     image: "vibe-coder:0123456789ab",
     containerName: "vibe-containment-sample",
     watchdogSeconds: 11_400,
+    buildCommit: "0123456789abcdef0123456789abcdef01234567",
     hostPaths: {
       homeDir: "/home/operator",
       baseDir: "/opt/VibeCoder",
@@ -1523,6 +1525,7 @@ function sampleExtensionPlan(): ContainerLaunchPlan {
     image: "vibe-coder:0123456789ab",
     containerName: "vibe-containment-sample",
     watchdogSeconds: 11_400,
+    buildCommit: "0123456789abcdef0123456789abcdef01234567",
     hostPaths: {
       homeDir: "/home/operator",
       baseDir: "/opt/VibeCoder",

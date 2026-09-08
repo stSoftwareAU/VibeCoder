@@ -1646,6 +1646,28 @@ Helper functions let callers distinguish timeouts from other failures. This
 prevents a single hung `git push` or `gh api` call from blocking the entire
 worker run.
 
+`runGitArgv()` is the adapter for the worker's **generic argv pass-through
+runners** — the injected runners that take a full `["git", …]` argv, binary
+included, and spawn its head (Issue #1553). Those runners are handed argv built
+in other modules, so the `git spawn chokepoint` quality check cannot tell from
+the file whether `git` reaches them; it therefore fails the build on any
+argv-head spawn (`new Deno.Command(cmd[0]!, { args: cmd.slice(1) })`) in a
+module that does not import `git_timeout.ts`. Delegating is one line:
+
+```ts
+if (cmd[0] === "git") return await runGitArgv(cmd);
+```
+
+```mermaid
+flowchart LR
+    C["Caller argv<br/>(built in another module)"] --> R["Generic runner<br/>cmd[0] + cmd.slice(1)"]
+    R -->|"cmd[0] === 'git'"| G["runGitArgv → runGitCommand"]
+    R -->|"cmd[0] === 'gh'"| H["spawnGh"]
+    R -->|other binary| D["Deno.Command"]
+    G --> T["timeout · audit journal · work-volume fault"]
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ### 🚦 Rate-limit aware retry (`worker/deno/lib/retry.ts`)
 
 [retry.ts](../worker/deno/lib/retry.ts) provides intelligent retry logic:
@@ -1775,10 +1797,40 @@ as mergeable.
 
 1. Lists open PRs authored by the worker.
 2. Queries check runs for each PR (`repos/{repo}/commits/{branch}/check-runs`).
-3. Filters for failed checks matching `spell|cspell|typo|codespell`.
+3. Shortlists failed checks whose **name** matches `spell|cspell|typo|codespell`,
+   then confirms each one by the **step that actually failed** — see
+   [Routing by failed step](#routing-by-failed-step-issue-1579).
 4. Fetches check annotations (file paths and messages).
 5. Passes annotations to `work_on_spelling_failure()`, which uses the
    `spelling_fix` prompt template.
+
+#### Routing by failed step (Issue #1579)
+
+A GitHub Actions **job** bundles many steps under one check name.
+NEAT-AI-core's `Scripts & spelling` job runs bats *and* codespell, so its
+name matched the spelling pattern while its failing step was
+`Run bats (tests/scripts)` — the spelling fixer found no spelling
+annotations and posted "no changes needed" twice while the bats failure went
+unfixed.
+
+`resolveCheckFixRoute()` (`worker/deno/lib/pr_ci_checks.ts`) therefore routes
+on the step, not the name:
+
+```mermaid
+flowchart TD
+    A["Failed check"] --> B{"Name looks<br/>spelling-related?"}
+    B -- no --> CI["CI-fix route<br/>(no extra API call)"]
+    B -- yes --> C["resolveFailedStepName()<br/>check-run → Actions job → failed steps"]
+    C -- "every failed step is codespell / cspell / typos" --> SP["Spelling route"]
+    C -- "any other failed step" --> CI
+    C -- "no resolvable step (not Actions, or lookup error)" --> CI
+```
+
+The job lookup runs **only** for checks whose name already matches the
+spelling pattern, so every other check keeps its zero-extra-call path. A
+check with no resolvable failed step goes to the CI-fix route — which can
+fix spelling too — and the reason is logged at info level; the spelling
+route is never taken on a guess.
 
 ### 🔧 CI/integration test failure detection
 
@@ -1787,8 +1839,10 @@ as mergeable.
 1. Lists open PRs authored by the worker (with `baseRefName` for priority
    sorting).
 2. Queries check runs for each PR (`repos/{repo}/commits/{branch}/check-runs`).
-3. Filters for failed checks, **excluding** spelling patterns
-   (`spell|cspell|typo|codespell`).
+3. Filters for failed checks, **excluding** the ones the spelling route
+   claims — a check is excluded only when its failing *step* is a spelling
+   tool (see [Routing by failed step](#routing-by-failed-step-issue-1579)),
+   not merely because its name mentions spelling.
 4. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
    over-retried failures.
 5. Prioritises PRs targeting the default branch (where integration tests run).

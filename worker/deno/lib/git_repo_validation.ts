@@ -12,6 +12,7 @@
 
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { cleanWorkingTree } from "./ignored_path_clean.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 
 /**
@@ -69,7 +70,11 @@ export async function validateRepoState(
         "SELF-HEALING: Resetting uncommitted changes to restore clean state (Issue #621)",
       );
       await runGitCommand(["reset", "--hard", "HEAD"], options);
-      await runGitCommand(["clean", "-fd"], options);
+      // Ignored executable paths go with it (Issue #1443); a clean that
+      // could not reach them is a warning on the validation result, never a
+      // silent pass.
+      const cleaned = await cleanWorkingTree(options);
+      if (!cleaned.ok) warnings.push(cleaned.error.message);
 
       // Re-check
       const recheckResult = await runGitCommand(

@@ -315,13 +315,16 @@ async function executeClaudeBody(
   // through a full browser context — into every issue the fleet worked.
   // Now only an issue that must produce screenshot evidence gets it: the
   // `needs-screenshot` label, or a repo configured with
-  // `requiresScreenshots`. A backend issue's agent has no browser tool for
-  // a prompt injection to steer at an internal or attacker-controlled host.
+  // `requiresScreenshots` — and never a repo that sets
+  // `skip_screenshot_check`, which overrides both (Issue #1584). A backend
+  // issue's agent has no browser tool for a prompt injection to steer at an
+  // internal or attacker-controlled host.
   const screenshotRequired = detectScreenshotRequired(
     ctx.issueLabels.join(","),
     LABEL_DEFAULTS.needsScreenshotLabel,
     config.repoConfig,
     repo,
+    (message) => logger.info(message),
   );
   if (screenshotRequired) {
     logger.info(

@@ -577,6 +577,11 @@ const NON_PARTICIPATING = new Map<string, string>([
     "No LLM, no prompt.",
   ],
   [
+    "gate-skip-drift",
+    "Native: reports a gate that skips a tool CI enforces, keyed on the " +
+    "repository. No LLM, no prompt.",
+  ],
+  [
     "workflow-annotation-scan",
     "Native: reports GitHub Actions annotations verbatim, keyed on the " +
     "annotation. No LLM, no prompt.",

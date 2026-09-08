@@ -13,7 +13,8 @@
  *
  * {@link updateCheckout} performs the update sequence — `git fetch origin` →
  * `git checkout <branch>` → `git reset --hard origin/<branch>` →
- * `git clean -fd` — and, on failure, enriches the error, counts the streak in
+ * `git clean -fd` → the scoped ignored clean of Issue #1443 — and, on
+ * failure, enriches the error, counts the streak in
  * `<logDir>/checkout-update-failure-streak`, and raises exactly one GitHub
  * issue per streak once {@link CHECKOUT_UPDATE_ESCALATION_THRESHOLD}
  * consecutive failures are reached **and** they span at least
@@ -47,8 +48,8 @@
  * Under `update_mode: "frozen"` (Issue #624, part of #583) the sequence above
  * would defeat the pin, so the checkout is held at `pinned_ref` instead: fetch
  * (so a newly pushed tag resolves), then `git checkout --detach <ref>` →
- * `git reset --hard <ref>` → `git clean -fd`, and nothing at all when `HEAD`
- * already resolves to that ref. The skip is logged, never silent, and a ref
+ * `git reset --hard <ref>` → `git clean -fd` → the scoped ignored clean, and
+ * nothing at all when `HEAD` already resolves to that ref. The skip is logged, never silent, and a ref
  * that does not resolve is a fail-loud failure counted in the same streak.
  *
  * An update that actually changed the checkout — moved the commit, or
@@ -69,6 +70,7 @@ import type { Result, UpdateMode } from "../types.ts";
 import { DEFAULT_UPDATE_MODE } from "./config_defaults.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { ignoredExecutableCleanArgs } from "./ignored_path_clean.ts";
 import {
   appendRunCoreLogLine,
   resolveOriginDefaultBranch,
@@ -406,9 +408,10 @@ async function appendLine(filePath: string, line: string): Promise<void> {
 }
 
 /**
- * The update sequence, unchanged from the prelude's:
+ * The update sequence, the prelude's plus the ignored clean (Issue #1443):
  *   git fetch origin && git checkout <branch> &&
- *   git reset --hard origin/<branch> && git clean -fd
+ *   git reset --hard origin/<branch> && git clean -fd &&
+ *   git clean -ffdx -- <executable-bearing ignored paths>
  *
  * Output is appended to `pull.log` **under the log directory**, which is a
  * mounted host directory — never the checkout. The first failing command
@@ -428,6 +431,9 @@ export function resetCheckoutToDefaultBranch(
     ["checkout", branch],
     ["reset", "--hard", `origin/${branch}`],
     ["clean", "-fd"],
+    // Issue #1443: and the ignored directories that carry executable content,
+    // so nothing a previous launch left in them runs in this one.
+    ignoredExecutableCleanArgs(),
   ], deps);
 }
 
@@ -449,7 +455,8 @@ export function fetchOrigin(
 
 /**
  * Hold the checkout at `ref` (Issue #624): a detached checkout of the ref, a
- * hard reset to it, then a clean.
+ * hard reset to it, then the clean pair — untracked, then the ignored
+ * executable paths (Issue #1443).
  *
  * `--detach` is deliberate — the pin is a commit SHA or a tag, and the
  * checkout is meant to sit exactly on it rather than on a branch that will
@@ -467,6 +474,7 @@ export function checkoutPinnedRef(
     ["checkout", "--force", "--detach", ref],
     ["reset", "--hard", ref],
     ["clean", "-fd"],
+    ignoredExecutableCleanArgs(),
   ], deps);
 }
 

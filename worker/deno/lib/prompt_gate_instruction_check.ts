@@ -55,6 +55,8 @@ export const GATE_INSTRUCTION_ALLOWLIST: ReadonlySet<string> = new Set([
   "format_drift/prompt.md",
   // Audits whether a repo's committed bash gate script runs in CI.
   "bash_syntax_audit/prompt.md",
+  // Compares a target repo's quality.sh with its own CI workflows.
+  "gate_skip_drift/prompt.md",
   // Audits a repo's GitHub Actions workflows, gate steps included.
   "github_actions_audit/prompt.md",
 ]);

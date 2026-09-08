@@ -1,0 +1,8 @@
+# Synthetic gate (Issue #1597): the gate skips a tool no workflow runs, so the
+# skip costs nothing in CI and must not be reported.
+echo "Running the optional typo check..."
+if command -v codespell &>/dev/null; then
+    codespell
+else
+    echo "⚠️  codespell not installed — skipping"
+fi

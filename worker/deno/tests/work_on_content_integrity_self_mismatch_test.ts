@@ -257,8 +257,10 @@ Deno.test(
     const gh = createGhMock({
       // Differs from the snapshot, yet GitHub records no edit: the mismatch
       // is self-inflicted (e.g. a hash-algorithm migration, as in #3963).
+      // Issue #1616: the difference has to be real text — a trailing-newline
+      // difference now normalises away and verifies as unchanged instead.
       title: "Fix the bug",
-      body: "Approved specification\r\n",
+      body: "Approved specification, restated",
       actions,
       addedLabels,
     });
@@ -314,7 +316,7 @@ Deno.test(
     const actions: string[] = [];
     const gh = createGhMock({
       title: "Fix the bug",
-      body: "Approved specification\r\n",
+      body: "Approved specification, restated",
       bodyEdits: [{ login: "mallory", at: "2026-05-01T07:00:00Z" }],
       renames: [{ login: "mallory", at: "2026-05-01T06:00:00Z" }],
       actions,
