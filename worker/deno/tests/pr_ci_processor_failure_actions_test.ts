@@ -148,6 +148,7 @@ async function makeRig(opts: {
     logger,
     deps,
     workDir: tmpDir,
+    workRoot: tmpDir,
     stateDir: `${tmpDir}/.ci_check_state`,
     ...(opts.repoConfigs !== undefined
       ? { repoConfigs: opts.repoConfigs }

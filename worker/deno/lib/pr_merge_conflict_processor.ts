@@ -134,6 +134,16 @@ export interface MergeConflictProcessorDeps {
   deps: WorkerDeps;
   /** Working directory — the target repo checkout. */
   workDir: string;
+  /**
+   * The `WORK_DIR` root where heartbeat and marker state files live — never a
+   * clone (Issue #1660).
+   *
+   * Kept separate from {@link MergeConflictProcessorDeps.workDir}, which is the
+   * clone every git and agent `cwd` uses. It cannot be derived from the clone's
+   * parent: a lane worktree sits at `<workRoot>/worktrees/<lane>/<repo>`, so
+   * `dirname` names the lane, not the root.
+   */
+  workRoot: string;
   /** Quality instructions for the prompt. */
   qualityInstructions?: string;
   /** Custom repo-specific instructions. */
@@ -652,7 +662,12 @@ export async function processMergeConflict(
     // from an issue of the same number, and matches the maintenance hold the
     // sweep's live set reports.
     kind: "pr",
-    workDir: processorDeps.workDir,
+    // Issue #1660: the work root, never the clone — `.heartbeat_*` and
+    // `.heartbeat-marker_*` written into the clone dirty its tree and stay
+    // invisible to stuck recovery and the prune liveness check, which both
+    // read the root. `stopHeartbeat` reuses these options, so the final
+    // `clearHeartbeat` follows.
+    workDir: processorDeps.workRoot,
     recordFn: processorDeps.deps.crashHandling.recordHeartbeat,
     clearFn: processorDeps.deps.crashHandling.clearHeartbeat,
   });

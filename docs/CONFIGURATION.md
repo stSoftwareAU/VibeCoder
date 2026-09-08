@@ -3697,7 +3697,10 @@ repo-specific commands in the worker.
 
 - Commands run **in listed order** in the repo working tree at the same
   chokepoint as `assertSafeToCommit()`, immediately before the worker's
-  automated commit. Execution stops at the **first non-zero exit**.
+  automated commit. Execution stops at the **first non-zero exit**. When the
+  only pending changes were worker-owned state files, they are unstaged before
+  the gate (Issue #1661) and nothing is left to commit — the gate, the
+  pre-flight commands and the commit are all skipped.
 - A non-zero exit is a **hard block**: it aborts both the commit **and** the
   push. The worker must fix and retry — there is deliberately **no** override
   or force flag and **no** environment escape hatch.
@@ -3727,7 +3730,10 @@ it the same way its checks do, via `untrusted_command_env.ts`'s allowlist.
 ```mermaid
 flowchart TD
     A["Worker automated commit"] --> B["git add -A"]
-    B --> C["assertSafeToCommit()"]
+    B --> W["unstage worker state files<br/>(Issue #1661)"]
+    W --> N{"anything real<br/>still staged?"}
+    N -->|no| S["no commit —<br/>reported honestly"]
+    N -->|yes| C["assertSafeToCommit()"]
     C --> D{"pre-flight<br/>configured?"}
     D -->|no| G["git commit → git push"]
     D -->|yes| E["run pre-flight commands<br/>in order"]
@@ -3736,6 +3742,7 @@ flowchart TD
     F -->|"non-zero / missing /<br/>timeout"| H["BLOCK commit + push<br/>surface output to fixer"]
     style H fill:#7f1d1d,stroke:#450a0a,color:#fff
     style G fill:#14532d,stroke:#052e16,color:#fff
+    style S fill:#495057,stroke:#212529,color:#fff
 ```
 
 ### 🛑 Auto-fix attempt cap

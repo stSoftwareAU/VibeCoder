@@ -99,6 +99,7 @@ Deno.test("processCiFailure - logs the recovery failure reason, not just 'push f
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure({

@@ -75,8 +75,18 @@ export interface SpellingProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
-  /** Working directory for heartbeat files. */
+  /** Working directory — the target repo checkout. */
   workDir?: string;
+  /**
+   * The `WORK_DIR` root where heartbeat and marker state files live — never a
+   * clone (Issue #1662).
+   *
+   * Kept separate from {@link SpellingProcessorDeps.workDir}, which is the
+   * clone every git and agent `cwd` uses. It cannot be derived from the
+   * clone's parent: a lane worktree sits at `<workRoot>/worktrees/<lane>/<repo>`,
+   * so `dirname` names the lane, not the root.
+   */
+  workRoot: string;
   /** Quality instructions for the prompt. */
   qualityInstructions?: string;
   /** Custom repo-specific instructions. */
@@ -193,13 +203,17 @@ export async function processSpellingFailure(
   // Start periodic heartbeat to prevent false crash detection (Issue #1204).
   // The initial record is awaited (Issue #1888); on failure return early so
   // the next worker iteration can re-attempt the spelling fix.
-  const workDir = processorDeps.workDir ?? Deno.env.get("WORK_DIR") ?? "/tmp";
   const heartbeatStart = await startHeartbeat({
     repo,
     issueNumber: prNumber,
     // A PR, not an issue (Issue #391) — see pr_merge_conflict_processor.
     kind: "pr",
-    workDir,
+    // Issue #1662: the work root, never the clone — `.heartbeat_*` and
+    // `.heartbeat-marker_*` written into the clone dirty its tree and stay
+    // invisible to stuck recovery and the prune liveness check, which both
+    // read the root. `stopHeartbeat` reuses these options, so the final
+    // `clearHeartbeat` follows.
+    workDir: processorDeps.workRoot,
     recordFn: deps.crashHandling.recordHeartbeat,
     clearFn: deps.crashHandling.clearHeartbeat,
   });
