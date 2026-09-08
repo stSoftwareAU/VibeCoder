@@ -157,6 +157,7 @@ function makeHarness(stateDir: string, workDir: string): Harness {
     deps,
     stateDir,
     workDir,
+    workRoot: workDir,
     // Deterministic: no live GitHub Actions log fetch in tests.
     actionsLogFn: () =>
       Promise.resolve({ kind: "not-applicable", reason: "test" } as const),

@@ -1581,7 +1581,8 @@ may hold hand-written `claude/provider-2.env`, `provider-3.env` … files as
 well ([Several Claude tokens](SETUP.md#several-claude-tokens)). The mount is
 the sub-directory, so every file in it is readable inside the container, while
 exactly one of them is exported into the run's environment — the worker picks
-the token with the most remaining budget at start and logs which one it chose.
+the token with the most remaining budget per hour until its window resets at
+start, gated on the five-hour window, and logs which one it chose.
 
 Codex was the first addition made purely through the seam. Two
 Codex facts shape its descriptor, and both are handled in the Codex-owned

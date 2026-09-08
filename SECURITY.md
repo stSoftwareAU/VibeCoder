@@ -647,6 +647,11 @@ beside the config would otherwise be staged by `git add -A`. A repo that
 intentionally tracks a matching fixture should negate it explicitly
 (e.g. `!tests/fixtures/*.pem`) rather than remove the broad rule.
 
+The worker's own state files are handled one layer earlier: at the
+`commitAndPushPending()` chokepoint they are **unstaged after `git add -A` and
+before the pre-commit gate** (Issue #1661), with a warning naming each path, so
+they never reach the gate and never widen its allowlist.
+
 **How It Works:**
 
 1. **`.gitignore` patterns**: The primary defence. Files matching these patterns won't be staged with normal `git add` commands.

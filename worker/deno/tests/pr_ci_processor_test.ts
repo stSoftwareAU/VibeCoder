@@ -27,6 +27,14 @@ import type {
   GitHubDeps,
   PrDeps,
 } from "../lib/issue_worker_wiring.ts";
+import {
+  heartbeatFilePath,
+  markerStateFilePath,
+} from "../lib/heartbeat_storage.ts";
+import {
+  heartbeatStrays,
+  trackHeartbeatDirs,
+} from "./support/heartbeat_placement.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -159,6 +167,7 @@ Deno.test("processCiFailure - succeeds with mock Claude output", async () => {
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -171,6 +180,84 @@ Deno.test("processCiFailure - succeeds with mock Claude output", async () => {
     }
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - the heartbeat and milestone state land in the work root, not the clone (Issue #1662)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
+  const workDir = await Deno.makeTempDir({ prefix: "vibe-ci-fix-clone-" });
+  try {
+    const dirs = { record: [] as string[], clear: [] as string[] };
+    const milestoneDirs: string[] = [];
+
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: { runGhCommand: () => Promise.resolve("") },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+      crashHandling: {
+        ...trackHeartbeatDirs(dirs),
+        recordMilestone: (dir: string) => {
+          milestoneDirs.push(dir);
+          return Promise.resolve({ ok: true, value: undefined });
+        },
+      },
+    });
+
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${workRoot}/.ci_check_state`,
+      workDir,
+      workRoot,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    };
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(dirs.record, [workRoot]);
+    assertEquals(dirs.clear, [workRoot]);
+    // Every milestone follows the heartbeat it annotates.
+    assertEquals(milestoneDirs.length >= 1, true);
+    assertEquals(
+      milestoneDirs.every((dir) => dir === workRoot),
+      true,
+      `milestones should be recorded in the work root, got ${milestoneDirs}`,
+    );
+
+    // The state files land under the work root ...
+    assertEquals(
+      (await Deno.stat(heartbeatFilePath(workRoot, "org/repo", 42))).isFile,
+      true,
+    );
+    assertEquals(
+      (await Deno.stat(markerStateFilePath(workRoot, "org/repo", 42)))
+        .isFile,
+      true,
+    );
+
+    // ... and the clone's top level gains neither.
+    assertEquals(await heartbeatStrays(workDir), []);
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
   }
 });
 
@@ -195,6 +282,7 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
       logger: makeSilentLogger(),
       deps,
       stateDir,
+      workRoot: tmpDir,
       maxCiRetries: 3,
       ghCommandFn: (args: string[]) => {
         ghCalls.push(args);
@@ -251,6 +339,7 @@ Deno.test("processCiFailure - increments retry count", async () => {
       deps,
       stateDir,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     // First run
@@ -328,6 +417,7 @@ Deno.test("processCiFailure - starts and stops heartbeat during processing", asy
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -384,6 +474,7 @@ Deno.test("processCiFailure - stops heartbeat even when Claude fails", async () 
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -423,6 +514,7 @@ Deno.test("processCiFailure - handles Claude failure", async () => {
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -478,6 +570,7 @@ Deno.test("processCiFailure - pushes commits even when Claude output is empty (I
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -540,6 +633,7 @@ Deno.test("processCiFailure - reports push failure when commits remain unpushed 
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -644,6 +738,7 @@ Deno.test("processCiFailure - pushes commits after Claude makes changes (Issue #
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -723,6 +818,7 @@ Deno.test("processCiFailure - checks out PR branch before running Claude (Issue 
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const input = makeInput();
@@ -812,6 +908,7 @@ Deno.test("processCiFailure - uses .pr_response_message as comment body when pre
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -879,6 +976,7 @@ Deno.test("processCiFailure - falls back to default message when .pr_response_me
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -959,6 +1057,7 @@ Deno.test("processCiFailure - recovers from push rejection and reports success (
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -1034,6 +1133,7 @@ Deno.test("processCiFailure - reports accurate failure when push cannot be recov
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -1103,6 +1203,7 @@ Deno.test("processCiFailure - reports no changes when Claude does nothing (Issue
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -1197,6 +1298,7 @@ Deno.test("processCiFailure - skips quality check when no uncommitted changes (I
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       qualityGateFn: () => {
         qualityFnCalled = true;
         return Promise.resolve({ action: "passed", qualityOutput: "" });
@@ -1277,6 +1379,7 @@ Deno.test("processCiFailure - runs quality check and commits uncommitted changes
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       qualityGateFn: () => {
         qualityFnCalled = true;
         return Promise.resolve({ action: "passed", qualityOutput: "" });
@@ -1369,6 +1472,7 @@ Deno.test("processCiFailure - retries Claude when quality check fails (Issue #14
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       qualityGateFn: () =>
         Promise.resolve({
           action: "failed_fixable",
@@ -1444,6 +1548,7 @@ Deno.test("processCiFailure - a PR whose branch no longer exists on origin (merg
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
     const result = await processCiFailure(
       makeInput({ prNumber: 4363, branchName: "issue-4297-gone" }),

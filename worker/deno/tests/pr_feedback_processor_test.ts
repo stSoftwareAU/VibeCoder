@@ -25,6 +25,14 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
+import {
+  heartbeatFilePath,
+  markerStateFilePath,
+} from "../lib/heartbeat_storage.ts";
+import {
+  heartbeatStrays,
+  trackHeartbeatDirs,
+} from "./support/heartbeat_placement.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -169,6 +177,7 @@ Deno.test("processPrFeedback - succeeds with mock Claude output", async () => {
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
     qualityInstructions: "",
   };
@@ -196,6 +205,7 @@ Deno.test("processPrFeedback - handles Claude timeout", async () => {
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -220,6 +230,7 @@ Deno.test("processPrFeedback - handles Claude failure", async () => {
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -271,6 +282,7 @@ Deno.test("processPrFeedback - skips processing when claim lost to another worke
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
     workerId: "my-worker",
     claimAuthorOptions: FLEET_OPTIONS,
   };
@@ -337,6 +349,7 @@ Deno.test("processPrFeedback - proceeds when claim won", async () => {
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
     workerId: "my-worker",
     claimAuthorOptions: FLEET_OPTIONS,
@@ -383,6 +396,7 @@ Deno.test("processPrFeedback - works without workerId (backward compatible)", as
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
     // No workerId — claim step should be skipped
   };
 
@@ -443,6 +457,7 @@ Deno.test("processPrFeedback - starts and stops heartbeat during processing", as
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -457,6 +472,66 @@ Deno.test("processPrFeedback - starts and stops heartbeat during processing", as
     true,
     "heartbeat should be cleared after processing completes",
   );
+});
+
+Deno.test("processPrFeedback - the heartbeat state lands in the work root, not the clone (Issue #1662)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
+  const workDir = await Deno.makeTempDir({ prefix: "vibe-pr-feedback-clone-" });
+  try {
+    const dirs = { record: [] as string[], clear: [] as string[] };
+
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed the typo.", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: { runGhCommand: () => Promise.resolve("") },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: true,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+      crashHandling: trackHeartbeatDirs(dirs),
+    });
+
+    const result = await processPrFeedback(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      workDir,
+      workRoot,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    });
+    assertEquals(result.ok, true);
+    assertEquals(dirs.record, [workRoot]);
+    assertEquals(dirs.clear, [workRoot]);
+
+    // The state files land under the work root ...
+    assertEquals(
+      (await Deno.stat(heartbeatFilePath(workRoot, "org/repo", 42))).isFile,
+      true,
+    );
+    assertEquals(
+      (await Deno.stat(markerStateFilePath(workRoot, "org/repo", 42))).isFile,
+      true,
+    );
+
+    // ... and the clone's top level gains neither.
+    assertEquals(await heartbeatStrays(workDir), []);
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 Deno.test("processPrFeedback - stops heartbeat even when Claude fails", async () => {
@@ -496,6 +571,7 @@ Deno.test("processPrFeedback - stops heartbeat even when Claude fails", async ()
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -530,6 +606,7 @@ Deno.test("processPrFeedback - reports no changes when Claude output empty", asy
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -581,6 +658,7 @@ Deno.test("processPrFeedback - passes workDir as cwd to Claude invocation", asyn
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo/MyRepo",
+    workRoot: "/tmp/test-repo/MyRepo",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -685,6 +763,7 @@ Deno.test("processPrFeedback - pushes commits after Claude makes changes (Issue 
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
   };
 
@@ -758,6 +837,7 @@ Deno.test("processPrFeedback - checks out PR branch before running Claude (Issue
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const input = makeInput();
@@ -846,6 +926,7 @@ Deno.test("processPrFeedback - uses .pr_response_message as comment body when pr
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -912,6 +993,7 @@ Deno.test("processPrFeedback - falls back to default message when .pr_response_m
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -978,6 +1060,7 @@ Deno.test("processPrFeedback - reports push failure accurately (Issue #1458)", a
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -1037,6 +1120,7 @@ Deno.test("processPrFeedback - reports no changes when Claude does nothing (Issu
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -1105,6 +1189,7 @@ Deno.test("processPrFeedback - a local commit with a failed push never claims su
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
   });
 
   assertEquals(result.ok, true);
@@ -1160,6 +1245,7 @@ Deno.test("processPrFeedback - a push the remote does not confirm is reported, n
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
     // ...and the remote disagrees. Local signals cannot see this, which is
     // why the claim is made against the remote.
     verifyPushFn: () =>
@@ -1214,6 +1300,7 @@ Deno.test("processPrFeedback - a verified push claims success and names the SHA 
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
     verifyPushFn: () =>
       Promise.resolve({
         landed: true,
