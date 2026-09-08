@@ -172,6 +172,11 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * `.github/workflows/validate-scripts.yml` fails loud without — the one
  * user-directed exception to "the gate runs it", since the `run.ps1` suites
  * are excluded from the local gate (Issue #971).
+ *
+ * Two more back the NEAT-AI-core and NEAT-AI-scorer gates (Issue #1595):
+ * `bats`, the runner both drive over their `tests/scripts` suites, and
+ * `codespell`, which NEAT-AI-core's gate skipped with a warning and
+ * NEAT-AI-scorer's `scripts/spell-check.sh` preflight exits 1 without.
  */
 export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "cargo",
@@ -185,6 +190,8 @@ export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "semgrep",
   "gitleaks",
   "pwsh",
+  "bats",
+  "codespell",
 ];
 
 /** Aliases that resolve to "whatever upstream published most recently". */

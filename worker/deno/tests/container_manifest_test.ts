@@ -1640,6 +1640,12 @@ Deno.test("container/ - the image supplies every monitored-repo toolchain comman
   // container/tools.json fails here.
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("gitleaks"));
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("pwsh"));
+  // Issue #1595: NEAT-AI-core and NEAT-AI-scorer both run BATS suites from
+  // their gates, and NEAT-AI-core spell-checks with codespell — which
+  // NEAT-AI-scorer's spell-check preflight exits 1 without. Dropping either
+  // from container/tools.json fails here.
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("bats"));
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("codespell"));
 });
 
 Deno.test("container/ - every committed toolchain names the repositories it exists for", async () => {
