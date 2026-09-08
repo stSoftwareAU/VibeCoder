@@ -39,7 +39,9 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | pip | tool | 26.2.1 | noarch: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e | exact version + SHA-256 verified |
 | playwright-core | tool | 1.61.0-alpha-1778188671000 | chromium_amd64: 4f5dfbb09cc103573be201e870573fe53f36b1de076ac649049c421bb5b31e69<br>chromium_arm64: 549844a1f15687f91486645079ec0e495a880687e6813e2d42ef4d044782d589<br>noarch: d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516 | exact version + SHA-256 verified |
 | actionlint | toolchain | 1.7.12 | amd64: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8<br>arm64: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 | exact version + SHA-256 verified |
+| bats-core | toolchain | 1.14.0 | noarch: bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177 | exact version + SHA-256 verified |
 | cargo-deny | toolchain | 0.20.2 | amd64: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f<br>arm64: 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d | exact version + SHA-256 verified |
+| codespell | toolchain | 2.4.3 | noarch: af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a | exact version + SHA-256 verified |
 | gitleaks | toolchain | 8.30.1 | amd64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb<br>arm64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | exact version + SHA-256 verified |
 | markdownlint-cli2 | toolchain | 0.23.2 | noarch: b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09 | exact version + SHA-256 verified |
 | node | toolchain | 24.19.0 | amd64: 14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647<br>arm64: 01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc | exact version + SHA-256 verified |
