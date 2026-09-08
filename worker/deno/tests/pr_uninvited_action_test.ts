@@ -333,6 +333,8 @@ const PR_COMMENTS = /\/pulls\/(\d+)\/comments/;
 const PR_REVIEWS = /\/pulls\/(\d+)\/reviews/;
 const ISSUE_COMMENTS = /\/issues\/(\d+)\/comments/;
 const CHECK_RUNS = /\/commits\/([^/]+)\/check-runs/;
+const CHECK_RUN_BY_ID = /\/check-runs\/(\d+)$/;
+const ACTIONS_JOB = /\/actions\/jobs\/(\d+)$/;
 
 function jsonOf(value: unknown): Promise<string> {
   return Promise.resolve(JSON.stringify(value));
@@ -424,6 +426,31 @@ function createFixtureGh(
         // escalation dedup, which must see an empty thread.
         if (!args.includes("--jq") || path.includes("?")) return jsonOf([]);
         return jsonOf(byNumber(Number(issueComments[1]))?.issueComments ?? []);
+      }
+
+      // Issue #1579: a failed check is routed on the step that failed
+      // inside its Actions job, so every check run resolves to a job whose
+      // failing step is named after the check.
+      const checkRunById = CHECK_RUN_BY_ID.exec(path);
+      if (checkRunById) {
+        return jsonOf({
+          app: { slug: "github-actions" },
+          details_url: `https://github.com/${REPO}/actions/runs/1/job/${
+            checkRunById[1]
+          }`,
+        });
+      }
+
+      const actionsJob = ACTIONS_JOB.exec(path);
+      if (actionsJob) {
+        const id = Number(actionsJob[1]);
+        const check = prs.flatMap((p) => p.failedChecks).find((c) =>
+          c.id === id
+        );
+        const step = check?.name === "spelling"
+          ? "Run codespell"
+          : `Run ${check?.name ?? "unknown"}`;
+        return jsonOf({ steps: [{ name: step, conclusion: "failure" }] });
       }
 
       const checkRuns = CHECK_RUNS.exec(path);

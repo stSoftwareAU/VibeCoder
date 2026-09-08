@@ -28,6 +28,7 @@ import {
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { INVITATION_PR_FIELDS } from "../lib/pr_invitation_lookup.ts";
 import type { Logger } from "../types.ts";
+import type { FailedCiCheck } from "../lib/pr_ci_checks.ts";
 import type { MergeAttemptOutcome } from "../lib/merge_block_escalation.ts";
 import {
   computeFailureSignature,
@@ -80,6 +81,41 @@ function makeBaseScanOptions(
     isAuthorisedCommenter: () => true,
     ghCommandFn: () => Promise.resolve("[]"),
     ...overrides,
+  };
+}
+
+/**
+ * Answer the two `gh api` reads that resolve which step of an Actions job
+ * failed (Issue #1579), keyed by check id → failing step name.
+ *
+ * Returns null for anything else so the caller's own stub still handles it.
+ * Routing reads the failed step, so a scan test that expects a check to
+ * reach the spelling processor has to say which step failed.
+ */
+function failedStepLookup(
+  failedSteps: Record<number, string>,
+): (key: string) => string | null {
+  return (key: string) => {
+    const checkRun = /check-runs\/(\d+)$/.exec(key);
+    if (checkRun) {
+      const id = Number(checkRun[1]);
+      if (failedSteps[id] === undefined) return null;
+      return JSON.stringify({
+        app: { slug: "github-actions" },
+        details_url: `https://github.com/org/repo/actions/runs/1/job/${id}`,
+      });
+    }
+    const job = /actions\/jobs\/(\d+)$/.exec(key);
+    if (job) {
+      const step = failedSteps[Number(job[1])];
+      return step === undefined ? null : JSON.stringify({
+        steps: [
+          { name: "Set up job", conclusion: "success" },
+          { name: step, conclusion: "failure" },
+        ],
+      });
+    }
+    return null;
   };
 }
 
@@ -755,8 +791,13 @@ Deno.test("findPrCommentsToFix - a trusted review bot's CHANGES_REQUESTED review
 // ============================================================================
 
 Deno.test("findFailedPrChecks - finds spelling check failure", async () => {
+  // Issue #1579 changed the routing input from the job name to the failed
+  // step, so the stub now says which step of the job failed.
+  const steps = failedStepLookup({ 100: "Run codespell" });
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
+    const step = steps(key);
+    if (step !== null) return step;
     if (key.includes("pr list")) {
       return JSON.stringify([
         { number: 10, headRefName: "issue-10-fix" },
@@ -818,14 +859,123 @@ Deno.test("findFailedPrChecks - returns null when no spelling checks fail", asyn
 });
 
 // ============================================================================
+// Routing by failed step, not job name (Issue #1579)
+// ============================================================================
+
+/**
+ * A `gh` stand-in for one PR whose single failed check is a bundled
+ * `Scripts & spelling` job, with `failedStep` the step that failed.
+ *
+ * `null` serves a check run that resolves to no Actions job at all — the
+ * shape a non-Actions check has.
+ */
+function makeBundledSpellingJobGh(
+  failedStep: string | null,
+): (args: string[]) => Promise<string> {
+  const steps: Record<number, string> = failedStep === null
+    ? {}
+    : { 300: failedStep };
+  const lookup = failedStepLookup(steps);
+  return (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    const step = lookup(key);
+    if (step !== null) return Promise.resolve(step);
+    if (key.includes("pr list")) {
+      return Promise.resolve(JSON.stringify([
+        { number: 30, headRefName: "issue-30-fix", baseRefName: "main" },
+      ]));
+    }
+    if (key.includes("annotations")) return Promise.resolve("[]");
+    if (key.includes("check-runs")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          id: 300,
+          name: "Scripts & spelling",
+          status: "completed",
+          conclusion: "failure",
+        },
+      ]));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+/** Run `findFailedCiChecks` against a throwaway state directory. */
+async function ciScan(
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<FailedCiCheck | null> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const options: CiCheckScanOptions = {
+      ...makeBaseScanOptions({ ghCommandFn: ghFn }),
+      stateDir: `${tmpDir}/.ci_state`,
+    };
+    const result = await findFailedCiChecks(options);
+    assertEquals(result.ok, true);
+    return result.ok ? result.value : null;
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+Deno.test("findFailedPrChecks - a bats failure inside a 'Scripts & spelling' job is not a spelling job (Issue #1579)", async () => {
+  const ghFn = makeBundledSpellingJobGh("Run bats (tests/scripts)");
+
+  const result = await findFailedPrChecks(makeBaseScanOptions({
+    ghCommandFn: ghFn,
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value, null);
+});
+
+Deno.test("findFailedCiChecks - that same bats failure reaches the CI-fix route (Issue #1579)", async () => {
+  const found = await ciScan(
+    makeBundledSpellingJobGh("Run bats (tests/scripts)"),
+  );
+
+  assertEquals(found?.checkName, "Scripts & spelling");
+  assertEquals(found?.checkId, "300");
+  assertEquals(found?.prNumber, 30);
+});
+
+Deno.test("findFailedPrChecks - a codespell step failure still reaches the spelling processor (Issue #1579)", async () => {
+  const result = await findFailedPrChecks(makeBaseScanOptions({
+    ghCommandFn: makeBundledSpellingJobGh("Run codespell"),
+  }));
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value?.checkName, "Scripts & spelling");
+
+  // …and the CI-fix scan leaves it alone.
+  assertEquals(await ciScan(makeBundledSpellingJobGh("Run codespell")), null);
+});
+
+Deno.test("findFailedCiChecks - a spelling-named check with no resolvable step goes to CI-fix (Issue #1579)", async () => {
+  const spelling = await findFailedPrChecks(makeBaseScanOptions({
+    ghCommandFn: makeBundledSpellingJobGh(null),
+  }));
+  assertEquals(spelling.ok, true);
+  if (spelling.ok) assertEquals(spelling.value, null);
+
+  const found = await ciScan(makeBundledSpellingJobGh(null));
+  assertEquals(found?.checkName, "Scripts & spelling");
+});
+
+// ============================================================================
 // findFailedCiChecks
 // ============================================================================
 
 Deno.test("findFailedCiChecks - finds CI failure excluding spelling", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
+    // Issue #1579: the cspell check is excluded because its failed step is
+    // codespell, not because of its name.
+    const steps = failedStepLookup({ 100: "Run codespell" });
     const ghFn = async (args: string[]): Promise<string> => {
       const key = args.join(" ");
+      const step = steps(key);
+      if (step !== null) return step;
       if (key.includes("pr list")) {
         return JSON.stringify([
           { number: 10, headRefName: "issue-10-fix", baseRefName: "main" },
@@ -1706,14 +1856,23 @@ Deno.test("findFailedCiChecks - sees a sibling fleet host's PR, never the human'
 Deno.test("findFailedPrChecks - sees a sibling fleet host's PR, never the human's (Issues #4023/#4076)", async () => {
   const calls: string[][] = [];
   const ghFn = makeFleetAuthoredPrGh({
-    "check-runs": JSON.stringify([
-      { id: 400, name: "cspell", status: "completed", conclusion: "failure" },
-    ]),
+    // Matched in insertion order, so the narrower reads come first. The
+    // job/step reads are what Issue #1579 routes on.
     annotations: JSON.stringify([{
       path: "a.ts",
       start_line: 1,
       message: "typo",
     }]),
+    "check-runs/400": JSON.stringify({
+      app: { slug: "github-actions" },
+      details_url: "https://github.com/org/repo/actions/runs/1/job/400",
+    }),
+    "actions/jobs/400": JSON.stringify({
+      steps: [{ name: "Run codespell", conclusion: "failure" }],
+    }),
+    "check-runs": JSON.stringify([
+      { id: 400, name: "cspell", status: "completed", conclusion: "failure" },
+    ]),
   }, (args) => calls.push(args));
 
   const result = await findFailedPrChecks(makeBaseScanOptions({

@@ -8,7 +8,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
+import { resolveFailedStepName } from "./github_actions_log_fetcher.ts";
 
 /** Information about a failed CI check. */
 export interface FailedCiCheck {
@@ -187,6 +188,128 @@ export async function postCiFixMaxRetriesComment(
  */
 export function isSpellingCheck(checkName: string): boolean {
   return /spell|cspell|typo|codespell/i.test(checkName);
+}
+
+/**
+ * Spelling tools whose failing *step* genuinely needs the spelling fixer
+ * (Issue #1579).
+ *
+ * Deliberately the three tool names only — the bare `spell` and `typo`
+ * substrings that {@link isSpellingCheck} matches are too loose for a step,
+ * and a job named `Scripts & spelling` says nothing about which of its
+ * steps failed.
+ */
+const SPELLING_STEP_PATTERN = /codespell|cspell|typos/i;
+
+/**
+ * Whether a failed *step* name is one of the spelling tools.
+ *
+ * @param stepName - The Actions step name to test
+ * @returns true when the step ran codespell, cspell or typos
+ */
+export function isSpellingStep(stepName: string): boolean {
+  return SPELLING_STEP_PATTERN.test(stepName);
+}
+
+/** Which fix processor a failed check belongs to (Issue #1579). */
+export type CheckFixRoute = "spelling" | "ci-fix";
+
+/** Routing decision for one failed check, with the reason behind it. */
+export interface CheckFixRouting {
+  /** The processor the check is routed to. */
+  route: CheckFixRoute;
+  /** Why that route was chosen — logged, so a surprise is traceable. */
+  reason: string;
+  /** The failing step name, when one was resolved. */
+  failedStep?: string;
+}
+
+/** Inputs for {@link resolveCheckFixRoute}. */
+export interface CheckFixRouteOptions {
+  /** Repository in "owner/repo" format. */
+  repo: string;
+  /** The GitHub check run id. */
+  checkId: string;
+  /** The check (job) name. */
+  checkName: string;
+  /** Function to run gh commands (injectable for testing). */
+  ghCommandFn: (args: string[]) => Promise<string>;
+  /**
+   * Logger — every decision that sends a spelling-named check elsewhere is
+   * recorded, and a failed lookup is recorded at warn level. Required, so
+   * no routing surprise can happen silently.
+   */
+  logger: Logger;
+}
+
+/**
+ * Decide which fix processor a failed check belongs to (Issue #1579).
+ *
+ * Routing used to read the *job* name, so NEAT-AI-core's `Scripts &
+ * spelling` job sent a failing bats step to the spelling fixer, which found
+ * no spelling annotations and posted "no changes needed" while the bats
+ * failure went unfixed. The decision is made on the step that actually
+ * failed instead.
+ *
+ * The job lookup runs only for checks whose *name* already looks like a
+ * spelling check, so every other check keeps its zero-extra-call path. A
+ * step that cannot be resolved — a check run that is not an Actions job, or
+ * a lookup that errored — routes to the generic CI-fix processor, which can
+ * fix spelling too; the spelling route is never taken on a guess.
+ */
+export async function resolveCheckFixRoute(
+  options: CheckFixRouteOptions,
+): Promise<CheckFixRouting> {
+  const { repo, checkId, checkName, ghCommandFn, logger } = options;
+
+  if (!isSpellingCheck(checkName)) {
+    return { route: "ci-fix", reason: "check name is not spelling-related" };
+  }
+
+  const resolution = await resolveFailedStepName({
+    repo,
+    checkRunId: checkId,
+    checkName,
+    ghFn: ghCommandFn,
+  });
+
+  if (resolution.kind !== "step") {
+    const failed = resolution.kind === "error";
+    const detail = failed ? resolution.error : resolution.reason;
+    const reason =
+      `no failed step could be resolved for a spelling-named check: ${detail}`;
+    // A lookup that genuinely failed is a fault, not the routine
+    // "this check is not an Actions job" case — it is reported as one.
+    const record = failed ? logger.warn : logger.info;
+    record.call(
+      logger,
+      "Routing a spelling-named check to the CI-fix processor",
+      { repo, checkName, checkId, reason },
+    );
+    return { route: "ci-fix", reason };
+  }
+
+  // Every failed step must be a spelling tool: a job that failed in both
+  // codespell and bats belongs on the CI-fix route, whose agent fixes
+  // spelling too — the spelling agent cannot fix the bats failure.
+  const spelling = resolution.failedSteps.every(isSpellingStep);
+  const steps = resolution.failedSteps.join(", ");
+  const reason = spelling
+    ? `failed step(s) '${steps}' are spelling tools`
+    : `failed step(s) '${steps}' include a non-spelling tool`;
+  if (!spelling) {
+    logger.info("Routing a spelling-named check to the CI-fix processor", {
+      repo,
+      checkName,
+      checkId,
+      failedSteps: steps,
+    });
+  }
+  return {
+    route: spelling ? "spelling" : "ci-fix",
+    reason,
+    failedStep: resolution.name,
+  };
 }
 
 /**
