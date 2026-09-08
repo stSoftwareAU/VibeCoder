@@ -692,8 +692,10 @@ Phase 1 inventories what earlier sweeps already recorded —
 `security-scan-overflow` issues — and dates each record with
 `git log -1 --format=%H -- <record>`, so
 `git diff --name-only <commit> HEAD -- <tree>` says which of its modules
-moved since. Each unswept chunk is then written in whichever of these two
-shapes its modules put it in:
+moved since. The worker's clones are shallow, so either command can come
+back empty or `fatal:`; an unanswerable history falls to never-recorded
+rather than reading as a clean sweep. Each unswept chunk is then written in
+whichever of these two shapes its modules put it in:
 
 ```text
 - <n>. <chunk name> (exposure: <band>) — never recorded

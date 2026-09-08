@@ -378,6 +378,22 @@ Deno.test("security_scan - Phase 1 inventories prior sweep records (Issue #1614)
     /no such records/i.test(text),
     "the step must say what a repository with no records does",
   );
+
+  // Fail loud, not silently clean: the worker's clones are shallow, so
+  // both git commands can come back empty or `fatal:`. An unanswerable
+  // history must fall to never-recorded, never to "recorded, unchanged".
+  assert(
+    /cannot\s+answer means never recorded/.test(text),
+    "an unanswerable git history must not book a tree as swept",
+  );
+
+  // The chunk plan's paths are confirmed before the numbering is fixed —
+  // #1608 planned `worker/deno/lib/pr_manager.ts`, which does not exist.
+  assert(
+    text.includes("Confirm every path the plan names with `ls`"),
+    "a chunk naming a file that does not exist reports a phantom module " +
+      "as covered",
+  );
 });
 
 Deno.test("security_scan - permits git log and git diff as read-only inspection (Issue #1614)", async () => {

@@ -230,7 +230,9 @@ Inventory the codebase and record:
 - **Prior sweep records** — what an earlier bounded sweep already
   covered, so this run does not re-declare a recorded tree unaudited.
   Look for `docs/audits/security-sweep-*.md`, a sweep coverage ledger
-  (whatever file the repo keeps its swept-module list in), and closed
+  (in this repository `docs/audits/lib-sweep-coverage.json`, which maps
+  each module to the record that swept it; elsewhere whatever file the
+  repo keeps its swept-module list in), and closed
   `security-scan-overflow` issues
   (`gh issue list --label security-scan-overflow --state closed`). For
   each tree a record names, take the commit the record was written at
@@ -239,7 +241,13 @@ Inventory the codebase and record:
   names and that diff does not is **previously swept**; a module the diff
   names, or that no record names at all, is not. Record, per recorded
   tree, the record path, its commit, and the count of modules changed
-  since — Phase 2 and Phase 4 both read it. This is a repository-shaped
+  since — Phase 2 and Phase 4 both read it. **A git command that cannot
+  answer means never recorded, never "unchanged".** The worker's clones
+  are shallow, so `git log -1 --format=%H -- <record>` can come back
+  empty and the follow-up diff can fail with `fatal: bad object`. When
+  either happens, treat every module of that tree as never-recorded and
+  say so in the tracker line — an unanswerable history must not read as a
+  clean sweep. This is a repository-shaped
   question, not a Vibe Coder one: where no such records exist, this item
   inventories nothing, every module is never-recorded, and the scan
   proceeds unchanged.
