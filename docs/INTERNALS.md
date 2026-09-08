@@ -1820,9 +1820,9 @@ on the step, not the name:
 flowchart TD
     A["Failed check"] --> B{"Name looks<br/>spelling-related?"}
     B -- no --> CI["CI-fix route<br/>(no extra API call)"]
-    B -- yes --> C["resolveFailedStepName()<br/>check-run → Actions job → first failed step"]
-    C -- "step is codespell / cspell / typos" --> SP["Spelling route"]
-    C -- "any other step" --> CI
+    B -- yes --> C["resolveFailedStepName()<br/>check-run → Actions job → failed steps"]
+    C -- "every failed step is codespell / cspell / typos" --> SP["Spelling route"]
+    C -- "any other failed step" --> CI
     C -- "no resolvable step (not Actions, or lookup error)" --> CI
 ```
 

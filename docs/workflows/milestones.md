@@ -192,7 +192,7 @@ gitGraph
 The milestone summary PR (final PR from `milestone/<name>` to default) is monitored for CI and integration test failures, just like any other PR authored by the worker. This is particularly important for milestones because:
 
 - **Integration tests on the default branch:** Some repositories only run integration tests when targeting the default branch. The milestone summary PR is the first time the combined milestone changes are tested against the default branch's CI pipeline.
-- **Automatic detection:** `find_failed_ci_checks` scans all open PRs for failed check runs (excluding spelling checks, which are handled separately at priority 1.5). PRs targeting the default branch are prioritised.
+- **Automatic detection:** `find_failed_ci_checks` scans all open PRs for failed check runs (excluding checks whose failing step is a spelling tool, which are handled separately at priority 1.5). PRs targeting the default branch are prioritised.
 - **Automatic remediation:** `work_on_ci_failure` diagnoses and fixes CI failures using Claude, then commits and pushes the fix to the PR branch. Retries are capped at `CI_CHECK_MAX_RETRIES` (default 3) per check run.
 - **Priority 1.55:** CI failure remediation runs after spelling fixes (1.5) but before branch updates (1.6), ensuring CI issues on the milestone summary PR are addressed promptly.
 

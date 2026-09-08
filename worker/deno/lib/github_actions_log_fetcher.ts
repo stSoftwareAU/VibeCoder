@@ -320,7 +320,7 @@ async function resolveJobFromRun(
 
 /** Result of resolving the step that failed inside an Actions job. */
 export type FailedStepResolution =
-  | { kind: "step"; name: string }
+  | { kind: "step"; name: string; failedSteps: string[] }
   | { kind: "not-applicable"; reason: string }
   | { kind: "error"; error: string };
 
@@ -332,6 +332,10 @@ export type FailedStepResolution =
  * nothing about which of them failed — NEAT-AI-core's `Scripts & spelling`
  * job runs bats and codespell under one name. Callers routing a failure to
  * a specialised fixer need the step, not the job name.
+ *
+ * `name` is the first failed step; `failedSteps` lists every failed step,
+ * because a job configured with `continue-on-error` can fail in more than
+ * one, and a caller routing on the step needs to see all of them.
  *
  * Returns `not-applicable` when the check is not an Actions job or the job
  * reports no failed step, and `error` when the lookup itself failed. Never
@@ -359,15 +363,18 @@ export async function resolveFailedStepName(
     return { kind: "error", error: "job response was not valid JSON" };
   }
 
-  const failed = steps.find((step) => step["conclusion"] === "failure");
-  const name = typeof failed?.["name"] === "string" ? failed["name"] : "";
-  if (name === "") {
+  const failedSteps = steps
+    .filter((step) => step["conclusion"] === "failure")
+    .map((step) => typeof step["name"] === "string" ? step["name"] : "")
+    .filter((name) => name !== "");
+  const name = failedSteps[0];
+  if (name === undefined) {
     return {
       kind: "not-applicable",
       reason: `Actions job ${resolution.jobId} reports no failed step`,
     };
   }
-  return { kind: "step", name };
+  return { kind: "step", name, failedSteps };
 }
 
 /**

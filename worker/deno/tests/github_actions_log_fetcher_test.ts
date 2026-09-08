@@ -471,7 +471,11 @@ Deno.test("resolveFailedStepName - names the first failed step of the Actions jo
     ghFn: gh,
   });
 
-  assertEquals(resolution, { kind: "step", name: "Run bats (tests/scripts)" });
+  assertEquals(resolution, {
+    kind: "step",
+    name: "Run bats (tests/scripts)",
+    failedSteps: ["Run bats (tests/scripts)"],
+  });
 });
 
 Deno.test("resolveFailedStepName - a job with no failed step is not applicable", async () => {
@@ -522,6 +526,24 @@ Deno.test("resolveFailedStepName - a failed job lookup is an error, never a step
     }
     return Promise.reject(new Error("HTTP 500"));
   };
+
+  const resolution = await resolveFailedStepName({
+    repo: "o/r",
+    checkRunId: "555",
+    ghFn: gh,
+  });
+
+  assertEquals(resolution.kind, "error");
+});
+
+Deno.test("resolveFailedStepName - a malformed job response is an error", async () => {
+  const gh = fakeGh({
+    "repos/o/r/check-runs/555": JSON.stringify({
+      app: { slug: "github-actions" },
+      details_url: "https://github.com/o/r/actions/runs/123/job/456",
+    }),
+    "repos/o/r/actions/jobs/456": "not json at all",
+  });
 
   const resolution = await resolveFailedStepName({
     repo: "o/r",

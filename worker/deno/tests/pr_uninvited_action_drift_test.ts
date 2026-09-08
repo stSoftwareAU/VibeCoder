@@ -323,10 +323,15 @@ function apiResponse(
 
   const actionsJob = /^actions\/jobs\/(\d+)$/.exec(rest);
   if (actionsJob) {
+    // The job id mirrors the check id, so the step is named after whichever
+    // of the fixture's two checks it belongs to.
     const id = Number(actionsJob[1]);
-    const step = id % 10 === 1 ? "Run codespell" : "Run quality checks";
+    const spelling = FIXTURE_PRS.some((pr) => spellingCheckId(pr) === id);
     return JSON.stringify({
-      steps: [{ name: step, conclusion: "failure" }],
+      steps: [{
+        name: spelling ? "Run codespell" : "Run quality checks",
+        conclusion: "failure",
+      }],
     });
   }
 

@@ -9,11 +9,7 @@
  */
 
 import type { Logger, Result } from "../types.ts";
-import {
-  type ActionsLogOptions,
-  type FailedStepResolution,
-  resolveFailedStepName,
-} from "./github_actions_log_fetcher.ts";
+import { resolveFailedStepName } from "./github_actions_log_fetcher.ts";
 
 /** Information about a failed CI check. */
 export interface FailedCiCheck {
@@ -238,14 +234,12 @@ export interface CheckFixRouteOptions {
   checkName: string;
   /** Function to run gh commands (injectable for testing). */
   ghCommandFn: (args: string[]) => Promise<string>;
-  /** Check `target_url` / `details_url` when the caller already has it. */
-  targetUrl?: string;
-  /** Logger — the routing reason is recorded at info level. */
-  logger?: Logger;
-  /** Failed-step resolver (injectable for testing). */
-  resolveFailedStepFn?: (
-    opts: ActionsLogOptions,
-  ) => Promise<FailedStepResolution>;
+  /**
+   * Logger — every decision that sends a spelling-named check elsewhere is
+   * recorded, and a failed lookup is recorded at warn level. Required, so
+   * no routing surprise can happen silently.
+   */
+  logger: Logger;
 }
 
 /**
@@ -266,53 +260,51 @@ export interface CheckFixRouteOptions {
 export async function resolveCheckFixRoute(
   options: CheckFixRouteOptions,
 ): Promise<CheckFixRouting> {
-  const {
-    repo,
-    checkId,
-    checkName,
-    ghCommandFn,
-    targetUrl,
-    logger,
-    resolveFailedStepFn = resolveFailedStepName,
-  } = options;
+  const { repo, checkId, checkName, ghCommandFn, logger } = options;
 
   if (!isSpellingCheck(checkName)) {
     return { route: "ci-fix", reason: "check name is not spelling-related" };
   }
 
-  const resolution = await resolveFailedStepFn({
+  const resolution = await resolveFailedStepName({
     repo,
     checkRunId: checkId,
     checkName,
     ghFn: ghCommandFn,
-    ...(targetUrl !== undefined ? { targetUrl } : {}),
   });
 
   if (resolution.kind !== "step") {
-    const detail = resolution.kind === "error"
-      ? resolution.error
-      : resolution.reason;
+    const failed = resolution.kind === "error";
+    const detail = failed ? resolution.error : resolution.reason;
     const reason =
       `no failed step could be resolved for a spelling-named check: ${detail}`;
-    logger?.info("Routing a spelling-named check to the CI-fix processor", {
-      repo,
-      checkName,
-      checkId,
-      reason,
-    });
+    // A lookup that genuinely failed is a fault, not the routine
+    // "this check is not an Actions job" case — it is reported as one.
+    const record = failed ? logger.warn : logger.info;
+    record.call(
+      logger,
+      "Routing a spelling-named check to the CI-fix processor",
+      { repo, checkName, checkId, reason },
+    );
     return { route: "ci-fix", reason };
   }
 
-  const spelling = isSpellingStep(resolution.name);
+  // Every failed step must be a spelling tool: a job that failed in both
+  // codespell and bats belongs on the CI-fix route, whose agent fixes
+  // spelling too — the spelling agent cannot fix the bats failure.
+  const spelling = resolution.failedSteps.every(isSpellingStep);
+  const steps = resolution.failedSteps.join(", ");
   const reason = spelling
-    ? `failed step '${resolution.name}' is a spelling tool`
-    : `failed step '${resolution.name}' is not a spelling tool`;
-  logger?.info(
-    spelling
-      ? "Routing a failed check to the spelling processor"
-      : "Routing a spelling-named check to the CI-fix processor",
-    { repo, checkName, checkId, failedStep: resolution.name },
-  );
+    ? `failed step(s) '${steps}' are spelling tools`
+    : `failed step(s) '${steps}' include a non-spelling tool`;
+  if (!spelling) {
+    logger.info("Routing a spelling-named check to the CI-fix processor", {
+      repo,
+      checkName,
+      checkId,
+      failedSteps: steps,
+    });
+  }
   return {
     route: spelling ? "spelling" : "ci-fix",
     reason,

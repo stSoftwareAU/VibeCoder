@@ -181,6 +181,7 @@ Deno.test("pr_ci_checks - a non-spelling check name routes to CI-fix with no ext
       calls.push(args);
       return Promise.resolve("{}");
     },
+    logger: makeCapturingLogger([]),
   });
 
   assertEquals(routing.route, "ci-fix");
@@ -193,6 +194,7 @@ Deno.test("pr_ci_checks - a bats failure inside a spelling-named job routes to C
     checkId: "900",
     checkName: "Scripts & spelling",
     ghCommandFn: ghForFailedStep("Run bats (tests/scripts)"),
+    logger: makeCapturingLogger([]),
   });
 
   assertEquals(routing.route, "ci-fix");
@@ -205,13 +207,42 @@ Deno.test("pr_ci_checks - a codespell step failure still routes to the spelling 
     checkId: "900",
     checkName: "Scripts & spelling",
     ghCommandFn: ghForFailedStep("Run codespell"),
+    logger: makeCapturingLogger([]),
   });
 
   assertEquals(routing.route, "spelling");
   assertEquals(routing.failedStep, "Run codespell");
 });
 
-Deno.test("pr_ci_checks - an unresolvable failed step routes to CI-fix and says why", async () => {
+Deno.test("pr_ci_checks - a job failing in both codespell and bats routes to CI-fix (Issue #1579)", async () => {
+  const gh = (args: string[]): Promise<string> => {
+    const endpoint = args[args.length - 1] ?? "";
+    if (endpoint === "repos/o/r/check-runs/900") {
+      return Promise.resolve(JSON.stringify({
+        app: { slug: "github-actions" },
+        details_url: "https://github.com/o/r/actions/runs/12/job/34",
+      }));
+    }
+    return Promise.resolve(JSON.stringify({
+      steps: [
+        { name: "Run codespell", conclusion: "failure" },
+        { name: "Run bats (tests/scripts)", conclusion: "failure" },
+      ],
+    }));
+  };
+
+  const routing = await resolveCheckFixRoute({
+    repo: "o/r",
+    checkId: "900",
+    checkName: "Scripts & spelling",
+    ghCommandFn: gh,
+    logger: makeCapturingLogger([]),
+  });
+
+  assertEquals(routing.route, "ci-fix");
+});
+
+Deno.test("pr_ci_checks - a failed job lookup routes to CI-fix and is reported loudly", async () => {
   const logged: string[] = [];
   const routing = await resolveCheckFixRoute({
     repo: "o/r",
@@ -223,16 +254,39 @@ Deno.test("pr_ci_checks - an unresolvable failed step routes to CI-fix and says 
 
   assertEquals(routing.route, "ci-fix");
   assertEquals(routing.failedStep, undefined);
-  assertEquals(logged.length, 1);
   assertEquals(routing.reason.includes("HTTP 500"), true);
+  // A genuine API failure is a warning, not routine information.
+  assertEquals(logged, [
+    "warn: Routing a spelling-named check to the CI-fix processor",
+  ]);
 });
 
-/** Minimal logger recording `info` messages only. */
+Deno.test("pr_ci_checks - a check that is not an Actions job routes to CI-fix as routine", async () => {
+  const logged: string[] = [];
+  const routing = await resolveCheckFixRoute({
+    repo: "o/r",
+    checkId: "900",
+    checkName: "cspell",
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify({
+        app: { slug: "some-other-ci" },
+        details_url: "https://ci.example.com/build/9",
+      })),
+    logger: makeCapturingLogger(logged),
+  });
+
+  assertEquals(routing.route, "ci-fix");
+  assertEquals(logged, [
+    "info: Routing a spelling-named check to the CI-fix processor",
+  ]);
+});
+
+/** Minimal logger recording `info` and `warn` messages with their level. */
 function makeCapturingLogger(sink: string[]): Logger {
   const noop = () => {};
   return {
-    info: (message: string) => sink.push(message),
-    warn: noop,
+    info: (message: string) => sink.push(`info: ${message}`),
+    warn: (message: string) => sink.push(`warn: ${message}`),
     error: noop,
     debug: noop,
     security: noop,
