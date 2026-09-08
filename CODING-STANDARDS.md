@@ -595,7 +595,9 @@ proactively:
   URLs, inspecting pages, taking screenshots (save to `docs/evidence/`), and
   interacting with web interfaces. Wired into a run only when that run needs a
   browser — a `needs-screenshot` issue, or a repo configured with
-  `requiresScreenshots` (Issue #192); a backend run is given no browser tool.
+  `requiresScreenshots` (Issue #192), and never a repo that sets
+  `skip_screenshot_check` (Issue #1584); a backend run is given no browser
+  tool.
 
 ## Prompt Engineering Guidance
 

@@ -98,6 +98,88 @@ Deno.test("detectScreenshotRequired - returns false for different repo", () => {
   assertEquals(result, false);
 });
 
+// --- skip_screenshot_check overrides both triggers (Issue #1584) ---
+
+Deno.test("detectScreenshotRequired - skip_screenshot_check beats the needs-screenshot label", () => {
+  const repoConfigs = {
+    "owner/backend": { skipScreenshotCheck: true } as Record<string, unknown>,
+  };
+  const result = detectScreenshotRequired(
+    "enhancement,needs-screenshot,work-on",
+    "needs-screenshot",
+    repoConfigs as unknown as Record<string, import("../types.ts").RepoConfig>,
+    "owner/backend",
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("detectScreenshotRequired - skip_screenshot_check beats requires_screenshots", () => {
+  const repoConfigs = {
+    "owner/backend": {
+      requiresScreenshots: true,
+      skipScreenshotCheck: true,
+    } as Record<string, unknown>,
+  };
+  const result = detectScreenshotRequired(
+    "enhancement",
+    "needs-screenshot",
+    repoConfigs as unknown as Record<string, import("../types.ts").RepoConfig>,
+    "owner/backend",
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("detectScreenshotRequired - skip_screenshot_check as a string still overrides", () => {
+  const repoConfigs = {
+    "owner/backend": {
+      requiresScreenshots: true,
+      skipScreenshotCheck: "true",
+    } as Record<string, unknown>,
+  };
+  const result = detectScreenshotRequired(
+    "enhancement,needs-screenshot",
+    "needs-screenshot",
+    repoConfigs as unknown as Record<string, import("../types.ts").RepoConfig>,
+    "owner/backend",
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("detectScreenshotRequired - logs the override once, naming the repository", () => {
+  const repoConfigs = {
+    "owner/backend": { skipScreenshotCheck: true } as Record<string, unknown>,
+  };
+  const lines: string[] = [];
+  const result = detectScreenshotRequired(
+    "needs-screenshot",
+    "needs-screenshot",
+    repoConfigs as unknown as Record<string, import("../types.ts").RepoConfig>,
+    "owner/backend",
+    (message) => lines.push(message),
+  );
+  assertEquals(result, false);
+  assertEquals(lines.length, 1);
+  const [overrideLine = ""] = lines;
+  assertStringIncludes(overrideLine, "owner/backend");
+  assertStringIncludes(overrideLine, "skip_screenshot_check");
+});
+
+Deno.test("detectScreenshotRequired - no override log when nothing was overridden", () => {
+  const repoConfigs = {
+    "owner/backend": { skipScreenshotCheck: true } as Record<string, unknown>,
+  };
+  const lines: string[] = [];
+  const result = detectScreenshotRequired(
+    "enhancement",
+    "needs-screenshot",
+    repoConfigs as unknown as Record<string, import("../types.ts").RepoConfig>,
+    "owner/backend",
+    (message) => lines.push(message),
+  );
+  assertEquals(result, false);
+  assertEquals(lines.length, 0);
+});
+
 // =============================================================================
 // Failure message formatting
 // =============================================================================
