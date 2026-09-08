@@ -437,8 +437,6 @@ export interface CommitAndPushPendingResult {
  * Result of {@link unstageWorkerStateFiles}.
  */
 interface UnstageWorkerStateResult {
-  /** Worker-owned state paths removed from the index (possibly empty). */
-  unstaged: string[];
   /** How many staged paths remain — 0 means there is nothing real to commit. */
   remainingStaged: number;
 }
@@ -477,7 +475,7 @@ async function unstageWorkerStateFiles(
   const remainingStaged = staged.length - workerState.length;
 
   if (workerState.length === 0) {
-    return { ok: true, value: { unstaged: [], remainingStaged } };
+    return { ok: true, value: { remainingStaged } };
   }
 
   // `--` guards the path list; `git reset -- <paths>` also behaves on an
@@ -506,7 +504,7 @@ async function unstageWorkerStateFiles(
       workerState.map((p) => `  - ${p}`).join("\n"),
   );
 
-  return { ok: true, value: { unstaged: workerState, remainingStaged } };
+  return { ok: true, value: { remainingStaged } };
 }
 
 /**
