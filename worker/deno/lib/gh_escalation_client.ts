@@ -12,16 +12,20 @@
  *                          with `gh issue edit --add-label` fallback.
  *   - `postComment`      — REST API (`POST /repos/.../issues/N/comments`).
  *   - `getIssueComments` — REST API list (`GET /repos/.../issues/N/comments`),
- *                          paged at 100 per request up to 10 pages (1 000
- *                          comments). GitHub's default page is the **oldest
- *                          30**, and asking this endpoint for `direction=desc`
- *                          returned the same ascending order when checked live
- *                          (NEAT-AI-core#593, 2026-09-08), so the newest
- *                          comments — where `escalateToHuman`'s dedup marker
- *                          always is — are reliably reachable only by paging
- *                          (Issue #1619). Pages are
- *                          concatenated oldest-first, the order the dedup
- *                          scan's `slice(-50)` tail expects.
+ *                          paged at 100 per page up to 10 pages (Issue #1619).
+ *
+ * **Comment window.** The un-paged endpoint returns the API default — the
+ * **oldest 30** comments — so on a busy issue `escalateToHuman`'s dedup scan
+ * never saw the marker it had itself written and posted a duplicate
+ * escalation (NEAT-AI-core#593: 46 comments, the marker in comment 47). The
+ * shim therefore fetches every page at `per_page=100` up to a cap of 10 pages
+ * (1 000 comments) and concatenates them oldest-first, so the helper's
+ * `comments.slice(-50)` tail scans the newest 50. A page that fails, and a
+ * thread that outruns the cap, degrade to a partial read — the best-effort
+ * contract this shim has always had — but never silently: both warn. `sort`/`direction` are not
+ * used: GitHub ignores them on the per-issue comments endpoint (verified live
+ * against NEAT-AI-core#593 on 2026-09-08 — the same ascending order came back
+ * with and without them).
  *
  * Issues and PRs share `/issues/<number>` endpoints in the GitHub API, so the
  * same shim works for both `target.kind: "issue"` and `target.kind: "pr"`.
@@ -41,12 +45,17 @@ import {
 type GhFn = (args: string[]) => Promise<string>;
 
 /**
- * Maximum pages fetched per issue: 10 × {@link COMMENTS_PER_PAGE} = 1 000
- * comments (Issue #1619). Half the shared `MAX_COMMENT_PAGES` because this
- * scan only needs the newest 50 comments, not the whole thread; the request
- * shape and page size are the shared ones so the two cannot drift.
+ * Page cap for the dedup read, so a pathological thread cannot spend the run
+ * on paging.
+ *
+ * Deliberately its own constant rather than `issue_comment_pages.ts`'s
+ * `MAX_COMMENT_PAGES` (20): that helper throws on the cap, because a
+ * truncated thread must never be mistaken for a full one. This shim cannot —
+ * its whole contract is best effort, and throwing would lose the escalation
+ * itself rather than the marker. So it truncates, and says so on stderr:
+ * degrading is allowed here, degrading silently is not.
  */
-const COMMENT_PAGE_CAP = 10;
+const MAX_DEDUP_COMMENT_PAGES = 10;
 
 /**
  * Best-effort parser for the REST `GET /comments` response. Returns the
@@ -87,10 +96,6 @@ function parseCommentsJson(raw: string): GitHubComment[] {
  * `escalateToHuman` to call `addLabel`, `postComment`, and (when a dedup
  * scan is requested) `getIssueComments`. All other methods throw at
  * runtime — they are never called by escalateToHuman.
- *
- * @param warn - Sink for the short-read diagnostics `getIssueComments` emits
- *   when a page fails or the page cap truncates the thread. Defaults to
- *   `console.warn`; tests inject a recorder.
  */
 export function createGhEscalationClient(
   ghFn: GhFn,
@@ -111,39 +116,37 @@ export function createGhEscalationClient(
       issueNumber: number,
     ): Promise<GitHubComment[]> {
       const all: GitHubComment[] = [];
-      for (let page = 1; page <= COMMENT_PAGE_CAP; page++) {
-        let parsed: GitHubComment[];
+      for (let page = 1; page <= MAX_DEDUP_COMMENT_PAGES; page++) {
+        let raw: string;
         try {
-          const raw = await ghFn(
+          raw = await ghFn(
             buildIssueCommentsPageArgs(repo, issueNumber, page),
           );
-          parsed = parseCommentsJson(raw);
         } catch (err) {
-          // Best effort: return the pages already fetched rather than
-          // discarding them (the pre-paging contract). The partial result
-          // is announced — a short read makes the dedup scan conclude "no
-          // marker" and post a duplicate, so it must not pass as a full one.
+          // Best effort: keep the pages already fetched rather than
+          // discarding them — a partial scan still finds most markers — but
+          // never let the shortfall pass unreported.
           warn(
-            `[GH_COMMENT_PAGE_FAILED] ${repo}#${issueNumber} page ${page} ` +
-              `could not be fetched (${
+            `createGhEscalationClient: comment page ${page} of ` +
+              `${repo}#${issueNumber} failed (${
                 err instanceof Error ? err.message : String(err)
-              }) — the dedup scan sees only the ${all.length} comments read ` +
-              `so far and may post a duplicate`,
+              }) — scanning the ${all.length} comments already fetched`,
           );
           return all;
         }
+        const parsed = parseCommentsJson(raw);
         all.push(...parsed);
-        // A short page is the last page (a malformed page parses to [] and
-        // also stops here — the dedup scan treats absence as "no marker").
+        // A short page is the last page; a malformed one yields none and
+        // ends the loop too, matching the pre-paging degrade-to-empty.
         if (parsed.length < COMMENTS_PER_PAGE) return all;
       }
-      // Cap reached on a full page: the thread is longer than the window,
-      // so the newest comments — where the dedup marker is — were not read.
+      // Every page was full at the cap, so the thread is longer than this
+      // read. Truncation is the best-effort contract; silence is not.
       warn(
-        `[GH_COMMENT_PAGE_CAP] ${repo}#${issueNumber} has more than ` +
-          `${COMMENT_PAGE_CAP * COMMENTS_PER_PAGE} comments — the newest are ` +
-          `beyond the page cap, so the escalation dedup scan may post a ` +
-          `duplicate`,
+        `createGhEscalationClient: ${repo}#${issueNumber} has more than ` +
+          `${MAX_DEDUP_COMMENT_PAGES * COMMENTS_PER_PAGE} comments — the ` +
+          `dedup scan reads the newest of the first ` +
+          `${MAX_DEDUP_COMMENT_PAGES} pages only`,
       );
       return all;
     },

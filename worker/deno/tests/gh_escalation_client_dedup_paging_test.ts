@@ -75,7 +75,16 @@ function makeBusyIssueGh(): {
   return { ghFn, postedBodies };
 }
 
-/** A `GitHubClient` whose comment read is the pre-fix, un-paged request. */
+/**
+ * A `GitHubClient` whose comment read is the pre-fix, un-paged request.
+ *
+ * Deliberately a hand-written control rather than shipped code: the fix
+ * replaced the un-paged read, so the only way to show the two shapes
+ * disagreeing on the same thread is to keep the old one here. It guards the
+ * *test*, proving the fake issue really does hide comment 47 from a 30-comment
+ * read — without it, a dedup pass would be indistinguishable from a fake that
+ * never had the problem.
+ */
 function makeUnpagedClient(
   ghFn: (args: string[]) => Promise<string>,
 ): GitHubClient {

@@ -128,16 +128,13 @@ Deno.test("getIssueComments - returns [] for malformed JSON without throwing", a
   assertEquals(comments, []);
 });
 
-Deno.test("getIssueComments - returns [] when ghFn throws, and says so", async () => {
+Deno.test("getIssueComments - returns [] when ghFn throws", async () => {
   const { ghFn } = makeFakeGh({ failWhen: () => true });
-  const warnings: string[] = [];
-  const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
+  const client = createGhEscalationClient(ghFn, () => {});
 
   const comments = await client.getIssueComments("owner/repo", 1);
 
   assertEquals(comments, []);
-  assertEquals(warnings.length, 1);
-  assert(warnings[0]?.includes("[GH_COMMENT_PAGE_FAILED]"));
 });
 
 Deno.test("getIssueComments - degrades a non-array JSON response to []", async () => {
@@ -223,117 +220,91 @@ Deno.test("unsupported methods reject with a descriptive error", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// getIssueComments paging (Issue #1619)
-//
-// The default un-paged request returns the OLDEST 30 comments, so on a busy
-// issue the dedup marker `escalateToHuman` looks for — always among the
-// newest — was never fetched. The shim now pages at 100 per request.
+// getIssueComments — paging (Issue #1619)
 // ---------------------------------------------------------------------------
 
-/** Build `count` REST comment payload entries starting at `startId`. */
-function makeRestComments(
-  count: number,
-  startId: number,
-): Array<Record<string, unknown>> {
-  return Array.from({ length: count }, (_unused, index) => ({
-    id: startId + index,
-    body: `comment ${startId + index}`,
-    created_at: "2026-09-08T00:00:00Z",
+/** Build a JSON page of `count` comments numbered from `startId`. */
+function commentPage(startId: number, count: number): string {
+  const entries = Array.from({ length: count }, (_, i) => ({
+    id: startId + i,
+    body: `comment ${startId + i}`,
+    created_at: "2026-01-01T00:00:00Z",
     user: { login: "vibe-coder[bot]" },
   }));
+  return JSON.stringify(entries);
 }
 
-Deno.test("getIssueComments - requests 100 comments per page", async () => {
-  const { ghFn, calls } = makeFakeGh({ response: () => "[]" });
-  const client = createGhEscalationClient(ghFn);
+/** Extract the `page=N` parameter from a `repos/.../comments?...` path. */
+function pageOf(args: string[]): number {
+  const match = /[?&]page=(\d+)/.exec(args[1] ?? "");
+  return match ? Number(match[1]) : 0;
+}
 
-  await client.getIssueComments("owner/repo", 593);
-
-  assertEquals(calls.length, 1);
-  assertEquals(calls[0], [
-    "api",
-    "repos/owner/repo/issues/593/comments?per_page=100&page=1",
-  ]);
-});
-
-Deno.test("getIssueComments - a full page is followed by a page=2 request", async () => {
+Deno.test("getIssueComments - follows a full page with a page=2 request", async () => {
   const { ghFn, calls } = makeFakeGh({
     response: (args) =>
-      args[1]?.endsWith("page=1")
-        ? JSON.stringify(makeRestComments(100, 1))
-        : JSON.stringify(makeRestComments(17, 101)),
+      pageOf(args) === 1 ? commentPage(1, 100) : commentPage(101, 7),
   });
   const client = createGhEscalationClient(ghFn);
 
-  const comments = await client.getIssueComments("owner/repo", 593);
+  const comments = await client.getIssueComments("owner/repo", 3);
 
   assertEquals(calls.length, 2);
+  assertEquals(calls[0], [
+    "api",
+    "repos/owner/repo/issues/3/comments?per_page=100&page=1",
+  ]);
   assertEquals(calls[1], [
     "api",
-    "repos/owner/repo/issues/593/comments?per_page=100&page=2",
+    "repos/owner/repo/issues/3/comments?per_page=100&page=2",
   ]);
-  assertEquals(comments.length, 117);
+  assertEquals(comments.length, 107);
+  // Oldest first across pages, so escalateToHuman's tail slice sees the newest.
+  assertEquals(comments[0]?.body, "comment 1");
+  assertEquals(comments[99]?.body, "comment 100");
+  assertEquals(comments[100]?.body, "comment 101");
+  assertEquals(comments[106]?.body, "comment 107");
 });
 
-Deno.test("getIssueComments - a short page stops paging", async () => {
-  const { ghFn, calls } = makeFakeGh({
-    response: () => JSON.stringify(makeRestComments(47, 1)),
-  });
+Deno.test("getIssueComments - a short first page stops paging", async () => {
+  const { ghFn, calls } = makeFakeGh({ response: () => commentPage(1, 47) });
   const client = createGhEscalationClient(ghFn);
 
-  const comments = await client.getIssueComments("owner/repo", 593);
+  const comments = await client.getIssueComments("owner/repo", 3);
 
   assertEquals(calls.length, 1);
   assertEquals(comments.length, 47);
 });
 
-Deno.test("getIssueComments - returns pages concatenated oldest-first", async () => {
-  const { ghFn } = makeFakeGh({
-    response: (args) =>
-      args[1]?.endsWith("page=1")
-        ? JSON.stringify(makeRestComments(100, 1))
-        : JSON.stringify(makeRestComments(3, 101)),
-  });
-  const client = createGhEscalationClient(ghFn);
-
-  const comments = await client.getIssueComments("owner/repo", 593);
-
-  assertEquals(comments.length, 103);
-  assertEquals(comments[0]?.body, "comment 1");
-  assertEquals(comments[99]?.body, "comment 100");
-  assertEquals(comments[102]?.body, "comment 103");
-});
-
-Deno.test("getIssueComments - caps paging at 10 pages and says the thread was truncated", async () => {
+Deno.test("getIssueComments - stops at the 10-page cap and says so", async () => {
   const { ghFn, calls } = makeFakeGh({
-    // Every page is full, so only the cap can stop the loop.
-    response: () => JSON.stringify(makeRestComments(100, 1)),
+    // Every page is full, so only the cap can end the loop.
+    response: (args) => commentPage((pageOf(args) - 1) * 100 + 1, 100),
   });
   const warnings: string[] = [];
   const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
 
-  const comments = await client.getIssueComments("owner/repo", 593);
+  const comments = await client.getIssueComments("owner/repo", 3);
 
   assertEquals(calls.length, 10);
   assertEquals(comments.length, 1000);
-  // A truncated thread must not pass as a full one: the newest comments —
-  // where the dedup marker is — were not read, so say so.
+  // Truncation is the best-effort contract; silence about it is not.
   assertEquals(warnings.length, 1);
-  assert(warnings[0]?.includes("[GH_COMMENT_PAGE_CAP]"));
-  assert(warnings[0]?.includes("owner/repo#593"));
+  assert(warnings[0]?.includes("more than 1000 comments"));
 });
 
-Deno.test("getIssueComments - a mid-paging failure returns what was fetched so far, loudly", async () => {
+Deno.test("getIssueComments - a failing later page returns what was fetched, loudly", async () => {
   const { ghFn } = makeFakeGh({
-    failWhen: (args) => args[1]?.includes("page=2") === true,
-    response: () => JSON.stringify(makeRestComments(100, 1)),
+    failWhen: (args) => pageOf(args) === 2,
+    response: () => commentPage(1, 100),
   });
   const warnings: string[] = [];
   const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
 
-  const comments = await client.getIssueComments("owner/repo", 593);
+  const comments = await client.getIssueComments("owner/repo", 3);
 
   assertEquals(comments.length, 100);
+  assertEquals(comments[0]?.body, "comment 1");
   assertEquals(warnings.length, 1);
-  assert(warnings[0]?.includes("[GH_COMMENT_PAGE_FAILED]"));
+  assert(warnings[0]?.includes("comment page 2"));
 });
