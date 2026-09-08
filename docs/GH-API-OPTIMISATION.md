@@ -385,9 +385,35 @@ absorb 17 unrelated sub-command calls. Summed over *all* buckets
 including `unattributed`, the gap needs no cross-crediting: since
 Issue #1485 the source counters count every GraphQL-backed sub-command,
 while the `api graphql` sub-command bucket counts only the explicit
-ones, so the two measure different sets by design. An explicit
-`enterGraphQLSource()` nested inside a wrapped chain still wins, and
-calls issued outside any source land in the `unattributed` bucket.
+ones, so the two measure different sets by design.
+
+The source of a GraphQL-billed call is resolved in four steps
+(Issue #1586):
+
+1. the explicit `enterGraphQLSource()` stack — innermost wins, so an
+   `enterGraphQLSource()` nested inside a wrapped chain still beats it;
+2. else the async-scoped `withGraphQLSource()` context;
+3. else the **active priority** — the `enterPriority()` stack top, else
+   the async-scoped `withPriorityContext()` — emitted with a `priority:`
+   prefix, e.g. `priority:issue-scanning`;
+4. else the `unattributed` bucket.
+
+Only the eight batching modules wrap themselves in an explicit GraphQL
+source, so before step 3 existed the bulk of the burn — the ordinary
+`issue list` / `pr list` / `issue view` traffic — had no source at all
+and `unattributed` was most of the line. With the priority fallback a
+cycle reads like `graphql-calls: 796 total,
+priority:issue-scanning=239, timeline-batch=26, …`. The `priority:`
+prefix keeps a derived bucket distinguishable from an explicit one, so
+a priority named the same as a source cannot merge with it.
+
+`unattributed` is therefore an anomaly signal, not the normal case: it
+means a call was issued with neither a GraphQL source nor a priority
+context in scope — a pass that runs outside `withPriorityContext`. The
+buckets sum exactly to the total, and a unit test in
+`worker/deno/tests/gh_call_metrics_test.ts` asserts that invariant, so
+any future path that counts a GraphQL call without choosing a bucket
+fails before merge.
 
 The primary-quota latch (Issue #42) is enforced at the same chokepoint:
 once the hourly GraphQL quota is exhausted, every GraphQL-backed spawn
