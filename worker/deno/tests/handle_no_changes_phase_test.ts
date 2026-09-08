@@ -689,68 +689,62 @@ Deno.test(
 // Issue #1385 — an untrusted image withholds the already-resolved close
 // -------------------------------------------------------------------------
 
-Deno.test(
-  "handle_no_changes_phase - an untrusted image withholds the already-resolved close (Issue #1385)",
-  async () => {
-    // The exploit this closes: an image tells the agent to report the issue as
-    // already fixed AND to withhold its own suspicious-image marker, so the
-    // only detector is the party under attack. The image reference cannot be
-    // suppressed that way — the worker parsed it before the agent saw
-    // anything — so the close is refused and the issue goes to a human.
-    const calls = makeStubGhCalls();
-    const body = "Broken login — see ![repro](https://example.test/shot.png)";
-    const ctx = makeContext({
-      issueBody: body,
-      untrustedImages: findImageReferences(body),
-    });
-    const state = makeState({
-      claudeOutput: "A".repeat(200) +
-        "\nThis has already been fixed. No code change was required.\n" +
-        '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
-        'verified="read the code on the default branch" -->',
-    });
-    const deps = createMockDeps({
-      github: { createClient: () => makeStubGhClient(calls) },
-    });
+Deno.test("handle_no_changes_phase - an untrusted image withholds the already-resolved close (Issue #1385)", async () => {
+  // The exploit this closes: an image tells the agent to report the issue as
+  // already fixed AND to withhold its own suspicious-image marker, so the
+  // only detector is the party under attack. The image reference cannot be
+  // suppressed that way — the worker parsed it before the agent saw
+  // anything — so the close is refused and the issue goes to a human.
+  const calls = makeStubGhCalls();
+  const body = "Broken login — see ![repro](https://example.test/shot.png)";
+  const ctx = makeContext({
+    issueBody: body,
+    untrustedImages: findImageReferences(body),
+  });
+  const state = makeState({
+    claudeOutput: "A".repeat(200) +
+      "\nThis has already been fixed. No code change was required.\n" +
+      '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+      'verified="read the code on the default branch" -->',
+  });
+  const deps = createMockDeps({
+    github: { createClient: () => makeStubGhClient(calls) },
+  });
 
-    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+  const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-    assertEquals(calls.closeIssue.length, 0, "must NOT close the issue");
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    assert(
-      calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
-      "must hand the issue to a human instead of closing it",
-    );
-  },
-);
+  assertEquals(calls.closeIssue.length, 0, "must NOT close the issue");
+  assertEquals(
+    (result as { reason: string }).reason,
+    "analysis_only_handed_off",
+  );
+  assert(
+    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    "must hand the issue to a human instead of closing it",
+  );
+});
 
-Deno.test(
-  "handle_no_changes_phase - a trusted author's issue still closes on the same evidence (Issue #1385)",
-  async () => {
-    // The gate is conjunctive: no observed untrusted image, no withholding.
-    // A control that fires on ordinary work is one somebody switches off.
-    const calls = makeStubGhCalls();
-    const ctx = makeContext({
-      issueBody: "Broken login — see ![repro](https://example.test/shot.png)",
-      // A trusted author's images are never observed, so the field is empty.
-      untrustedImages: [],
-    });
-    const state = makeState({
-      claudeOutput: "A".repeat(200) +
-        "\nThis has already been fixed. No code change was required.\n" +
-        '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
-        'verified="read the code on the default branch" -->',
-    });
-    const deps = createMockDeps({
-      github: { createClient: () => makeStubGhClient(calls) },
-    });
+Deno.test("handle_no_changes_phase - a trusted author's issue still closes on the same evidence (Issue #1385)", async () => {
+  // The gate is conjunctive: no observed untrusted image, no withholding.
+  // A control that fires on ordinary work is one somebody switches off.
+  const calls = makeStubGhCalls();
+  const ctx = makeContext({
+    issueBody: "Broken login — see ![repro](https://example.test/shot.png)",
+    // A trusted author's images are never observed, so the field is empty.
+    untrustedImages: [],
+  });
+  const state = makeState({
+    claudeOutput: "A".repeat(200) +
+      "\nThis has already been fixed. No code change was required.\n" +
+      '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+      'verified="read the code on the default branch" -->',
+  });
+  const deps = createMockDeps({
+    github: { createClient: () => makeStubGhClient(calls) },
+  });
 
-    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+  const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-    assertEquals((result as { reason: string }).reason, "already_complete");
-    assertEquals(calls.closeIssue.length, 1);
-  },
-);
+  assertEquals((result as { reason: string }).reason, "already_complete");
+  assertEquals(calls.closeIssue.length, 1);
+});
