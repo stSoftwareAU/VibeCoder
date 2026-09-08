@@ -361,7 +361,9 @@ underlying counters so its `cache: N hits, M misses` log matches.
 
 A companion line, `graphql-calls: N total, <source>=n, …`, counts the
 subset of those invocations that are GraphQL-backed and attributes them
-to the scan that issued them. Every `gh` sub-command (`issue list`,
+to the scan that issued them — by the four-step resolution described
+below, which since Issue #1586 names the ordinary scan traffic too.
+Every `gh` sub-command (`issue list`,
 `pr view`, `search`, …) is GraphQL-backed, as is an explicit
 `gh api graphql`; only a plain REST `gh api <path>` is not. The line
 uses the same predicate as the primary-quota latch
