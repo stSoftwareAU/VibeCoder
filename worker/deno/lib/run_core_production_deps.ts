@@ -98,6 +98,7 @@ import { stopAllHeartbeats, stopHeartbeatsExcept } from "./heartbeat.ts";
 import { workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
+import { observeUntrustedIssueImages } from "./issue_content_trust_filter.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
 import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
 import { routeRunResult } from "./route_claim.ts";
@@ -3233,6 +3234,17 @@ export async function createProductionRunCoreDeps(
         issueBody: issueData.body ?? "",
         issueLabels: issueData.labels ?? [],
         issueComments: "",
+        // Issue #1385: the main loop builds its own context, so the
+        // untrusted-image observation is made here too — the gate in the
+        // no-changes phase is only a control on the routes that observe.
+        untrustedImages: observeUntrustedIssueImages(
+          issueData.author ?? "",
+          issueData.body ?? "",
+          {
+            allowedAuthors: config.allowedAuthors ?? [],
+            authorisedCommenters: config.authorisedCommenters ?? [],
+          },
+        ),
         githubUser,
         milestoneTitle: issue.milestoneTitle || undefined,
         config,

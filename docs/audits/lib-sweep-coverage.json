@@ -625,6 +625,7 @@
         "worker/deno/lib/idle_task_templates/supply_chain_readiness_template.ts",
         "worker/deno/lib/idle_task_wrapper_closure.ts",
         "worker/deno/lib/idle_task_wrapper_dedup.ts",
+        "worker/deno/lib/image_conclusion_gate.ts",
         "worker/deno/lib/image_path_resolver.ts",
         "worker/deno/lib/in_flight_repos.ts",
         "worker/deno/lib/independent_review_gate.ts",
