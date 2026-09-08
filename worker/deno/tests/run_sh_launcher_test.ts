@@ -678,6 +678,21 @@ Deno.test("run.sh - refuses to launch when another worker is already running on 
       "a live worker is never reaped",
     );
     assertEquals(await recorded(harness, "build"), null);
+
+    // Issue #1550: the one thing this tick still does for the running worker
+    // is hand it a fresh host-disk reading, in the log directory the
+    // container mounts read-write. Shape as `parseHostDiskRefresh` expects.
+    const reading = JSON.parse(
+      await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
+    ) as Record<string, unknown>;
+    assertEquals(typeof reading.availableBytes, "number");
+    assertEquals(typeof reading.totalBytes, "number");
+    assertEquals(typeof reading.measuredAt, "number");
+    assert((reading.totalBytes as number) > 0, "a measured total");
+    assert(
+      Math.abs((reading.measuredAt as number) - Date.now() / 1000) < 300,
+      "measured now, not copied from anywhere",
+    );
     assertEquals(await recorded(harness, "run"), null);
   } finally {
     await harness.cleanup();

@@ -365,7 +365,11 @@ import {
 } from "./software_updates.ts";
 import { enableAutoMerge, logAutoMergeOutcome } from "./pr_auto_merge.ts";
 import { closeIssuesForMergedPrs as prIssueCloseForMerged } from "./pr_issue_linking.ts";
-import { formatGb, HostDiskMonitor } from "./host_disk.ts";
+import {
+  formatGb,
+  HOST_DISK_REFRESH_FILE,
+  HostDiskMonitor,
+} from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
   reclaimWorkVolumeTiers,
@@ -638,6 +642,9 @@ export async function createProductionRunCoreDeps(
   const hostDisk = new HostDiskMonitor({
     workDir,
     log: (message: string) => logger.info(message),
+    // Issue #1550: the launcher's per-tick reading, written to the worker
+    // log directory — mounted read-write at `${HOME}/logs` in the container.
+    refreshFile: `${env("HOME") ?? "~"}/logs/${HOST_DISK_REFRESH_FILE}`,
     // Issue #732: the floor this deployment states, so the worker claims at
     // the floor the launcher heals at — `.config.json` first, then the
     // environment override, then the default.
