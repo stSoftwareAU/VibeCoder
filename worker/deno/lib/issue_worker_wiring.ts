@@ -54,6 +54,7 @@ import { repairSharedObjectStore } from "./object_store_repair.ts";
 import { ensureRepoClone } from "./ensure_repo_clone.ts";
 import { ensureLaneWorktree } from "./lane_worktree.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { cleanWorkingTree } from "./ignored_path_clean.ts";
 import { restoreSession } from "./session_manager.ts";
 import { branchHeadChanged, captureBranchHead } from "./branch_head_tracker.ts";
 
@@ -419,7 +420,12 @@ async function setupRepoFn(
     // check the same branch out twice, and the feature branch is created
     // from `origin/<base>` regardless.
     await runGitCommand(["reset", "--hard", "HEAD"], { cwd: worktree.value });
-    await runGitCommand(["clean", "-fd"], { cwd: worktree.value });
+    // Including the ignored executable paths (Issue #1443): a lane's worktree
+    // is the longest-lived reused tree there is, so it is exactly where a
+    // previous run's content would wait for the next one. As in `setupRepo`,
+    // a clean that could not do that refuses the worktree.
+    const cleaned = await cleanWorkingTree({ cwd: worktree.value });
+    if (!cleaned.ok) return { ok: false, error: cleaned.error };
     await restoreSession(worktree.value, workDir, repo);
     return worktree;
   }

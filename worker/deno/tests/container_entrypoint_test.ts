@@ -1089,12 +1089,18 @@ async function realTar(): Promise<string> {
  * Shim `mktemp` so it always fails, driving the entrypoint's fallback path,
  * and `tar` so the `-T <list>` it is handed is recorded.
  *
- * Returns the log file the tar shim appends its argv to.
+ * Returns the directory the tar shim writes its argv records into. Each
+ * invocation gets its own file: the entrypoint seeds through
+ * `tar cf - -T list | tar xf -`, so two shims run at once, and appending
+ * both argv lists to one shared log interleaves them — a split between
+ * `-T` and its path made the recorded list read as `-` (a flake on loaded
+ * runners). One file per process cannot interleave.
  */
 async function stubMktempFailureAndTarLog(dir: string): Promise<string> {
   const binDir = `${dir}/bin`;
-  const tarLog = `${dir}/tar-argv.txt`;
+  const tarLogDir = `${dir}/tar-argv`;
   await Deno.mkdir(binDir, { recursive: true });
+  await Deno.mkdir(tarLogDir, { recursive: true });
   await Deno.writeTextFile(
     `${binDir}/mktemp`,
     "#!/bin/bash\necho 'mktemp: refused (test shim)' >&2\nexit 1\n",
@@ -1102,16 +1108,24 @@ async function stubMktempFailureAndTarLog(dir: string): Promise<string> {
   await Deno.chmod(`${binDir}/mktemp`, 0o755);
   await Deno.writeTextFile(
     `${binDir}/tar`,
-    `#!/bin/bash\nprintf '%s\\n' "$@" >> "${tarLog}"\nexec ${await realTar()} "$@"\n`,
+    `#!/bin/bash\nprintf '%s\\n' "$@" > "${tarLogDir}/$$.\${RANDOM}"\nexec ${await realTar()} "$@"\n`,
   );
   await Deno.chmod(`${binDir}/tar`, 0o755);
-  return tarLog;
+  return tarLogDir;
 }
 
 /** The paths the entrypoint handed to `tar -T` during a run. */
-function tarListPaths(log: string): string[] {
-  const argv = log.split("\n");
-  return argv.flatMap((arg, i) => arg === "-T" ? [argv[i + 1] ?? ""] : []);
+async function tarListPaths(tarLogDir: string): Promise<string[]> {
+  const lists: string[] = [];
+  for await (const entry of Deno.readDir(tarLogDir)) {
+    if (!entry.isFile) continue;
+    const argv = (await Deno.readTextFile(`${tarLogDir}/${entry.name}`))
+      .split("\n");
+    for (const [i, arg] of argv.entries()) {
+      if (arg === "-T") lists.push(argv[i + 1] ?? "");
+    }
+  }
+  return lists;
 }
 
 Deno.test("entrypoint - deno-seed keeps its missing-list out of shared /tmp when mktemp fails (Issue #1522)", async () => {
@@ -1122,7 +1136,7 @@ Deno.test("entrypoint - deno-seed keeps its missing-list out of shared /tmp when
     const home = `${dir}/home`;
     await Deno.mkdir(home, { recursive: true });
     const seed = await fakeSeed(dir);
-    const tarLog = await stubMktempFailureAndTarLog(dir);
+    const tarLogDir = await stubMktempFailureAndTarLog(dir);
 
     const { code, stderr } = await runEntrypoint({
       dir,
@@ -1151,7 +1165,7 @@ Deno.test("entrypoint - deno-seed keeps its missing-list out of shared /tmp when
 
     // The list both iterations were built from lives in a directory the
     // container owns, never in world-writable /tmp under a guessable name.
-    const lists = tarListPaths(await Deno.readTextFile(tarLog));
+    const lists = await tarListPaths(tarLogDir);
     assertEquals(lists.length, 2, `expected one list per sub: ${lists}`);
     for (const list of lists) {
       assert(

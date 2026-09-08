@@ -37,6 +37,7 @@ if your worker login is read-only on any monitored repository.**
 | A resumed Claude Code phase is invoked as `--resume <uuid>` instead of `--session-id <uuid> --resume`, which Claude Code 2.1.261 refuses at start-up; the refusal itself is now recognised as a session-flag failure and retried without the flags, loudly | #1580 |
 | The security-fix verification gate recognises a test name that `deno fmt` wrapped onto the line after `Deno.test(` (and the `it(` / `test(` and object-form `name:` equivalents), so a correctly cited regression test no longer blocks a security PR | #1581 |
 | The primary-quota latch is now set at the `gh` spawn chokepoint, so a rate-limit refusal seen by any of the thirty-odd modules that spawn `gh` directly latches the process and writes the shared signal, instead of only a refusal seen through `runGhCommandRaw` | #1540 |
+| The launcher writes a fresh host-disk reading to the worker log directory on every tick (`host-disk.json`), and the worker adopts it mid-run, so the host-disk estimate can rise when the host frees space and fall when another account consumes it, instead of standing on a launch-time baseline that could only fall | #1550 |
 
 ### In detail
 
@@ -157,6 +158,20 @@ refusal itself and hands it to the hook `github.ts` registers at load, which
 probes the reset, latches, and writes the shared signal; the quota probe is
 exempt, REST `gh api <path>` calls are unaffected, and a process that never
 loads `github.ts` spawns exactly as before. Nothing to configure.
+
+The host-disk estimate no longer stands on a figure taken once at launch
+(Issue #1550). `run.sh` runs every few minutes whether or not a worker is
+up; on the ticks where it does not launch it now writes the host's `df`
+reading to `host-disk.json` in the worker log directory — the one host path
+the container mounts read-write — and the worker adopts a reading that is
+newer than the one it holds and less than fifteen minutes old, re-basing its
+volume-growth term at that moment. A host that frees space mid-run resumes
+claiming within one tick rather than at the next launch; a host where another
+account consumes space stops claiming within one tick rather than claiming
+into a shortage. With no file (an older launcher, native mode) the launch
+baseline stands exactly as before. The log line says which it is using:
+`estimated from launch baseline` or `estimated from the launcher's reading
+N min ago`. Nothing to configure.
 
 ## 1.5.5 — the log directory comes from the file alone
 
