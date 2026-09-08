@@ -31,12 +31,19 @@
  */
 
 import type { GitHubClient, GitHubComment } from "../types.ts";
+import {
+  buildIssueCommentsPageArgs,
+  COMMENTS_PER_PAGE,
+} from "./issue_comment_pages.ts";
 
 type GhFn = (args: string[]) => Promise<string>;
 
-/** Comments requested per `GET /comments` page — the GitHub maximum. */
-const COMMENT_PAGE_SIZE = 100;
-/** Maximum pages fetched per issue: 10 × 100 = 1 000 comments. */
+/**
+ * Maximum pages fetched per issue: 10 × {@link COMMENTS_PER_PAGE} = 1 000
+ * comments (Issue #1619). Half the shared `MAX_COMMENT_PAGES` because this
+ * scan only needs the newest 50 comments, not the whole thread; the request
+ * shape and page size are the shared ones so the two cannot drift.
+ */
 const COMMENT_PAGE_CAP = 10;
 
 /**
@@ -78,8 +85,15 @@ function parseCommentsJson(raw: string): GitHubComment[] {
  * `escalateToHuman` to call `addLabel`, `postComment`, and (when a dedup
  * scan is requested) `getIssueComments`. All other methods throw at
  * runtime — they are never called by escalateToHuman.
+ *
+ * @param warn - Sink for the short-read diagnostics `getIssueComments` emits
+ *   when a page fails or the page cap truncates the thread. Defaults to
+ *   `console.warn`; tests inject a recorder.
  */
-export function createGhEscalationClient(ghFn: GhFn): GitHubClient {
+export function createGhEscalationClient(
+  ghFn: GhFn,
+  warn: (message: string) => void = (message) => console.warn(message),
+): GitHubClient {
   const notImplemented = (method: string) =>
     Promise.reject<never>(
       new Error(
@@ -98,22 +112,37 @@ export function createGhEscalationClient(ghFn: GhFn): GitHubClient {
       for (let page = 1; page <= COMMENT_PAGE_CAP; page++) {
         let parsed: GitHubComment[];
         try {
-          const raw = await ghFn([
-            "api",
-            `repos/${repo}/issues/${issueNumber}/comments` +
-            `?per_page=${COMMENT_PAGE_SIZE}&page=${page}`,
-          ]);
+          const raw = await ghFn(
+            buildIssueCommentsPageArgs(repo, issueNumber, page),
+          );
           parsed = parseCommentsJson(raw);
-        } catch {
+        } catch (err) {
           // Best effort: return the pages already fetched rather than
-          // discarding them, matching the pre-paging behaviour on failure.
+          // discarding them (the pre-paging contract). The partial result
+          // is announced — a short read makes the dedup scan conclude "no
+          // marker" and post a duplicate, so it must not pass as a full one.
+          warn(
+            `[GH_COMMENT_PAGE_FAILED] ${repo}#${issueNumber} page ${page} ` +
+              `could not be fetched (${
+                err instanceof Error ? err.message : String(err)
+              }) — the dedup scan sees only the ${all.length} comments read ` +
+              `so far and may post a duplicate`,
+          );
           return all;
         }
         all.push(...parsed);
         // A short page is the last page (a malformed page parses to [] and
         // also stops here — the dedup scan treats absence as "no marker").
-        if (parsed.length < COMMENT_PAGE_SIZE) break;
+        if (parsed.length < COMMENTS_PER_PAGE) return all;
       }
+      // Cap reached on a full page: the thread is longer than the window,
+      // so the newest comments — where the dedup marker is — were not read.
+      warn(
+        `[GH_COMMENT_PAGE_CAP] ${repo}#${issueNumber} has more than ` +
+          `${COMMENT_PAGE_CAP * COMMENTS_PER_PAGE} comments — the newest are ` +
+          `beyond the page cap, so the escalation dedup scan may post a ` +
+          `duplicate`,
+      );
       return all;
     },
     async addLabel(

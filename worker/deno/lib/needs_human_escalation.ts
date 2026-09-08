@@ -106,10 +106,10 @@ export interface EscalateToHumanOptions {
    * `<!-- needs-human-escalation: {dedupKey} -->` to the comment body and
    * scans the newest 50 comments for the same marker; if a match was
    * created within 24 hours, the duplicate comment is skipped (the label
-   * add is still re-attempted, idempotently). The scan sees the newest
-   * comments on any issue: `getIssueComments` fetches every page (capped
-   * at 1 000 comments) and this helper scans the last 50 of them
-   * (Issue #1619).
+   * add is still re-attempted, idempotently). Which comments are in reach
+   * is the `ghClient`'s business: `gh_escalation_client.ts` fetches every
+   * page up to 1 000 comments, so the newest 50 of a thread that long are
+   * scanned and a marker past the oldest 30 is found (Issue #1619).
    */
   dedupKey?: string;
   /**

@@ -38,7 +38,10 @@ function silentLogger(): Logger {
     debug: () => {},
     security: () => {},
     skipReason: () => {},
-  } as unknown as Logger;
+    timing: () => {},
+    scanSummary: () => {},
+    workerSummary: () => {},
+  };
 }
 
 function ensureLabelStub(): (
@@ -125,8 +128,11 @@ Deno.test("escalateToHuman via the gh shim - finds a dedup marker past the oldes
 
 Deno.test("escalateToHuman via the gh shim - an un-paged fetch of the same issue misses the marker", async () => {
   const { ghFn, postedComments } = makeGhWithBusyIssue();
-  // The pre-fix shim: one un-paged request, which GitHub answers with the
-  // oldest 30 comments. This is the duplicate-comment fault being fixed.
+  // The pre-fix shim, reconstructed against the same 47-comment fixture:
+  // one un-paged request, which GitHub answers with the oldest 30 comments.
+  // It records the fault being fixed — that an un-paged read of this very
+  // issue cannot see the marker — so the contrast with the test above is
+  // the paging, not the fixture.
   const unpagedClient = createGhEscalationClient(ghFn);
   const preFixComments = await ghFn([
     "api",

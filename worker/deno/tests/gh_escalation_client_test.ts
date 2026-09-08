@@ -128,13 +128,16 @@ Deno.test("getIssueComments - returns [] for malformed JSON without throwing", a
   assertEquals(comments, []);
 });
 
-Deno.test("getIssueComments - returns [] when ghFn throws", async () => {
+Deno.test("getIssueComments - returns [] when ghFn throws, and says so", async () => {
   const { ghFn } = makeFakeGh({ failWhen: () => true });
-  const client = createGhEscalationClient(ghFn);
+  const warnings: string[] = [];
+  const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
 
   const comments = await client.getIssueComments("owner/repo", 1);
 
   assertEquals(comments, []);
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]?.includes("[GH_COMMENT_PAGE_FAILED]"));
 });
 
 Deno.test("getIssueComments - degrades a non-array JSON response to []", async () => {
@@ -301,27 +304,36 @@ Deno.test("getIssueComments - returns pages concatenated oldest-first", async ()
   assertEquals(comments[102]?.body, "comment 103");
 });
 
-Deno.test("getIssueComments - caps paging at 10 pages (1 000 comments)", async () => {
+Deno.test("getIssueComments - caps paging at 10 pages and says the thread was truncated", async () => {
   const { ghFn, calls } = makeFakeGh({
     // Every page is full, so only the cap can stop the loop.
     response: () => JSON.stringify(makeRestComments(100, 1)),
   });
-  const client = createGhEscalationClient(ghFn);
+  const warnings: string[] = [];
+  const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
 
   const comments = await client.getIssueComments("owner/repo", 593);
 
   assertEquals(calls.length, 10);
   assertEquals(comments.length, 1000);
+  // A truncated thread must not pass as a full one: the newest comments —
+  // where the dedup marker is — were not read, so say so.
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]?.includes("[GH_COMMENT_PAGE_CAP]"));
+  assert(warnings[0]?.includes("owner/repo#593"));
 });
 
-Deno.test("getIssueComments - a mid-paging failure returns what was fetched so far", async () => {
+Deno.test("getIssueComments - a mid-paging failure returns what was fetched so far, loudly", async () => {
   const { ghFn } = makeFakeGh({
     failWhen: (args) => args[1]?.includes("page=2") === true,
     response: () => JSON.stringify(makeRestComments(100, 1)),
   });
-  const client = createGhEscalationClient(ghFn);
+  const warnings: string[] = [];
+  const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
 
   const comments = await client.getIssueComments("owner/repo", 593);
 
   assertEquals(comments.length, 100);
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]?.includes("[GH_COMMENT_PAGE_FAILED]"));
 });
