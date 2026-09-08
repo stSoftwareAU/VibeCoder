@@ -59,8 +59,10 @@ over a synthetic codebase map: 11 ms at 81 KB, 33 ms at 324 KB, 128 ms at 1.3 MB
 ## Security-fix evidence
 
 - **Regression test** —
-  `worker/deno/tests/prompt_context_secret_redaction_1424_test.ts::issue prompt - secrets in the issue, repo guidance and codebase map never reach the model`
-  builds a real issue prompt whose title, body, repo-guidance document and
+  `worker/deno/tests/prompt_context_secret_redaction_1424_test.ts::"issue prompt - secrets in the issue, repo guidance and codebase map never reach the model"`,
+  declared in the diff as
+  `Deno.test("issue prompt - secrets in the issue, repo guidance and codebase map never reach the model", async () => {`.
+  It builds a real issue prompt whose title, body, repo-guidance document and
   codebase map each carry a credential, and asserts none of them appears in the
   assembled prompt. It was observed **failing against the unfixed code** (4 of
   the 5 new tests failed: the token was present in the prompt bytes) and
