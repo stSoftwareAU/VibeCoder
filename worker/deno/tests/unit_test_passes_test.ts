@@ -142,12 +142,23 @@ Deno.test("unit passes - the serial pass names every mutator that is not an inte
 });
 
 Deno.test("unit passes - a file that is both a mutator and an integration suite stays out (Issue #940)", () => {
-  // `container_entrypoint_test.ts` is both. Naming it in the serial pass
-  // would run in the gate the very suite #907 removed from it.
+  // Injected lists, not the real manifests. The rule is a property of
+  // `serialPassFiles`: naming an excluded suite in the serial pass would run
+  // in the gate the very suite #907 removed from it. It used to be asserted
+  // against whatever overlap the manifests happened to hold, which stopped
+  // being assertable when Issue #1598 took `run_ps1_launcher_test.ts` — the
+  // last file in both — out of the integration list and into the gate.
+  assertEquals(
+    serialPassFiles(
+      ["tests/both_test.ts", "tests/mutator_test.ts"],
+      ["tests/both_test.ts"],
+    ),
+    ["tests/mutator_test.ts"],
+  );
+  // And the real manifests keep it, for as long as they overlap at all.
   const both = PARALLEL_UNSAFE_TEST_FILES.filter((f) =>
     INTEGRATION_TEST_FILES.includes(f)
   );
-  assert(both.length > 0, "the overlap this guards must actually exist");
   assertEquals(
     serialPassFiles().filter((f) => both.includes(f)),
     [],

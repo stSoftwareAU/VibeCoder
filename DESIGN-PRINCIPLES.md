@@ -1450,7 +1450,9 @@ static, source-shape checks — the audit never runs a test, so it never reports
 measured or estimated duration, and neither check keys on whether a test passes.
 Files already on the repository's parallel-unsafe manifest are known debt and
 excluded from check 12 (the check exists to stop that list growing, not to
-re-report it); files on the integration-test manifest are excluded from both.
+re-report it); files the repository declares as script-driving suites — on
+the integration-test manifest, or named as one the every-change gate runs
+deliberately with a reason — are excluded from both.
 The remedy is the seam, never a `--no-parallel` flag, or reclassification into
 the integration manifest. Each is reported as a **single** finding listing the
 affected files, so a suite-wide habit across a hundred files cannot become a
