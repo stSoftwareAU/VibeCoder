@@ -48,10 +48,13 @@ flowchart LR
     style M2 fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-Quality gate: `./quality.sh` — **PASSED** (semgrep, markdownlint, mermaid, full
-`deno test` suite, lint, type check, fmt; `config integration` skipped as it
-always is without a live config). Re-run on the final tree after `origin/main`
-was merged in: all 21 checks pass, `deno test` 2m56s parallel + 11s serial.
+Quality gate: `./quality.sh` — **PASSED**, re-run on the final tree after
+`origin/main` was merged in (through `c63e5a6d`): all 21 checks pass
+(`config integration` is skipped as it always is without a live config).
+
+Cost of the inbound call, measured on this tree via `sanitiseDelimiterPatterns`
+over a synthetic codebase map: 11 ms at 81 KB, 33 ms at 324 KB, 128 ms at 1.3 MB
+— linear in input length, and paid once per prompt assembly.
 
 ## Security-fix evidence
 
