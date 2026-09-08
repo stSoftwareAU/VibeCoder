@@ -902,6 +902,17 @@
         "worker/deno/lib/gate_skip_drift_scanner.ts",
         "worker/deno/lib/idle_task_templates/gate_skip_drift_template.ts"
       ]
+    },
+    {
+      "issue": 1661,
+      "chunk": "12j",
+      "title": "top-up: the worker-owned state path matcher added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1661-worker-state-paths.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12i recorded their coverage: worker_state_paths.ts (#1661)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/worker_state_paths.ts"
+      ]
     }
   ]
 }
