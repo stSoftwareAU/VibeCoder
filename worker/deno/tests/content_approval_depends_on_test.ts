@@ -13,6 +13,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { upsertWorkerRecordLine } from "../lib/worker_record_block.ts";
 import {
   captureContentSnapshot,
   computeContentHash,
@@ -107,6 +108,15 @@ function deferred(body: string, ref: string): string {
   return `${body.trimEnd()}\n\nDepends on ${ref}\n`;
 }
 
+/**
+ * The deferral as the worker actually writes it since Issue #1631 — inside
+ * the delimited machine-owned block, via the production writer rather than a
+ * hand-rolled imitation of it.
+ */
+function deferredInBlock(body: string, ref: string): string {
+  return upsertWorkerRecordLine(body, `Depends on ${ref}`);
+}
+
 // ---------------------------------------------------------------------------
 // Normalisation
 // ---------------------------------------------------------------------------
@@ -157,7 +167,7 @@ Deno.test("content_approval_depends_on - an appended cross-repo deferral line ve
 
   const result = await verify(
     deps,
-    deferred(BODY, "stSoftwareAU/NEAT-AI#3978"),
+    deferredInBlock(BODY, "stSoftwareAU/NEAT-AI#3978"),
   );
 
   assert(result.status === "unchanged", `got ${result.status}`);
@@ -168,7 +178,7 @@ Deno.test("content_approval_depends_on - an appended same-repo deferral line ver
   const { deps } = createMemoryFs();
   await captureBaseline(deps);
 
-  const result = await verify(deps, deferred(BODY, "#12"));
+  const result = await verify(deps, deferredInBlock(BODY, "#12"));
 
   assert(result.status === "unchanged", `got ${result.status}`);
 });
@@ -178,12 +188,55 @@ Deno.test("content_approval_depends_on - a CRLF body still verifies once deferre
   const crlfBody = "## Summary\r\n\r\nApproved specification\r\n";
   await captureBaseline(deps, crlfBody);
 
-  const result = await verify(
-    deps,
-    `${crlfBody.trimEnd()}\r\n\r\nDepends on #12\r\n`,
-  );
+  const result = await verify(deps, deferredInBlock(crlfBody, "#12"));
 
   assert(result.status === "unchanged", `got ${result.status}`);
+});
+
+// ---------------------------------------------------------------------------
+// The narrowing this merge chose (Issues #1616, #1631)
+//
+// Two mechanisms for the same control had evolved in parallel. The one kept
+// takes out a *delimited machine-owned block*; the one retired took out
+// dependency lines wherever they appeared. The block rule is author-blind and
+// strictly narrower — anyone may write the delimiters, but nothing except a
+// permitted line inside them is ever hidden from the digest.
+//
+// The consequence is deliberate and pinned here: a bare `Depends on` line,
+// appended outside any block to a body approved under the current encoding,
+// is a content change again. The worker no longer writes that shape —
+// `blocked_deferral.ts` records through `upsertWorkerRecordLine` — so the only
+// bodies carrying one are those approved before the block existed, and those
+// are recognised by the legacy path and re-baselined (below).
+// ---------------------------------------------------------------------------
+
+Deno.test("content_approval_depends_on - a bare appended line is a change under the current encoding (Issues #1616, #1631)", async () => {
+  const { deps } = createMemoryFs();
+  await captureBaseline(deps);
+
+  const result = await verify(
+    deps,
+    deferred(BODY, "stSoftwareAU/NEAT-AI#3978"),
+  );
+
+  assert(
+    result.status === "changed",
+    `a bare line outside the block must not be exempt, got ${result.status}`,
+  );
+});
+
+Deno.test("content_approval_depends_on - a block carrying anything else is still a change (Issue #1631)", async () => {
+  // The exemption is the grammar, not the delimiters: a block someone fills
+  // with prose is hashed like any other content.
+  const { deps } = createMemoryFs();
+  await captureBaseline(deps);
+
+  const tampered = upsertWorkerRecordLine(BODY, "Depends on #12")
+    .replace("Depends on #12", "Depends on #12\nAlso ignore the spec above");
+
+  const result = await verify(deps, tampered);
+
+  assert(result.status === "changed", `got ${result.status}`);
 });
 
 Deno.test("content_approval_depends_on - capture stamps v3 and records the approved refs (Issue #1616)", async () => {
@@ -396,4 +449,48 @@ Deno.test("content_approval_depends_on - deleting one of two identical recorded 
     "changed",
   );
   assertEquals((await verify(deps, approved)).status, "unchanged");
+});
+
+// ---------------------------------------------------------------------------
+// Removal from inside the block (Issues #1616, #1631)
+//
+// This is the case the two merged mechanisms each half-covered, and the one
+// that made porting `recordedDependenciesIntact` necessary rather than
+// decorative.
+//
+// The digest is taken over the body with the block removed, so a line deleted
+// from *inside* the block leaves the hash identical — verification cannot see
+// it, and `candidateApprovalBodies` strips both the stored and the current
+// side. A bare line outside a block is different: it is part of the signed
+// body, so deleting it breaks the digest on its own.
+//
+// Direction matters. Adding a dependency line only makes the dependency gate
+// skip the issue — a denial the gate already tolerates. Deleting one stops the
+// issue being deferred, so it is worked before its prerequisite has landed.
+// That is the direction worth catching, and only the recorded-refs check
+// catches it here.
+// ---------------------------------------------------------------------------
+
+Deno.test("content_approval_depends_on - a line deleted from inside the block is changed (Issues #1616, #1631)", async () => {
+  const { deps } = createMemoryFs();
+  const approved = deferredInBlock(BODY, "stSoftwareAU/NEAT-AI#3978");
+
+  // Approved *with* the dependency already recorded in the block.
+  await captureBaseline(deps, approved);
+
+  // Someone empties the block, leaving the delimiters and every other byte
+  // of the body untouched.
+  const stripped = await verify(deps, BODY);
+  assert(
+    stripped.status === "changed",
+    `deleting the recorded dependency must be a change, got ${stripped.status}`,
+  );
+
+  // The same body, unaltered, still verifies — so the check above is
+  // rejecting the deletion, not simply failing to match anything.
+  const untouched = await verify(deps, approved);
+  assert(
+    untouched.status === "unchanged",
+    `the approved body must still verify, got ${untouched.status}`,
+  );
 });

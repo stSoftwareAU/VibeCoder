@@ -19,6 +19,7 @@
 
 import type { Result } from "../types.ts";
 import { atomicWrite } from "./file_utils.ts";
+import { stripWorkerRecordBlocks } from "./worker_record_block.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -153,14 +154,27 @@ export const CONTENT_HASH_ENCODING_V1 = "content-approval/v1";
 export const CONTENT_HASH_ENCODING_V2 = "content-approval/v2";
 
 /**
- * The v2 layout over a body normalised by {@link normaliseBodyForApproval}
- * (Issue #1616).
+ * The v2 layout over a body with the worker's machine-owned record block
+ * removed (Issues #1616, #1631).
  *
- * The worker's own blocked-deferral path appends `Depends on owner/repo#N` to
+ * The worker's own blocked-deferral path records `Depends on owner/repo#N` in
  * an approved body as `stservice`, which the gate then judged an untrusted
  * edit on every scan. `stservice` cannot be trusted — a compromised agent runs
- * as that login — so the tolerance lives in what is hashed rather than in who
- * is trusted: exact-form dependency lines sit outside the signed content.
+ * as that login — so the tolerance lives in **what is hashed** rather than in
+ * who is trusted.
+ *
+ * What is taken out is the delimited block, and only when every line inside
+ * it matches the machine grammar (see `worker_record_block.ts`): anyone may
+ * write the delimiters, so the rule is author-blind, and nothing but a
+ * dependency line can ever be hidden from the digest.
+ *
+ * **Note on the tag.** The milestone branch that introduced `v3` gave it a
+ * different meaning — the v2 layout over a body with dependency lines removed
+ * wherever they appeared, which is a wider exemption. That branch never ran
+ * outside its own CI, so no snapshot carries the older sense of this tag; a
+ * stray one would fail its digest, fall to the legacy candidates below, and
+ * be re-baselined, which is a safe failure rather than a silent
+ * mis-verification.
  */
 export const CONTENT_HASH_ENCODING_V3 = "content-approval/v3";
 
@@ -301,6 +315,11 @@ function legacyApprovedBodyCandidates(body: string): string[] {
  *   `work_on_content_integrity.ts`), and `label_security` strips reserved
  *   workflow labels added by anyone else (Issue #1344).
  *
+ * One region of the body is also out: the worker's machine-owned record block
+ * (Issue #1631), stripped by `stripWorkerRecordBlocks` before the digest is
+ * taken. The exemption is scoped to the *edit* and not the editor — see
+ * `worker_record_block.ts` for why that keeps the gate author-blind.
+ *
  * Uses Deno's built-in Web Crypto API — deterministic and dependency-free.
  *
  * @param title - Issue title
@@ -323,14 +342,20 @@ export async function computeContentHash(
     return await sha256Hex(encoder.encode(`${title}\n${body}`));
   }
 
-  // Issue #1616: v3 keeps the v2 layout and signs the *normalised* body, so
-  // an appended exact-form `Depends on` line leaves the digest untouched.
-  const signedBody = encoding === CONTENT_HASH_ENCODING_V3
-    ? normaliseBodyForApproval(body)
-    : body;
-
+  // v3 keeps the v2 layout and hashes the body it is handed, unchanged.
+  //
+  // The milestone branch normalised the body *here*, dropping every
+  // exact-form `Depends on` line wherever it appeared. `main` instead strips
+  // a delimited machine-owned block at the call site
+  // (`stripWorkerRecordBlocks`), which is the narrower and author-blind rule.
+  // Composing the two would have applied both normalisations to every v3
+  // digest — a wider exemption than either side chose, granting bare
+  // dependency lines a permanent pass rather than only the legacy bodies that
+  // predate the block. The normalisation therefore stays at the call site,
+  // and the wider legacy form is offered only to pre-v3 snapshots by
+  // `legacyApprovedBodyCandidates` in `verifyContentUnchanged`.
   const titleBytes = encoder.encode(title);
-  const bodyBytes = encoder.encode(signedBody);
+  const bodyBytes = encoder.encode(body);
   const header = encoder.encode(
     `${
       encoding === CONTENT_HASH_ENCODING_V3
@@ -866,7 +891,14 @@ export async function captureContentSnapshot(
   issueAuthor: string,
   deps: ContentApprovalDeps = {},
 ): Promise<Result<void>> {
-  const contentHash = await computeContentHash(title, body);
+  // Issue #1631: the baseline covers the body with the worker's machine-owned
+  // record block removed, so the fleet's own deferral bookkeeping cannot make
+  // the next verification look like a content change. The exemption is scoped
+  // to the *edit*, never the editor — see `worker_record_block.ts`.
+  const contentHash = await computeContentHash(
+    title,
+    stripWorkerRecordBlocks(body),
+  );
   const key = snapshotKey(repo, issueNumber);
   const snapshot: ContentSnapshot = {
     contentHash,
@@ -896,6 +928,17 @@ export async function captureContentSnapshot(
 
   loaded.state.snapshots[key] = snapshot;
   return await saveContentApprovalState(stateDir, loaded.state, deps);
+}
+
+/**
+ * The body forms a stored digest may legitimately have been computed over
+ * (Issue #1631): the body as it stands, and the body with the worker's
+ * machine-owned record block stripped. Identical when there is no block, in
+ * which case only one hash is computed.
+ */
+function candidateApprovalBodies(body: string): string[] {
+  const stripped = stripWorkerRecordBlocks(body);
+  return stripped === body ? [body] : [body, stripped];
 }
 
 /**
@@ -955,46 +998,57 @@ export async function verifyContentUnchanged(
       return { status: "error", message: encodings.error.message };
     }
 
-    for (const encoding of encodings.value) {
-      const hash = await computeContentHash(
-        currentTitle,
-        currentBody,
-        encoding,
-      );
-      if (hash === snapshot.contentHash) {
-        // Issue #1616: v3 signs the body without its dependency lines, so a
-        // *removed* line would otherwise slip through the digest.
-        if (
-          encoding === CONTENT_HASH_ENCODING_V3 &&
-          !recordedDependenciesIntact(snapshot, currentBody)
-        ) {
-          break;
-        }
-        // A snapshot with no stamp is re-baselined too: an unstamped digest
-        // stays ambiguous until it is rewritten with its encoding recorded.
-        return snapshot.encoding === CURRENT_CONTENT_HASH_ENCODING
-          ? { status: "unchanged" }
-          : { status: "unchanged", staleEncoding: encoding };
-      }
+    // Issue #1631: both the body as it stands and the body with the
+    // machine-owned record block removed are accepted. The stripped form is
+    // what new baselines are captured over; the raw form is what baselines
+    // captured before a block existed were hashed from, and either match
+    // proves every byte outside the block equals the approved content.
+    const candidateBodies = candidateApprovalBodies(currentBody);
 
-      // Issue #1616: a pre-v3 snapshot was hashed over the raw body, so the
-      // deferral line the worker appended after approval breaks the digest.
-      // Re-check the same encoding over the normalised body: a match means the
-      // approved content is intact apart from added dependency lines, and the
-      // stale-encoding return re-baselines it under v3. A snapshot whose
-      // approved body *already* carried such a line only ever matches on the
-      // raw body, so a removal is never blessed here.
-      if (encoding === CONTENT_HASH_ENCODING_V3) continue;
-      for (const candidate of legacyApprovedBodyCandidates(currentBody)) {
-        const normalisedHash = await computeContentHash(
+    for (const encoding of encodings.value) {
+      // The union of the two mechanisms this merge reconciles.
+      //
+      // `candidateBodies` (Issue #1631) is the narrow, author-blind form: the
+      // body as it stands, and the body with the delimited machine-owned
+      // block removed. That is what current baselines are captured over.
+      //
+      // A **pre-v3** snapshot predates the block, so a bare `Depends on` line
+      // the worker appended after approval sits outside any delimiters and
+      // breaks its digest — the live misfires on NEAT-AI-core#592 and #593 are
+      // exactly that shape. For those snapshots only, the legacy
+      // normalisation (Issue #1616) is also tried, and a match re-baselines
+      // under v3 so the issue converts to the narrow scheme by itself. Current
+      // snapshots never get the wider exemption.
+      let matched = false;
+      const bodies = encoding === CURRENT_CONTENT_HASH_ENCODING
+        ? candidateBodies
+        : [...candidateBodies, ...legacyApprovedBodyCandidates(currentBody)];
+      for (const candidate of bodies) {
+        const hash = await computeContentHash(
           currentTitle,
           candidate,
           encoding,
         );
-        if (normalisedHash === snapshot.contentHash) {
-          return { status: "unchanged", staleEncoding: encoding };
+        if (hash === snapshot.contentHash) {
+          matched = true;
+          break;
         }
       }
+      if (!matched) continue;
+
+      // Issue #1616: every accepted form has the dependency lines taken out of
+      // it one way or another, so a match alone cannot tell a *removed* line
+      // from one that was never written. Adding a line is a denial the gate
+      // tolerates; deleting one would let an issue be worked before its
+      // prerequisite landed, which is the direction that matters. The refs
+      // approved with the snapshot must therefore still all be present.
+      if (!recordedDependenciesIntact(snapshot, currentBody)) break;
+
+      // A snapshot with no stamp is re-baselined too: an unstamped digest
+      // stays ambiguous until it is rewritten with its encoding recorded.
+      return snapshot.encoding === CURRENT_CONTENT_HASH_ENCODING
+        ? { status: "unchanged" }
+        : { status: "unchanged", staleEncoding: encoding };
     }
 
     return {

@@ -14,6 +14,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { upsertWorkerRecordLine } from "../lib/worker_record_block.ts";
 import { resolveContentIntegrity } from "../lib/work_on_content_integrity.ts";
 import {
   captureContentSnapshot,
@@ -26,8 +27,19 @@ import type { WorkerConfig } from "../types.ts";
 const TITLE = "Fix the bug";
 const APPROVED_BODY = "## Summary\n\nApproved specification";
 /** Exactly what `recordDependencyInBody` writes on a blocked deferral. */
-const DEFERRED_BODY =
-  `${APPROVED_BODY}\n\nDepends on stSoftwareAU/NEAT-AI#3978\n`;
+/**
+ * The body after the worker's own deferral write, produced by the production
+ * writer rather than imitated (Issue #1631).
+ *
+ * `blocked_deferral.ts` records through `upsertWorkerRecordLine`, so the line
+ * lands inside the delimited machine-owned block. Hand-rolling the bare
+ * append here would test a shape the worker no longer writes, and would have
+ * gone on passing while the real path broke.
+ */
+const DEFERRED_BODY = upsertWorkerRecordLine(
+  APPROVED_BODY,
+  "Depends on stSoftwareAU/NEAT-AI#3978",
+);
 
 function createMemoryFs(): ContentApprovalDeps {
   const files = new Map<string, string>();

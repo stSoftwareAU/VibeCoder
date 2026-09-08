@@ -70,6 +70,7 @@ import {
   buildSecurityFixGateMessage,
   evaluateSecurityFixGate,
   hasSecurityLabel,
+  matchedTestDeclarations,
   referencesFindingId,
 } from "../security_fix_gate.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
@@ -99,9 +100,9 @@ import {
 } from "../claim_freshness.ts";
 import {
   clearSecurityFixGateBlock,
-  recordSecurityFixGateBlock,
   resolveSecurityGateStateDir,
 } from "../security_fix_gate_feedback.ts";
+import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
@@ -454,17 +455,19 @@ export async function workOnIssueCompletion(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
-  let result = await completionBody(ctx, state, deps);
+  let result = await runCompletionAttempt(ctx, state, deps);
 
-  if (result.status === "failure") {
-    const shouldRetry = await shouldRetryInfrastructureFailure(
-      "completion",
-      result.reason,
+  // In-run recovery from the first security-fix gate block (Issue #1575): a
+  // false block used to cost the whole run.
+  if (
+    result.status === "failure" && (state.securityGateBlocks?.length ?? 0) > 0
+  ) {
+    result = await recoverFromSecurityGateBlock(
+      ctx,
       state,
-      deps.logger,
-      { backoffMs: ctx.config.infraRetryBackoffMs },
+      deps,
+      () => runCompletionAttempt(ctx, state, deps),
     );
-    if (shouldRetry) result = await completionBody(ctx, state, deps);
   }
 
   // Issue #3756 — a `work-on` issue is auto-closed by its merged PR, with no
@@ -477,6 +480,34 @@ export async function workOnIssueCompletion(
   }
 
   return result;
+}
+
+/**
+ * One completion-phase attempt, with the #1550 infrastructure retry.
+ *
+ * A security-fix gate block is a verdict, not an infrastructure blip: re-running
+ * the same body against the same summary reproduces it, so the retry is skipped
+ * and the in-run recovery (Issue #1575) handles it instead.
+ */
+async function runCompletionAttempt(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<PhaseResult> {
+  const blocksBefore = state.securityGateBlocks?.length ?? 0;
+  const result = await completionBody(ctx, state, deps);
+  const gateBlocked = (state.securityGateBlocks?.length ?? 0) > blocksBefore;
+
+  if (result.status !== "failure" || gateBlocked) return result;
+
+  const shouldRetry = await shouldRetryInfrastructureFailure(
+    "completion",
+    result.reason,
+    state,
+    deps.logger,
+    { backoffMs: ctx.config.infraRetryBackoffMs },
+  );
+  return shouldRetry ? await completionBody(ctx, state, deps) : result;
 }
 
 /**
@@ -1263,36 +1294,27 @@ async function completionBody(
     const gateStateDir = resolveSecurityGateStateDir(config.workDir);
 
     if (securityGate.isSecurityFix && !securityGate.ok) {
+      // The declarations the gate matched (Issue #1575) — a
+      // `test-identifier-in-diff` block that cannot say what it did see reads
+      // exactly like the false block that cost #1385 three runs.
+      const declarations = matchedTestDeclarations(
+        securityDiff?.testDiffText ?? "",
+      );
       logger.warn("Security-fix verification gate blocked PR creation", {
         missing: securityGate.missing,
+        matchedDeclarations: declarations.length,
       });
-      try {
-        const block = await recordSecurityFixGateBlock(
-          gateStateDir,
-          repo,
-          issueNumber,
-          securityGate.missing,
-        );
-        logger.info("Recorded security-fix gate verdict for the next attempt", {
-          blockCount: block.blockCount,
-        });
-      } catch (err) {
-        // Loud, but not fatal: the PR is blocked either way. A silent drop
-        // here is what let the loop repeat, so it must reach the log.
-        logger.warn(
-          `Could not persist the security-fix gate verdict — the next attempt will start blind: ${
-            (err as Error).message
-          }`,
-        );
-      }
-      const failureMessage = buildSecurityFixGateMessage(securityGate.missing);
-      try {
-        const client = deps.github.createClient(logger);
-        await client.postComment(repo, issueNumber, failureMessage);
-      } catch {
-        logger.warn("Failed to post security-fix gate comment (non-fatal)");
-      }
-      return { status: "failure", reason: failureMessage };
+      // The verdict is reported on run state; the wrapper decides whether it
+      // is recoverable in-run (first block) or ends the run (second), and
+      // owns the persistence, the comment and any escalation (Issue #1575).
+      state.securityGateBlocks = [
+        ...(state.securityGateBlocks ?? []),
+        { missing: securityGate.missing, declarations },
+      ];
+      return {
+        status: "failure",
+        reason: buildSecurityFixGateMessage(securityGate.missing, declarations),
+      };
     }
 
     // Gate satisfied (or inactive) — drop any stale verdict so a later run on

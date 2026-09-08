@@ -2449,7 +2449,14 @@ A blocked run is now **deferred**:
 - `Depends on owner/repo#N` is recorded in the body — the exact form
   `isDependencyBlocked` reads — so the dependency gate skips the issue on every
   scan until that dependency closes (the `blocked` label is the fallback when
-  the body cannot be edited);
+  the body cannot be edited). The line goes inside a delimited, machine-owned
+  block (`<!-- vibe-worker-record-start -->` … `<!-- vibe-worker-record-end -->`)
+  that the content-approval gate strips before hashing, so the fleet's own
+  bookkeeping write no longer reads as content changed after approval
+  (Issue #1631). The exemption is scoped to the **edit**, never the author: a
+  block is ignored only while every line inside it matches
+  `Depends on [owner/repo]#N`, so nothing else can be smuggled past the gate,
+  and a compromised agent running as the worker's own login gains nothing;
 - the claim is released with the outcome `deferred: depends on owner/repo#N`,
   which the release comment states.
 

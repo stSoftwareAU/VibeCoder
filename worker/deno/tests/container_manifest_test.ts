@@ -19,6 +19,7 @@ import {
   findContainerfileViolations,
   findMissingRuntimeTools,
   findProviderInstallViolations,
+  findToolchainInstallViolations,
   isRegistryQualifiedImage,
   parseContainerManifest,
   REQUIRED_REPO_TOOLCHAIN_COMMANDS,
@@ -1336,6 +1337,285 @@ Deno.test("findContainerfileViolations - flags a missing toolchain sha256 ARG", 
   assert(violations[0]!.includes("RUST_SHA256_ARM64"));
 });
 
+// ---------------------------------------------------------------------------
+// Fragment-driven toolchains (Issue #1594, parent #1574)
+// ---------------------------------------------------------------------------
+
+/**
+ * A manifest object whose toolchain is installed by a fragment rather than
+ * restated in the Containerfile as `ARG`s.
+ */
+function fragmentToolchainManifestObject(): Record<string, unknown> {
+  return {
+    ...manifestObject(),
+    toolchains: [
+      {
+        id: "shellcheck",
+        version: "0.11.0",
+        fragment: "toolchains/shellcheck.sh",
+        commands: ["shellcheck"],
+        versionCommand: "shellcheck",
+        sha256: { amd64: SHA_AMD64, arm64: SHA_ARM64 },
+        repos: ["stSoftwareAU/private-repo-17"],
+      },
+    ],
+  };
+}
+
+function fragmentToolchainManifestText(
+  mutate: (t: Record<string, unknown>) => void = () => {},
+): string {
+  const raw = fragmentToolchainManifestObject();
+  mutate((raw.toolchains as Record<string, unknown>[])[0]!);
+  return JSON.stringify(raw);
+}
+
+/** A fragment that reads its pins from the manifest and verifies the bytes. */
+const GOOD_TOOLCHAIN_FRAGMENT = [
+  'version="$(jq -er \'.toolchains[] | select(.id == $id) | .version\' "${MANIFEST}")"',
+  'curl -fsSL ${CURL_RETRY} -o "${archive}" "https://example.invalid/${version}"',
+  'echo "${checksum}  ${archive}" | sha256sum -c -',
+].join("\n");
+
+/** A Containerfile that copies the fragments and runs the named set. */
+function toolchainContainerfile(installed: string): string {
+  return GOOD_CONTAINERFILE.replace(
+    "COPY --from=deno",
+    [
+      "COPY toolchains/*.sh /tmp/toolchains/",
+      "COPY install-toolchains.sh /tmp/install-toolchains.sh",
+      "COPY tools.json /tmp/toolchain-manifest.json",
+      "RUN set -eu; \\",
+      "    TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \\",
+      `      bash /tmp/install-toolchains.sh ${installed}`,
+      "COPY --from=deno",
+    ].join("\n"),
+  );
+}
+
+Deno.test("parseContainerManifest - a fragment toolchain needs no versionArg", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  assertEquals(manifest.toolchains[0]?.fragment, "toolchains/shellcheck.sh");
+  assertEquals(manifest.toolchains[0]?.versionArg, undefined);
+  assertEquals(manifest.toolchains[0]?.version, "0.11.0");
+});
+
+Deno.test("parseContainerManifest - rejects a toolchain carrying both versionArg and fragment", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        fragmentToolchainManifestText((t) => {
+          t.versionArg = "SHELLCHECK_VERSION";
+        }),
+      ),
+    Error,
+    "toolchains[0]",
+  );
+});
+
+Deno.test("parseContainerManifest - rejects a toolchain carrying neither versionArg nor fragment", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        fragmentToolchainManifestText((t) => {
+          delete t.fragment;
+        }),
+      ),
+    Error,
+    "toolchains[0]",
+  );
+});
+
+Deno.test("parseContainerManifest - rejects a fragment path that does not name the toolchain", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        fragmentToolchainManifestText((t) => {
+          t.fragment = "toolchains/shell-check.sh";
+        }),
+      ),
+    Error,
+    "toolchains[0].fragment",
+  );
+});
+
+Deno.test("findContainerfileViolations - a fragment toolchain is exempt from the ARG rule", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  // No ARG SHELLCHECK_VERSION anywhere: the fragment reads the pin itself.
+  assertEquals(
+    findContainerfileViolations(toolchainContainerfile("shellcheck"), manifest),
+    [],
+  );
+});
+
+Deno.test("findToolchainInstallViolations - accepts a fragment layer the build runs", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  assertEquals(
+    findToolchainInstallViolations(
+      toolchainContainerfile("shellcheck"),
+      manifest,
+      new Map([["toolchains/shellcheck.sh", GOOD_TOOLCHAIN_FRAGMENT]]),
+    ),
+    [],
+  );
+});
+
+Deno.test("findToolchainInstallViolations - reports a pinned toolchain no run installs", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  // The pin, the fragment and the COPY are all there — but the build never
+  // names the id, so the image would ship without the toolchain.
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("actionlint"),
+    manifest,
+    new Map([["toolchains/shellcheck.sh", GOOD_TOOLCHAIN_FRAGMENT]]),
+  );
+
+  assert(
+    violations.some((v) =>
+      v.includes("shellcheck") && v.includes("never installs")
+    ),
+    `a toolchain the build never installs must be reported: ${violations}`,
+  );
+});
+
+Deno.test("findToolchainInstallViolations - reports an id no fragment toolchain pins", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("shellcheck,rust"),
+    manifest,
+    new Map([["toolchains/shellcheck.sh", GOOD_TOOLCHAIN_FRAGMENT]]),
+  );
+
+  assert(
+    violations.some((v) => v.includes("rust")),
+    `an unpinned installed id must be reported: ${violations}`,
+  );
+});
+
+Deno.test("findToolchainInstallViolations - reports a Containerfile that never copies the fragments", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("shellcheck").replace(
+      "COPY toolchains/*.sh /tmp/toolchains/\n",
+      "",
+    ),
+    manifest,
+    new Map([["toolchains/shellcheck.sh", GOOD_TOOLCHAIN_FRAGMENT]]),
+  );
+
+  assert(
+    violations.some((v) => v.includes("toolchains/*.sh")),
+    `an uncopied fragment directory must be reported: ${violations}`,
+  );
+});
+
+Deno.test("findToolchainInstallViolations - reports a missing, unverified or self-pinned fragment", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  assert(
+    findToolchainInstallViolations(
+      toolchainContainerfile("shellcheck"),
+      manifest,
+      new Map(),
+    ).some((v) => v.includes("toolchains/shellcheck.sh is missing")),
+    "a pinned toolchain without a fragment is reported",
+  );
+
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("shellcheck"),
+    manifest,
+    new Map([[
+      "toolchains/shellcheck.sh",
+      "curl -fsSL https://example.invalid/0.11.0/shellcheck | bash",
+    ]]),
+  );
+
+  assert(
+    violations.some((v) => v.includes("without verifying a checksum")),
+    "an unverified download is reported",
+  );
+  assert(
+    violations.some((v) => v.includes("pipes a download into a shell")),
+    "piping a download into a shell is reported",
+  );
+  assert(
+    violations.some((v) => v.includes("restates version")),
+    "a fragment that re-pins the version is reported",
+  );
+  assert(
+    violations.some((v) => v.includes("CURL_RETRY")),
+    "a fetch without the shared retry policy is reported",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The committed fragment directory
+// ---------------------------------------------------------------------------
+
+Deno.test("container/ - every committed fragment is a selectable toolchain id", async () => {
+  const ids: string[] = [];
+  for await (
+    const entry of Deno.readDir(new URL("container/toolchains", REPO_ROOT))
+  ) {
+    if (!entry.isFile) continue;
+    assert(
+      entry.name.endsWith(".sh"),
+      `container/toolchains/${entry.name} is not a fragment — the build ` +
+        `lists this directory to report the available toolchain ids`,
+    );
+    const id = entry.name.slice(0, -".sh".length);
+    assert(
+      /^[a-z][a-z0-9-]*$/.test(id),
+      `container/toolchains/${entry.name} is not selectable: "${id}" is not ` +
+        `a lower-case toolchain id`,
+    );
+    ids.push(id);
+  }
+  assert(
+    ids.length > 0,
+    "container/toolchains must ship at least one fragment",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A fragment resolves every pin it needs before it downloads anything
+// ---------------------------------------------------------------------------
+
+Deno.test("container/ - the committed toolchain layer is fragment-driven and pinned", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+  const containerfile = await Deno.readTextFile(
+    new URL("container/Containerfile", REPO_ROOT),
+  );
+
+  const fragments = new Map<string, string>();
+  for (const toolchain of manifest.toolchains) {
+    if (!toolchain.fragment) continue;
+    fragments.set(
+      toolchain.fragment,
+      await Deno.readTextFile(
+        new URL(`container/${toolchain.fragment}`, REPO_ROOT),
+      ),
+    );
+  }
+
+  assert(
+    fragments.size > 0,
+    "the committed manifest must pin at least one fragment toolchain",
+  );
+  assertEquals(
+    findToolchainInstallViolations(containerfile, manifest, fragments),
+    [],
+  );
+});
+
 Deno.test("container/ - the image supplies every monitored-repo toolchain command", async () => {
   const manifest = parseContainerManifest(
     await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
@@ -1355,6 +1635,17 @@ Deno.test("container/ - the image supplies every monitored-repo toolchain comman
   // Issue #650: the local SAST gate stage needs the binary in the image, or
   // it SKIPs on every fleet run and findings are met only in CI.
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("semgrep"));
+  // Issue #1596: gitleaks is CI-enforced in two fleet repos, and pwsh is the
+  // interpreter validate-scripts.yml fails loud without. Dropping either from
+  // container/tools.json fails here.
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("gitleaks"));
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("pwsh"));
+  // Issue #1595: NEAT-AI-core and NEAT-AI-scorer both run BATS suites from
+  // their gates, and NEAT-AI-core spell-checks with codespell — which
+  // NEAT-AI-scorer's spell-check preflight exits 1 without. Dropping either
+  // from container/tools.json fails here.
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("bats"));
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("codespell"));
 });
 
 Deno.test("container/ - every committed toolchain names the repositories it exists for", async () => {
@@ -1373,6 +1664,34 @@ Deno.test("container/ - every committed toolchain names the repositories it exis
       `${toolchain.id} must report its version from a command it installs`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1596 — the image and this repo's own secret scan run one gitleaks
+// ---------------------------------------------------------------------------
+
+Deno.test("container/ - the gitleaks pin matches the CI workflow's CLI fallback (Issue #1596)", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+  const gitleaks = manifest.toolchains.find((t) => t.id === "gitleaks");
+  assert(gitleaks, "container/tools.json must pin the gitleaks toolchain");
+
+  // One artefact, one digest: .github/workflows/gitleaks.yml fetches the same
+  // linux_x64 release when the licensed action cannot run, so a bump that
+  // moved only one of them would have CI scanning with a gitleaks the image
+  // does not carry. Asserted rather than asserted-in-prose (Issue #1596).
+  const workflow = await Deno.readTextFile(
+    new URL(".github/workflows/gitleaks.yml", REPO_ROOT),
+  );
+  const versions = [...workflow.matchAll(/GITLEAKS_VERSION:\s*"([^"]+)"/g)]
+    .map((m) => m[1]);
+  const digests = [...workflow.matchAll(/GITLEAKS_SHA256:\s*"([^"]+)"/g)]
+    .map((m) => m[1]);
+  assert(versions.length > 0, "gitleaks.yml must pin GITLEAKS_VERSION");
+  assertEquals(digests.length, versions.length);
+  for (const version of versions) assertEquals(version, gitleaks.version);
+  for (const digest of digests) assertEquals(digest, gitleaks.sha256.amd64);
 });
 
 // ---------------------------------------------------------------------------

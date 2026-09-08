@@ -141,6 +141,7 @@
         "worker/deno/lib/run_housekeeping.ts",
         "worker/deno/lib/run_worker.ts",
         "worker/deno/lib/security_fix_gate_feedback.ts",
+        "worker/deno/lib/security_fix_gate_retry.ts",
         "worker/deno/lib/self_heal_events.ts",
         "worker/deno/lib/session_compaction.ts",
         "worker/deno/lib/session_manager.ts",
@@ -877,6 +878,17 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/ignored_path_clean.ts"
+      ]
+    },
+    {
+      "issue": 1631,
+      "chunk": "12h",
+      "title": "top-up: the machine-owned record block added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1631-worker-record-block.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12g recorded their coverage: worker_record_block.ts (#1631)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/worker_record_block.ts"
       ]
     }
   ]
