@@ -986,10 +986,10 @@ Two guards sit ahead of the close:
 
 ```mermaid
 flowchart TD
-  Pre["Merged-PR pre-check"] --> Landed{"Merge reachable from<br/>the default branch?"}
-  Landed -->|Yes| Reapp{"Trusted approval label<br/>added after mergedAt?"}
+  Pre["Merged-PR pre-check"] --> Reapp{"Trusted approval label<br/>added after mergedAt?"}
   Reapp -->|"Yes — re-approved"| Work["Continue the run:<br/>WARNING, no close"]
-  Reapp -->|No| Close["Close the issue<br/>(success)"]
+  Reapp -->|No| Landed{"Merge reachable from<br/>the default branch?"}
+  Landed -->|Yes| Close["Close the issue<br/>(success)"]
   Landed -->|"No — orphaned"| Heal["Raise / confirm a rollup PR<br/>milestone branch → default"]
   Heal --> Bounce["Expected skip:<br/>cooldown + WARNING,<br/>not counted as processed"]
   Bounce --> Next["Slot takes a DIFFERENT issue"]
