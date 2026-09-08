@@ -684,6 +684,28 @@ reason alone, titled `security-scan-overflow: N chunks not reached`, even
 when six or fewer findings survived. A bounded sweep is therefore always
 visible in the filed output rather than silent.
 
+**Two line shapes, because "unswept" is not one state (Issue #1614).**
+Phase 1 inventories what earlier sweeps already recorded —
+`docs/audits/security-sweep-*.md`, a sweep coverage ledger, closed
+`security-scan-overflow` issues — and dates each record with
+`git log -1 --format=%H -- <record>`, so `git diff --name-only <commit>
+HEAD -- <tree>` says which of its modules moved since. Each unswept chunk
+is then written in whichever of these two shapes its modules put it in:
+
+```text
+- <n>. <chunk name> (exposure: <band>) — never recorded
+- <n>. <chunk name> (exposure: <band>) — recorded in <record path> at <commit>; N modules changed since
+```
+
+The title's `N` counts **only the never-recorded chunks**. A recorded,
+unchanged tree is listed for the reader but is already covered, so counting
+it would re-report an audited tree as unaudited — which is exactly what the
+#1608 tracker did to roughly a thousand recorded modules. The stopping rule
+drops previously-swept-and-unchanged chunks first for the same reason: the
+budget is better spent on a chunk no record covers. When every unswept chunk
+is recorded, `N` is zero and no tracker is filed for the stopping rule
+alone.
+
 **Title and label.** The tracker issue is titled
 `security-scan-overflow: N unfiled findings`, where `N` is the size of
 the leftover slice. It carries the `security-scan-overflow` label
@@ -886,6 +908,7 @@ enforcement (LLM06, `label_security.ts`), and secret handling (LLM02).
 | Wrapper closed with `security-scan failed: …` or `security-scan threw: …`    | The scanner exited non-zero, timed out, or threw before finishing. Inspect the worker log for the matching `[security-scan]` lines; the run will be retried on the next idle pass once the repo's cooldown window expires. |
 | Filed finding looks wrong                                                    | Either close the issue (the live `gh issue list` dedup query keeps the scanner from re-filing while it is open), or add a `security-scan-ignore: SEC-… — reason` comment at the cited line so future scans skip it. |
 | Scan filed a `security-scan-overflow` tracker                                | Resolve the six filed issues, then wait for the next idle trigger to run another batch against the same repo.                                                                  |
+| Scan filed a `security-scan-overflow: N chunks not reached` tracker | The bounded sweep stopped early. Plan follow-up work for the chunks listed `— never recorded` only; a chunk listed `— recorded in <record path> at <commit>` with `0 modules changed since` is already covered by that record and needs no action. A recorded chunk with a non-zero count needs only its changed modules re-swept. |
 | Wrapper comment ends `SARIF: code scanning unavailable (HTTP 403\|404) …`    | Code scanning is disabled for that repo, or the worker token lacks the `security_events` scope. Enable code scanning (or grant the scope) if you want the alerts; the findings are already filed as issues either way. |
 | Wrapper comment ends `SARIF: not uploaded — git symbolic-ref …`              | The clone is on a detached HEAD, so no ref could be attributed. Nothing to do — the next scan on an attached branch uploads normally.                                          |
 | Worker-generated alerts appear on a repo's code-scanning tab | Expected since — they are this scanner's findings, published as SARIF under the `VibeCoder-security-scan` tool. Dismiss them there (closing the matching `security` issue does not clear an alert), or fix the code. |
