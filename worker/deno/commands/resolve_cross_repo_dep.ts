@@ -25,16 +25,25 @@ import {
   type RunCommand,
 } from "../lib/cross_repo_fix.ts";
 import { spawnGh } from "../lib/gh_spawn.ts";
+import { runGitArgv } from "../lib/git_timeout.ts";
 
 /**
  * Default command runner using `Deno.Command`.
  *
  * Issue #3703: a `gh` command is delegated to the shared chokepoint so the
  * cross-repo PR it opens is allowlist-checked and journalled.
+ *
+ * Issue #1553: a `git` command is delegated the same way. This runner is
+ * handed `git` argv built in `lib/cross_repo_fix.ts` — clone, checkout,
+ * add, commit, push — so spawning it here put every one of those outside
+ * the `AbortController` timeout (Issue #619), the git-mutation audit
+ * journal (Issue #2380) and the work-volume fault detector (Issue #229).
+ * Exported so the routing is testable directly.
  */
-const defaultRunCommand: RunCommand = async (
+export const defaultRunCommand: RunCommand = async (
   cmd: string[],
 ): Promise<CommandOutput> => {
+  if (cmd[0] === "git") return await runGitArgv(cmd);
   if (cmd[0] === "gh") {
     const result = await spawnGh(cmd.slice(1));
     return {
