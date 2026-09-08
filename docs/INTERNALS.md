@@ -1279,8 +1279,8 @@ network hiccups, and even its own mistakes:
   human is ever flagged.
 - **Cross-identity round verification for grill-me** — the same multi-account
   fleet means a peer (`Vibecoderbot`) can post `## Grill-Me Round N` moments
-  before another identity (`stsvcbot`) claims the issue. `countGrillMeRounds` /
-  `hasReadyMarkerBeenPosted` only see the current identity's comments, so the
+  before another identity (`stsvcbot`) claims the issue. Every check was keyed
+  to the current identity's own comments at the time, so the
   post-run verification declared a false
   `## Grill-Me Failed — Claude did not post a Grill-Me round comment`
   immediately below the round it could not see (incident). Before posting that
@@ -1290,6 +1290,26 @@ network hiccups, and even its own mistakes:
   marker-not-account keying as the failure-marker fix. A round that is still
   unanswered makes the run a no-op success; once a human has replied to it the
   round really is missing and the failure is still reported loudly.
+- **Cross-identity awaiting-reply gate for grill-me** — the pre-Claude gate had
+  the same author-keyed blind spot, so the fix above only cleaned up after the
+  event: `stservice` posted Round 1 on an issue and six minutes later, with no
+  developer reply in between, `VibeCoderST` claimed it and invoked Claude on
+  the unanswered round (incident). The gate now calls the author-agnostic
+  `hasGrillMeRoundAwaitingReply()` before invoking Claude, so a peer's
+  unanswered round stops the invocation instead of costing one wasted run per
+  scan. `countGrillMeRounds()` and `findLatestWorkerRoundTimestamp()` count
+  markers from **any** identity for the same reason — `ROUND_NUMBER` continues
+  from the peer's round rather than restarting at 1, and the Issue #1878
+  override still recognises a developer's explicit `needs-human` removal as
+  their "proceed" signal when the pending round came from a peer. Two
+  boundaries keep the widened keying safe: a marker counts only when it heads a
+  line, so a developer answering with GitHub's "Quote reply" does not re-assert
+  the round they just answered; and the #1878 override excludes removals by any
+  fleet login (`resolveSuppressionExcludedLogins`), because
+  `verifyOperationalLabels` strips `needs-human` under whichever identity is
+  scanning — a peer's strip is a fleet action, not consent. `hasReadyMarkerBeenPosted`
+  is fleet-wide too, so a peer's Ready marker takes the Ready path rather than
+  asking the developer to answer questions the last round never posed.
 - **Crash cleanup** — trap handler (Deno `crash-cleanup` command) cleans up
   heartbeat files and unassigns the worker from claimed issues on unexpected
   exit, closing the crash window between claim and heartbeat recording.

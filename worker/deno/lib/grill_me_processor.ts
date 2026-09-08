@@ -64,6 +64,10 @@ import {
 import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { invalidateComments } from "./comment_cache.ts";
 import { getLabelLastRemoveInfo } from "./issue_query.ts";
+import {
+  isFleetAuthor,
+  resolveSuppressionExcludedLogins,
+} from "./fleet_authors.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { reportGrillMeDegradation } from "./grill_me_run_stats.ts";
 import { releaseAllWorkerClaims } from "./claim_release.ts";
@@ -241,26 +245,60 @@ export interface BuildGrillMePromptOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Count how many grill-me rounds the worker has already posted.
+ * Does `body` carry `marker` as a heading — at the start of the body or of a
+ * line within it (Issue #1560)?
  *
- * A worker round is a comment authored by `githubUser` containing the
- * `## Grill-Me Round N` marker. The final-confirmation comment also counts
- * because finalisation is itself the last round.
+ * The grill-me markers are `##` headings the worker posts on their own line.
+ * A bare `body.includes(marker)` also matches the marker *quoted* inside
+ * someone else's comment, and GitHub's "Quote reply" button prefixes every
+ * quoted line with `> `. Since the marker checks are now author-agnostic, a
+ * developer answering a round with Quote reply would otherwise re-assert the
+ * round they just answered and stall the issue on every scan. Anchoring the
+ * match to the start of a line ignores quoted and inline mentions while still
+ * matching every genuine round comment.
+ *
+ * @param body - Comment body
+ * @param marker - Marker text (a `##` heading prefix)
+ */
+function carriesMarkerHeading(body: string, marker: string): boolean {
+  // `\r\n` line endings are covered — the `\n` still precedes the marker.
+  return body.startsWith(marker) || body.includes(`\n${marker}`);
+}
+
+/**
+ * Count how many grill-me rounds the fleet has already posted.
+ *
+ * A round is any comment carrying the `## Grill-Me Round N` marker; the
+ * final-confirmation comment also counts because finalisation is itself the
+ * last round.
+ *
+ * Counting is **author-agnostic** (Issue #1560). A fleet running more than
+ * one worker identity (e.g. `stservice` on one host and `VibeCoderST` on
+ * another) posts rounds under whichever identity claimed the issue, so an
+ * author-keyed count restarted `ROUND_NUMBER` at 1 whenever a peer had posted
+ * the previous round — observed on stSoftwareAU/GRQ#4686. Keying off the
+ * distinctive marker rather than the author matches
+ * {@link countConsecutiveFailures} (#2729) and
+ * {@link hasGrillMeRoundAwaitingReply} (#3768).
+ *
+ * Only a marker that heads a line counts ({@link carriesMarkerHeading}), so a
+ * quoted round in a developer's reply is not miscounted. A marker a commenter
+ * types deliberately still inflates the count, and that fails safe in both
+ * directions it can move: a higher count either continues the numbering or
+ * trips the safety cap, and the cap hands the issue to a human rather than
+ * acting on the forgery.
  *
  * @param comments - Issue comments (chronological order)
- * @param githubUser - Worker's GitHub username
- * @returns The number of prior rounds posted by the worker
+ * @returns The number of prior rounds posted by any worker identity
  */
 export function countGrillMeRounds(
   comments: readonly GitHubComment[],
-  githubUser: string,
 ): number {
   let count = 0;
   for (const c of comments) {
-    if (c.author !== githubUser) continue;
     if (
-      c.body.includes(GRILL_ME_ROUND_MARKER) ||
-      c.body.includes(GRILL_ME_FINAL_MARKER)
+      carriesMarkerHeading(c.body, GRILL_ME_ROUND_MARKER) ||
+      carriesMarkerHeading(c.body, GRILL_ME_FINAL_MARKER)
     ) {
       count++;
     }
@@ -454,78 +492,25 @@ export function synthesiseRoundComment(
 }
 
 /**
- * Detect whether the worker has already posted a Ready-for-Next-Phase
- * marker (Issue #1648). When true the processor must not invoke Claude
- * again — it is the developer's turn to apply the next-phase label.
+ * Detect whether a Ready-for-Next-Phase marker has already been posted
+ * (Issue #1648). When true the processor must not invoke Claude again — it is
+ * the developer's turn to apply the next-phase label.
+ *
+ * Author-agnostic (Issue #1560), like {@link countGrillMeRounds}: grilling has
+ * converged whichever fleet identity posted the Ready comment. Keyed to the
+ * current identity, a peer's Ready fell through to the awaiting-reply branch,
+ * which told the developer to "answer the questions in the latest grill-me
+ * round" when the last round had asked none and left `grill-me` in place.
+ * Only a marker that heads a line counts, so a quoted Ready does not.
  *
  * @param comments - Issue comments (chronological order)
- * @param githubUser - Worker's GitHub username
- * @returns True when a Ready marker authored by the worker is present
+ * @returns True when a Ready marker from any worker identity is present
  */
 export function hasReadyMarkerBeenPosted(
   comments: readonly GitHubComment[],
-  githubUser: string,
 ): boolean {
   for (const c of comments) {
-    if (c.author !== githubUser) continue;
-    if (c.body.includes(GRILL_ME_READY_MARKER)) return true;
-  }
-  return false;
-}
-
-/**
- * Detect whether the worker is awaiting a developer reply to the most
- * recent grill-me Round N comment (Issue #1876).
- *
- * Returns true when the most recent worker-authored grill-me marker is
- * a Round N (or final-confirmation) comment AND no non-worker comment
- * has been posted after it. In that state the ball is in the
- * developer's court — the processor must not invoke Claude again,
- * otherwise a second worker (or a re-run of the same worker after a
- * label-strip) would fast-forward to a Ready marker before the
- * developer has had a chance to answer.
- *
- * The race this guards against: machine A posts Round N, signals
- * "awaiting developer" via the `needs-human` label, and unassigns.
- * Because `needs-human` is an operational label and the worker user
- * is not on the authorised allowlist, `verifyOperationalLabels`
- * strips it. Machine B then picks the issue up and re-enters
- * grill-me. Without this comment-state-based gate, machine B would
- * invoke Claude again — Claude reads Round N (with checkboxes
- * pre-filled by Claude itself) and self-answers them, producing a
- * Ready marker simultaneously with Round N from the user's
- * perspective.
- *
- * Ready markers are not handled here — {@link hasReadyMarkerBeenPosted}
- * is the dedicated check for that case and is called first.
- *
- * @param comments - Issue comments (chronological order)
- * @param githubUser - Worker's GitHub username
- * @returns True when a developer reply is pending after the latest round
- */
-export function isAwaitingDeveloperReply(
-  comments: readonly GitHubComment[],
-  githubUser: string,
-): boolean {
-  // Walk backwards. The first non-worker comment we hit means the
-  // developer (or another participant) has spoken since the latest
-  // worker activity — proceed normally. The first worker Round N /
-  // final-confirmation marker we encounter before any non-worker
-  // comment means the worker is awaiting a reply. Worker comments
-  // that are not grill-me markers (claim, heartbeat, etc.) are
-  // skipped so they do not confuse the lookback.
-  for (let i = comments.length - 1; i >= 0; i--) {
-    const c = comments[i]!;
-    if (c.author !== githubUser) {
-      return false;
-    }
-    if (
-      c.body.includes(GRILL_ME_ROUND_MARKER) ||
-      c.body.includes(GRILL_ME_FINAL_MARKER)
-    ) {
-      return true;
-    }
-    // Other worker comments (claim, heartbeat, failure marker) — skip past.
+    if (carriesMarkerHeading(c.body, GRILL_ME_READY_MARKER)) return true;
   }
   return false;
 }
@@ -536,18 +521,21 @@ export function isAwaitingDeveloperReply(
  *
  * In a fleet running more than one worker identity (e.g. `Vibecoderbot` on one
  * host and `stsvcbot` on another), a peer may post `## Grill-Me Round N`
- * moments before this identity claims the same issue. Because
- * {@link countGrillMeRounds} and {@link hasReadyMarkerBeenPosted} only see
- * comments authored by the current identity, the post-run verification used to
- * conclude "Claude did not post a Grill-Me round comment" and post a
- * `## Grill-Me Failed` marker that directly contradicted the visible round
- * comment (observed on #3767). Keying off the distinctive marker rather than
- * the author is consistent with the Issue #2729 failure-marker fix.
+ * moments before this identity claims the same issue. Every author-keyed check
+ * missed that round, so the post-run verification used to conclude "Claude did
+ * not post a Grill-Me round comment" and post a `## Grill-Me Failed` marker
+ * that directly contradicted the visible round comment (observed on #3767).
+ * Keying off the distinctive marker rather than the author is consistent with
+ * the Issue #2729 failure-marker fix; {@link countGrillMeRounds} and
+ * {@link hasReadyMarkerBeenPosted} were given the same treatment by Issue
+ * #1560, which also promoted this check to the pre-Claude gate.
  *
  * Walking backwards guards against masking a genuine failure: a round marker
  * only counts while it is still the newest thing in the thread. Once a human
  * has replied to it, the round we were supposed to post really is missing and
- * the failure must be reported loudly.
+ * the failure must be reported loudly. Only a marker that heads a line counts
+ * ({@link carriesMarkerHeading}), so a developer answering via GitHub's "Quote
+ * reply" does not re-assert the round they just answered (Issue #1560).
  *
  * @param comments - Issue comments (chronological order)
  * @param githubUser - Worker's GitHub username (current identity)
@@ -561,9 +549,9 @@ export function hasGrillMeRoundAwaitingReply(
     const c = comments[i]!;
     const body = c.body;
     if (
-      body.includes(GRILL_ME_ROUND_MARKER) ||
-      body.includes(GRILL_ME_FINAL_MARKER) ||
-      body.includes(GRILL_ME_READY_MARKER)
+      carriesMarkerHeading(body, GRILL_ME_ROUND_MARKER) ||
+      carriesMarkerHeading(body, GRILL_ME_FINAL_MARKER) ||
+      carriesMarkerHeading(body, GRILL_ME_READY_MARKER)
     ) {
       return true;
     }
@@ -584,28 +572,31 @@ export function hasGrillMeRoundAwaitingReply(
 }
 
 /**
- * Find the `createdAt` ISO timestamp of the most recent worker-authored
- * Round N (or final-confirmation) comment, or `null` when no such
- * comment exists (Issue #1878).
+ * Find the `createdAt` ISO timestamp of the most recent Round N (or
+ * final-confirmation) comment, or `null` when no such comment exists
+ * (Issue #1878).
  *
  * Used to test whether a `needs-human` removal event in the issue
  * timeline came AFTER the latest grilling round. Heartbeat and other
- * non-marker worker comments are skipped so they do not shadow the
- * round timestamp.
+ * non-marker comments are skipped so they do not shadow the round
+ * timestamp.
+ *
+ * Author-agnostic for the same reason as {@link countGrillMeRounds}
+ * (Issue #1560): when a peer identity posted the pending round, the
+ * developer's explicit `needs-human` removal must still be recognised as
+ * their "proceed" signal, otherwise the #1878 override dies the moment two
+ * identities share an issue.
  *
  * @param comments - Issue comments (chronological order)
- * @param githubUser - Worker's GitHub username
  */
 export function findLatestWorkerRoundTimestamp(
   comments: readonly GitHubComment[],
-  githubUser: string,
 ): string | null {
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!;
-    if (c.author !== githubUser) continue;
     if (
-      c.body.includes(GRILL_ME_ROUND_MARKER) ||
-      c.body.includes(GRILL_ME_FINAL_MARKER)
+      carriesMarkerHeading(c.body, GRILL_ME_ROUND_MARKER) ||
+      carriesMarkerHeading(c.body, GRILL_ME_FINAL_MARKER)
     ) {
       return c.createdAt;
     }
@@ -626,24 +617,36 @@ export function findLatestWorkerRoundTimestamp(
  *
  * Returns true when:
  *   - the timeline shows a recent `unlabeled needs-human` event;
- *   - the actor is NOT the worker user (i.e. the removal was an
+ *   - the actor is NOT a worker identity (i.e. the removal was an
  *     intentional developer signal, not the operational-label
  *     verifier stripping the label); and
- *   - the removal occurred AFTER the most recent worker Round N
- *     comment.
+ *   - the removal occurred AFTER the most recent Round N comment.
  *
  * Returns false when no such event exists, when the timeline lookup
  * fails (fail-safe — preserve the existing awaiting-reply behaviour),
  * or when the most recent removal pre-dates the latest Round N.
+ *
+ * `fleetLogins` widens "worker identity" beyond this host (Issue #1560).
+ * `verifyOperationalLabels` strips `needs-human` under whichever identity is
+ * scanning, so a peer's strip is a fleet action, not a developer's "proceed"
+ * — treating it as consent would re-open the very gate this issue closes.
+ *
+ * @param removeInfo - Latest `unlabeled needs-human` event, or null
+ * @param latestRoundTimestamp - `createdAt` of the newest round comment
+ * @param githubUser - This host's GitHub login
+ * @param fleetLogins - Sibling fleet logins (`fleet_pr_authors` /
+ *   `service_accounts`); human `allowed_authors` are deliberately excluded so
+ *   a maintainer's removal still counts as the developer's signal
  */
 export function isNonWorkerRemovalAfterRound(
   removeInfo: { removedAt: number; removedBy: string } | null,
   latestRoundTimestamp: string | null,
   githubUser: string,
+  fleetLogins: readonly string[] = [],
 ): boolean {
   if (removeInfo === null) return false;
   if (latestRoundTimestamp === null) return false;
-  if (removeInfo.removedBy.toLowerCase() === githubUser.toLowerCase()) {
+  if (isFleetAuthor(removeInfo.removedBy, [githubUser, ...fleetLogins])) {
     return false;
   }
   const roundMs = Date.parse(latestRoundTimestamp);
@@ -953,7 +956,7 @@ async function _processGrillMeWithHeartbeat(
 
   // 3) Skip when the worker has already posted the Ready marker — it is
   //    the developer's turn to apply the next-phase label (Issue #1648).
-  if (hasReadyMarkerBeenPosted(comments, githubUser)) {
+  if (hasReadyMarkerBeenPosted(comments)) {
     logger.info(
       "Ready-for-Next-Phase marker already posted — skipping Claude invocation",
       { repo, issueNumber },
@@ -1049,7 +1052,16 @@ async function _processGrillMeWithHeartbeat(
   //
   //     This comment-state gate fires regardless of label state, so
   //     it survives the operational-label strip and prevents the race.
-  if (isAwaitingDeveloperReply(comments, githubUser)) {
+  //
+  //     The gate is author-agnostic (Issue #1560). Keyed on this
+  //     identity's own comments it returned false the moment it met a
+  //     peer identity's round, so a second machine claimed the issue
+  //     and invoked Claude on the unanswered round — observed on
+  //     stSoftwareAU/GRQ#4686, six minutes after `stservice` posted
+  //     Round 1. `hasGrillMeRoundAwaitingReply` sees any identity's
+  //     unanswered round, so the invocation is prevented, not merely
+  //     recovered from after the fact by the #3768 post-run check.
+  if (hasGrillMeRoundAwaitingReply(comments, githubUser)) {
     // Issue #1878: Treat an explicit non-worker removal of
     // `needs-human` after the latest Round N as the developer's "go"
     // signal — even when no separate reply comment has been posted.
@@ -1057,10 +1069,7 @@ async function _processGrillMeWithHeartbeat(
     // every iteration after the user removes it, producing the
     // "constantly labelling as needs-human but no questions posed"
     // loop reported in #1878.
-    const latestRoundTimestamp = findLatestWorkerRoundTimestamp(
-      comments,
-      githubUser,
-    );
+    const latestRoundTimestamp = findLatestWorkerRoundTimestamp(comments);
     let explicitRemoval = false;
     try {
       const removeInfo = await getLabelLastRemoveInfo(
@@ -1073,6 +1082,13 @@ async function _processGrillMeWithHeartbeat(
         removeInfo,
         latestRoundTimestamp,
         githubUser,
+        // A peer identity's operational-label strip is a fleet action, not
+        // the developer's "proceed" signal (Issue #1560).
+        resolveSuppressionExcludedLogins({
+          githubUser,
+          fleetPrAuthors: config.fleetPrAuthors,
+          serviceAccounts: config.serviceAccounts,
+        }),
       );
       if (explicitRemoval && removeInfo !== null) {
         logger.info(
@@ -1107,7 +1123,7 @@ async function _processGrillMeWithHeartbeat(
       // is paired with an explanation comment. The dedup key is keyed
       // off the awaiting round number, so a fresh comment is posted
       // only when the round number changes.
-      const priorRounds = countGrillMeRounds(comments, githubUser);
+      const priorRounds = countGrillMeRounds(comments);
       let awaitingNeedsHumanAdded = false;
       try {
         const issue = await ghClient.getIssue(repo, issueNumber);
@@ -1152,7 +1168,7 @@ async function _processGrillMeWithHeartbeat(
         ok: true,
         value: {
           processed: false,
-          roundNumber: countGrillMeRounds(comments, githubUser),
+          roundNumber: countGrillMeRounds(comments),
           isFinalRound: false,
           workerCommentPosted: false,
           labelsSwapped: false,
@@ -1174,7 +1190,7 @@ async function _processGrillMeWithHeartbeat(
   // 4) Compute the current round number. maxGrillMeRounds is now a
   //    safety cap (Issue #1648) — when the next round would exceed it,
   //    escalate to needs-human instead of forcing finalisation.
-  const priorRounds = countGrillMeRounds(comments, githubUser);
+  const priorRounds = countGrillMeRounds(comments);
   if (priorRounds >= maxRounds) {
     logger.warn(
       "Grill-me safety cap reached without convergence — escalating to needs-human",
@@ -1256,11 +1272,8 @@ async function _processGrillMeWithHeartbeat(
     );
   }
 
-  const guardPriorRounds = countGrillMeRounds(raceGuardComments, githubUser);
-  const guardReadyPosted = hasReadyMarkerBeenPosted(
-    raceGuardComments,
-    githubUser,
-  );
+  const guardPriorRounds = countGrillMeRounds(raceGuardComments);
+  const guardReadyPosted = hasReadyMarkerBeenPosted(raceGuardComments);
 
   if (guardPriorRounds > priorRounds || guardReadyPosted) {
     logger.warn(
@@ -1460,8 +1473,8 @@ async function _processGrillMeWithHeartbeat(
     }
   }
 
-  const newRoundCount = countGrillMeRounds(postCommentList, githubUser);
-  const readyPostedNow = hasReadyMarkerBeenPosted(postCommentList, githubUser);
+  const newRoundCount = countGrillMeRounds(postCommentList);
+  const readyPostedNow = hasReadyMarkerBeenPosted(postCommentList);
   const workerCommentPosted = newRoundCount > priorRounds || readyPostedNow;
 
   // Issue #1876: duplicate-post detection. If `newRoundCount` jumped by
