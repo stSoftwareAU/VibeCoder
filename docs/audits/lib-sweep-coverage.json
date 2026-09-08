@@ -141,6 +141,7 @@
         "worker/deno/lib/run_housekeeping.ts",
         "worker/deno/lib/run_worker.ts",
         "worker/deno/lib/security_fix_gate_feedback.ts",
+        "worker/deno/lib/security_fix_gate_retry.ts",
         "worker/deno/lib/self_heal_events.ts",
         "worker/deno/lib/session_compaction.ts",
         "worker/deno/lib/session_manager.ts",

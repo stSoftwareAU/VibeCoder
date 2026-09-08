@@ -84,8 +84,24 @@ export interface ContainerToolchainPin {
   id: string;
   /** Exact release version, never a floating alias. */
   version: string;
-  /** Containerfile `ARG` carrying the version, e.g. `RUST_VERSION`. */
-  versionArg: string;
+  /**
+   * Containerfile `ARG` carrying the version, e.g. `RUST_VERSION`.
+   *
+   * Set on a toolchain the Containerfile installs itself. Absent when
+   * {@link fragment} is set: a toolchain carries exactly one of the two.
+   */
+  versionArg?: string;
+  /**
+   * Fragment path relative to `container/`, e.g. `toolchains/rust.sh`
+   * (Issue #1594).
+   *
+   * A fetch-verify-extract toolchain lives in its own fragment, which
+   * `container/install-toolchains.sh` runs and which reads its pins from
+   * here — so the toolchain costs the Containerfile one word rather than the
+   * `ARG` block and `RUN` body that pushed it towards Apple container's size
+   * cap. Absent when {@link versionArg} is set.
+   */
+  fragment?: string;
   /** Architecture (`amd64`, `arm64`, `noarch`) to SHA-256 of the asset. */
   sha256: Record<string, string>;
   /** Commands the toolchain puts on the image PATH. */
@@ -149,6 +165,18 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * files (Issue #650 — without the binary that SAST stage SKIPs on every fleet
  * run and findings are met only in CI). Each must be supplied by a manifest
  * toolchain, so the image never falls back to a host-installed equivalent.
+ *
+ * Two entries are enforced in CI rather than by a `quality.sh` (Issue #1596):
+ * `gitleaks`, the secret scanner GRQ-AutoTrader and NEAT-AI-Explore both run
+ * on every PR, and `pwsh`, the interpreter this repository's
+ * `.github/workflows/validate-scripts.yml` fails loud without — the one
+ * user-directed exception to "the gate runs it", since the `run.ps1` suites
+ * are excluded from the local gate (Issue #971).
+ *
+ * Two more back the NEAT-AI-core and NEAT-AI-scorer gates (Issue #1595):
+ * `bats`, the runner both drive over their `tests/scripts` suites, and
+ * `codespell`, which NEAT-AI-core's gate skipped with a warning and
+ * NEAT-AI-scorer's `scripts/spell-check.sh` preflight exits 1 without.
  */
 export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "cargo",
@@ -160,6 +188,10 @@ export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "actionlint",
   "markdownlint-cli2",
   "semgrep",
+  "gitleaks",
+  "pwsh",
+  "bats",
+  "codespell",
 ];
 
 /** Aliases that resolve to "whatever upstream published most recently". */
@@ -338,13 +370,41 @@ function parseToolchain(value: unknown, index: number): ContainerToolchainPin {
   const raw = asRecord(value, field);
   const id = asString(raw.id, `${field}.id`);
   const version = parseExactVersion(raw.version, `${field}.version`);
-  const versionArg = asString(raw.versionArg, `${field}.versionArg`);
 
   if (!PROVIDER_ID_RE.test(id)) {
     fail(`${field}.id`, 'must be a lower-case toolchain id (e.g. "rust")');
   }
-  if (!ARG_NAME_RE.test(versionArg) || !versionArg.endsWith("_VERSION")) {
-    fail(`${field}.versionArg`, "must be named <TOOLCHAIN>_VERSION");
+
+  // Exactly one of the two (Issue #1594): the Containerfile restates the pin
+  // as `ARG`s, or a fragment reads it from here. Both would be two sources of
+  // truth; neither would leave the version stated nowhere the build reads.
+  const hasVersionArg = raw.versionArg !== undefined;
+  const hasFragment = raw.fragment !== undefined;
+  if (hasVersionArg === hasFragment) {
+    fail(
+      field,
+      'must carry exactly one of "versionArg" (the Containerfile installs it) ' +
+        'or "fragment" (container/install-toolchains.sh runs it)',
+    );
+  }
+
+  let versionArg: string | undefined;
+  if (hasVersionArg) {
+    versionArg = asString(raw.versionArg, `${field}.versionArg`);
+    if (!ARG_NAME_RE.test(versionArg) || !versionArg.endsWith("_VERSION")) {
+      fail(`${field}.versionArg`, "must be named <TOOLCHAIN>_VERSION");
+    }
+  }
+
+  let fragment: string | undefined;
+  if (hasFragment) {
+    fragment = asString(raw.fragment, `${field}.fragment`);
+    if (fragment !== `toolchains/${id}.sh`) {
+      fail(
+        `${field}.fragment`,
+        `must be "toolchains/${id}.sh" so the requested id selects it`,
+      );
+    }
   }
 
   const commands = asArray(raw.commands, `${field}.commands`)
@@ -378,7 +438,8 @@ function parseToolchain(value: unknown, index: number): ContainerToolchainPin {
   return {
     id,
     version,
-    versionArg,
+    ...(versionArg === undefined ? {} : { versionArg }),
+    ...(fragment === undefined ? {} : { fragment }),
     sha256: parseSha256(raw.sha256, `${field}.sha256`),
     commands,
     versionCommand,
@@ -661,6 +722,123 @@ export function findProviderInstallViolations(
           `reading it from container/tools.json`,
       );
     }
+  }
+
+  return violations;
+}
+
+/** The step that installs a set of fragment-driven toolchains (Issue #1594). */
+const TOOLCHAIN_INSTALLER = "install-toolchains.sh";
+
+/**
+ * The set of ids handed to one `install-toolchains.sh` run.
+ *
+ * Deliberately narrow: the argument is a comma-separated id list, so the same
+ * step's `rm -rf /tmp/install-toolchains.sh <path>` cleanup is not mistaken
+ * for an installed set.
+ */
+const TOOLCHAIN_INSTALL_RE =
+  /install-toolchains\.sh\s+"?([a-z][a-z0-9,-]*)"?(?=[\s;]|$)/g;
+
+/** The glob COPY that puts the fragments where the installer looks for them. */
+const TOOLCHAIN_COPY_RE = /^COPY\s+toolchains\/\*\.sh\b/;
+
+/**
+ * Report every place the fragment-driven toolchain layer would not install
+ * what `container/tools.json` pins (Issue #1594, parent #1574).
+ *
+ * A toolchain carrying a `fragment` is exempt from the `ARG` restatement rule
+ * in {@link findContainerfileViolations} — its pins are read from the manifest
+ * by `container/toolchains/<id>.sh` rather than restated in the Containerfile,
+ * which is what keeps the comment-stripped definition under Apple container's
+ * size cap. That exemption is only safe while something else proves the
+ * fragment is actually copied in, actually run, and actually verifies what it
+ * downloads: absence of a failure is not success. This is that check.
+ *
+ * @param containerfile - Raw Containerfile text.
+ * @param manifest - The parsed manifest.
+ * @param fragments - Fragment path (as recorded in the manifest) to its text.
+ * @returns Human-readable violations; empty when the layer installs the pins.
+ */
+export function findToolchainInstallViolations(
+  containerfile: string,
+  manifest: ContainerManifest,
+  fragments: Map<string, string>,
+): string[] {
+  const violations: string[] = [];
+
+  const pinned = manifest.toolchains.filter((t) => t.fragment !== undefined);
+  if (pinned.length === 0) return violations;
+
+  // Which ids the build actually asks for, across every installer run.
+  const installed = new Set<string>();
+  for (const run of runInstructions(containerfile)) {
+    for (const match of run.matchAll(TOOLCHAIN_INSTALL_RE)) {
+      for (const id of match[1]!.split(",")) {
+        const trimmed = id.trim();
+        if (trimmed !== "") installed.add(trimmed);
+      }
+    }
+  }
+
+  const copiesFragments = containerfile
+    .split("\n")
+    .map(codeOf)
+    .some((line) => TOOLCHAIN_COPY_RE.test(line));
+  if (!copiesFragments) {
+    violations.push(
+      `Containerfile never copies the toolchain fragments ` +
+        `(COPY toolchains/*.sh): ${TOOLCHAIN_INSTALLER} would find none`,
+    );
+  }
+
+  for (const toolchain of pinned) {
+    const path = toolchain.fragment!;
+
+    if (!installed.has(toolchain.id)) {
+      violations.push(
+        `Containerfile never installs toolchain "${toolchain.id}": ` +
+          `container/tools.json pins it with ${path}, so the image would ` +
+          `ship without ${toolchain.versionCommand}`,
+      );
+    }
+
+    const fragment = fragments.get(path);
+    if (fragment === undefined) {
+      violations.push(`${path} is missing`);
+      continue;
+    }
+    if (!fragment.includes("sha256sum -c")) {
+      violations.push(`${path} installs without verifying a checksum`);
+    }
+    if (/curl[^\n]*\|\s*(ba)?sh/.test(fragment)) {
+      violations.push(`${path} pipes a download into a shell`);
+    }
+    // The pins belong to the manifest; a fragment that restates the version
+    // is a second source of truth that will drift.
+    if (fragment.includes(toolchain.version)) {
+      violations.push(
+        `${path} restates version ${toolchain.version} instead of reading it ` +
+          `from container/tools.json`,
+      );
+    }
+    // One dropped connection must not fail the image build (Issue #1014): the
+    // fragment inherits the Containerfile's shared policy, so it has to use it.
+    if (FETCH_RE.test(fragment) && !RETRY_POLICY_RE.test(fragment)) {
+      violations.push(
+        `${path} downloads without the \${${CURL_RETRY_ARG}} retry policy, ` +
+          `so one dropped connection fails the image build`,
+      );
+    }
+  }
+
+  const pinnedIds = new Set(pinned.map((t) => t.id));
+  for (const id of installed) {
+    if (pinnedIds.has(id)) continue;
+    violations.push(
+      `Containerfile runs ${TOOLCHAIN_INSTALLER} with "${id}", which ` +
+        `container/tools.json does not pin with a fragment`,
+    );
   }
 
   return violations;
@@ -1162,10 +1340,20 @@ export function findContainerfileViolations(
     }
   }
 
-  // Toolchains pin exactly as tools do, so the same ARG checks apply.
+  // Toolchains pin exactly as tools do, so the same ARG checks apply — except
+  // a fragment-driven one (Issue #1594), whose pins the Containerfile never
+  // restates because container/toolchains/<id>.sh reads them from the manifest
+  // itself. findToolchainInstallViolations is what checks those.
   const pins: Array<
     Pick<ContainerToolPin, "version" | "versionArg" | "sha256">
-  > = [...manifest.tools, ...manifest.toolchains];
+  > = [
+    ...manifest.tools,
+    ...manifest.toolchains.filter((t) => t.fragment === undefined).map((t) => ({
+      version: t.version,
+      versionArg: t.versionArg!,
+      sha256: t.sha256,
+    })),
+  ];
 
   for (const tool of pins) {
     const actual = args.get(tool.versionArg);

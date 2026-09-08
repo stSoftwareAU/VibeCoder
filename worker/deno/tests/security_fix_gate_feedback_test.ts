@@ -263,3 +263,109 @@ Deno.test("gate feedback - a recorded verdict reaches the retry prompt", async (
     "the retry notice must sit outside the untrusted block",
   );
 });
+
+// --- Blocked-run counting and declaration bounds (Issue #1575) --------------
+
+Deno.test(
+  "gate feedback - a verdict recorded for the in-run retry charges no blocked run",
+  async () => {
+    await withStateDir(async (stateDir) => {
+      const recorded = await recordSecurityFixGateBlock(
+        stateDir,
+        REPO,
+        1575,
+        ["test-identifier-in-diff"],
+        { countsAsBlockedRun: false },
+      );
+      assertEquals(recorded.blockCount, 0);
+      // Zero survives the round trip — it is a real count, not a corrupt file.
+      assertEquals(
+        (await readSecurityFixGateBlock(stateDir, REPO, 1575))?.blockCount,
+        0,
+      );
+
+      // The run then ends blocked, which is what charges the run.
+      const blocked = await recordSecurityFixGateBlock(
+        stateDir,
+        REPO,
+        1575,
+        ["test-identifier-in-diff"],
+        { countsAsBlockedRun: true },
+      );
+      assertEquals(blocked.blockCount, 1);
+    });
+  },
+);
+
+Deno.test(
+  "gate feedback - declarations are bounded on write and on read",
+  async () => {
+    await withStateDir(async (stateDir) => {
+      const declarations = [
+        `Deno.test("${"x".repeat(500)}", () => {});`,
+        "   ",
+        ...Array.from({ length: 20 }, (_, i) => `Deno.test("case ${i}");`),
+      ];
+      const recorded = await recordSecurityFixGateBlock(
+        stateDir,
+        REPO,
+        1575,
+        ["test-identifier-in-diff"],
+        { declarations },
+      );
+
+      assertEquals(recorded.declarations?.length, 10, "capped at ten lines");
+      assertEquals(recorded.declarations?.[0]?.length, 200, "each truncated");
+      assertEquals(
+        recorded.declarations?.includes(""),
+        false,
+        "blank lines dropped",
+      );
+
+      const read = await readSecurityFixGateBlock(stateDir, REPO, 1575);
+      assertEquals(read?.declarations, recorded.declarations);
+    });
+  },
+);
+
+Deno.test(
+  "gate feedback - a tampered declarations field cannot reach the prompt",
+  async () => {
+    await withStateDir(async (stateDir) => {
+      await recordSecurityFixGateBlock(stateDir, REPO, 1575, [
+        "test-identifier-in-diff",
+      ]);
+      const path = `${stateDir}/${
+        REPO.replace("/", "_")
+      }_1575.securitygate.json`;
+      const state = JSON.parse(await Deno.readTextFile(path));
+      state.declarations = { not: "an array" };
+      await Deno.writeTextFile(path, JSON.stringify(state));
+
+      const read = await readSecurityFixGateBlock(stateDir, REPO, 1575);
+      assertEquals(read?.declarations, undefined);
+      // The section still renders, stating that nothing was matched.
+      assertStringIncludes(
+        buildSecurityFixGateFeedbackSection(read!),
+        "matched NO test-declaration line",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "gate feedback - the retry section lists the declarations the gate matched",
+  () => {
+    const block: SecurityFixGateBlock = {
+      repo: REPO,
+      issueNumber: 1575,
+      missing: ["test-identifier-in-diff"],
+      blockedAt: "2026-09-08T00:00:00.000Z",
+      blockCount: 1,
+      declarations: ["Deno.test(", '"a wrapped declaration",'],
+    };
+    const section = buildSecurityFixGateFeedbackSection(block);
+    assertStringIncludes(section, "a wrapped declaration");
+    assertStringIncludes(section, "The gate matched these test declarations");
+  },
+);

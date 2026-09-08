@@ -77,10 +77,25 @@ weight.
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
+| `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
+| `pwsh` 7.6.5 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites, which `validate-scripts.yml` fails loud without              |
+| `bats-core` 1.14.0                                  | `bats`                                    | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it       |
+| `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 
-Two consequences worth knowing:
+`rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
+`bats-core` and `codespell` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`container/install-toolchains.sh` with the ids the Containerfile names
+(Issue #1594). Each fragment reads its own version and per-architecture
+SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
+ids rather than `ARG` blocks; see
+[How the pins stay honest](#how-the-pins-stay-honest) for the rule that keeps
+that exemption honest. Adding one is a fragment, a `container/tools.json`
+entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
+added to one of the Containerfile's `install-toolchains.sh` runs.
+
+Six consequences worth knowing:
 
 - **Rust is pinned to 1.98.0, not `stable`.** That is the channel
   NEAT-AI-scorer, NEAT-AI-Lamarck, NEAT-AI-Backpropagation and NEAT-AI-Forests
@@ -101,6 +116,41 @@ Two consequences worth knowing:
   into a `/opt/semgrep` virtualenv rather than a single binary, and at roughly
   350 MB it is the image's largest toolchain — see
   [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
+- **`gitleaks` is enforced in CI, not by a `quality.sh`.** Neither
+  GRQ-AutoTrader (which has no `quality.sh`) nor NEAT-AI-Explore runs the
+  scanner from its local gate, so it is here for the agent's benefit: with the
+  binary in the image the same scan an agent's PR will face can be run before
+  the PR exists. The amd64 checksum is deliberately the digest the gitleaks
+  CLI fallback pins in both that scan and this repository's own
+  `.github/workflows/gitleaks.yml`; the local half of that claim is enforced —
+  `container_manifest_test.ts` fails the gate when the manifest pin and that
+  workflow's `GITLEAKS_VERSION` / `GITLEAKS_SHA256` drift apart.
+- **`pwsh` is the one user-directed exception to "the gate runs it and CI
+  enforces it".** This repo's `run.ps1`, `setup.ps1` and `loop.ps1` suites are
+  excluded from the local gate (Issue #971,
+  `worker/deno/tests/pwsh_suites_outside_the_gate_test.ts`), but
+  `.github/workflows/validate-scripts.yml` fails loud without PowerShell and
+  runs them — so the CI half holds and the local half does not. Wiring those
+  suites into the local gate is separate work, not part of baking the
+  toolchain in. The image sets `POWERSHELL_UPDATECHECK=Off` and
+  `POWERSHELL_TELEMETRY_OPTOUT=1`: no update nag and no telemetry round trip
+  from an unattended container, the same reasoning as
+  `SEMGREP_ENABLE_VERSION_CHECK`. No apt step either — the runtime libraries
+  the .NET host needs (`libicu76`, `libssl3t64`, `libstdc++6`,
+  `libgssapi-krb5-2`) are already in the digest-pinned base, and the
+  fragment's `pwsh --version` assertion is what proves it.
+- **`bats-core` and `codespell` replace two skipped gate lines.** Both
+  NEAT-AI-core and NEAT-AI-scorer drive a BATS suite from their own
+  `quality.sh`, and without the runner each printed `bats not installed —
+  skipping` while their CI apt-installed it and ran the suites — NEAT-AI-core
+  PR 597 skipped all 394 tests locally. `codespell` is the same story on
+  NEAT-AI-core and worse on NEAT-AI-scorer, whose `scripts/spell-check.sh`
+  preflight exits 1 when the binary is absent, so that gate failed outright in
+  the image. `bats-core` publishes no release asset, so the pinned artefact is
+  the tag's GitHub source tarball installed by its own bundled `install.sh`;
+  `codespell` is a wheel in a `/opt/codespell` virtualenv, following semgrep
+  (see [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md)). Both are pure text, so one
+  `noarch` digest covers each.
 
 Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
 provider need; the worker itself is Deno. Its layer is built **before** the
@@ -124,7 +174,7 @@ mid-run on an unattended host.
 flowchart TD
     C[".config.json repos"] --> Q["each repo's quality.sh"]
     Q --> T["container/tools.json<br/>toolchains + repos"]
-    T --> L["Containerfile toolchain layers<br/>(pinned + checksummed)"]
+    T --> L["install-toolchains.sh<br/>→ toolchains/&lt;id&gt;.sh<br/>(pinned + checksummed)"]
     T --> V["container_manifest_test.ts<br/>coverage + ARG agreement"]
     L --> C2["container-build.yml<br/>presence + version + Rust gate probe"]
     V -->|drift| F["❌ quality gate fails"]
@@ -245,6 +295,28 @@ and Containerfile on every quality-gate run, so a version bumped in one file
 and not the other fails locally and in CI. The CI workflow then builds the
 image with both Docker and Podman and runs `./quality.sh` inside it.
 
+**A toolchain carries exactly one of `versionArg` or `fragment`** — never both,
+never neither, and `parseContainerManifest` rejects the manifest otherwise.
+`versionArg` means the Containerfile installs the toolchain itself and must
+restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
+installs it and reads the pin from `container/tools.json` with `jq`, so the
+Containerfile states no version at all. `shellcheck`, `actionlint`,
+`cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell` and `rust` are
+fragments (Issues #1594, #1595, #1596) — they are the fetch-verify-extract
+toolchains, whose `ARG` blocks and `RUN` bodies were the bulk of the
+Containerfile's size. `node`, `npm`, `markdownlint-cli2` and
+`semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
+the npm- and pip-installed tools have their own steps.
+
+The exemption from the `ARG` rule is only safe while something else proves the
+fragment is real, so `findToolchainInstallViolations` requires that the
+Containerfile copies `toolchains/*.sh`, that **every** fragment-bearing
+toolchain id is named by some `install-toolchains.sh` run — a pin the build
+never installs is a violation, because absence of a failure is not success —
+and that each fragment verifies its download with `sha256sum -c`, carries the
+shared `${CURL_RETRY}` policy, pipes nothing into a shell, and restates no
+version the manifest already pins.
+
 ## Image identity — the tag is the definition's hash
 
 The image reference is derived from the container definition itself, so a
@@ -265,8 +337,9 @@ it would invalidate the image on every commit:
 | `container/Containerfile` | The build instructions themselves            |
 | `container/entrypoint.sh` | Baked into the image at `/usr/local/bin`     |
 | `container/tools.json`    | The pinned versions the build must agree with |
-| `container/install-*.sh`  | The provider and tool installers the build runs |
+| `container/install-*.sh`  | The provider, toolchain and tool installers the build runs |
 | `container/providers/*.sh` | The coding-agent provider layer the build installs |
+| `container/toolchains/*.sh` | The monitored-repository toolchain layer the build installs |
 | `container/install-tools.sh` | The installer the build runs over the deployer's tool selection |
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
 | `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
@@ -453,7 +526,7 @@ fourth input added to the hash cannot be added to the launcher alone.
 
 ```mermaid
 flowchart LR
-    I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
+    I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>container/toolchains/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
     C["container_tools<br/>(.config.json)"] --> H
     G["agent_providers<br/>(.config.json)"] --> H
     X["container_extension<br/>(.config.json)"] --> E["container_extension_digest.ts<br/>streaming SHA-256"]

@@ -29,7 +29,7 @@ import type { FailedCiCheck } from "./pr_ci_checks.ts";
 import {
   encodeBase64,
   getCiCheckRetryCount,
-  isSpellingCheck,
+  resolveCheckFixRoute,
 } from "./pr_ci_checks.ts";
 import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
 import {
@@ -1014,7 +1014,9 @@ async function findActionableComment(
 /**
  * Scan open PRs for failed spelling checks.
  *
- * Returns the first spelling check failure found across all repos.
+ * Returns the first spelling check failure found across all repos. A check
+ * qualifies when the Actions *step* that failed is codespell, cspell or
+ * typos — the job name alone is not enough (Issue #1579).
  *
  * @param options - Scan options
  * @returns Result containing the first failed spelling check, or null
@@ -1064,7 +1066,17 @@ export async function findFailedPrChecks(
       const failedChecks = await getFailedChecks(pr);
 
       for (const check of failedChecks) {
-        if (!isSpellingCheck(check.name)) continue;
+        // Route on the step that failed, not the job name (Issue #1579):
+        // a `Scripts & spelling` job whose bats step failed is a CI-fix
+        // job, and sending it here left the bats failure unfixed.
+        const routing = await resolveCheckFixRoute({
+          repo,
+          checkId: String(check.id),
+          checkName: check.name,
+          ghCommandFn,
+          logger,
+        });
+        if (routing.route !== "spelling") continue;
 
         logger.info("Found failed spelling check", {
           repo,
@@ -1103,7 +1115,8 @@ export async function findFailedPrChecks(
 // ---------------------------------------------------------------------------
 
 /**
- * Scan open PRs for failed CI checks (excluding spelling).
+ * Scan open PRs for failed CI checks (excluding genuine spelling failures
+ * — see {@link findFailedPrChecks} and `resolveCheckFixRoute`).
  *
  * Prioritises failures on PRs targeting the default branch.
  * Respects retry limits — checks that exceeded max retries are skipped.
@@ -1197,8 +1210,17 @@ export async function findFailedCiChecks(
       }
 
       for (const check of failedChecks) {
-        // Skip spelling checks — handled by findFailedPrChecks
-        if (isSpellingCheck(check.name)) continue;
+        // Skip genuine spelling failures — handled by findFailedPrChecks.
+        // The decision reads the failed *step*, so a non-spelling step
+        // inside a spelling-named job stays on this route (Issue #1579).
+        const routing = await resolveCheckFixRoute({
+          repo,
+          checkId: String(check.id),
+          checkName: check.name,
+          ghCommandFn,
+          logger,
+        });
+        if (routing.route === "spelling") continue;
 
         // Check retry count
         const retryCount = await getCiCheckRetryCount(
