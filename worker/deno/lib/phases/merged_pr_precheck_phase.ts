@@ -31,7 +31,10 @@ import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { ensureIssueClosedIfPrMerged } from "../issue_lifecycle.ts";
 import { isAuthorTrusted } from "../content_approval_tracker.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
-import { getLabelLastAddInfo } from "../issue_query.ts";
+import {
+  fetchTimelineWithCache,
+  lastAddInfoFromTimeline,
+} from "../issue_query.ts";
 import { repairOrphanedMilestoneMerge } from "../orphaned_rollup.ts";
 import {
   describeStrandedBranches,
@@ -321,36 +324,27 @@ async function findPostMergeApproval(
     fleetPrAuthors: config.fleetPrAuthors ?? [],
   });
 
-  // `getLabelLastAddInfo` swallows a failed timeline read into the same
-  // `null` it returns for "no such label event", so capture the error here
-  // and report it rather than letting a failed lookup read as "not approved".
-  let lookupError: string | null = null;
-  const ghWithErrorCapture = async (args: string[]): Promise<string> => {
-    try {
-      return await deps.github.runGhCommand(args);
-    } catch (err) {
-      lookupError = err instanceof Error ? err.message : String(err);
-      throw err;
-    }
-  };
+  // One read answers every label (Issue #1617 exported the seam for exactly
+  // this). No timeline cache is plumbed into the phases; the page-1 read is
+  // acceptable because a miss only preserves today's behaviour. `null` here
+  // is a *failed* read — an issue with no label events is an empty array —
+  // so it is reported rather than passing as "nobody re-approved".
+  const timeline = await fetchTimelineWithCache(
+    repo,
+    issueNumber,
+    deps.github.runGhCommand,
+  );
+  if (timeline === null) {
+    deps.logger.warn(
+      "Merged PR pre-check: approval-time lookup failed, so a later " +
+        "approval cannot be detected — closing as before",
+      { repo, issueNumber, prNumber, labels: approvalLabels },
+    );
+    return null;
+  }
 
   for (const label of approvalLabels) {
-    // No timeline cache is plumbed into the phases; the page-1 read is
-    // acceptable here because a miss only preserves today's behaviour.
-    const info = await getLabelLastAddInfo(
-      repo,
-      issueNumber,
-      label,
-      ghWithErrorCapture,
-    );
-    if (lookupError !== null) {
-      deps.logger.warn(
-        "Merged PR pre-check: approval-time lookup failed, so a later " +
-          "approval cannot be detected — closing as before",
-        { repo, issueNumber, prNumber, label, error: lookupError },
-      );
-      return null;
-    }
+    const info = lastAddInfoFromTimeline(timeline, label);
     if (info === null) continue;
     if (info.addedAt <= mergedAtSeconds) continue;
     if (!isAuthorTrusted(info.addedBy, config.allowedAuthors)) continue;

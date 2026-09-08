@@ -96,9 +96,34 @@ function timelineWith(
   );
 }
 
-/** Build a gh double answering PR view, the timeline, and issue lifecycle. */
+/**
+ * Model `gh pr view --json <fields>`: the response object carries the
+ * requested fields and nothing else. An unrecognised field is simply absent,
+ * exactly as a caller that never asked for it would see.
+ */
+function projectJsonFields(
+  args: string[],
+  view: Record<string, unknown>,
+): Record<string, unknown> {
+  const jsonIndex = args.indexOf("--json");
+  if (jsonIndex === -1) return {};
+  const fields = (args[jsonIndex + 1] ?? "").split(",").map((f) => f.trim());
+  const projected: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (field in view) projected[field] = view[field];
+  }
+  return projected;
+}
+
+/**
+ * Build a gh double answering PR view, the timeline, and issue lifecycle.
+ *
+ * `pr view` models gh's own rule: the answer carries exactly the fields
+ * `--json` asked for. A pre-check that never requests `mergedAt` therefore
+ * cannot see one, and the decision tests below go red on their own.
+ */
 function makeGh(handlers: {
-  prView?: (prNumber: number) => string;
+  prView?: (prNumber: number) => Record<string, unknown>;
   timeline?: () => string;
   timelineThrows?: boolean;
 }): {
@@ -113,8 +138,8 @@ function makeGh(handlers: {
     if (args[0] === "pr" && args[1] === "view") {
       const view = handlers.prView
         ? handlers.prView(parseInt(args[2]!, 10))
-        : JSON.stringify(MERGED_PR_WITH_TIME);
-      return Promise.resolve(view);
+        : MERGED_PR_WITH_TIME;
+      return Promise.resolve(JSON.stringify(projectJsonFields(args, view)));
     }
     if (args[0] === "api" && String(args[1]).includes("/timeline")) {
       if (handlers.timelineThrows) {
@@ -386,13 +411,14 @@ Deno.test(
       { message: string; context?: Record<string, unknown> }
     > = [];
     const gh = makeGh({
-      prView: () =>
-        JSON.stringify({
-          state: "MERGED",
-          mergeCommit: { oid: "abc123" },
-          baseRefName: "Develop",
-          headRefName: "issue-42-already-merged-work",
-        }),
+      // A PR view with no merge time at all — the field is absent from the
+      // upstream answer, not merely unrequested.
+      prView: () => ({
+        state: "MERGED",
+        mergeCommit: { oid: "abc123" },
+        baseRefName: "Develop",
+        headRefName: "issue-42-already-merged-work",
+      }),
       timeline: () =>
         timelineWith([
           { label: "top-priority", actor: "trusted-human", at: AFTER_MERGE },
@@ -410,35 +436,5 @@ Deno.test(
     const warned = warnings.find((w) => w.message.includes("merge time"));
     assertEquals(warned !== undefined, true);
     assertStringIncludes(warned!.message, "merge time");
-  },
-);
-
-// ---------------------------------------------------------------------------
-// The PR view asks for the merge time
-// ---------------------------------------------------------------------------
-
-Deno.test(
-  "merged-pr-precheck - requests mergedAt alongside state from gh pr view",
-  async () => {
-    const warnings: Array<
-      { message: string; context?: Record<string, unknown> }
-    > = [];
-    const gh = makeGh({
-      timeline: () =>
-        timelineWith([
-          { label: "top-priority", actor: "trusted-human", at: AFTER_MERGE },
-        ]),
-    });
-
-    await workOnIssueMergedPrPrecheck(
-      makeContext(),
-      makeState(),
-      makeDeps(gh, warnings),
-    );
-
-    const prView = gh.calls.find((a) => a[0] === "pr" && a[1] === "view");
-    const json = prView?.[prView.indexOf("--json") + 1] ?? "";
-    assertStringIncludes(json, "state");
-    assertStringIncludes(json, "mergedAt");
   },
 );
