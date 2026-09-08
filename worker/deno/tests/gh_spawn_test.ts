@@ -13,8 +13,10 @@ import { assertEquals, assertRejects } from "@std/assert";
 import {
   _resetGhSpawnRunner,
   _setGhSpawnRunner,
+  type PrimaryQuotaRefusal,
   resetGhRestageAttempts,
   runGhOrThrow,
+  setPrimaryQuotaExhaustionHook,
   spawnGh,
 } from "../lib/gh_spawn.ts";
 import {
@@ -716,5 +718,98 @@ Deno.test("spawnGh - bypassQuotaLatch lets the quota probe run while latched (Is
     restore();
     clearPrimaryQuotaLatch();
     resetGhCallMetrics();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1540: the chokepoint recognises a primary-quota refusal itself and
+// hands it to the registered hook — whichever module made the call.
+// ---------------------------------------------------------------------------
+
+const QUOTA_REFUSED = "GraphQL: API rate limit already exceeded for user ID 1.";
+
+Deno.test("spawnGh - a GraphQL-backed refusal reaches the exhaustion hook once, with the call and the signal dir (Issue #1540)", async () => {
+  clearPrimaryQuotaLatch();
+  const seen: PrimaryQuotaRefusal[] = [];
+  setPrimaryQuotaExhaustionHook((refusal) => {
+    seen.push(refusal);
+    return Promise.resolve();
+  });
+  recordingRunner({ code: 1, stderr: QUOTA_REFUSED });
+  try {
+    const result = await spawnGh(["pr", "list", "--repo", "o/r"], {
+      workDir: "/work/dir",
+    });
+    assertEquals(result.success, false, "the caller still sees its failure");
+    assertEquals(seen.length, 1);
+    assertEquals(seen[0]?.args, ["pr", "list", "--repo", "o/r"]);
+    assertEquals(seen[0]?.stderr, QUOTA_REFUSED);
+    assertEquals(seen[0]?.workDir, "/work/dir");
+    // runGhOrThrow rides the same chokepoint.
+    await assertRejects(() => runGhOrThrow(["issue", "list"]), Error);
+    assertEquals(seen.length, 2);
+    assertEquals(seen[1]?.workDir, undefined);
+  } finally {
+    setPrimaryQuotaExhaustionHook(null);
+    restore();
+    clearPrimaryQuotaLatch();
+  }
+});
+
+Deno.test("spawnGh - the hook is not called for REST, for success, for the probe, or for another failure (Issue #1540)", async () => {
+  clearPrimaryQuotaLatch();
+  let calls = 0;
+  setPrimaryQuotaExhaustionHook(() => {
+    calls++;
+    return Promise.resolve();
+  });
+  try {
+    // REST rides the core quota; the same wording there is not the latch's.
+    recordingRunner({ code: 1, stderr: QUOTA_REFUSED });
+    await spawnGh(["api", "repos/o/r/issues/1"]);
+    // The probe learns the reset and must never feed the hook.
+    await spawnGh(["api", "graphql", "-f", "query=Q"], {
+      bypassQuotaLatch: true,
+    });
+    // An ordinary failure.
+    recordingRunner({ code: 1, stderr: "HTTP 404: Not Found" });
+    await spawnGh(["pr", "list", "--repo", "o/r"]);
+    // A success.
+    recordingRunner({ code: 0, stdout: "[]" });
+    await spawnGh(["pr", "list", "--repo", "o/r"]);
+    assertEquals(calls, 0);
+  } finally {
+    setPrimaryQuotaExhaustionHook(null);
+    restore();
+    clearPrimaryQuotaLatch();
+  }
+});
+
+Deno.test("spawnGh - a throwing hook never masks the call's own result (Issue #1540)", async () => {
+  clearPrimaryQuotaLatch();
+  setPrimaryQuotaExhaustionHook(() => Promise.reject(new Error("probe died")));
+  recordingRunner({ code: 1, stderr: QUOTA_REFUSED });
+  try {
+    const result = await spawnGh(["pr", "list", "--repo", "o/r"]);
+    assertEquals(result.code, 1);
+    assertEquals(result.stderr, QUOTA_REFUSED);
+  } finally {
+    setPrimaryQuotaExhaustionHook(null);
+    restore();
+    clearPrimaryQuotaLatch();
+  }
+});
+
+Deno.test("spawnGh - with no hook registered a refusal is just a failed call (Issue #1540)", async () => {
+  clearPrimaryQuotaLatch();
+  setPrimaryQuotaExhaustionHook(null);
+  const { calls } = recordingRunner({ code: 1, stderr: QUOTA_REFUSED });
+  try {
+    await spawnGh(["pr", "list", "--repo", "o/r"]);
+    await spawnGh(["pr", "list", "--repo", "o/r"]);
+    assertEquals(calls.length, 2, "nothing latched, nothing short-circuited");
+  } finally {
+    restore();
+    clearPrimaryQuotaLatch();
   }
 });

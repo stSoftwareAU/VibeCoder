@@ -227,20 +227,44 @@ const TEST_ANNOTATION_LINE =
   /^\s*@(Test|ParameterizedTest|RepeatedTest|TestTemplate)\s*(\(.*\))?\s*$/;
 
 /**
+ * A test call opened on one line with nothing after the parenthesis, or the
+ * object form's bare `name:` — `deno fmt` wraps a long declaration exactly
+ * so, and the name lands on the line that follows (Issue #1581):
+ *
+ *     Deno.test(
+ *       "handle_no_changes_phase - an untrusted image withholds the close",
+ *       async () => { … },
+ *     );
+ *
+ * The line carrying `Deno.test(` matches {@link TEST_DECLARATION_PATTERNS}
+ * but holds no name, so on its own the gate reported the cited test missing
+ * from a branch that added it. As with the Java annotation, the next line is
+ * the declaration — when it is a string literal.
+ */
+const TEST_CALL_OPENER_LINE =
+  /(^|[^.\w])(Deno\.test|it|test|specify)\s*(\.\s*[a-z]+\s*)?\(\s*$|^\s*name\s*:\s*$/;
+
+/** A line that is only a string literal (the wrapped test name), with or without its trailing comma. */
+const STRING_LITERAL_LINE = /^\s*(["'`])[^"'`]*\1\s*,?\s*$/;
+
+/**
  * Added lines that declare a test, so citing a token from an assertion body
  * does not satisfy the gate (Issue #1279).
  */
 function testDeclarationLines(diffText: string): string[] {
   const declarations: string[] = [];
   let previousWasAnnotation = false;
+  let previousWasOpener = false;
   for (const line of addedLines(diffText)) {
     if (
       previousWasAnnotation ||
+      (previousWasOpener && STRING_LITERAL_LINE.test(line)) ||
       TEST_DECLARATION_PATTERNS.some((pattern) => pattern.test(line))
     ) {
       declarations.push(line);
     }
     previousWasAnnotation = TEST_ANNOTATION_LINE.test(line);
+    previousWasOpener = TEST_CALL_OPENER_LINE.test(line);
   }
   return declarations;
 }

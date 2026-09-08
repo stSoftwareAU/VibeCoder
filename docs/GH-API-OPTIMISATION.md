@@ -372,6 +372,18 @@ counts. Before Issue #1485 only `gh api graphql` was counted, and the
 line showed a fraction of the real burn — a whole cycle's `issue list`
 and `pr list` traffic was invisible to it.
 
+The primary-quota latch (Issue #42) is set and enforced at the same
+chokepoint. The first GraphQL-backed spawn from any module that comes
+back `API rate limit already exceeded` is handed to the hook `github.ts`
+registers, which probes the reset, latches the process and writes the
+shared rate-limit signal (Issue #1540 — before that only
+`runGhCommandRaw`'s own catch could latch, so a refusal seen by a direct
+`spawnGh` caller was logged, retried and never latched). From then on
+every GraphQL-backed spawn returns a `gh command skipped: … API rate
+limit already exceeded` failure without starting a process, while REST
+`gh api <path>` calls and the quota probe that learns the reset still
+run.
+
 ### How the two counters relate
 
 `graphql-calls: N total` and the `api-graphql=` bucket of the

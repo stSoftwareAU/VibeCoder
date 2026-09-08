@@ -35,6 +35,8 @@ if your worker login is read-only on any monitored repository.**
 | The merge-conflict stall watchdog, the Failure-Detection resume collector and the auto-merge sweep stop at the first GraphQL quota refusal and log one line naming how many repositories were left for the next cycle, instead of one warning per repository; the behaviour is one shared helper (`repo_loop_quota_stop.ts`) for every per-repository loop | #1515 |
 | A merged PR closes the issues its **body** names with a closing keyword (`Fixes #N`, `Closes #N`, …), not only the one its title's trailing `(#N)` names, and a close after a merge into a milestone branch says so in its comment — so sub-issue PRs on a milestone branch no longer hold the rollup shut | #1528 |
 | A resumed Claude Code phase is invoked as `--resume <uuid>` instead of `--session-id <uuid> --resume`, which Claude Code 2.1.261 refuses at start-up; the refusal itself is now recognised as a session-flag failure and retried without the flags, loudly | #1580 |
+| The security-fix verification gate recognises a test name that `deno fmt` wrapped onto the line after `Deno.test(` (and the `it(` / `test(` and object-form `name:` equivalents), so a correctly cited regression test no longer blocks a security PR | #1581 |
+| The primary-quota latch is now set at the `gh` spawn chokepoint, so a rate-limit refusal seen by any of the thirty-odd modules that spawn `gh` directly latches the process and writes the shared signal, instead of only a refusal seen through `runGhCommandRaw` | #1540 |
 
 ### In detail
 
@@ -134,6 +136,27 @@ the continuation the worker wants on both the old and the new CLI, and the
 start-up refusal is recognised as a session-flag failure so the Issue #204
 remedy — drop the flags, retry once, say so — fires if it ever recurs.
 Nothing to configure.
+
+The security-fix verification gate's `test-identifier-in-diff` check
+(Issue #1581) now treats a string literal on the line after a bare
+`Deno.test(` — the shape `deno fmt` produces for a long test name — as part
+of the declaration, as it already did for a Java `@Test` annotation; the
+wrapped `it(` / `test(` forms and the object form's `name:` on its own line
+are covered the same way. Before this a branch that added exactly the cited
+regression test was refused with "Name the ACTUAL TEST IDENTIFIER you added"
+whenever the formatter had wrapped the declaration. Fail-closed throughout:
+a string literal counts only directly after such an opener.
+
+The primary-quota latch (Issue #42) is now also **set** at the `gh` spawn
+chokepoint (Issue #1540). #1485 moved its enforcement there, but the latch
+was still set only from `runGhCommandRaw`'s catch, so a refusal seen by one
+of the thirty-odd modules that spawn `gh` directly — the auto-merge enable
+path retried one four times in a row today — latched nothing and wrote no
+signal. `spawnGh` now recognises the first `API rate limit already exceeded`
+refusal itself and hands it to the hook `github.ts` registers at load, which
+probes the reset, latches, and writes the shared signal; the quota probe is
+exempt, REST `gh api <path>` calls are unaffected, and a process that never
+loads `github.ts` spawns exactly as before. Nothing to configure.
 
 ## 1.5.5 — the log directory comes from the file alone
 

@@ -22,11 +22,10 @@ import {
 } from "./validation.ts";
 import { retryWithBackoff } from "./retry.ts";
 import { isReservedLabel } from "./config_defaults.ts";
-import { runGhOrThrow } from "./gh_spawn.ts";
+import { runGhOrThrow, setPrimaryQuotaExhaustionHook } from "./gh_spawn.ts";
 import { probeGraphqlQuota } from "./graphql_quota_probe.ts";
 import {
   isPrimaryQuotaLatched,
-  isPrimaryRateLimitMessage,
   isQuotaExemptGhCall,
   latchPrimaryQuota,
   primaryQuotaSkipMessage,
@@ -244,20 +243,27 @@ export async function runGhCommandRaw(
   // Issue #3311/#3703: egress containment lives in the shared chokepoint —
   // `spawnGh` refuses an off-allowlist (or undeterminable) write BEFORE the
   // command reaches GitHub, then journals the mutation (Issue #2380).
-  try {
-    return await runGhOrThrow(args);
-  } catch (err) {
-    // Issue #42: the first live call to report the primary-quota message
-    // latches the whole process until the reset, so the calls behind it
-    // never spawn. Setting the shared rate-limit signal here also drives the
-    // existing Issue #1780 mid-cycle pause at the next priority-pass check.
-    const message = err instanceof Error ? err.message : String(err);
-    if (isPrimaryRateLimitMessage(message)) {
-      await notePrimaryQuotaExhaustion(options.workDir);
-    }
-    throw err;
-  }
+  //
+  // Issue #42 / #1540: the first live call to report the primary-quota
+  // message latches the whole process until the reset, so the calls behind
+  // it never spawn, and writes the shared rate-limit signal that drives the
+  // Issue #1780 mid-cycle pause. That used to happen in this function's
+  // catch alone; it now happens in `spawnGh` for every caller, through the
+  // hook registered below — this wrapper only threads its signal directory
+  // through.
+  return await runGhOrThrow(
+    args,
+    options.workDir !== undefined ? { workDir: options.workDir } : {},
+  );
 }
+
+// Issue #1540: the chokepoint sees every refusal; this module knows what to
+// do about one. Registered at load, so any process that uses `gh` through
+// `github.ts` — the worker — latches on the first refusal whichever module
+// saw it.
+setPrimaryQuotaExhaustionHook(({ workDir }) =>
+  notePrimaryQuotaExhaustion(workDir)
+);
 
 /** True while a single primary-quota exhaustion is being recorded. */
 let quotaExhaustionNoteInFlight = false;
