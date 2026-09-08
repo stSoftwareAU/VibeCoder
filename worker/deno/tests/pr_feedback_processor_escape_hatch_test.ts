@@ -231,6 +231,7 @@ async function runWithResponseMessage(
       logger: makeCapturingLogger(logs),
       deps,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processPrFeedback(

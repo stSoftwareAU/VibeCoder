@@ -163,6 +163,7 @@ Deno.test("processPrFeedback - claude self-pushed: HEAD moved => success reply",
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-self-push",
+    workRoot: "/tmp/test-self-push",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
   };
 
@@ -238,6 +239,7 @@ Deno.test("processPrFeedback - claude self-pushed: genuinely no changes => neutr
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-no-changes",
+    workRoot: "/tmp/test-no-changes",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -300,6 +302,7 @@ Deno.test("processPrFeedback - capture failure degrades safely without false suc
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-capture-fail",
+    workRoot: "/tmp/test-capture-fail",
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
