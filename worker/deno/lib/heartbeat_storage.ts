@@ -24,6 +24,10 @@ import {
   describePreservedBranch,
   type PreservedWip,
 } from "./preserved_wip_branch.ts";
+import {
+  HEARTBEAT_FILE_PREFIX,
+  HEARTBEAT_MARKER_FILE_PREFIX,
+} from "./worker_state_paths.ts";
 
 /**
  * Generate the heartbeat file path for a given repo and issue.
@@ -34,7 +38,7 @@ export function heartbeatFilePath(
   issueNumber: number,
 ): string {
   const safeRepo = repo.replace("/", "_");
-  return `${workDir}/.heartbeat_${safeRepo}_${issueNumber}`;
+  return `${workDir}/${HEARTBEAT_FILE_PREFIX}${safeRepo}_${issueNumber}`;
 }
 
 /**
@@ -49,7 +53,7 @@ export function markerStateFilePath(
   issueNumber: number,
 ): string {
   const safeRepo = repo.replace("/", "_");
-  return `${workDir}/.heartbeat-marker_${safeRepo}_${issueNumber}`;
+  return `${workDir}/${HEARTBEAT_MARKER_FILE_PREFIX}${safeRepo}_${issueNumber}`;
 }
 
 /** Prefix used inside the marker HTML comment. */

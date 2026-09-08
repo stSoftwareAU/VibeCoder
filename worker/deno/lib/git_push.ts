@@ -20,7 +20,8 @@ import {
   buildFetchArgs,
   buildPushArgs,
 } from "./git_ref_args.ts";
-import { assertSafeToCommit } from "./pre_commit_safety.ts";
+import { assertSafeToCommit, inspectStagedFiles } from "./pre_commit_safety.ts";
+import { isWorkerStatePath } from "./worker_state_paths.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
 import { getPreFlightCommands } from "./repo_config.ts";
@@ -433,6 +434,82 @@ export interface CommitAndPushPendingResult {
 }
 
 /**
+ * Result of {@link unstageWorkerStateFiles}.
+ */
+interface UnstageWorkerStateResult {
+  /** Worker-owned state paths removed from the index (possibly empty). */
+  unstaged: string[];
+  /** How many staged paths remain — 0 means there is nothing real to commit. */
+  remainingStaged: number;
+}
+
+/**
+ * Stage with intent — drop the worker's own state files from the index
+ * (Issue #1661, part of #1644).
+ *
+ * The worker writes `.heartbeat_<owner>_<repo>_<n>`,
+ * `.heartbeat-marker_<owner>_<repo>_<n>` and `.vibe_default_branch` into the
+ * directory it runs from. When that is a repository clone, `git add -A` stages
+ * them and the pre-commit safety gate (Issue #1758) refuses the entire commit
+ * — a merge-conflict resolution is lost over a file the worker itself dropped
+ * there.
+ *
+ * So this runs BETWEEN `git add -A` and the gate: the gate never sees them and
+ * is left completely unchanged, and a genuinely hidden or secret-bearing file
+ * is still refused exactly as before. Each unstaged path is warned about
+ * rather than swallowed — the file being in the tree is a bug worth seeing —
+ * but it is not a reason to fail the commit. The file itself is untouched on
+ * disk; only the index entry goes.
+ *
+ * A failing `git reset` is returned as an error, never ignored: carrying
+ * worker state into the gate is precisely what this exists to prevent.
+ */
+async function unstageWorkerStateFiles(
+  options: GitCommandOptions,
+): Promise<Result<UnstageWorkerStateResult>> {
+  const inspection = await inspectStagedFiles(options);
+  if (!inspection.ok) {
+    return { ok: false, error: inspection.error };
+  }
+
+  const staged = [...inspection.value.violations, ...inspection.value.safe];
+  const workerState = staged.filter(isWorkerStatePath);
+  const remainingStaged = staged.length - workerState.length;
+
+  if (workerState.length === 0) {
+    return { ok: true, value: { unstaged: [], remainingStaged } };
+  }
+
+  // `--` guards the path list; `git reset -- <paths>` also behaves on an
+  // unborn HEAD, where it resets the named paths against the empty tree.
+  const resetResult = await runGitCommand(
+    ["reset", "--", ...workerState],
+    options,
+  );
+  if (!resetResult.ok) {
+    return { ok: false, error: resetResult.error };
+  }
+  if (resetResult.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        "Failed to unstage worker-owned state files (Issue #1661): " +
+          `${resetResult.value.stderr.trim()}`,
+      ),
+    };
+  }
+
+  console.warn(
+    "[git-push] Unstaged worker-owned state file(s) before the pre-commit " +
+      "safety gate (Issue #1661) — the worker wrote these into the clone, " +
+      "which is itself a bug worth fixing:\n" +
+      workerState.map((p) => `  - ${p}`).join("\n"),
+  );
+
+  return { ok: true, value: { unstaged: workerState, remainingStaged } };
+}
+
+/**
  * Commit any uncommitted working-tree changes and push every unpushed commit
  * to origin (Issue #1643 — "Why we forget to push?").
  *
@@ -524,68 +601,86 @@ export async function commitAndPushPending(
       };
     }
 
-    // Pre-commit safety gate (Issue #1758) — refuse to commit any
-    // hidden or secret-bearing file. On violation, unstage everything
-    // so the worker does not silently carry secrets in the index.
-    const safetyResult = await assertSafeToCommit(options);
-    if (!safetyResult.ok) {
+    // Stage with intent (Issue #1661) — remove the worker's own state files
+    // from the index before the safety gate sees them, so a stray
+    // `.heartbeat_*` or `.vibe_default_branch` in the clone can no longer
+    // cost the whole commit.
+    const unstageResult = await unstageWorkerStateFiles(options);
+    if (!unstageResult.ok) {
       await runGitCommand(["reset", "--"], options);
-      return { ok: false, error: safetyResult.error };
+      return { ok: false, error: unstageResult.error };
     }
 
-    // Pre-flight enforcement gate (Issue #3577) — run the repo's configured
-    // mandatory pre-flight commands at this same chokepoint. A non-zero exit,
-    // a command that cannot be started, or a timeout is a hard BLOCK: return
-    // before the commit so BOTH the commit and the push are refused. There is
-    // no override. On block, unstage so the worker does not silently carry the
-    // broken change in the index. The captured command output rides on the
-    // returned error so the fixer sees the real failure, not a bare
-    // "pre-flight failed".
-    if (preFlight && preFlight.commands.length > 0) {
-      const gateResult = await runPreFlightGate(preFlight.commands, {
-        cwd: options.cwd,
-        env: options.env,
-        timeoutSeconds: preFlight.timeoutSeconds,
-        runner: preFlight.runner,
-      });
-      if (!gateResult.ok) {
+    // Everything pending was worker state — there is no real change to
+    // commit. Say so honestly rather than inventing an empty commit or
+    // failing on git's "nothing added to commit".
+    if (unstageResult.value.remainingStaged > 0) {
+      // Pre-commit safety gate (Issue #1758) — refuse to commit any
+      // hidden or secret-bearing file. On violation, unstage everything
+      // so the worker does not silently carry secrets in the index.
+      const safetyResult = await assertSafeToCommit(options);
+      if (!safetyResult.ok) {
         await runGitCommand(["reset", "--"], options);
-        return { ok: false, error: gateResult.error };
+        return { ok: false, error: safetyResult.error };
       }
-    }
 
-    // Run-id traceability (Issue #2381) — stamp the commit with the
-    // canonical run id so the push is attributable to a specific worker
-    // run. assertRunIdTrailer is the pre-commit gate; appendRunIdTrailer
-    // guarantees it passes for worker-authored commits.
-    const finalMessage = appendRunIdTrailer(commitMessage, runId ?? getRunId());
-    const trailerGate = assertRunIdTrailer(finalMessage);
-    if (!trailerGate.ok) {
-      await runGitCommand(["reset", "--"], options);
-      return { ok: false, error: trailerGate.error };
-    }
-
-    const commitResult = await runGitCommand(
-      ["commit", "-m", finalMessage],
-      options,
-    );
-    if (!commitResult.ok) {
-      return { ok: false, error: commitResult.error };
-    }
-    // `git commit` exits non-zero when there is nothing to commit. The
-    // status check above means this should not happen, but be defensive.
-    if (commitResult.value.code !== 0) {
-      const combined =
-        `${commitResult.value.stdout}\n${commitResult.value.stderr}`.trim();
-      // Tolerate "nothing to commit" — treat as no new commit.
-      if (!/nothing to commit/i.test(combined)) {
-        return {
-          ok: false,
-          error: new Error(`git commit failed: ${combined}`),
-        };
+      // Pre-flight enforcement gate (Issue #3577) — run the repo's configured
+      // mandatory pre-flight commands at this same chokepoint. A non-zero exit,
+      // a command that cannot be started, or a timeout is a hard BLOCK: return
+      // before the commit so BOTH the commit and the push are refused. There is
+      // no override. On block, unstage so the worker does not silently carry the
+      // broken change in the index. The captured command output rides on the
+      // returned error so the fixer sees the real failure, not a bare
+      // "pre-flight failed".
+      if (preFlight && preFlight.commands.length > 0) {
+        const gateResult = await runPreFlightGate(preFlight.commands, {
+          cwd: options.cwd,
+          env: options.env,
+          timeoutSeconds: preFlight.timeoutSeconds,
+          runner: preFlight.runner,
+        });
+        if (!gateResult.ok) {
+          await runGitCommand(["reset", "--"], options);
+          return { ok: false, error: gateResult.error };
+        }
       }
-    } else {
-      committedNewChanges = true;
+
+      // Run-id traceability (Issue #2381) — stamp the commit with the
+      // canonical run id so the push is attributable to a specific worker
+      // run. assertRunIdTrailer is the pre-commit gate; appendRunIdTrailer
+      // guarantees it passes for worker-authored commits.
+      const finalMessage = appendRunIdTrailer(
+        commitMessage,
+        runId ?? getRunId(),
+      );
+      const trailerGate = assertRunIdTrailer(finalMessage);
+      if (!trailerGate.ok) {
+        await runGitCommand(["reset", "--"], options);
+        return { ok: false, error: trailerGate.error };
+      }
+
+      const commitResult = await runGitCommand(
+        ["commit", "-m", finalMessage],
+        options,
+      );
+      if (!commitResult.ok) {
+        return { ok: false, error: commitResult.error };
+      }
+      // `git commit` exits non-zero when there is nothing to commit. The
+      // status check above means this should not happen, but be defensive.
+      if (commitResult.value.code !== 0) {
+        const combined =
+          `${commitResult.value.stdout}\n${commitResult.value.stderr}`.trim();
+        // Tolerate "nothing to commit" — treat as no new commit.
+        if (!/nothing to commit/i.test(combined)) {
+          return {
+            ok: false,
+            error: new Error(`git commit failed: ${combined}`),
+          };
+        }
+      } else {
+        committedNewChanges = true;
+      }
     }
   }
 

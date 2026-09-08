@@ -451,3 +451,202 @@ Deno.test("commitAndPushPending - reports finalUnpushedCount=0 after successful 
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+/**
+ * The three worker-owned state files the worker itself can drop into a clone
+ * (Issue #1661). Each is untracked and unignored in these temp repos, so
+ * `git add -A` stages all three unless the chokepoint unstages them.
+ */
+const WORKER_STATE_FILES = [
+  ".heartbeat_stSoftwareAU_VibeCoder_1661",
+  ".heartbeat-marker_stSoftwareAU_VibeCoder_1661",
+  ".vibe_default_branch",
+];
+
+/** Drop all three worker state files into a clone. */
+async function plantWorkerStateFiles(dir: string): Promise<void> {
+  for (const name of WORKER_STATE_FILES) {
+    await Deno.writeTextFile(`${dir}/${name}`, "worker state\n");
+  }
+}
+
+/** Run `body` with `console.warn` captured rather than printed. */
+async function withCapturedWarnings(
+  body: () => Promise<void>,
+): Promise<string[]> {
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((a) => String(a)).join(" "));
+  };
+  try {
+    await body();
+  } finally {
+    console.warn = original;
+  }
+  return warnings;
+}
+
+Deno.test("commitAndPushPending - unstages worker state files and still commits the real change (Issue #1661)", async () => {
+  const branch = "issue-1661-worker-state";
+  const { tmp, downstream } = await makeUpstreamAndDownstream(
+    "commit_push_pending_worker_state_",
+    branch,
+  );
+  try {
+    await plantWorkerStateFiles(downstream);
+    await Deno.writeTextFile(`${downstream}/feature.txt`, "feature work\n");
+
+    let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
+    const warnings = await withCapturedWarnings(async () => {
+      result = await commitAndPush(
+        branch,
+        "Auto-commit pending changes (Issue #1661)",
+        downstream,
+      );
+    });
+
+    assert(result, "expected the chokepoint to return a result");
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+    if (result.ok) {
+      assertEquals(result.value.committedNewChanges, true);
+      assertEquals(result.value.commitsPushed, 1);
+      assertEquals(result.value.finalUnpushedCount, 0);
+    }
+
+    // The commit carries the real change and none of the worker state.
+    const committed = await runGit(
+      ["show", "--name-only", "--format=", "HEAD"],
+      downstream,
+    );
+    assert(
+      committed.stdout.includes("feature.txt"),
+      `expected feature.txt in the commit, got:\n${committed.stdout}`,
+    );
+    for (const name of WORKER_STATE_FILES) {
+      assert(
+        !committed.stdout.includes(name),
+        `${name} must not be in the commit, got:\n${committed.stdout}`,
+      );
+    }
+
+    // Unstaged, not deleted — all three are still on disk, still untracked.
+    for (const name of WORKER_STATE_FILES) {
+      const stat = await Deno.stat(`${downstream}/${name}`);
+      assert(stat.isFile, `${name} must still exist on disk`);
+    }
+
+    // Each unstaged path is named in a warning — the file being in the tree
+    // is itself a bug worth seeing.
+    const warned = warnings.join("\n");
+    for (const name of WORKER_STATE_FILES) {
+      assert(
+        warned.includes(name),
+        `expected a warning naming ${name}, got:\n${warned}`,
+      );
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - still refuses a staged secret when worker state is present (Issue #1661)", async () => {
+  const branch = "issue-1661-secret-still-refused";
+  const { tmp, downstream } = await makeUpstreamAndDownstream(
+    "commit_push_pending_worker_state_secret_",
+    branch,
+  );
+  try {
+    await plantWorkerStateFiles(downstream);
+    await Deno.writeTextFile(`${downstream}/feature.txt`, "feature work\n");
+    await Deno.writeTextFile(`${downstream}/.env`, "API_KEY=leak\n");
+
+    let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
+    await withCapturedWarnings(async () => {
+      result = await commitAndPush(
+        branch,
+        "Auto-commit pending changes",
+        downstream,
+      );
+    });
+
+    assert(result, "expected the chokepoint to return a result");
+    assert(!result.ok, "expected the #1758 safety gate to refuse the commit");
+    if (!result.ok) {
+      const message = result.error.message;
+      assert(
+        message.includes("Issue #1758") && message.includes(".env"),
+        `expected the unchanged #1758 refusal naming .env, got: ${message}`,
+      );
+      for (const name of WORKER_STATE_FILES) {
+        assert(
+          !message.includes(name),
+          `${name} must not be named by the refusal, got: ${message}`,
+        );
+      }
+    }
+
+    const remoteLog = await runGit(
+      ["log", "--format=%s", `origin/${branch}`],
+      downstream,
+    );
+    assert(
+      !remoteLog.stdout.includes("Auto-commit pending changes"),
+      `secret-bearing commit must not have been pushed, got log:\n${remoteLog.stdout}`,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - makes no commit when only worker state is pending (Issue #1661)", async () => {
+  const branch = "issue-1661-worker-state-only";
+  const { tmp, downstream } = await makeUpstreamAndDownstream(
+    "commit_push_pending_worker_state_only_",
+    branch,
+  );
+  try {
+    await plantWorkerStateFiles(downstream);
+    const headBefore = await runGit(["rev-parse", "HEAD"], downstream);
+
+    let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
+    await withCapturedWarnings(async () => {
+      result = await commitAndPush(
+        branch,
+        "Auto-commit pending changes",
+        downstream,
+      );
+    });
+
+    assert(result, "expected the chokepoint to return a result");
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+    if (result.ok) {
+      assertEquals(result.value.committedNewChanges, false);
+      assertEquals(result.value.commitsPushed, 0);
+      assertEquals(result.value.finalUnpushedCount, 0);
+    }
+
+    // No commit was made — HEAD is exactly where it was.
+    const headAfter = await runGit(["rev-parse", "HEAD"], downstream);
+    assertEquals(headAfter.stdout.trim(), headBefore.stdout.trim());
+
+    // Nothing left staged, and the files are still on disk.
+    const stagedAfter = await runGit(
+      ["diff", "--cached", "--name-only"],
+      downstream,
+    );
+    assertEquals(stagedAfter.stdout.trim(), "");
+    for (const name of WORKER_STATE_FILES) {
+      const stat = await Deno.stat(`${downstream}/${name}`);
+      assert(stat.isFile, `${name} must still exist on disk`);
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
