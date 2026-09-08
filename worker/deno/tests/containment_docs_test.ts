@@ -76,6 +76,8 @@ function launchInputs(): ContainerLaunchInputs {
     manifest: MANIFEST,
     image: "vibe-coder:0123456789ab",
     containerName: "vibe-coder-4073",
+    // The build stamp the launch plan resolves from the checkout (Issue #1572).
+    buildCommit: "0123456789abcdef0123456789abcdef01234567",
     watchdogSeconds: 11_400,
     hostPaths: {
       homeDir: "/home/operator",

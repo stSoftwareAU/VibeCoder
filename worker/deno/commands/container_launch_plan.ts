@@ -37,6 +37,7 @@ import {
   STRIPPED_CONTAINERFILE_SUFFIX,
 } from "../lib/containerfile_strip.ts";
 import { detectContainerRuntime } from "../lib/container_runtime.ts";
+import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
 import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
 import { readRunCapPassthrough } from "../lib/run_hard_cap.ts";
 import { formatGb, probeDiskReading } from "../lib/host_disk.ts";
@@ -227,6 +228,16 @@ export async function buildLaunchPlanForCommand(
     await Deno.chmod(stagedConfig, 0o600);
   }
 
+  // Which commit the container is about to run (Issue #1572). Both launchers
+  // update this checkout before the plan is built, so its HEAD *is* the code
+  // the run executes — and stamping it here means the value reaches both
+  // launchers from one place rather than from two shells that could drift.
+  // A checkout that cannot be stamped says why and reports `unknown`, which
+  // now means a genuinely unstamped build rather than the normal case.
+  const buildCommit = await resolveBuildCommitStamp(baseDir, {
+    log: (message) => console.error(`container-launch-plan: ${message}`),
+  });
+
   // The host's own name, for fleet telemetry inside the container
   // (VIBE_HOST_ID). Best-effort: an unreadable hostname just omits the env
   // and the worker falls back to its own (container) hostname.
@@ -319,6 +330,7 @@ export async function buildLaunchPlanForCommand(
     watchdogSeconds,
     hostPaths,
     agentProviders: providers,
+    buildCommit,
     ...(customPromptPaths.length > 0 ? { customPromptPaths } : {}),
     ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
