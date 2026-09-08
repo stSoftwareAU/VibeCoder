@@ -24,6 +24,7 @@ import type { PreservedWip } from "./preserved_wip_branch.ts";
 // red on a type this file still uses (added by Issue #806).
 import type { CallbackRunTelemetry } from "./run_callbacks.ts";
 import type { ImageReference } from "./untrusted_image_signal.ts";
+import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -223,6 +224,17 @@ export interface PhaseState {
    * file on it) instead of a generic "WIP preserved".
    */
   preservedWip?: PreservedWip;
+  /**
+   * Security-fix gate verdicts observed during THIS run (Issue #1575), oldest
+   * first.
+   *
+   * The completion phase appends one entry per block. The first entry triggers
+   * the in-run retry — a fresh agent invocation carrying the verdict, then the
+   * quality gate and the completion gates again — so a single false block no
+   * longer costs the whole run. A second entry ends the run in `failure`, and
+   * one comment carries both verdicts.
+   */
+  securityGateBlocks?: SecurityGateRunVerdict[];
   /**
    * Short facts to state on the claim-release comment (Issue #210) —
    * currently a follow-up reference the agent named that does not exist.

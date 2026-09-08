@@ -38,6 +38,8 @@
  * Pure functions, no I/O. Australian English throughout.
  */
 
+import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
+
 /** Distinct evidence items the gate requires of a security-fix PR. */
 export type SecurityFixEvidenceKind =
   | "regression-test"
@@ -269,6 +271,50 @@ function testDeclarationLines(diffText: string): string[] {
   return declarations;
 }
 
+/** Cap on test-declaration lines reported back to the agent (Issue #1575). */
+export const MAX_REPORTED_TEST_DECLARATIONS = 10;
+
+/** Cap on the length of a single reported declaration line. */
+const MAX_DECLARATION_LINE_CHARS = 200;
+
+/**
+ * The test declarations the gate actually matched in the added lines of the
+ * branch's test diff (Issue #1575).
+ *
+ * A `test-identifier-in-diff` block says only that no cited identifier named a
+ * declared test — it never said what the gate *did* see, so a false block
+ * (#1385 lost three runs to one) could not be told apart from a real one. The
+ * lines are deduplicated, trimmed, truncated and capped at
+ * {@link MAX_REPORTED_TEST_DECLARATIONS}: they are agent-authored diff text, so
+ * every consumer fences them as untrusted.
+ */
+export function matchedTestDeclarations(testDiffText: string): string[] {
+  const matched = new Set<string>();
+  for (const line of testDeclarationLines(testDiffText)) {
+    const trimmed = line.trim().slice(0, MAX_DECLARATION_LINE_CHARS);
+    if (trimmed) matched.add(trimmed);
+    if (matched.size >= MAX_REPORTED_TEST_DECLARATIONS) break;
+  }
+  return [...matched];
+}
+
+/**
+ * Render the matched declarations for an operator comment or a retry prompt
+ * (Issue #1575). Empty is a finding in its own right — the branch declares no
+ * test at all — and is stated rather than left blank.
+ */
+export function formatMatchedTestDeclarations(
+  declarations: readonly string[],
+): string {
+  if (declarations.length === 0) {
+    return "The gate matched NO test-declaration line in the added lines of this branch's test diff, so no citation could have satisfied it.";
+  }
+  return fenceUntrustedIssueText(
+    declarations.join("\n"),
+    `The gate matched these test declarations in the added lines of the branch diff (up to ${MAX_REPORTED_TEST_DECLARATIONS}) — if the test you cited is listed here, the name in the summary does not match the declared one:`,
+  ).join("\n");
+}
+
 /** Whether `haystack` contains `needle` as a whole normalised token run. */
 function containsWholeToken(haystack: string, needle: string): boolean {
   return ` ${haystack} `.includes(` ${needle} `);
@@ -402,15 +448,21 @@ export function isSecurityFixEvidenceKind(
  */
 export function buildSecurityFixGateMessage(
   missing: SecurityFixEvidenceKind[],
+  declarations: readonly string[] = [],
 ): string {
   const items = missing
     .map((kind) => `- ${SECURITY_FIX_EVIDENCE_DESCRIPTIONS[kind]}`)
     .join("\n");
+  // A missing test identifier is the one verdict an agent cannot check for
+  // itself, so the block states what the gate matched (Issue #1575).
+  const matched = missing.includes("test-identifier-in-diff")
+    ? `\n\n${formatMatchedTestDeclarations(declarations)}`
+    : "";
   return `PR creation blocked: this PR closes a security-labelled finding but is missing required vulnerability-fix verification evidence.
 
 Any PR that closes a \`security\` finding must show — in the branch diff, not only in prose — that the fault is genuinely closed (fail loud — never mask a fault as success, Issue #3234):
 
-${items}
+${items}${matched}
 
 Fix the branch (and \`docs/archive/pr-summaries/pr-summary-<issue>.md\`), then retry. No execution is required: the test assertions are static checks over \`git diff\`, and the trigger-closed statement is static reasoning over the changed code path.`;
 }

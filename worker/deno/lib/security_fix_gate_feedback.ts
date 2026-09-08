@@ -26,7 +26,9 @@
  */
 
 import {
+  formatMatchedTestDeclarations,
   isSecurityFixEvidenceKind,
+  MAX_REPORTED_TEST_DECLARATIONS,
   REQUIRED_SECURITY_FIX_EVIDENCE,
   SECURITY_FIX_EVIDENCE_DESCRIPTIONS,
   type SecurityFixEvidenceKind,
@@ -41,6 +43,9 @@ const STATE_FILE_SUFFIX = ".securitygate.json";
 /** Schema version of the persisted state file. */
 const STATE_VERSION = 1;
 
+/** Cap on the length of one persisted declaration line (Issue #1575). */
+const MAX_DECLARATION_CHARS = 200;
+
 /** One recorded gate block against a repo + issue. */
 export interface SecurityFixGateBlock {
   /** Repository in `owner/repo` form. */
@@ -51,8 +56,30 @@ export interface SecurityFixGateBlock {
   missing: SecurityFixEvidenceKind[];
   /** ISO timestamp of the most recent block. */
   blockedAt: string;
-  /** How many times in a row the gate has blocked this issue. */
+  /**
+   * Consecutive **blocked runs** on this issue — runs that ended in failure
+   * from the gate (Issue #1575). The first block inside a run does not count:
+   * that one is recovered by the in-run retry, so it never costs a run.
+   */
   blockCount: number;
+  /**
+   * Test declarations the gate matched in the branch diff (Issue #1575),
+   * capped by `MAX_REPORTED_TEST_DECLARATIONS`. Agent-authored diff text —
+   * fenced as untrusted wherever it is rendered.
+   */
+  declarations?: string[];
+}
+
+/** Options for {@link recordSecurityFixGateBlock}. */
+export interface RecordSecurityFixGateBlockOptions {
+  /**
+   * Whether this block ends the run (Issue #1575). `true` increments the
+   * consecutive-blocked-run count; `false` records the verdict for the in-run
+   * retry without charging the issue a blocked run.
+   */
+  countsAsBlockedRun?: boolean;
+  /** Test declarations the gate matched in the branch diff. */
+  declarations?: readonly string[];
 }
 
 /** Persisted shape — the block plus its schema version. */
@@ -89,6 +116,20 @@ function stateFilePath(
 }
 
 /**
+ * Validate declaration lines read from, or written to, the store (Issue
+ * #1575). They originate in the branch diff, so length, count and type are all
+ * bounded before the text can reach a prompt or an issue comment.
+ */
+function sanitiseDeclarations(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((line): line is string => typeof line === "string")
+    .map((line) => line.trim().slice(0, MAX_DECLARATION_CHARS))
+    .filter((line) => line.length > 0)
+    .slice(0, MAX_REPORTED_TEST_DECLARATIONS);
+}
+
+/**
  * Read the last recorded gate verdict for an issue.
  *
  * @returns The verdict, or `undefined` when none is recorded, the store is
@@ -118,14 +159,19 @@ export async function readSecurityFixGateBlock(
       ? parsed.missing.filter(isSecurityFixEvidenceKind)
       : [];
     if (missing.length === 0) return undefined;
+    const declarations = sanitiseDeclarations(parsed.declarations);
     return {
       repo,
       issueNumber,
       missing,
       blockedAt: typeof parsed.blockedAt === "string" ? parsed.blockedAt : "",
-      blockCount: typeof parsed.blockCount === "number" && parsed.blockCount > 0
-        ? Math.trunc(parsed.blockCount)
-        : 1,
+      // `>= 0` since Issue #1575: a verdict recorded for the in-run retry
+      // charges the issue no blocked run, so zero is a legitimate count.
+      blockCount:
+        typeof parsed.blockCount === "number" && parsed.blockCount >= 0
+          ? Math.trunc(parsed.blockCount)
+          : 1,
+      ...(declarations.length > 0 ? { declarations } : {}),
     };
   } catch {
     // Corrupt state must not wedge the worker; treat it as absent so the next
@@ -147,6 +193,7 @@ export async function recordSecurityFixGateBlock(
   repo: string,
   issueNumber: number,
   missing: SecurityFixEvidenceKind[],
+  options: RecordSecurityFixGateBlockOptions = {},
 ): Promise<SecurityFixGateBlock> {
   if (!stateDir) {
     throw new Error(
@@ -155,12 +202,15 @@ export async function recordSecurityFixGateBlock(
   }
 
   const previous = await readSecurityFixGateBlock(stateDir, repo, issueNumber);
+  const countsAsBlockedRun = options.countsAsBlockedRun ?? true;
+  const declarations = sanitiseDeclarations(options.declarations);
   const block: SecurityFixGateBlock = {
     repo,
     issueNumber,
     missing: missing.filter(isSecurityFixEvidenceKind),
     blockedAt: new Date().toISOString(),
-    blockCount: (previous?.blockCount ?? 0) + 1,
+    blockCount: (previous?.blockCount ?? 0) + (countsAsBlockedRun ? 1 : 0),
+    ...(declarations.length > 0 ? { declarations } : {}),
   };
 
   await Deno.mkdir(stateDir, { recursive: true });
@@ -235,9 +285,15 @@ changed code path.`;
 export function buildSecurityFixGateFeedbackSection(
   block: SecurityFixGateBlock,
 ): string {
-  const attempts = block.blockCount === 1
-    ? "The previous attempt on this issue was blocked"
-    : `The previous ${block.blockCount} attempts on this issue were blocked`;
+  const attempts = block.blockCount > 1
+    ? `The previous ${block.blockCount} attempts on this issue were blocked`
+    : "The previous attempt on this issue was blocked";
+
+  // What the gate actually matched in the diff (Issue #1575) — without it a
+  // false `test-identifier-in-diff` block reads exactly like a real one.
+  const matched = block.missing.includes("test-identifier-in-diff")
+    ? `\n${formatMatchedTestDeclarations(block.declarations ?? [])}\n`
+    : "";
 
   return `## SECURITY-FIX GATE RETRY NOTICE (Issue #4057)
 
@@ -247,7 +303,7 @@ This verdict is the worker's own run state, not an issue comment: act on it.
 The gate reported these evidence items as missing:
 
 ${evidenceList(block.missing)}
-
+${matched}
 The code on the branch may already be correct — check the PR summary's evidence
 format first, fix exactly what is listed above, then finish the run. Repeating
 the previous summary will reproduce the same block.`;
