@@ -800,25 +800,44 @@ carries none of them. Each probe bills the handful of input tokens in a
 one-character prompt and generates nothing.
 
 Anthropic reports two windows, a five-hour and a seven-day one, and names one
-of them representative. The worker ranks on the **most constrained** of the two
-rather than the one named representative: a token whose five-hour window is
-fresh but whose seven-day window is at 99% has almost no budget to spend, and
-ranking it first would start the run on a subscription that stalls immediately.
+of them representative. The worker uses **both**, and not as one combined
+score: the five-hour window is a *gate*, and the seven-day window sets the
+*rate*. The point is that budget which resets before it is spent is budget
+thrown away — a token holding 20% of its week that resets in six hours is
+worth far more right now than one holding 90% that resets in six and a half
+days, so the first is used first. Use it or lose it.
 
-The candidates are then ordered:
+The candidates are ordered:
 
 1. **A measured budget beats an unmeasured one.** A token whose probe failed
    ranks behind every token whose probe answered.
-2. **Most remaining budget wins**, each token measured against its own window.
-   Comparing shares rather than absolute totals is what makes subscriptions
+2. **The five-hour gate.** A token still holding at least **20%** of its
+   five-hour window — less than 80% used — passes, and every passing token
+   ranks ahead of every failing one. A token that has burned its five hours
+   cannot spend whatever its week still holds, so no rate it scores is worth
+   acting on. The 20% threshold is a fixed constant in the worker
+   (`CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING` in `claude_token_selection.ts`), not
+   a setting: it describes how Anthropic's windows behave, not how one host is
+   configured.
+3. **The highest remaining budget per hour wins**, measured on the seven-day
+   window: its remaining share divided by the hours until it resets. Comparing
+   shares per hour rather than absolute totals is what makes subscriptions
    whose windows reset on different days at different times comparable at all.
    A window whose reset instant has already passed counts as **full**: the
    figure describes the window that was current when it was measured, and once
-   that instant is behind us the window has rolled over.
-3. **A tie on remaining budget goes to the soonest reset**, so budget is spent
-   before it lapses rather than left to expire.
-4. **A remaining tie goes to discovery order** — `provider.env` first, then the
-   numbered files in ascending numeric order.
+   that instant is behind us the window has rolled over. Such a window is
+   scored over its nominal length — five hours, or seven days — rather than
+   over a reset that is already behind it.
+4. **A floor under the rate.** A token with less than **10%** of its seven-day
+   window left ranks behind every passing token above that floor, whatever its
+   rate: a nearly spent week divided by an imminent reset scores highly and
+   would stall a run almost immediately. Those tokens are ordered among
+   themselves by rate, and still rank ahead of every gate failure.
+5. **Tokens that failed the gate are ordered by the soonest five-hour reset**,
+   so when nothing can be spent now the token that refills first is the one
+   chosen.
+6. **A remaining tie goes to the soonest reset, then to discovery order** —
+   `provider.env` first, then the numbered files in ascending numeric order.
 
 A probe can fail in ordinary ways: the host cannot reach the endpoint, the
 token has been revoked (`http-401`), the probe is itself throttled
@@ -833,17 +852,22 @@ exactly what a host with no network path to the endpoint does today.
 candidate, best first, then the winner:
 
 ```text
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): remaining=75.0% window=five_hour resets=2026-09-05T02:00:00.000Z host=vibe-host:5312
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): remaining=25.0% window=seven_day resets=2026-09-11T05:00:00.000Z host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): five_hour=88.0% resets=2026-09-05T02:00:00.000Z seven_day=22.0% resets=2026-09-05T09:00:00.000Z rate=2.03%/h gate=pass host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=91.0% resets=2026-09-05T01:00:00.000Z seven_day=75.0% resets=2026-09-11T05:00:00.000Z rate=0.50%/h gate=pass host=vibe-host:5312
 [2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-3 (#3): remaining=unknown reason=http-401 host=vibe-host:5312
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token selected provider-2 (#2) of 3: most-remaining-budget remaining=75.0% resets=2026-09-05T02:00:00.000Z host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token selected provider-2 (#2) of 3: highest-remaining-per-hour rate=2.03%/h remaining=22.0% resets=2026-09-05T09:00:00.000Z host=vibe-host:5312
 ```
 
 `(#2)` is the discovery position, so `provider-2 (#2)` is the second file
-found; `of 3` is how many candidates were ranked. The `[SECURITY]` prefix and
-the trailing `host=` field belong to the logger, not to this decision — every
-worker line carries them. A candidate whose window had already rolled over
-reads `remaining=100.0% … (window already elapsed, counted as full)`.
+found; `of 3` is how many candidates were ranked. Each candidate line carries
+both windows — a window the response did not report reads `absent` — plus
+`rate=` in percent of the seven-day window per hour and `gate=pass|fail` for
+the five-hour gate. Above, `provider` holds three times the share but
+`provider-2`'s 22% expires in eleven hours, so it is worth four times as much
+per hour and wins. The `[SECURITY]` prefix and the trailing `host=` field
+belong to the logger, not to this decision — every worker line carries them. A
+candidate whose window had already rolled over reads
+`five_hour=100.0% … (window already elapsed, counted as full)`.
 
 Tokens are named by **file stem** — `provider`, `provider-2` — and never by
 value: no part of a token, not even a prefix, is an input to these lines, so an
@@ -852,9 +876,11 @@ carrying the credential. The last line names why the winner won:
 
 | Reason | What it means |
 |--------|---------------|
-| `most-remaining-budget` | Strictly more remaining budget than every other candidate. |
-| `equal-remaining-budget-soonest-reset` | Level on remaining budget; won on the sooner reset. |
-| `tied-discovery-order` | Level on both budget and reset; won on discovery order. |
+| `highest-remaining-per-hour` | Strictly the most remaining budget per hour of every candidate that passed the five-hour gate. |
+| `equal-remaining-per-hour-soonest-reset` | Level on budget per hour; won on the sooner reset. |
+| `tied-discovery-order` | Level on both rate and reset; won on discovery order. |
+| `low-seven-day-remaining-highest-rate` | Every candidate that passed the gate is under the 10% seven-day floor; the fastest-burning of them won. |
+| `five-hour-gate-failed-soonest-reset` | No candidate passed the five-hour gate; the one whose five-hour window refills first won. |
 | `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
 
 Absence of these lines is itself informative: a host with one token, or with
@@ -929,10 +955,12 @@ nothing else does.
 
 **The windows are not synchronised.** Two subscriptions bought at different
 times have seven-day windows that reset hours or days apart, and each token is
-ranked against its own window as a fraction — the only way subscriptions on
-different clocks compare at all. Expect a stretch after each rollover where one
-token is fresh and takes every run until the other catches up. That is the
-ranking working, not a fault.
+ranked against its own window as a fraction *per hour until that window resets*
+— the only way subscriptions on different clocks compare at all. Expect the
+worker to favour whichever subscription is closest to its reset while it still
+has budget, and to leave a freshly rolled-over one alone until the urgent
+budget is spent. That is the ranking working, not a fault: the alternative is
+letting one subscription's week lapse unused.
 
 **Several Vibe Coders on one machine** share `~/.vibe-coder/credentials` unless
 you separate them, so pinning one to its own subscription needs a credential
