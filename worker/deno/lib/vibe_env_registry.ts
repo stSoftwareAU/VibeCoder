@@ -365,7 +365,9 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
   },
   VIBE_BUILD_COMMIT: {
     role: "launch_plumbing",
-    note: "the commit the image was built from",
+    note:
+      "the commit of the checkout the container runs, resolved by the launch " +
+      "plan and carrying `-dirty` when that checkout was modified (Issue #1572)",
   },
   VIBE_RUN_ID: {
     role: "launch_plumbing",

@@ -1430,6 +1430,57 @@ Deno.test("slot pool - a slot that finds nothing with no sibling running retires
   );
 });
 
+Deno.test("slot pool - a stop line with eligible work never claims there was none (Issue #1573)", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  let scans = 0;
+  const logs: string[] = [];
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => logs.push(m),
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: (options) => {
+      scans++;
+      // Three issues passed the per-issue filter; none was claimable
+      // because sibling slots hold their streams (the #1573 line).
+      options?.onScanSummary?.({
+        totalConsidered: 36,
+        totalEligible: 3,
+        skippedByReason: {
+          "needs-human": 16,
+          "milestone-occupied": 12,
+          "filtered-out": 3,
+        },
+        claimRaceWins: 0,
+        claimRaceLosses: 0,
+      });
+      if (scans >= 2) now = cycleMs + 1;
+      return Promise.resolve({ ok: true as const, value: null });
+    },
+  });
+
+  await runOneCycle(deps, 2);
+
+  const stops = logs.filter((m) => m.includes("stop reason=no-work"));
+  assert(
+    stops.length > 0,
+    `every slot must state why it stopped: ${logs.join(" | ")}`,
+  );
+  for (const stop of stops) {
+    assertEquals(
+      stop.includes("no eligible work"),
+      false,
+      `a stop line reporting eligible=3 must not also say "no eligible work": ${stop}`,
+    );
+  }
+  assertStringIncludes(stops[0]!, "3 eligible, none claimable");
+  assertStringIncludes(stops[0]!, "considered=36 eligible=3 skipped=31");
+});
+
 Deno.test("slot pool - a slot that loses the acquire race drops that repo's cached issue list before re-scanning (Issue #219)", async () => {
   const config = createDefaultRunCoreConfig();
   const cycleMs = config.runDurationSeconds * 1000;

@@ -90,6 +90,12 @@ flowchart TD
    (from `VIBE_BUILD_COMMIT`). The stamp is emitted at startup
    (`[worker-build] version=… commit=…`) and included in the claim-time and
    PR-open log lines, so an outdated host is now visible in the logs.
+   `VIBE_BUILD_COMMIT` is set by the container launch plan (Issue #1572),
+   which resolves `git rev-parse HEAD` of the checkout it is about to mount —
+   both launchers update that checkout before the plan is built, so the stamp
+   names the code the run really executes. A modified checkout stamps
+   `<sha>-dirty`, and `unknown` now means a genuinely unstamped build rather
+   than every build.
 4. **Fail-loud fleet-config validation.** `validateFleetConfig()`
    (`lib/fleet_config_validation.ts`) errors on an empty effective fleet set and
    warns when `allowed_authors` is empty or when a `fleet_pr_authors` sibling is
