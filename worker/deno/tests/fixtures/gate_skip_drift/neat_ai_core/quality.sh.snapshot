@@ -1,0 +1,67 @@
+# Snapshot excerpt of stSoftwareAU/NEAT-AI-core quality.sh (Issue #1597).
+# Taken from the gate as it stood before #1595 baked bats/codespell into
+# the image. Not executed — read as data by gate_skip_drift_scanner.ts.
+find . -name "*.sh" -type f -not -path "./target/*" -not -path "./.git/*" -exec bash -n {} \;
+
+echo "Running shellcheck on bash scripts..."
+if ! command -v shellcheck &>/dev/null; then
+    echo "shellcheck is required — install: https://github.com/koalaman/shellcheck#installing"
+    exit 1
+fi
+SHELLCHECK_FAILED=0
+while IFS= read -r script; do
+    echo "  shellcheck: $script"
+    if ! shellcheck -s bash "$script"; then
+        SHELLCHECK_FAILED=1
+    fi
+done < <(find . -name "*.sh" -type f -not -path "./target/*" -not -path "./.git/*")
+if [[ "$SHELLCHECK_FAILED" -ne 0 ]]; then
+    echo "shellcheck: FAILED"
+    exit 1
+fi
+echo "shellcheck: all scripts passed"
+
+# Bash helper tests (bats) — covers bump-deps.sh and any future shell helpers.
+echo "🧰 Running bash helper tests (bats)..."
+if command -v bats &>/dev/null; then
+    if [ -d "tests/scripts" ]; then
+        bats tests/scripts
+    fi
+else
+    echo "⚠️  bats not installed — skipping shell helper tests"
+    echo "   Install with: brew install bats-core  (or your package manager)"
+fi
+
+# TypeScript basic-validity gate (Issue #307) — mirrors the CI typescript-gate job.
+echo "🧾 Checking TypeScript sources (deno check)..."
+./scripts/typescript-check.sh </dev/null
+
+# Mermaid gate (Issue #379) — repo-owned, always-on; mirrors the CI
+# markdown-lint job. Fails loud: a missing deno exits non-zero under `set -e`.
+echo "🧜 Validating Mermaid blocks..."
+deno test --allow-read --allow-write tests/check_mermaid_test.ts </dev/null
+deno run --allow-read scripts/check_mermaid.ts . </dev/null
+
+# Native/WASM pruning parity record (Issue #592) — the comparator and the
+# committed golden record, which are what stop the wasm entry surface drifting
+# from the native one. The end-to-end check needs a built bundle and runs in
+# wasm-bundle.yml; this half runs everywhere.
+echo "🌿 Checking the native/WASM pruning parity record..."
+deno test --allow-read tests/wasm_prune_parity_test.ts </dev/null
+
+# JSR supply-chain gate (Issue #603) — mirrors the CI typescript-gate step.
+# The committed `deno.json` quarantine (24h `minimumDependencyAge`) and the
+# frozen `deno.lock` are what keep every Deno gate off a freshly-published JSR
+# release; this test fails loud if either is removed or weakened.
+echo "🔒 Checking JSR dependency quarantine and lockfile..."
+deno test --allow-read --allow-write --allow-run=deno tests/deno_supply_chain_test.ts </dev/null
+
+# Optional: codespell (CI runs this; install: pip install codespell)
+if command -v codespell &>/dev/null; then
+    echo "📖 Running codespell..."
+    codespell
+else
+    echo "⚠️  codespell not installed — skipping (CI still enforces spelling)"
+fi
+
+# Update dependencies to latest versions (including incompatible upgrades)

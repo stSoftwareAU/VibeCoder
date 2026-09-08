@@ -1,0 +1,18 @@
+# Snapshot excerpt of stSoftwareAU/NEAT-AI-scorer .github/workflows/ci.yml
+# (Issue #1597): the shell-checks job that installs and runs bats.
+name: CI
+on: [pull_request]
+jobs:
+  shell-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Run bash helper tests (bats)
+        run: |
+          set -euo pipefail
+          if [ -d "tests/scripts" ]; then
+            bats tests/scripts
+          fi
+
