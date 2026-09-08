@@ -48,11 +48,21 @@ sequenceDiagram
     E->>Cl: run Claude
     Cl-->>C: branch + PR summary
     C->>G: evaluateSecurityFixGate({ summary, labels, diff })
-    alt evidence missing
-        G-->>C: missing[]
-        C->>S: recordSecurityFixGateBlock(missing)
-        C->>GH: post the blocked comment (operator-facing)
-        C-->>E: PR creation blocked — attempt N+1 reads run state
+    alt evidence missing (first block this run)
+        G-->>C: missing[] + the declarations it matched
+        C->>S: recordSecurityFixGateBlock(missing, countsAsBlockedRun=false)
+        C->>Cl: fresh invocation replaying the verdict (no --resume)
+        Cl-->>C: fixed summary, committed
+        C->>C: quality gate, then the completion gates again
+        alt the retry satisfies the gate
+            C->>S: clearSecurityFixGateBlock()
+            C->>GH: gh pr create — no block comment posted
+        else blocked twice in one run
+            C->>S: recordSecurityFixGateBlock(countsAsBlockedRun=true)
+            C->>GH: one comment carrying BOTH verdicts
+            C->>GH: needs-human after 2 consecutive blocked runs
+            C-->>E: PR creation blocked — attempt N+1 reads run state
+        end
     else evidence complete
         G-->>C: ok
         C->>S: clearSecurityFixGateBlock()
@@ -84,8 +94,16 @@ Blocked verdicts live in a directory **beside** `workDir`, never inside it:
 The sibling placement is the same reasoning as the content-approval baseline
  — `nukeWorkDir` and an agent-driven `rm` inside the work tree
 must not be able to erase the record. Each file holds the missing evidence
-kinds, the ISO timestamp of the last block, and a running `blockCount` so a
-repeat loop is visible in the retry prompt and the worker log.
+kinds, the ISO timestamp of the last block, the test declarations the gate
+matched, and a running `blockCount` so a repeat loop is visible in the retry
+prompt and the worker log.
+
+Since Issue #1575, `blockCount` counts **blocked runs** — runs that ended in
+`failure` from the gate — not blocks. The first block inside a run is recovered
+by the in-run retry below, so it records its verdict with
+`countsAsBlockedRun: false` and charges the issue nothing. The count is
+host-local: it clears the moment the gate passes, and a different host starts
+at zero.
 
 Reads are defensive even though the file is worker-written: unknown evidence
 kinds are discarded and a corrupt file reads as absent, so nothing that lands
@@ -93,6 +111,50 @@ in that directory can inject text into the next prompt. A verdict that cannot
 be persisted (an unconfigured `workDir`) is logged loudly rather than dropped
 silently — the PR is blocked either way, but an operator can see that the next
 attempt will start blind.
+
+## The in-run retry (Issue #1575)
+
+A block used to end the run. Issue #1385 needed four runs to raise its PR: the
+first three were blocked with `test-identifier-in-diff` missing while each
+branch already carried the cited regression test, because the gate could not
+read a test name `deno fmt` had wrapped onto the line after `Deno.test(`. That
+regex fault is fixed, but three correct branches still cost roughly USD 10.50
+and 28 minutes of worker time — one false block should not cost a run at all.
+
+The completion phase therefore recovers from the **first** block inside the run:
+
+1. the verdict is recorded in run state (charging no blocked run) and the log
+   reads `security-fix gate block — retrying once in-run`;
+2. the agent is re-invoked **fresh** — never `--resume`, because the previous
+   turn already concluded the work was finished — carrying the same replay
+   section the next-run prompt uses;
+3. the quality gate runs again, then the completion gates. `bump-deps` does
+   not: the bump is already on the branch.
+
+The retry always runs; it is never skipped on time-budget grounds. A run that
+passes on the retry raises its PR and posts **no** block comment for the first
+verdict. A run blocked twice ends in `failure` exactly as a block did before,
+with **one** comment carrying both verdicts.
+
+### Recognising a false block
+
+When `test-identifier-in-diff` is missing, the block comment and the replayed
+verdict list the test declaration lines the gate matched in the diff, capped at
+ten, scrubbed and code-fenced — they are agent-authored diff text, so they must
+render as data and stay inert in the retry prompt. A summary that cites a listed
+declaration means the gate is at fault rather than the summary, which is exactly
+what nobody could tell during #1385.
+
+A retry the worker could not launch at all — a rate limit, a failed spawn — is
+not a second gate verdict: the block is still reported on the issue, but it
+charges no blocked run, so a flaky CLI cannot spend the hand-off budget below.
+
+### After two blocked runs
+
+Two consecutive blocked runs on one issue and the worker stops re-attempting:
+`needs-human` is applied through the guarded `escalateToHuman` chokepoint, with
+a comment quoting the last verdict and naming the gate itself as a suspect. The
+label and its explanation are always applied together.
 
 ## Configuration
 
