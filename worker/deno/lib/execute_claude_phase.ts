@@ -370,16 +370,25 @@ export interface ContextBudgetEscalation {
 // =============================================================================
 
 /**
- * Detect whether screenshot instructions should be injected into the prompt.
+ * Detect whether screenshot instructions should be injected into the prompt,
+ * and — because the same answer wires the Playwright MCP browser (Issue #192)
+ * — whether the run gets a browser at all.
  *
  * Screenshot is required when:
  * 1. The issue has the needs-screenshot label (Issue #344), OR
  * 2. The repo has requires_screenshots=true in config (Issue #793)
  *
+ * A repository configured with `skip_screenshot_check` overrides both
+ * (Issue #1584): its prompt already has the screenshot instructions stripped,
+ * so starting Chromium and the Playwright MCP server for it buys nothing and
+ * hands the run an outbound-HTTP tool it must not have. The override is logged
+ * once, naming the repository, whenever it actually changed the answer.
+ *
  * @param issueLabels - Comma-separated issue labels
  * @param needsScreenshotLabel - The label name to check for
  * @param repoConfigs - Per-repo configuration map
  * @param repo - Repository in "owner/repo" format
+ * @param log - Optional info-level sink for the override notice
  * @returns Whether screenshots are required
  */
 export function detectScreenshotRequired(
@@ -387,29 +396,41 @@ export function detectScreenshotRequired(
   needsScreenshotLabel: string,
   repoConfigs: Record<string, RepoConfig> | undefined,
   repo: string,
+  log?: (message: string) => void,
 ): boolean {
   // Check for needs-screenshot label (case-insensitive)
-  if (issueLabels.toLowerCase().includes(needsScreenshotLabel.toLowerCase())) {
-    return true;
-  }
+  const labelPresent = issueLabels.toLowerCase().includes(
+    needsScreenshotLabel.toLowerCase(),
+  );
 
   // Check repo config for requires_screenshots (Issue #793)
   // Note: requires_screenshots is not a typed RepoConfig field — it uses
   // the generic jq-based lookup in shell. In Deno, we check it as a custom
   // property on the config object.
-  if (repoConfigs) {
-    const config = repoConfigs[repo];
-    if (config) {
-      // Access the property via indexing since it's not part of the typed interface
-      const requiresScreenshots =
-        (config as Record<string, unknown>)["requiresScreenshots"];
-      if (requiresScreenshots === true || requiresScreenshots === "true") {
-        return true;
-      }
-    }
+  const requiresScreenshots =
+    (repoConfigs?.[repo] as Record<string, unknown> | undefined)
+      ?.["requiresScreenshots"];
+  const repoRequires = requiresScreenshots === true ||
+    requiresScreenshots === "true";
+
+  if (!labelPresent && !repoRequires) {
+    return false;
   }
 
-  return false;
+  // `skip_screenshot_check` wins over both triggers (Issue #1584).
+  if (getRepoConfig(repoConfigs, repo, "skipScreenshotCheck") === "true") {
+    const overridden = [
+      ...(labelPresent ? [`the ${needsScreenshotLabel} label`] : []),
+      ...(repoRequires ? ["requires_screenshots"] : []),
+    ].join(", ");
+    log?.(
+      `${repo} sets skip_screenshot_check — no screenshot instructions and ` +
+        `no Playwright MCP browser, overriding ${overridden} (Issue #1584)`,
+    );
+    return false;
+  }
+
+  return true;
 }
 
 // =============================================================================
@@ -829,6 +850,7 @@ export async function runExecuteClaudePhase(
     needsScreenshotLabel,
     repoConfigs,
     repo,
+    deps.log,
   );
   if (screenshotRequired) {
     deps.log(

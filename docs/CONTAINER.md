@@ -253,7 +253,9 @@ flowchart TD
   — the main fleet loop (`phases/execute_phase.ts`) and the standalone
   `execute-claude-phase` command — set the signal from the same
   `screenshotRequired` detection that injects the screenshot instructions (the
-  `needs-screenshot` label, or a repo configured with `requiresScreenshots`);
+  `needs-screenshot` label, or a repo configured with `requiresScreenshots`,
+  unless the repo sets `skip_screenshot_check`, which overrides both and keeps
+  Playwright out of the run entirely — Issue #1584);
   planning, PR feedback, CI-fix and grill-me runs get no browser. A UI change
   in a repo that declared neither still self-heals through the existing
   round trip: the evidence gate blocks the PR, labels the issue
