@@ -134,7 +134,13 @@ const WINDOW_HOURS: Record<ClaudeBudgetWindowName, number> = {
 
 /** Why the winning token won — stable, greppable, and safe to log. */
 export type ClaudeTokenSelectionReason =
-  /** Strictly the most remaining budget per hour of every passing candidate. */
+  /**
+   * Strictly the most remaining budget per hour of every candidate that
+   * passed the five-hour gate **and** holds at least
+   * {@link CLAUDE_SEVEN_DAY_LOW_REMAINING} of its seven-day window. A
+   * near-exhausted token demoted by that floor can still score a higher rate
+   * — the floor is applied before the rate, not after it.
+   */
   | "highest-remaining-per-hour"
   /** Level on budget per hour; won on the sooner reset. */
   | "equal-remaining-per-hour-soonest-reset"
@@ -186,6 +192,11 @@ export interface RankedClaudeToken {
   /**
    * Remaining share of {@link rateWindow}, in `[0, 1]`, or null when the
    * budget is unknown. 1 for a token whose window had already reset.
+   *
+   * This and the two fields below flatten {@link rateWindow} — the same three
+   * figures, without the null check at every call site. `rateWindow` stays the
+   * source of truth; these are derived from it in one place
+   * ({@link rankingView}) and never set independently.
    */
   readonly remainingFraction: number | null;
   /** {@link rateWindow}'s reset in epoch ms, or null when unknown. */
@@ -461,10 +472,15 @@ export function formatClaudeTokenSelectionLog(
     `${LOG_PREFIX} candidate ${candidate.label} (#${candidate.index + 1}): ` +
     describeCandidate(candidate)
   );
+  // A gate failure was decided on the five-hour reset, so the line that
+  // records the decision has to carry it.
+  const gateDetail = winner.passesFiveHourGate || winner.fiveHour === null
+    ? ""
+    : `${describeWindow("five_hour", winner.fiveHour)} `;
   const detail =
     winner.remainingFraction === null || winner.ratePerHour === null
       ? `remaining=unknown`
-      : `rate=${formatRate(winner.ratePerHour)} ` +
+      : `${gateDetail}rate=${formatRate(winner.ratePerHour)} ` +
         `remaining=${formatShare(winner.remainingFraction)} resets=${
           winner.resetAt === null ? "unknown" : formatReset(winner.resetAt)
         }`;

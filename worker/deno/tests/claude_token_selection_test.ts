@@ -8,14 +8,25 @@
  * operator had to swap files between runs by hand. #918 can measure one
  * token's remaining budget; nothing joined the two.
  *
+ * Issue #1623 then reshaped the rule the join applies: the five-hour window
+ * became a gate and the seven-day window sets the rate, so budget that would
+ * otherwise lapse is spent first ("use it or lose it"). Three cases below
+ * assert the new outcome where they used to assert the old one; each says so
+ * at the point it does.
+ *
  * These tests pin the join, and each rule is one that would silently degrade
  * rather than fail visibly if it regressed:
  *
- * - the winner really is the token with the most remaining budget, measured
- *   against **its own** window, not a wall-clock total;
- * - a tie goes to the sooner reset, so budget is spent before it lapses;
- * - a token whose window has already reset counts as full, not as the stale
- *   near-exhausted figure the probe reported for a window that has gone;
+ * - a token that has burned over 80% of its five-hour window ranks behind
+ *   every token that has not — it cannot spend what its week still holds;
+ * - the winner really is the token with the most remaining budget **per hour**
+ *   until its own window resets, not the largest share and not a wall-clock
+ *   total;
+ * - a token under 10% of its seven-day window ranks behind every passing token
+ *   above that floor, whatever its rate;
+ * - a token whose window has already reset counts as full — scored over the
+ *   window's nominal length — not as the stale near-exhausted figure the probe
+ *   reported for a window that has gone;
  * - a token that could not be probed ranks last but never disappears, and a
  *   pool where every probe failed still starts the worker on the primary
  *   token — a network fault must never refuse to start a run;
@@ -392,6 +403,23 @@ Deno.test("ranking treats a reset that has already passed as a full window (Issu
   assertEquals(ranking.winner?.windowElapsed, true);
 });
 
+Deno.test("ranking scores an elapsed seven-day window over its nominal 168 hours (Issue #1623)", () => {
+  // The reset is behind us, so the window is full again and there is no
+  // positive number of hours to divide by. Its nominal length is the divisor:
+  // a rolled-over week is 100% over 168 hours, not a division by a negative.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.90, NOW + 2 * HOUR),
+      sevenDay(0.01, NOW - 2 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.remainingFraction, 1);
+  assertEquals(ranking.winner?.windowElapsed, true);
+  assertEquals(ranking.winner?.ratePerHour, 1 / 168);
+  assertEquals(ranking.winner?.rateWindow?.hoursUntilReset, 168);
+});
+
 Deno.test("ranking breaks a complete tie on discovery order (Issue #919)", () => {
   const ranking = rankClaudeTokenBudgets([
     known("provider", 0.4, NOW + HOUR),
@@ -462,9 +490,13 @@ Deno.test("the decision log prints both windows and the rate for a token reporti
       "resets=2026-09-04T02:00:00.000Z seven_day=60.0% " +
       "resets=2026-09-06T00:00:00.000Z rate=1.25%/h gate=fail",
   );
-  assertStringIncludes(
-    lines[1] ?? "",
-    "five-hour-gate-failed-soonest-reset",
+  assertEquals(
+    lines[1],
+    "[SECURITY] claude token selected provider (#1) of 1: " +
+      "five-hour-gate-failed-soonest-reset five_hour=10.0% " +
+      "resets=2026-09-04T02:00:00.000Z rate=1.25%/h remaining=60.0% " +
+      "resets=2026-09-06T00:00:00.000Z",
+    "the line records the five-hour reset the decision was made on",
   );
 });
 

@@ -1292,8 +1292,9 @@ export interface RecordContainerOutcomeOptions {
    * — every single-subscription host — makes no probe and behaves exactly as
    * before. When it answers true the pause takes the base cadence instead of
    * the hour-long quota cadence: worker start already ranks the pool and takes
-   * the most-remaining token, so the only thing keeping this host idle is the
-   * sleep, and the spent token will rank last on the next pass.
+   * the token worth the most per hour (Issue #1623), so the only thing keeping
+   * this host idle is the sleep, and the spent token — having burned its
+   * five-hour window — fails that ranking's gate on the next pass.
    *
    * A probe that fails must answer false — never leave a host spinning on a
    * cadence it cannot justify.

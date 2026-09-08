@@ -818,9 +818,12 @@ The candidates are ordered:
    acting on. The 20% threshold is a fixed constant in the worker
    (`CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING` in `claude_token_selection.ts`), not
    a setting: it describes how Anthropic's windows behave, not how one host is
-   configured.
+   configured. A response that reported **no** five-hour window has no gate to
+   fail, so it passes.
 3. **The highest remaining budget per hour wins**, measured on the seven-day
-   window: its remaining share divided by the hours until it resets. Comparing
+   window: its remaining share divided by the hours until it resets. A response
+   that reported no seven-day window is ranked on the rate of the window it did
+   report, rather than dropped. Comparing
    shares per hour rather than absolute totals is what makes subscriptions
    whose windows reset on different days at different times comparable at all.
    A window whose reset instant has already passed counts as **full**: the
@@ -861,8 +864,10 @@ candidate, best first, then the winner:
 `(#2)` is the discovery position, so `provider-2 (#2)` is the second file
 found; `of 3` is how many candidates were ranked. Each candidate line carries
 both windows — a window the response did not report reads `absent` — plus
-`rate=` in percent of the seven-day window per hour and `gate=pass|fail` for
-the five-hour gate. Above, `provider` holds three times the share but
+`rate=`, the remaining share per hour of the seven-day window (or of the only
+window the response reported, when it carried no seven-day one), and
+`gate=pass|fail` for the five-hour gate. A `selected` line for a token that
+failed the gate also carries the five-hour reset the choice was made on. Above, `provider` holds three times the share but
 `provider-2`'s 22% expires in eleven hours, so it is worth four times as much
 per hour and wins. The `[SECURITY]` prefix and the trailing `host=` field
 belong to the logger, not to this decision — every worker line carries them. A
@@ -876,7 +881,7 @@ carrying the credential. The last line names why the winner won:
 
 | Reason | What it means |
 |--------|---------------|
-| `highest-remaining-per-hour` | Strictly the most remaining budget per hour of every candidate that passed the five-hour gate. |
+| `highest-remaining-per-hour` | Strictly the most remaining budget per hour of every candidate that passed the five-hour gate **and** holds at least 10% of its seven-day window. A token demoted by that floor can still show a higher rate — the floor is applied before the rate, not after it. |
 | `equal-remaining-per-hour-soonest-reset` | Level on budget per hour; won on the sooner reset. |
 | `tied-discovery-order` | Level on both rate and reset; won on discovery order. |
 | `low-seven-day-remaining-highest-rate` | Every candidate that passed the gate is under the 10% seven-day floor; the fastest-burning of them won. |
