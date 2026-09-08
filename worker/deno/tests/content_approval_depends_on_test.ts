@@ -354,3 +354,46 @@ Deno.test("content_approval_depends_on - re-capturing after a stale match writes
   assert(after.status === "unchanged");
   assertEquals(after.staleEncoding, undefined);
 });
+
+Deno.test("content_approval_depends_on - a v2 baseline whose body ended in a newline still migrates (Issue #1616)", async () => {
+  // `recordDependencyInBody` trims before appending, so the trailing newline a
+  // GitHub body carries is destroyed by the deferral edit. A pre-v3 digest
+  // covers those bytes, so the fallback must try the endings the append ate —
+  // otherwise the field case this issue was filed for keeps failing closed.
+  for (const ending of ["\n", "\r\n", "\n\n"]) {
+    const { deps, files } = createMemoryFs();
+    const approved = `${BODY}${ending}`;
+    seedState(files, {
+      contentHash: await computeContentHash(
+        TITLE,
+        approved,
+        CONTENT_HASH_ENCODING_V2,
+      ),
+      capturedAt: 1_760_000_000,
+      issueAuthor: "alice",
+      encoding: CONTENT_HASH_ENCODING_V2,
+    });
+
+    const result = await verify(deps, deferred(approved, "#12"));
+
+    assert(
+      result.status === "unchanged",
+      `body ending ${JSON.stringify(ending)} got ${result.status}`,
+    );
+    assertEquals(result.staleEncoding, CONTENT_HASH_ENCODING_V2);
+  }
+});
+
+Deno.test("content_approval_depends_on - deleting one of two identical recorded lines is changed (Issue #1616)", async () => {
+  // The refs are counted, not set-matched: a duplicated ref must not let one
+  // copy be deleted unnoticed.
+  const { deps } = createMemoryFs();
+  const approved = `${BODY}\n\nDepends on #12\nDepends on #12\n`;
+  await captureBaseline(deps, approved);
+
+  assertEquals(
+    (await verify(deps, `${BODY}\n\nDepends on #12\n`)).status,
+    "changed",
+  );
+  assertEquals((await verify(deps, approved)).status, "unchanged");
+});

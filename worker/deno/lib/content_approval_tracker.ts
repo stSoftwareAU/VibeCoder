@@ -239,8 +239,36 @@ function recordedDependenciesIntact(
 ): boolean {
   const recorded = Array.isArray(snapshot.dependsOn) ? snapshot.dependsOn : [];
   if (recorded.length === 0) return true;
-  const present = new Set(extractApprovalDependsOnRefs(body));
-  return recorded.every((ref) => present.has(ref.toLowerCase()));
+
+  // Counted, not a set: an issue approved with the same ref on two lines must
+  // still report `changed` when one of them is deleted.
+  const present = new Map<string, number>();
+  for (const ref of extractApprovalDependsOnRefs(body)) {
+    present.set(ref, (present.get(ref) ?? 0) + 1);
+  }
+  for (const ref of recorded) {
+    const remaining = present.get(ref.toLowerCase()) ?? 0;
+    if (remaining === 0) return false;
+    present.set(ref.toLowerCase(), remaining - 1);
+  }
+  return true;
+}
+
+/**
+ * Bodies a pre-v3 snapshot's approved content may have been (Issue #1616).
+ *
+ * `recordDependencyInBody` writes `${body.trimEnd()}\n\n<line>\n`, so the
+ * trailing whitespace the approved body carried — GitHub bodies routinely end
+ * in `\n` or `\r\n` — is destroyed by the append and cannot be recovered from
+ * what is on the page now. A pre-v3 digest covers those bytes, so matching the
+ * trimmed body alone would leave exactly the field case this issue was filed
+ * for failing closed. The candidates are the trimmed body plus the endings the
+ * append could have eaten; v3 tolerates trailing whitespace anyway, so trying
+ * them widens nothing the current encoding does not already allow.
+ */
+function legacyApprovedBodyCandidates(body: string): string[] {
+  const trimmed = normaliseBodyForApproval(body);
+  return [trimmed, `${trimmed}\n`, `${trimmed}\r\n`, `${trimmed}\n\n`];
 }
 
 /**
@@ -957,13 +985,15 @@ export async function verifyContentUnchanged(
       // approved body *already* carried such a line only ever matches on the
       // raw body, so a removal is never blessed here.
       if (encoding === CONTENT_HASH_ENCODING_V3) continue;
-      const normalisedHash = await computeContentHash(
-        currentTitle,
-        normaliseBodyForApproval(currentBody),
-        encoding,
-      );
-      if (normalisedHash === snapshot.contentHash) {
-        return { status: "unchanged", staleEncoding: encoding };
+      for (const candidate of legacyApprovedBodyCandidates(currentBody)) {
+        const normalisedHash = await computeContentHash(
+          currentTitle,
+          candidate,
+          encoding,
+        );
+        if (normalisedHash === snapshot.contentHash) {
+          return { status: "unchanged", staleEncoding: encoding };
+        }
       }
     }
 
