@@ -147,6 +147,34 @@
       "notes": "`cargo deny check` is not optional in these gates: private-repo-16 exits non-zero when the binary is absent and private-repo-17 runs it unguarded. The linux release is a static musl build, so it runs on the glibc base image."
     },
     {
+      "id": "gitleaks",
+      "version": "8.30.1",
+      "fragment": "toolchains/gitleaks.sh",
+      "commands": ["gitleaks"],
+      "versionCommand": "gitleaks",
+      "source": "https://github.com/gitleaks/gitleaks/releases",
+      "sha256": {
+        "amd64": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+        "arm64": "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080"
+      },
+      "repos": ["stSoftwareAU/GRQ-AutoTrader", "stSoftwareAU/NEAT-AI-Explore"],
+      "notes": "Secret scanner both repositories enforce in CI (Issue #1596). Neither drives it from a quality.sh — GRQ-AutoTrader has none — so this is the one toolchain the local gate does not run; it is here because a fleet agent that cannot run the scanner locally meets its findings only after the PR is open. The amd64 checksum is deliberately the digest the gitleaks CLI fallback pins in both GRQ-AutoTrader's secret-scan workflow and this repository's own .github/workflows/gitleaks.yml: one artefact, one digest. Only the local half can be enforced, and it is — container_manifest_test.ts fails the gate when this pin and that workflow's GITLEAKS_VERSION/GITLEAKS_SHA256 drift apart. Both digests are the release's own gitleaks_<version>_linux_x64/arm64.tar.gz entries from gitleaks_<version>_checksums.txt. `gitleaks --version` prints \"gitleaks version <version>\", which is what the build-verification loop in container-build.yml matches on."
+    },
+    {
+      "id": "pwsh",
+      "version": "7.6.5",
+      "fragment": "toolchains/pwsh.sh",
+      "commands": ["pwsh"],
+      "versionCommand": "pwsh",
+      "source": "https://github.com/PowerShell/PowerShell/releases",
+      "sha256": {
+        "amd64": "b34ab3b19acac1d3d4d0d3cfdb02acf62f457b0b6a962ff008132033f7566844",
+        "arm64": "ed4084f215d8bce2edd23aa7cb1f1e7b0818e41363a635a22065d2701b6141df"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "PowerShell 7 for this repository's .ps1 launchers (Issue #1596) — the one user-directed exception to the \"the gate runs it and CI enforces it\" rule for a toolchain. .github/workflows/validate-scripts.yml fails loud when pwsh is absent and runs the run.ps1 suites, which the local gate excludes (Issue #971, worker/deno/tests/pwsh_suites_outside_the_gate_test.ts); wiring those suites into the local gate is separate work. Checksums are the release's powershell-<version>-linux-x64/arm64.tar.gz entries from its hashes.sha256. No apt step: the runtime libraries the .NET host needs (libicu76, libssl3t64, libstdc++6, libgssapi-krb5-2) are already in the digest-pinned base, verified by running the extracted binary on the image."
+    },
+    {
       "id": "node",
       "version": "24.19.0",
       "versionArg": "NODE_VERSION",

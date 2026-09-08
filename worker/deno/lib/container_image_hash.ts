@@ -82,6 +82,8 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   "container/toolchains/shellcheck.sh",
   "container/toolchains/actionlint.sh",
   "container/toolchains/cargo-deny.sh",
+  "container/toolchains/gitleaks.sh",
+  "container/toolchains/pwsh.sh",
   "container/toolchains/rust.sh",
   "worker/deno/deno.lock",
 ];

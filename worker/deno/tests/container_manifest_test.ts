@@ -1635,6 +1635,11 @@ Deno.test("container/ - the image supplies every monitored-repo toolchain comman
   // Issue #650: the local SAST gate stage needs the binary in the image, or
   // it SKIPs on every fleet run and findings are met only in CI.
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("semgrep"));
+  // Issue #1596: gitleaks is CI-enforced in two fleet repos, and pwsh is the
+  // interpreter validate-scripts.yml fails loud without. Dropping either from
+  // container/tools.json fails here.
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("gitleaks"));
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("pwsh"));
 });
 
 Deno.test("container/ - every committed toolchain names the repositories it exists for", async () => {
@@ -1653,6 +1658,34 @@ Deno.test("container/ - every committed toolchain names the repositories it exis
       `${toolchain.id} must report its version from a command it installs`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1596 — the image and this repo's own secret scan run one gitleaks
+// ---------------------------------------------------------------------------
+
+Deno.test("container/ - the gitleaks pin matches the CI workflow's CLI fallback (Issue #1596)", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+  const gitleaks = manifest.toolchains.find((t) => t.id === "gitleaks");
+  assert(gitleaks, "container/tools.json must pin the gitleaks toolchain");
+
+  // One artefact, one digest: .github/workflows/gitleaks.yml fetches the same
+  // linux_x64 release when the licensed action cannot run, so a bump that
+  // moved only one of them would have CI scanning with a gitleaks the image
+  // does not carry. Asserted rather than asserted-in-prose (Issue #1596).
+  const workflow = await Deno.readTextFile(
+    new URL(".github/workflows/gitleaks.yml", REPO_ROOT),
+  );
+  const versions = [...workflow.matchAll(/GITLEAKS_VERSION:\s*"([^"]+)"/g)]
+    .map((m) => m[1]);
+  const digests = [...workflow.matchAll(/GITLEAKS_SHA256:\s*"([^"]+)"/g)]
+    .map((m) => m[1]);
+  assert(versions.length > 0, "gitleaks.yml must pin GITLEAKS_VERSION");
+  assertEquals(digests.length, versions.length);
+  for (const version of versions) assertEquals(version, gitleaks.version);
+  for (const digest of digests) assertEquals(digest, gitleaks.sha256.amd64);
 });
 
 // ---------------------------------------------------------------------------

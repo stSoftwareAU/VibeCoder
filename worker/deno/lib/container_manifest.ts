@@ -165,6 +165,13 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * files (Issue #650 — without the binary that SAST stage SKIPs on every fleet
  * run and findings are met only in CI). Each must be supplied by a manifest
  * toolchain, so the image never falls back to a host-installed equivalent.
+ *
+ * Two entries are enforced in CI rather than by a `quality.sh` (Issue #1596):
+ * `gitleaks`, the secret scanner GRQ-AutoTrader and NEAT-AI-Explore both run
+ * on every PR, and `pwsh`, the interpreter this repository's
+ * `.github/workflows/validate-scripts.yml` fails loud without — the one
+ * user-directed exception to "the gate runs it", since the `run.ps1` suites
+ * are excluded from the local gate (Issue #971).
  */
 export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "cargo",
@@ -176,6 +183,8 @@ export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "actionlint",
   "markdownlint-cli2",
   "semgrep",
+  "gitleaks",
+  "pwsh",
 ];
 
 /** Aliases that resolve to "whatever upstream published most recently". */
