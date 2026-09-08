@@ -62,6 +62,13 @@ const MAX_DEDUP_COMMENT_PAGES = 10;
 /** One page's worth of parsed comments, and whether the body made sense. */
 interface ParsedPage {
   comments: GitHubComment[];
+  /**
+   * How many entries the page carried before parsing dropped any. This — not
+   * `comments.length` — decides whether the page was full: an entry the
+   * parser skips would otherwise make a full page look short and stop the
+   * paging mid-thread, which is the blind spot being fixed.
+   */
+  rawCount: number;
   /** True when a non-empty body was neither JSON nor a JSON array. */
   malformed: boolean;
 }
@@ -75,14 +82,16 @@ interface ParsedPage {
  * page, not a malformed one: that is how the API answers a page past the end.
  */
 function parseCommentsJson(raw: string): ParsedPage {
-  if (raw.trim() === "") return { comments: [], malformed: false };
+  if (raw.trim() === "") return { comments: [], rawCount: 0, malformed: false };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { comments: [], malformed: true };
+    return { comments: [], rawCount: 0, malformed: true };
   }
-  if (!Array.isArray(parsed)) return { comments: [], malformed: true };
+  if (!Array.isArray(parsed)) {
+    return { comments: [], rawCount: 0, malformed: true };
+  }
   const out: GitHubComment[] = [];
   for (const entry of parsed) {
     if (typeof entry !== "object" || entry === null) continue;
@@ -100,7 +109,7 @@ function parseCommentsJson(raw: string): ParsedPage {
       reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
     });
   }
-  return { comments: out, malformed: false };
+  return { comments: out, rawCount: parsed.length, malformed: false };
 }
 
 /**
@@ -160,12 +169,12 @@ export function createGhEscalationClient(
           return all;
         }
         // A short page is the last page.
-        if (parsed.comments.length < COMMENTS_PER_PAGE) return all;
+        if (parsed.rawCount < COMMENTS_PER_PAGE) return all;
       }
       // Every page was full at the cap, so the thread is longer than this
       // read. Truncation is the best-effort contract; silence is not.
       warn(
-        `createGhEscalationClient: ${repo}#${issueNumber} has more than ` +
+        `createGhEscalationClient: ${repo}#${issueNumber} has at least ` +
           `${MAX_DEDUP_COMMENT_PAGES * COMMENTS_PER_PAGE} comments — the ` +
           `dedup scan reads the newest of the first ` +
           `${MAX_DEDUP_COMMENT_PAGES} pages only`,

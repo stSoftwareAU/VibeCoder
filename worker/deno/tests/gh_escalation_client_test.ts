@@ -290,7 +290,27 @@ Deno.test("getIssueComments - stops at the 10-page cap and says so", async () =>
   assertEquals(comments.length, 1000);
   // Truncation is the best-effort contract; silence about it is not.
   assertEquals(warnings.length, 1);
-  assert(warnings[0]?.includes("more than 1000 comments"));
+  assert(warnings[0]?.includes("at least 1000 comments"));
+});
+
+Deno.test("getIssueComments - a full page carrying an unparseable entry still pages on", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    response: (args) => {
+      if (pageOf(args) > 1) return commentPage(101, 4);
+      // A full page whose 50th entry is a null the parser drops: the page is
+      // still full, so the thread must not be treated as ended here.
+      const page = JSON.parse(commentPage(1, 100));
+      page[49] = null;
+      return JSON.stringify(page);
+    },
+  });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 3);
+
+  assertEquals(calls.length, 2);
+  assertEquals(comments.length, 103);
+  assertEquals(comments[102]?.body, "comment 104");
 });
 
 Deno.test("getIssueComments - a mid-thread page that is not a JSON array is reported", async () => {
