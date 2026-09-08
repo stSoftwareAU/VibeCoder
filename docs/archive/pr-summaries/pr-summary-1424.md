@@ -2,26 +2,26 @@
 
 ## Summary
 
-`redactSecrets` was wired into output-side sinks only — the logger's write
-path, `gh` body publication, captured subprocess tails — so the redaction
-boundary sat *after* the model had already read the text. A credential quoted
-in an issue body or comment, left in a `CLAUDE.md` on the branch under work, or
-carried in a generated codebase map reached the model's own context unmasked.
+`redactSecrets` was wired into output-side sinks only — the logger's write path,
+`gh` body publication, captured subprocess tails — so the redaction boundary sat
+_after_ the model had already read the text. A credential quoted in an issue
+body or comment, left in a `CLAUDE.md` on the branch under work, or carried in a
+generated codebase map reached the model's own context unmasked.
 
-`sanitiseDelimiterPatterns()`
-(`worker/deno/lib/prompt_delimiter.ts`) is the single ingestion chokepoint every
-prompt builder already routes untrusted text through — issue titles, bodies and
-labels, comment bodies, repository guidance documents, the codebase map,
-recent-activity summaries, PR review comments (86 call sites across 19 modules).
-It now **redacts before it scrubs**, so the mask is applied where untrusted text
-is ingested rather than only where model output leaves the process.
+`sanitiseDelimiterPatterns()` (`worker/deno/lib/prompt_delimiter.ts`) is the
+single ingestion chokepoint every prompt builder already routes untrusted text
+through — issue titles, bodies and labels, comment bodies, repository guidance
+documents, the codebase map, recent-activity summaries, PR review comments (86
+call sites across 19 modules). It now **redacts before it scrubs**, so the mask
+is applied where untrusted text is ingested rather than only where model output
+leaves the process.
 
 Redaction runs first because the delimiter scrub substitutes fullwidth
 characters mid-string and could otherwise split a secret across a signature-rule
 boundary — the same ordering `fenceQualityOutput()` and
-`formatConflictIssueContextSection()` already use. `redactSecrets` is
-idempotent (the placeholder matches no rule), so the call sites that already
-redact their own text are unaffected.
+`formatConflictIssueContextSection()` already use. `redactSecrets` is idempotent
+(the placeholder matches no rule), so the call sites that already redact their
+own text are unaffected.
 
 Closes #1424.
 
@@ -50,25 +50,27 @@ flowchart LR
 
 Quality gate: `./quality.sh` — **PASSED** (semgrep, markdownlint, mermaid, full
 `deno test` suite, lint, type check, fmt; `config integration` skipped as it
-always is without a live config).
+always is without a live config). Re-run on the final tree after `origin/main`
+was merged in: all 21 checks pass, `deno test` 2m56s parallel + 11s serial.
 
 ## Security-fix evidence
 
-- **Regression test** — `worker/deno/tests/prompt_context_secret_redaction_1424_test.ts::issue prompt - secrets in the issue, repo guidance and codebase map never reach the model`
+- **Regression test** —
+  `worker/deno/tests/prompt_context_secret_redaction_1424_test.ts::issue prompt - secrets in the issue, repo guidance and codebase map never reach the model`
   builds a real issue prompt whose title, body, repo-guidance document and
   codebase map each carry a credential, and asserts none of them appears in the
-  assembled prompt. It was observed **failing against the unfixed code**
-  (4 of the 5 new tests failed: the token was present in the prompt bytes) and
+  assembled prompt. It was observed **failing against the unfixed code** (4 of
+  the 5 new tests failed: the token was present in the prompt bytes) and
   **passing after the fix**.
-- **Original trigger closed, no trivial bypass** — the trigger is
-  "secret-shaped text in an issue/comment body, a working-tree file, or a cached
-  prior-run artefact that gets read into the prompt". Every one of those paths
-  reaches the model only through `sanitiseDelimiterPatterns()`, which now
-  redacts as its first statement, before any other transformation of the input;
-  the delimiter scrub that follows can no longer expose an unmasked secret
-  because it never sees one. A bypass would require a prompt builder that
-  interpolates externally-sourced text *without* the delimiter scrub — which is
-  already forbidden by the untrusted-fencing standard (C4) and would be a
+- **Original trigger closed, no trivial bypass** — the trigger is "secret-shaped
+  text in an issue/comment body, a working-tree file, or a cached prior-run
+  artefact that gets read into the prompt". Every one of those paths reaches the
+  model only through `sanitiseDelimiterPatterns()`, which now redacts as its
+  first statement, before any other transformation of the input; the delimiter
+  scrub that follows can no longer expose an unmasked secret because it never
+  sees one. A bypass would require a prompt builder that interpolates
+  externally-sourced text _without_ the delimiter scrub — which is already
+  forbidden by the untrusted-fencing standard (C4) and would be a
   prompt-injection hole in its own right, not merely a redaction gap. Feeding
   the secret in transformed (base64, hex, reversed, split across lines) does not
   evade it either: `redactSecrets` runs the decode-then-rescan pass
