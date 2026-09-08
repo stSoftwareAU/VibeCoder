@@ -124,10 +124,14 @@ Deno.test("buildSessionResumeArgs - first phase produces only --session-id args"
   assertEquals(args, ["--session-id", "test-123"]);
 });
 
-Deno.test("buildSessionResumeArgs - subsequent phase includes --resume", () => {
+Deno.test("buildSessionResumeArgs - subsequent phase resumes by id, never pairing --session-id with --resume (Issue #1580)", () => {
   const flags = { sessionId: "test-123", resume: true };
   const args = buildSessionResumeArgs(flags);
-  assertEquals(args, ["--session-id", "test-123", "--resume"]);
+  // Claude Code 2.1.261 refuses `--session-id X --resume` at start-up:
+  // "--session-id can only be used with --continue or --resume if
+  // --fork-session is also specified". `--resume <id>` is the continuation.
+  assertEquals(args, ["--resume", "test-123"]);
+  assertEquals(args.includes("--session-id"), false);
 });
 
 Deno.test("buildSessionResumeArgs - no sessionId produces empty args", () => {
@@ -160,14 +164,10 @@ Deno.test("session resume lifecycle - first phase then subsequent phase", () => 
   const afterFirst = recordPhaseCompletion(state);
   assertEquals(afterFirst.phaseCount, 1);
 
-  // Second phase: should get session-id AND resume
+  // Second phase: resume the same id (Issue #1580)
   const secondFlags = buildSessionResumeFlags(afterFirst);
   const secondArgs = buildSessionResumeArgs(secondFlags);
-  assertEquals(secondArgs, [
-    "--session-id",
-    state.sessionId,
-    "--resume",
-  ]);
+  assertEquals(secondArgs, ["--resume", state.sessionId]);
 
   // Record completion of second phase
   const afterSecond = recordPhaseCompletion(afterFirst);

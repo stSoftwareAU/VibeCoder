@@ -34,6 +34,8 @@ if your worker login is read-only on any monitored repository.**
 | The agent-side `gh`/`git` guard wrappers pin the guard child's `DENO_DIR` to the image's read-only Deno seed, so neither the agent's environment nor its uid can feed the guard the compiled modules it reads back on every call; a container without a read-only seed reports `[SECURITY] [GH_GUARD_CACHE_WRITABLE]` | #1448 |
 | The merge-conflict stall watchdog, the Failure-Detection resume collector and the auto-merge sweep stop at the first GraphQL quota refusal and log one line naming how many repositories were left for the next cycle, instead of one warning per repository; the behaviour is one shared helper (`repo_loop_quota_stop.ts`) for every per-repository loop | #1515 |
 | A merged PR closes the issues its **body** names with a closing keyword (`Fixes #N`, `Closes #N`, …), not only the one its title's trailing `(#N)` names, and a close after a merge into a milestone branch says so in its comment — so sub-issue PRs on a milestone branch no longer hold the rollup shut | #1528 |
+| A resumed Claude Code phase is invoked as `--resume <uuid>` instead of `--session-id <uuid> --resume`, which Claude Code 2.1.261 refuses at start-up; the refusal itself is now recognised as a session-flag failure and retried without the flags, loudly | #1580 |
+| The security-fix verification gate recognises a test name that `deno fmt` wrapped onto the line after `Deno.test(` (and the `it(` / `test(` and object-form `name:` equivalents), so a correctly cited regression test no longer blocks a security PR | #1581 |
 
 ### In detail
 
@@ -121,6 +123,28 @@ shut. The closing comment now names the branch when it is not the default
 one, so the issue says where its fix lives until the rollup lands. A PR closed
 without merging still closes nothing, and an already-closed issue is left
 alone, so nothing is closed or commented twice. Nothing to configure.
+
+Claude Code 2.1.261 refuses `--session-id <uuid>` combined with `--resume`
+unless `--fork-session` is also given, and that pairing was what the worker
+sent for every phase after the first — so on that CLI every resumed phase
+died 0.1 s after spawn with "--session-id can only be used with --continue or
+--resume if --fork-session is also specified", was misread as an ordinary
+empty-output failure, and the run carried on without session continuity
+(Issue #1580). A resumed phase is now invoked as `--resume <uuid>`, which is
+the continuation the worker wants on both the old and the new CLI, and the
+start-up refusal is recognised as a session-flag failure so the Issue #204
+remedy — drop the flags, retry once, say so — fires if it ever recurs.
+Nothing to configure.
+
+The security-fix verification gate's `test-identifier-in-diff` check
+(Issue #1581) now treats a string literal on the line after a bare
+`Deno.test(` — the shape `deno fmt` produces for a long test name — as part
+of the declaration, as it already did for a Java `@Test` annotation; the
+wrapped `it(` / `test(` forms and the object form's `name:` on its own line
+are covered the same way. Before this a branch that added exactly the cited
+regression test was refused with "Name the ACTUAL TEST IDENTIFIER you added"
+whenever the formatter had wrapped the declaration. Fail-closed throughout:
+a string literal counts only directly after such an opener.
 
 ## 1.5.5 — the log directory comes from the file alone
 
