@@ -24,6 +24,17 @@
  *   (the volume image only grows on the host), re-probed on a bounded
  *   cadence. In native mode (no baseline) the work dir's own filesystem
  *   is the host, so `df` there is the truth.
+ * - The **launcher keeps measuring** (Issue #1550). It runs every few
+ *   minutes from launchd/cron and, when a worker is already up, writes the
+ *   fresh `df` reading to `host-disk.json` in the worker log directory —
+ *   the one host path the container mounts read-write. The worker adopts a
+ *   reading that is newer than what it holds and not stale, and re-bases
+ *   the growth term at that moment. A baseline taken once could only ever
+ *   fall: on GRQ-25 the host freed 26 GB mid-run and the worker stayed
+ *   parked below the floor for the hour (39 GB estimated, 66 GB real), and
+ *   five hours later another account wrote 21 GB the estimate could not see
+ *   (37 GB estimated, 23 GB real). Only a host-side measurement can move
+ *   the figure either way, and that is the only thing that does.
  * - Below the **low floor** the worker stops claiming (the claim guard
  *   drains the pool exactly as the spend ceiling does) and reports
  *   `host-disk: degraded`; below the **hard floor** the launcher never
@@ -306,6 +317,63 @@ export function lowFloorBytes(totalBytes: number, floors: DiskFloors): number {
   );
 }
 
+/**
+ * The launcher's per-tick reading, as written to the worker log directory
+ * (Issue #1550): `<log dir>/host-disk.json`, host-side
+ * `${RUN_CORE_LOG_DIR}/host-disk.json`, guest-side `${HOME}/logs/host-disk.json`.
+ */
+export const HOST_DISK_REFRESH_FILE = "host-disk.json";
+
+/**
+ * How old a launcher reading may be and still be adopted. The launcher
+ * ticks every 300 s; three missed ticks means it is not running, and a
+ * figure from a dead launcher is not fresher than what the worker holds.
+ */
+export const DEFAULT_REFRESH_MAX_AGE_MS = 15 * 60_000;
+
+/** One reading the launcher took of the host filesystem (Issue #1550). */
+export interface HostDiskRefresh {
+  availableBytes: number;
+  totalBytes: number;
+  /** When the launcher measured, Unix seconds. */
+  measuredAt: number;
+}
+
+/** Parse a `host-disk.json` body; anything malformed reads as no reading. */
+export function parseHostDiskRefresh(text: string): HostDiskRefresh | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const o = parsed as Record<string, unknown>;
+  const avail = o.availableBytes;
+  const total = o.totalBytes;
+  const at = o.measuredAt;
+  if (
+    typeof avail !== "number" || typeof total !== "number" ||
+    typeof at !== "number" || !Number.isFinite(avail) ||
+    !Number.isFinite(total) || !Number.isFinite(at) || avail < 0 ||
+    total <= 0 || at <= 0
+  ) {
+    return null;
+  }
+  return { availableBytes: avail, totalBytes: total, measuredAt: at };
+}
+
+/** Read the launcher's reading file; missing or unreadable is no reading. */
+export async function readHostDiskRefreshFile(
+  path: string,
+): Promise<HostDiskRefresh | null> {
+  try {
+    return parseHostDiskRefresh(await Deno.readTextFile(path));
+  } catch {
+    return null;
+  }
+}
+
 /** The launch baseline the launcher passed in, if any. */
 export interface HostDiskBaseline {
   availableBytes: number;
@@ -387,6 +455,15 @@ export interface HostDiskMonitorOptions {
    * environment and the defaults decide, exactly as before.
    */
   floors?: ConfiguredDiskFloors;
+  /**
+   * The launcher's per-tick reading file (Issue #1550). Omitted → the
+   * launch baseline stands for the whole run, exactly as before.
+   */
+  refreshFile?: string;
+  /** Reads the refresh file (injectable for tests). */
+  readRefresh?: (path: string) => Promise<HostDiskRefresh | null>;
+  /** A reading older than this is ignored. */
+  refreshMaxAgeMs?: number;
 }
 
 /**
@@ -400,7 +477,17 @@ export class HostDiskMonitor {
   private readonly sampleIntervalMs: number;
   private readonly log: (message: string) => void;
   private readonly floors: DiskFloors;
-  private readonly baseline: HostDiskBaseline | null;
+  /** The launch baseline, re-based by each adopted launcher reading. */
+  private baseline: HostDiskBaseline | null;
+  private readonly refreshFile: string | undefined;
+  private readonly readRefresh: (
+    path: string,
+  ) => Promise<HostDiskRefresh | null>;
+  private readonly refreshMaxAgeMs: number;
+  /** When the figure the estimate rests on was measured (Issue #1550). */
+  private adoptedMeasuredAtMs: number;
+  /** Age of the adopted launcher reading at the last check, if any. */
+  private refreshAgeMs: number | undefined;
   private volumeUsedAtLaunch: number | null = null;
   /** Highest volume usage seen this run — what the host has lost (#384). */
   private volumeUsedPeak: number | null = null;
@@ -424,6 +511,53 @@ export class HostDiskMonitor {
     this.log = options.log ?? (() => {});
     this.floors = resolveDiskFloors(this.env, options.floors ?? {});
     this.baseline = readHostDiskBaseline(this.env);
+    this.refreshFile = options.refreshFile;
+    this.readRefresh = options.readRefresh ?? readHostDiskRefreshFile;
+    this.refreshMaxAgeMs = options.refreshMaxAgeMs ??
+      DEFAULT_REFRESH_MAX_AGE_MS;
+    // The launch baseline is as old as this process; only a reading the
+    // launcher took after it can replace it.
+    this.adoptedMeasuredAtMs = this.now();
+  }
+
+  /**
+   * Adopt the launcher's latest reading when it is newer than the figure the
+   * estimate rests on and not stale (Issue #1550). The growth term is
+   * re-based at the same moment: a host reading already counts everything
+   * the volume held when it was taken, so only growth since then is
+   * subtracted — the #384 rule, restarted from a truer origin.
+   */
+  private async adoptLauncherReading(
+    reading: DiskReading | null,
+    t: number,
+  ): Promise<void> {
+    if (this.refreshFile === undefined || this.baseline === null) return;
+    let refresh: HostDiskRefresh | null = null;
+    try {
+      refresh = await this.readRefresh(this.refreshFile);
+    } catch {
+      refresh = null;
+    }
+    if (refresh === null) return;
+    const measuredMs = refresh.measuredAt * 1000;
+    if (measuredMs <= this.adoptedMeasuredAtMs) return;
+    if (t - measuredMs > this.refreshMaxAgeMs) return;
+    this.baseline = {
+      availableBytes: refresh.availableBytes,
+      totalBytes: refresh.totalBytes,
+    };
+    this.adoptedMeasuredAtMs = measuredMs;
+    this.refreshAgeMs = t - measuredMs;
+    this.volumeUsedAtLaunch = reading?.usedBytes ?? null;
+    this.volumeUsedPeak = reading?.usedBytes ?? null;
+    this.baselined = reading !== null;
+    this.log(
+      `Host disk: adopted the launcher's reading — ${
+        formatGb(refresh.availableBytes)
+      } free of ${formatGb(refresh.totalBytes)}, measured ${
+        Math.round(this.refreshAgeMs / 1000)
+      }s ago (Issue #1550)`,
+    );
   }
 
   /** The most recent status without probing. */
@@ -499,6 +633,7 @@ export class HostDiskMonitor {
       reading !== null &&
       reading.totalBytes === this.baseline.totalBytes;
     if (this.baseline !== null && !probeIsHostFilesystem) {
+      await this.adoptLauncherReading(reading, t);
       if (!this.baselined) {
         this.volumeUsedAtLaunch = reading?.usedBytes ?? null;
         this.baselined = true;
@@ -524,12 +659,17 @@ export class HostDiskMonitor {
         this.floors,
       );
       const ratchet = describeWorkVolumeRatchet(this.workVolumeRatchet);
+      const origin = this.refreshAgeMs === undefined
+        ? "estimated from launch baseline"
+        : `estimated from the launcher's reading ${
+          Math.round((t - this.adoptedMeasuredAtMs) / 60_000)
+        } min ago`;
       status = {
         level: cls.level,
         availableBytes: available,
         totalBytes: this.baseline.totalBytes,
         source: "launch-baseline",
-        detail: `host (estimated from launch baseline) ${cls.detail}${
+        detail: `host (${origin}) ${cls.detail}${
           ratchet === "" ? "" : ` — ${ratchet}`
         }`,
       };
