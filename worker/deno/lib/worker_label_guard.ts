@@ -135,6 +135,7 @@ export const WORKER_APPLIABLE_CONTENT_LABELS: ReadonlySet<string> = new Set([
   "enable-feed",
   "enhancement",
   "format-drift",
+  "gate-skip-drift",
   "orphan-deps",
   "private-repo-reference",
   "retro",
