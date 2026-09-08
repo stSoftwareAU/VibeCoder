@@ -21,6 +21,7 @@ import {
   isLineSuperset,
   isTestPath,
   parseFixReferences,
+  parseStampedIssues,
   planConflictResolution,
 } from "../lib/milestone_conflict_triage.ts";
 
@@ -39,15 +40,26 @@ function file(over: Partial<ConflictedFile> = {}): ConflictedFile {
 // Parsing primitives
 // ---------------------------------------------------------------------------
 
-Deno.test("parseFixReferences - reads closing keywords and this fleet's own '(Issue #N)' stamp", () => {
+Deno.test("parseFixReferences - reads closing keywords, and only those", () => {
   assertEquals(parseFixReferences("Fixes #1270"), [1270]);
   assertEquals(parseFixReferences("closes #12 and Resolved #13"), [12, 13]);
-  assertEquals(
-    parseFixReferences("Bound the fallback (Issue #1264)"),
-    [1264],
-  );
   assertEquals(parseFixReferences("Refs #99 — mentions only"), []);
+  assertEquals(
+    parseFixReferences("Issue #1562 records three defects"),
+    [],
+    "prose that mentions an issue is not a claim to have fixed it",
+  );
   assertEquals(parseFixReferences("no references at all"), []);
+});
+
+Deno.test("parseStampedIssues - reads this fleet's '(Issue #N)' subject stamp, not body prose", () => {
+  assertEquals(parseStampedIssues("Bound the fallback (Issue #1264)"), [1264]);
+  assertEquals(
+    parseStampedIssues("Subject (Issue #7)\n\nBody mentions (Issue #8)"),
+    [7],
+    "only the subject line carries the claim",
+  );
+  assertEquals(parseStampedIssues("Issue #1562 records three defects"), []);
 });
 
 Deno.test("extractTestNames - finds Deno.test names in every shape the repo uses", () => {
@@ -99,55 +111,75 @@ Deno.test("isLineSuperset - true only when every line of the smaller side surviv
 // Case 1 — the same fix landed twice
 // ---------------------------------------------------------------------------
 
-Deno.test("planConflictResolution - case 1: both sides fix the same issue, the side with the superset tests wins", () => {
-  const plan = planConflictResolution([
-    file({
-      path: "lib/spawn.ts",
-      ours: "export const impl = 'branch';\n",
-      theirs: "export const impl = 'main';\n",
-      oursFixes: [1270],
-      theirsFixes: [1270],
-    }),
-    file({
-      path: "tests/spawn_test.ts",
-      ours: 'Deno.test("one", () => {});\nDeno.test("two", () => {});\n',
-      theirs: 'Deno.test("one", () => {});\n',
-      oursFixes: [1270],
-      theirsFixes: [1270],
-    }),
-  ]);
+const DUPLICATE_FIX = [
+  file({
+    path: "lib/spawn.ts",
+    ours: "export const impl = 'branch';\n",
+    theirs: "export const impl = 'main';\n",
+    oursFixes: [1270],
+    theirsFixes: [1270],
+  }),
+];
+
+Deno.test("planConflictResolution - case 1: both sides fix the same issue, the side whose cases for it are a superset wins", () => {
+  const plan = planConflictResolution(DUPLICATE_FIX, {
+    oursAdded: { 1270: ["covers the fallback", "covers the bound"] },
+    theirsAdded: { 1270: ["covers the fallback"] },
+    complete: true,
+  });
 
   assertEquals(plan.escalations.length, 0, "case 1 resolves without a human");
-  assertEquals(plan.testsSuperset, "ours");
-  const impl = plan.decisions.find((d) => d.path === "lib/spawn.ts");
+  const impl = plan.decisions[0];
   assertEquals(impl?.case, "duplicate-fix");
-  assertEquals(impl?.side, "ours");
+  assertEquals(impl?.action, "ours");
   assertStringIncludes(impl?.reason ?? "", "#1270");
-  const tests = plan.decisions.find((d) => d.path === "tests/spawn_test.ts");
-  assertEquals(tests?.side, "ours", "the side carrying both cases is kept");
+  assertStringIncludes(
+    impl?.reason ?? "",
+    "dropped",
+    "the reason says what was dropped",
+  );
 });
 
-Deno.test("planConflictResolution - a duplicate fix whose test coverage is incomparable escalates", () => {
-  const plan = planConflictResolution([
-    file({
-      path: "lib/spawn.ts",
-      ours: "export const impl = 'branch';\n",
-      theirs: "export const impl = 'main';\n",
-      oursFixes: [1270],
-      theirsFixes: [1270],
-    }),
-    file({
-      path: "tests/spawn_test.ts",
-      ours: 'Deno.test("only ours", () => {});\n',
-      theirs: 'Deno.test("only theirs", () => {});\n',
-      oursFixes: [1270],
-      theirsFixes: [1270],
-    }),
-  ]);
+Deno.test("planConflictResolution - a duplicate fix is scoped to the issue both sides cite, not to unrelated churn", () => {
+  // Each side added cases for OTHER issues that the other side lacks. Those
+  // must not make the sides incomparable for #1270.
+  const plan = planConflictResolution(DUPLICATE_FIX, {
+    oursAdded: { 1270: ["shared case"], 999: ["unrelated branch case"] },
+    theirsAdded: { 1270: ["shared case"], 888: ["unrelated main case"] },
+    complete: true,
+  });
 
-  assertEquals(plan.testsSuperset, null);
-  assertEquals(plan.escalations.length, 2);
-  assert(plan.escalations.every((d) => d.side === null));
+  assertEquals(plan.escalations.length, 0);
+  assertEquals(plan.decisions[0]?.case, "duplicate-fix");
+});
+
+Deno.test("planConflictResolution - a duplicate fix whose cases for that issue are incomparable escalates", () => {
+  const plan = planConflictResolution(DUPLICATE_FIX, {
+    oursAdded: { 1270: ["only ours"] },
+    theirsAdded: { 1270: ["only theirs"] },
+    complete: true,
+  });
+
+  assertEquals(plan.escalations.length, 1);
+  assertEquals(plan.escalations[0]?.action, "escalate");
+});
+
+Deno.test("planConflictResolution - a duplicate fix neither side tested is not resolved on no evidence", () => {
+  const plan = planConflictResolution(DUPLICATE_FIX);
+
+  assertEquals(plan.escalations.length, 1);
+  assertStringIncludes(plan.escalations[0]?.reason ?? "", "neither side wrote");
+});
+
+Deno.test("planConflictResolution - evidence git could not read decides nothing", () => {
+  const plan = planConflictResolution(DUPLICATE_FIX, {
+    oursAdded: {},
+    theirsAdded: {},
+    complete: false,
+  });
+
+  assertEquals(plan.escalations.length, 1);
+  assertStringIncludes(plan.escalations[0]?.reason ?? "", "could not be read");
 });
 
 // ---------------------------------------------------------------------------
@@ -165,7 +197,7 @@ Deno.test("planConflictResolution - case 2: the side that keeps every line of th
 
   const decision = plan.decisions[0];
   assertEquals(decision?.case, "superset");
-  assertEquals(decision?.side, "theirs");
+  assertEquals(decision?.action, "theirs");
   assertEquals(plan.escalations.length, 0);
   assertStringIncludes(decision?.reason ?? "", "every line");
 });
@@ -188,7 +220,7 @@ Deno.test("planConflictResolution - case 3: two designs for the same problem rea
   assertEquals(plan.resolved.length, 0);
   assertEquals(plan.escalations.length, 1);
   assertEquals(plan.escalations[0]?.case, "rival-designs");
-  assertEquals(plan.escalations[0]?.side, null);
+  assertEquals(plan.escalations[0]?.action, "escalate");
 });
 
 // ---------------------------------------------------------------------------
@@ -206,11 +238,13 @@ Deno.test("planConflictResolution - a test file is never resolved by taking a si
     }),
   ]);
 
-  assertEquals(plan.escalations.length, 1);
-  assertStringIncludes(
-    plan.escalations[0]?.reason ?? "",
-    "keeps the branch case",
+  const decision = plan.decisions[0];
+  assert(
+    decision?.action !== "ours" && decision?.action !== "theirs",
+    "neither side may be taken when each carries a case the other lacks",
   );
+  assertEquals(decision?.action, "union", "both sides' cases are kept instead");
+  assertStringIncludes(decision?.reason ?? "", "keeps the branch case");
 });
 
 Deno.test("planConflictResolution - a test file resolves when one side is a genuine union of both", () => {
@@ -225,10 +259,10 @@ Deno.test("planConflictResolution - a test file resolves when one side is a genu
 
   assertEquals(plan.escalations.length, 0);
   assertEquals(plan.decisions[0]?.case, "test-union");
-  assertEquals(plan.decisions[0]?.side, "ours");
+  assertEquals(plan.decisions[0]?.action, "ours");
 });
 
-Deno.test("planConflictResolution - a test file whose cases match but whose bodies differ escalates", () => {
+Deno.test("planConflictResolution - a test file whose cases match but whose bodies differ is not decided by taking a side", () => {
   const plan = planConflictResolution([
     file({
       path: "tests/gate_test.ts",
@@ -238,8 +272,8 @@ Deno.test("planConflictResolution - a test file whose cases match but whose bodi
   ]);
 
   assertEquals(
-    plan.escalations.length,
-    1,
+    plan.decisions[0]?.action,
+    "union",
     "equal case names still hide a lost assertion — that is the silent loss",
   );
 });
@@ -254,7 +288,7 @@ Deno.test("planConflictResolution - a file the default branch deleted stays dele
   ]);
 
   assertEquals(plan.decisions[0]?.case, "incoming-delete");
-  assertEquals(plan.decisions[0]?.side, "theirs");
+  assertEquals(plan.decisions[0]?.action, "theirs");
   assertEquals(plan.escalations.length, 0);
 });
 
@@ -324,39 +358,4 @@ Deno.test("buildConflictAnalysisComment - carries both sides' exports, test name
     !body.includes("was pushed"),
     "nothing is pushed when the sync escalates",
   );
-});
-
-Deno.test("planConflictResolution - a duplicate fix is decided by the cases each side added, not only by the conflicted files", () => {
-  const conflicted = [
-    file({
-      path: "lib/spawn.ts",
-      ours: "export const impl = 'branch';\n",
-      theirs: "export const impl = 'main';\n",
-      oursFixes: [1270],
-      theirsFixes: [1270],
-    }),
-  ];
-
-  // No test file conflicted, but the milestone branch added a case for the
-  // fix in a file the default branch never touched.
-  const withEvidence = planConflictResolution(conflicted, {
-    oursAdded: ["covers the bounded fallback"],
-    theirsAdded: [],
-  });
-  assertEquals(withEvidence.testsSuperset, "ours");
-  assertEquals(withEvidence.decisions[0]?.side, "ours");
-
-  // Neither side's cases moved: nothing is at stake, so the default branch's
-  // side is taken and the green-tree gate is what checks it.
-  const noEvidence = planConflictResolution(conflicted);
-  assertEquals(noEvidence.testsSuperset, "theirs");
-  assertEquals(noEvidence.decisions[0]?.side, "theirs");
-
-  // Both sides added cases the other lacks — no side to prefer.
-  const incomparable = planConflictResolution(conflicted, {
-    oursAdded: ["branch case"],
-    theirsAdded: ["main case"],
-  });
-  assertEquals(incomparable.testsSuperset, null);
-  assertEquals(incomparable.escalations.length, 1);
 });

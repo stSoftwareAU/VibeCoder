@@ -120,7 +120,7 @@ Deno.test(
       assertStringIncludes(body, "rules reject an indirect spawn");
       assertStringIncludes(body, "triaged false positive stays quiet");
       assertStringIncludes(body, "Cases only on");
-      assertStringIncludes(body, "aborted");
+      assertStringIncludes(body, "Nothing has been pushed");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

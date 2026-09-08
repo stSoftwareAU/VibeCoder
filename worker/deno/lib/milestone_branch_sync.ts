@@ -627,17 +627,18 @@ export async function syncMilestoneBranches(
             // loud WARNING log above stands on its own there, as it does for
             // the Issue #974 gate refusal below.
             const conflictKey = syncResult.error.defaultSha || UNRESOLVED_SHA;
-            if (entry && entry.conflictEscalatedSha !== conflictKey) {
+            if (entry && entry.analysisEscalatedSha !== conflictKey) {
               const escalated = await escalateConflictAnalysis(
                 repo,
                 milestone,
                 syncResult.error.analyses,
                 syncResult.error.resolved,
+                syncResult.error.gateFailure,
                 conflictKey,
                 ghCommandFn,
                 log,
               );
-              if (escalated) entry.conflictEscalatedSha = conflictKey;
+              if (escalated) entry.analysisEscalatedSha = conflictKey;
             }
           } else if (isMergeGateFailure(syncResult.error)) {
             // Issue #974: a merged tree the repo's own check rejects is not a
@@ -757,6 +758,18 @@ async function escalateSyncConflict(
 
   const issueNumber = trackingIssueFromMilestoneTitle(milestone.milestoneTitle);
   if (issueNumber === null) {
+    // A conflict the worker resolved itself is a report, not an escalation
+    // (Issue #1559): filing a `needs-human` issue for it is the very move
+    // this issue removed. The decisions are on the merge commit and in the
+    // log; only a resolution nobody could make reaches a human.
+    if (conflict.resolution === "auto") {
+      log(
+        `Resolved ${what} in ${repo} automatically; the milestone has no ` +
+          `tracking issue, so the reasoning is on the merge commit rather ` +
+          `than in a comment.`,
+      );
+      return true;
+    }
     return await fileStuckSyncDiagnostic(
       repo,
       milestone.milestoneBranch,
@@ -795,6 +808,8 @@ async function escalateConflictAnalysis(
   milestone: ActiveMilestone,
   analyses: FileAnalysis[],
   resolved: FileDecision[],
+  /** What the verification said, when it is what refused the resolution. */
+  gateFailure: string | undefined,
   /** The default-branch commit that conflicted, for the diagnostic's title. */
   defaultSha: string,
   ghCommandFn: GhCommandFn,
@@ -817,6 +832,7 @@ async function escalateConflictAnalysis(
       defaultBranch: milestone.defaultBranch,
       analyses,
       resolved,
+      ...(gateFailure ? { gateFailure } : {}),
     })
   }\n\n${describeBranchTips(tips)}`;
 

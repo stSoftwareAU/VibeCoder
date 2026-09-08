@@ -237,49 +237,61 @@ only what is not.
 flowchart TD
     A["main → milestone/* merge conflicts"] --> B{"For each conflicted file"}
     B --> T{"Test file?"}
-    T -- yes --> U{"One side keeps every<br/>case AND every line<br/>of the other?"}
-    U -- yes --> K["Take that side (a union)"]
-    U -- no --> H["Escalate — coverage would drop"]
-    T -- no --> D{"Both sides cite the<br/>same Fixes #NNNN?"}
-    D -- yes --> E{"One side's tests<br/>a superset?"}
+    T -- yes --> U{"One side already keeps<br/>every case and every line<br/>of the other?"}
+    U -- yes --> K["Take that side"]
+    U -- no --> M["Union merge: keep both sides' hunks"]
+    M --> N{"Every case on<br/>both sides survived?"}
+    N -- yes --> K
+    N -- no --> H["Escalate — coverage would drop"]
+    T -- no --> F{"One side keeps every<br/>line of the other?"}
+    F -- yes --> K
+    F -- no --> D{"Both sides cite the<br/>same Fixes #NNNN?"}
+    D -- yes --> E{"One side's cases for<br/>that issue a superset?"}
     E -- yes --> K
     E -- no --> H
-    D -- no --> F{"One side keeps every<br/>line of the other?"}
-    F -- yes --> K
-    F -- no --> H
+    D -- no --> H
     K --> G{"Any file escalated?"}
     H --> G
     G -- yes --> X["Abort the merge — nothing pushed —<br/>and post both sides' exports,<br/>test names and the difference"]
-    G -- no --> V["Commit with the reasoning, then verify:<br/>deno task check + check:manifests + unit suite"]
+    G -- no --> V["Commit with the reasoning, then verify:<br/>the Issue #974 type check +<br/>check:manifests + the unit suite"]
     V -- green --> P["Push"]
-    V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate"]
+    V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate with both halves"]
 ```
 
 Three rules decide a file, and one rule outranks all of them:
 
-1. **The same fix landed twice** — both sides' commits touching the file cite
-   the same `Fixes #NNNN` (or this fleet's own `(Issue #N)` stamp). The side
-   whose tests are a superset is kept, and what was dropped is named on the
-   merge commit.
-2. **One side subsumes the other** — every line of the smaller side survives in
-   the larger, so the larger is taken and nothing is lost.
+1. **One side subsumes the other** — every line of the smaller side survives in
+   the larger, so the larger is taken and nothing is lost. Checked first,
+   because it needs no evidence about either side's tests.
+2. **The same fix landed twice** — both sides' commits touching the file cite
+   the same `Fixes #NNNN`, or carry this fleet's own `(Issue #N)` **subject**
+   stamp. The side whose test cases *for that issue* are a superset is kept,
+   and the reason names what was dropped. Cases written for other issues do not
+   count: pooling them compares two populations dominated by unrelated churn.
+   Where neither side wrote a case for the fix, or the evidence could not be
+   read, nothing is decided — the file escalates rather than being resolved on
+   no evidence.
 3. **Two designs for the same problem** — neither side contains the other, so a
    human chooses. The merge is aborted and the escalation carries the
    preparation: what each side exports, what each side tests, and which cases
    exist on one side only.
 
-**No resolution may reduce test coverage.** A conflicted test file resolves
-only when one side is a genuine union of both — every case *and* every line of
-the other side survives in it. Equal case names are not enough: an assertion
-changed inside a case with the same name is a silent loss, so that file
-escalates too.
+**No resolution may reduce test coverage.** A conflicted test file is resolved
+by taking a side only when that side already keeps every case *and* every line
+of the other. Otherwise the file is merged as a **union** — both sides' hunks
+kept — and the result is checked case by case before it is staged: a union that
+would lose a case escalates instead. Equal case names are not enough to take a
+side, because an assertion changed inside a case with the same name is a silent
+loss.
 
 **Every automatic resolution is verified before it is pushed.** The merged tree
-must pass the repository's own `check`, `check:manifests` and unit suite
-(`test:unit`, else `test`). A red tree is reset to the pre-merge commit and
-escalated; a tree that defines none of those tasks is *unverifiable*, and a
-resolution that cannot be verified is not a resolution — it is refused the same
-way.
+must pass the repository's own Issue #974 type check, its `check:manifests`
+task and its unit suite (`test:unit`, else `test`), inside a single 15-minute
+budget so the sync cannot block the event loop. A red tree is reset to the
+pre-merge commit and escalated — with both halves: what the verification said
+*and* both sides prepared. A tree with no type check or no unit suite is
+*unverifiable*, and a resolution that cannot be verified is not a resolution —
+it is refused the same way.
 
 ### The sync must record the default branch as an ancestor
 

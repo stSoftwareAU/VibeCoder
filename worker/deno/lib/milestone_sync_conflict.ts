@@ -178,11 +178,15 @@ export function buildConflictEscalationComment(
   // overwritten.
   if (e.conflict.resolution === "auto") {
     const decisions = (e.conflict.decisions ?? []).map((d) =>
-      `- \`${d.path}\` — **${d.case}**, took the ${
-        d.side === "ours"
-          ? `\`${e.milestoneBranch}\``
-          : `\`${e.defaultBranch}\``
-      } side: ${d.reason}`
+      `- \`${d.path}\` — **${d.case}**, ${
+        d.action === "union"
+          ? "kept both sides' hunks"
+          : `took the ${
+            d.action === "ours"
+              ? `\`${e.milestoneBranch}\``
+              : `\`${e.defaultBranch}\``
+          } side`
+      }: ${d.reason}`
     ).join("\n");
     return `## Milestone sync resolved a conflict automatically\n\n` +
       `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +

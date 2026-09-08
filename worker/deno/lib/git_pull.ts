@@ -18,16 +18,6 @@ import {
 } from "./milestone_sync_pr.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { buildBranchDeleteArgs } from "./git_branch_args.ts";
-import {
-  buildAddPathArgs,
-  buildCheckoutStrategyArgs,
-  buildRemovePathArgs,
-} from "./git_conflict_args.ts";
-import {
-  hasAnyStage,
-  parseUnmergedStages,
-  resolveTowardsIncoming,
-} from "./merge_conflict_stages.ts";
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
 import {
   assertSafeGitRef,
@@ -46,16 +36,16 @@ import type { MilestoneSyncOutcome } from "./milestone_sync_conflict.ts";
 import {
   analyseConflictedFile,
   buildResolutionCommitMessage,
-  type ConflictedFile,
-  type ConflictPlan,
-  type ConflictSide,
-  extractTestNames,
-  isTestPath,
   MilestoneConflictEscalation,
-  parseFixReferences,
   planConflictResolution,
-  type TestEvidence,
 } from "./milestone_conflict_triage.ts";
+import {
+  applyConflictPlan,
+  readConflictedSides,
+  readMergeBase,
+  readTestEvidence,
+  unionMergeConflictedFile,
+} from "./milestone_conflict_git.ts";
 import { verifyResolvedTree } from "./milestone_resolution_gate.ts";
 import {
   checkMergedTree,
@@ -395,24 +385,6 @@ async function gateThenPushMilestoneBranch(
   return { ok: true, value: `${gateNote}${pushNote}` };
 }
 
-/** Build the refusal for a conflicted path whose chosen side would not take. */
-function takeSideError(
-  what: string,
-  file: string,
-  side: ConflictSide,
-  defaultBranch: string,
-  milestoneBranch: string,
-  detail: string,
-): Error {
-  const whose = side === "theirs" ? defaultBranch : milestoneBranch;
-  return new Error(
-    `Failed to ${what} '${whose}'s version of '${file}' while ` +
-      `merging '${defaultBranch}' into '${milestoneBranch}' — refusing to ` +
-      `commit a resolution that would keep the other side instead ` +
-      `(Issues #1048, #1559): ${detail.trim() || "git reported no stderr"}`,
-  );
-}
-
 /** Paths git currently reports as conflicted; empty when it reports none. */
 async function listConflictedFiles(
   options: GitCommandOptions,
@@ -735,63 +707,78 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
-  const sides = await readConflictedSides(
+  const mergeBase = await readMergeBase(preMergeSha, defaultBranch, options);
+  const readSides = await readConflictedSides(
     conflictedFiles,
+    mergeBase,
     defaultBranch,
     defaultSha || defaultBranch,
     preMergeSha,
     options,
   );
+  if (!readSides.ok) {
+    await runGitCommand(["merge", "--abort"], options);
+    return readSides;
+  }
+  const sides = readSides.value;
   const plan = planConflictResolution(
     sides,
     await readTestEvidence(
-      conflictedFiles,
-      defaultBranch,
+      mergeBase,
       defaultSha || defaultBranch,
       preMergeSha,
       options,
     ),
   );
 
+  // A conflicted test file whose sides do not contain one another is merged
+  // as a union — both sides' hunks kept — rather than escalated on sight
+  // (Issue #1559). A union that would lose a case, or that git could not
+  // produce, becomes an escalation for that file instead.
+  const decided = new Map(plan.decisions.map((d) => [d.path, d]));
+  for (const file of sides) {
+    const decision = decided.get(file.path);
+    if (decision?.action !== "union") continue;
+    const failure = await unionMergeConflictedFile(file, options);
+    if (failure) {
+      decision.action = "escalate";
+      decision.reason = `${decision.reason} — and ${failure}`;
+    }
+  }
+  const resolved = plan.decisions.filter((d) => d.action !== "escalate");
+  const escalations = plan.decisions.filter((d) => d.action === "escalate");
+
   // Case 3 (Issue #1559): no automatic rule can choose between the two sides,
   // so nothing is pushed and the branch is left exactly as it was. The
   // analysis travels with the refusal — both sides' exports, both sides' test
   // names and the difference between them — because that preparation is most
   // of the hour the reader would otherwise spend.
-  if (plan.escalations.length > 0) {
+  if (escalations.length > 0) {
     await runGitCommand(["merge", "--abort"], options);
-    const byPath = new Map(sides.map((side) => [side.path, side]));
-    const analyses = plan.escalations.map((decision) =>
-      analyseConflictedFile(
-        byPath.get(decision.path) ??
-          {
-            path: decision.path,
-            ours: null,
-            theirs: null,
-            oursFixes: [],
-            theirsFixes: [],
-          },
-        decision.reason,
-      )
-    );
+    const escalated = new Map(escalations.map((d) => [d.path, d]));
+    const analyses = sides
+      .filter((side) => escalated.has(side.path))
+      .map((side) =>
+        analyseConflictedFile(side, escalated.get(side.path)!.reason)
+      );
     return {
       ok: false,
       error: new MilestoneConflictEscalation(
         `Refusing to resolve the merge of '${defaultBranch}' into ` +
-          `'${milestoneBranch}': ${plan.escalations.length} of ` +
+          `'${milestoneBranch}': ${escalations.length} of ` +
           `${conflictedFiles.length} conflicted file(s) need a human ` +
           `(Issue #1559) — ${
-            plan.escalations.map((d) => `${d.path}: ${d.reason}`).join("; ")
+            escalations.map((d) => `${d.path}: ${d.reason}`).join("; ")
           }`,
         analyses,
-        plan.resolved,
+        resolved,
         defaultSha,
       ),
     };
   }
 
   const applied = await applyConflictPlan(
-    plan,
+    { ...plan, resolved, escalations },
     sides,
     defaultBranch,
     milestoneBranch,
@@ -806,7 +793,11 @@ export async function syncMilestoneBranchWithDefault(
     [
       "commit",
       "-m",
-      buildResolutionCommitMessage({ defaultBranch, milestoneBranch, plan }),
+      buildResolutionCommitMessage({
+        defaultBranch,
+        milestoneBranch,
+        plan: { ...plan, resolved, escalations },
+      }),
     ],
     options,
   );
@@ -847,12 +838,35 @@ export async function syncMilestoneBranchWithDefault(
     },
     preMergeSha,
   );
-  if (!gatedResolved.ok) return gatedResolved;
+  if (!gatedResolved.ok) {
+    // The resolution was made and the verification refused it. The reader
+    // gets both halves (Issue #1559) — what the gate said, and the two sides
+    // that produced it — rather than the wall of compiler output that made
+    // #1542 nearly useless for deciding anything. The branch was already
+    // reset by the gate, so nothing was pushed.
+    return {
+      ok: false,
+      error: new MilestoneConflictEscalation(
+        gatedResolved.error.message,
+        sides.map((side) =>
+          analyseConflictedFile(
+            side,
+            decided.get(side.path)?.reason ?? "resolved automatically",
+          )
+        ),
+        resolved,
+        defaultSha,
+        gatedResolved.error.message,
+      ),
+    };
+  }
 
-  const summary = plan.resolved
+  const summary = resolved
     .map((d) =>
-      `${d.path} (${d.case}, took ${
-        d.side === "ours" ? milestoneBranch : defaultBranch
+      `${d.path} (${d.case}, ${
+        d.action === "union"
+          ? "kept both sides"
+          : `took ${d.action === "ours" ? milestoneBranch : defaultBranch}`
       })`
     )
     .join(", ");
@@ -860,288 +874,16 @@ export async function syncMilestoneBranchWithDefault(
     ok: true,
     value: {
       message:
-        `${selfHealNote}${gatedResolved.value}Issue #1559: resolved ${plan.resolved.length} conflict(s) automatically — ${summary}`,
+        `${selfHealNote}${gatedResolved.value}Issue #1559: resolved ${resolved.length} conflict(s) automatically — ${summary}`,
       conflict: {
         files: conflictedFiles,
         milestoneSha: preMergeSha,
         defaultSha,
         resolution: "auto",
-        decisions: plan.resolved,
+        decisions: resolved,
       },
     },
   };
-}
-
-/**
- * Read both sides of every conflicted path, plus what each side says it fixes
- * (Issue #1559).
- *
- * Read while the merge is still in progress: stages 2 and 3 are the two sides
- * as git staged them, and they are gone once the merge is aborted. A side that
- * has no stage deleted the file, which is a decision in its own right.
- *
- * The fix references come from the commits on each side that touched *this*
- * path since the merge base. A merge base that cannot be read (a shallow clone
- * with too little history) yields no references at all, so the duplicate-fix
- * rule simply does not fire — the safe direction, since a wrong shared
- * reference would resolve a conflict nobody meant to resolve.
- */
-async function readConflictedSides(
-  conflictedFiles: string[],
-  defaultBranch: string,
-  defaultRef: string,
-  milestoneRef: string,
-  options: GitCommandOptions,
-): Promise<ConflictedFile[]> {
-  const baseResult = await runGitCommand(
-    ["merge-base", milestoneRef, defaultBranch],
-    options,
-  );
-  const mergeBase = baseResult.ok && baseResult.value.code === 0
-    ? baseResult.value.stdout.trim()
-    : "";
-
-  const sides: ConflictedFile[] = [];
-  for (const path of conflictedFiles) {
-    sides.push({
-      path,
-      ours: await readStage(2, path, options),
-      theirs: await readStage(3, path, options),
-      oursFixes: await readFixReferences(
-        mergeBase,
-        milestoneRef,
-        path,
-        options,
-      ),
-      theirsFixes: await readFixReferences(
-        mergeBase,
-        defaultRef,
-        path,
-        options,
-      ),
-    });
-  }
-  return sides;
-}
-
-/**
- * The test cases each side added since the merge base (Issue #1559).
- *
- * The conflicted files alone rarely settle a duplicate fix: the branch fixed
- * the issue and wrote its case in a test file the default branch never
- * touched, so nothing about that case conflicts. Comparing what each side
- * *added* is what makes "keep the side whose tests are a superset"
- * answerable. Read best-effort — a side whose files cannot be read simply
- * contributes no evidence, which leaves the duplicate-fix rule with less to
- * go on rather than with something wrong.
- */
-async function readTestEvidence(
-  conflictedFiles: string[],
-  defaultBranch: string,
-  defaultRef: string,
-  milestoneRef: string,
-  options: GitCommandOptions,
-): Promise<TestEvidence> {
-  const baseResult = await runGitCommand(
-    ["merge-base", milestoneRef, defaultBranch],
-    options,
-  );
-  const mergeBase = baseResult.ok && baseResult.value.code === 0
-    ? baseResult.value.stdout.trim()
-    : "";
-  if (!mergeBase) return { oursAdded: [], theirsAdded: [] };
-
-  // The conflicted test files are judged on their own contents by the triage;
-  // this evidence is about everything else that moved.
-  const conflicted = new Set(conflictedFiles);
-  const addedFor = async (ref: string): Promise<string[]> => {
-    if (!ref) return [];
-    const changed = await runGitCommand(
-      ["diff", "--name-only", `${mergeBase}..${ref}`],
-      options,
-    );
-    if (!changed.ok || changed.value.code !== 0) return [];
-    const added: string[] = [];
-    for (const path of changed.value.stdout.split("\n").map((l) => l.trim())) {
-      if (!path || conflicted.has(path) || !isTestPath(path)) continue;
-      const before = await runGitCommand(
-        ["show", `${mergeBase}:${path}`],
-        options,
-      );
-      const after = await runGitCommand(["show", `${ref}:${path}`], options);
-      const baseNames = before.ok && before.value.code === 0
-        ? extractTestNames(before.value.stdout)
-        : [];
-      const names = after.ok && after.value.code === 0
-        ? extractTestNames(after.value.stdout)
-        : [];
-      added.push(...names.filter((name) => !baseNames.includes(name)));
-    }
-    return added;
-  };
-
-  return {
-    oursAdded: await addedFor(milestoneRef),
-    theirsAdded: await addedFor(defaultRef),
-  };
-}
-
-/** One side of a conflicted path, or null when that side has no version. */
-async function readStage(
-  stage: 2 | 3,
-  path: string,
-  options: GitCommandOptions,
-): Promise<string | null> {
-  const result = await runGitCommand(["show", `:${stage}:${path}`], options);
-  return result.ok && result.value.code === 0 ? result.value.stdout : null;
-}
-
-/** Issues the commits touching `path` on one side say they close. */
-async function readFixReferences(
-  mergeBase: string,
-  ref: string,
-  path: string,
-  options: GitCommandOptions,
-): Promise<number[]> {
-  if (!mergeBase || !ref) return [];
-  const result = await runGitCommand(
-    ["log", "--format=%B", `${mergeBase}..${ref}`, "--", path],
-    options,
-  );
-  return result.ok && result.value.code === 0
-    ? parseFixReferences(result.value.stdout)
-    : [];
-}
-
-/**
- * Stage the side the triage chose for every conflicted path (Issue #1559).
- *
- * "Taking a side" is not the same as "keeping the file": where the chosen side
- * has no version, taking it means deleting the file — the modify/delete rule
- * of Issue #1048, which is how `lib/fleet_health.ts` came back on
- * `milestone/863` before it existed. A path whose stages cannot be read fails
- * the whole resolution rather than being guessed at.
- */
-async function applyConflictPlan(
-  plan: ConflictPlan,
-  sides: ConflictedFile[],
-  defaultBranch: string,
-  milestoneBranch: string,
-  options: GitCommandOptions,
-): Promise<Result<string>> {
-  const byPath = new Map(sides.map((side) => [side.path, side]));
-  for (const decision of plan.resolved) {
-    const side = decision.side;
-    const file = byPath.get(decision.path);
-    if (!side || !file) {
-      return {
-        ok: false,
-        error: new Error(
-          `Refusing to resolve the merge of '${defaultBranch}' into ` +
-            `'${milestoneBranch}': no side was read for conflicted file ` +
-            `'${decision.path}' (Issue #1559)`,
-        ),
-      };
-    }
-
-    const staged = await runGitCommand(
-      ["ls-files", "-u", "--", decision.path],
-      options,
-    );
-    const stages = staged.ok && staged.value.code === 0
-      ? parseUnmergedStages(staged.value.stdout)
-      : { base: false, ours: false, theirs: false };
-    if (!hasAnyStage(stages)) {
-      // Every conflicted path has stages. None means git could not be read,
-      // and guessing here is precisely the silent wrong answer (Issue #1048).
-      const detail = staged.ok
-        ? staged.value.stderr.trim()
-        : staged.error.message;
-      return {
-        ok: false,
-        error: new Error(
-          `Refusing to resolve the merge of '${defaultBranch}' into ` +
-            `'${milestoneBranch}': the merge stages of conflicted file ` +
-            `'${decision.path}' could not be read (Issue #1048): ${
-              detail || "git reported no stderr"
-            }`,
-        ),
-      };
-    }
-
-    // The chosen side has no version of the file: taking that side deletes it.
-    // For the incoming side that rule lives in `merge_conflict_stages.ts`
-    // (Issue #1048), so it is read from there rather than restated here.
-    const deletes = side === "theirs"
-      ? resolveTowardsIncoming(stages) === "delete"
-      : !stages.ours;
-    if (deletes) {
-      const removed = await runGitCommand(
-        buildRemovePathArgs(decision.path),
-        options,
-      );
-      if (!removed.ok || removed.value.code !== 0) {
-        const detail = removed.ok
-          ? removed.value.stderr.trim()
-          : removed.error.message;
-        return {
-          ok: false,
-          error: takeSideError(
-            "delete",
-            decision.path,
-            side,
-            defaultBranch,
-            milestoneBranch,
-            detail,
-          ),
-        };
-      }
-      continue;
-    }
-
-    // Both exit codes matter (Issue #1048): a `checkout --<side>` that failed
-    // leaves the other side's working-tree copy in place, and the `add` below
-    // would stage exactly the side the triage rejected.
-    const checkedOut = await runGitCommand(
-      buildCheckoutStrategyArgs(side, decision.path),
-      options,
-    );
-    if (!checkedOut.ok || checkedOut.value.code !== 0) {
-      const detail = checkedOut.ok
-        ? checkedOut.value.stderr.trim()
-        : checkedOut.error.message;
-      return {
-        ok: false,
-        error: takeSideError(
-          "check out",
-          decision.path,
-          side,
-          defaultBranch,
-          milestoneBranch,
-          detail,
-        ),
-      };
-    }
-    const added = await runGitCommand(
-      buildAddPathArgs(decision.path),
-      options,
-    );
-    if (!added.ok || added.value.code !== 0) {
-      const detail = added.ok ? added.value.stderr.trim() : added.error.message;
-      return {
-        ok: false,
-        error: takeSideError(
-          "stage",
-          decision.path,
-          side,
-          defaultBranch,
-          milestoneBranch,
-          detail,
-        ),
-      };
-    }
-  }
-  return { ok: true, value: "" };
 }
 
 /** Error name for a PR branch left untouched because its changes conflict (Issue #4373). */

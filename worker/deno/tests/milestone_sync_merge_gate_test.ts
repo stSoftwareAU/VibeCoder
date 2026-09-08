@@ -12,6 +12,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
+import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import {
   isMergeGateFailure,
   type MergeGateFn,
@@ -243,7 +244,17 @@ Deno.test(
       );
 
       assert(!result.ok, "a conflict-resolved merge is gated too");
-      assert(isMergeGateFailure(result.error));
+      // Issue #1559: the refusal now carries both halves — what the gate
+      // said, and the two sides that produced it — rather than the raw
+      // compiler output alone.
+      assert(
+        isConflictEscalation(result.error),
+        `expected the prepared refusal, got: ${result.error.message}`,
+      );
+      assertStringIncludes(
+        result.error.gateFailure ?? "",
+        "does not pass the repository's own check",
+      );
       assertEquals(
         await remoteSha(fx, "milestone/974"),
         published,

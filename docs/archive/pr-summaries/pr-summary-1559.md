@@ -91,6 +91,21 @@ flowchart TD
     V -- red or unverifiable --> R["Reset to the pre-merge commit and escalate"]
 ```
 
+What a resolved merge commit says (rendered from
+`buildResolutionCommitMessage`):
+
+```text
+Merge 'main' into 'milestone/1559' — 1 conflict(s) resolved automatically
+
+- `worker/deno/lib/spawn_runner.ts` — duplicate-fix, took the 'main' side: both
+  sides fix #1264 — the same fix landed twice, and the default branch's
+  implementation is kept because its tests are a superset of the other side's
+
+Each resolution was verified before it was pushed: the merged tree passes the
+repository's own check, its manifest check and its unit suite. No conflicted
+test file was resolved by taking a side that drops cases (Issue #1559).
+```
+
 Docs updated in the same change: `docs/workflows/milestones.md` (new **Conflict
 triage** section with the flowchart) and `docs/INTERNALS.md` (the sync section
 and the module table).
@@ -133,6 +148,7 @@ New — `worker/deno/tests/milestone_sync_conflict_analysis_escalation_test.ts`:
 
 - `milestone sync - a case-3 conflict escalates on the first cycle with both sides' exports, cases and the difference (Issue #1559)`
 - `milestone sync - the same unresolvable conflict is reported once, a new one again (Issue #1559)`
+- `milestone sync - without a streak file the analysis is logged, not repeated every cycle (Issue #1559)`
 
 Updated — `milestone_sync_ancestry_test.ts`,
 `milestone_sync_conflict_report_test.ts`, `milestone_sync_merge_gate_test.ts`

@@ -183,7 +183,7 @@ Deno.test(
       assertEquals(conflict.resolution, "auto");
       assertEquals(conflict.decisions?.length, 1);
       assertEquals(conflict.decisions?.[0]?.path, "scan.ts");
-      assertEquals(conflict.decisions?.[0]?.side, "theirs");
+      assertEquals(conflict.decisions?.[0]?.action, "theirs");
     } finally {
       await fx.cleanup();
     }

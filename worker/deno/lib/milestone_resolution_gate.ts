@@ -19,30 +19,33 @@
  */
 
 import {
+  checkMergedTree,
   findProjectManifests,
+  type MergeGateFn,
   type MergeGateOutcome,
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 
 /**
- * How long one verification task may run before it is killed.
+ * How long the whole verification may run before it is given up on.
  *
- * Longer than the type-check gate's budget because a unit suite is the slowest
- * thing here; a suite that cannot finish inside it is reported as a failure,
- * not waved through.
+ * A single budget across every task, not one per task: this runs inside the
+ * sync cycle, and three fifteen-minute tasks per project would block the loop
+ * the milestone sync is supposed to stay out of the way of. A verification
+ * that does not finish inside it is a failure, never a pass.
  */
-export const RESOLUTION_GATE_TIMEOUT_MS = 900_000;
+export const RESOLUTION_GATE_BUDGET_MS = 900_000;
 
 /**
- * The tasks a resolved tree is verified with, in the order they run.
+ * The tasks a resolved tree is verified with, beyond the Issue #974 type
+ * check, in the order they run.
  *
  * `test:unit` and `test` are alternatives — the first one the repository
  * defines is the unit suite, so a repo with both does not run its integration
  * tests inside a sync cycle.
  */
 export const RESOLUTION_GATE_TASKS = [
-  "check",
   "check:manifests",
   "test:unit",
   "test",
@@ -57,6 +60,8 @@ export interface ResolutionTask {
   dir: string;
   /** The manifest task name, e.g. `check:manifests`. */
   task: string;
+  /** What is left of {@link RESOLUTION_GATE_BUDGET_MS} when it starts. */
+  timeoutMs: number;
 }
 
 /** Runs one task. Injected in tests; spawns `deno task <name>` in production. */
@@ -83,20 +88,23 @@ function tail(output: string): string {
  */
 export function resolutionTasksFor(defined: string[]): string[] {
   const tasks: string[] = [];
-  for (const name of ["check", "check:manifests"]) {
-    if (defined.includes(name)) tasks.push(name);
-  }
+  if (defined.includes("check:manifests")) tasks.push("check:manifests");
   const unitSuite = UNIT_SUITE_TASKS.find((name) => defined.includes(name));
   if (unitSuite) tasks.push(unitSuite);
   return tasks;
 }
 
-/** Spawn one of the repository's own tasks with a bounded timeout. */
+/** Whether a task name is the unit suite (the one the issue requires). */
+function isUnitSuite(task: string): boolean {
+  return (UNIT_SUITE_TASKS as readonly string[]).includes(task);
+}
+
+/** Spawn one of the repository's own tasks within the remaining budget. */
 const spawnTask: ResolutionTaskRunner = async (task) => {
   const result = await runWithTimeout(
     Deno.execPath(),
     ["task", task.task],
-    { cwd: task.dir, timeoutMs: RESOLUTION_GATE_TIMEOUT_MS },
+    { cwd: task.dir, timeoutMs: task.timeoutMs },
   );
   if (!result.ok) return { code: 1, output: result.error.message };
   const { code, stdout, stderr, timedOut } = result.value;
@@ -106,7 +114,7 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
     return {
       code: 124,
       output:
-        `${output}\n'deno task ${task.task}' timed out after ${RESOLUTION_GATE_TIMEOUT_MS}ms`
+        `${output}\n'deno task ${task.task}' timed out after ${task.timeoutMs}ms`
           .trim(),
     };
   }
@@ -124,6 +132,10 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
 export async function verifyResolvedTree(
   repoDir: string,
   runner: ResolutionTaskRunner = spawnTask,
+  /** The Issue #974 type check. Injected in tests; the real gate otherwise. */
+  typeCheck: MergeGateFn = checkMergedTree,
+  /** Reads the clock. Injected in tests so the budget is deterministic. */
+  now: () => number = () => Date.now(),
 ): Promise<MergeGateOutcome> {
   // A tree that cannot be read is a verification that could not be run.
   try {
@@ -144,14 +156,40 @@ export async function verifyResolvedTree(
     };
   }
 
-  const ran: string[] = [];
+  const deadline = now() + RESOLUTION_GATE_BUDGET_MS;
+
+  // The Issue #974 gate first, exactly as it stands — including its fallback
+  // to a whole-tree `deno check` where the manifest names no `check` task.
+  // Re-implementing it here would quietly drop that fallback, and a
+  // resolution pushed without any type check is the state #974 exists to end.
+  const typed = await typeCheck(repoDir);
+  if (typed.status !== "passed") {
+    return typed.status === "failed" ? typed : {
+      status: "skipped",
+      detail: `${typed.detail} — the Issue #974 type check did not run`,
+      output: typed.output,
+    };
+  }
+
+  const ran: string[] = [typed.detail];
+  let unitSuiteRan = false;
   for (const project of await findProjectManifests(repoDir)) {
     const defined = await readManifestTasks(project.manifest);
     for (const task of resolutionTasksFor(defined)) {
       const where = `deno task ${task} in ${project.dir}`;
+      const timeoutMs = deadline - now();
+      if (timeoutMs <= 0) {
+        return {
+          status: "failed",
+          detail: `${where} was not reached within the ` +
+            `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
+            `resolution is unverified, so it is not pushed`,
+          output: "",
+        };
+      }
       let result: { code: number; output: string };
       try {
-        result = await runner({ dir: project.dir, task });
+        result = await runner({ dir: project.dir, task, timeoutMs });
       } catch (err) {
         // Unrunnable is not clean — the resolution stays unverified.
         return {
@@ -168,14 +206,17 @@ export async function verifyResolvedTree(
         };
       }
       ran.push(where);
+      if (isUnitSuite(task)) unitSuiteRan = true;
     }
   }
 
-  if (ran.length === 0) {
+  if (!unitSuiteRan) {
+    // Choosing a side compiles perfectly while dropping the other side's
+    // behaviour, so the type check alone does not verify a resolution.
     return {
       status: "skipped",
-      detail: `no ${RESOLUTION_GATE_TASKS.join("/")} task under '${repoDir}' ` +
-        `— nothing could verify the resolution`,
+      detail: `no ${UNIT_SUITE_TASKS.join("/")} task under '${repoDir}' — ` +
+        `nothing ran the cases that would show a dropped implementation`,
       output: "",
     };
   }

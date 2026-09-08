@@ -246,3 +246,41 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "milestone sync - an automatically resolved conflict files no needs-human issue (Issue #1559)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1559-auto-" });
+    try {
+      const calls: string[][] = [];
+      const result = await syncMilestoneBranches(deps(calls, {
+        // No tracking issue in the title: the old path filed a needs-human
+        // diagnostic here, which is the escalation Issue #1559 removed for a
+        // conflict the worker resolved and verified itself.
+        milestoneTitle: "Drift with no tracking issue",
+        conflict: {
+          ...CONFLICT,
+          resolution: "auto",
+          decisions: [{
+            path: "worker/deno/lib/scan_content.ts",
+            case: "superset",
+            action: "theirs",
+            reason: "the default branch's side keeps every line of the other",
+          }],
+        },
+        streakPath: milestoneSyncStreakPath(dir),
+      }));
+
+      assert(result.ok);
+      assertEquals(result.value.synced, 1, "the resolution landed");
+      assertEquals(
+        createCalls(calls).length,
+        0,
+        "a verified automatic resolution does not reach a human",
+      );
+      assertEquals(commentCalls(calls).length, 0);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);

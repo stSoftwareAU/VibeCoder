@@ -50,6 +50,8 @@ interface Fixture {
 interface Side {
   files: Record<string, string>;
   subject: string;
+  /** Paths this side deletes. */
+  remove?: string[];
 }
 
 /**
@@ -73,7 +75,10 @@ async function setup(
   await gitOk(["config", "user.email", "t@example.com"], seed);
   await gitOk(["config", "user.name", "Test"], seed);
 
-  const write = async (files: Record<string, string>) => {
+  const write = async (
+    files: Record<string, string>,
+    remove: string[] = [],
+  ) => {
     for (const [path, content] of Object.entries(files)) {
       const dir = path.includes("/")
         ? `${seed}/${path.slice(0, path.lastIndexOf("/"))}`
@@ -81,6 +86,7 @@ async function setup(
       await Deno.mkdir(dir, { recursive: true });
       await Deno.writeTextFile(`${seed}/${path}`, content);
     }
+    for (const path of remove) await Deno.remove(`${seed}/${path}`);
     await gitOk(["add", "-A"], seed);
   };
 
@@ -89,12 +95,12 @@ async function setup(
   await gitOk(["push", "origin", "main"], seed);
 
   await gitOk(["checkout", "-b", "milestone/1559"], seed);
-  await write(milestone.files);
+  await write(milestone.files, milestone.remove ?? []);
   await gitOk(["commit", "-m", milestone.subject], seed);
   await gitOk(["push", "origin", "milestone/1559"], seed);
 
   await gitOk(["checkout", "main"], seed);
-  await write(main.files);
+  await write(main.files, main.remove ?? []);
   await gitOk(["commit", "-m", main.subject], seed);
   await gitOk(["push", "origin", "main"], seed);
 
@@ -185,7 +191,7 @@ Deno.test(
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "syncMilestoneBranchWithDefault - a test file is never resolved by taking one side wholesale (Issue #1559)",
+  "syncMilestoneBranchWithDefault - a conflicted test file resolves as a union, never by taking one side (Issue #1559)",
   async () => {
     const fx = await setup(
       { "tests/gate_test.ts": 'Deno.test("shared case", () => {});\n' },
@@ -205,6 +211,55 @@ Deno.test(
       },
     );
     try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+      );
+
+      assert(
+        result.ok,
+        `expected the union to land: ${!result.ok && result.error.message}`,
+      );
+      const merged = await Deno.readTextFile(`${fx.clone}/tests/gate_test.ts`);
+      assertStringIncludes(merged, "branch only");
+      assertStringIncludes(
+        merged,
+        "main only",
+        "a union keeps both sides' cases — taking a side would drop one",
+      );
+      assertEquals(result.value.conflict?.decisions?.[0]?.action, "union");
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a test file whose union would lose a case escalates instead (Issue #1559)",
+  async () => {
+    // The default branch DELETED the branch's test file: there is no union to
+    // build, and deleting it would drop its cases.
+    const fx = await setup(
+      { "tests/gate_test.ts": 'Deno.test("shared case", () => {});\n' },
+      {
+        files: {
+          "tests/gate_test.ts":
+            'Deno.test("shared case", () => {});\nDeno.test("branch only", () => {});\n',
+        },
+        subject: "Issue #1557: the branch's cases",
+      },
+      {
+        files: {},
+        subject: "main removes the gate test",
+        remove: [
+          "tests/gate_test.ts",
+        ],
+      },
+    );
+    try {
       const published = (await gitOk(["rev-parse", "milestone/1559"], fx.clone))
         .trim();
 
@@ -216,11 +271,8 @@ Deno.test(
         passingGate,
       );
 
-      assert(!result.ok, "taking either side would drop a case");
+      assert(!result.ok, "a test file with no union to build reaches a human");
       assert(isConflictEscalation(result.error));
-      const analysis = result.error.analyses[0];
-      assertEquals(analysis?.onlyOursTests, ["branch only"]);
-      assertEquals(analysis?.onlyTheirsTests, ["main only"]);
       assertEquals(
         (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
         published,
