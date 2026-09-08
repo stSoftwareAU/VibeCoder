@@ -20,8 +20,8 @@ import { assert, assertEquals } from "@std/assert";
 import { verifyWorkOnContentIntegrity } from "../lib/work_on_content_integrity.ts";
 import {
   CONTENT_HASH_ENCODING_V1,
-  CONTENT_HASH_ENCODING_V2,
   type ContentApprovalDeps,
+  CURRENT_CONTENT_HASH_ENCODING,
   loadContentApprovalState,
 } from "../lib/content_approval_tracker.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
@@ -145,7 +145,7 @@ async function readSnapshot(
 }
 
 Deno.test(
-  "work_on_content_integrity - a v1-stamped snapshot over unchanged content proceeds and is re-baselined under v2 (Issue #3963)",
+  "work_on_content_integrity - a v1-stamped snapshot over unchanged content proceeds and is re-baselined under the current encoding (Issue #3963)",
   async () => {
     const { deps, files } = createMemoryFs();
     const config = makeConfig();
@@ -174,7 +174,7 @@ Deno.test(
 
     const snapshot = await readSnapshot(config, deps);
     assert(snapshot, "The baseline must survive the migration");
-    assertEquals(snapshot.encoding, CONTENT_HASH_ENCODING_V2);
+    assertEquals(snapshot.encoding, CURRENT_CONTENT_HASH_ENCODING);
     assertEquals(
       snapshot.capturedAt > SNAPSHOT_AT_UNIX,
       true,
@@ -206,7 +206,7 @@ Deno.test(
     assertEquals(actions, []);
     assertEquals(
       (await readSnapshot(config, deps))?.encoding,
-      CONTENT_HASH_ENCODING_V2,
+      CURRENT_CONTENT_HASH_ENCODING,
     );
   },
 );
