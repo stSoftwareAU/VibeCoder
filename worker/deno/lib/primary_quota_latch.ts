@@ -25,6 +25,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { classifyGhCall } from "./gh_argv.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
 
 /** The epoch (Unix seconds) the primary quota is latched until, or null. */
@@ -78,10 +79,14 @@ export function isPrimaryRateLimitMessage(message: string): boolean {
  *     endpoint even while GraphQL is exhausted (Issue #42 Defect 3).
  */
 export function isQuotaExemptGhCall(args: readonly string[]): boolean {
-  if (args[0] !== "api") return false;
-  // `gh api graphql …` is a GraphQL call — never exempt. Any other
-  // `gh api <rest-path>` hits the separate core REST quota.
-  return !args.includes("graphql");
+  // Issue #1588: the argv shape is decided once, by the shared classifier
+  // `classifyGhCall`, so this predicate and the `api-graphql` sub-command
+  // bucket in `gh_call_metrics.ts` can never disagree about what an
+  // `api graphql` invocation is. Only a positively-classified REST
+  // `gh api <path>` is exempt; everything else stays GraphQL-billed, which
+  // is the safe direction — a call the classifier cannot place as REST is
+  // short-circuited rather than let through.
+  return classifyGhCall(args) === "api-rest";
 }
 
 /**
