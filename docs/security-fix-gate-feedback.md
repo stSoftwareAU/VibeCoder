@@ -140,9 +140,14 @@ with **one** comment carrying both verdicts.
 
 When `test-identifier-in-diff` is missing, the block comment and the replayed
 verdict list the test declaration lines the gate matched in the diff, capped at
-ten and fenced as untrusted — they are agent-authored diff text. A summary that
-cites a listed declaration means the gate is at fault rather than the summary,
-which is exactly what nobody could tell during #1385.
+ten, scrubbed and code-fenced — they are agent-authored diff text, so they must
+render as data and stay inert in the retry prompt. A summary that cites a listed
+declaration means the gate is at fault rather than the summary, which is exactly
+what nobody could tell during #1385.
+
+A retry the worker could not launch at all — a rate limit, a failed spawn — is
+not a second gate verdict: the block is still reported on the issue, but it
+charges no blocked run, so a flaky CLI cannot spend the hand-off budget below.
 
 ### After two blocked runs
 

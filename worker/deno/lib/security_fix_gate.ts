@@ -38,7 +38,7 @@
  * Pure functions, no I/O. Australian English throughout.
  */
 
-import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
+import { codeFenceFor, scrubUntrustedText } from "./prompt_delimiter.ts";
 
 /** Distinct evidence items the gate requires of a security-fix PR. */
 export type SecurityFixEvidenceKind =
@@ -274,8 +274,8 @@ function testDeclarationLines(diffText: string): string[] {
 /** Cap on test-declaration lines reported back to the agent (Issue #1575). */
 export const MAX_REPORTED_TEST_DECLARATIONS = 10;
 
-/** Cap on the length of a single reported declaration line. */
-const MAX_DECLARATION_LINE_CHARS = 200;
+/** Cap on the length of a single reported declaration line (Issue #1575). */
+export const MAX_DECLARATION_LINE_CHARS = 200;
 
 /**
  * The test declarations the gate actually matched in the added lines of the
@@ -309,10 +309,17 @@ export function formatMatchedTestDeclarations(
   if (declarations.length === 0) {
     return "The gate matched NO test-declaration line in the added lines of this branch's test diff, so no citation could have satisfied it.";
   }
-  return fenceUntrustedIssueText(
-    declarations.join("\n"),
-    `The gate matched these test declarations in the added lines of the branch diff (up to ${MAX_REPORTED_TEST_DECLARATIONS}) — if the test you cited is listed here, the name in the summary does not match the declared one:`,
-  ).join("\n");
+  // Scrubbed and code-fenced, not nonce-fenced: the lines are diff text, so
+  // they must render as data in the comment and stay inert in the retry
+  // prompt, but this message is also the operator's evidence and must read the
+  // same every time it is built.
+  const body = scrubUntrustedText(declarations.join("\n"));
+  const fence = codeFenceFor(body);
+  return `The gate matched these test declarations in the added lines of the branch diff (up to ${MAX_REPORTED_TEST_DECLARATIONS}) — if the test you cited is listed here, the name in the summary does not match the declared one:
+
+${fence}text
+${body}
+${fence}`;
 }
 
 /** Whether `haystack` contains `needle` as a whole normalised token run. */

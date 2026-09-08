@@ -28,6 +28,7 @@
 import {
   formatMatchedTestDeclarations,
   isSecurityFixEvidenceKind,
+  MAX_DECLARATION_LINE_CHARS,
   MAX_REPORTED_TEST_DECLARATIONS,
   REQUIRED_SECURITY_FIX_EVIDENCE,
   SECURITY_FIX_EVIDENCE_DESCRIPTIONS,
@@ -42,9 +43,6 @@ const STATE_FILE_SUFFIX = ".securitygate.json";
 
 /** Schema version of the persisted state file. */
 const STATE_VERSION = 1;
-
-/** Cap on the length of one persisted declaration line (Issue #1575). */
-const MAX_DECLARATION_CHARS = 200;
 
 /** One recorded gate block against a repo + issue. */
 export interface SecurityFixGateBlock {
@@ -124,7 +122,7 @@ function sanitiseDeclarations(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
     .filter((line): line is string => typeof line === "string")
-    .map((line) => line.trim().slice(0, MAX_DECLARATION_CHARS))
+    .map((line) => line.trim().slice(0, MAX_DECLARATION_LINE_CHARS))
     .filter((line) => line.length > 0)
     .slice(0, MAX_REPORTED_TEST_DECLARATIONS);
 }

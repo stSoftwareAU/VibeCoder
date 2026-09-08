@@ -105,6 +105,8 @@ interface Scenario {
   retryWrites?: string;
   /** Work directory backing the verdict store. */
   workDir: string;
+  /** Make the retry invocation itself fail (a rate limit, a spawn failure). */
+  retryInvocationFails?: boolean;
 }
 
 interface Outcome {
@@ -192,6 +194,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       runClaudeWithRetry: (options: { prompt: string }) => {
         claudeCalls++;
         claudePrompts.push(options.prompt);
+        if (scenario.retryInvocationFails) {
+          return Promise.resolve({
+            ok: false as const,
+            error: new Error("rate limited"),
+          });
+        }
         if (scenario.retryWrites !== undefined) {
           Deno.writeTextFileSync(summaryPath(repoPath), scenario.retryWrites);
         }
@@ -392,5 +400,33 @@ Deno.test(
       matchedTestDeclarations(many).length,
       MAX_REPORTED_TEST_DECLARATIONS,
     );
+  },
+);
+
+Deno.test(
+  "completion - a retry that cannot be launched charges no blocked run",
+  async () => {
+    await withWorkDir(async (workDir, stateDir) => {
+      const outcome = await runCompletion({
+        summary: BARE_SUMMARY,
+        workDir,
+        retryInvocationFails: true,
+      });
+
+      assertEquals(outcome.status, "failure");
+      assertEquals(outcome.prCreateCalls, 0);
+      assertStringIncludes(
+        outcome.reason ?? "",
+        "The in-run gate retry could not be launched",
+      );
+      // The issue still hears the verdict, but a CLI failure is not a gate
+      // verdict, so it must not consume the hand-off budget.
+      assertEquals(outcome.comments.length, 1);
+      assertEquals(outcome.labels.includes("needs-human"), false);
+      assertEquals(
+        (await readSecurityFixGateBlock(stateDir, REPO, ISSUE))?.blockCount,
+        0,
+      );
+    });
   },
 );

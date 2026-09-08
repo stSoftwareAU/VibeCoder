@@ -15,8 +15,9 @@
  * second block in the same run ends the run. Two consecutive *blocked runs*
  * then hand the issue to a human rather than burning a third.
  *
- * Pure text builders only; the orchestration lives in
- * `phases/completion_phase.ts`. Australian English throughout.
+ * The completion phase calls {@link recoverFromSecurityGateBlock} and supplies
+ * the completion attempt to re-run; everything else here is pure text.
+ * Australian English throughout.
  */
 
 import {
@@ -25,8 +26,19 @@ import {
 } from "./security_fix_gate.ts";
 import {
   buildSecurityFixGateFeedbackSection,
+  recordSecurityFixGateBlock,
+  resolveSecurityGateStateDir,
   type SecurityFixGateBlock,
 } from "./security_fix_gate_feedback.ts";
+import {
+  type IssueContext,
+  type PhaseResult,
+  type PhaseState,
+  recordClaudeRunStats,
+} from "./issue_worker_types.ts";
+import type { WorkerDeps } from "./issue_worker_wiring.ts";
+import { workOnIssueQualityGate } from "./phases/quality_gate_remediation_phase.ts";
+import { escalateToHuman } from "./needs_human_escalation.ts";
 
 /** One gate verdict observed during a single run. */
 export interface SecurityGateRunVerdict {
@@ -124,4 +136,191 @@ export function buildBlockedRunsEscalation(
     nextStep:
       "Read the gate comment above: it lists the test declarations the gate matched in the branch diff. If the summary already cites one of them, the gate itself is at fault — fix `worker/deno/lib/security_fix_gate.ts`. Otherwise supply the missing evidence in the PR summary and remove `needs-human` to release the issue.",
   };
+}
+
+/**
+ * Persist this run's latest gate verdict (Issue #4057, recounted by #1575).
+ *
+ * `countsAsBlockedRun` is false for a block the run recovers from — that block
+ * costs no run, so it must not charge the issue one. Fail loud but non-fatal:
+ * the PR is blocked either way, and an operator must be able to see that the
+ * count could not be updated.
+ */
+async function persistVerdict(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  countsAsBlockedRun: boolean,
+): Promise<SecurityFixGateBlock | undefined> {
+  const verdicts = state.securityGateBlocks ?? [];
+  const latest = verdicts[verdicts.length - 1];
+  if (!latest) return undefined;
+  try {
+    const block = await recordSecurityFixGateBlock(
+      resolveSecurityGateStateDir(ctx.config.workDir),
+      ctx.repo,
+      ctx.issueNumber,
+      latest.missing,
+      { countsAsBlockedRun, declarations: latest.declarations },
+    );
+    deps.logger.info("Recorded security-fix gate verdict", {
+      blockedRuns: block.blockCount,
+      countsAsBlockedRun,
+    });
+    return block;
+  } catch (err) {
+    deps.logger.warn(
+      `Could not persist the security-fix gate verdict — the next attempt will start blind and the consecutive-blocked-run count is NOT updated, so the ${MAX_CONSECUTIVE_BLOCKED_RUNS}-run hand-off may be delayed: ${
+        (err as Error).message
+      }`,
+    );
+    // The retry still needs the verdict, so fall back to the in-memory one.
+    return {
+      repo: ctx.repo,
+      issueNumber: ctx.issueNumber,
+      missing: latest.missing,
+      blockedAt: new Date().toISOString(),
+      blockCount: countsAsBlockedRun ? 1 : 0,
+      declarations: latest.declarations,
+    };
+  }
+}
+
+/**
+ * Report a gate block that this run could not recover from.
+ *
+ * Posts the single operator-facing comment carrying every verdict the run
+ * collected, and — only when the block genuinely ended the run in `failure`
+ * from the gate — counts the blocked run and hands the issue to a human once
+ * {@link MAX_CONSECUTIVE_BLOCKED_RUNS} consecutive runs have ended that way. An
+ * agent invocation that could not be launched is not a gate verdict, so it is
+ * reported without charging the issue a blocked run.
+ */
+async function reportBlock(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  countsAsBlockedRun: boolean,
+  reasonPrefix = "",
+): Promise<PhaseResult> {
+  const logger = deps.logger;
+  const { repo, issueNumber } = ctx;
+  const verdicts = state.securityGateBlocks ?? [];
+  const block = await persistVerdict(ctx, state, deps, countsAsBlockedRun);
+  const comment = buildSecurityFixGateBlockComment(verdicts);
+
+  const client = deps.github.createClient(logger);
+  try {
+    await client.postComment(repo, issueNumber, comment);
+  } catch (err) {
+    logger.warn(
+      `Failed to post the security-fix gate comment (non-fatal): ${
+        (err as Error).message
+      }`,
+    );
+  }
+
+  if (
+    countsAsBlockedRun && block && shouldEscalateBlockedRuns(block.blockCount)
+  ) {
+    const escalation = buildBlockedRunsEscalation(block);
+    await escalateToHuman({
+      ghClient: client,
+      repo,
+      target: { kind: "issue", number: issueNumber },
+      needsHumanLabel: ctx.config.needsHumanLabel,
+      reason: escalation.reason,
+      nextStep: escalation.nextStep,
+      heading: "Security-fix gate blocked this issue twice",
+      dedupKey: `security-fix-gate-${issueNumber}`,
+      githubUser: ctx.githubUser,
+      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
+      logger,
+    });
+  }
+
+  return { status: "failure", reason: `${reasonPrefix}${comment}` };
+}
+
+/**
+ * Recover from a security-fix gate block inside the run (Issue #1575).
+ *
+ * The first block re-invokes the agent with the verdict replayed into a FRESH
+ * invocation (never `--resume`: the previous turn already concluded the work
+ * was finished), then re-runs the quality gate and the completion attempt.
+ * `bump-deps` is not re-run — the bump is already on the branch. A second block
+ * ends the run exactly as any block did before, with one comment carrying both
+ * verdicts.
+ *
+ * @param rerunCompletion - Re-runs the completion attempt after the retry.
+ */
+export async function recoverFromSecurityGateBlock(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  rerunCompletion: () => Promise<PhaseResult>,
+): Promise<PhaseResult> {
+  const logger = deps.logger;
+  const { repo, issueNumber, config } = ctx;
+
+  // Persisted before the retry so a run that dies mid-recovery still leaves the
+  // verdict for the next attempt — charging no blocked run, because this block
+  // has not ended one.
+  const block = await persistVerdict(ctx, state, deps, false);
+  if (!block) {
+    return {
+      status: "failure",
+      reason: "No security-fix gate verdict to act on",
+    };
+  }
+
+  logger.warn("security-fix gate block — retrying once in-run (Issue #1575)", {
+    repo,
+    issueNumber,
+    missing: block.missing,
+  });
+
+  const retryResult = await deps.claude.runClaudeWithRetry(
+    {
+      prompt: buildSecurityFixGateRetryPrompt(block),
+      phase: "issue",
+      repo,
+      issueNumber,
+      timeoutSeconds: config.claudeTimeout,
+      killAfterSeconds: config.claudeKillAfter,
+      model: config.claudeModel || undefined,
+      cwd: state.repoPath,
+      logger,
+    },
+    { maxRetries: config.maxRateLimitRetries },
+  );
+
+  if (!retryResult.ok) {
+    // The agent could not be re-invoked. That is not a second gate verdict, so
+    // it is reported without charging the issue a blocked run.
+    logger.warn(
+      `Security-fix gate retry invocation failed: ${retryResult.error.message}`,
+    );
+    return await reportBlock(
+      ctx,
+      state,
+      deps,
+      false,
+      `The in-run gate retry could not be launched (${retryResult.error.message}).\n\n`,
+    );
+  }
+  recordClaudeRunStats(state, retryResult.value);
+
+  // The retry changed the tree, so the quality gate runs again before the
+  // completion gates — the same order the pipeline uses after any agent turn.
+  const quality = await workOnIssueQualityGate(ctx, state, deps);
+  if (quality.status !== "continue") return quality;
+
+  const result = await rerunCompletion();
+  if (
+    result.status === "failure" && (state.securityGateBlocks?.length ?? 0) > 1
+  ) {
+    return await reportBlock(ctx, state, deps, true);
+  }
+  return result;
 }
