@@ -566,7 +566,9 @@ Deno.test("container/ - the committed definition yields a reference", async () =
 
 Deno.test("container/ - every committed container file is enumerated", async () => {
   const enumerated = new Set(CONTAINER_IMAGE_INPUTS);
-  for (const dir of ["container", "container/providers"]) {
+  for (
+    const dir of ["container", "container/providers", "container/toolchains"]
+  ) {
     for await (const entry of Deno.readDir(`${REPO_ROOT}/${dir}`)) {
       if (!entry.isFile) continue;
       assert(
@@ -592,6 +594,26 @@ Deno.test("container/ - every pinned provider fragment is enumerated", async () 
     assert(
       enumerated.has(`container/${provider.fragment}`),
       `container/${provider.fragment} is not in CONTAINER_IMAGE_INPUTS — a ` +
+        `changed fragment must change the image tag`,
+    );
+  }
+});
+
+Deno.test("container/ - every pinned toolchain fragment is enumerated", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(`${REPO_ROOT}/container/tools.json`),
+  );
+  const enumerated = new Set(CONTAINER_IMAGE_INPUTS);
+
+  const fragments = manifest.toolchains.filter((t) => t.fragment !== undefined);
+  assert(
+    fragments.length > 0,
+    "container/tools.json must pin at least one fragment toolchain",
+  );
+  for (const toolchain of fragments) {
+    assert(
+      enumerated.has(`container/${toolchain.fragment}`),
+      `container/${toolchain.fragment} is not in CONTAINER_IMAGE_INPUTS — a ` +
         `changed fragment must change the image tag`,
     );
   }

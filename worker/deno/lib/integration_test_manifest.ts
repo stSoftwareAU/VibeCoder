@@ -55,6 +55,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/container_tools_example_docs_test.ts",
   "tests/container_tools_install_test.ts",
   "tests/first_run_script_test.ts",
+  // Issue #1594: runs container/install-toolchains.sh against fixture
+  // fragments, the same shape as the provider-set suite above.
+  "tests/install_toolchains_test.ts",
   "tests/install_tools_test.ts",
   "tests/launcher_egress_probe_test.ts",
   "tests/launcher_parity_test.ts",

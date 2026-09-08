@@ -46,6 +46,16 @@ version reuses their cache. Within that block the order is least-to-most
 churn — the static analysers move rarely; Rust moves every few weeks and is
 the largest download, so it sits last and a Rust bump rebuilds only itself.
 
+The fetch-verify-extract toolchains in that block are **fragments**
+(Issue #1594): `COPY toolchains/*.sh` puts them in the image, then
+`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell`
+and a separate `RUN … rust` install them, so the two layers keep the
+least-to-most-churn split while the Containerfile carries ids instead of `ARG`
+blocks. `markdownlint-cli2` sits between the two runs, unchanged — it is
+installed from npm, not fetched and extracted. The Rust run removes the
+installer and the fragments once it is done, so none of them survive into the
+finished image.
+
 ## Node and npm
 
 Node and npm are pinned as two separate toolchains. The Node tarball bundles
@@ -119,8 +129,11 @@ than via rustup, so there is no per-user toolchain directory and nothing to
 update at run time. The combined `rust-<version>` package carries only
 rustc/cargo/rust-std (rust-docs is dropped to keep the layer smaller);
 rustfmt and clippy are separate component packages, each with its own pinned
-checksum. `QUALITY_SKIP_RUST_UPDATE=1` stops private-repo-9's gate running
-`rustup update stable` — the image owns its toolchain.
+checksum. Since Issue #1594 that install lives in
+`container/toolchains/rust.sh`, which reads the version and all six checksums
+from `container/tools.json`. `QUALITY_SKIP_RUST_UPDATE=1` stops
+private-repo-9's gate running `rustup update stable` — the image owns its
+toolchain.
 
 ## semgrep
 
@@ -172,6 +185,17 @@ binary the wheel bundles. That is the largest single toolchain in the image and
 it was a deliberate trade: the alternative is every fleet agent discovering
 `p/default` findings in CI instead of before the push. The stage scans changed
 files only, so the run-time cost stays small even though the install is large.
+
+`codespell` follows the same venv pattern for the same reason (Issue #1595): a
+pure-Python console script with no standalone binary, so
+`container/toolchains/codespell.sh` fetches the pinned `pip` and the pinned
+`py3-none-any` wheel by `files.pythonhosted.org` URL, verifies both digests,
+installs into `/opt/codespell` off the externally-managed system interpreter
+and symlinks `/usr/local/bin/codespell`. Two differences: one `noarch` digest
+covers both architectures (nothing compiled is bundled), and the install is
+`--no-deps`, because codespell 2.4.3 declares no required runtime dependencies
+— so unlike semgrep it leaves no unverified wheel coming from the index. Its
+cost is a few megabytes rather than 350.
 
 ## Playwright + headless Chromium
 
