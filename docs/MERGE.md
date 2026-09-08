@@ -544,6 +544,14 @@ This is enforced at the single git-push choke-point by
 - **Opt-out reserved for merge machinery.** An `allowDefaultBranch` parameter
   (default `false` = forbid) exists only for the legitimate merge path that must
   update the default-branch ref.
+- **Worker-owned state files are unstaged, not allowed through** (Issue #1661).
+  Between `git add -A` and the pre-commit safety gate, `commitAndPushPending()`
+  drops the worker's own state files (`.heartbeat_<owner>_<repo>_<n>`,
+  `.heartbeat-marker_<owner>_<repo>_<n>`, `.vibe_default_branch` — the shapes
+  `worker/deno/lib/worker_state_paths.ts` defines) from the index and warns,
+  naming each path. The gate never sees them, so a stray worker file no longer
+  costs the whole commit; the gate itself is unchanged and still refuses every
+  genuinely hidden or secret-bearing path.
 
 Existing maintenance that touches files (bump-deps, gitignore/gitattributes
 sync) **stages locally and rides the next feature-branch PR** — it never pushes

@@ -177,6 +177,9 @@ export const prSpellingProcessorCommand: Command = {
           logger: deps.logger,
           deps,
           workDir: repoWorkDir,
+          // Issue #1662: heartbeat and marker state live in the work
+          // root, not in the clone `setupRepo` returned above.
+          workRoot: config.workDir,
           qualityInstructions,
           customInstructions,
           claudeTimeout: config.claudeTimeout || undefined,

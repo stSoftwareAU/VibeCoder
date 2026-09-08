@@ -194,6 +194,7 @@ async function runCiFix(
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeCiInput(), processorDeps);
