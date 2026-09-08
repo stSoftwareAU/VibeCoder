@@ -867,6 +867,17 @@
         "worker/deno/lib/gh_body_file_io.ts",
         "worker/deno/lib/gh_timeout.ts"
       ]
+    },
+    {
+      "issue": 1443,
+      "chunk": "12g",
+      "title": "top-up: the reused-tree ignored clean added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1443-ignored-path-clean.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12f recorded their coverage: ignored_path_clean.ts (#1443)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/ignored_path_clean.ts"
+      ]
     }
   ]
 }
