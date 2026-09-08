@@ -18,6 +18,7 @@ import {
   captureContentSnapshot,
   cleanupStaleSnapshots,
   computeContentHash,
+  CONTENT_HASH_ENCODING_V2,
   type ContentApprovalDeps,
   isAuthorTrusted,
   loadContentApprovalState,
@@ -128,14 +129,23 @@ Deno.test("content_approval_tracker - computeContentHash does not collide when t
   );
 });
 
-Deno.test("content_approval_tracker - computeContentHash is pinned for a known fixture (Issue #3878)", async () => {
-  // Pins the v2 encoding. Changing it invalidates every stored approval
-  // digest — previously approved issues then verify as `changed` at pickup
-  // (fail-closed, but a visible burst of blocks after deploy), so any further
-  // change must be deliberate rather than incidental.
+Deno.test("content_approval_tracker - computeContentHash is pinned for a known fixture (Issues #3878, #1616)", async () => {
+  // Pins both live encodings. Changing one silently would make every snapshot
+  // stored under it verify as `changed` at pickup (fail-closed, but a visible
+  // burst of blocks after deploy), so any further change must be deliberate.
+  // Issue #1616 made v3 the capture encoding; the v2 pin stays because
+  // snapshots stamped v2 are still verified under it.
+  assertEquals(
+    await computeContentHash(
+      "Fix the bug",
+      "Approved specification",
+      CONTENT_HASH_ENCODING_V2,
+    ),
+    "8bfe0ef8d244abfba3aa34b99396de4b8b8ea2d5fc345790ee5ae28a6232ca05",
+  );
   assertEquals(
     await computeContentHash("Fix the bug", "Approved specification"),
-    "8bfe0ef8d244abfba3aa34b99396de4b8b8ea2d5fc345790ee5ae28a6232ca05",
+    "e1aefe1c5e3baaacf5d5d5122998a8b2b888b8e814b88c6564e6590888e4d93b",
   );
 });
 
