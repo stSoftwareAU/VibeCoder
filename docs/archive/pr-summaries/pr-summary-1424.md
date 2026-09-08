@@ -49,7 +49,7 @@ flowchart LR
 ```
 
 Quality gate: `./quality.sh` — **PASSED**, re-run on the final tree after
-`origin/main` was merged in (through `a02f0eb7`): all 21 checks pass
+`origin/main` was merged in (through `a342392e`): all 21 checks pass
 (`config integration` is skipped as it always is without a live config).
 
 Cost of the inbound call, measured on this tree via `sanitiseDelimiterPatterns`
