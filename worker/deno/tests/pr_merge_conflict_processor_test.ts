@@ -355,7 +355,7 @@ async function runProcessor(
     git: makeGit(script, captured),
     github: makeGithub(captured),
     claude: makeClaude(captured, opts?.claudeDelayMs ?? 0),
-    ...(opts?.crashHandling ? { crashHandling: opts.crashHandling } : {}),
+    crashHandling: opts?.crashHandling,
   });
 
   // Issue #1660: the work root and the clone are separate directories, so a
