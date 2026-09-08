@@ -178,6 +178,9 @@ export const prFeedbackProcessorCommand: Command = {
           logger: deps.logger,
           deps,
           workDir: repoWorkDir,
+          // Issue #1662: heartbeat and marker state live in the work
+          // root, not in the clone `setupRepo` returned above.
+          workRoot: config.workDir,
           qualityInstructions,
           customInstructions,
           // Issue #1824: PR feedback uses its own timeout, distinct from

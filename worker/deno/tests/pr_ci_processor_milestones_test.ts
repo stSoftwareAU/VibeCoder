@@ -137,6 +137,7 @@ Deno.test("processCiFailure records claim → diagnosis → pushed → released"
       deps: makeDeps(milestones),
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -170,6 +171,7 @@ Deno.test("a throwing recordMilestone never fails the CI fix", async () => {
       deps: makeDeps([], { milestoneThrows: true }),
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 

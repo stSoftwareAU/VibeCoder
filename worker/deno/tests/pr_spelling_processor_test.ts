@@ -25,6 +25,14 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
+import {
+  heartbeatFilePath,
+  markerStateFilePath,
+} from "../lib/heartbeat_storage.ts";
+import {
+  heartbeatStrays,
+  trackHeartbeatDirs,
+} from "./support/heartbeat_placement.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -175,6 +183,7 @@ Deno.test("processSpellingFailure - succeeds with mock Claude output", async () 
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -183,6 +192,67 @@ Deno.test("processSpellingFailure - succeeds with mock Claude output", async () 
     assertEquals(result.value.processed, true);
     assertEquals(result.value.changesPushed, true);
     assertEquals(result.value.annotationCount, 2);
+  }
+});
+
+Deno.test("processSpellingFailure - the heartbeat state lands in the work root, not the clone (Issue #1662)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
+  const workDir = await Deno.makeTempDir({ prefix: "vibe-spelling-clone-" });
+  try {
+    const dirs = { record: [] as string[], clear: [] as string[] };
+
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed spelling", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: { runGhCommand: () => Promise.resolve("") },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+      crashHandling: trackHeartbeatDirs(dirs),
+    });
+
+    const processorDeps: SpellingProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      workDir,
+      workRoot,
+    };
+
+    const result = await processSpellingFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(dirs.record, [workRoot]);
+    assertEquals(dirs.clear, [workRoot]);
+
+    // The state files land under the work root ...
+    assertEquals(
+      (await Deno.stat(heartbeatFilePath(workRoot, "org/repo", 42))).isFile,
+      true,
+    );
+    assertEquals(
+      (await Deno.stat(markerStateFilePath(workRoot, "org/repo", 42))).isFile,
+      true,
+    );
+
+    // ... and the clone's top level gains neither.
+    assertEquals(await heartbeatStrays(workDir), []);
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
   }
 });
 
@@ -203,6 +273,7 @@ Deno.test("processSpellingFailure - handles Claude timeout", async () => {
     promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -262,6 +333,7 @@ Deno.test("processSpellingFailure - starts and stops heartbeat during processing
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -312,6 +384,7 @@ Deno.test("processSpellingFailure - stops heartbeat even when Claude fails", asy
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -345,6 +418,7 @@ Deno.test("processSpellingFailure - reports no changes for empty output", async 
     promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -453,6 +527,7 @@ Deno.test("processSpellingFailure - pushes commits after Claude makes changes (I
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
   };
 
   const input = makeInput();
@@ -513,6 +588,7 @@ Deno.test("processSpellingFailure - reports no changes when Claude does nothing 
     promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -577,6 +653,7 @@ Deno.test("processSpellingFailure - reports push failure accurately (Issue #1412
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -655,6 +732,7 @@ Deno.test("processSpellingFailure - retries push after recovery from rejection (
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -735,6 +813,7 @@ Deno.test("processSpellingFailure - Claude self-pushed: HEAD moved triggers succ
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -809,6 +888,7 @@ Deno.test("processSpellingFailure - genuine no-changes when HEAD unchanged still
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -874,6 +954,7 @@ Deno.test("processSpellingFailure - checks out PR branch before running Claude (
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const input = makeInput();

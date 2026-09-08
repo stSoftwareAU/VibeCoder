@@ -156,6 +156,7 @@ Deno.test("processCiFailure - logs the recovery error when the push cannot be re
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);

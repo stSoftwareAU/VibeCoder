@@ -99,6 +99,16 @@ export interface PrFeedbackProcessorDeps {
   /** Working directory for repo operations. */
   workDir: string;
   /**
+   * The `WORK_DIR` root where heartbeat and marker state files live — never a
+   * clone (Issue #1662).
+   *
+   * Kept separate from {@link PrFeedbackProcessorDeps.workDir}, which is the
+   * clone every git and agent `cwd` uses. It cannot be derived from the
+   * clone's parent: a lane worktree sits at `<workRoot>/worktrees/<lane>/<repo>`,
+   * so `dirname` names the lane, not the root.
+   */
+  workRoot: string;
+  /**
    * Fleet identity inputs for the PR-comment claim's author check
    * (Issue #1124). Omitted reads the configured fleet, which is what
    * production does; a test states the fleet instead of writing a config
@@ -325,7 +335,12 @@ export async function processPrFeedback(
     issueNumber: prNumber,
     // A PR, not an issue (Issue #391) — see pr_merge_conflict_processor.
     kind: "pr",
-    workDir: processorDeps.workDir,
+    // Issue #1662: the work root, never the clone — `.heartbeat_*` and
+    // `.heartbeat-marker_*` written into the clone dirty its tree and stay
+    // invisible to stuck recovery and the prune liveness check, which both
+    // read the root. `stopHeartbeat` reuses these options, so the final
+    // `clearHeartbeat` follows.
+    workDir: processorDeps.workRoot,
     recordFn: deps.crashHandling.recordHeartbeat,
     clearFn: deps.crashHandling.clearHeartbeat,
   });
