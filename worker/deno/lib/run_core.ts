@@ -1699,60 +1699,68 @@ export function buildPriorityDispatchTable(
  *
  * @returns Result with error details if any step fails fatally
  */
-async function runInitialisation(
+function runInitialisation(
   deps: RunCoreDeps,
 ): Promise<Result<void>> {
-  // Git reset to clean state
-  const gitResult = await deps.gitResetToOrigin();
-  if (!gitResult.ok) {
-    return {
-      ok: false,
-      error: new Error(`git reset failed: ${gitResult.error.message}`),
-    };
-  }
-
-  // Logging setup
-  await deps.setupLogging();
-
-  // Dependency checks
-  const depsResult = await deps.checkDependencies();
-  if (!depsResult.ok) {
-    return {
-      ok: false,
-      error: new Error(`dependency check failed: ${depsResult.error.message}`),
-    };
-  }
-
-  // Non-fatal initialisation steps — best-effort
-  try {
-    await deps.checkSoftwareUpdates();
-  } catch { /* best-effort */ }
-  try {
-    const diskResult = await deps.checkDiskSpace();
-    if (!diskResult.ok) {
-      deps.logError(`Disk space warning: ${diskResult.error.message}`);
+  // Issue #1587: initialisation issues `gh` calls (stuck-issue recovery,
+  // the two branch cleanups, the feature-availability probe) outside
+  // priority dispatch, so they were counted but attributed to nothing.
+  // Async-scoped (Issue #213), never enterPriority/exitPriority.
+  return withPriorityContext("Initialisation", async () => {
+    // Git reset to clean state
+    const gitResult = await deps.gitResetToOrigin();
+    if (!gitResult.ok) {
+      return {
+        ok: false,
+        error: new Error(`git reset failed: ${gitResult.error.message}`),
+      };
     }
-  } catch { /* best-effort */ }
-  try {
-    await deps.rotateLogFiles();
-  } catch { /* best-effort */ }
-  try {
-    await deps.cleanupStaleTempFiles();
-  } catch { /* best-effort */ }
-  try {
-    await deps.recoverStuckIssues();
-  } catch { /* best-effort */ }
-  try {
-    await deps.cleanupStaleBranches();
-  } catch { /* best-effort */ }
-  try {
-    await deps.cleanupMergedBranches();
-  } catch { /* best-effort */ }
-  try {
-    await deps.checkFeatureAvailability();
-  } catch { /* best-effort */ }
 
-  return { ok: true, value: undefined };
+    // Logging setup
+    await deps.setupLogging();
+
+    // Dependency checks
+    const depsResult = await deps.checkDependencies();
+    if (!depsResult.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `dependency check failed: ${depsResult.error.message}`,
+        ),
+      };
+    }
+
+    // Non-fatal initialisation steps — best-effort
+    try {
+      await deps.checkSoftwareUpdates();
+    } catch { /* best-effort */ }
+    try {
+      const diskResult = await deps.checkDiskSpace();
+      if (!diskResult.ok) {
+        deps.logError(`Disk space warning: ${diskResult.error.message}`);
+      }
+    } catch { /* best-effort */ }
+    try {
+      await deps.rotateLogFiles();
+    } catch { /* best-effort */ }
+    try {
+      await deps.cleanupStaleTempFiles();
+    } catch { /* best-effort */ }
+    try {
+      await deps.recoverStuckIssues();
+    } catch { /* best-effort */ }
+    try {
+      await deps.cleanupStaleBranches();
+    } catch { /* best-effort */ }
+    try {
+      await deps.cleanupMergedBranches();
+    } catch { /* best-effort */ }
+    try {
+      await deps.checkFeatureAvailability();
+    } catch { /* best-effort */ }
+
+    return { ok: true, value: undefined };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1840,38 +1848,43 @@ interface TerminalRun {
  * Never throws and never alters the run's outcome: a hook that fails is one
  * more thing to report, not a reason to rewrite what VibeCoder achieved.
  */
-async function dispatchIssueCallbacks(
+function dispatchIssueCallbacks(
   deps: RunCoreDeps,
   repo: string,
   issueNumber: number,
   ran: TerminalRun,
 ): Promise<void> {
-  if (!deps.runIssueCallbacks) return;
-  if (!ran.guard.tryClaim(repo, issueNumber)) {
-    // Said out loud: "already reported" is a very different fact from
-    // "never ran", and only the log can tell them apart afterwards.
-    deps.log(
-      `Post-run callbacks for ${repo}#${issueNumber} already ran for this ` +
-        `claim — not repeating them (Issue #806).`,
-    );
-    return;
-  }
-  try {
-    await deps.runIssueCallbacks({
-      repo,
-      issueNumber,
-      result: ran.result,
-      startedAtEpochMs: ran.startedAtEpochMs,
-      finishedAtEpochMs: deps.now(),
-      ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
-    });
-  } catch (error) {
-    deps.logError(
-      `Post-run callbacks for ${repo}#${issueNumber} faulted: ${
-        error instanceof Error ? error.message : String(error)
-      }. The original VibeCoder result (${ran.result}) is unchanged.`,
-    );
-  }
+  // Issue #1587: the operator's callbacks run after the scan has released
+  // the issue, so their `gh` calls belong to the callbacks, not to
+  // whichever context happened to be on the async chain.
+  return withPriorityContext("Issue Callbacks", async () => {
+    if (!deps.runIssueCallbacks) return;
+    if (!ran.guard.tryClaim(repo, issueNumber)) {
+      // Said out loud: "already reported" is a very different fact from
+      // "never ran", and only the log can tell them apart afterwards.
+      deps.log(
+        `Post-run callbacks for ${repo}#${issueNumber} already ran for this ` +
+          `claim — not repeating them (Issue #806).`,
+      );
+      return;
+    }
+    try {
+      await deps.runIssueCallbacks({
+        repo,
+        issueNumber,
+        result: ran.result,
+        startedAtEpochMs: ran.startedAtEpochMs,
+        finishedAtEpochMs: deps.now(),
+        ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
+      });
+    } catch (error) {
+      deps.logError(
+        `Post-run callbacks for ${repo}#${issueNumber} faulted: ${
+          error instanceof Error ? error.message : String(error)
+        }. The original VibeCoder result (${ran.result}) is unchanged.`,
+      );
+    }
+  });
 }
 
 /**
@@ -4031,39 +4044,43 @@ interface IdleHookOutcome {
  *
  * Best-effort — a failure is logged loudly and the cycle continues.
  */
-async function runPostScanAutoMerge(
+function runPostScanAutoMerge(
   deps: RunCoreDeps,
   tracker: WorkProgressTracker,
 ): Promise<void> {
-  const claimed = tracker.claimedRepos.size > 0;
-  const state = `claimedRepos=${tracker.claimedRepos.size} ` +
-    `foundClaimableIssue=${tracker.foundClaimableIssue} ` +
-    `scanHadSuccess=${tracker.scanHadSuccess}`;
-  if (!claimed && !tracker.scanHadSuccess && !tracker.foundClaimableIssue) {
+  // Issue #1587: the sweep runs after the pool drains, outside priority
+  // dispatch, and refreshes the open-PR list — attribute it by name.
+  return withPriorityContext("Post-scan Auto-merge", async () => {
+    const claimed = tracker.claimedRepos.size > 0;
+    const state = `claimedRepos=${tracker.claimedRepos.size} ` +
+      `foundClaimableIssue=${tracker.foundClaimableIssue} ` +
+      `scanHadSuccess=${tracker.scanHadSuccess}`;
+    if (!claimed && !tracker.scanHadSuccess && !tracker.foundClaimableIssue) {
+      deps.log(
+        `[post-scan-auto-merge] skipped reason=no-work-this-cycle ${state}`,
+      );
+      return;
+    }
     deps.log(
-      `[post-scan-auto-merge] skipped reason=no-work-this-cycle ${state}`,
+      `[post-scan-auto-merge] sweeping reason=work-this-cycle ${state}`,
     );
-    return;
-  }
-  deps.log(
-    `[post-scan-auto-merge] sweeping reason=work-this-cycle ${state}`,
-  );
-  try {
-    // Live listing, not the cache the 1.65 sweep filled before these PRs
-    // existed (see {@link EnsureAutoMergeOptions.refreshOpenPrs}).
-    const result = await deps.ensureAutoMerge({ refreshOpenPrs: true });
-    if (!result.ok) {
+    try {
+      // Live listing, not the cache the 1.65 sweep filled before these PRs
+      // existed (see {@link EnsureAutoMergeOptions.refreshOpenPrs}).
+      const result = await deps.ensureAutoMerge({ refreshOpenPrs: true });
+      if (!result.ok) {
+        deps.logError(
+          `[post-scan-auto-merge] sweep failed: ${result.error.message}`,
+        );
+      }
+    } catch (err) {
       deps.logError(
-        `[post-scan-auto-merge] sweep failed: ${result.error.message}`,
+        `[post-scan-auto-merge] sweep threw: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
     }
-  } catch (err) {
-    deps.logError(
-      `[post-scan-auto-merge] sweep threw: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
+  });
 }
 
 /**
@@ -4081,158 +4098,216 @@ async function runPostScanAutoMerge(
  * Best-effort throughout — every hook's throw is caught and logged so a
  * failure here can never abort the loop.
  */
-async function runIdleWorkHooks(
+function runIdleWorkHooks(
   deps: RunCoreDeps,
   state: IdleHookState,
   req: IdleHookRequest,
 ): Promise<IdleHookOutcome> {
-  const outcome: IdleHookOutcome = { filed: false };
-  const flagFragment =
-    `foundClaimableIssue=${req.scanFoundClaimable} scanHadSuccess=${req.scanHadSuccess}`;
-  // Issue #2106: run the idle-detect audit at the same gate
-  // as the filer so its `[idle-detect] ...` lines (and the
-  // `mis_classification` ALERT when the probe disagrees with
-  // the scan) appear in the log immediately before the filer
-  // makes its decision. Best-effort — any throw is caught
-  // and logged so an audit failure never aborts the loop.
-  let auditClaimableTotal: number | null = null;
-  if (deps.runIdleDetectAudit) {
-    state.idleDetectTick += 1;
-    try {
-      const auditResult = await deps.runIdleDetectAudit({
-        tick: state.idleDetectTick,
-        scanFoundClaimable: req.scanFoundClaimable,
-        // Issue #898: the scan and the audit cannot disagree about
-        // a repository the scan was never shown.
-        scanExcludedRepos: req.scanExcludedRepos,
-      });
-      if (
-        auditResult !== undefined &&
-        typeof auditResult.claimableTotal === "number"
-      ) {
-        auditClaimableTotal = auditResult.claimableTotal;
+  // Issue #1587: the audit, the census and the filer all issue `gh` calls
+  // from outside priority dispatch — attribute them to the hooks.
+  return withPriorityContext("Idle Work Hooks", async () => {
+    const outcome: IdleHookOutcome = { filed: false };
+    const flagFragment =
+      `foundClaimableIssue=${req.scanFoundClaimable} scanHadSuccess=${req.scanHadSuccess}`;
+    // Issue #2106: run the idle-detect audit at the same gate
+    // as the filer so its `[idle-detect] ...` lines (and the
+    // `mis_classification` ALERT when the probe disagrees with
+    // the scan) appear in the log immediately before the filer
+    // makes its decision. Best-effort — any throw is caught
+    // and logged so an audit failure never aborts the loop.
+    let auditClaimableTotal: number | null = null;
+    if (deps.runIdleDetectAudit) {
+      state.idleDetectTick += 1;
+      try {
+        const auditResult = await deps.runIdleDetectAudit({
+          tick: state.idleDetectTick,
+          scanFoundClaimable: req.scanFoundClaimable,
+          // Issue #898: the scan and the audit cannot disagree about
+          // a repository the scan was never shown.
+          scanExcludedRepos: req.scanExcludedRepos,
+        });
+        if (
+          auditResult !== undefined &&
+          typeof auditResult.claimableTotal === "number"
+        ) {
+          auditClaimableTotal = auditResult.claimableTotal;
+        }
+      } catch (auditErr) {
+        const msg = auditErr instanceof Error
+          ? auditErr.message
+          : String(auditErr);
+        req.log(`Idle-detect audit failed (continuing): ${msg}`);
       }
-    } catch (auditErr) {
-      const msg = auditErr instanceof Error
-        ? auditErr.message
-        : String(auditErr);
-      req.log(`Idle-detect audit failed (continuing): ${msg}`);
     }
-  }
-  // Issue #2811: emit the per-repo claimable-work census at the
-  // idle-task filing decision point so the idle-vs-work-on
-  // inversion is observable from the log alone. Best-effort —
-  // any throw is caught and logged, never aborting the loop
-  // (mirrors the `Idle-task filer failed (continuing)` pattern).
-  // Issue #2813: capture the census's fleet-global inversion
-  // verdict (cache-backed — no extra issue-list call) so it can
-  // suppress the filer below when real work exists anywhere in
-  // the monitored set, even when it was only deferred this cycle.
-  //
-  // Issue #437: the census is also told whether the scan
-  // completed an eligibility pass this cycle. Every VibeCoder
-  // inversion alert on 2026-08-26 followed a `stop reason=deadline`
-  // line by about a minute — the scan had stopped before its next
-  // claim and never evaluated the backlog — yet three such cycles
-  // escalated to a human as "the claim scan keeps refusing" work
-  // nothing had refused.
-  let censusInversionDetected = false;
-  if (deps.runIdleDecisionCensus) {
-    try {
-      const censusResult = await deps.runIdleDecisionCensus({
-        decisionPoint: "filing",
-        claimScanCompleted: req.claimScanCompleted,
-        // Issue #460: a repo the scan served is not one it refused.
-        claimedRepos: [...req.claimedRepos],
-        // Issue #898: nor is one it was never shown. A slot or the
-        // maintenance lane holding a repo makes it invisible to
-        // the scan, which then records no reason for any of its
-        // issues — the empty section in every escalation filed.
-        scanExcludedRepos: req.scanExcludedRepos,
-      });
-      if (
-        censusResult !== undefined &&
-        censusResult.inversionDetected === true
-      ) {
-        censusInversionDetected = true;
+    // Issue #2811: emit the per-repo claimable-work census at the
+    // idle-task filing decision point so the idle-vs-work-on
+    // inversion is observable from the log alone. Best-effort —
+    // any throw is caught and logged, never aborting the loop
+    // (mirrors the `Idle-task filer failed (continuing)` pattern).
+    // Issue #2813: capture the census's fleet-global inversion
+    // verdict (cache-backed — no extra issue-list call) so it can
+    // suppress the filer below when real work exists anywhere in
+    // the monitored set, even when it was only deferred this cycle.
+    //
+    // Issue #437: the census is also told whether the scan
+    // completed an eligibility pass this cycle. Every VibeCoder
+    // inversion alert on 2026-08-26 followed a `stop reason=deadline`
+    // line by about a minute — the scan had stopped before its next
+    // claim and never evaluated the backlog — yet three such cycles
+    // escalated to a human as "the claim scan keeps refusing" work
+    // nothing had refused.
+    let censusInversionDetected = false;
+    if (deps.runIdleDecisionCensus) {
+      try {
+        const censusResult = await deps.runIdleDecisionCensus({
+          decisionPoint: "filing",
+          claimScanCompleted: req.claimScanCompleted,
+          // Issue #460: a repo the scan served is not one it refused.
+          claimedRepos: [...req.claimedRepos],
+          // Issue #898: nor is one it was never shown. A slot or the
+          // maintenance lane holding a repo makes it invisible to
+          // the scan, which then records no reason for any of its
+          // issues — the empty section in every escalation filed.
+          scanExcludedRepos: req.scanExcludedRepos,
+        });
+        if (
+          censusResult !== undefined &&
+          censusResult.inversionDetected === true
+        ) {
+          censusInversionDetected = true;
+        }
+        // Issue #855: the census already knows why every repo was
+        // passed over, so it names the reason the fleet's idle
+        // seconds are booked against.
+        if (censusResult?.idleReason !== undefined) {
+          outcome.idleReason = censusResult.idleReason;
+        }
+      } catch (censusErr) {
+        const msg = censusErr instanceof Error
+          ? censusErr.message
+          : String(censusErr);
+        req.log(`Idle-decision census failed (continuing): ${msg}`);
       }
-      // Issue #855: the census already knows why every repo was
-      // passed over, so it names the reason the fleet's idle
-      // seconds are booked against.
-      if (censusResult?.idleReason !== undefined) {
-        outcome.idleReason = censusResult.idleReason;
-      }
-    } catch (censusErr) {
-      const msg = censusErr instanceof Error
-        ? censusErr.message
-        : String(censusErr);
-      req.log(`Idle-decision census failed (continuing): ${msg}`);
     }
-  }
-  // Budget guard: when the audit's independent probe already
-  // sees claimable work somewhere in the monitored set, the
-  // scan loop's `foundClaimableIssue=false` is almost
-  // certainly mis-classification (see Issue #2106 and the
-  // private-repo-10 #45-#48 incident). Filing more `idle-task`
-  // wrappers won't help and burns GraphQL budget the next
-  // iteration needs to actually claim the existing ones, so
-  // skip the filer this iteration. The next iteration's
-  // scan gets a fresh chance to pick up the existing
-  // claimable issues.
-  //
-  // Issue #2475: bound the short-circuit so a *persistent*
-  // disagreement cannot suppress filing indefinitely. Each
-  // disagreement observation extends this observer's run and
-  // emits a structured diagnostic; while the run stays inside
-  // the bound the filer is skipped as before, but once it
-  // exceeds the bound exactly ONE filer attempt is forced
-  // through and the run restarts — so a durable disagreement
-  // still produces wrappers without re-introducing the #2106
-  // wrapper flooding.
-  //
-  // Issue #1051: the run is measured in elapsed time (so it
-  // does not silently depend on the liveness-guard cadence),
-  // kept per starved observer (so a sibling slot's claim
-  // cannot clear it) and persisted across the worker's roughly
-  // hourly restarts. Without all three the bound could never
-  // be reached and the fleet filed no idle-task for ten days.
-  const nowMs = deps.now();
-  const auditDisagrees = auditClaimableTotal !== null &&
-    auditClaimableTotal > 0;
-  if (censusInversionDetected) {
-    // Issue #2813: the cache-backed census found an open,
-    // unblocked top-priority/work-on/low-priority issue
-    // somewhere in the monitored set — even if it was only
-    // deferred this cycle by nice/rotation/cooldown. The fleet
-    // has real work, so filing an idle-task would invert
-    // priority (#2806). Suppress the filer this iteration.
+    // Budget guard: when the audit's independent probe already
+    // sees claimable work somewhere in the monitored set, the
+    // scan loop's `foundClaimableIssue=false` is almost
+    // certainly mis-classification (see Issue #2106 and the
+    // private-repo-10 #45-#48 incident). Filing more `idle-task`
+    // wrappers won't help and burns GraphQL budget the next
+    // iteration needs to actually claim the existing ones, so
+    // skip the filer this iteration. The next iteration's
+    // scan gets a fresh chance to pick up the existing
+    // claimable issues.
     //
-    // Issue #3526: the suppression participates in the same
-    // #2475 bound as the audit disagreement instead of clearing
-    // the streak. The census does not model every rule the scan
-    // applies (open-PR blocking, milestone occupancy, TOCTOU,
-    // cooldowns), so its "there is work" verdict can be wrong
-    // about work the scan will never claim — in the host-23
-    // incident one open PR made the whole low-priority backlog
-    // unclaimable while the census counted it as available, and
-    // the then-unconditional streak reset suppressed the filer
-    // for hours. Once the run exceeds the bound, exactly ONE
-    // filer attempt is forced through and the run restarts, so
-    // a durable census/scan divergence still produces wrappers
-    // without re-introducing the #2106 wrapper flooding.
+    // Issue #2475: bound the short-circuit so a *persistent*
+    // disagreement cannot suppress filing indefinitely. Each
+    // disagreement observation extends this observer's run and
+    // emits a structured diagnostic; while the run stays inside
+    // the bound the filer is skipped as before, but once it
+    // exceeds the bound exactly ONE filer attempt is forced
+    // through and the run restarts — so a durable disagreement
+    // still produces wrappers without re-introducing the #2106
+    // wrapper flooding.
     //
-    // The observation is recorded whether or not a filer hook is
-    // wired — the bound describes the disagreement, not the hook —
-    // so a caller with no filer (test deps only; production always
-    // wires one) sees the run restart with nothing filed.
-    const streak = await state.disagreement.record(req.observerId, nowMs);
-    const streakFragment = formatIdleDisagreementFragment(
-      req.observerId,
-      streak,
-    );
-    if (streak.action === "bound-exceeded" && deps.runIdleTaskFiler) {
+    // Issue #1051: the run is measured in elapsed time (so it
+    // does not silently depend on the liveness-guard cadence),
+    // kept per starved observer (so a sibling slot's claim
+    // cannot clear it) and persisted across the worker's roughly
+    // hourly restarts. Without all three the bound could never
+    // be reached and the fleet filed no idle-task for ten days.
+    const nowMs = deps.now();
+    const auditDisagrees = auditClaimableTotal !== null &&
+      auditClaimableTotal > 0;
+    if (censusInversionDetected) {
+      // Issue #2813: the cache-backed census found an open,
+      // unblocked top-priority/work-on/low-priority issue
+      // somewhere in the monitored set — even if it was only
+      // deferred this cycle by nice/rotation/cooldown. The fleet
+      // has real work, so filing an idle-task would invert
+      // priority (#2806). Suppress the filer this iteration.
+      //
+      // Issue #3526: the suppression participates in the same
+      // #2475 bound as the audit disagreement instead of clearing
+      // the streak. The census does not model every rule the scan
+      // applies (open-PR blocking, milestone occupancy, TOCTOU,
+      // cooldowns), so its "there is work" verdict can be wrong
+      // about work the scan will never claim — in the host-23
+      // incident one open PR made the whole low-priority backlog
+      // unclaimable while the census counted it as available, and
+      // the then-unconditional streak reset suppressed the filer
+      // for hours. Once the run exceeds the bound, exactly ONE
+      // filer attempt is forced through and the run restarts, so
+      // a durable census/scan divergence still produces wrappers
+      // without re-introducing the #2106 wrapper flooding.
+      //
+      // The observation is recorded whether or not a filer hook is
+      // wired — the bound describes the disagreement, not the hook —
+      // so a caller with no filer (test deps only; production always
+      // wires one) sees the run restart with nothing filed.
+      const streak = await state.disagreement.record(req.observerId, nowMs);
+      const streakFragment = formatIdleDisagreementFragment(
+        req.observerId,
+        streak,
+      );
+      if (streak.action === "bound-exceeded" && deps.runIdleTaskFiler) {
+        req.log(
+          `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=census_inversion_bound_exceeded ${streakFragment}`,
+        );
+        try {
+          outcome.filed = true;
+          await deps.runIdleTaskFiler();
+        } catch (filerErr) {
+          const msg = filerErr instanceof Error
+            ? filerErr.message
+            : String(filerErr);
+          req.log(`Idle-task filer failed (continuing): ${msg}`);
+        }
+      } else {
+        req.log(
+          `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=unblocked_work_exists ${streakFragment}`,
+        );
+      }
+    } else if (auditDisagrees && deps.runIdleTaskFiler) {
+      const streak = await state.disagreement.record(req.observerId, nowMs);
+      const streakFragment = formatIdleDisagreementFragment(
+        req.observerId,
+        streak,
+      );
+      // Structured diagnostic on every disagreement so the
+      // scan/probe mismatch is observable per iteration.
       req.log(
-        `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=census_inversion_bound_exceeded ${streakFragment}`,
+        `[idle-hooks] ${flagFragment} action=audit_scan_disagreement claimable_total=${auditClaimableTotal} ${streakFragment}`,
+      );
+      if (streak.action === "bound-exceeded") {
+        // Bound exceeded: force a single filer attempt. The run
+        // has already restarted from this observation, so we do
+        // not file again until the disagreement persists for
+        // another full bound.
+        req.log(
+          `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=audit_disagreement_bound_exceeded ${streakFragment}`,
+        );
+        try {
+          outcome.filed = true;
+          await deps.runIdleTaskFiler();
+        } catch (filerErr) {
+          const msg = filerErr instanceof Error
+            ? filerErr.message
+            : String(filerErr);
+          req.log(`Idle-task filer failed (continuing): ${msg}`);
+        }
+      } else {
+        req.log(
+          `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=audit_found_claimable claimable_total=${auditClaimableTotal} ${streakFragment}`,
+        );
+      }
+    } else if (deps.runIdleTaskFiler) {
+      // No disagreement (probe agreed, audit unavailable, or no
+      // positive claimable total) — this observer's run ends
+      // here and the filer runs as usual.
+      await state.disagreement.clear(req.observerId);
+      req.log(
+        `[idle-hooks] ${flagFragment} invoking=idle-task-filer`,
       );
       try {
         outcome.filed = true;
@@ -4245,65 +4320,11 @@ async function runIdleWorkHooks(
       }
     } else {
       req.log(
-        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=unblocked_work_exists ${streakFragment}`,
+        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=no_hook`,
       );
     }
-  } else if (auditDisagrees && deps.runIdleTaskFiler) {
-    const streak = await state.disagreement.record(req.observerId, nowMs);
-    const streakFragment = formatIdleDisagreementFragment(
-      req.observerId,
-      streak,
-    );
-    // Structured diagnostic on every disagreement so the
-    // scan/probe mismatch is observable per iteration.
-    req.log(
-      `[idle-hooks] ${flagFragment} action=audit_scan_disagreement claimable_total=${auditClaimableTotal} ${streakFragment}`,
-    );
-    if (streak.action === "bound-exceeded") {
-      // Bound exceeded: force a single filer attempt. The run
-      // has already restarted from this observation, so we do
-      // not file again until the disagreement persists for
-      // another full bound.
-      req.log(
-        `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=audit_disagreement_bound_exceeded ${streakFragment}`,
-      );
-      try {
-        outcome.filed = true;
-        await deps.runIdleTaskFiler();
-      } catch (filerErr) {
-        const msg = filerErr instanceof Error
-          ? filerErr.message
-          : String(filerErr);
-        req.log(`Idle-task filer failed (continuing): ${msg}`);
-      }
-    } else {
-      req.log(
-        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=audit_found_claimable claimable_total=${auditClaimableTotal} ${streakFragment}`,
-      );
-    }
-  } else if (deps.runIdleTaskFiler) {
-    // No disagreement (probe agreed, audit unavailable, or no
-    // positive claimable total) — this observer's run ends
-    // here and the filer runs as usual.
-    await state.disagreement.clear(req.observerId);
-    req.log(
-      `[idle-hooks] ${flagFragment} invoking=idle-task-filer`,
-    );
-    try {
-      outcome.filed = true;
-      await deps.runIdleTaskFiler();
-    } catch (filerErr) {
-      const msg = filerErr instanceof Error
-        ? filerErr.message
-        : String(filerErr);
-      req.log(`Idle-task filer failed (continuing): ${msg}`);
-    }
-  } else {
-    req.log(
-      `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=no_hook`,
-    );
-  }
-  return outcome;
+    return outcome;
+  });
 }
 
 /**
@@ -4692,10 +4713,17 @@ export async function runCoreLoop(
           // so a worker that is quietly doing nothing is not mistaken
           // for a healthy idle host. The host is marked unhealthy so
           // the end-of-run FLEET report cannot claim otherwise.
-          if (deps.refreshTrustedAuthors) {
+          const refreshTrust = deps.refreshTrustedAuthors;
+          if (refreshTrust) {
             let refresh: RefreshOutcome;
             try {
-              refresh = await deps.refreshTrustedAuthors();
+              // Issue #1587: the refresh lists collaborators on every
+              // monitored repo — attribute those calls to it, not to
+              // nothing.
+              refresh = await withPriorityContext(
+                "Trust Refresh",
+                () => refreshTrust(),
+              );
             } catch (refreshErr) {
               const reason = refreshErr instanceof Error
                 ? refreshErr.message
@@ -4719,9 +4747,14 @@ export async function runCoreLoop(
           // after the trust refresh because `allowed_authors` decides which
           // logins are searched. A failure is reported and the cycle
           // continues on the per-repo path.
-          if (deps.prefetchFleetOpenPrs) {
+          const prefetchOpenPrs = deps.prefetchFleetOpenPrs;
+          if (prefetchOpenPrs) {
             try {
-              await deps.prefetchFleetOpenPrs();
+              // Issue #1587: one `gh search` per owner, outside dispatch.
+              await withPriorityContext(
+                "Fleet PR Prefetch",
+                () => prefetchOpenPrs(),
+              );
             } catch (prefetchErr) {
               deps.logError(
                 `[fleet-pr-prefetch] cross-repo prefetch failed: ${
@@ -4995,9 +5028,15 @@ export async function runCoreLoop(
           // Best-effort — any throw is caught and logged so recovery never
           // aborts the loop. Quiet on a no-op: the hook emits only the
           // existing `[recovery-decision]` telemetry.
-          if (deps.recoverStaleAssignments) {
+          const recoverStale = deps.recoverStaleAssignments;
+          if (recoverStale) {
             try {
-              await deps.recoverStaleAssignments();
+              // Issue #1587: two GitHub-side recovery scans, outside
+              // dispatch.
+              await withPriorityContext(
+                "Stale Assignment Recovery",
+                () => recoverStale(),
+              );
             } catch (recoveryErr) {
               const msg = recoveryErr instanceof Error
                 ? recoveryErr.message
