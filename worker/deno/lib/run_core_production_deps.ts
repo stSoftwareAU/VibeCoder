@@ -2145,6 +2145,9 @@ export async function createProductionRunCoreDeps(
             logger,
             deps: workerDeps,
             workDir: repoSetupResult.message,
+            // Issue #1660: heartbeat and marker state belong in the work
+            // root, not the clone `setupRepo` returned above.
+            workRoot: workDir,
             qualityInstructions: buildQualityInstructions(
               config.repoConfig,
               conflict.repo,
