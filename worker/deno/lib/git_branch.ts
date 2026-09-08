@@ -11,7 +11,10 @@
 
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
-import { detachLaneWorktreeHead, LANE_WORKTREE_ROOT } from "./lane_worktree.ts";
+import {
+  detachLaneWorktreeHead,
+  laneWorktreeHoldingBranch,
+} from "./lane_worktree.ts";
 import type { GitCommandOptions, GitCommandOutput } from "./git_timeout.ts";
 import {
   buildCheckoutResetBranchArgs,
@@ -101,30 +104,15 @@ export function isProtectedBranch(branchName: string): boolean {
  * The lane worktree holding `branchName`, when git refused for that reason
  * (Issue #1564).
  *
- * Returns a path only when it is one of **this host's own lane worktrees** —
- * `<work root>/worktrees/<lane>/<repo>`, the shape `laneWorktreePath` builds.
- * A branch held by anything else (a developer's own worktree, a path git
- * names that this module does not recognise) is reported rather than wrenched
- * away: the repair is for the fleet's own contention, not for whatever else
- * happens to share the clone.
+ * The recognition itself lives in `lane_worktree.ts`
+ * ({@link laneWorktreeHoldingBranch}) so the PR passes share it (Issue
+ * #1677); this wrapper only unpacks the checkout result.
  */
-function laneWorktreeHoldingBranch(
+function heldByLaneWorktree(
   checkout: Result<GitCommandOutput>,
 ): string | undefined {
   if (!checkout.ok || checkout.value.code === 0) return undefined;
-  const match = checkout.value.stderr.match(
-    /is already used by worktree at '([^']+)'/,
-  );
-  const path = match?.[1];
-  if (path === undefined) return undefined;
-
-  // `<...>/<LANE_WORKTREE_ROOT>/<lane>/<repo>`: the lane root must be the
-  // third segment from the end, so a merely similar path does not qualify.
-  const segments = path.split("/").filter((segment) => segment !== "");
-  if (segments.length < 3) return undefined;
-  return segments[segments.length - 3] === LANE_WORKTREE_ROOT
-    ? path
-    : undefined;
+  return laneWorktreeHoldingBranch(checkout.value.stderr);
 }
 
 /**
@@ -201,7 +189,7 @@ export async function createFeatureBranchFromBase(
       };
     }
     failures.push(describeGitFailure(args, checkout));
-    heldBy ??= laneWorktreeHoldingBranch(checkout);
+    heldBy ??= heldByLaneWorktree(checkout);
   }
 
   // Issue #1564: branches are shared between the worktrees of one clone, so

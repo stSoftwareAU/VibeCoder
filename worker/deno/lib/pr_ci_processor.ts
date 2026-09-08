@@ -503,8 +503,12 @@ async function _processCiFailureLocked(
     };
   }
 
-  // Record this retry attempt
-  const newRetryCount = await recordCiCheckRetry(stateDir, repo, checkRunId);
+  // The attempt this run will be. It is *recorded* only once the PR branch is
+  // checked out (Issue #1677, in `_processCiWithHeartbeat`): a checkout the
+  // clone refused — the branch held by another lane's worktree, or gone from
+  // origin — is not an attempt at the fix, and counting it burnt all three
+  // retries on NEAT-AI-Ockham#184 without the agent ever running.
+  const newRetryCount = currentRetries + 1;
 
   // Start periodic heartbeat to prevent false crash detection (Issue #1204).
   // The initial record is awaited (Issue #1888); on failure return early so
@@ -593,7 +597,7 @@ async function _processCiWithHeartbeat(
   processorDeps: CiProcessorDeps,
   newRetryCount: number,
 ): Promise<Result<CiFixResult>> {
-  const { repo, prNumber, checkName, encodedAnnotations } = input;
+  const { repo, prNumber, checkRunId, checkName, encodedAnnotations } = input;
   const {
     logger,
     deps,
@@ -626,11 +630,17 @@ async function _processCiWithHeartbeat(
   });
   if (!prepared.ok) {
     // Issue #4376: never run the agent on the wrong branch. A missing ref
-    // means the PR merged/closed after it was listed — skip it.
+    // means the PR merged/closed after it was listed — skip it. A branch
+    // another worktree on this host still holds (Issue #1677) is contention:
+    // the PR is not at fault and no retry is spent, so the pass tries again
+    // next cycle with its budget intact.
     logger.warn(
       `CI fix skipped for PR #${prNumber}: PR branch '${input.branchName}' ${
         prepared.reason === "branch_missing"
           ? "no longer exists on origin (merged or closed?)"
+          : prepared.reason === "branch_held"
+          ? "is checked out in another worktree on this host — not the PR's " +
+            "fault, retried next cycle without spending a retry (Issue #1677)"
           : "could not be checked out"
       } — ${prepared.detail}`,
     );
@@ -640,12 +650,16 @@ async function _processCiWithHeartbeat(
         processed: false,
         changesPushed: false,
         annotationCount: 0,
-        retryCount: newRetryCount,
+        retryCount: newRetryCount - 1,
         summary:
           `PR branch '${input.branchName}' unavailable (${prepared.reason})`,
       },
     };
   }
+
+  // The branch is the PR's: this is a real attempt, so it counts against
+  // `maxCiRetries` (Issue #1677 — see `_processCiFailureLocked`).
+  await recordCiCheckRetry(stateDir, repo, checkRunId);
 
   // Capture pre-Claude HEAD so we can detect commits Claude pushes itself
   // (Issue #1863). The final-mile commitAndPushPending only sees uncommitted

@@ -259,6 +259,9 @@ async function _processSpellingWithHeartbeat(
       `Spelling fix skipped for PR #${prNumber}: PR branch '${input.branchName}' ${
         prepared.reason === "branch_missing"
           ? "no longer exists on origin (merged or closed?)"
+          : prepared.reason === "branch_held"
+          ? "is checked out in another worktree on this host — not the PR's " +
+            "fault, retried next cycle (Issue #1677)"
           : "could not be checked out"
       } — ${prepared.detail}`,
     );

@@ -25,6 +25,10 @@ import {
   buildFetchTrackingRefArgs,
 } from "./git_ref_args.ts";
 import { LOCAL_AHEAD_OF_REMOTE_ERROR } from "./git_branch_sync.ts";
+import {
+  detachLaneWorktreeHead,
+  laneWorktreeHoldingBranch,
+} from "./lane_worktree.ts";
 
 /** What the checkout had to do to put the local branch on the remote head. */
 export type BranchAlignment =
@@ -167,10 +171,25 @@ export async function checkoutPrBranchAtRemoteHead(
   //
   // — while the branch sat healthy on origin the whole time. PR #408 failed
   // that way on three consecutive cycles.
-  const aligned = await runGitCommand(
+  let aligned = await runGitCommand(
     buildCheckoutResetBranchArgs(branchName, trackingRef),
     options,
   );
+  if (aligned.ok && aligned.value.code !== 0) {
+    // Issue #1677: the branch is checked out in one of this host's own lane
+    // worktrees — typically the issue lane that raised the PR and then sat
+    // parked on its branch. Detach that worktree and try once more, the
+    // repair `createFeatureBranchFromBase` already makes (Issue #1564). A
+    // holder that is not a lane worktree of this host is left alone and the
+    // refusal is reported below in git's own words.
+    const heldBy = laneWorktreeHoldingBranch(aligned.value.stderr);
+    if (heldBy !== undefined && await detachLaneWorktreeHead(heldBy)) {
+      aligned = await runGitCommand(
+        buildCheckoutResetBranchArgs(branchName, trackingRef),
+        options,
+      );
+    }
+  }
   if (!aligned.ok || aligned.value.code !== 0) {
     const stderr = aligned.ok ? aligned.value.stderr.trim() : "";
     return {
