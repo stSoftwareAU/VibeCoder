@@ -11,7 +11,15 @@
  *   - `addLabel`         — REST API (`POST /repos/.../issues/N/labels`)
  *                          with `gh issue edit --add-label` fallback.
  *   - `postComment`      — REST API (`POST /repos/.../issues/N/comments`).
- *   - `getIssueComments` — REST API list (`GET /repos/.../issues/N/comments`).
+ *   - `getIssueComments` — REST API list (`GET /repos/.../issues/N/comments`),
+ *                          paged at 100 per request up to 10 pages (1 000
+ *                          comments). GitHub's default page is the **oldest
+ *                          30**, and it ignores `sort`/`direction` on this
+ *                          endpoint, so the newest comments — where
+ *                          `escalateToHuman`'s dedup marker always is — are
+ *                          only reachable by paging (Issue #1619). Pages are
+ *                          concatenated oldest-first, the order the dedup
+ *                          scan's `slice(-50)` tail expects.
  *
  * Issues and PRs share `/issues/<number>` endpoints in the GitHub API, so the
  * same shim works for both `target.kind: "issue"` and `target.kind: "pr"`.
@@ -25,6 +33,11 @@
 import type { GitHubClient, GitHubComment } from "../types.ts";
 
 type GhFn = (args: string[]) => Promise<string>;
+
+/** Comments requested per `GET /comments` page — the GitHub maximum. */
+const COMMENT_PAGE_SIZE = 100;
+/** Maximum pages fetched per issue: 10 × 100 = 1 000 comments. */
+const COMMENT_PAGE_CAP = 10;
 
 /**
  * Best-effort parser for the REST `GET /comments` response. Returns the
@@ -81,15 +94,27 @@ export function createGhEscalationClient(ghFn: GhFn): GitHubClient {
       repo: string,
       issueNumber: number,
     ): Promise<GitHubComment[]> {
-      try {
-        const raw = await ghFn([
-          "api",
-          `repos/${repo}/issues/${issueNumber}/comments`,
-        ]);
-        return parseCommentsJson(raw);
-      } catch {
-        return [];
+      const all: GitHubComment[] = [];
+      for (let page = 1; page <= COMMENT_PAGE_CAP; page++) {
+        let parsed: GitHubComment[];
+        try {
+          const raw = await ghFn([
+            "api",
+            `repos/${repo}/issues/${issueNumber}/comments` +
+            `?per_page=${COMMENT_PAGE_SIZE}&page=${page}`,
+          ]);
+          parsed = parseCommentsJson(raw);
+        } catch {
+          // Best effort: return the pages already fetched rather than
+          // discarding them, matching the pre-paging behaviour on failure.
+          return all;
+        }
+        all.push(...parsed);
+        // A short page is the last page (a malformed page parses to [] and
+        // also stops here — the dedup scan treats absence as "no marker").
+        if (parsed.length < COMMENT_PAGE_SIZE) break;
       }
+      return all;
     },
     async addLabel(
       repo: string,

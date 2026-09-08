@@ -108,7 +108,7 @@ Deno.test("getIssueComments - parses valid JSON into GitHubComment shape", async
 
   assertEquals(calls[0], [
     "api",
-    "repos/owner/repo/issues/9/comments",
+    "repos/owner/repo/issues/9/comments?per_page=100&page=1",
   ]);
   assertEquals(comments.length, 2);
   const [c0, c1] = comments;
@@ -217,4 +217,111 @@ Deno.test("unsupported methods reject with a descriptive error", async () => {
     }
     assert(threw, "expected the unsupported method to reject");
   }
+});
+
+// ---------------------------------------------------------------------------
+// getIssueComments paging (Issue #1619)
+//
+// The default un-paged request returns the OLDEST 30 comments, so on a busy
+// issue the dedup marker `escalateToHuman` looks for — always among the
+// newest — was never fetched. The shim now pages at 100 per request.
+// ---------------------------------------------------------------------------
+
+/** Build `count` REST comment payload entries starting at `startId`. */
+function makeRestComments(
+  count: number,
+  startId: number,
+): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_unused, index) => ({
+    id: startId + index,
+    body: `comment ${startId + index}`,
+    created_at: "2026-09-08T00:00:00Z",
+    user: { login: "vibe-coder[bot]" },
+  }));
+}
+
+Deno.test("getIssueComments - requests 100 comments per page", async () => {
+  const { ghFn, calls } = makeFakeGh({ response: () => "[]" });
+  const client = createGhEscalationClient(ghFn);
+
+  await client.getIssueComments("owner/repo", 593);
+
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0], [
+    "api",
+    "repos/owner/repo/issues/593/comments?per_page=100&page=1",
+  ]);
+});
+
+Deno.test("getIssueComments - a full page is followed by a page=2 request", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    response: (args) =>
+      args[1]?.endsWith("page=1")
+        ? JSON.stringify(makeRestComments(100, 1))
+        : JSON.stringify(makeRestComments(17, 101)),
+  });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 593);
+
+  assertEquals(calls.length, 2);
+  assertEquals(calls[1], [
+    "api",
+    "repos/owner/repo/issues/593/comments?per_page=100&page=2",
+  ]);
+  assertEquals(comments.length, 117);
+});
+
+Deno.test("getIssueComments - a short page stops paging", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    response: () => JSON.stringify(makeRestComments(47, 1)),
+  });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 593);
+
+  assertEquals(calls.length, 1);
+  assertEquals(comments.length, 47);
+});
+
+Deno.test("getIssueComments - returns pages concatenated oldest-first", async () => {
+  const { ghFn } = makeFakeGh({
+    response: (args) =>
+      args[1]?.endsWith("page=1")
+        ? JSON.stringify(makeRestComments(100, 1))
+        : JSON.stringify(makeRestComments(3, 101)),
+  });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 593);
+
+  assertEquals(comments.length, 103);
+  assertEquals(comments[0]?.body, "comment 1");
+  assertEquals(comments[99]?.body, "comment 100");
+  assertEquals(comments[102]?.body, "comment 103");
+});
+
+Deno.test("getIssueComments - caps paging at 10 pages (1 000 comments)", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    // Every page is full, so only the cap can stop the loop.
+    response: () => JSON.stringify(makeRestComments(100, 1)),
+  });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 593);
+
+  assertEquals(calls.length, 10);
+  assertEquals(comments.length, 1000);
+});
+
+Deno.test("getIssueComments - a mid-paging failure returns what was fetched so far", async () => {
+  const { ghFn } = makeFakeGh({
+    failWhen: (args) => args[1]?.includes("page=2") === true,
+    response: () => JSON.stringify(makeRestComments(100, 1)),
+  });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 593);
+
+  assertEquals(comments.length, 100);
 });

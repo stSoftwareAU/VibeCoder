@@ -104,15 +104,19 @@ export interface EscalateToHumanOptions {
   /**
    * Optional dedup key. When supplied, the helper appends a marker
    * `<!-- needs-human-escalation: {dedupKey} -->` to the comment body and
-   * scans the most recent ~50 comments for the same marker; if a match
-   * was created within 24 hours, the duplicate comment is skipped (the
-   * label add is still re-attempted, idempotently).
+   * scans the newest 50 comments for the same marker; if a match was
+   * created within 24 hours, the duplicate comment is skipped (the label
+   * add is still re-attempted, idempotently). The scan sees the newest
+   * comments on any issue: `getIssueComments` fetches every page (capped
+   * at 1 000 comments) and this helper scans the last 50 of them
+   * (Issue #1619).
    */
   dedupKey?: string;
   /**
    * Optional list of additional substrings that count as a pre-existing
    * explanation. When the dedup scan finds any of these substrings in
-   * the most recent ~50 comments within the 24-hour window, the
+   * the newest 50 comments (of all pages fetched, capped at 1 000)
+   * within the 24-hour window, the
    * duplicate comment is skipped — even if the helper's own dedup
    * marker is absent. Used by callers (e.g. the grill-me processor)
    * whose Round N / Ready comments already serve as the explanation
@@ -299,8 +303,9 @@ export async function escalateToHuman(
       const comments = prefetchedComments
         ? prefetchedComments
         : await ghClient.getIssueComments(repo, target.number);
-      // Scan the most recent ~50 comments (issue-spec). Newer comments
-      // come last in the REST default ordering, so iterate the tail.
+      // Scan the newest 50 comments. Newer comments come last in the REST
+      // ordering — which GitHub does not let `direction` reverse — so the
+      // tail is the newest, and the client pages to reach it (Issue #1619).
       const recent = comments.slice(-COMMENT_SCAN_LIMIT);
       const cutoff = now() - DEDUP_WINDOW_MS;
       const matched = recent.filter((comment) => {
