@@ -736,17 +736,25 @@ export function detectModelUnavailable(
 // ---------------------------------------------------------------------------
 
 /**
- * The Claude CLI's refusal of a `--session-id` it will not accept.
+ * The Claude CLI's refusal of the session flags it was given.
  *
- * The CLI validates the flag as a UUID and, when it fails, exits ~0.2 s after
- * spawn with `Error: Invalid session ID. Must be a valid UUID.` — before it
- * ever reaches a model call. Anchored to session-id phrasing so an unrelated
- * "invalid" (a bad model alias, a git reference) cannot match: the remedy here
- * is to drop the session flags, which would silently discard continuity if it
- * fired on the wrong failure.
+ * Two shapes, both start-up failures — the process exits ~0.2 s after spawn,
+ * before it ever reaches a model call:
+ *
+ * - `Error: Invalid session ID. Must be a valid UUID.` — the id itself
+ *   (Issue #204);
+ * - `Error: --session-id can only be used with --continue or --resume if
+ *   --fork-session is also specified.` — the flag pairing (Issue #1580,
+ *   Claude Code 2.1.261). The worker no longer sends that pairing, but a
+ *   refusal of the flags is still the flags' fault, and the remedy is the
+ *   same: drop them and retry once, loudly.
+ *
+ * Anchored to session-id phrasing so an unrelated "invalid" (a bad model
+ * alias, a git reference) cannot match: dropping the session flags would
+ * silently discard continuity if it fired on the wrong failure.
  */
 const INVALID_SESSION_ID_RE =
-  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid/i;
+  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with/i;
 
 /**
  * Check if the tail of output indicates the CLI rejected the session id.

@@ -84,8 +84,8 @@ export function createSessionResumeState(): SessionResumeState {
 /**
  * Build CLI flags for session resume based on current state.
  *
- * - First phase (phaseCount === 0): passes `--session-id` only
- * - Subsequent phases (phaseCount > 0): passes both `--session-id` and `--resume`
+ * - First phase (phaseCount === 0): a new session under `--session-id`
+ * - Subsequent phases (phaseCount > 0): `--resume <that id>` (Issue #1580)
  *
  * @param state - Current session resume state (undefined if feature disabled)
  * @returns CLI flags to apply, or empty flags if state is undefined
@@ -127,21 +127,23 @@ export function recordPhaseCompletion(
  * Converts the structured flags into an array of CLI arguments
  * suitable for passing to `Deno.Command`.
  *
+ * The two flags name two different things (Issue #1580): `--session-id
+ * <uuid>` is the id a NEW conversation is created under, and `--resume
+ * <uuid>` continues an existing one. A subsequent phase therefore sends
+ * `--resume <id>` alone. It used to send `--session-id <id> --resume`, which
+ * Claude Code 2.1.261 refuses at start-up — "--session-id can only be used
+ * with --continue or --resume if --fork-session is also specified" — because
+ * that pairing asks for a fork, which is not what a continuation wants.
+ *
  * @param flags - Session resume flags
- * @returns Array of CLI arguments (e.g., ["--session-id", "abc-123", "--resume"])
+ * @returns Array of CLI arguments, e.g. `["--session-id", "<uuid>"]` for the
+ *   first phase and `["--resume", "<uuid>"]` for a later one
  */
 export function buildSessionResumeArgs(
   flags: SessionResumeFlags,
 ): string[] {
-  const args: string[] = [];
-
-  if (flags.sessionId) {
-    args.push("--session-id", flags.sessionId);
-  }
-
   if (flags.resume) {
-    args.push("--resume");
+    return flags.sessionId ? ["--resume", flags.sessionId] : ["--resume"];
   }
-
-  return args;
+  return flags.sessionId ? ["--session-id", flags.sessionId] : [];
 }

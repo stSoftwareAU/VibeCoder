@@ -37,6 +37,14 @@ Deno.test("detectInvalidSessionId - matches the CLI's refusal (Issue #204)", () 
   );
 });
 
+Deno.test("detectInvalidSessionId - matches the flag-pairing refusal of Claude Code 2.1.261 (Issue #1580)", () => {
+  assert(
+    detectInvalidSessionId(
+      "Error: --session-id can only be used with --continue or --resume if --fork-session is also specified.",
+    ),
+  );
+});
+
 Deno.test("detectInvalidSessionId - ignores unrelated failures (Issue #204)", () => {
   assertEquals(detectInvalidSessionId(""), false);
   assertEquals(detectInvalidSessionId("Error: invalid model"), false);
@@ -183,14 +191,17 @@ Deno.test({
     assertEquals(result.value.exitCode, 0);
     assertEquals(result.value.output.includes("Done."), true);
 
-    // Two invocations: the first carried the session flags, the retry none.
+    // Two invocations: the first carried the session flag (a resumed phase
+    // is `--resume <id>`, Issue #1580), the retry none.
     assertEquals(invocations.length, 2);
-    assertEquals(invocations[0], "session-flags: --session-id --resume");
+    assertEquals(invocations[0], "session-flags: --resume");
     assertEquals(invocations[1], "session-flags:");
 
     // The degradation is loud, never silent.
     assert(
-      warnings.some((w) => w.includes("Invalid session ID")),
+      warnings.some((w) =>
+        w.includes("Retrying once without --session-id/--resume")
+      ),
       `expected a WARNING naming the refusal, got: ${warnings.join(" | ")}`,
     );
     assertEquals(securityEvents.includes("INVALID_SESSION_ID"), true);
