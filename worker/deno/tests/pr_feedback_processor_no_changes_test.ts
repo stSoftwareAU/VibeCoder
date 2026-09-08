@@ -149,6 +149,7 @@ async function runNoChangesScenario(
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-feedback",
+    workRoot: "/tmp/test-feedback",
   };
 
   const result = await processPrFeedback(input, processorDeps);

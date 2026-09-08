@@ -135,6 +135,7 @@ Deno.test("processCiFailure - rebases onto the moved head, pushes, and posts no 
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -192,6 +193,7 @@ Deno.test("processCiFailure - an unrecoverable push names the failing step in th
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
