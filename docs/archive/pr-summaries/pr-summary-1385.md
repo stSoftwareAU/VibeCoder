@@ -70,6 +70,12 @@ flowchart TD
 21 checks including semgrep, completeness, markdownlint and the full Deno unit
 suite.
 
+Both Issue #1385 regression tests are declared on a single `Deno.test("…", …)`
+line. The security-fix gate matches a cited identifier against the declaration
+line in the branch diff (`citedTestIdentifierInDiff`), so a name carried on a
+continuation line cites a declaration the gate cannot see — which is what
+blocked this PR on the previous attempt. The test bodies are unchanged.
+
 ### Security-fix evidence
 
 - **Regression test** —
