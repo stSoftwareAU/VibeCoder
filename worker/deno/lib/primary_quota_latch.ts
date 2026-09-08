@@ -15,8 +15,13 @@
  * and {@link isPrimaryQuotaLatched} lets the shared chokepoint
  * (`gh_spawn.ts` `spawnGh`, since Issue #1485 — every `gh` process in the
  * worker passes it) short-circuit every subsequent GraphQL-backed call — no
- * spawn, no retry, no secondary-limit cost — until the quota resets. The chokepoint also writes the shared rate-limit signal
- * so the existing Issue #1780 mid-cycle pause engages at the next pass.
+ * spawn, no retry, no secondary-limit cost — until the quota resets. Since
+ * Issue #1540 the same chokepoint is where the refusal is *recognised*: it
+ * hands the first one to the hook `github.ts` registers, which probes the
+ * reset, latches, and writes the shared rate-limit signal so the existing
+ * Issue #1780 mid-cycle pause engages at the next pass. Before that only
+ * `runGhCommandRaw`'s own catch could latch, and a refusal seen by one of
+ * the thirty-odd modules that spawn `gh` directly latched nothing.
  *
  * The latch is a module-global: it lives for the life of the worker process
  * and auto-expires the instant the recorded reset passes, so a stale latch

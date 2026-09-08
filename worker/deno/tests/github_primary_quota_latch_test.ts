@@ -15,6 +15,7 @@ import {
   _resetGhSpawnRunner,
   _setGhSpawnRunner,
   type GhSpawnResult,
+  spawnGh,
 } from "../lib/gh_spawn.ts";
 import {
   runGhCommandRaw,
@@ -368,6 +369,50 @@ Deno.test("chokepoint - a secondary limit honours a longer retry-after (Issue #1
       until !== null && until >= nowSec + 119 && until <= nowSec + 121,
       `latched ${until}`,
     );
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("chokepoint - a refusal seen by a DIRECT spawnGh caller latches the process and signals the window (Issue #1540)", async () => {
+  // Loading `github.ts` (imported above) registered the production hook.
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "quota_latch_direct_" });
+  const nowSec = Math.floor(Date.now() / 1000);
+  const resetAt = nowSec + 900;
+  const seen: string[] = [];
+  _setGhSpawnRunner((args) => {
+    seen.push(args.join(" "));
+    if (args[0] === "api" && args.includes("rate_limit")) {
+      return Promise.resolve(ok(rateLimitDoc(resetAt)));
+    }
+    return Promise.resolve(fail(RATE_LIMIT_MSG));
+  });
+
+  try {
+    // The auto-merge shape: a module calling the chokepoint directly, not
+    // through runGhCommandRaw, sees the refusal …
+    const first = await spawnGh(["pr", "merge", "7", "--auto", "--squash"], {
+      workDir,
+    });
+    assertEquals(first.success, false);
+    // … and that alone latches the process and writes the signal.
+    assert(isPrimaryQuotaLatched(nowSec), "a direct caller's refusal latches");
+    const signal = await readRateLimitSignal(workDir);
+    assert(signal.ok, "a signal file should be written");
+
+    // Its retry — and every other module's GraphQL call — is now skipped
+    // without a spawn.
+    const spawnsBefore = seen.length;
+    const retry = await spawnGh(["pr", "merge", "7", "--auto", "--squash"]);
+    assertEquals(retry.success, false);
+    assert(
+      /gh command skipped/.test(retry.stderr),
+      `the retry should be the latch's skip, got: ${retry.stderr}`,
+    );
+    assertEquals(seen.length, spawnsBefore, "no spawn behind the latch");
   } finally {
     _resetGhSpawnRunner();
     clearPrimaryQuotaLatch();
