@@ -305,23 +305,35 @@ An integration test **may need what a unit test may not**: a provisioned
 interpreter, a container runtime, `git`, the network, real credentials. That
 prerequisite must be named and enforced loudly, never skipped in silence.
 `tests/setup_ps1_test.ts` resolves PowerShell once and marks its cases
-`ignore` when it is absent — and both CI jobs that would run it fail the build
+`ignore` when it is absent — and every CI job that would run it fails the build
 when `pwsh` is missing, rather than reporting a green suite that tested nothing.
 
 Integration tests are **excluded from every quality run and from the merge
 gate**. Both unit passes ignore them, because they cost roughly a third of the
 gate's wall time and ran on changes that cannot reach them (Issue #907), and
 PR #1170 took them out of the sharded `validate (tests N/4)` legs for the
-same reason — a required check that needs a provisioned PowerShell before it
-can start reports the runner as often as it reports the change. They run in
+same reason — a required check that needs an interpreter it cannot count on
+reports the runner as often as it reports the change. They run in
 per-PR CI in their own `integration tests` job, which is deliberately **not** a
 required check, and on demand with `deno task test:integration`. A red result
 there is a real signal and must be read; it is not the gate.
 
+**One named exception, and it is the prerequisite that moved, not the rule**
+(Issue #1598). The container image now ships PowerShell 7 (Issue #1596), so
+the three `run.ps1` launcher suites have their interpreter wherever the worker
+runs its gate. They are named in `IN_GATE_SCRIPT_SUITES`, each with a reason
+and its measured cost, and the gate runs them — about 97s for the Windows
+containment boundary being verified before the push rather than in a job that
+cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
+host without PowerShell rather than letting those suites report "ignored"
+while the gate reports green. The `setup.ps1` suites stay excluded. An entry
+there is an exception a change has to argue for, never a place to move a slow
+suite into.
+
 A test that **reads** a repository script without running it is a unit test,
 not an integration test — but the classifier still claims it, so it must be
-named in `SCRIPT_READING_UNIT_TESTS` with a reason. Neither list is a default:
-a file the classifier claims is placed in one or the other deliberately.
+named in `SCRIPT_READING_UNIT_TESTS` with a reason. No list is a default: a
+file the classifier claims is placed in one of the three deliberately.
 
 ### Benchmarks
 
@@ -386,17 +398,19 @@ bash linting is owned by each repo's own CI. See
 [CONTRIBUTING.md → Local quality gate](CONTRIBUTING.md) for how to install the
 optional checks (`markdownlint-cli2`, `semgrep`).
 
-**A quality run executes the unit suite only** — no integration tests, no
-benchmarks. Its `deno test` stage is the two unit passes and nothing else:
-both of them ignore `INTEGRATION_TEST_FILES` (Issue #907), and no gate has
-ever run a benchmark. The sharded `validate (tests N/4)` legs run exactly the
-same two unit passes, built from the same manifests by
-`lib/unit_test_passes.ts` (PR #1170), so "it passed locally" and "the merge
-gate passed" mean the same thing. Integration tests are covered by per-PR CI in
-a separate, non-required `integration tests` job; run them locally with
-`deno task test:integration` when your change touches a script they drive. A
-green quality run therefore says nothing about the integration suites, and is
-not meant to.
+**A quality run executes the unit suite only** — no benchmarks, and no
+integration tests beyond the three `run.ps1` launcher suites
+`IN_GATE_SCRIPT_SUITES` names (Issue #1598). Its `deno test` stage is the two
+unit passes and nothing else: both of them ignore `INTEGRATION_TEST_FILES`
+(Issue #907), and no gate has ever run a benchmark. The sharded
+`validate (tests N/4)` legs run exactly the same two unit passes, built from
+the same manifests by `lib/unit_test_passes.ts` (PR #1170), so "it passed
+locally" and "the merge gate passed" mean the same thing — including the
+`run.ps1` suites, which both now run. Every other integration test is covered
+by per-PR CI in a separate, non-required `integration tests` job; run them
+locally with `deno task test:integration` when your change touches a script
+they drive. A green quality run therefore says nothing about those suites, and
+is not meant to.
 
 **All quality checks MUST pass before creating a PR.** The worker runs
 `./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a

@@ -176,10 +176,15 @@ Deno.test("test taxonomy - the quality gate is documented as unit-only (Issue #9
   );
   assertStringIncludes(body, "A quality run executes the unit suite only");
   assert(
-    /no integration tests, no benchmarks/i.test(body),
+    /no benchmarks/i.test(body),
     "the Quality Gates section no longer says which categories a quality " +
       "run leaves out",
   );
+  // Issue #1598: "no integration tests" full stop stopped being true when
+  // the image's baked pwsh let the gate take back the three run.ps1 launcher
+  // suites. The exception is part of the claim now — prose that states the
+  // rule without it documents a gate that is not the gate.
+  assertStringIncludes(body, "IN_GATE_SCRIPT_SUITES");
   assertStringIncludes(body, "per-PR CI");
 });
 
