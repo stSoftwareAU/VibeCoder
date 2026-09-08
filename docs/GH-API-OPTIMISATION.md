@@ -361,7 +361,9 @@ underlying counters so its `cache: N hits, M misses` log matches.
 
 A companion line, `graphql-calls: N total, <source>=n, …`, counts the
 subset of those invocations that are GraphQL-backed and attributes them
-to the scan that issued them. Every `gh` sub-command (`issue list`,
+to the scan that issued them — by the four-step resolution described
+below, which since Issue #1586 names the ordinary scan traffic too.
+Every `gh` sub-command (`issue list`,
 `pr view`, `search`, …) is GraphQL-backed, as is an explicit
 `gh api graphql`; only a plain REST `gh api <path>` is not. The line
 uses the same predicate as the primary-quota latch
@@ -381,6 +383,133 @@ every GraphQL-backed spawn returns a `gh command skipped: … API rate
 limit already exceeded` failure without starting a process, while REST
 `gh api <path>` calls and the quota probe that learns the reset still
 run.
+
+### How the two counters relate
+
+`graphql-calls: N total` and the `api-graphql=` bucket of the
+`gh-calls:` line answer different questions, and both are wanted:
+
+- **`graphql-calls: N total`** counts *every* GraphQL-billed
+  sub-command — `issue list`, `pr view`, `search`, and `api graphql`.
+- **`api-graphql=` in `gh-calls:`** is the subset that is an explicit
+  `gh api graphql`. It is always ≤ the `graphql-calls:` total.
+
+So `api-graphql=23` beside `graphql-calls: 796 total` is normal, not a
+defect. What the two must agree on is *which argv is an `api graphql`
+invocation*, and since Issue #1588 they do by construction: both derive
+from the one flag-aware classifier in `worker/deno/lib/gh_argv.ts`
+(`classifyGhCall`), which skips flags **and the values of value-taking
+flags** (`-f`, `-F`, `--field`, `--raw-field`, `-H`, `--header`, `-X`,
+`--method`, `-q`, `--jq`, `-t`, `--template`, `--input`, `-R`,
+`--repo`, `--cache`, `-p`, `--preview`, `--hostname` — every
+value-taking flag `gh api` itself has) before reading the endpoint
+token. argv is normalised by `normaliseGhArgs`
+(`worker/deno/lib/gh_flag_parser.ts`, Issue #3867/#1219) first and
+pflag shorthand groups are then read the way pflag reads them, so
+neither `gh api -iXPOST graphql` nor `gh api -iq .data graphql` — both
+`-i` plus a value-taking shorthand — can hide the endpoint token behind
+a flag value. Before that, `classifyGhArgs` read
+`["api", "-f", "query=…", "graphql"]` as REST `api` while the latch
+read it as GraphQL, and the latch's `args.includes("graphql")` matched
+the token anywhere in argv — including as a flag value.
+
+Only a positively-classified REST `gh api <path>` is exempt from the
+latch; anything the classifier cannot place as REST — a sub-command, an
+`api` call with no endpoint token, an argv with no positional at all —
+stays GraphQL-billed. That is the safe direction for the tightening:
+the flag list would have to gain a *false* entry, not miss one, for a
+real GraphQL call to be waved through as REST.
+
+Because every `withGraphQLSource` call site wraps exactly one
+`gh api graphql` spawn, the **explicitly-sourced** buckets (steps 1–2
+of the resolution below — not the derived `priority:` ones, and not
+`unattributed`) should sum to exactly the `api-graphql=` count. A
+divergence therefore means one of two concrete things, and nothing
+vaguer: either a `withGraphQLSource` wrapper spans a call that is not
+an `api graphql` spawn (the sum runs high), or an `api graphql` call
+site is not wrapped at all (the sum runs low). A table-driven test in
+`worker/deno/tests/gh_call_metrics_test.ts` holds both functions to the
+same argv rows, so a future edit to either classifier that reopens the
+divergence fails before merge.
+
+Source attribution is scoped to the async chain that entered it
+(`withGraphQLSource`, Issue #1585), so two lanes running at once cannot
+credit each other's calls. Before that, the source was a process-wide
+stack: while `comment_batch.ts` awaited its `api graphql` spawn, an
+`issue list` from the lane beside it was credited to `comments-batch`.
+That mechanism explains the earlier reading where the attributed
+buckets summed to 40 against an `api-graphql` sub-command counter of 23
+for the same cycle — but only if the 40 was summed over the *named*
+buckets. Every `withGraphQLSource` call site wraps exactly one
+`gh api graphql` spawn, so absent concurrency the named buckets sum to
+exactly the `api graphql` count, and only a shared stack could let one
+absorb 17 unrelated sub-command calls. Summed over *all* buckets
+including `unattributed`, the gap needs no cross-crediting: since
+Issue #1485 the source counters count every GraphQL-backed sub-command,
+while the `api graphql` sub-command bucket counts only the explicit
+ones, so the two measure different sets by design.
+
+The source of a GraphQL-billed call is resolved in four steps
+(Issue #1586):
+
+1. the explicit `enterGraphQLSource()` stack — innermost wins, so an
+   `enterGraphQLSource()` nested inside a wrapped chain still beats it;
+2. else the async-scoped `withGraphQLSource()` context;
+3. else the **active priority** — the `enterPriority()` stack top, else
+   the async-scoped `withPriorityContext()` — emitted with a `priority:`
+   prefix, e.g. `priority:issue-scanning`;
+4. else the `unattributed` bucket.
+
+Only the eight batching modules wrap themselves in an explicit GraphQL
+source, so before step 3 existed the bulk of the burn — the ordinary
+`issue list` / `pr list` / `issue view` traffic — had no source at all
+and `unattributed` was most of the line. With the priority fallback a
+cycle reads like `graphql-calls: 796 total,
+priority:issue-scanning=239, timeline-batch=26, …`. The `priority:`
+prefix keeps a derived bucket distinguishable from an explicit one, so
+a priority named the same as a source cannot merge with it.
+
+`unattributed` is therefore an anomaly signal, not the normal case: it
+means a call was issued with neither a GraphQL source nor a priority
+context in scope — a pass that runs outside `withPriorityContext`. The
+buckets sum exactly to the total, and a unit test in
+`worker/deno/tests/gh_call_metrics_test.ts` asserts that invariant, so
+any future path that counts a GraphQL call without choosing a bucket
+fails before merge.
+
+The primary-quota latch (Issue #42) is enforced at the same chokepoint:
+once the hourly GraphQL quota is exhausted, every GraphQL-backed spawn
+from any module returns a `gh command skipped: … API rate limit already
+exceeded` failure without starting a process, while REST `gh api <path>`
+calls and the quota probe that learns the reset still run.
+
+### The `gh-calls-by-priority:` line — which pass spent the calls
+
+A third line attributes the same invocations to the cycle phase that
+issued them:
+
+```
+gh-calls-by-priority: issue-scanning=239 post-scan-auto-merge=12 initialisation=6
+```
+
+Every dispatched priority handler is attributed by
+`executePriorityHandler`, and the Priority 2 scan by its own
+`"Issue Scanning"` wrapper. Issue #1587 extended the axis to the phases
+that run *outside* priority dispatch, each in its own named context:
+`initialisation`, `issue-callbacks`, `post-scan-auto-merge`,
+`idle-work-hooks`, plus the outer-loop passes the same audit found —
+`trust-refresh`, `fleet-pr-prefetch`, `stale-assignment-recovery`,
+`github-auth-check` and `liveness-guard`. Before that, those phases'
+calls appeared in `gh-calls:` and in no by-priority bucket at all.
+
+Attribution uses `withPriorityContext` (async-scoped, Issue #213), so a
+phase overlapping the scan pool cannot cross-credit it, and the
+innermost context wins — the callbacks a scan slot fires are credited
+to `issue-callbacks`, not to `issue-scanning`.
+
+Two probes are deliberately left bare: `preflightGitHubRateLimit` and
+`describeGraphqlQuota` read the quota itself, which GitHub does not
+charge, and both run after the summary line is emitted.
 
 ### The `graphql-quota:` line — points, as GitHub counts them
 

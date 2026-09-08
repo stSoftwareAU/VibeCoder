@@ -3,8 +3,10 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { createRendezvous } from "./support/rendezvous.ts";
 import {
   classifyGhArgs,
+  currentGraphQLSourceContext,
   enterGraphQLSource,
   enterPriority,
   exitGraphQLSource,
@@ -21,8 +23,12 @@ import {
   recordGhCall,
   resetGhCallMetrics,
   withGraphQLSource,
+  withGraphQLSourceContext,
   withPriority,
+  withPriorityContext,
 } from "../lib/gh_call_metrics.ts";
+import { classifyGhCall } from "../lib/gh_argv.ts";
+import { isQuotaExemptGhCall } from "../lib/primary_quota_latch.ts";
 
 Deno.test("gh_call_metrics - classifyGhArgs categorises common sub-commands", () => {
   assertEquals(
@@ -42,6 +48,12 @@ Deno.test("gh_call_metrics - classifyGhArgs categorises common sub-commands", ()
 Deno.test("gh_call_metrics - classifyGhArgs skips leading flags", () => {
   assertEquals(
     classifyGhArgs(["--version", "issue", "list"]),
+    "issue list",
+  );
+  // Issue #1588: a value-taking flag's value is not the verb — before the
+  // shared classifier this bucketed as `issue o/r`.
+  assertEquals(
+    classifyGhArgs(["issue", "--repo", "o/r", "list"]),
     "issue list",
   );
 });
@@ -503,4 +515,392 @@ Deno.test("gh_call_metrics - formatGraphQLSummary marks unattributed graphql cal
   // The "unattributed" sentinel surfaces unwrapped GraphQL call sites
   // so future regressions are obvious in the log.
   assertStringIncludes(summary, "unattributed=2");
+});
+
+/**
+ * Issue #1585: the GraphQL source axis must be async-scoped, so two lanes
+ * running at once cannot credit each other's `gh` calls. Interleave a
+ * wrapped chain and an unwrapped one through a manually resolved promise:
+ * the unwrapped chain's calls must land in `unattributed`.
+ */
+Deno.test("gh_call_metrics - concurrent chains do not cross-credit GraphQL sources", async () => {
+  resetGhCallMetrics();
+
+  // Bounded rendezvous, never a sleep: a lane that never arrives fails the
+  // assertion below rather than hanging the suite.
+  const meeting = createRendezvous(2);
+
+  const wrapped = withGraphQLSource("comments-batch", async () => {
+    // Suspend inside the source, exactly as an awaited `gh` spawn does.
+    const arrived = await meeting.arrive();
+    assertEquals(arrived, 2);
+    recordGhCall(["api", "graphql", "-f", "query=Q"]);
+  });
+
+  // A second lane, outside any source, runs while the first is suspended.
+  const unwrapped = (async () => {
+    await Promise.resolve();
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+    recordGhCall(["pr", "view", "42", "--json", "mergeable"]);
+    assertEquals(await meeting.arrive(), 2);
+  })();
+
+  await Promise.all([wrapped, unwrapped]);
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlTotal, 3);
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+  assertEquals(snap.graphqlBySource["unattributed"], 2);
+});
+
+Deno.test("gh_call_metrics - nested enterGraphQLSource still wins inside a wrapped chain", async () => {
+  resetGhCallMetrics();
+
+  await withGraphQLSource("comments-batch", async () => {
+    await Promise.resolve();
+    enterGraphQLSource("timeline-batch");
+    recordGhCall(["api", "graphql", "-f", "query=Inner"]);
+    exitGraphQLSource();
+    recordGhCall(["api", "graphql", "-f", "query=Outer"]);
+  });
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["timeline-batch"], 1);
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+});
+
+Deno.test("gh_call_metrics - withGraphQLSourceContext scopes currentGraphQLSourceContext", async () => {
+  resetGhCallMetrics();
+
+  assertEquals(currentGraphQLSourceContext(), undefined);
+
+  const seen = await withGraphQLSourceContext("Comments Batch", async () => {
+    await Promise.resolve();
+    return currentGraphQLSourceContext();
+  });
+
+  // Names are normalised the same way priority names are.
+  assertEquals(seen, "comments-batch");
+  assertEquals(currentGraphQLSourceContext(), undefined);
+
+  // Error path: a throwing `fn` propagates and still unwinds the context.
+  let thrown: unknown;
+  try {
+    await withGraphQLSourceContext("comments-batch", async () => {
+      await Promise.resolve();
+      recordGhCall(["api", "graphql", "-f", "query=Q"]);
+      throw new Error("boom");
+    });
+  } catch (err) {
+    thrown = err;
+  }
+  assertEquals((thrown as Error).message, "boom");
+  assertEquals(currentGraphQLSourceContext(), undefined);
+
+  recordGhCall(["api", "graphql", "-f", "query=After"]);
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+  assertEquals(snap.graphqlBySource["unattributed"], 1);
+});
+
+// ---------------------------------------------------------------------------
+// Priority fallback for GraphQL attribution (Issue #1586)
+// ---------------------------------------------------------------------------
+
+Deno.test("gh_call_metrics - GraphQL calls fall back to the active priority context", async () => {
+  resetGhCallMetrics();
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await Promise.resolve();
+    recordGhCall(["issue", "list", "--repo", "o/r", "--json", "number"]);
+    recordGhCall(["pr", "list", "--repo", "o/r"]);
+  });
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlTotal, 2);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 2);
+  assertEquals(snap.graphqlBySource["unattributed"], undefined);
+});
+
+Deno.test("gh_call_metrics - GraphQL calls fall back to the explicit priority stack", () => {
+  resetGhCallMetrics();
+
+  enterPriority("Stale Workflow Detection");
+  recordGhCall(["issue", "view", "1", "--repo", "o/r"]);
+  exitPriority();
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["priority:stale-workflow-detection"], 1);
+});
+
+Deno.test("gh_call_metrics - an explicit GraphQL source beats an enclosing priority", async () => {
+  resetGhCallMetrics();
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await withGraphQLSource("timeline-batch", () => {
+      recordGhCall(["api", "graphql", "-f", "query=Q"]);
+    });
+    enterGraphQLSource("comments-batch");
+    recordGhCall(["api", "graphql", "-f", "query=Q2"]);
+    exitGraphQLSource();
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+  });
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["timeline-batch"], 1);
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 1);
+});
+
+Deno.test("gh_call_metrics - REST calls inside a priority context are not GraphQL", async () => {
+  resetGhCallMetrics();
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await Promise.resolve();
+    recordGhCall(["api", "/repos/o/r/issues/1/comments"]);
+    recordGhCall(["api", "-X", "PATCH", "/repos/o/r/issues/1"]);
+  });
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.total, 2);
+  assertEquals(snap.graphqlTotal, 0);
+  assertEquals(Object.keys(snap.graphqlBySource).length, 0);
+});
+
+Deno.test("gh_call_metrics - a call with neither source nor priority stays unattributed", () => {
+  resetGhCallMetrics();
+  recordGhCall(["issue", "list", "--repo", "o/r"]);
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["unattributed"], 1);
+});
+
+/**
+ * Standing invariant (Issue #1586): every increment of `graphqlTotal` must
+ * choose a bucket, so any future path that counts a call without attributing
+ * it fails here before merge.
+ */
+Deno.test("gh_call_metrics - graphqlBySource sums exactly to graphqlTotal", async () => {
+  resetGhCallMetrics();
+
+  // Unattributed: no source, no priority.
+  recordGhCall(["issue", "list", "--repo", "o/r"]);
+  // REST — contributes to neither counter.
+  recordGhCall(["api", "/repos/o/r/issues/1"]);
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await Promise.resolve();
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+    recordGhCall(["pr", "view", "42", "--json", "mergeable"]);
+    // REST inside a priority — still excluded.
+    recordGhCall(["api", "rate_limit"]);
+    await withGraphQLSource("timeline-batch", () => {
+      recordGhCall(["api", "graphql", "-f", "query=Q"]);
+    });
+  });
+
+  enterPriority("Auto Merge");
+  recordGhCall(["pr", "list", "--repo", "o/r"]);
+  exitPriority();
+
+  await withGraphQLSource("comments-batch", () => {
+    recordGhCall(["api", "graphql", "-f", "query=Q2"]);
+  });
+
+  const snap = getGhCallMetrics();
+  const summed = Object.values(snap.graphqlBySource).reduce(
+    (a, b) => a + b,
+    0,
+  );
+  assertEquals(snap.graphqlTotal, 6);
+  assertEquals(summed, snap.graphqlTotal);
+  assertEquals(snap.graphqlBySource["unattributed"], 1);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 2);
+  assertEquals(snap.graphqlBySource["priority:auto-merge"], 1);
+  assertEquals(snap.graphqlBySource["timeline-batch"], 1);
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+});
+
+Deno.test("gh_call_metrics - formatGraphQLSummary names derived priority buckets", async () => {
+  resetGhCallMetrics();
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await Promise.resolve();
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+    recordGhCall(["pr", "list", "--repo", "o/r"]);
+  });
+  await withGraphQLSource("timeline-batch", () => {
+    recordGhCall(["api", "graphql", "-f", "query=Q"]);
+  });
+
+  const summary = formatGraphQLSummary();
+  assertStringIncludes(summary, "graphql-calls: 3 total");
+  assertStringIncludes(summary, "priority:issue-scanning=2");
+  assertStringIncludes(summary, "timeline-batch=1");
+});
+
+/**
+ * The derived bucket inherits the priority axis, so it must inherit its
+ * async scoping too (Issue #1586, the shape Issue #213 fixed): two priority
+ * lanes running at once must not credit each other's GraphQL calls.
+ */
+Deno.test("gh_call_metrics - concurrent priority lanes do not cross-credit derived buckets", async () => {
+  resetGhCallMetrics();
+
+  // Bounded rendezvous, never a sleep: a lane that never arrives fails the
+  // assertion below rather than hanging the suite.
+  const meeting = createRendezvous(2);
+
+  const scanning = withPriorityContext("Issue Scanning", async () => {
+    // Suspend inside the priority, exactly as an awaited `gh` spawn does.
+    assertEquals(await meeting.arrive(), 2);
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+  });
+
+  const merging = withPriorityContext("Auto Merge", async () => {
+    await Promise.resolve();
+    recordGhCall(["pr", "list", "--repo", "o/r"]);
+    assertEquals(await meeting.arrive(), 2);
+  });
+
+  await Promise.all([scanning, merging]);
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlTotal, 2);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 1);
+  assertEquals(snap.graphqlBySource["priority:auto-merge"], 1);
+});
+
+/**
+ * Issue #1588 — one argv classifier behind both counters.
+ *
+ * `classifyGhArgs` and `isQuotaExemptGhCall` used to parse argv their own
+ * way, so the `api-graphql=` sub-command bucket could not be reconciled with
+ * the GraphQL attribution that shares the latch predicate. Each row states,
+ * as a literal, what the invocation actually is — the sub-command bucket it
+ * belongs in, and whether it is billed against the GraphQL quota. The
+ * assertions below hold both functions to those literals, so neither can
+ * excuse the other.
+ */
+const GH_ARGV_ROWS: ReadonlyArray<
+  {
+    readonly argv: readonly string[];
+    readonly bucket: string;
+    readonly graphql: boolean;
+  }
+> = [
+  // The ordinary shape: `graphql` is the endpoint token after `api`.
+  {
+    argv: ["api", "graphql", "-f", "query=…"],
+    bucket: "api graphql",
+    graphql: true,
+  },
+  // The endpoint token sits after a value-taking flag's value — the row the
+  // old flag-skipper read as `"api"` while the latch read it as GraphQL.
+  {
+    argv: ["api", "-f", "query=…", "graphql"],
+    bucket: "api graphql",
+    graphql: true,
+  },
+  // A method or header before the endpoint must not hide it either.
+  {
+    argv: ["api", "-X", "POST", "graphql", "-f", "query=…"],
+    bucket: "api graphql",
+    graphql: true,
+  },
+  // …nor may a pflag shorthand group, whose value is the rest of the token
+  // (`-iXPOST`) or the token after it (`-iX POST` is `-i -X POST`).
+  {
+    argv: ["api", "-iX", "POST", "graphql"],
+    bucket: "api graphql",
+    graphql: true,
+  },
+  { argv: ["api", "-iXPOST", "graphql"], bucket: "api graphql", graphql: true },
+  // A long flag's value is not the endpoint token either.
+  {
+    argv: ["api", "--jq", ".data", "graphql"],
+    bucket: "api graphql",
+    graphql: true,
+  },
+  {
+    argv: ["api", "-iq", ".data", "graphql"],
+    bucket: "api graphql",
+    graphql: true,
+  },
+  // Plain REST paths.
+  { argv: ["api", "/repos/o/r/issues"], bucket: "api", graphql: false },
+  {
+    argv: ["api", "rate_limit", "--jq", ".resources"],
+    bucket: "api",
+    graphql: false,
+  },
+  // A REST path containing the word `graphql` is still REST.
+  { argv: ["api", "/search/issues?q=graphql"], bucket: "api", graphql: false },
+  // …and so is a flag *value* that is exactly `graphql`.
+  {
+    argv: ["api", "repos/o/r/labels", "--jq", "graphql"],
+    bucket: "api",
+    graphql: false,
+  },
+  {
+    argv: ["api", "-f", "q=graphql", "/search/issues"],
+    bucket: "api",
+    graphql: false,
+  },
+  // A global flag before the sub-command does not hide the head token.
+  {
+    argv: ["--paginate", "api", "/repos/o/r/issues"],
+    bucket: "api",
+    graphql: false,
+  },
+  // Every non-`api` sub-command is GraphQL-backed.
+  {
+    argv: ["issue", "list", "--limit", "500"],
+    bucket: "issue list",
+    graphql: true,
+  },
+  { argv: ["pr", "view", "42"], bucket: "pr view", graphql: true },
+];
+
+Deno.test("gh_call_metrics - classifyGhArgs and isQuotaExemptGhCall agree on every argv shape", () => {
+  for (const { argv, bucket, graphql } of GH_ARGV_ROWS) {
+    const where = JSON.stringify(argv);
+    // The bucket is the one the row declares…
+    assertEquals(classifyGhArgs(argv), bucket, `bucket for ${where}`);
+    // …and the latch bills everything that is not positively a REST call.
+    assertEquals(isQuotaExemptGhCall(argv), !graphql, `latch for ${where}`);
+    // Which makes the two agree by construction on the `api graphql` shape:
+    // the bucket names it exactly when the latch bills an `api` call.
+    assertEquals(
+      classifyGhArgs(argv) === "api graphql",
+      graphql && bucket.startsWith("api"),
+      `agreement for ${where}`,
+    );
+  }
+});
+
+Deno.test("gh_call_metrics - the api-graphql bucket equals the recorded api graphql calls", () => {
+  resetGhCallMetrics();
+
+  // A recorded mixed sequence: every row above, twice over.
+  const sequence = [...GH_ARGV_ROWS, ...GH_ARGV_ROWS];
+  for (const { argv } of sequence) recordGhCall(argv);
+
+  // What the shared classifier calls an `api graphql` invocation…
+  const classified =
+    sequence.filter(({ argv }) => classifyGhCall(argv) === "api-graphql")
+      .length;
+  // …cross-checked against the rows' own literals, which owe nothing to the
+  // code under test, so a classifier regression cannot satisfy both sides.
+  const declared = sequence.filter(({ bucket }) => bucket === "api graphql")
+    .length;
+  assertEquals(classified, declared);
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.bySubCommand["api graphql"], declared);
+  // The REST rows are the rest of the `api` traffic, and none of them is
+  // billed against the GraphQL quota.
+  assertEquals(
+    snap.graphqlTotal,
+    sequence.filter(({ graphql }) => graphql).length,
+  );
 });

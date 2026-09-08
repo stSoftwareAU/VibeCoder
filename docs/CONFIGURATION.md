@@ -1250,8 +1250,12 @@ checkout already holds. Use the variable for development trees and CI; use
 ### 🔄 Host-Side Checkout Update
 
 Before each launch, the launcher updates the worker checkout itself — `git
-fetch origin`, then a hard reset to `origin/<default-branch>` and a
-`git clean -fd` (Issue #512). This is the **only** update of that checkout:
+fetch origin`, then a hard reset to `origin/<default-branch>`, a
+`git clean -fd` (Issue #512) and a pathspec-scoped `git clean -ffdx` over the
+ignored directories that carry executable content (`node_modules/`, `.venv/`,
+`target/`, …) so nothing a previous launch left in them runs in this one
+(Issue #1443 — see `worker/deno/lib/ignored_path_clean.ts`). This is the
+**only** update of that checkout:
 Issue #513 retired the in-container reset, so nothing inside the container
 writes to `/workspace` and that mount can become read-only (Issue #509). The
 branch is read from the checkout's own `origin/HEAD`.

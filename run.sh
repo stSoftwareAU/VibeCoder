@@ -768,6 +768,43 @@ done
 # worker would only fail on its storage attachment with a VM-internals error
 # that names nothing. --refuse-live has the reaper say "already running"
 # instead, and this launcher exits on that status alone.
+# The host's free space, measured now and handed to the running worker
+# (Issue #1550). The worker's own view is a baseline taken once, at launch,
+# less the growth of its work volume since - a figure that can only fall, and
+# that cannot see space another account frees or consumes. This launcher runs
+# every few minutes whether or not a worker is up, and already knows how to
+# measure the host; on the ticks where it does not launch, that measurement
+# used to be thrown away. It is written instead to the worker log directory,
+# the one host path the container mounts read-write, as
+# `${RUN_CORE_LOG_DIR}/host-disk.json` — guest-side `${HOME}/logs/host-disk.json`
+# (worker/deno/lib/host_disk.ts reads it and re-bases its estimate on a reading
+# newer than the one it holds). Written whole-file-then-rename so the worker
+# never reads a torn value; a failure to write is a warning, never a reason
+# not to launch or not to exit.
+write_host_disk_reading() {
+  local gate="${HOME}" store="${HOME:-}/Library/Application Support/com.apple.container"
+  [[ -d "${store}" ]] && gate="${store}"
+  local avail_kb total_kb
+  avail_kb="$(df -kP "${gate}" 2>/dev/null | awk 'NR>1 {v=$(NF-2)} END {print v}')"
+  total_kb="$(df -kP "${gate}" 2>/dev/null | awk 'NR>1 {v=$(NF-4)} END {print v}')"
+  if ! [[ "${avail_kb}" =~ ^[0-9]+$ && "${total_kb}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[run.sh] warning: could not measure ${gate} for the worker's host-disk reading (Issue #1550)" >&2
+    return 0
+  fi
+  [[ -n "${RUN_CORE_LOG_DIR:-}" ]] || return 0
+  mkdir -p "${RUN_CORE_LOG_DIR}" 2>/dev/null || return 0
+  local file="${RUN_CORE_LOG_DIR}/host-disk.json" tmp
+  tmp="${file}.tmp.$$"
+  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s"}\n' \
+    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" >"${tmp}" 2>/dev/null &&
+    mv -f "${tmp}" "${file}" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "${tmp}" 2>/dev/null || true
+  echo "[run.sh] warning: could not write ${file} (Issue #1550)" >&2
+  return 0
+}
+
 reap_status=0
 bounded 300 "${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
@@ -780,6 +817,8 @@ bounded 300 "${DENO_CMD}" run \
   --refuse-live </dev/null >&2 || reap_status=$?
 if ((reap_status == ANOTHER_WORKER_RUNNING_EXIT)); then
   echo "[run.sh] another worker is already running on this host - one worker per host; not launching (Issue #26)" >&2
+  # The one thing this tick can still do for the running worker (Issue #1550).
+  write_host_disk_reading
   # The reaper's own status leaves this launcher unchanged (Issue #1056). It
   # used to collapse to 1, which the outcome recorder reads as "a bootstrap,
   # config or loop failure the worker reported itself" - a healthy host
@@ -1443,6 +1482,9 @@ if [[ "${disk_avail_kb}" =~ ^[0-9]+$ && "${disk_hard_floor_gb}" =~ ^[0-9]+$ ]]; 
     log_run_core "host-disk: $((disk_avail_kb / 1024)) MB free on ${disk_gate_path}${trim_refusal_note}"
   fi
 fi
+# The same reading, in the file the running worker will read from now on
+# (Issue #1550) - so the first tick after launch has something to compare to.
+write_host_disk_reading
 
 # Exit status this launcher reports after reaping a wedged container - a named
 # reason rather than a bare failure, and deliberately outside the runtime CLI's
