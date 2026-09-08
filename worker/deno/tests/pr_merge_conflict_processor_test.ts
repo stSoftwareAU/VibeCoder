@@ -36,9 +36,14 @@ import type { AbandonRestartRequest } from "../lib/conflict_abandon_restart.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type {
   ClaudeDeps,
+  CrashHandlingDeps,
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
+import {
+  heartbeatFilePath,
+  markerStateFilePath,
+} from "../lib/heartbeat_storage.ts";
 import type { LogContext, Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -319,12 +324,20 @@ async function runProcessor(
   input: MergeConflictInput,
   script: GitScript,
   depOverrides?: Partial<MergeConflictProcessorDeps>,
-  opts?: { claudeDelayMs?: number; workDirFiles?: Record<string, string> },
+  opts?: {
+    claudeDelayMs?: number;
+    workDirFiles?: Record<string, string>;
+    crashHandling?: Partial<CrashHandlingDeps>;
+  },
 ): Promise<{
   captured: Captured;
   result: Awaited<
     ReturnType<typeof processMergeConflict>
   >;
+  /** The clone the merge runs in. */
+  workDir: string;
+  /** The `WORK_DIR` root that holds heartbeat and marker state. */
+  workRoot: string;
 }> {
   const captured: Captured = {
     events: [],
@@ -342,8 +355,12 @@ async function runProcessor(
     git: makeGit(script, captured),
     github: makeGithub(captured),
     claude: makeClaude(captured, opts?.claudeDelayMs ?? 0),
+    ...(opts?.crashHandling ? { crashHandling: opts.crashHandling } : {}),
   });
 
+  // Issue #1660: the work root and the clone are separate directories, so a
+  // heartbeat written into the clone is visible as a wrong location.
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
   const workDir = await Deno.makeTempDir({ prefix: "vibe-merge-conflict-" });
   for (const [path, content] of Object.entries(opts?.workDirFiles ?? {})) {
     await Deno.writeTextFile(`${workDir}/${path}`, content);
@@ -353,13 +370,14 @@ async function runProcessor(
     logger: makeSilentLogger(),
     deps,
     workDir,
+    workRoot,
     // Pin the prompts directory: the checkout under test, not whatever
     // VIBE_BASE_DIR/PROMPTS_DIR the host happens to export.
     promptsDir: new URL("../../../prompts", import.meta.url).pathname,
     ...depOverrides,
   });
 
-  return { captured, result };
+  return { captured, result, workDir, workRoot };
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +436,63 @@ Deno.test("processMergeConflict - records the attempt before touching the branch
       captured.events.join(",")
     }`,
   );
+});
+
+Deno.test("processMergeConflict - the heartbeat state lands in the work root, not the clone (Issue #1660)", async () => {
+  const recordDirs: string[] = [];
+  const clearDirs: string[] = [];
+
+  const { result, workDir, workRoot } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    undefined,
+    {
+      crashHandling: {
+        // The real recorder writes both state files off the directory it is
+        // given, so writing them here shows where the pass points it.
+        recordHeartbeat: async (dir, repo, issueNumber) => {
+          recordDirs.push(dir);
+          await Deno.writeTextFile(
+            heartbeatFilePath(dir, repo, issueNumber),
+            `${Date.now()}`,
+          );
+          await Deno.writeTextFile(
+            markerStateFilePath(dir, repo, issueNumber),
+            "{}",
+          );
+          return { ok: true, value: undefined };
+        },
+        clearHeartbeat: (dir) => {
+          clearDirs.push(dir);
+          return Promise.resolve({ ok: true, value: undefined });
+        },
+      },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(recordDirs, [workRoot]);
+  assertEquals(clearDirs, [workRoot]);
+
+  // The state files land under the work root …
+  const heartbeat = await Deno.stat(
+    heartbeatFilePath(workRoot, "org/repo", 48),
+  );
+  assert(heartbeat.isFile);
+  const marker = await Deno.stat(markerStateFilePath(workRoot, "org/repo", 48));
+  assert(marker.isFile);
+
+  // … and the clone's top level gains neither.
+  const strays: string[] = [];
+  for await (const entry of Deno.readDir(workDir)) {
+    if (
+      entry.name.startsWith(".heartbeat_") ||
+      entry.name.startsWith(".heartbeat-marker_")
+    ) {
+      strays.push(entry.name);
+    }
+  }
+  assertEquals(strays, []);
 });
 
 Deno.test("processMergeConflict - a clean merge needs no agent", async () => {
