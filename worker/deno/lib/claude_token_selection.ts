@@ -20,10 +20,10 @@
  * a parameter rather than a clock of its own — so every rule below is a plain
  * unit test:
  *
- * - **The five-hour window is a gate, not a score.** A token still holding at
- *   least {@link CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING} of it passes; one that
- *   has used more than 80% cannot spend whatever its week still holds, so
- *   every passing token ranks ahead of every failing one.
+ * - **The five-hour window is a gate, not a score.** A token that has used
+ *   less than {@link CLAUDE_FIVE_HOUR_GATE_MAX_USED} of it passes; one that
+ *   has used 80% or more cannot spend whatever its week still holds, so every
+ *   passing token ranks ahead of every failing one.
  * - **Passing tokens are ordered by remaining budget per hour** on the
  *   seven-day window: its remaining share divided by the hours until it
  *   resets. A response that reported no seven-day window is ranked on the
@@ -104,16 +104,21 @@ const LOG_PREFIX = "[SECURITY] claude token";
 const HOUR_MS = 3_600_000;
 
 /**
- * Five-hour remaining share a token must still hold to pass the gate.
+ * Five-hour usage share a token must stay **below** to pass the gate: a token
+ * that has used 80% or more of its five-hour window fails it.
  *
  * A fixed constant, deliberately not an environment variable (Issue #1623):
  * the figure describes how Anthropic's windows behave, not how one host is
- * configured, so a per-host override would only let a fleet drift apart.
- * Below it — more than 80% of the five-hour window used — the token cannot
- * spend whatever its seven-day window still holds, so no rate it scores is
- * worth acting on.
+ * configured, so a per-host override would only let a fleet drift apart. Past
+ * it the token cannot spend whatever its seven-day window still holds, so no
+ * rate it scores is worth acting on.
+ *
+ * Stated as usage rather than as the remaining share it complements, because
+ * that is the comparison the gate makes: at exactly 20% remaining the token
+ * has used exactly 80% and fails, which no `remaining >= 0.2` spelling gets
+ * right on both sides of the boundary.
  */
-export const CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING = 0.2;
+export const CLAUDE_FIVE_HOUR_GATE_MAX_USED = 0.8;
 
 /**
  * Seven-day remaining share below which a gate-passing token ranks behind
@@ -299,7 +304,7 @@ function rankingView(
       : rateWindow.remainingFraction / rateWindow.hoursUntilReset,
     // A response carrying no five-hour window has no gate to fail.
     passesFiveHourGate: fiveHour === null ||
-      fiveHour.remainingFraction >= CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING,
+      1 - fiveHour.remainingFraction < CLAUDE_FIVE_HOUR_GATE_MAX_USED,
     remainingFraction: rateWindow?.remainingFraction ?? null,
     resetAt: rateWindow?.resetAt ?? null,
     windowElapsed: rateWindow?.elapsed ?? false,

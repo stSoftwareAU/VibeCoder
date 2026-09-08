@@ -811,15 +811,15 @@ The candidates are ordered:
 
 1. **A measured budget beats an unmeasured one.** A token whose probe failed
    ranks behind every token whose probe answered.
-2. **The five-hour gate.** A token still holding at least **20%** of its
-   five-hour window — less than 80% used — passes, and every passing token
-   ranks ahead of every failing one. A token that has burned its five hours
-   cannot spend whatever its week still holds, so no rate it scores is worth
-   acting on. The 20% threshold is a fixed constant in the worker
-   (`CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING` in `claude_token_selection.ts`), not
-   a setting: it describes how Anthropic's windows behave, not how one host is
-   configured. A response that reported **no** five-hour window has no gate to
-   fail, so it passes.
+2. **The five-hour gate.** A token that has used **less than 80%** of its
+   five-hour window passes, and every passing token ranks ahead of every
+   failing one; at exactly 80% used — 20% left — it fails. A token that has
+   burned its five hours cannot spend whatever its week still holds, so no rate
+   it scores is worth acting on. The 80% threshold is a fixed constant in the
+   worker (`CLAUDE_FIVE_HOUR_GATE_MAX_USED` in `claude_token_selection.ts`),
+   not a setting: it describes how Anthropic's windows behave, not how one host
+   is configured. A response that reported **no** five-hour window has no gate
+   to fail, so it passes.
 3. **The highest remaining budget per hour wins**, measured on the seven-day
    window: its remaining share divided by the hours until it resets. A response
    that reported no seven-day window is ranked on the rate of the window it did

@@ -238,15 +238,18 @@ Deno.test("ranking gates on the five-hour window before it looks at the rate (Is
 });
 
 Deno.test("ranking puts a token at 80% of its five-hour window behind one at 79% (Issue #1623)", () => {
-  // The gate boundary: 80% used fails it, 79% used passes, and the two are
-  // otherwise identical.
+  // The gate boundary, stated as the shares themselves rather than as
+  // `1 - 0.80`: at exactly 20% left the token has used exactly 80% and fails,
+  // at 21% left it has used 79% and passes. The two are otherwise identical,
+  // so nothing but the gate can decide the order — and no floating-point
+  // artefact can make the test pass for the wrong reason.
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
-      fiveHour(1 - 0.80, NOW + 2 * HOUR),
+      fiveHour(0.20, NOW + 2 * HOUR),
       sevenDay(0.50, NOW + 24 * HOUR),
     ]),
     dual("provider-2", [
-      fiveHour(1 - 0.79, NOW + 2 * HOUR),
+      fiveHour(0.21, NOW + 2 * HOUR),
       sevenDay(0.50, NOW + 24 * HOUR),
     ]),
   ], NOW);
@@ -254,6 +257,20 @@ Deno.test("ranking puts a token at 80% of its five-hour window behind one at 79%
   assertEquals(ranking.winner?.label, "provider-2");
   assertEquals(ranking.ranked[0]?.passesFiveHourGate, true);
   assertEquals(ranking.ranked[1]?.label, "provider");
+  assertEquals(ranking.ranked[1]?.passesFiveHourGate, false);
+});
+
+Deno.test("the gate reads the utilisation the probe actually reports (Issue #1623)", () => {
+  // The probe reports remaining as `1 - utilisation`, which is not exact:
+  // 80% used arrives as 0.19999999999999996 and 79% as 0.20999999999999996.
+  // Both sides of the boundary must still land where they belong.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [fiveHour(1 - 0.80, NOW + 2 * HOUR)]),
+    dual("provider-2", [fiveHour(1 - 0.79, NOW + 2 * HOUR)]),
+  ], NOW);
+
+  assertEquals(ranking.ranked[0]?.label, "provider-2");
+  assertEquals(ranking.ranked[0]?.passesFiveHourGate, true);
   assertEquals(ranking.ranked[1]?.passesFiveHourGate, false);
 });
 
@@ -401,6 +418,30 @@ Deno.test("ranking treats a reset that has already passed as a full window (Issu
   assertEquals(ranking.winner?.label, "provider");
   assertEquals(ranking.winner?.remainingFraction, 1);
   assertEquals(ranking.winner?.windowElapsed, true);
+});
+
+Deno.test("ranking falls back to the headline figure for a budget carrying no window list (Issue #1623)", () => {
+  // `probeClaudeTokenBudget` always fills `windows`, but the type permits an
+  // empty list and a budget that reached ranking with one must still be
+  // ranked rather than silently treated as unmeasured.
+  const ranking = rankClaudeTokenBudgets([
+    {
+      known: true,
+      label: "provider",
+      remainingFraction: 0.60,
+      resetAt: NOW + 12 * HOUR,
+      window: "seven_day",
+      windows: [],
+    },
+    dual("provider-2", [
+      fiveHour(0.90, NOW + 2 * HOUR),
+      sevenDay(0.60, NOW + 120 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider", "0.60/12h beats 0.60/120h");
+  assertEquals(ranking.winner?.ratePerHour, 0.60 / 12);
+  assertEquals(ranking.winner?.passesFiveHourGate, true, "no gate to fail");
 });
 
 Deno.test("ranking scores an elapsed seven-day window over its nominal 168 hours (Issue #1623)", () => {
