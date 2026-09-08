@@ -59,6 +59,11 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   // a deployment that selects a different one contributes it separately, under
   // AGENT_PROVIDERS_HASH_INPUT (Issue #729).
   "container/install-providers.sh",
+  // The toolchain installer (Issue #1594): it validates the requested set and
+  // decides which toolchain fragments run, so a change to it changes what the
+  // image contains. Which ids the build asks for is stated in the
+  // Containerfile, already hashed above.
+  "container/install-toolchains.sh",
   // The deployer-supplied tool installer (Issue #71): the build runs it over
   // the VIBE_CONTAINER_TOOLS spec, so a change to it changes what the image
   // contains. The selection itself is a build argument, not a committed file.
@@ -71,6 +76,13 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   // DeepSeek rides the Claude CLI under its own command name and its own pin
   // (Issue #415), so it is its own fragment and its own hash input.
   "container/providers/deepseek.sh",
+  // The monitored-repository toolchain fragments (Issue #1594): each fetches,
+  // verifies and installs one toolchain, so editing one changes what the image
+  // contains — exactly as the provider fragments do.
+  "container/toolchains/shellcheck.sh",
+  "container/toolchains/actionlint.sh",
+  "container/toolchains/cargo-deny.sh",
+  "container/toolchains/rust.sh",
   "worker/deno/deno.lock",
 ];
 

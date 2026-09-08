@@ -7,6 +7,10 @@
 # (apple/container#735), and near the cap the build dies with an unexplained
 # "Stream unexpectedly closed". container_manifest_test.ts enforces a margin
 # — new commentary belongs in docs/CONTAINER-IMAGE.md, not here.
+#
+# A fetch-verify-extract toolchain goes in container/toolchains/<id>.sh and a
+# provider in container/providers/<id>.sh; both read their own pins, so neither
+# costs this file an ARG block (Issues #1594, #4067).
 
 ARG DENO_IMAGE="docker.io/denoland/deno:bin-2.9.6@sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba"
 ARG BASE_IMAGE="docker.io/library/ruby:3.4-trixie@sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b"
@@ -147,68 +151,36 @@ ENV VIBE_IMAGE_AGENT_PROVIDERS="${AGENT_PROVIDERS}"
 # ---------------------------------------------------------------------------
 # Monitored-repository toolchains (Issue #4068). Last on purpose: a toolchain
 # bump reuses the worker-runtime layers' cache. Ordered least-to-most churn
-# (Rust, largest and most frequent, sits last). Versions and checksums are
-# restated from container/tools.json `toolchains`, which records which repo
-# each toolchain exists for.
-
-ARG SHELLCHECK_VERSION="0.11.0"
-ARG SHELLCHECK_SHA256_AMD64="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
-ARG SHELLCHECK_SHA256_ARM64="12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588"
-ARG ACTIONLINT_VERSION="1.7.12"
-ARG ACTIONLINT_SHA256_AMD64="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
-ARG ACTIONLINT_SHA256_ARM64="325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
-ARG CARGO_DENY_VERSION="0.20.2"
-ARG CARGO_DENY_SHA256_AMD64="9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
-ARG CARGO_DENY_SHA256_ARM64="995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d"
-ARG MARKDOWNLINT_CLI2_VERSION="0.23.2"
-ARG MARKDOWNLINT_CLI2_SHA256_NOARCH="b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09"
-ARG RUST_VERSION="1.98.0"
-ARG RUST_SHA256_AMD64="aa30409afa67bd1ada244cefd82c7980e6a65bc113bb978e934b2413c75e3900"
-ARG RUST_SHA256_ARM64="5fbb4282403046d52a4672765c6761a809bf9f33e699b17e6eb7a93ab7770cc3"
-ARG RUST_SHA256_RUSTFMT_AMD64="0f425a5e8e9826840f4105d71f2e758f55ff21cb1805670dffd2c93e8e0a9a95"
-ARG RUST_SHA256_RUSTFMT_ARM64="61f29320c8bc790bcf5f82020b7487bb5c6427bed76fd0a9b7241cf1249eaf51"
-ARG RUST_SHA256_CLIPPY_AMD64="22a5d1ed834c3b94cd5f5b0a7d1c804ca1124b7c1fadaf25583e452e6426ebd7"
-ARG RUST_SHA256_CLIPPY_ARM64="2333ba7932e2bc473f8cc05a41e3d4c65543fc6834ca61da4be5590457e52a9b"
+# (Rust, largest and most frequent, sits last).
+#
+# The fetch-verify-extract toolchains are fragments (Issue #1594): each reads
+# its pinned version and per-architecture checksum from container/tools.json,
+# so this file names ids rather than restating pins as ARG blocks — which is
+# what keeps the stripped definition under Apple container's size cap.
+# container_manifest.ts fails the gate on a pinned fragment no run installs.
+#
+# Glob, not a bare directory COPY: Apple container materialises the latter as
+# an EMPTY directory, exactly as it does for the provider fragments.
+COPY toolchains/*.sh /tmp/toolchains/
+COPY install-toolchains.sh /tmp/install-toolchains.sh
+COPY tools.json /tmp/toolchain-manifest.json
 
 # Static analysers the monitored repositories' gates invoke directly:
 # shellcheck (every repo with a committed shell gate), actionlint
 # (private-repo-22) and cargo-deny (the Rust crates, which exit non-zero when
 # it is absent). All three are single, checksum-verified binaries.
 RUN set -eu; \
-    arch="$(uname -m)"; \
-    case "${arch}" in \
-      x86_64) goarch="amd64"; \
-        sc_sha="${SHELLCHECK_SHA256_AMD64}"; \
-        al_sha="${ACTIONLINT_SHA256_AMD64}"; \
-        cd_sha="${CARGO_DENY_SHA256_AMD64}" ;; \
-      aarch64) goarch="arm64"; \
-        sc_sha="${SHELLCHECK_SHA256_ARM64}"; \
-        al_sha="${ACTIONLINT_SHA256_ARM64}"; \
-        cd_sha="${CARGO_DENY_SHA256_ARM64}" ;; \
-      *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL ${CURL_RETRY} -o /tmp/shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz"; \
-    echo "${sc_sha}  /tmp/shellcheck.tar.xz" | sha256sum -c -; \
-    tar -xJf /tmp/shellcheck.tar.xz -C /tmp; \
-    install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck; \
-    curl -fsSL ${CURL_RETRY} -o /tmp/actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${goarch}.tar.gz"; \
-    echo "${al_sha}  /tmp/actionlint.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint; \
-    install -m 0755 /tmp/actionlint /usr/local/bin/actionlint; \
-    cargo_deny_dir="cargo-deny-${CARGO_DENY_VERSION}-${arch}-unknown-linux-musl"; \
-    curl -fsSL ${CURL_RETRY} -o /tmp/cargo-deny.tar.gz "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${cargo_deny_dir}.tar.gz"; \
-    echo "${cd_sha}  /tmp/cargo-deny.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/cargo-deny.tar.gz -C /tmp; \
-    install -m 0755 "/tmp/${cargo_deny_dir}/cargo-deny" /usr/local/bin/cargo-deny; \
-    rm -rf /tmp/shellcheck.tar.xz "/tmp/shellcheck-v${SHELLCHECK_VERSION}" \
-      /tmp/actionlint.tar.gz /tmp/actionlint \
-      /tmp/cargo-deny.tar.gz "/tmp/${cargo_deny_dir}"
+    TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny
 
 # markdownlint-cli2 backs the check-markdownlint gate stage. The release
 # tarball is downloaded and checksum-verified first, then installed from that
 # local file — `npm install <name>@<version>` would take upstream's word for
 # the bytes. `--ignore-scripts` keeps a package lifecycle script from running
 # as root during the build.
+ARG MARKDOWNLINT_CLI2_VERSION="0.23.2"
+ARG MARKDOWNLINT_CLI2_SHA256_NOARCH="b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09"
+
 RUN set -eu; \
     tarball="/tmp/markdownlint-cli2.tgz"; \
     curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/markdownlint-cli2/-/markdownlint-cli2-${MARKDOWNLINT_CLI2_VERSION}.tgz"; \
@@ -217,41 +189,14 @@ RUN set -eu; \
     rm -rf /tmp/npmc "${tarball}"; \
     markdownlint-cli2 --version
 
-# The Rust toolchain the fleet's crates build and test with. The standalone
-# rust-lang distribution is installed into /usr/local rather than via rustup,
-# so there is no per-user toolchain directory and nothing to update at run
-# time. The combined rust-<version> package carries only rustc/cargo/rust-std
-# (rust-docs is dropped to keep the layer smaller); rustfmt and clippy are
-# separate component packages, each with its own pinned checksum.
+# The Rust toolchain the fleet's crates build and test with — its own layer,
+# rebuilt on a Rust bump without disturbing the smaller toolchains above.
+# container/toolchains/rust.sh holds the detail (standalone rust-lang
+# distribution into /usr/local, rustfmt and clippy as separate packages).
 RUN set -eu; \
-    arch="$(uname -m)"; \
-    case "${arch}" in \
-      x86_64) target="x86_64-unknown-linux-gnu"; \
-        rust_sha="${RUST_SHA256_AMD64}"; \
-        rustfmt_sha="${RUST_SHA256_RUSTFMT_AMD64}"; \
-        clippy_sha="${RUST_SHA256_CLIPPY_AMD64}" ;; \
-      aarch64) target="aarch64-unknown-linux-gnu"; \
-        rust_sha="${RUST_SHA256_ARM64}"; \
-        rustfmt_sha="${RUST_SHA256_RUSTFMT_ARM64}"; \
-        clippy_sha="${RUST_SHA256_CLIPPY_ARM64}" ;; \
-      *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
-    esac; \
-    install_rust_pkg() { \
-      dir="$1-${RUST_VERSION}-${target}"; \
-      curl -fsSL ${CURL_RETRY} -o /tmp/rust-pkg.tar.gz "https://static.rust-lang.org/dist/${dir}.tar.gz"; \
-      echo "$2  /tmp/rust-pkg.tar.gz" | sha256sum -c -; \
-      tar -xzf /tmp/rust-pkg.tar.gz -C /tmp; \
-      shift 2; \
-      "/tmp/${dir}/install.sh" --prefix=/usr/local "$@"; \
-      rm -rf /tmp/rust-pkg.tar.gz "/tmp/${dir}"; \
-    }; \
-    install_rust_pkg rust "${rust_sha}" --without=rust-docs; \
-    install_rust_pkg rustfmt "${rustfmt_sha}"; \
-    install_rust_pkg clippy "${clippy_sha}"; \
-    cargo --version; \
-    rustc --version; \
-    cargo-clippy --version; \
-    rustfmt --version
+    TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
+      bash /tmp/install-toolchains.sh rust; \
+    rm -rf /tmp/toolchains /tmp/install-toolchains.sh /tmp/toolchain-manifest.json
 
 # semgrep backs the gate's SAST stage (worker/deno/lib/semgrep_check.ts):
 # without it in the image that stage SKIPped on every fleet run and agents met

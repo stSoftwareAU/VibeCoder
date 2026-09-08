@@ -1,5 +1,5 @@
 {
-  "description": "Pinned tool manifest for the Vibe Coder container image (Issue #4061). Every version the image installs is recorded here; container/Containerfile only restates these values as build ARGs, and worker/deno/tests/container_manifest_test.ts fails the quality gate when the two disagree. `providers` is the catalogue of pinned coding-agent providers and `installedProviders` is the set a default image build actually installs, which the Containerfile restates as the AGENT_PROVIDERS default (Issue #4105).",
+  "description": "Pinned tool manifest for the Vibe Coder container image (Issue #4061). Every version the image installs is recorded here; container/Containerfile only restates these values as build ARGs, and worker/deno/tests/container_manifest_test.ts fails the quality gate when the two disagree. `providers` is the catalogue of pinned coding-agent providers and `installedProviders` is the set a default image build actually installs, which the Containerfile restates as the AGENT_PROVIDERS default (Issue #4105). A `toolchains` entry carries exactly one of `versionArg` (the Containerfile installs it and restates the pin as ARGs) or `fragment` (container/install-toolchains.sh runs container/toolchains/<id>.sh, which reads the pin from here with jq — Issue #1594).",
   "workdir": "/workspace",
   "user": {
     "name": "vibe",
@@ -91,7 +91,7 @@
     {
       "id": "shellcheck",
       "version": "0.11.0",
-      "versionArg": "SHELLCHECK_VERSION",
+      "fragment": "toolchains/shellcheck.sh",
       "commands": ["shellcheck"],
       "versionCommand": "shellcheck",
       "source": "https://github.com/koalaman/shellcheck/releases",
@@ -114,7 +114,7 @@
     {
       "id": "actionlint",
       "version": "1.7.12",
-      "versionArg": "ACTIONLINT_VERSION",
+      "fragment": "toolchains/actionlint.sh",
       "commands": ["actionlint"],
       "versionCommand": "actionlint",
       "source": "https://github.com/rhysd/actionlint/releases",
@@ -128,7 +128,7 @@
     {
       "id": "cargo-deny",
       "version": "0.20.2",
-      "versionArg": "CARGO_DENY_VERSION",
+      "fragment": "toolchains/cargo-deny.sh",
       "commands": ["cargo-deny"],
       "versionCommand": "cargo-deny",
       "source": "https://github.com/EmbarkStudios/cargo-deny/releases",
@@ -189,7 +189,7 @@
     {
       "id": "rust",
       "version": "1.98.0",
-      "versionArg": "RUST_VERSION",
+      "fragment": "toolchains/rust.sh",
       "commands": ["cargo", "rustc", "cargo-clippy", "rustfmt"],
       "versionCommand": "cargo",
       "source": "https://static.rust-lang.org/dist",

@@ -80,7 +80,18 @@ weight.
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 
-Two consequences worth knowing:
+`rust`, `cargo-deny`, `shellcheck` and `actionlint` are installed by
+per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`container/install-toolchains.sh` with the ids the Containerfile names
+(Issue #1594). Each fragment reads its own version and per-architecture
+SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
+ids rather than `ARG` blocks; see
+[How the pins stay honest](#how-the-pins-stay-honest) for the rule that keeps
+that exemption honest. Adding one is a fragment, a `container/tools.json`
+entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
+added to one of the Containerfile's `install-toolchains.sh` runs.
+
+Three consequences worth knowing:
 
 - **Rust is pinned to 1.98.0, not `stable`.** That is the channel
   NEAT-AI-scorer, NEAT-AI-Lamarck, NEAT-AI-Backpropagation and NEAT-AI-Forests
@@ -124,7 +135,7 @@ mid-run on an unattended host.
 flowchart TD
     C[".config.json repos"] --> Q["each repo's quality.sh"]
     Q --> T["container/tools.json<br/>toolchains + repos"]
-    T --> L["Containerfile toolchain layers<br/>(pinned + checksummed)"]
+    T --> L["install-toolchains.sh<br/>→ toolchains/&lt;id&gt;.sh<br/>(pinned + checksummed)"]
     T --> V["container_manifest_test.ts<br/>coverage + ARG agreement"]
     L --> C2["container-build.yml<br/>presence + version + Rust gate probe"]
     V -->|drift| F["❌ quality gate fails"]
@@ -245,6 +256,27 @@ and Containerfile on every quality-gate run, so a version bumped in one file
 and not the other fails locally and in CI. The CI workflow then builds the
 image with both Docker and Podman and runs `./quality.sh` inside it.
 
+**A toolchain carries exactly one of `versionArg` or `fragment`** — never both,
+never neither, and `parseContainerManifest` rejects the manifest otherwise.
+`versionArg` means the Containerfile installs the toolchain itself and must
+restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
+installs it and reads the pin from `container/tools.json` with `jq`, so the
+Containerfile states no version at all. `shellcheck`, `actionlint`,
+`cargo-deny` and `rust` are fragments (Issue #1594) — they are the
+fetch-verify-extract toolchains, whose `ARG` blocks and `RUN` bodies were the
+bulk of the Containerfile's size. `node`, `npm`, `markdownlint-cli2` and
+`semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
+the npm- and pip-installed tools have their own steps.
+
+The exemption from the `ARG` rule is only safe while something else proves the
+fragment is real, so `findToolchainInstallViolations` requires that the
+Containerfile copies `toolchains/*.sh`, that **every** fragment-bearing
+toolchain id is named by some `install-toolchains.sh` run — a pin the build
+never installs is a violation, because absence of a failure is not success —
+and that each fragment verifies its download with `sha256sum -c`, carries the
+shared `${CURL_RETRY}` policy, pipes nothing into a shell, and restates no
+version the manifest already pins.
+
 ## Image identity — the tag is the definition's hash
 
 The image reference is derived from the container definition itself, so a
@@ -265,8 +297,9 @@ it would invalidate the image on every commit:
 | `container/Containerfile` | The build instructions themselves            |
 | `container/entrypoint.sh` | Baked into the image at `/usr/local/bin`     |
 | `container/tools.json`    | The pinned versions the build must agree with |
-| `container/install-*.sh`  | The provider and tool installers the build runs |
+| `container/install-*.sh`  | The provider, toolchain and tool installers the build runs |
 | `container/providers/*.sh` | The coding-agent provider layer the build installs |
+| `container/toolchains/*.sh` | The monitored-repository toolchain layer the build installs |
 | `container/install-tools.sh` | The installer the build runs over the deployer's tool selection |
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
 | `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
@@ -453,7 +486,7 @@ fourth input added to the hash cannot be added to the launcher alone.
 
 ```mermaid
 flowchart LR
-    I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
+    I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>container/toolchains/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
     C["container_tools<br/>(.config.json)"] --> H
     G["agent_providers<br/>(.config.json)"] --> H
     X["container_extension<br/>(.config.json)"] --> E["container_extension_digest.ts<br/>streaming SHA-256"]
