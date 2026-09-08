@@ -890,6 +890,18 @@
       "paths": [
         "worker/deno/lib/worker_record_block.ts"
       ]
+    },
+    {
+      "issue": 1597,
+      "chunk": "12i",
+      "title": "top-up: the gate-skip drift audit added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1597-gate-skip-drift.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12h recorded their coverage: gate_skip_drift_scanner.ts and idle_task_templates/gate_skip_drift_template.ts (#1597)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/gate_skip_drift_scanner.ts",
+        "worker/deno/lib/idle_task_templates/gate_skip_drift_template.ts"
+      ]
     }
   ]
 }

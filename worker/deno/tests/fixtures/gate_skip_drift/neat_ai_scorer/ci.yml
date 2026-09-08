@@ -15,4 +15,3 @@ jobs:
           if [ -d "tests/scripts" ]; then
             bats tests/scripts
           fi
-

@@ -37,7 +37,7 @@ flowchart LR
     M --> F["One gate-skip-drift issue<br/>naming each tool and both lines"]
     G -. no quality.sh .-> N["no findings"]
     C -. no workflow runs it .-> N
-    G -. guard exits 1 .-> N
+    G -. skip branch exits .-> N
 ```
 
 ## What the scanner checks
@@ -48,7 +48,7 @@ workflows are read as text.
 
 | Input | Rule |
 | --- | --- |
-| `quality.sh` | A `command -v <tool>` guard followed by an `echo … skipping` is a **skip**. A guard that reaches `exit 1` first already enforces the tool, so it is never a finding. Both the `if … then … else` and the `\|\| echo` spellings are recognised. |
+| `quality.sh` | A `command -v <tool>` guard followed by an `echo … skipping` is a **skip**. Both the `if … then … else` and the `\|\| echo` spellings are recognised. An `exit` disqualifies only **its own branch**: `if command -v bats; then bats t \|\| exit 1; else echo "… skipping"; fi` still skips when the tool is absent, while an `exit` beside the skip line means the gate stops and is never a finding. A nested guard inside the block does not hide the outer skip. |
 | `.github/workflows/*` | The tool is **enforced** when a `run:` step invokes it, or a `uses:` action runs it (`codespell-project/actions-codespell`). A bare `<tool> --version` probe and a `setup-*` action are installs, not enforcement. An install step (`apt-get install -y bats`, `pip install codespell`) is recorded as supporting evidence. |
 | `container/tools.json` | A tool pinned as a toolchain whose `repos` list names this repository is **suppressed** — the image carries it, so the gate no longer skips. |
 
@@ -73,10 +73,13 @@ scan is issue-only and never opens a PR.
 
 ## Fail-loud and fail-safe
 
-- **Fail-loud.** A `quality.sh` that exists but cannot be read, or a
-  `container/tools.json` that will not parse, returns `ok: false` and the
-  wrapper issue records the scanner error. An audit that could not complete is
-  never reconciled as "no findings".
+- **Fail-loud.** A `quality.sh` that exists but cannot be read, a
+  `container/tools.json` that will not parse, or a workflow file that cannot be
+  read or parsed as YAML, returns `ok: false` and the wrapper issue records the
+  scanner error **instead of** a count. The workflows are where "CI enforces
+  this tool" is read from, so an unreadable one must never pass as "CI enforces
+  nothing". An audit that could not complete is never reconciled as "no
+  findings".
 - **Fail-safe.** A repository with no `quality.sh`, or with no workflows,
   produces no finding rather than a false one.
 

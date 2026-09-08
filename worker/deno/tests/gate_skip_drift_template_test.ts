@@ -267,6 +267,18 @@ Deno.test("renderGateSkipDriftSummary - wording", () => {
     renderGateSkipDriftSummary([], "quality.sh could not be read"),
     "Scanner error: quality.sh could not be read.",
   );
+  // A failed audit must never read as a clean one: the "no findings" count
+  // is dropped entirely when the scanner errored.
+  assertEquals(
+    renderGateSkipDriftSummary([], "quality.sh could not be read", ""),
+    "Scanner error: quality.sh could not be read.",
+  );
+  // An active or rejected waiver is visible in the report, not only in the
+  // source it silences.
+  assertEquals(
+    renderGateSkipDriftSummary([], null, "Rejected suppressions (1): x."),
+    "no findings Rejected suppressions (1): x.",
+  );
 });
 
 // ---------------------------------------------------------------------------

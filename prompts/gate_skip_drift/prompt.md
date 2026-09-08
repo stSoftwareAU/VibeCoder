@@ -22,9 +22,10 @@ this audit only reports the drift and raises an issue.
 
 - **The gate script.** `quality.sh` is read for the shape
   `command -v <tool> … || echo "… not installed — skipping"` — in both its
-  `if … then … else` and its `||` spelling. A guard that **fails** instead of
-  skipping (`exit 1` before any skip line) is already enforcing the tool and is
-  never reported.
+  `if … then … else` and its `||` spelling. An `exit` disqualifies only the
+  branch it sits in: a gate that runs the tool and exits on *its* failure still
+  skips when the tool is absent, while an `exit` in the branch that carries the
+  skip line means the gate stops rather than skipping, and is never reported.
 - **The repository's own workflows.** `.github/workflows/*` are parsed for an
   install-and-run of that same tool: a `run:` step invoking it, or a `uses:`
   action that runs it (`codespell-project/actions-codespell`). A bare
@@ -46,10 +47,11 @@ or make the gate fail loud instead of skipping.
 ## Fail-loud contract
 
 The scanner **never returns a silent green on error**. A gate script that exists
-but cannot be read, or a container manifest that will not parse, surfaces as a
-loud failure on this wrapper issue — an audit that could not complete is never
+but cannot be read, a container manifest that will not parse, or a workflow file
+that cannot be read or parsed as YAML, surfaces as a loud failure on this
+wrapper issue and replaces the count — an audit that could not complete is never
 reconciled as "no findings". A repository with no `quality.sh`, or with no
-workflows, produces no finding rather than a false one.
+workflows at all, produces no finding rather than a false one.
 
 ## In-code suppression
 
@@ -62,8 +64,11 @@ All three fields are mandatory. The suppression check honours a marker — and
 drops the tool — **only** when `author=` is present and non-empty, `expires=` is
 a real `YYYY-MM-DD` calendar date that is today or later, and non-empty reason
 text follows. A marker missing any field, or carrying a malformed or past
-expiry, **does not suppress**: the drift is reported as normal rather than
-silently obeyed.
+expiry, **does not suppress**: the drift is reported as normal and the run
+records `Rejected suppression: <file>:<line> <id> — <failed check>` rather than
+silently obeying the marker. This is the rule the deterministic suppression
+check applies, and every triage path that reads these markers applies the same
+three-field check — so the paths cannot drift.
 
 ---
 

@@ -210,8 +210,19 @@ export function findGateToolSkips(script: string): GateToolSkip[] {
 
 /**
  * Walk the guard's own block looking for the `echo … skipping` that makes
- * it a skip, stopping at a hard failure, at the next guard, or when the
- * block closes.
+ * it a skip.
+ *
+ * Two rules keep the common defensive shapes honest:
+ *
+ *   - **A hard failure disqualifies only its own branch.** In
+ *     `if command -v bats; then bats t || exit 1; else echo "… skipping"; fi`
+ *     the `exit` belongs to the branch taken when the tool is *present*, so
+ *     the gate still skips when it is absent. An `exit` in the branch that
+ *     carries the skip means the gate stops instead — no finding.
+ *   - **A nested guard does not hide the outer skip.** Once a second
+ *     `command -v` has been seen inside the block, only a skip line that
+ *     names this guard's tool is attributed to it, so the inner guard's own
+ *     warning is never misread as the outer tool's.
  */
 function findSkipForGuard(
   lines: readonly string[],
@@ -222,42 +233,60 @@ function findSkipForGuard(
   // A bare `command -v x || echo …` guard is a single logical line; an
   // `if command -v x; then … fi` guard owns the block it opens.
   const blockMode = BLOCK_OPEN.test(guardLine.trim());
-  let depth = 0;
 
   const last = blockMode
     ? Math.min(lines.length - 1, guardIndex + MAX_GUARD_BLOCK_LINES)
     : guardIndex;
 
+  let depth = 0;
+  /** Which branch of *this* guard the walk is in — `else`/`elif` advance it. */
+  let branch = 0;
+  let nestedGuard = false;
+  let skip: GateToolSkip | null = null;
+  let skipBranch = -1;
+  const hardFailBranches = new Set<number>();
+
   for (let j = guardIndex; j <= last; j++) {
-    const raw = lines[j] as string;
-    const trimmed = raw.trim();
-    if (trimmed.startsWith("#")) continue;
+    const trimmed = (lines[j] as string).trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
 
-    // A second guard starts a new block — this one never skipped.
-    if (j > guardIndex && GUARD.test(trimmed)) return null;
-    // The gate stops rather than skipping: already enforced locally.
-    if (HARD_FAIL.test(trimmed)) return null;
+    if (blockMode && depth === 1 && /^(?:else|elif)\b/.test(trimmed)) branch++;
 
-    if (SKIP_ECHO.test(trimmed)) {
-      return {
+    if (
+      skip === null && SKIP_ECHO.test(trimmed) &&
+      (!nestedGuard || namesTool(trimmed, tool))
+    ) {
+      skip = {
         tool,
         guardLine: guardIndex + 1,
         skipLine: j + 1,
         skipText: trimmed,
       };
+      skipBranch = branch;
     }
+
+    if (HARD_FAIL.test(trimmed)) hardFailBranches.add(branch);
+    if (j > guardIndex && GUARD.test(trimmed)) nestedGuard = true;
 
     if (blockMode) {
       if (BLOCK_CLOSE.test(trimmed)) {
         depth--;
-        if (depth <= 0) return null;
+        if (depth <= 0) break;
       } else if (BLOCK_OPEN.test(trimmed)) {
         depth++;
       }
     }
   }
 
-  return null;
+  if (skip === null || hardFailBranches.has(skipBranch)) return null;
+  return skip;
+}
+
+/** Does this line name `tool` as a word of its own? */
+function namesTool(line: string, tool: string): boolean {
+  const escaped = tool.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+  return new RegExp(`(?:^|[^A-Za-z0-9_])${escaped}(?:[^A-Za-z0-9_]|$)`, "i")
+    .test(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +558,67 @@ export function correlateGateSkipDrift(
 }
 
 // ---------------------------------------------------------------------------
+// Workflow readability (fail-loud)
+// ---------------------------------------------------------------------------
+
+/** `*.yml` / `*.yaml` names directly inside `.github/workflows`. */
+async function listWorkflowNames(repoPath: string): Promise<string[]> {
+  const names: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(`${repoPath}/.github/workflows`)) {
+      if (/\.ya?ml$/.test(entry.name)) names.push(entry.name);
+    }
+  } catch {
+    // No workflows directory at all — a repository with no CI, which is a
+    // clean "nothing to enforce", not a failed read.
+    return [];
+  }
+  return names.sort();
+}
+
+/**
+ * The workflows are where "CI enforces this tool" is read from, so a
+ * workflow the scan could not read or parse must never pass as "CI enforces
+ * nothing" — that is precisely the silent green this audit exists to catch.
+ *
+ * Returns the loud error, or `null` when every workflow was read and parsed.
+ */
+async function workflowReadFailure(
+  repoPath: string,
+  files: readonly WorkflowFile[],
+): Promise<GateSkipDriftError | null> {
+  const loaded = new Set(
+    files
+      .filter((f) => f.kind === "workflow")
+      .map((f) => f.path.slice(f.path.lastIndexOf("/") + 1)),
+  );
+  const unread = (await listWorkflowNames(repoPath))
+    .filter((name) => !loaded.has(name));
+  if (unread.length > 0) {
+    return {
+      kind: "read",
+      message: `workflow file(s) could not be read: ${
+        unread.map((n) => `.github/workflows/${n}`).join(", ")
+      }`,
+    };
+  }
+
+  const unparsed = files
+    .filter((f) => f.parsed === null && f.rawText.trim() !== "")
+    .map((f) => f.path);
+  if (unparsed.length > 0) {
+    return {
+      kind: "read",
+      message: `workflow file(s) could not be parsed as YAML: ${
+        unparsed.join(", ")
+      }`,
+    };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -585,6 +675,8 @@ export async function scanGateSkipDrift(
   const skips = gateScript === null ? [] : findGateToolSkips(gateScript.text);
   const bakedTools = bakedToolsForRepo(manifest, opts.repo);
   const files = await readWorkflowFiles(opts.repoPath);
+  const readFailure = await workflowReadFailure(opts.repoPath, files);
+  if (readFailure !== null) return { ok: false, error: readFailure };
   const enforcements = findCiToolEnforcements(
     files,
     skips.map((s) => s.tool).filter((tool) => !bakedTools.includes(tool)),

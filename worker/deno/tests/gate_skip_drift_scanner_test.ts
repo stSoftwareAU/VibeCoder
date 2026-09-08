@@ -20,8 +20,12 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   bakedToolsForRepo,
+  type CiToolEnforcement,
+  correlateGateSkipDrift,
   findCiToolEnforcements,
   findGateToolSkips,
+  gateSkipFindingId,
+  type GateToolSkip,
   type GateSkipDriftResult,
   type GateSkipDriftValue,
   scanGateSkipDrift,
@@ -429,4 +433,186 @@ Deno.test("scanGateSkipDrift - an unparseable manifest fails loud", async () => 
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Guard shapes that must not read as "already enforced"
+// ---------------------------------------------------------------------------
+
+Deno.test("findGateToolSkips - an exit in the success branch is not the skip branch", async () => {
+  // The commonest defensive gate shape in the fleet: the tool is run and its
+  // failure exits, but its *absence* only warns. The exit belongs to the
+  // branch taken when the tool is present, so the gate still skips.
+  const gate = [
+    "#!/bin/bash",
+    "if command -v bats >/dev/null 2>&1; then",
+    "  bats tests/scripts || exit 1",
+    "else",
+    '  echo "bats not installed — skipping"',
+    "fi",
+  ].join("\n");
+
+  const skips = findGateToolSkips(gate);
+  assertEquals(skips.map((s) => s.tool), ["bats"]);
+  assertEquals(skips[0]?.skipLine, 5);
+});
+
+Deno.test("findGateToolSkips - a nested guard does not hide the outer skip", async () => {
+  const gate = [
+    "#!/bin/bash",
+    "if command -v bats >/dev/null 2>&1; then",
+    "  if command -v parallel >/dev/null 2>&1; then",
+    "    parallel bats ::: tests/*.bats",
+    "  else",
+    "    bats tests",
+    "  fi",
+    "else",
+    '  echo "bats not installed — skipping"',
+    "fi",
+  ].join("\n");
+
+  assertEquals(findGateToolSkips(gate).map((s) => s.tool), ["bats"]);
+});
+
+Deno.test("findGateToolSkips - a skip branch that exits is still enforced", async () => {
+  const gate = [
+    "#!/bin/bash",
+    "if command -v bats >/dev/null 2>&1; then",
+    "  bats tests",
+    "else",
+    '  echo "bats missing — not skipping this gate"',
+    "  exit 1",
+    "fi",
+  ].join("\n");
+
+  assertEquals(findGateToolSkips(gate), []);
+});
+
+// ---------------------------------------------------------------------------
+// Fail-loud on workflows the scan could not read
+// ---------------------------------------------------------------------------
+
+Deno.test("scanGateSkipDrift - an unparseable workflow fails loud", async () => {
+  const dir = await checkoutFixture("neat_ai_core");
+  try {
+    // Valid YAML is what "CI enforces this tool" is read from; a file that
+    // will not parse must not silently read as "CI enforces nothing".
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/broken.yml`,
+      "jobs:\n  build:\n  - [unbalanced\n",
+    );
+
+    const result = await scanGateSkipDrift({
+      repoPath: dir,
+      repo: "stSoftwareAU/NEAT-AI-core",
+      manifestText: await pre1595ManifestText(),
+    });
+
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertEquals(result.error.kind, "read");
+      assert(result.error.message.includes("broken.yml"));
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("scanGateSkipDrift - a workflow that could not be read fails loud", async () => {
+  const dir = await checkoutFixture("neat_ai_core");
+  try {
+    // A directory named like a workflow: listed, never read. Dropping it
+    // silently would leave the enforcement it may declare unseen.
+    await Deno.mkdir(`${dir}/.github/workflows/release.yml`);
+
+    const result = await scanGateSkipDrift({
+      repoPath: dir,
+      repo: "stSoftwareAU/NEAT-AI-core",
+      manifestText: await pre1595ManifestText(),
+    });
+
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertEquals(result.error.kind, "read");
+      assert(result.error.message.includes("release.yml"));
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// gateSkipFindingId / correlateGateSkipDrift — the pure correlation layer
+// ---------------------------------------------------------------------------
+
+Deno.test("gateSkipFindingId - one stable id per tool, punctuation collapsed", () => {
+  assertEquals(gateSkipFindingId("bats"), "BP-GATE-SKIP-BATS");
+  assertEquals(gateSkipFindingId("pip3"), "BP-GATE-SKIP-PIP3");
+  // A run of punctuation collapses to a single separator, so two spellings
+  // of the same tool cannot open two issues.
+  assertEquals(gateSkipFindingId("shell-check"), "BP-GATE-SKIP-SHELL-CHECK");
+  assertEquals(gateSkipFindingId("shell..check"), "BP-GATE-SKIP-SHELL-CHECK");
+  assertEquals(gateSkipFindingId(""), "BP-GATE-SKIP-");
+});
+
+/** A skip as `findGateToolSkips` reports one. */
+function skipOf(tool: string): GateToolSkip {
+  return {
+    tool,
+    guardLine: 10,
+    skipLine: 11,
+    skipText: `echo "${tool} not installed — skipping"`,
+  };
+}
+
+/** An enforcement as `findCiToolEnforcements` reports one. */
+function enforcementOf(tool: string): CiToolEnforcement {
+  return {
+    tool,
+    file: ".github/workflows/ci.yml",
+    line: 42,
+    text: `${tool} tests`,
+    kind: "run",
+    installLine: 40,
+    installText: `sudo apt-get install -y ${tool}`,
+  };
+}
+
+Deno.test("correlateGateSkipDrift - pairs a skip with the CI enforcement of the same tool", () => {
+  const drifts = correlateGateSkipDrift({
+    skips: [skipOf("bats")],
+    enforcements: [enforcementOf("bats")],
+    bakedTools: [],
+  });
+
+  assertEquals(drifts.length, 1);
+  assertEquals(drifts[0]?.findingId, "BP-GATE-SKIP-BATS");
+  assertEquals(drifts[0]?.skip.skipLine, 11);
+  assertEquals(drifts[0]?.enforcement.line, 42);
+});
+
+Deno.test("correlateGateSkipDrift - a skip CI never runs, and a baked tool, both drop", () => {
+  assertEquals(
+    correlateGateSkipDrift({
+      skips: [skipOf("bats")],
+      enforcements: [],
+      bakedTools: [],
+    }),
+    [],
+  );
+  assertEquals(
+    correlateGateSkipDrift({
+      skips: [skipOf("bats")],
+      enforcements: [enforcementOf("bats")],
+      bakedTools: ["bats"],
+    }),
+    [],
+  );
+});
+
+Deno.test("correlateGateSkipDrift - empty input yields nothing, never a throw", () => {
+  assertEquals(
+    correlateGateSkipDrift({ skips: [], enforcements: [], bakedTools: [] }),
+    [],
+  );
 });

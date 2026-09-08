@@ -48,6 +48,7 @@ import {
   NEWLY_FILED_UNKNOWN_SUMMARY,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
+import { renderSuppressionSummary } from "../suppression_comments.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
@@ -205,14 +206,22 @@ export function renderGateSkipDriftBody(
  *   - No newly-filed issues and no scanner error → `"no findings"`.
  *   - One or more newly-filed → `"Gate-skip drift audit complete. Filed N
  *     issues: #A, #B, …"` with numbers sorted ascending.
- *   - A scanner error is appended and forces `ok: false` (fail-loud).
+ *   - A scanner error **replaces** the count — an audit that could not
+ *     complete never reads as `"no findings"` — and forces `ok: false`.
+ *   - Any suppression marker seen during the run is listed on a trailing
+ *     sentence, so an active waiver and a rejected one are both visible in
+ *     the report rather than only in the source they silence.
  */
 export function renderGateSkipDriftSummary(
   newlyFiled: readonly number[] | null,
   scannerError: string | null = null,
+  suppressionReport: string = renderSuppressionSummary(),
 ): string {
   const parts: string[] = [];
-  if (newlyFiled === null) {
+  if (scannerError !== null) {
+    // Deliberately no count: "no findings" beside an error is the silent
+    // green this scan exists to prevent.
+  } else if (newlyFiled === null) {
     parts.push(NEWLY_FILED_UNKNOWN_SUMMARY);
   } else if (newlyFiled.length === 0) {
     parts.push("no findings");
@@ -225,6 +234,7 @@ export function renderGateSkipDriftSummary(
     );
   }
   if (scannerError !== null) parts.push(`Scanner error: ${scannerError}.`);
+  if (suppressionReport.length > 0) parts.push(suppressionReport);
   return parts.join(" ");
 }
 
