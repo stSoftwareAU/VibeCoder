@@ -419,11 +419,11 @@ explicitly overridden.
 ### ⚖️ Idle-Task Template Weights
 
 When no claimable work exists, the worker files a background **idle-task**
-issue. It picks which template to run from the eighteen registered templates by
+issue. It picks which template to run from the nineteen registered templates by
 a random draw — the authoritative list lives in the
 [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry), which this page
 deliberately does not restate. By default the draw is **uniform** — each
-template has a 1/18 chance, so only ~2/18 of idle runs are
+template has a 1/19 chance, so only ~2/19 of idle runs are
 supply-chain-relevant.
 
 Set `idle_task_template_weights` to bias the draw toward the templates you care
