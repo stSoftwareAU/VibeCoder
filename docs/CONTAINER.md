@@ -77,11 +77,13 @@ weight.
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
+| `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
+| `pwsh` 7.6.5 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites, which `validate-scripts.yml` fails loud without              |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 
-`rust`, `cargo-deny`, `shellcheck` and `actionlint` are installed by
-per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks` and `pwsh` are
+installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
 SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
@@ -91,7 +93,7 @@ that exemption honest. Adding one is a fragment, a `container/tools.json`
 entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
 added to one of the Containerfile's `install-toolchains.sh` runs.
 
-Three consequences worth knowing:
+Five consequences worth knowing:
 
 - **Rust is pinned to 1.98.0, not `stable`.** That is the channel
   NEAT-AI-scorer, NEAT-AI-Lamarck, NEAT-AI-Backpropagation and NEAT-AI-Forests
@@ -112,6 +114,27 @@ Three consequences worth knowing:
   into a `/opt/semgrep` virtualenv rather than a single binary, and at roughly
   350 MB it is the image's largest toolchain — see
   [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
+- **`gitleaks` is enforced in CI, not by a `quality.sh`.** Neither
+  GRQ-AutoTrader (which has no `quality.sh`) nor NEAT-AI-Explore runs the
+  scanner from its local gate, so it is here for the agent's benefit: with the
+  binary in the image the same scan an agent's PR will face can be run before
+  the PR exists. The amd64 checksum is deliberately the digest
+  GRQ-AutoTrader's `.github/workflows/gitleaks.yml` pins for its CLI fallback,
+  so the image and that workflow cannot diverge.
+- **`pwsh` is the one user-directed exception to "the gate runs it and CI
+  enforces it".** This repo's `run.ps1`, `setup.ps1` and `loop.ps1` suites are
+  excluded from the local gate (Issue #971,
+  `worker/deno/tests/pwsh_suites_outside_the_gate_test.ts`), but
+  `.github/workflows/validate-scripts.yml` fails loud without PowerShell and
+  runs them — so the CI half holds and the local half does not. Wiring those
+  suites into the local gate is separate work, not part of baking the
+  toolchain in. The image sets `POWERSHELL_UPDATECHECK=Off` and
+  `POWERSHELL_TELEMETRY_OPTOUT=1`: no update nag and no telemetry round trip
+  from an unattended container, the same reasoning as
+  `SEMGREP_ENABLE_VERSION_CHECK`. No apt step either — the runtime libraries
+  the .NET host needs (`libicu76`, `libssl3t64`, `libstdc++6`,
+  `libgssapi-krb5-2`) are already in the digest-pinned base, and the
+  fragment's `pwsh --version` assertion is what proves it.
 
 Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
 provider need; the worker itself is Deno. Its layer is built **before** the
@@ -129,7 +152,11 @@ version. It then runs the stages a monitored Rust gate runs — `cargo fmt
 --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo deny check` —
 against a crate created inside the container, so an image that would leave a
 monitored repository unbuildable fails on the pull request rather than
-mid-run on an unattended host.
+mid-run on an unattended host. A version string only proves a file exists, so
+a further probe step runs `gitleaks` over a temporary directory holding a
+planted secret (exit 1) and over a clean one (exit 0), and runs
+`pwsh -NoProfile -NonInteractive -Command 'exit 3'` — the exit code is what
+proves the .NET runtime starts rather than that the binary is on PATH.
 
 ```mermaid
 flowchart TD
@@ -262,7 +289,7 @@ never neither, and `parseContainerManifest` rejects the manifest otherwise.
 restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
-`cargo-deny` and `rust` are fragments (Issue #1594) — they are the
+`cargo-deny`, `gitleaks`, `pwsh` and `rust` are fragments (Issues #1594, #1596) — they are the
 fetch-verify-extract toolchains, whose `ARG` blocks and `RUN` bodies were the
 bulk of the Containerfile's size. `node`, `npm`, `markdownlint-cli2` and
 `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and

@@ -169,9 +169,20 @@ COPY tools.json /tmp/toolchain-manifest.json
 # shellcheck (every repo with a committed shell gate), actionlint
 # (private-repo-22) and cargo-deny (the Rust crates, which exit non-zero when
 # it is absent). All three are single, checksum-verified binaries.
+#
+# gitleaks and pwsh join them (Issue #1596): gitleaks is the secret scanner
+# two repositories enforce in CI, and pwsh is the interpreter this repo's
+# .ps1 launcher suites need — validate-scripts.yml fails loud without it.
+#
+# No update nag and no telemetry round trip from an unattended container —
+# the same reasoning as SEMGREP_ENABLE_VERSION_CHECK below. Set before the
+# install so the build's own version assertion is quiet too.
+ENV POWERSHELL_UPDATECHECK="Off" \
+    POWERSHELL_TELEMETRY_OPTOUT="1"
+
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh
 
 # markdownlint-cli2 backs the check-markdownlint gate stage. The release
 # tarball is downloaded and checksum-verified first, then installed from that

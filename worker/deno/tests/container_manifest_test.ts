@@ -1635,6 +1635,11 @@ Deno.test("container/ - the image supplies every monitored-repo toolchain comman
   // Issue #650: the local SAST gate stage needs the binary in the image, or
   // it SKIPs on every fleet run and findings are met only in CI.
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("semgrep"));
+  // Issue #1596: gitleaks is CI-enforced in two fleet repos, and pwsh is the
+  // interpreter validate-scripts.yml fails loud without. Dropping either from
+  // container/tools.json fails here.
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("gitleaks"));
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("pwsh"));
 });
 
 Deno.test("container/ - every committed toolchain names the repositories it exists for", async () => {
