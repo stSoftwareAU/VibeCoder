@@ -20,6 +20,7 @@ import {
   CONTENT_HASH_ENCODING_V2,
   type ContentApprovalDeps,
   type ContentApprovalState,
+  CURRENT_CONTENT_HASH_ENCODING,
   loadContentApprovalState,
   verifyContentUnchanged,
 } from "../lib/content_approval_tracker.ts";
@@ -106,8 +107,18 @@ Deno.test("content_approval_encoding - v1 encoding reproduces the pre-migration 
   );
 });
 
-Deno.test("content_approval_encoding - the default encoding is still v2 (Issue #3963)", async () => {
+Deno.test("content_approval_encoding - the default encoding is the current one (Issues #3963, #1616)", async () => {
+  // Issue #1616 bumped the capture encoding to v3; v2 stays verifiable, so the
+  // two must remain distinct digests.
   assertEquals(
+    await computeContentHash("Fix the bug", "Approved specification"),
+    await computeContentHash(
+      "Fix the bug",
+      "Approved specification",
+      CURRENT_CONTENT_HASH_ENCODING,
+    ),
+  );
+  assertNotEquals(
     await computeContentHash("Fix the bug", "Approved specification"),
     await computeContentHash(
       "Fix the bug",
@@ -141,7 +152,7 @@ Deno.test("content_approval_encoding - captured snapshots record the encoding th
   );
   assertEquals(
     state.snapshots["owner/repo|42"]?.encoding,
-    CONTENT_HASH_ENCODING_V2,
+    CURRENT_CONTENT_HASH_ENCODING,
   );
 });
 
