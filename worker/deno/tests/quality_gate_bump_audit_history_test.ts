@@ -52,6 +52,21 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+/**
+ * Give the repository its own committer identity.
+ *
+ * The test helper above passes `GIT_AUTHOR_*` / `GIT_COMMITTER_*` to the git
+ * calls it makes itself, but the code under test runs `git revert` through
+ * `runGitCommand` with no identity of its own. A CI runner has no global
+ * `user.name` / `user.email`, so without a repo-local identity the revert
+ * fails with "Please tell me who you are", the audit is skipped, and the
+ * tests fail for a reason that has nothing to do with the audit.
+ */
+async function setLocalIdentity(cwd: string): Promise<void> {
+  await git(cwd, "config", "user.name", "test");
+  await git(cwd, "config", "user.email", "test@example.com");
+}
+
 async function commitFile(
   cwd: string,
   path: string,
@@ -104,11 +119,13 @@ async function buildScenario(): Promise<Scenario> {
   const seed = `${root}/seed`;
   await Deno.mkdir(seed);
   await git(seed, "init", "-q", "--initial-branch=main");
+  await setLocalIdentity(seed);
   await commitFile(seed, "package.json", '{"dep":"1.0.0"}\n', "initial");
   await git(seed, "remote", "add", "origin", origin);
   await git(seed, "push", "-q", "origin", "main");
 
   await git(root, "clone", "-q", origin, clone);
+  await setLocalIdentity(clone);
   await git(clone, "checkout", "-q", "-b", BRANCH);
   const beforeBumpSha = await commitFile(
     clone,
@@ -180,7 +197,8 @@ interface RunOutcome {
   reason?: string;
   handleIssueFailureCalled: boolean;
   gateRuns: number;
-  warnings: string[];
+  /** Warning messages, each with the stringified `error` it carried. */
+  warnings: Array<{ message: string; error: string }>;
 }
 
 async function runAudit(
@@ -190,7 +208,7 @@ async function runAudit(
 ): Promise<RunOutcome> {
   let gateRuns = 0;
   let handleIssueFailureCalled = false;
-  const warnings: string[] = [];
+  const warnings: Array<{ message: string; error: string }> = [];
   const deps = createMockDeps({
     quality: {
       runQualityGate: () => {
@@ -235,7 +253,10 @@ async function runAudit(
   });
   const baseWarn = deps.logger.warn.bind(deps.logger);
   deps.logger.warn = ((msg: string, ctx?: unknown) => {
-    warnings.push(msg);
+    const error = ctx && typeof ctx === "object" && "error" in ctx
+      ? String((ctx as { error: unknown }).error)
+      : "";
+    warnings.push({ message: msg, error });
     baseWarn(msg, ctx as never);
   }) as typeof deps.logger.warn;
 
@@ -457,9 +478,16 @@ Deno.test(
       assertEquals(outcome.gateRuns, 2, "audit rerun must be skipped");
       assertEquals(state.bumpInfo?.status, "applied");
       assertEquals(outcome.handleIssueFailureCalled, true);
+      // The audit must have been skipped because the revert CONFLICTED —
+      // not because git could not commit at all (a missing identity also
+      // skips the audit and would make this test pass for the wrong reason).
+      const skipped = outcome.warnings.find((w) =>
+        w.message.includes("did not apply cleanly")
+      );
+      assert(skipped, "the skipped audit must be logged");
       assert(
-        outcome.warnings.some((w) => w.includes("bump audit")),
-        "the skipped audit must be logged",
+        /conflict/i.test(skipped.error),
+        `the revert must have failed on a conflict, got: ${skipped.error}`,
       );
 
       assertEquals(await git(s.clone, "rev-parse", "HEAD"), fixSha);
@@ -477,4 +505,3 @@ Deno.test(
     }
   },
 );
-
