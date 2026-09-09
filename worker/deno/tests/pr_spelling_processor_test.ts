@@ -7,7 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CheckAnnotation,
   decodeAnnotations,
@@ -991,4 +991,107 @@ Deno.test("processSpellingFailure - checks out PR branch before running Claude (
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// ============================================================================
+// Issue #1673: repo context comes from the clone, not <clone>/<repo>
+// ============================================================================
+
+Deno.test("processSpellingFailure - injects the clone's CLAUDE.md into the prompt (Issue #1673)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
+  const workDir = await Deno.makeTempDir({ prefix: "vibe-spelling-clone-" });
+  try {
+    await Deno.writeTextFile(
+      `${workDir}/CLAUDE.md`,
+      "# Repo guidance\n\nSENTINEL-1673-SPELLING: prefer Australian English.\n",
+    );
+
+    const prompts: string[] = [];
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: ((options: { prompt?: string }) => {
+        prompts.push(options?.prompt ?? "");
+        return Promise.resolve({
+          ok: true,
+          value: { output: "Fixed spelling", exitCode: 0, timedOut: false },
+        });
+      }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: { runGhCommand: () => Promise.resolve("") },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const processorDeps: SpellingProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      workDir,
+      workRoot,
+    };
+
+    const result = await processSpellingFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(prompts.length, 1);
+    assertStringIncludes(prompts[0]!, "SENTINEL-1673-SPELLING");
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("processSpellingFailure - warns when the checkout directory is missing (Issue #1673)", async () => {
+  const warnings: string[] = [];
+  const logger = makeSilentLogger();
+  logger.warn = (message: string) => {
+    warnings.push(message);
+  };
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed spelling", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    },
+    github: { runGhCommand: () => Promise.resolve("") },
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger,
+    deps,
+    workDir: "/nonexistent/vibe-1673-clone",
+    workRoot: "/tmp/vibe-1673-work-root",
+  };
+
+  const result = await processSpellingFailure(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  assertEquals(
+    warnings.some((w) => w.includes("Repo context directory does not exist")),
+    true,
+    `expected a missing-directory warning, got: ${warnings.join(" | ")}`,
+  );
 });

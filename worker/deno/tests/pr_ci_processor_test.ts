@@ -7,7 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -1698,5 +1698,116 @@ Deno.test("recordCiCheckRetry - a read-only state directory does not abort the r
   } finally {
     await Deno.chmod(stateDir, 0o700);
     await Deno.remove(root, { recursive: true });
+  }
+});
+
+// ============================================================================
+// Issue #1673: repo context comes from the clone, not <clone>/<repo>
+// ============================================================================
+
+Deno.test("processCiFailure - injects the clone's CLAUDE.md into the prompt (Issue #1673)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
+  const workDir = await Deno.makeTempDir({ prefix: "vibe-ci-fix-clone-" });
+  try {
+    await Deno.writeTextFile(
+      `${workDir}/CLAUDE.md`,
+      "# Repo guidance\n\nSENTINEL-1673-CI: prefer Australian English.\n",
+    );
+
+    const prompts: string[] = [];
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: ((options: { prompt?: string }) => {
+          prompts.push(options?.prompt ?? "");
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: { runGhCommand: () => Promise.resolve("") },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${workRoot}/.ci_check_state`,
+      workDir,
+      workRoot,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    };
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(prompts.length, 1);
+    assertStringIncludes(prompts[0]!, "SENTINEL-1673-CI");
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - warns when the checkout directory is missing (Issue #1673)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
+  try {
+    const warnings: string[] = [];
+    const logger = makeSilentLogger();
+    logger.warn = (message: string) => {
+      warnings.push(message);
+    };
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: { runGhCommand: () => Promise.resolve("") },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger,
+      deps,
+      stateDir: `${workRoot}/.ci_check_state`,
+      workDir: "/nonexistent/vibe-1673-clone",
+      workRoot,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    };
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(
+      warnings.some((w) => w.includes("Repo context directory does not exist")),
+      true,
+      `expected a missing-directory warning, got: ${warnings.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
   }
 });

@@ -20,7 +20,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 import {
   codeFenceFor,
   createPromptDelimiters,
@@ -120,6 +120,54 @@ export async function readRepoContext(
       truncated,
     },
   };
+}
+
+/**
+ * Load repo context from a checkout, warning when the directory is absent
+ * (Issue #1673).
+ *
+ * The PR-kind processors used to build this path as `<workDir>/<repoName>`
+ * while production already hands them the clone as `workDir`, so the path
+ * resolved one level too deep and every run lost its `CLAUDE.md`/`AGENTS.md`
+ * context. The clone *is* the checkout, so it is read directly — no repo name
+ * appended, no `WORK_DIR` fallback, and nothing to re-derive when the clone
+ * shape changes (a lane worktree sits at `<workRoot>/worktrees/<lane>/<repo>`).
+ *
+ * "Nothing found" and "looked in the wrong place" are indistinguishable in
+ * {@link readRepoContext}'s result, so a missing directory is logged at `warn`
+ * rather than silently degrading the prompt.
+ *
+ * @param cloneDir - The repository checkout to read context from
+ * @param logger - Logger that receives the warning when the directory is absent
+ * @returns The combined context content, or undefined when there is none
+ */
+export async function loadRepoContextContent(
+  cloneDir: string | undefined,
+  logger: Pick<Logger, "warn">,
+): Promise<string | undefined> {
+  if (!cloneDir) {
+    logger.warn(
+      "No checkout directory supplied — CLAUDE.md/AGENTS.md context will not be injected",
+    );
+    return undefined;
+  }
+
+  let isDirectory = false;
+  try {
+    isDirectory = (await Deno.stat(cloneDir)).isDirectory;
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    logger.warn(
+      "Repo context directory does not exist — CLAUDE.md/AGENTS.md context will not be injected",
+      { cloneDir },
+    );
+    return undefined;
+  }
+
+  const result = await readRepoContext(cloneDir);
+  return result.ok && result.value.content ? result.value.content : undefined;
 }
 
 /**

@@ -21,7 +21,7 @@ import {
   buildPrFeedbackPrompt,
   type PrFeedbackPromptOptions,
 } from "./prompt_builder.ts";
-import { readRepoContext } from "./repo_context_reader.ts";
+import { loadRepoContextContent } from "./repo_context_reader.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
@@ -422,14 +422,13 @@ async function _processFeedbackWithHeartbeat(
     });
   }
 
-  // Read repo context (CLAUDE.md/AGENTS.md) for system prompt injection (Issue #1325)
-  const repoName = repo.split("/").pop() ?? repo;
-  const repoDir = `${processorDeps.workDir}/${repoName}`;
-  const repoContextResult = await readRepoContext(repoDir);
-  const repoContextContent =
-    repoContextResult.ok && repoContextResult.value.content
-      ? repoContextResult.value.content
-      : undefined;
+  // Read repo context (CLAUDE.md/AGENTS.md) for prompt injection (Issue #1325).
+  // `workDir` already is the checkout, so it is read directly — appending the
+  // repo name looked one level too deep and injected nothing (Issue #1673).
+  const repoContextContent = await loadRepoContextContent(
+    processorDeps.workDir,
+    logger,
+  );
 
   // Bundle unresolved trusted-bot review comments as additional prompt
   // context (Issue #1858). Failures degrade silently — no bundling
