@@ -621,6 +621,9 @@ Deno.test("pr_auto_merge - arming a draft is a typed non-failure: no retries, no
   assertEquals(sink.length, 1);
   assertEquals(sink[0]!.level, "info");
   assertStringIncludes(sink[0]!.message, "Auto-merge draft");
+});
+
+// ---------------------------------------------------------------------------
 // A policy GitHub enforces that the rules endpoint does not show (Issue #1763)
 // ---------------------------------------------------------------------------
 
