@@ -538,9 +538,9 @@ pwshTest("setup.ps1 - dot-sourcing runs no setup step", async () => {
  * for a reason neither was about.
  *
  * So the environment is BUILT from the same allowlist every other
- * repository-controlled spawn uses. It carries `PATH`, `HOME` and `DENO_DIR`
- * and carries no config variable at all, which is why `CONFIG_FILE` is the
- * only one the child sees.
+ * repository-controlled spawn uses. It carries `PATH`, `HOME` and `DENO_DIR`,
+ * and neither `CONFIG_FILE` nor `CONFIG_PATH` is on it, so the only config
+ * file the child can resolve is the one named here.
  *
  * @param configFile the `.config.json` this spawn must read and write.
  * @param source the environment to build from; injected by the case that
@@ -642,9 +642,15 @@ Deno.test({
     // The container exports CONFIG_PATH=/home/vibe/.vibe-coder/run-config/
     // .config.json, so a case that inherited the caller's environment handed
     // setup.ps1 two config variables naming different files and it exited 1 —
-    // a failure about the host, not about the flag under test. The ambient
-    // value is supplied here rather than depended on, so the guarantee holds
-    // on a host that exports nothing.
+    // a failure about the host, not about the flag under test.
+    //
+    // What is asserted here is the half that holds on every host: an
+    // environment carrying a conflicting CONFIG_PATH goes in, and what comes
+    // out names one config file and no credential. Then the real -ListRepos
+    // run proves that built environment is all setup.ps1 needs. The other
+    // half — that the child inherits nothing the builder was not asked for —
+    // is `clearEnv: true`, and it is the image's own ambient CONFIG_PATH
+    // that exercises it, in this case and in the two beside it.
     const dir = await Deno.makeTempDir({ prefix: "vibe-ps1-config-path-" });
     try {
       const configPath = `${dir}/.config.json`;
@@ -656,6 +662,15 @@ Deno.test({
         }),
       );
 
+      const env = setupCliEnv(configPath, {
+        ...Deno.env.toObject(),
+        CONFIG_PATH: `${dir}/ambient/.config.json`,
+        GH_TOKEN: "gho_caller",
+      });
+      assertEquals(env.CONFIG_FILE, configPath);
+      assertEquals(Object.hasOwn(env, "CONFIG_PATH"), false);
+      assertEquals(Object.hasOwn(env, "GH_TOKEN"), false);
+
       const proc = await new Deno.Command(PWSH!, {
         args: [
           "-NoProfile",
@@ -664,10 +679,7 @@ Deno.test({
           SETUP_PS1,
           "-ListRepos",
         ],
-        env: setupCliEnv(configPath, {
-          ...Deno.env.toObject(),
-          CONFIG_PATH: `${dir}/ambient/.config.json`,
-        }),
+        env,
         clearEnv: true,
         stdout: "piped",
         stderr: "piped",

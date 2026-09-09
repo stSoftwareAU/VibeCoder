@@ -479,10 +479,13 @@ jobs:
           # shape a poisoned entry needs to be selected. A lockfile change now
           # costs one cold fetch of a few small JSR modules, nothing more.
 
-      # No PowerShell check here any more (PR #1170). Every suite that
-      # spawns `pwsh` is an integration suite by the repository's own
-      # classifier, and none of them run in this job — the `integration tests`
-      # job below is where that prerequisite is enforced.
+      # No PowerShell check step here (PR #1170), but these shards do run
+      # the PowerShell suites: `IN_GATE_SCRIPT_SUITES` keeps the three
+      # `run.ps1` ones (Issue #1598) and the two `setup.ps1` ones (Issue
+      # #1656) in the unit passes this job runs. The prerequisite is enforced
+      # by `pwsh_suites_in_the_gate_test.ts`, which fails in these shards on a
+      # runner without PowerShell rather than letting the suites report
+      # "ignored" — a check inside the suite, not a step in front of it.
       - name: Deno tests (shard ${{ matrix.shard }} of 4)
         run: |
           set -euo pipefail
@@ -540,14 +543,17 @@ jobs:
           key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
           # Issue #4404 (GHA-SUPPLY-010): exact-key only, as in the shard jobs.
 
-      # Issue #4066: the run.ps1 launcher tests only run where PowerShell
-      # exists, and a skipped test is not a passed one. This is the job that
-      # owns that prerequisite now.
+      # Issue #4066: a skipped test is not a passed one, so this job asserts
+      # its runner still has the interpreter its scripts expect. Issue #1656
+      # moved the last PowerShell suite out of `INTEGRATION_TEST_FILES` and
+      # into the gate, so what this now guards is the runner, not a suite in
+      # this job — `pwsh_suites_in_the_gate_test.ts` owns that, in the
+      # required shards.
       - name: Check PowerShell is available
         run: |
           set -euo pipefail
           if ! command -v pwsh > /dev/null 2>&1; then
-            echo "❌ pwsh not found — the run.ps1 launcher tests would skip" >&2
+            echo "❌ pwsh not found on the integration runner" >&2
             exit 1
           fi
           pwsh --version

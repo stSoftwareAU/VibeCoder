@@ -106,8 +106,8 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
  *
  * The three `run.ps1` entries below cost about 97s of the gate on the image
  * (76s, 15s and 6s, measured serially inside the container at PowerShell
- * 7.6.5). What they buy is a verdict on `run.ps1` **before the push**, from the same gate
- * that decides everything else about the change. CI's cover was uneven:
+ * 7.6.5). What they buy is a verdict on `run.ps1` **before the push**, from
+ * the same gate that decides everything else about the change. CI's cover was uneven:
  * `deno task test:run-mode` already ran two of them in the required
  * `validate (container)` / `validate (no-runtime)` legs, while
  * `launcher_egress_probe_test.ts` was only ever in the `integration tests`

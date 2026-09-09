@@ -133,11 +133,12 @@ Seven consequences worth knowing:
   gate (Issue #1598, `IN_GATE_SCRIPT_SUITES` in
   `worker/deno/lib/integration_test_manifest.ts`), joined by the two
   `setup.ps1` suites once Issue #1656 stopped one of them inheriting the
-  image's own `CONFIG_PATH`, and
+  image's own `CONFIG_PATH` — so every suite that starts PowerShell is now
+  the gate's, and none is left to CI alone.
   `worker/deno/tests/pwsh_suites_in_the_gate_test.ts` fails the gate on a host
-  without PowerShell rather than letting them report "ignored".
-  `.github/workflows/validate-scripts.yml` fails loud without PowerShell for
-  the integration suites that are still CI's alone. The image sets `POWERSHELL_UPDATECHECK=Off` and
+  without PowerShell rather than letting them report "ignored", in the local
+  gate and in the `validate (tests N/4)` shards alike. The image sets
+  `POWERSHELL_UPDATECHECK=Off` and
   `POWERSHELL_TELEMETRY_OPTOUT=1`: no update nag and no telemetry round trip
   from an unattended container, the same reasoning as
   `SEMGREP_ENABLE_VERSION_CHECK`. No apt step either — the runtime libraries

@@ -149,17 +149,18 @@ Deno.test("pwsh suites - the manifest names every one of them (Issue #1598)", as
 });
 
 Deno.test("pwsh suites - a host without PowerShell fails the gate (Issue #1598)", () => {
-  // The exact value the three suites gate their cases on, so this cannot
+  // The exact value every in-gate suite gates its cases on, so this cannot
   // pass while they quietly report "ignored". `resolvePowerShell` tries
   // `$env:VIBE_PWSH` first, which is the remedy for a host that keeps the
   // interpreter somewhere `PATH` does not name.
   assert(
     PWSH !== null,
-    "no PowerShell 7 on this host, so the run.ps1 launcher suites would " +
-      "skip and the gate would report green having verified nothing about " +
-      "the Windows containment boundary. Install PowerShell 7 (the worker " +
-      "container ships it at /usr/local/bin/pwsh — Issue #1596) or set " +
-      "VIBE_PWSH to its absolute path.",
+    "no PowerShell 7 on this host, so every suite IN_GATE_SCRIPT_SUITES " +
+      "names would skip and the gate would report green having verified " +
+      "nothing about the Windows containment boundary or the Windows " +
+      "onboarding path. Install PowerShell 7 (the worker container ships " +
+      "it at /usr/local/bin/pwsh — Issue #1596) or set VIBE_PWSH to its " +
+      "absolute path.",
   );
 });
 

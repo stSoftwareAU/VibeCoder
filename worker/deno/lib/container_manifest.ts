@@ -189,9 +189,9 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * `gitleaks`, the secret scanner GRQ-AutoTrader and NEAT-AI-Explore both run
  * on every PR. `pwsh` was the second until Issue #1598: with the interpreter
  * in the image the local gate runs the `run.ps1` launcher suites itself, and
- * the `setup.ps1` ones since Issue #1656.
- * `.github/workflows/validate-scripts.yml` still fails loud without it for
- * the integration suites that remain CI's alone.
+ * the `setup.ps1` ones since Issue #1656 — every suite that starts the
+ * interpreter is the gate's now, so `pwsh_suites_in_the_gate_test.ts` is
+ * what fails loud without it, locally and in the required CI shards.
  *
  * Two more back the NEAT-AI-core and NEAT-AI-scorer gates (Issue #1595):
  * `bats`, the runner both drive over their `tests/scripts` suites, and
