@@ -186,7 +186,11 @@ Deno.test("CI-fix pass - a gated head spends no retry (Issue #1679)", async () =
   }
 });
 
-Deno.test("merge-conflict pass - a gated head opens no attempt (Issue #1679)", async () => {
+Deno.test("merge-conflict pass - a milestone head opens no attempt (Issues #1679, #1772)", async () => {
+  // The merge-conflict pass now stands down on the branch name alone: a
+  // `milestone/**` head belongs to the milestone branch sync, gated or not
+  // (Issue #1772). The stand-down it records names the sync rather than the
+  // rule; the spelling and CI-fix passes above still read the ruleset.
   resetGatedHeadReportsForTest();
   const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-merge-" });
   try {
@@ -233,10 +237,11 @@ Deno.test("merge-conflict pass - a gated head opens no attempt (Issue #1679)", a
     // posted, so the attempt budget is intact for a real conflict.
     const comments = standDownComments(observed);
     assertEquals(comments.length, 1);
+    assertStringIncludes(comments[0]!, "milestone branch sync");
     assertEquals(
       comments.some((body) => body.includes("Attempt")),
       false,
-      "no merge-conflict attempt is opened on a gated head",
+      "no merge-conflict attempt is opened on a milestone head",
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

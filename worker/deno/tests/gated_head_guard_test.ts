@@ -9,10 +9,13 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assessGatedHead,
   buildGatedHeadComment,
+  buildMilestoneHeadComment,
   gatedHeadMarker,
   guardGatedHead,
   isMilestoneHead,
+  milestoneHeadMarker,
   resetGatedHeadReportsForTest,
+  standDownMilestoneHead,
 } from "../lib/gated_head_guard.ts";
 import type { Logger } from "../types.ts";
 
@@ -245,4 +248,103 @@ Deno.test("buildGatedHeadComment - names the branch, the rule and the way forwar
   assertStringIncludes(body, MILESTONE_HEAD);
   assertStringIncludes(body, "required_status_checks");
   assertStringIncludes(body, "pull request");
+});
+
+// ---------------------------------------------------------------------------
+// standDownMilestoneHead (Issue #1772)
+// ---------------------------------------------------------------------------
+
+Deno.test("standDownMilestoneHead - an ungated milestone head still stands down", async () => {
+  // The sync owns `default -> milestone/*` whether or not a rule is in force,
+  // so this reads the branch name and never the ruleset.
+  resetGatedHeadReportsForTest();
+  const gh = makeGh({ rules: [] });
+  const stoodDown = await standDownMilestoneHead({
+    repo: "org/repo",
+    prNumber: 4702,
+    branchName: MILESTONE_HEAD,
+    logger: makeSilentLogger(),
+    runGhCommand: gh.run,
+  });
+
+  assertEquals(stoodDown, true);
+  assertEquals(
+    gh.calls.some((args) => args.join(" ").includes("rules/branches")),
+    false,
+    "the branch name decides it — no rules read is needed",
+  );
+  const comments = gh.calls.filter((args) =>
+    args[0] === "pr" && args[1] === "comment"
+  );
+  assertEquals(comments.length, 1);
+  assertStringIncludes(
+    comments[0]?.[comments[0].indexOf("--body") + 1] ?? "",
+    "milestone branch sync",
+  );
+});
+
+Deno.test("standDownMilestoneHead - an ordinary feature head is worked as before", async () => {
+  resetGatedHeadReportsForTest();
+  const gh = makeGh({ rules: [{ type: "required_status_checks" }] });
+  const stoodDown = await standDownMilestoneHead({
+    repo: "org/repo",
+    prNumber: 7,
+    branchName: "issue-7-fix",
+    logger: makeSilentLogger(),
+    runGhCommand: gh.run,
+  });
+
+  assertEquals(stoodDown, false);
+  assertEquals(gh.calls.length, 0);
+});
+
+Deno.test("standDownMilestoneHead - a PR already carrying the marker is not commented on again", async () => {
+  resetGatedHeadReportsForTest();
+  const gh = makeGh({
+    comments: [{
+      body: `${milestoneHeadMarker(MILESTONE_HEAD)}\nsaid already`,
+    }],
+  });
+  const stoodDown = await standDownMilestoneHead({
+    repo: "org/repo",
+    prNumber: 4702,
+    branchName: MILESTONE_HEAD,
+    logger: makeSilentLogger(),
+    runGhCommand: gh.run,
+  });
+
+  assertEquals(stoodDown, true);
+  assertEquals(
+    gh.calls.some((args) => args[0] === "pr" && args[1] === "comment"),
+    false,
+  );
+});
+
+Deno.test("standDownMilestoneHead - the gated-head stand-down does not mask it", async () => {
+  // Two different stand-downs, two markers: a PR the CI-fix pass already
+  // commented on as gated still gets the merge-conflict pass's own comment.
+  resetGatedHeadReportsForTest();
+  const gh = makeGh({
+    comments: [{ body: gatedHeadMarker(MILESTONE_HEAD) }],
+  });
+  await standDownMilestoneHead({
+    repo: "org/repo",
+    prNumber: 4702,
+    branchName: MILESTONE_HEAD,
+    logger: makeSilentLogger(),
+    runGhCommand: gh.run,
+  });
+
+  assertEquals(
+    gh.calls.filter((args) => args[0] === "pr" && args[1] === "comment").length,
+    1,
+  );
+});
+
+Deno.test("buildMilestoneHeadComment - names the branch and the sync that owns it", () => {
+  const body = buildMilestoneHeadComment(MILESTONE_HEAD);
+  assertStringIncludes(body, milestoneHeadMarker(MILESTONE_HEAD));
+  assertStringIncludes(body, MILESTONE_HEAD);
+  assertStringIncludes(body, "milestone branch sync");
+  assertStringIncludes(body, "no resolution attempt is spent");
 });

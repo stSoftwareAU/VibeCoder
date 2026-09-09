@@ -39,7 +39,8 @@ import {
   createMergeConflictReplyReader,
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
-import { guardGatedHead } from "./gated_head_guard.ts";
+import { standDownMilestoneHead } from "./gated_head_guard.ts";
+import { isRuleViolationPush } from "./milestone_sync_pr.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
 import {
   type HeartbeatHandle,
@@ -641,28 +642,31 @@ export async function processMergeConflict(
     attemptCount: input.attemptCount,
   });
 
-  // Issue #1679: a head under a ruleset that refuses direct pushes can never
-  // receive the resolved merge — the push is declined with GH013. Stand down
-  // before the lock, the lock comment and the heartbeat, so a PR the worker
-  // will never work leaves one comment rather than churn on every run, and
-  // before the attempt marker below, so the refusal spends no attempt.
-  const pushGate = await guardGatedHead({
-    repo,
-    prNumber,
-    branchName: input.branchName,
-    pass: "Merge-conflict resolution",
-    logger,
-    runGhCommand: processorDeps.deps.github.runGhCommand,
-  });
-  if (pushGate.gated) {
+  // Issue #1772: a `milestone/**` head belongs to the every-cycle milestone
+  // branch sync, which owns `default -> milestone/*` merges and already lands
+  // them through a sync PR when a ruleset refuses the direct push (#589).
+  // Running the ladder here too would duplicate that merge on the same branch
+  // and race its push — so stand down whether or not a rule is in force
+  // (#1679 stood down only on the gated case). Before the lock, the lock
+  // comment and the heartbeat, so the PR churns nothing on every run, and
+  // before the attempt marker below, so no attempt is spent.
+  if (
+    await standDownMilestoneHead({
+      repo,
+      prNumber,
+      branchName: input.branchName,
+      logger,
+      runGhCommand: processorDeps.deps.github.runGhCommand,
+    })
+  ) {
     return {
       ok: true,
       value: {
         processed: false,
         merged: false,
         escalated: false,
-        summary:
-          `PR #${prNumber} head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
+        summary: `PR #${prNumber} head '${input.branchName}' is a milestone ` +
+          `branch — left to the milestone branch sync, no attempt spent`,
       },
     };
   }
@@ -1075,6 +1079,18 @@ async function resolveConflict(
     preFlight,
   );
   if (!finalise.ok) {
+    // A ruleset refusing the push is a configuration fact, not a resolution
+    // the agent got wrong (Issue #1772) — it recurs identically every run, so
+    // charging it would burn the PR's budget on something no retry can fix.
+    if (isRuleViolationPush(finalise.error.message)) {
+      return await withdrawRulesetRefusedAttempt(
+        input,
+        processorDeps,
+        attemptCommentId,
+        attemptNumber,
+        finalise.error.message,
+      );
+    }
     return await failAttempt(
       input,
       processorDeps,
@@ -1092,8 +1108,19 @@ async function resolveConflict(
       ["push", "--dry-run", "--end-of-options", "origin", branchName],
       workDir,
     );
-    const gitDetail = (dryRun.stderr + dryRun.stdout).trim().split("\n")
+    const pushOutput = dryRun.stderr + dryRun.stdout;
+    const gitDetail = pushOutput.trim().split("\n")
       .slice(-3).join(" | ");
+    // Same refusal, reported by the dry run rather than by the push itself.
+    if (isRuleViolationPush(pushOutput)) {
+      return await withdrawRulesetRefusedAttempt(
+        input,
+        processorDeps,
+        attemptCommentId,
+        attemptNumber,
+        gitDetail,
+      );
+    }
     return await failAttempt(
       input,
       processorDeps,
@@ -1338,6 +1365,63 @@ async function escalateNoCommonAncestor(
       summary: `PR #${prNumber}: no common ancestor between '${branchName}' ` +
         `and 'origin/${baseBranch}' even in full history — escalated to a ` +
         `human, no attempt spent (Issue #1458)`,
+    },
+  };
+}
+
+/**
+ * Withdraw an attempt whose push a repository ruleset refused (Issue #1772).
+ *
+ * GH013 is not a resolution the agent got wrong — the merge itself succeeded,
+ * and the same refusal arrives on every run for as long as the rule stands.
+ * Charging it spent the PR's two-attempt budget on a push that could never
+ * land and escalated a conflict nobody had failed to resolve. So this posts no
+ * `CONFLICT_FAILED_MARKER` and deletes the attempt marker instead: the next
+ * scan counts neither a concluded attempt nor an open one.
+ *
+ * A marker that cannot be deleted is left and said out loud by
+ * {@link deleteAttemptMarker} — the PR then reads as disrupted, which is
+ * retried rather than judged, and that bound still holds.
+ */
+async function withdrawRulesetRefusedAttempt(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  attemptCommentId: number | null,
+  attemptNumber: number,
+  detail: string,
+): Promise<Result<MergeConflictResult>> {
+  const { logger, deps } = processorDeps;
+  const { repo, prNumber, branchName } = input;
+
+  await deleteAttemptMarker(
+    deps,
+    repo,
+    attemptCommentId,
+    logger,
+    "the push was refused by a repository ruleset (Issue #1772)",
+  );
+
+  logger.warn(
+    "Merge-conflict resolution not charged: push rejected by ruleset",
+    {
+      repo,
+      prNumber,
+      branchName,
+      attempt: attemptNumber,
+      attemptCharged: false,
+      detail,
+    },
+  );
+
+  return {
+    ok: true,
+    value: {
+      processed: false,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      summary: `Merge-conflict resolution on PR #${prNumber} was not ` +
+        `charged: push rejected by ruleset — ${detail}`,
     },
   };
 }

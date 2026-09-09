@@ -681,14 +681,34 @@ So every pass asks
 flowchart TD
     A[PR pass picks up a PR] --> B{"Head is a milestone branch?"}
     B -- no --> W[Work the PR as before]
-    B -- yes --> C[GET /rules/branches/head]
+    B -- yes --> M{"Which pass?"}
+    M -- merge-conflict --> S["Stand down: left to<br/>the milestone sync"]
+    M -- spelling / CI fix --> C[GET /rules/branches/head]
     C -- unreadable --> W
     C --> D{"required_status_checks<br/>or pull_request rule?"}
     D -- no --> W
     D -- yes --> E[Stand down: no agent run,<br/>no attempt, no retry]
     E --> F[One comment per branch,<br/>naming the rule]
+    S --> F2[One comment per branch,<br/>naming the sync]
 ```
 
+What each pass does with a `milestone/**` head:
+
+| Pass | On a `milestone/**` head | Marker on the comment |
+| --- | --- | --- |
+| Spelling fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head` |
+| CI fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head` |
+| Merge conflict | **Left to the milestone sync**, gated or not (Issue #1772) | `vibe-milestone-head` |
+
+- **The merge-conflict pass is left to the milestone sync.** The every-cycle
+  milestone branch sync is the single owner of `default → milestone/*` merges,
+  and it already lands its merge through a sync PR when a ruleset refuses the
+  direct push (Issue #589). Running the PR ladder on the same head would
+  duplicate that merge and race the sync's push, so the pass stands down on the
+  branch name alone — no rules read, no attempt marker, one log line
+  (`skipped: milestone head — resolved by the milestone branch sync`) and one
+  comment naming the sync. The CI-nudge behaviour (Issue #1762) is unchanged by
+  this.
 - **The agent never runs on a gated head**, so nothing is committed that cannot
   be pushed, and no attempt or retry is spent — the guard runs before
   `recordCiCheckRetry` and before the merge-conflict attempt marker is posted.
@@ -704,6 +724,14 @@ flowchart TD
 - **Unreadable rules fail open.** The push is attempted exactly as before, and
   a genuine refusal is still loud on stderr. Failing closed would stop every
   milestone PR being worked on a transient API blip.
+- **A push a ruleset refuses anyway spends no merge-conflict attempt**
+  (Issue #1772). Rules only gate `milestone/**` heads here, so an ordinary head
+  under a repo-wide ruleset still reaches the push and is still refused with
+  GH013. That refusal recurs identically every run, so the pass posts no
+  `vibe-coder:merge-conflict-failed` conclusion: it withdraws the attempt
+  marker, logs `not charged: push rejected by ruleset`, and the next scan
+  counts zero attempts. Every other push failure — a race, a network fault — is
+  charged exactly as before.
 
 A claim that the fix was pushed is now made against the remote in all three
 passes: the spelling pass adopted `verifyPushLanded()`
