@@ -495,6 +495,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "switch",
     note: "disables the audit hook; tests only",
   },
+  VIBE_HOST_DISK_REFRESH_SECONDS: {
+    role: "switch",
+    note: "shortens the attached launcher's host-disk.json refresh interval " +
+      "from its fixed five minutes (Issue #1691); tests only",
+  },
   VIBE_EXTENSION_PREFIX: {
     role: "switch",
     note: "test-only override of the fixed in-container extension prefix " +

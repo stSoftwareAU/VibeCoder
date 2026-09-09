@@ -781,6 +781,15 @@ done
 # newer than the one it holds). Written whole-file-then-rename so the worker
 # never reads a torn value; a failure to write is a warning, never a reason
 # not to launch or not to exit.
+#
+# Called from three places: at launch, on a tick that found a worker already
+# running, and — Issue #1691 — every HOST_DISK_REFRESH_SECONDS from the
+# attached launcher while its container runs. The tick path alone was not
+# enough: this launcher stays attached for the whole run, so a scheduler that
+# never overlaps a still-running job (launchd's StartInterval) delivers no tick
+# until the worker exits. On GRQ-25 the file stayed at its launch value for a
+# whole run while the host freed 23 GB, and the worker refused claims 12 GB
+# above its floor on the strength of a reading it could not refresh.
 write_host_disk_reading() {
   local gate="${HOME}" store="${HOME:-}/Library/Application Support/com.apple.container"
   [[ -d "${store}" ]] && gate="${store}"
@@ -1492,6 +1501,33 @@ write_host_disk_reading
 # worker/deno/lib/container_watchdog.ts by the launcher tests (Issue #4173).
 CONTAINER_WEDGED_EXIT_STATUS=87
 
+# How often the attached launcher hands the running worker a fresh host-disk
+# reading (Issue #1691). Five minutes matches the scheduler tick the worker's
+# fifteen-minute adoption window was sized for; the override exists for the
+# launcher tests, which cannot wait five minutes to see a rewrite.
+HOST_DISK_REFRESH_SECONDS="${VIBE_HOST_DISK_REFRESH_SECONDS:-300}"
+if ! [[ "${HOST_DISK_REFRESH_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  HOST_DISK_REFRESH_SECONDS=300
+fi
+
+# Refresh `host-disk.json` while the container client is alive (Issue #1691).
+# Runs only as a background job beside the watchdog below, with the same
+# discipline: the inherited traps are dropped so it can neither record a
+# second launcher outcome nor swallow the kill that ends it, and the sleep's
+# streams are detached so an orphaned sleep cannot hold this launcher's stdout
+# open. The reading is taken after each interval, never before the first one:
+# the launch already wrote one.
+# shellcheck disable=SC2317,SC2329
+refresh_host_disk_while_running() {
+  trap - EXIT TERM INT
+  local client_pid="$1"
+  while kill -0 "${client_pid}" 2>/dev/null; do
+    sleep "${HOST_DISK_REFRESH_SECONDS}" >/dev/null 2>&1
+    kill -0 "${client_pid}" 2>/dev/null || return 0
+    write_host_disk_reading
+  done
+}
+
 # The outer watchdog (Issue #4173). The runtime client is waited on under the
 # plan's deadline instead of for ever: on expiry the reaper kills the container
 # and, when the runtime refuses ("running and can not be deleted"), SIGKILLs
@@ -1605,12 +1641,16 @@ deliver_pending_signal
 
 watchdog_reap_on_deadline "${CHILD_PID}" &
 WATCHDOG_PID=$!
+refresh_host_disk_while_running "${CHILD_PID}" &
+HOST_DISK_REFRESH_PID=$!
 
 status=0
 wait_for_child || status=$?
 
-# The client is gone, so the watchdog has nothing left to guard.
+# The client is gone, so the watchdog has nothing left to guard, and the
+# host-disk refresher (Issue #1691) nobody left to read for.
 kill "${WATCHDOG_PID}" 2>/dev/null || true
+kill "${HOST_DISK_REFRESH_PID}" 2>/dev/null || true
 
 # The capture is only evidence once the copier has drained the client's stderr,
 # which it has when it exits on end-of-file. Waited on rather than assumed:
