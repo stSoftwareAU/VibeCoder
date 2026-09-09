@@ -3105,10 +3105,30 @@ flowchart TD
     V -- red or unverifiable --> R[Reset to the pre-merge commit and escalate]
     V -- green --> P[Push]
     P --> F["Report the same cycle:<br/>decisions + both sides' commits"]
-    F --> G{Milestone has a tracking issue?}
-    G -- yes --> H[Comment on it]
-    G -- no --> I["File a diagnostic issue,<br/>titled per branch and conflicting commit"]
+    F --> G{Parent planning issue?}
+    G -- open --> H[Comment on it]
+    G -- closed --> RO["Reopen it (needs-human,<br/>never a pickup label)"] --> H
+    G -- none --> C2{Oldest open child?}
+    C2 -- yes --> H2[Comment on it]
+    C2 -- no --> L["One log line —<br/>no issue is filed"]
 ```
+
+**No milestone-sync outcome files an issue** (Issue #1769). Every escalation
+lands on an issue that already exists, resolved by
+[milestone_escalation_target.ts](../worker/deno/lib/milestone_escalation_target.ts):
+the milestone's parent planning issue — reopened when planning has already
+closed it, carrying `needs-human` and never a pickup label — else the
+milestone's oldest open non-tracking child, else nowhere, which is one log line
+and a streak marked escalated so the line is not repeated every cycle. Only a
+comment that actually posted marks the streak escalated; one that threw is
+retried. The old path filed one `needs-human` issue per branch and per
+conflicting commit (#1754, #1756, #1764, NEAT-AI-scorer#612/#613,
+GRQ-AutoTrader#120) and nothing ever closed them — so the two diagnostic titles
+survive only as the search keys of the close-out in
+[milestone_sync_diagnostic_closeout.ts](../worker/deno/lib/milestone_sync_diagnostic_closeout.ts):
+a branch that syncs closes its own open **fleet-authored** diagnostics with a
+comment naming the commit the branch now stands at. The author check is what
+makes that safe — a same-titled issue somebody else opened is left alone.
 
 The report is deduped on the default-branch commit that conflicted
 (`conflictEscalatedSha` in the streak file), so the same conflict is reported
@@ -3138,7 +3158,7 @@ flowchart TD
     B -- no Deno project --> D["Push, logged UNGATED<br/>(nothing verified the tree)"]
     B -- fails or cannot run --> E[Reset to the pre-merge commit]
     E --> F["Report the failure loudly<br/>(sync_failed, self-heal event)"]
-    F --> G["Comment on the milestone's<br/>tracking issue — needs a human"]
+    F --> G["Comment on the milestone's<br/>parent planning issue, else its<br/>oldest open child — needs a human"]
 ```
 
 Three properties matter:
@@ -3153,7 +3173,7 @@ Three properties matter:
   back is one it must not start.
 - **It escalates on the first occurrence.** A tree the check rejects is not
   transient, so the needs-human comment (carrying the check output) goes to the
-  milestone's tracking issue immediately rather than waiting for the
+  milestone's escalation target immediately rather than waiting for the
   `MILESTONE_SYNC_ESCALATION_THRESHOLD` failure streak. It is posted once, via
   its own `gateEscalated` flag in the streak file — a branch that already
   escalated for an ordinary sync failure still reports a refused merge. Without
