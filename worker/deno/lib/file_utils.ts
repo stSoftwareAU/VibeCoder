@@ -30,6 +30,15 @@ export interface AtomicWriteOptions {
   content: string | Uint8Array;
   /** File permissions (default: 0o600). */
   mode?: number;
+  /**
+   * Directory the temporary file is created in (Issue #1604). Defaults to
+   * the target's own directory. Must be on the same filesystem as the
+   * target, or the rename stops being atomic — the one caller that sets it
+   * (the audit roster's seen-marker) writes a file that sits *beside* the
+   * journal directory from a process whose write grant covers the journal
+   * directory and that one file, but not the file's siblings.
+   */
+  tempDir?: string;
 }
 
 /** Bytes for a write, without a lossy round-trip through the decoder. */
@@ -90,7 +99,12 @@ export async function atomicWrite(
   //   - the file is restricted to the requested mode from creation,
   //     closing the permission window between write and chmod that the
   //     previous writeTextFile + late-chmod sequence opened.
-  const tmpFile = `${targetFile}.tmp.${crypto.randomUUID()}`;
+  const tmpBase = options.tempDir === undefined
+    ? targetFile
+    : `${options.tempDir.replace(/\/+$/, "")}/${
+      targetFile.slice(targetFile.lastIndexOf("/") + 1)
+    }`;
+  const tmpFile = `${tmpBase}.tmp.${crypto.randomUUID()}`;
 
   let file: Deno.FsFile;
   try {
