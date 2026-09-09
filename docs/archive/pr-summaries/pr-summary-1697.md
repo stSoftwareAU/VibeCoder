@@ -19,7 +19,7 @@ What _does_ carry it is the rollout session file: `should_persist_event_msg`
 and those lines land in `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`. That
 is the source the adapter reads, because it is free — the file was already
 written by a run the worker already paid for. **There is no probe and none is
-possible**: Codex has no `max_tokens: 0` equivalent, so a probe would have to
+possible**: Codex has no zero-output `max_tokens` equivalent, so a probe would have to
 run a real turn, spending quota to measure quota.
 
 None of Claude's mechanism was assumed: no OAuth endpoint, no
