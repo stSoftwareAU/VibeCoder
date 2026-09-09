@@ -62,6 +62,14 @@ export interface OpenPR {
    * "unknown", which a destructive consumer must treat as "not ours".
    */
   isCrossRepository?: boolean;
+  /**
+   * True when the PR is a draft (Issue #1800). GitHub refuses to arm
+   * auto-merge on a draft, so the sweep skips one rather than failing on
+   * it every cycle. Set only when the query asked for it; cache entries
+   * written before #1800 leave it unset, which means "unknown" and is
+   * treated as not a draft.
+   */
+  isDraft?: boolean;
 }
 
 /**
@@ -283,6 +291,7 @@ export function parsePRListJson(jsonStr: string): OpenPR[] {
       if (typeof item.isCrossRepository === "boolean") {
         entry.isCrossRepository = item.isCrossRepository;
       }
+      if (typeof item.isDraft === "boolean") entry.isDraft = item.isDraft;
       items.push(entry);
     }
     return items;
@@ -688,7 +697,9 @@ export async function fetchOpenPRsByUser(
     "--author",
     githubUser,
     "--json",
-    "number,title,baseRefName,headRefName",
+    // Issue #1800: `isDraft` lets the auto-merge sweep skip a draft PR
+    // instead of failing to arm it every cycle.
+    "number,title,baseRefName,headRefName,isDraft",
     "--limit",
     "10",
   ]);

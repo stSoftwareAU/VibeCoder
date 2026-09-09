@@ -461,6 +461,14 @@ Two changes close that window:
   was raised. It lists **live**, not from the iteration-scoped `prs_${author}`
   cache the 1.65 sweep filled before those PRs existed. An idle cycle skips it
   and says so — it raised nothing to sweep.
+- **Drafts are skipped, not failed** (Issue #1800). GitHub refuses to arm
+  auto-merge on a draft ("Pull Request is still a draft"), and the sweep used
+  to log that refusal as a failure every cycle for as long as the draft stayed
+  open. The fleet listing now carries `isDraft`; the sweep skips a draft with
+  one line the first time this process sees it, and an arming call that still
+  meets a draft (at creation, or from a listing written before the field
+  existed) returns the typed `draft` outcome, logged at info. A draft is the
+  author asking for eyes — marking it ready is what puts it back in the sweep.
 
 ```mermaid
 sequenceDiagram
@@ -704,6 +712,12 @@ flowchart TD
 - **The agent never runs on a gated head**, so nothing is committed that cannot
   be pushed, and no attempt or retry is spent — the guard runs before
   `recordCiCheckRetry` and before the merge-conflict attempt marker is posted.
+- **The CI-nudge pass asks too** (Issue #1762). Its `none` path adds an empty
+  commit and pushes it to the head, so on VibeCoder#1741's own milestone head
+  it was refused with GH013 every cycle the PR stayed a nudge candidate. The
+  guard now runs before that checkout; a gated head is recorded as a `noop`
+  nudge and left for the milestone completion path. The `queued` path only
+  re-runs a workflow and pushes nothing, so it is not gated.
 - **One comment per branch, not one per run.** The comment carries a hidden
   `<!-- vibe-gated-head branch="…" -->` marker; a later run that finds the
   marker stays silent. A comment thread that cannot be read posts nothing and

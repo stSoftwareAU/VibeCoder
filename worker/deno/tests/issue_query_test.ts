@@ -1496,3 +1496,29 @@ Deno.test("issue_query - fetchAllClosedIssues returns [] uncached on empty gh ou
     await cleanup();
   }
 });
+
+Deno.test("parsePRListJson - carries isDraft through when the listing asked for it (Issue #1800)", () => {
+  const prs = parsePRListJson(JSON.stringify([
+    {
+      number: 1794,
+      title: "draft",
+      baseRefName: "m",
+      headRefName: "s",
+      isDraft: true,
+    },
+    {
+      number: 1792,
+      title: "ready",
+      baseRefName: "main",
+      headRefName: "i",
+      isDraft: false,
+    },
+    {
+      number: 1700,
+      title: "older cache shape",
+      baseRefName: "main",
+      headRefName: "j",
+    },
+  ]));
+  assertEquals(prs.map((p) => p.isDraft), [true, false, undefined]);
+});

@@ -42,6 +42,14 @@ export enum AutoMergeResult {
   /** Skipped because auto-merge is disabled in config */
   Skipped = "skipped",
   /**
+   * The PR is a draft, so GitHub refuses to arm auto-merge on it
+   * (Issue #1800). Not a failure: the author asked for eyes. The sweep
+   * skips drafts before arming; this is the result when the arming call
+   * itself meets one (at creation, or from a listing that predates the
+   * `isDraft` field).
+   */
+  Draft = "draft",
+  /**
    * Refused: this is a milestone summary PR and the milestone still has open
    * children (Issue #3909). Merging would delete the milestone branch and
    * auto-close those children's PRs, so the merge is not attempted. The PR is
@@ -77,6 +85,9 @@ const SUCCESSFUL_OUTCOMES: ReadonlySet<AutoMergeResult> = new Set([
   AutoMergeResult.Enabled,
   AutoMergeResult.MergedDirectly,
   AutoMergeResult.Skipped,
+  // Issue #1800: a draft is the author's choice, not a fault of the worker's
+  // — logged at info so a long-lived draft is not a warning per cycle.
+  AutoMergeResult.Draft,
 ]);
 
 /**
@@ -203,6 +214,12 @@ export function classifyAutoMergeFailure(output: string): AutoMergeResult {
     lower.includes("auto-merge is not enabled")
   ) {
     return AutoMergeResult.NotEnabledOnRepo;
+  }
+
+  // Issue #1800: "GraphQL: Pull Request is still a draft (mergePullRequest)"
+  // — the PR's author has not marked it ready. Not a failure to retry.
+  if (lower.includes("still a draft") || lower.includes("is a draft")) {
+    return AutoMergeResult.Draft;
   }
 
   // Transient errors worth retrying
@@ -599,6 +616,15 @@ export async function enableAutoMerge(
       }
 
       const classification = classifyAutoMergeFailure(errorMsg);
+
+      if (classification === AutoMergeResult.Draft) {
+        return {
+          result: AutoMergeResult.Draft,
+          message:
+            `Auto-merge not armed on PR #${prNumber}: it is a draft — GitHub ` +
+            `arms nothing until it is marked ready for review (Issue #1800)`,
+        };
+      }
 
       if (classification === AutoMergeResult.NotAllowed) {
         return {
