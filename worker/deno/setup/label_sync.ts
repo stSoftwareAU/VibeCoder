@@ -11,6 +11,13 @@
  * table. `dryRun` plans the whole pass from a read-only listing so an
  * operator can see what a repo would lose before anything is touched, and
  * GitHub's stock labels are never deleted at all.
+ * Issue #1716: Each repo's pass runs inside its own write-repo allowlist
+ * scope seeded with that repo. Setup is a legitimate writer to every
+ * monitored repo, but it used to write with the allowlist inert, so every
+ * `setup` printed a `[SECURITY] [WRITE_REPO_UNSEEDED]` line per verb — a
+ * signal meant for a *forgotten* seed, firing on an expected path. Scoped,
+ * the label writes are enforced against the one repo they target and the
+ * line falls silent.
  */
 
 import {
@@ -21,6 +28,11 @@ import {
 } from "./label_definitions.ts";
 import type { LabelDefinition } from "./label_definitions.ts";
 import { createSetupRunCommand } from "./setup_command_runner.ts";
+import {
+  createWriteRepoAllowlistContext,
+  seedWriteRepoAllowlist,
+  withWriteRepoAllowlistContext,
+} from "../lib/write_repo_allowlist.ts";
 
 /** Result of syncing labels for a single repo. */
 export interface LabelSyncResult {
@@ -237,13 +249,34 @@ export async function detectRepoUi(
  * planned from that snapshot — no label is created, edited or deleted
  * (Issue #1295).
  *
+ * The whole pass runs in a fresh write-repo allowlist context seeded with
+ * `repo` (Issue #1716): every `gh` mutation the `spawnGh` chokepoint sees is
+ * then enforced against this one repo, none is recorded as unseeded, and
+ * the caller's own context — a worker slot's, or the process default — is
+ * neither widened nor left active afterwards.
+ *
  * @param repo - Repository in "owner/repo" format
  * @param hasUi - Whether the repo has UI (auto-detected if not provided)
  */
-export async function syncLabelsForRepo(
+export function syncLabelsForRepo(
   repo: string,
   hasUi?: boolean,
   opts: LabelSyncOptions = {},
+): Promise<LabelSyncResult> {
+  return withWriteRepoAllowlistContext(
+    createWriteRepoAllowlistContext(),
+    () => {
+      seedWriteRepoAllowlist(repo);
+      return syncLabelsForRepoScoped(repo, hasUi, opts);
+    },
+  );
+}
+
+/** The label pass proper — call via {@link syncLabelsForRepo}, which scopes it. */
+async function syncLabelsForRepoScoped(
+  repo: string,
+  hasUi: boolean | undefined,
+  opts: LabelSyncOptions,
 ): Promise<LabelSyncResult> {
   const dryRun = opts.dryRun === true;
   // Auto-detect UI capability if not specified
