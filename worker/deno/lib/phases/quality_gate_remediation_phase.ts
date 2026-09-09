@@ -406,8 +406,8 @@ async function runQualityGateBody(
     }
 
     // Generic baseline-aware bypass (Issue #2604): when every current
-    // diffable finding (shellcheck, mermaid, markdownlint, docs) was
-    // already present at baseline, treat the gate as passed so a
+    // diffable finding (mermaid, markdownlint, workflow hygiene — Issue
+    // #1641) was already present at baseline, treat the gate as passed so a
     // pre-existing residue in an untouched artefact does not consume a
     // `failed-once` attempt. Reasoning over ALL failing checks at once
     // also closes the shellcheck-only hole (Issue #1549): a genuinely-new

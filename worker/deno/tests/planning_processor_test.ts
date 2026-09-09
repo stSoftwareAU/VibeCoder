@@ -3872,7 +3872,8 @@ Deno.test("processIssuePlanning - includes milestone in critique/publish prompt 
 
 Deno.test("processIssuePlanning - auto-creates a milestone and assigns 2+ sub-issues (Issue #2863)", async () => {
   // Parent has NO milestone, and the run creates two sub-issues — the worker
-  // should POST a `#<N> <title>` milestone and assign both sub-issues to it.
+  // should POST a `#<N> <short description>` milestone (Issue #1690) and
+  // assign both sub-issues to it.
   const ctx = makeContext({ issueNumber: 2863, issueTitle: "Big feature" });
 
   const ghCalls: string[][] = [];

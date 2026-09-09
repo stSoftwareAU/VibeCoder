@@ -590,6 +590,13 @@ export async function attemptPrSelfHealing(
     milestoneBranch: string;
     issueNumber: number;
     githubUser: string;
+    /**
+     * The repository's `skip_auto_merge` opt-out (Issue #1650). A PR the
+     * agent raised itself is finalised here; without this the recovery
+     * armed auto-merge on a repository an operator had marked for human
+     * review, exactly as the completion phase's creation path did.
+     */
+    skipAutoMerge?: boolean;
   },
   deps: Pick<
     ExecuteClaudePhaseDeps,
@@ -625,7 +632,14 @@ export async function attemptPrSelfHealing(
 
   // Finalise the PR (best-effort)
   if (prNumber > 0) {
-    await deps.finalisePr({ repo, prNumber }).catch(() => {
+    const skipAutoMerge = options.skipAutoMerge ?? false;
+    if (skipAutoMerge) {
+      deps.log(
+        "SELF-HEALING: auto-merge not armed — the repository opts out " +
+          "(skip_auto_merge, Issue #1650)",
+      );
+    }
+    await deps.finalisePr({ repo, prNumber, skipAutoMerge }).catch(() => {
       deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
     });
 
@@ -860,6 +874,10 @@ export async function runExecuteClaudePhase(
 
   const skipScreenshotCheck =
     getRepoConfig(repoConfigs, repo, "skipScreenshotCheck") === "true";
+  // The repository's auto-merge opt-out, for the self-healing paths below
+  // (Issue #1650): the same lookup the sweep and pr_manager make.
+  const selfHealSkipAutoMerge =
+    getRepoConfig(repoConfigs, repo, "skipAutoMerge") === "true";
 
   // --- Build quality and custom instructions ---
   const qualityInstructions = buildQualityInstructions(repoConfigs, repo);
@@ -1262,7 +1280,14 @@ export async function runExecuteClaudePhase(
 
     // Self-healing: an OOM late in the run may follow a pushed PR (Issue #386).
     const selfHealResult = await attemptPrSelfHealing(
-      { repo, branchName, milestoneBranch, issueNumber, githubUser },
+      {
+        repo,
+        branchName,
+        milestoneBranch,
+        issueNumber,
+        githubUser,
+        skipAutoMerge: selfHealSkipAutoMerge,
+      },
       deps,
     );
 
@@ -1308,7 +1333,14 @@ export async function runExecuteClaudePhase(
 
     // Self-healing: a kill late in the run may follow a pushed PR (#386).
     const selfHealResult = await attemptPrSelfHealing(
-      { repo, branchName, milestoneBranch, issueNumber, githubUser },
+      {
+        repo,
+        branchName,
+        milestoneBranch,
+        issueNumber,
+        githubUser,
+        skipAutoMerge: selfHealSkipAutoMerge,
+      },
       deps,
     );
     if (selfHealResult.ok) {
@@ -1394,7 +1426,14 @@ export async function runExecuteClaudePhase(
 
     // Self-healing: check if Claude already created a PR (Issue #386)
     const selfHealResult = await attemptPrSelfHealing(
-      { repo, branchName, milestoneBranch, issueNumber, githubUser },
+      {
+        repo,
+        branchName,
+        milestoneBranch,
+        issueNumber,
+        githubUser,
+        skipAutoMerge: selfHealSkipAutoMerge,
+      },
       deps,
     );
 
@@ -1453,7 +1492,14 @@ export async function runExecuteClaudePhase(
   if (!hasUncommittedChanges && !hasNewCommits) {
     // Check for existing PR
     const selfHealResult = await attemptPrSelfHealing(
-      { repo, branchName, milestoneBranch, issueNumber, githubUser },
+      {
+        repo,
+        branchName,
+        milestoneBranch,
+        issueNumber,
+        githubUser,
+        skipAutoMerge: selfHealSkipAutoMerge,
+      },
       deps,
     );
 
