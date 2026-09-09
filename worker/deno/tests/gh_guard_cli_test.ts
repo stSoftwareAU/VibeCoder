@@ -9,14 +9,21 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   encodeGuardStdout,
   GH_GUARD_ALLOW_MARKER,
+  GH_GUARD_REFUSAL_AUDIT_VERB,
+  GH_GUARD_REFUSAL_TARGET_CHARS,
   GH_GUARD_REFUSE_MARKER,
+  journalGuardRefusal,
   runGhGuardCli,
 } from "../lib/gh_guard_cli.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
+import type { AuditMutation } from "../lib/audit_entry.ts";
+import type { RecordOptions } from "../lib/audit_journal.ts";
+import { loadEntries } from "../lib/audit_journal.ts";
+import { rosterPath, rosterSeenPath } from "../lib/audit_anchor.ts";
 
 /** A realistic GitHub token shape used by the redaction assertions (#3938). */
 const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
@@ -528,4 +535,278 @@ Deno.test("gh-guard-cli #1364 - --body-dir requires a value", () => {
   assertEquals(result.exitCode, 2);
   assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
   assertStringIncludes(result.stderr, "--body-dir requires a value");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1604 — a refusal is journaled, never only printed
+// ---------------------------------------------------------------------------
+
+const AUDIT_FLAGS = [
+  "--audit-dir",
+  "/work/audit",
+  "--audit-worker",
+  "worker",
+  "--audit-run",
+  "run-42",
+];
+
+Deno.test("gh-guard-cli - a refusal carries the control and the argv for the journal (Issue #1604)", () => {
+  const result = runGhGuardCli([
+    "--active",
+    "--allow-repo",
+    "stSoftwareAU/VibeCoder",
+    ...AUDIT_FLAGS,
+    "--",
+    "issue",
+    "comment",
+    "1",
+    "-R",
+    "other/repo",
+    "--body",
+    "leak",
+  ]);
+  assertEquals(result.exitCode, 1);
+  assertEquals(result.refusal?.marker, "WRITE_REPO_BLOCKED");
+  assertEquals(result.refusal?.ghArgs.slice(0, 3), ["issue", "comment", "1"]);
+  assertEquals(result.audit, {
+    baseDir: "/work/audit",
+    workerId: "worker",
+    runId: "run-42",
+  });
+});
+
+Deno.test("gh-guard-cli - an allowed command carries no refusal to journal (Issue #1604)", () => {
+  const result = runGhGuardCli([
+    "--active",
+    "--allow-repo",
+    "stSoftwareAU/VibeCoder",
+    ...AUDIT_FLAGS,
+    "--",
+    "issue",
+    "view",
+    "1",
+    "-R",
+    "stSoftwareAU/VibeCoder",
+  ]);
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.refusal, undefined);
+});
+
+Deno.test("gh-guard-cli - the audit flags travel together or not at all (Issue #1604)", () => {
+  const partial = runGhGuardCli([
+    "--active",
+    "--audit-dir",
+    "/work/audit",
+    "--",
+    "issue",
+    "comment",
+    "1",
+    "-R",
+    "other/repo",
+    "--body",
+    "x",
+  ]);
+  assertEquals(partial.exitCode, 1);
+  assertEquals(partial.audit, undefined, "a lone --audit-dir journals nothing");
+  const empty = runGhGuardCli(["--audit-run", "", "--", "issue", "view", "1"]);
+  assertEquals(empty.exitCode, 2, "an empty value is a malformed invocation");
+});
+
+Deno.test("gh-guard-cli - journalGuardRefusal appends the control, the redacted argv and the run (Issue #1604)", async () => {
+  const seen: { mutation: AuditMutation; opts: RecordOptions | undefined }[] =
+    [];
+  const record = ((mutation: AuditMutation, opts?: RecordOptions) => {
+    seen.push({ mutation, opts });
+    return Promise.resolve({ ok: true as const, value: mutation });
+  }) as unknown as Parameters<typeof journalGuardRefusal>[1];
+  const token = "ghp_" + "A".repeat(36);
+  const result = runGhGuardCli([
+    "--active",
+    "--allow-repo",
+    "stSoftwareAU/VibeCoder",
+    ...AUDIT_FLAGS,
+    "--",
+    "issue",
+    "comment",
+    "1",
+    "-R",
+    "other/repo",
+    "--body",
+    `token ${token}`,
+  ]);
+  const journaled = await journalGuardRefusal(result, record);
+  assertEquals(journaled.ok, true);
+  assertEquals(seen.length, 1);
+  const { mutation, opts } = seen[0]!;
+  assertEquals(mutation.verb, GH_GUARD_REFUSAL_AUDIT_VERB);
+  assertEquals(mutation.outcome, "error");
+  assertEquals(mutation.runId, "run-42");
+  assertEquals(mutation.exitCode, 1);
+  assertEquals(mutation.caller, "worker/deno/lib/gh_guard_cli.ts");
+  assertStringIncludes(
+    mutation.target ?? "",
+    "WRITE_REPO_BLOCKED: gh issue comment 1",
+  );
+  assertEquals(
+    (mutation.target ?? "").includes(token),
+    false,
+    "the credential never reaches the journal",
+  );
+  assertStringIncludes(mutation.target ?? "", REDACTION_PLACEHOLDER);
+  assertEquals(opts?.baseDir, "/work/audit");
+  assertEquals(opts?.workerId, "worker");
+  assertEquals(
+    opts?.env?.("WORK_DIR"),
+    undefined,
+    "the child answers no environment question",
+  );
+});
+
+Deno.test("gh-guard-cli - journalGuardRefusal caps a long argv and never throws on a failed append (Issue #1604)", async () => {
+  const result = runGhGuardCli([
+    "--active",
+    ...AUDIT_FLAGS,
+    "--",
+    "issue",
+    "comment",
+    "1",
+    "-R",
+    "other/repo",
+    "--body",
+    "x".repeat(2000),
+  ]);
+  let target = "";
+  const record = ((mutation: AuditMutation) => {
+    target = mutation.target ?? "";
+    return Promise.reject(new Error("disk full"));
+  }) as unknown as Parameters<typeof journalGuardRefusal>[1];
+  const journaled = await journalGuardRefusal(result, record);
+  assertEquals(journaled.ok, false);
+  if (!journaled.ok) assertStringIncludes(journaled.error.message, "disk full");
+  assert(
+    target.length < GH_GUARD_REFUSAL_TARGET_CHARS + 80,
+    `target not capped: ${target.length}`,
+  );
+  // The verdict is untouched by the journal's failure.
+  assertEquals(result.exitCode, 1);
+  assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+});
+
+Deno.test("gh-guard-cli - nothing to journal without the audit flags or without a refusal (Issue #1604)", async () => {
+  let calls = 0;
+  const record = (() => {
+    calls++;
+    return Promise.resolve({ ok: true as const, value: undefined });
+  }) as unknown as Parameters<typeof journalGuardRefusal>[1];
+  const refusedNoAudit = runGhGuardCli([
+    "--active",
+    "--",
+    "issue",
+    "comment",
+    "1",
+    "-R",
+    "o/r",
+    "--body",
+    "x",
+  ]);
+  assertEquals((await journalGuardRefusal(refusedNoAudit, record)).ok, true);
+  const allowed = runGhGuardCli([
+    "--active",
+    "--allow-repo",
+    "o/r",
+    ...AUDIT_FLAGS,
+    "--",
+    "issue",
+    "view",
+    "1",
+    "-R",
+    "o/r",
+  ]);
+  assertEquals((await journalGuardRefusal(allowed, record)).ok, true);
+  assertEquals(calls, 0);
+});
+
+Deno.test({
+  name:
+    "gh-guard-cli - the guard child journals a refusal with only --allow-read and the journal's write grant (Issue #1604)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const tmp = await Deno.makeTempDir({ prefix: "gh-guard-audit-" });
+    try {
+      const auditDir = `${tmp}/audit`;
+      const guard = new URL("../lib/gh_guard_cli.ts", import.meta.url).pathname;
+      const child = new Deno.Command(Deno.execPath(), {
+        args: [
+          "run",
+          "--quiet",
+          "--no-config",
+          "--no-lock",
+          "--allow-read",
+          `--allow-write=${tmp}/verdict,${auditDir},${rosterPath(auditDir)},${
+            rosterSeenPath(auditDir)
+          }`,
+          guard,
+          "--active",
+          "--allow-repo",
+          "stSoftwareAU/VibeCoder",
+          "--body-dir",
+          `${tmp}/verdict`,
+          "--audit-dir",
+          auditDir,
+          "--audit-worker",
+          "guardtest",
+          "--audit-run",
+          "run-1604",
+          "--",
+          "issue",
+          "edit",
+          "7",
+          "-R",
+          "stSoftwareAU/VibeCoder",
+          "--add-label",
+          "top-priority",
+        ],
+        // The shim clears the child's environment of everything it does not
+        // pin; the journal must therefore need nothing from it.
+        env: {
+          PATH: Deno.env.get("PATH") ?? "",
+          ...(Deno.env.get("DENO_DIR")
+            ? { DENO_DIR: Deno.env.get("DENO_DIR")! }
+            : {}),
+        },
+        clearEnv: true,
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const out = await child.output();
+      const stderr = new TextDecoder().decode(out.stderr);
+      assertEquals(out.code, 1, stderr);
+      assertStringIncludes(stderr, "[SECURITY] [WORKER_LABEL_REFUSED]");
+      assertEquals(stderr.includes("AUDIT_JOURNAL_REFUSED"), false, stderr);
+
+      // One journal file in the directory, holding the refusal, chained.
+      const files: string[] = [];
+      for await (const e of Deno.readDir(auditDir)) {
+        if (e.isFile && e.name.endsWith(".jsonl")) files.push(e.name);
+      }
+      assertEquals(files.length, 1, `journal files: ${files.join(",")}`);
+      assertStringIncludes(files[0]!, "audit-guardtest-");
+      const loaded = await loadEntries(`${auditDir}/${files[0]}`);
+      assert(loaded.ok, loaded.ok ? "" : loaded.error.message);
+      if (loaded.ok) {
+        assertEquals(loaded.value.length, 1);
+        const entry = loaded.value[0]!;
+        assertEquals(entry.verb, GH_GUARD_REFUSAL_AUDIT_VERB);
+        assertEquals(entry.runId, "run-1604");
+        assertStringIncludes(
+          entry.target ?? "",
+          "WORKER_LABEL_REFUSED: gh issue edit 7",
+        );
+        assert(entry.hash.length > 0);
+      }
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
 });

@@ -412,3 +412,27 @@ Deno.test("readTextFileNoFollow - refuses a symlink, a hard link and a directory
     assertStringIncludes(directory.error.message, "not a regular file");
   });
 });
+
+Deno.test("atomicWrite - a tempDir keeps the temporary file out of the target's directory (Issue #1604)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "atomic-tempdir-" });
+  try {
+    const journalDir = `${root}/audit`;
+    await Deno.mkdir(journalDir);
+    const target = `${root}/audit.roster.seen`;
+    const result = await atomicWrite({
+      targetFile: target,
+      content: "marker\n",
+      tempDir: journalDir,
+    });
+    assertEquals(result.ok, true);
+    assertEquals(await Deno.readTextFile(target), "marker\n");
+    // Neither directory keeps a stray temp file behind.
+    for (const dir of [root, journalDir]) {
+      for await (const e of Deno.readDir(dir)) {
+        assertEquals(e.name.includes(".tmp."), false, `${dir}/${e.name}`);
+      }
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

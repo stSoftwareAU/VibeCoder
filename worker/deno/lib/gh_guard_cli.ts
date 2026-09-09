@@ -28,6 +28,17 @@
  * newlines and must survive byte-for-byte. Reading `--body-file` contents is
  * why the guard child now runs with `--allow-read`.
  *
+ * **A refusal is journaled (Issue #1604).** The verdict used to be a single
+ * stderr line from this short-lived process — the one event the threat
+ * model's control C16 exists to prove happened, and the one that left no
+ * durable trace. When the shim hands over `--audit-dir`, `--audit-worker`
+ * and `--audit-run` (it does whenever the worker's own journal is on), a
+ * refused command is appended to the same hash-chained journal as every
+ * other classified mutation, under {@link GH_GUARD_REFUSAL_AUDIT_VERB}. The
+ * shim widens `--allow-write` to exactly the journal's footprint for it. A
+ * journal that cannot be written never changes the verdict — the refusal
+ * stands and `[SECURITY] [AUDIT_JOURNAL_REFUSED]` says what was lost.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -43,12 +54,43 @@ import { installConsoleRedaction } from "./console_redaction.ts";
 import { encodeNulFields } from "./guard_field_encoding.ts";
 import { evaluateGhCommand } from "./gh_guard_decision.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
+import type { AuditMutation } from "./audit_entry.ts";
+import { recordMutation } from "./audit_journal.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+import type { Result } from "../types.ts";
 
 /** Printed on stdout when — and only when — the command may proceed. */
 export const GH_GUARD_ALLOW_MARKER = "VIBE_GH_GUARD_ALLOW";
 
 /** Printed on stdout when a control refused the command. */
 export const GH_GUARD_REFUSE_MARKER = "VIBE_GH_GUARD_REFUSE";
+
+/** Audit-journal verb for a `gh` command the guard refused (Issue #1604). */
+export const GH_GUARD_REFUSAL_AUDIT_VERB = "gh-guard-refused";
+
+/** Cap on the argv quoted in a refusal's journal entry (Issue #1604). */
+export const GH_GUARD_REFUSAL_TARGET_CHARS = 400;
+
+/**
+ * Where a refusal is journaled (Issue #1604): the journal directory, the
+ * worker partition and the run id, all handed over on argv by the shim —
+ * the child has no `--allow-env` to resolve any of them itself.
+ */
+export interface GuardAuditTarget {
+  baseDir: string;
+  workerId: string;
+  runId: string;
+}
+
+/** The control that refused a command, for the journal (Issue #1604). */
+export interface GuardRefusal {
+  /** The decision marker, e.g. `WRITE_REPO_BLOCKED`. */
+  marker: string;
+  /** The reason the control gave. */
+  reason: string;
+  /** The `gh` argv as the agent issued it. */
+  ghArgs: readonly string[];
+}
 
 /** Outcome of one guard evaluation. */
 export interface GhGuardCliResult {
@@ -63,6 +105,10 @@ export interface GhGuardCliResult {
    * Present only when the command is allowed.
    */
   ghArgs?: string[];
+  /** Present when a control refused the command (Issue #1604). */
+  refusal?: GuardRefusal;
+  /** Present when the shim asked for refusals to be journaled (Issue #1604). */
+  audit?: GuardAuditTarget;
 }
 
 /**
@@ -92,6 +138,8 @@ interface ParsedArgv {
    * loose in TMPDIR with nothing to remove it.
    */
   bodyDir?: string;
+  /** Where to journal a refusal (Issue #1604), when the shim asked for it. */
+  audit?: GuardAuditTarget;
   ghArgs: string[];
   /** Set when the invocation is malformed. */
   error?: string;
@@ -121,6 +169,9 @@ function parseArgv(argv: readonly string[]): ParsedArgv {
   const allowedVerbs: string[] = [];
   let claimedIssue: ClaimedIssue | undefined;
   let bodyDir: string | undefined;
+  let auditDir: string | undefined;
+  let auditWorker: string | undefined;
+  let auditRun: string | undefined;
   let active = false;
   let i = 0;
   const fail = (error: string): ParsedArgv => ({
@@ -136,6 +187,9 @@ function parseArgv(argv: readonly string[]): ParsedArgv {
       ? { claimedIssue: { ...claimedIssue, allowedVerbs } }
       : {}),
     ...(bodyDir ? { bodyDir } : {}),
+    ...(auditDir && auditWorker && auditRun
+      ? { audit: { baseDir: auditDir, workerId: auditWorker, runId: auditRun } }
+      : {}),
     ghArgs,
   });
   for (; i < argv.length; i++) {
@@ -169,6 +223,23 @@ function parseArgv(argv: readonly string[]): ParsedArgv {
         return fail("--body-dir requires a value");
       }
       bodyDir = value;
+      i++;
+      continue;
+    }
+    // Issue #1604 — the three travel together; a journal entry with a
+    // made-up partition or run id would be a record that lies rather than
+    // one that is missing, so `finish` only journals when all three arrived.
+    if (
+      token === "--audit-dir" || token === "--audit-worker" ||
+      token === "--audit-run"
+    ) {
+      const value = argv[i + 1];
+      if (value === undefined || value === "") {
+        return fail(`${token} requires a value`);
+      }
+      if (token === "--audit-dir") auditDir = value;
+      else if (token === "--audit-worker") auditWorker = value;
+      else auditRun = value;
       i++;
       continue;
     }
@@ -235,7 +306,69 @@ export function runGhGuardCli(
     exitCode: 1,
     stdout: GH_GUARD_REFUSE_MARKER,
     stderr: `[SECURITY] [${decision.marker}] ${decision.reason}`,
+    refusal: {
+      // Always set on a refusal; the decision type leaves them optional for
+      // the allowed shape.
+      marker: decision.marker ?? "GH_GUARD_REFUSED",
+      reason: decision.reason ?? "",
+      ghArgs: parsed.ghArgs,
+    },
+    ...(parsed.audit ? { audit: parsed.audit } : {}),
   };
+}
+
+/**
+ * Append a refused command to the audit journal (Issue #1604).
+ *
+ * Runs in the guard child after the verdict has been written, with the
+ * journal location the shim handed over. The entry names the control, the
+ * reason and the argv the agent issued — the argv passed through the same
+ * secret redaction the stderr line gets, and capped, because it is
+ * agent-authored text that a credential could ride in. Never throws, and
+ * never changes the verdict: a journal that cannot be written is reported
+ * through the Result, and the caller says so on stderr.
+ *
+ * @param result - The evaluation, carrying `refusal` and `audit`.
+ * @param record - The journal append (test seam; defaults to the real one).
+ * @returns `ok: true` when journaled or when there was nothing to journal;
+ *   `ok: false` with the reason when the append failed.
+ */
+export async function journalGuardRefusal(
+  result: GhGuardCliResult,
+  record: typeof recordMutation = recordMutation,
+): Promise<Result<void>> {
+  const { refusal, audit } = result;
+  if (refusal === undefined || audit === undefined) {
+    return { ok: true, value: undefined };
+  }
+  const argv = refusal.ghArgs.join(" ");
+  const bounded = argv.length > GH_GUARD_REFUSAL_TARGET_CHARS
+    ? `${argv.slice(0, GH_GUARD_REFUSAL_TARGET_CHARS)}…`
+    : argv;
+  const mutation: AuditMutation = {
+    runId: audit.runId,
+    verb: GH_GUARD_REFUSAL_AUDIT_VERB,
+    outcome: "error",
+    exitCode: result.exitCode,
+    target: `${refusal.marker}: gh ${redactSecrets(bounded)}`,
+    caller: "worker/deno/lib/gh_guard_cli.ts",
+  };
+  try {
+    const appended = await record(mutation, {
+      baseDir: audit.baseDir,
+      workerId: audit.workerId,
+      // No `--allow-env` in the guard child: every environment question the
+      // journal could ask is answered "unset" rather than thrown.
+      env: () => undefined,
+    });
+    if (!appended.ok) return { ok: false, error: appended.error };
+    return { ok: true, value: undefined };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
 }
 
 /**
@@ -260,6 +393,14 @@ function allowWithRedactedBody(
       exitCode: 1,
       stdout: GH_GUARD_REFUSE_MARKER,
       stderr: `[SECURITY] [GH_BODY_UNREDACTABLE] ${err.message}`,
+      // A body the guard could not scan is a refusal like any other
+      // (Issue #1604): journaled, so the loss is visible after the fact.
+      refusal: {
+        marker: "GH_BODY_UNREDACTABLE",
+        reason: err.message,
+        ghArgs: parsed.ghArgs,
+      },
+      ...(parsed.audit ? { audit: parsed.audit } : {}),
     };
   }
 
@@ -285,5 +426,15 @@ if (import.meta.main) {
   const result = runGhGuardCli(Deno.args);
   await Deno.stdout.write(new TextEncoder().encode(encodeGuardStdout(result)));
   if (result.stderr) console.error(result.stderr);
+  // Issue #1604: the refusal outlives this process in the journal, or the
+  // failure to record it is said out loud — after the verdict, never instead
+  // of it.
+  const journaled = await journalGuardRefusal(result);
+  if (!journaled.ok) {
+    console.error(
+      `[SECURITY] [AUDIT_JOURNAL_REFUSED] ${GH_GUARD_REFUSAL_AUDIT_VERB}: ` +
+        journaled.error.message,
+    );
+  }
   Deno.exit(result.exitCode);
 }

@@ -648,9 +648,14 @@ export async function markRosterSeen(
     nonEmpty: true,
     updatedAt: now ?? new Date().toISOString(),
   };
+  // The temp file lives inside the journal directory, not beside the
+  // marker (Issue #1604): the agent-side gh guard journals a refusal from a
+  // child whose write grant is the journal directory plus this one file, so
+  // a sibling temp path would be refused — and the marker never written.
   const written = await atomicWrite({
     targetFile: path,
     content: `${JSON.stringify(marker)}\n`,
+    tempDir: baseDir,
   });
   if (!written.ok) return { ok: false, error: written.error };
   return { ok: true, value: undefined };
