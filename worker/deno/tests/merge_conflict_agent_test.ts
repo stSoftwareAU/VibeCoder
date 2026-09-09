@@ -44,23 +44,31 @@ function makeSilentLogger(): Logger {
   };
 }
 
+/**
+ * The runner's own parameter types, so a rename in `runClaudeWithRetry`'s
+ * options fails this suite rather than passing under a cast.
+ */
+type RunAgent = MergeConflictAgentRequest["runAgent"];
+type RunAgentOptions = Parameters<RunAgent>[0];
+type RunAgentRetryOptions = NonNullable<Parameters<RunAgent>[1]>;
+
 interface Captured {
   runs: number;
   prompts: string[];
-  options: Record<string, unknown>[];
-  retryOptions: Record<string, unknown>[];
+  options: RunAgentOptions[];
+  retryOptions: RunAgentRetryOptions[];
 }
 
 function makeRunner(
   captured: Captured,
   result: Partial<ClaudeRunResult> | { failure: string } = {},
-): MergeConflictAgentRequest["runAgent"] {
-  return ((
-    options: Record<string, unknown>,
-    retryOptions: Record<string, unknown>,
+): RunAgent {
+  return (
+    options: RunAgentOptions,
+    retryOptions?: RunAgentRetryOptions,
   ): Promise<Result<ClaudeRunResult>> => {
     captured.runs++;
-    captured.prompts.push(String(options.prompt ?? ""));
+    captured.prompts.push(options.prompt);
     captured.options.push(options);
     captured.retryOptions.push(retryOptions ?? {});
     if ("failure" in result) {
@@ -73,9 +81,9 @@ function makeRunner(
         exitCode: 0,
         timedOut: false,
         ...result,
-      } as ClaudeRunResult,
+      },
     });
-  }) as unknown as MergeConflictAgentRequest["runAgent"];
+  };
 }
 
 function makeCaptured(): Captured {
@@ -189,7 +197,7 @@ Deno.test("merge conflict agent - a branch target renders with no PR number", as
   const prompt = captured.prompts[0]!;
   assertStringIncludes(
     prompt,
-    "The default branch is being merged into a milestone branch",
+    "The default branch is being merged into the milestone branch named below",
   );
   assertEquals(
     /PR #\d+/.test(prompt),
