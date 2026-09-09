@@ -138,6 +138,8 @@ export interface ConfigFileJson {
   agent_provider?: string;
   /** Providers enabled for a run (Issue #4108). */
   agent_providers?: string[];
+  /** Opt-in ordered fallback providers (Issue #1700). */
+  agent_provider_fallback?: string[];
   claude_model?: string;
   best_planning_model?: string;
   claude_timeout?: number;
@@ -659,6 +661,7 @@ export function validateConfigFileJson(
     "authorized_commenters",
     "trusted_review_bots",
     "agent_providers",
+    "agent_provider_fallback",
     // Long-job labels for the adaptive claim floor (Issue #245).
     "claim_long_job_labels",
   ] as const;

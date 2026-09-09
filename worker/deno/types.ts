@@ -193,6 +193,12 @@ export interface WorkerConfig {
    * another's secret. Defaults to the active provider alone.
    */
   enabledAgentProviders: string[];
+  /**
+   * Opt-in ordered fallback providers (Issue #1700). Empty or omitted
+   * means the preferred `agentProvider` is pinned and must not be
+   * substituted.
+   */
+  agentProviderFallback?: string[];
   /** Claude model ID to use (empty string means CLI default) (Issue #260) */
   claudeModel: string;
   /**
@@ -1071,6 +1077,12 @@ export interface ConfigFile {
    * (it no longer overrides the key — Issue #1032).
    */
   agent_providers?: string[];
+  /**
+   * Ordered fallback providers (Issue #1700). Omitted or `[]` pins
+   * `agent_provider` — no automatic substitution. Every id must already
+   * be in `agent_providers`.
+   */
+  agent_provider_fallback?: string[];
   claude_model?: string;
   /** Configured best planning model for degraded-model detection (Issue #2654) */
   best_planning_model?: string;

@@ -2970,6 +2970,7 @@ async function runRetryLadder(
             waitSeconds,
             resetMs ?? undefined,
             "usage",
+            { provider: "claude" },
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(
@@ -3100,6 +3101,7 @@ async function runRetryLadder(
             jitteredWait,
             undefined,
             "usage",
+            { provider: "claude" },
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(
