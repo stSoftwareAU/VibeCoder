@@ -3,16 +3,22 @@
  *
  * The whole-gate "treat as passed when every current finding was already
  * present at baseline" decision reasons over every diffable check at once:
- * mermaid and markdownlint. (Shellcheck is no longer run by the worker —
- * Issue #3129 delegated bash linting to each target repo's own CI, and Issue
- * #844 removed the docs prompt-version check with prompt versioning itself.)
+ * mermaid, markdownlint and workflow hygiene. (Shellcheck is no longer run
+ * by the worker — Issue #3129 delegated bash linting to each target repo's
+ * own CI, and Issue #844 removed the docs prompt-version check with prompt
+ * versioning itself.)
  *
  * A pre-existing failure in an untouched mermaid/markdownlint artefact
  * no longer fails the post-Claude gate (the production symptom — a Mermaid
  * reserved-keyword collision in an unrelated doc pushing the worker into a
- * remediation loop). The decision sees ALL failing checks, so a
- * genuinely-new failure is never waved through just because another check
- * had carryover.
+ * remediation loop). Workflow hygiene joined the set in Issue #1641: the
+ * built-in gate runs its `set -euo pipefail` and version-comment rules on
+ * every monitored repository, so a repository whose workflows predate those
+ * conventions failed every run on residue the run did not create —
+ * GRQ-FX-validation#119 spent its whole invocation budget on seven
+ * `version-comment-drift` findings that were all on `Develop`. The
+ * decision sees ALL failing checks, so a genuinely-new failure is never
+ * waved through just because another check had carryover.
  *
  * A check that is NOT diffable (deno test/lint/type-check, etc.) failing
  * means the PR likely touched code — never bypass in that case.
@@ -26,12 +32,16 @@ import {
   type MarkdownlintCheckResult,
   runMarkdownlintCheck,
 } from "./markdownlint_check.ts";
+import {
+  scanWorkflowsForHygiene,
+  type WorkflowHygieneResult,
+} from "./workflow_hygiene_check.ts";
 /**
  * The diffable check kinds the generic bypass can reason over. Each maps
  * one-to-one to a `GenericFinding.check` value and to a quality-gate
  * check name (see `CHECK_NAME_TO_KIND`).
  */
-export type DiffableCheck = "mermaid" | "markdownlint";
+export type DiffableCheck = "mermaid" | "markdownlint" | "workflow hygiene";
 
 /**
  * Quality-gate check NAMES (as reported in `CheckResult.name`) that are
@@ -41,12 +51,14 @@ export type DiffableCheck = "mermaid" | "markdownlint";
 export const DIFFABLE_CHECK_NAMES: ReadonlySet<string> = new Set([
   "mermaid",
   "markdownlint",
+  "workflow hygiene",
 ]);
 
 /** Map a failing quality-gate check name to its diffable kind. */
 const CHECK_NAME_TO_KIND: Readonly<Record<string, DiffableCheck>> = {
   "mermaid": "mermaid",
   "markdownlint": "markdownlint",
+  "workflow hygiene": "workflow hygiene",
 };
 
 /**
@@ -91,6 +103,7 @@ export type GateBypassReason =
 export interface DiffableGateDeps {
   mermaid?: (cwd: string) => Promise<MermaidCheckResult>;
   markdownlint?: (cwd: string) => Promise<MarkdownlintCheckResult>;
+  workflowHygiene?: (cwd: string) => Promise<WorkflowHygieneResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +134,23 @@ export function markdownlintFinding(
   };
 }
 
+/**
+ * GenericFinding for a workflow-hygiene violation (Issue #1641).
+ *
+ * Keyed on file, kind and detail — not the line — so a violation that moves
+ * because the run edited the workflow above it still matches its baseline
+ * twin, exactly as the mermaid and markdownlint keys do.
+ */
+export function workflowHygieneFinding(
+  v: { file: string; line: number; kind: string; detail: string },
+): GenericFinding {
+  return {
+    check: "workflow hygiene",
+    key: `workflow hygiene|${v.file}|${v.kind}|${v.detail}`,
+    display: `${v.file}:${v.line} ${v.kind}: ${v.detail}`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Collection
 // ---------------------------------------------------------------------------
@@ -135,6 +165,7 @@ export async function collectDiffableGateFindings(
 ): Promise<GenericFinding[]> {
   const mermaidRun = deps.mermaid ?? runMermaidCheck;
   const markdownlintRun = deps.markdownlint ?? runMarkdownlintCheck;
+  const hygieneRun = deps.workflowHygiene ?? scanWorkflowsForHygiene;
 
   const findings: GenericFinding[] = [];
 
@@ -144,6 +175,13 @@ export async function collectDiffableGateFindings(
   const markdownlint = await markdownlintRun(repoPath);
   for (const v of markdownlint.violations) {
     findings.push(markdownlintFinding(v));
+  }
+
+  // Same scan the gate's `workflow hygiene` check runs (Issue #1641), so the
+  // findings here account for that check's failure one-to-one.
+  const hygiene = await hygieneRun(repoPath);
+  for (const v of hygiene.violations) {
+    findings.push(workflowHygieneFinding(v));
   }
 
   return findings;
