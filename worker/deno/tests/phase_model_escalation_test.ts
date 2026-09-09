@@ -225,3 +225,22 @@ Deno.test("phase_model_escalation - the phase's model is resolved through the in
   assertEquals(pinned.escalated, false);
   assertEquals(pinned.model, "opus");
 });
+
+Deno.test("phase_model_escalation - Codex summarise never receives sonnet or haiku (Issue #1701)", () => {
+  const small = selectModelForLargeInput("summarise", 5_000, {
+    provider: "codex",
+    env: emptyEnv,
+  });
+  assertEquals(small.escalated, false);
+  assertEquals(small.model.includes("sonnet"), false);
+  assertEquals(small.model.includes("haiku"), false);
+
+  const large = selectModelForLargeInput("summarise", 500_000, {
+    provider: "codex",
+    env: emptyEnv,
+  });
+  assertEquals(large.escalated, false);
+  assertEquals(large.model.includes("sonnet"), false);
+  assertEquals(large.model.includes("haiku"), false);
+  assertEquals(large.model, "gpt-5-mini");
+});

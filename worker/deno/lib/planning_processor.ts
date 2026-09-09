@@ -34,6 +34,7 @@ import {
   buildPlanningPrompt,
 } from "./prompt_builder.ts";
 import {
+  adoptProviderSession,
   createSessionResumeState,
   recordPhaseCompletion,
 } from "./session_resume.ts";
@@ -1451,7 +1452,7 @@ async function _processPlanningWithHeartbeat(
   // revises once, and only then publishes the final sub-issues. The critique
   // text itself is never published. Sub-issue detection runs on the turn-2
   // output, so the existing fallback/retry logic below is unchanged.
-  const sessionState = createSessionResumeState();
+  let sessionState = createSessionResumeState();
 
   // Collect stats from every planning Claude invocation in the run (Issue
   // #2649). Designed for a list — draft + critique (#2648), plus the #1219
@@ -1487,6 +1488,12 @@ async function _processPlanningWithHeartbeat(
       { repo, issueNumber, error: draftResult.error.message },
     );
   } else {
+    if (draftResult.value.provider) {
+      sessionState = adoptProviderSession(sessionState, {
+        sessionId: draftResult.value.agentOutput?.sessionId,
+        providerId: draftResult.value.provider,
+      });
+    }
     recordInvocation(invocations, draftResult.value);
     if (draftResult.value.timedOut) {
       logger.warn(

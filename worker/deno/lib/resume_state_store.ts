@@ -31,7 +31,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { isValidSessionId } from "./session_resume.ts";
+import { isPersistableSessionId } from "./session_resume.ts";
 import { describesPreservedWip } from "./wip_markers.ts";
 
 /** Resume state older than this is stale — the next attempt starts clean. */
@@ -53,9 +53,10 @@ export const PRIOR_PROGRESS_PROMPT_NOTE =
 /** What survives a process/container/host death, per issue. */
 export interface PersistedResumeState {
   /**
-   * Claude CLI session id, when session resume was active. Absent when the
+   * CLI session id, when session resume was active. Absent when the
    * attempt ran without CLI session continuity — the branch checkpoint is
-   * still worth resuming.
+   * still worth resuming. Codex stores its thread id here too (Issue #1699);
+   * {@link providerId} says which vendor named it.
    */
   sessionId?: string;
   /** Phases completed in the persisted session. */
@@ -64,6 +65,10 @@ export interface PersistedResumeState {
   branch: string;
   /** Epoch milliseconds of the last save, for the freshness window. */
   savedAtEpochMs: number;
+  /** Provider that owns {@link sessionId} (Issue #1699). */
+  providerId?: string;
+  /** Credential label that opened the session (Issue #1699). */
+  credentialScope?: string;
 }
 
 /** Directory holding all resume-state files. */
@@ -90,7 +95,13 @@ export async function saveResumeState(
   workDir: string,
   repo: string,
   issueNumber: number,
-  state: { sessionId?: string; phaseCount: number; branch: string },
+  state: {
+    sessionId?: string;
+    phaseCount: number;
+    branch: string;
+    providerId?: string;
+    credentialScope?: string;
+  },
   nowEpochMs: number = Date.now(),
 ): Promise<boolean> {
   const persisted: PersistedResumeState = {
@@ -98,6 +109,10 @@ export async function saveResumeState(
     phaseCount: state.phaseCount,
     branch: state.branch,
     savedAtEpochMs: nowEpochMs,
+    ...(state.providerId !== undefined ? { providerId: state.providerId } : {}),
+    ...(state.credentialScope !== undefined
+      ? { credentialScope: state.credentialScope }
+      : {}),
   };
   const dir = resumeStateDir(workDir);
   try {
@@ -189,12 +204,25 @@ function parsePersisted(raw: string): PersistedResumeState | null {
   if (record.sessionId !== undefined && typeof record.sessionId !== "string") {
     return null;
   }
-  // An id written before the UUID fix (Issue #204) is stale: the CLI refuses
-  // it outright, so `--resume` with it kills the invocation 0.2 s after spawn.
-  // Drop the id and keep the entry — the branch checkpoint is still resumable,
-  // it just resumes without CLI session continuity.
+  if (
+    record.providerId !== undefined && typeof record.providerId !== "string"
+  ) {
+    return null;
+  }
+  if (
+    record.credentialScope !== undefined &&
+    typeof record.credentialScope !== "string"
+  ) {
+    return null;
+  }
+  const providerId = typeof record.providerId === "string"
+    ? record.providerId
+    : undefined;
+  // An id written before the UUID fix (Issue #204) is stale for Claude: the
+  // CLI refuses it outright. Codex thread ids are not UUIDs-or-bust
+  // (Issue #1699), so they persist when the record names Codex.
   const sessionId = typeof record.sessionId === "string" &&
-      isValidSessionId(record.sessionId)
+      isPersistableSessionId(record.sessionId, providerId)
     ? record.sessionId
     : undefined;
   return {
@@ -202,6 +230,10 @@ function parsePersisted(raw: string): PersistedResumeState | null {
     phaseCount: record.phaseCount,
     branch: record.branch,
     savedAtEpochMs: record.savedAtEpochMs,
+    ...(providerId !== undefined ? { providerId } : {}),
+    ...(typeof record.credentialScope === "string"
+      ? { credentialScope: record.credentialScope }
+      : {}),
   };
 }
 

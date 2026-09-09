@@ -142,7 +142,7 @@ Deno.test("codex provider - a disallowed-tools list is carried into the prompt, 
   assertStringIncludes(prompt, "ExitPlanMode");
 });
 
-Deno.test("codex provider - a later phase resumes the previous session", () => {
+Deno.test("codex provider - a later phase resumes the captured thread id, never --last (Issue #1699)", () => {
   const first = codex.buildInvocation({
     prompt: "phase one",
     sessionResumeState: { sessionId: "owner-repo-42-7", phaseCount: 0 },
@@ -153,13 +153,141 @@ Deno.test("codex provider - a later phase resumes the previous session", () => {
     false,
     "the first phase starts a session rather than resuming one",
   );
+  assertEquals(
+    first.includes("--last"),
+    false,
+    "--last would resume another issue's thread in a shared working directory",
+  );
 
-  const later = codex.buildInvocation({
+  // A Claude UUID with no providerId is not a Codex thread: resume would
+  // send the wrong id. The next phase starts fresh instead of `--last`.
+  const laterWithoutCapture = codex.buildInvocation({
     prompt: "phase two",
     sessionResumeState: { sessionId: "owner-repo-42-7", phaseCount: 1 },
   });
-  assertEquals(later.slice(0, 3), ["exec", "resume", "--last"]);
+  assertEquals(laterWithoutCapture.includes("resume"), false);
+  assertEquals(laterWithoutCapture.includes("--last"), false);
+
+  const captured = "0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e77";
+  const later = codex.buildInvocation({
+    prompt: "phase two",
+    sessionResumeState: {
+      sessionId: captured,
+      phaseCount: 1,
+      providerId: "codex",
+    },
+  });
+  assertEquals(later.slice(0, 3), ["exec", "resume", captured]);
+  assertEquals(later.includes("--last"), false);
   assertEquals(later.at(-1), "phase two");
+});
+
+Deno.test("codex provider - interleaved issues resume their own thread ids (Issue #1699)", () => {
+  const issueA = {
+    sessionId: "thread-issue-A",
+    phaseCount: 1,
+    providerId: "codex",
+  };
+  const issueB = {
+    sessionId: "thread-issue-B",
+    phaseCount: 1,
+    providerId: "codex",
+  };
+  const argsA = codex.buildInvocation({
+    prompt: "continue A",
+    sessionResumeState: issueA,
+  });
+  const argsB = codex.buildInvocation({
+    prompt: "continue B",
+    sessionResumeState: issueB,
+  });
+  assertEquals(argsA.slice(0, 3), ["exec", "resume", "thread-issue-A"]);
+  assertEquals(argsB.slice(0, 3), ["exec", "resume", "thread-issue-B"]);
+  assertEquals(argsA.includes("thread-issue-B"), false);
+  assertEquals(argsB.includes("thread-issue-A"), false);
+  assertEquals(argsA.includes("--last"), false);
+  assertEquals(argsB.includes("--last"), false);
+});
+
+Deno.test("codex provider - a Claude session id is never passed to exec resume (Issue #1699)", () => {
+  const claudeId = "6f1f2c0a-9b7d-4c3e-8a11-2b3c4d5e6f70";
+  const args = codex.buildInvocation({
+    prompt: "after a Claude phase",
+    sessionResumeState: {
+      sessionId: claudeId,
+      phaseCount: 2,
+      providerId: "claude",
+    },
+  });
+  assertEquals(args.includes("resume"), false);
+  assertEquals(args.includes(claudeId), false);
+});
+
+Deno.test("codex provider - promptViaStdin puts '-' last and keeps the prompt off argv (Issue #1702)", () => {
+  const prompt = "x".repeat(200_000);
+  const guidance = "You run unattended inside a sandboxed container.";
+  const args = codex.buildInvocation({
+    prompt,
+    systemPrompt: guidance,
+    promptViaStdin: true,
+  });
+  assertEquals(args.at(-1), "-");
+  assertEquals(args.includes(prompt), false);
+  assert(
+    args.every((a) => a.length < 131_072),
+    "no argv element may reach MAX_ARG_STRLEN",
+  );
+  const body = codex.stdinBody!({ prompt, systemPrompt: guidance });
+  assertStringIncludes(body, guidance);
+  assertStringIncludes(body, prompt);
+});
+
+Deno.test("codex provider - Playwright MCP config becomes -c mcp_servers.* overrides (Issue #1702)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-codex-mcp-" });
+  try {
+    const path = `${dir}/mcp.json`;
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        mcpServers: {
+          playwright: {
+            command: "deno",
+            args: ["run", "-A", "npm:@playwright/mcp@0.0.1"],
+            env: { PLAYWRIGHT_BROWSERS_PATH: "/opt/pw" },
+          },
+        },
+      }),
+    );
+    const args = codex.buildInvocation({
+      prompt: "screenshot the login",
+      mcpConfigPath: path,
+    });
+    assertEquals(args.includes("--mcp-config"), false);
+    const joined = args.join(" ");
+    assertStringIncludes(joined, "mcp_servers.playwright.command=");
+    assertStringIncludes(joined, "mcp_servers.playwright.args=");
+    assertStringIncludes(joined, "mcp_servers.playwright.env=");
+    assertStringIncludes(joined, "deno");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("codex provider - an unreadable MCP config fails closed (Issue #1702)", () => {
+  let thrown = false;
+  try {
+    codex.buildInvocation({
+      prompt: "screenshot",
+      mcpConfigPath: "/nonexistent/mcp.json",
+    });
+  } catch (error) {
+    thrown = true;
+    assertStringIncludes(
+      error instanceof Error ? error.message : String(error),
+      "could not be read",
+    );
+  }
+  assert(thrown, "a missing MCP config must refuse the run");
 });
 
 // ---------------------------------------------------------------------------
