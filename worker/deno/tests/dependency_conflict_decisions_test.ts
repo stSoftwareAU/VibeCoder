@@ -17,7 +17,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { parseConflictSegments } from "../lib/dependency_conflict_rules.ts";
+import {
+  type ManifestRule,
+  parseConflictSegments,
+} from "../lib/dependency_conflict_rules.ts";
 import { denoJsonRule } from "../lib/dependency_conflict_json.ts";
 import { cargoTomlRule } from "../lib/dependency_conflict_native.ts";
 import {
@@ -28,18 +31,19 @@ import {
 
 /** Resolve `text` with `rule`, then extract the decisions it made. */
 function decisionsFor(
-  rule: { resolve: (segments: never) => unknown },
+  rule: ManifestRule,
   text: string,
 ): DependencyDecision[] | null {
   const parsed = parseConflictSegments(text);
   assert(parsed.ok, "the fixture must parse");
-  const outcome = (rule as unknown as {
-    resolve: (
-      s: readonly unknown[],
-    ) => { kind: string; text?: string };
-  }).resolve(parsed.value);
+  // Neither manifest rule reads the merge base, so the context (Issue #1768)
+  // carries none.
+  const outcome = rule.resolve(parsed.value, { path: rule.name, base: null });
   assertEquals(outcome.kind, "resolved");
-  return extractDependencyDecisions(parsed.value, outcome.text ?? "");
+  return extractDependencyDecisions(
+    parsed.value,
+    outcome.kind === "resolved" ? outcome.text : "",
+  );
 }
 
 /** Find the decision for a key, failing the test when it is absent. */

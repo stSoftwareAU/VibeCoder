@@ -747,7 +747,13 @@ export async function syncMilestoneBranchWithDefault(
   for (const file of sides) {
     const decision = decided.get(file.path);
     if (decision?.action !== "union") continue;
-    const failure = await unionMergeConflictedFile(file, options);
+    // An append-only ledger reads the default branch's entry first (Issue
+    // #1768); a test-file union keeps the branch's own cases first as before.
+    const failure = await unionMergeConflictedFile(
+      file,
+      options,
+      decision.case === "both-inserted" ? "default-first" : "milestone-first",
+    );
     if (failure) {
       decision.action = "escalate";
       decision.reason = `${decision.reason} — and ${failure}`;

@@ -20,6 +20,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildConflictEscalationReason,
   buildResolvedComment,
+  buildRuleResolutionSection,
   describeDependencyDecision,
   type MergeConflictInput,
   type MergeConflictProcessorDeps,
@@ -1355,4 +1356,46 @@ Deno.test("processMergeConflict - a marker that cannot be withdrawn is never sil
     warnings.some((w) => w.includes("Could not withdraw the attempt marker")),
     `an unwithdrawable marker must warn, got: ${warnings.join(" | ")}`,
   );
+});
+
+Deno.test("buildRuleResolutionSection - a ledger resolution says both additions were kept, not a version pick (Issue #1768)", () => {
+  const section = buildRuleResolutionSection(
+    [
+      {
+        path: "CHANGELOG.md",
+        kind: "manifest",
+        resolvedBy: "both-inserted",
+        decisions: [],
+        decisionsUnattributed: false,
+      },
+    ],
+    "main",
+    "issue-1768",
+  ).join("\n");
+
+  assertStringIncludes(section, "CHANGELOG.md");
+  assertStringIncludes(section, "both additions were kept");
+  assertEquals(
+    section.includes("higher published version"),
+    false,
+    "no dependency was decided, so the comment must not claim one was",
+  );
+});
+
+Deno.test("buildRuleResolutionSection - a manifest resolution still explains the version rule (Issue #466)", () => {
+  const section = buildRuleResolutionSection(
+    [
+      {
+        path: "deno.json",
+        kind: "manifest",
+        resolvedBy: "deno.json",
+        decisions: [],
+        decisionsUnattributed: false,
+      },
+    ],
+    "main",
+    "issue-1768",
+  ).join("\n");
+
+  assertStringIncludes(section, "higher published version");
 });

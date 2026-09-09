@@ -1,0 +1,229 @@
+/**
+ * The append-only ledger rule: both sides inserted, nothing was deleted
+ * (Issue #1768, part of #1730).
+ *
+ * `CHANGELOG.md`, `docs/RELEASE-NOTES.md` and the audit ledgers under
+ * `docs/audits/` are written by appending. Two branches that each append to the
+ * same list conflict on every merge, and the resolution is never a judgement:
+ * both entries were written deliberately, neither removed anything, so the
+ * merge keeps both. Round 5 of #1730 measured that shape as the second-largest
+ * conflict class on the milestone branches, and each one currently costs an AI
+ * call.
+ *
+ * This rule settles it deterministically, registered beside the manifest rules
+ * so the pass in `dependency_conflict_apply.ts` offers it every conflicted
+ * path.
+ *
+ * ## How "nothing was deleted" is established
+ *
+ * The PR merge does **not** run with `diff3` conflict style, so a hunk carries
+ * no `||||||| base` section to read an empty base off. The merge base is read
+ * out of the conflicted index instead (`git show :1:<path>`) and handed to the
+ * rule as {@link RuleContext.base}.
+ *
+ * A conflicted file is literal (common) regions interleaved with hunks. A base
+ * line that survived on both sides is common, so it sits in a literal; a base
+ * line one side deleted or edited does not, because the two sides then differ
+ * over it and git puts it inside a hunk. So the test is: **every line of the
+ * merge base still appears, in order, outside the conflict hunks.** When it
+ * does, nothing the base had was removed or edited and each hunk holds only
+ * what the two sides added.
+ *
+ * It is a subsequence rather than an equality, because the literals legitimately
+ * carry more than the base: a blank line both sides added around their entry,
+ * and any *other* insertion in the same file that merged cleanly, are both
+ * common text and both appear there. Requiring equality would defer the very
+ * merges this rule exists for.
+ *
+ * ## What it refuses
+ *
+ * - **No merge base** — an add/add conflict, or a stage 1 git would not give
+ *   up. "Could not read the base" is never treated as "the base was empty".
+ * - **Manifests and lock files** — those have their own rules, and a lock file
+ *   is regenerated rather than text-merged.
+ * - **A `.json` result that does not parse** — the union of two ledger entries
+ *   can be invalid JSON (two objects appended into one array without a comma),
+ *   and an unparseable ledger is deferred, never written.
+ *
+ * The module is pure — no git, no network, no file I/O.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import {
+  type ConflictSegment,
+  type ManifestRule,
+  type ManifestRuleRegistry,
+  manifestRuleRegistry,
+  type RuleContext,
+  type RuleOutcome,
+} from "./dependency_conflict_rules.ts";
+
+/** The rule's registered name, quoted in the pass's log and PR comment. */
+export const BOTH_INSERTED_RULE_NAME = "both-inserted";
+
+/**
+ * Files another rule owns, or that are never text-merged.
+ *
+ * Registration order already puts this rule last, so a manifest reaches its own
+ * rule first; the list is restated here so `matches` is honest on its own and a
+ * future registration order cannot quietly hand `deno.lock` to a union.
+ */
+const OWNED_ELSEWHERE = new Set([
+  "deno.json",
+  "deno.jsonc",
+  "package.json",
+  "cargo.toml",
+  "go.mod",
+  "deno.lock",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "cargo.lock",
+  "go.sum",
+]);
+
+/** The last path component, lower-cased. */
+function baseName(path: string): string {
+  return (path.split("/").pop() ?? path).toLowerCase();
+}
+
+/** Whether this rule is willing to look at a repository-relative path. */
+export function isBothInsertedCandidate(path: string): boolean {
+  return !OWNED_ELSEWHERE.has(baseName(path));
+}
+
+/** An `unresolved` outcome, so the reason reads the same way every time. */
+function defer(reason: string): RuleOutcome {
+  return { kind: "unresolved", reason };
+}
+
+/** Lines of a file, terminators dropped, with no trailing empty element. */
+function lines(text: string): string[] {
+  const split = text.split("\n");
+  if (split.length > 0 && split[split.length - 1] === "") split.pop();
+  return split;
+}
+
+/**
+ * Whether every line of `subset` appears in `superset`, in order.
+ *
+ * Order matters: it is what separates "the base survived and more was added
+ * around it" from "a base line was replaced by a different one".
+ */
+export function isLineSubsequence(subset: string, superset: string): boolean {
+  const want = lines(subset);
+  const have = lines(superset);
+  let i = 0;
+  for (const line of have) {
+    if (i < want.length && line === want[i]) i++;
+  }
+  return i === want.length;
+}
+
+/**
+ * Resolve a conflict in which both sides only inserted.
+ *
+ * The base branch's hunk is emitted first and this branch's second: the pass
+ * runs during `git merge origin/<base>` on the PR branch, so stage 3
+ * ("theirs") is the base branch's side. Ordering the newest local entry after
+ * the base branch's keeps a ledger reading the way both authors wrote it.
+ */
+export function resolveBothInserted(
+  segments: readonly ConflictSegment[],
+  context: RuleContext,
+): RuleOutcome {
+  if (context.base === null) {
+    return defer(
+      `${context.path} has no merge-base version to compare against, so ` +
+        `"both sides only inserted" cannot be established`,
+    );
+  }
+
+  const hunks = segments.filter((s) => s.kind === "conflict");
+  if (hunks.length === 0) {
+    return defer(`${context.path} has no conflict hunk to resolve`);
+  }
+
+  // A file merged with `diff3` markers states its base regions outright; a
+  // non-empty one is a deletion or an edit, whatever the whole-file check says.
+  for (const hunk of hunks) {
+    if (hunk.base !== null && hunk.base !== "") {
+      return defer(
+        `${context.path} has a conflict hunk whose merge base is not empty, ` +
+          `so at least one side changed or deleted a base line`,
+      );
+    }
+  }
+
+  const literals = segments
+    .filter((s) => s.kind === "literal")
+    .map((s) => s.text)
+    .join("");
+  if (!isLineSubsequence(context.base, literals)) {
+    return defer(
+      `${context.path} does not read as two pure insertions: a line the merge ` +
+        `base had does not survive outside the conflict hunks, so it was ` +
+        `changed, moved or deleted`,
+    );
+  }
+
+  let merged = "";
+  for (const segment of segments) {
+    merged += segment.kind === "literal"
+      ? segment.text
+      : segment.theirs + segment.ours;
+  }
+
+  if (!unionIsWellFormed(context.path, merged)) {
+    return defer(
+      `keeping both sides of ${context.path} does not parse as JSON, so the ` +
+        `union was not written`,
+    );
+  }
+
+  return { kind: "resolved", text: merged };
+}
+
+/**
+ * Whether keeping both sides of `path` leaves a well-formed document.
+ *
+ * JSON is the one format cheap enough to check and common enough to matter: a
+ * union of two ledger entries readily leaves an array with a missing or
+ * doubled comma, and an invalid ledger must never be written. A path in any
+ * other format has no such check and is not blocked by one.
+ *
+ * Shared with the milestone ladder's union merge (`milestone_conflict_git.ts`)
+ * so both rungs apply the same guard rather than two copies of it.
+ */
+export function unionIsWellFormed(path: string, text: string): boolean {
+  if (!baseName(path).endsWith(".json")) return true;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The rule as the registry holds it. */
+export const bothInsertedRule: ManifestRule = {
+  name: BOTH_INSERTED_RULE_NAME,
+  needsBase: true,
+  matches: isBothInsertedCandidate,
+  resolve: resolveBothInserted,
+};
+
+/**
+ * Register the rule.
+ *
+ * Registered **last**, because it matches almost every path: the manifest rules
+ * must see their own files first.
+ */
+export function registerBothInsertedRule(
+  registry: ManifestRuleRegistry = manifestRuleRegistry,
+): void {
+  registry.register(bothInsertedRule);
+}
+
+registerBothInsertedRule();

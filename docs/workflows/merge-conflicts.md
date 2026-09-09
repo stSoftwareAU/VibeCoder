@@ -174,6 +174,17 @@ deterministically **before** the agent is asked anything:
   (`deno.json`/`deno.jsonc`, `package.json`, `Cargo.toml`, `go.mod`). Per
   dependency key the higher published version wins, whichever branch carries it,
   and a key only one side has is kept — an ordinary both-sides-survive merge.
+- A conflict where **both sides only inserted** — an append-only ledger such as
+  `CHANGELOG.md`, `docs/RELEASE-NOTES.md` or an audit ledger — keeps **both**
+  entries, the base branch's first (Issue #1768). The PR merge runs without
+  `diff3` markers, so the merge base is read from index stage 1
+  (`git show :1:<path>`), and the file qualifies only when every line of that
+  base still appears **in order outside the conflict hunks**: a base line one
+  side deleted or edited is inside a hunk instead, and the file defers. A
+  cleanly merged insertion elsewhere in the same file is common text and does
+  not stop the rule. A `.json` result must parse, or the union is not written,
+  and a base git will not give up defers with git's own words rather than being
+  read as an empty base.
 - A lock file (`deno.lock`, `package-lock.json`, `Cargo.lock`, `go.sum`) is
   **never** text-merged. It is regenerated from the already-merged manifest with
   the ecosystem's own tool, and only when that toolchain is on `PATH`.
@@ -844,6 +855,15 @@ branch at the same time. A host that loses the race returns immediately.
   `optionalDependencies`). Per dependency key the higher semver wins, whichever
   branch carries it; a hunk touching anything else, or one undecidable version,
   defers the whole file.
+- `worker/deno/lib/both_inserted_conflict_rule.ts` — the append-only ledger rule
+  on the same seam: both sides inserted and nothing in the merge base was
+  removed, so both are kept with the base branch's hunk first. It is the one
+  rule that needs the merge base, read from index stage 1 by the pass; a base
+  line that does not survive outside the hunks, a file with no base at all, and
+  a `.json` union that does not parse all defer. The milestone ladder decides
+  the same shape from whole files rather than hunks
+  (`milestone_conflict_triage.ts`), because that rung never sees a conflicted
+  working-tree file — it reads both sides out of the index.
 - `worker/deno/lib/dependency_lock_regen.ts` — lock files are **never**
   text-merged: `deno.lock`, `package-lock.json`, `Cargo.lock` and `go.sum` are
   regenerated from the already-merged manifest with the ecosystem's own tool,

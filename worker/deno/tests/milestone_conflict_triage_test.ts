@@ -1,11 +1,11 @@
 /**
  * Triage of a conflicted `main` → `milestone/*` sync merge (Issue #1559).
  *
- * The three patterns the issue names are exercised here against real content:
- * the same fix landed twice, one side that subsumes the other, and two rival
- * designs that only a human can choose between. The coverage rule is pinned
- * too — a conflicted test file is never resolved by taking a side that drops
- * cases.
+ * The four patterns the issues name are exercised here against real content:
+ * the same fix landed twice, one side that subsumes the other, both sides
+ * appending to a ledger (Issue #1768), and two rival designs that only a human
+ * can choose between. The coverage rule is pinned too — a conflicted test file
+ * is never resolved by taking a side that drops cases.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -358,4 +358,134 @@ Deno.test("buildConflictAnalysisComment - carries both sides' exports, test name
     !body.includes("was pushed"),
     "nothing is pushed when the sync escalates",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Both sides only appended — the append-only ledger rule (Issue #1768)
+// ---------------------------------------------------------------------------
+
+const LEDGER_BASE = `# Changelog
+
+## Unreleased
+`;
+
+Deno.test("planConflictResolution - both sides only appended to a ledger, so both are kept", () => {
+  const plan = planConflictResolution([
+    file({
+      path: "CHANGELOG.md",
+      base: LEDGER_BASE,
+      ours: `${LEDGER_BASE}- the milestone branch's entry\n`,
+      theirs: `${LEDGER_BASE}- the default branch's entry\n`,
+    }),
+  ]);
+
+  assertEquals(plan.escalations.length, 0);
+  assertEquals(plan.resolved[0]?.case, "both-inserted");
+  assertEquals(plan.resolved[0]?.action, "union");
+  assertStringIncludes(plan.resolved[0]?.reason ?? "", "only added");
+});
+
+Deno.test("planConflictResolution - a side that dropped a base line is not a both-inserted union", () => {
+  const base = `${LEDGER_BASE}- an entry from the base\n`;
+  const plan = planConflictResolution([
+    file({
+      path: "CHANGELOG.md",
+      base,
+      // The milestone side removed the base's entry while adding its own.
+      ours: `${LEDGER_BASE}- the milestone branch's entry\n`,
+      theirs: `${base}- the default branch's entry\n`,
+    }),
+  ]);
+
+  assertEquals(plan.resolved.length, 0);
+  assertEquals(plan.escalations[0]?.case, "rival-designs");
+});
+
+Deno.test("planConflictResolution - a merge base that was not read decides nothing", () => {
+  const plan = planConflictResolution([
+    file({
+      path: "CHANGELOG.md",
+      // No `base`: an unread base must never read as "nothing was deleted".
+      ours: `${LEDGER_BASE}- the milestone branch's entry\n`,
+      theirs: `${LEDGER_BASE}- the default branch's entry\n`,
+    }),
+  ]);
+
+  assertEquals(plan.resolved.length, 0);
+  assertEquals(plan.escalations[0]?.case, "rival-designs");
+});
+
+Deno.test("planConflictResolution - a duplicate fix is decided as one, not unioned", () => {
+  const plan = planConflictResolution([
+    file({
+      path: "lib/spawn.ts",
+      base: "export const a = 1;\n",
+      ours: "export const a = 1;\nexport const branch = true;\n",
+      theirs: "export const a = 1;\nexport const main = true;\n",
+      oursFixes: [1270],
+      theirsFixes: [1270],
+    }),
+  ]);
+
+  assertEquals(
+    plan.decisions[0]?.action === "union",
+    false,
+    "the same fix landing twice is not two insertions to keep",
+  );
+  assertStringIncludes(plan.decisions[0]?.reason ?? "", "#1270");
+});
+
+Deno.test("planConflictResolution - a conflicted test file is still decided by the coverage rule", () => {
+  const plan = planConflictResolution([
+    file({
+      path: "tests/gate_test.ts",
+      base: 'Deno.test("shared", () => {});\n',
+      ours:
+        'Deno.test("shared", () => {});\nDeno.test("branch only", () => {});\n',
+      theirs:
+        'Deno.test("shared", () => {});\nDeno.test("main only", () => {});\n',
+    }),
+  ]);
+
+  assertEquals(plan.resolved[0]?.case, "test-union");
+  assertEquals(plan.resolved[0]?.action, "union");
+});
+
+Deno.test("planConflictResolution - two rival designs that are both purely additive are unioned, not escalated", () => {
+  // The canonical rival-designs pair, but with a merge base showing that each
+  // side only added: nothing either branch wrote is dropped by keeping both,
+  // and the resolution gate verifies the union before it lands (Issue #1768).
+  const base = "export const a = 1;\n";
+  const plan = planConflictResolution([
+    file({
+      path: "lib/scan.ts",
+      base,
+      ours: `${base}export class IndirectSpawnRules {}\n`,
+      theirs: `${base}export function scanContentForVariableBinarySpawn() {}\n`,
+      oursFixes: [1378],
+      theirsFixes: [1227],
+    }),
+  ]);
+
+  assertEquals(plan.decisions[0]?.case, "both-inserted");
+  assertEquals(plan.decisions[0]?.action, "union");
+});
+
+Deno.test("planConflictResolution - rival designs still escalate once a side changed a base line", () => {
+  const base = "export const a = 1;\nexport const shared = true;\n";
+  const plan = planConflictResolution([
+    file({
+      path: "lib/scan.ts",
+      base,
+      // The milestone side rewrote `shared`, so this is no longer two pure
+      // insertions and only a human can choose.
+      ours: "export const a = 1;\nexport const shared = false;\n" +
+        "export class IndirectSpawnRules {}\n",
+      theirs: `${base}export function scanContentForVariableBinarySpawn() {}\n`,
+      oursFixes: [1378],
+      theirsFixes: [1227],
+    }),
+  ]);
+
+  assertEquals(plan.escalations[0]?.case, "rival-designs");
 });
