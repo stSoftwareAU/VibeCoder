@@ -184,7 +184,7 @@ function fetchByToken(answer: (token: string) => Response) {
 // The pure ranking function
 // ---------------------------------------------------------------------------
 
-Deno.test("ranking returns the token with the most remaining budget per hour of its own window (Issue #1623)", () => {
+Deno.test("ranking compares budget per hour, and only between candidates whose figures describe the same window (Issue #1623, narrowed by #1731)", () => {
   // Different windows, different reset days — exactly the case the parent
   // issue exists for. Only the fraction per hour is comparable across them.
   // Rewritten for Issue #1623: until then this ranked on the largest share
@@ -857,6 +857,45 @@ Deno.test("with every credential under the guard the weekly rate still decides a
     "below-five-hour-guard-highest-remaining-per-hour",
   );
   assertEquals(ranking.ranked.map((r) => r.exhausted), [false, false]);
+});
+
+Deno.test("a below-guard winner level on every figure names the tie-break that decided it (Issue #1685, refined by #1731)", () => {
+  // Both under the guard and both measured on the week, level on rate and on
+  // reset: the reason names the last comparison that actually decided the
+  // order. Until Issue #1731 reordered `winningReason` around the
+  // discriminators, every below-guard winner reported the guard code even
+  // when the guard had separated nothing.
+  const tied = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.10, NOW + 2 * HOUR),
+      sevenDay(0.40, NOW + 8 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.10, NOW + 2 * HOUR),
+      sevenDay(0.40, NOW + 8 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(tied.winner?.label, "provider");
+  assertEquals(tied.winner?.meetsFiveHourGuard, false);
+  assertEquals(tied.reason, "tied-discovery-order");
+
+  // Separated on rate, the guard code still names why that ranking was the
+  // one consulted at all.
+  const onRate = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.10, NOW + 2 * HOUR),
+      sevenDay(0.40, NOW + 8 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.10, NOW + 2 * HOUR),
+      sevenDay(0.40, NOW + 80 * HOUR),
+    ]),
+  ], NOW);
+  assertEquals(
+    onRate.reason,
+    "below-five-hour-guard-highest-remaining-per-hour",
+  );
 });
 
 Deno.test("an exhausted credential loses to a usable one under the guard (Issue #1685)", () => {

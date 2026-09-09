@@ -31,53 +31,21 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import type {
-  ClaudeTokenBudget,
-  ClaudeTokenBudgetUnknownReason,
-  ClaudeTokenBudgetWindow,
-} from "../lib/claude_token_budget.ts";
 import {
   type ClaudeTokenSelectionReason,
   formatClaudeTokenSelectionLog,
   rankClaudeTokenBudgets,
 } from "../lib/claude_token_selection.ts";
 import { createClaudeCredentialPool } from "../lib/claude_credential_pool.ts";
-import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 import {
-  type AgentProviderDescriptor,
-  CLAUDE_PROVIDER_ID,
-  resolveAgentProvider,
-} from "../lib/agent_provider.ts";
-
-/** A fixed "now" for every row — 2026-09-09T00:00:00Z. */
-const NOW = Date.UTC(2026, 8, 9, 0, 0, 0);
-
-/** One hour, in milliseconds. */
-const HOUR = 3_600_000;
-
-const CLAUDE: AgentProviderDescriptor = resolveAgentProvider(
-  CLAUDE_PROVIDER_ID,
-);
-
-/** One window of a synthetic snapshot, stated as a share and an offset. */
-interface Window {
-  /** Unused share of the window, in `[0, 1]`. */
-  readonly remaining: number;
-  /** Hours from {@link NOW} until it resets; negative means already past. */
-  readonly resetInHours: number;
-}
-
-/** One credential in a row, exactly as the probe would have reported it. */
-interface Candidate {
-  /** The file stem the pool identifies it by. */
-  readonly label: string;
-  /** Its five-hour window, or absent when the response reported none. */
-  readonly fiveHour?: Window;
-  /** Its seven-day window, or absent when the response reported none. */
-  readonly sevenDay?: Window;
-  /** Set instead of the windows for a credential that could not be probed. */
-  readonly unknown?: ClaudeTokenBudgetUnknownReason;
-}
+  CLAUDE_PROVIDER,
+  POOL_NOW as NOW,
+  type PoolCandidate as Candidate,
+  poolTokenFile as tokenFile,
+  type PoolWindow as Window,
+  snapshotOf,
+  spawnDecision,
+} from "./support/claude_pool_fixtures.ts";
 
 /** One row of the telemetry-quality matrix. */
 interface Row {
@@ -91,86 +59,6 @@ interface Row {
   readonly reason: ClaudeTokenSelectionReason;
   /** The credential a child may be spawned on, or null when none may be. */
   readonly spawn: string | null;
-}
-
-/** Resolve one window offset against {@link NOW}. */
-function window(
-  name: ClaudeTokenBudgetWindow["window"],
-  spec: Window,
-): ClaudeTokenBudgetWindow {
-  return {
-    window: name,
-    remainingFraction: spec.remaining,
-    resetAt: NOW + spec.resetInHours * HOUR,
-  };
-}
-
-/** The probe result a candidate stands for. */
-function snapshotOf(candidate: Candidate): ClaudeTokenBudget {
-  if (candidate.unknown !== undefined) {
-    return { known: false, label: candidate.label, reason: candidate.unknown };
-  }
-  const windows: ClaudeTokenBudgetWindow[] = [];
-  if (candidate.fiveHour) windows.push(window("five_hour", candidate.fiveHour));
-  if (candidate.sevenDay) windows.push(window("seven_day", candidate.sevenDay));
-  if (windows.length === 0) {
-    throw new Error(`${candidate.label}: a known snapshot needs a window`);
-  }
-  // The headline is the most constrained window, exactly as #918 reports it.
-  const headline = windows.reduce((best, current) =>
-    current.remainingFraction < best.remainingFraction ? current : best
-  );
-  return {
-    known: true,
-    label: candidate.label,
-    remainingFraction: headline.remainingFraction,
-    resetAt: headline.resetAt,
-    window: headline.window,
-    windows,
-  };
-}
-
-/** The discovered file for a candidate, as credential discovery returns it. */
-function tokenFile(label: string): ProviderTokenFile {
-  const name = "CLAUDE_CODE_OAUTH_TOKEN";
-  const value = `sk-ant-oat01-${label}`;
-  return {
-    label,
-    path: `/creds/claude/${label}.env`,
-    name,
-    value,
-    primary: label === "provider",
-    poolMember: true,
-    entries: [{ name, value }],
-  };
-}
-
-/**
- * Ask the pool which credential a child may be spawned on, from snapshots
- * recorded rather than probed.
- *
- * @param candidates - The pool, in discovery order.
- * @returns The chosen label, or null when no spawn is allowed, plus the
- *   number of probes the decision cost.
- */
-async function spawnDecision(
-  candidates: readonly Candidate[],
-): Promise<{ label: string | null; probes: number }> {
-  let probes = 0;
-  const pool = createClaudeCredentialPool({
-    provider: CLAUDE,
-    now: () => NOW,
-    discover: () => Promise.resolve(candidates.map((c) => tokenFile(c.label))),
-    fetchFn: () => {
-      probes += 1;
-      return Promise.resolve(new Response("{}", { status: 500 }));
-    },
-  });
-  for (const candidate of candidates) {
-    pool.recordBudget(candidate.label, snapshotOf(candidate), NOW);
-  }
-  const chosen = await pool.selectEligible(NOW);
-  return { label: chosen?.label ?? null, probes };
 }
 
 /** Comfortable five-hour headroom, for a row that is about the week. */
@@ -277,6 +165,27 @@ const MATRIX: readonly Row[] = [
     spawn: "provider-2",
   },
   {
+    // The guard's exact boundary, with the telemetry gap across it: 20% is
+    // usable and 19.999% is not, so the credential missing a week leads on
+    // the band alone. A guard applied after the telemetry tie-break would
+    // invert this row.
+    name: "at the guard's boundary the band decides, not the telemetry gap",
+    candidates: [
+      {
+        label: "provider",
+        fiveHour: { remaining: 0.19999, resetInHours: 4 },
+        sevenDay: { remaining: 0.9, resetInHours: 2 },
+      },
+      {
+        label: "provider-2",
+        fiveHour: { remaining: 0.2, resetInHours: 4 },
+      },
+    ],
+    order: ["provider-2", "provider"],
+    reason: "no-seven-day-telemetry-degraded-fallback",
+    spawn: "provider-2",
+  },
+  {
     // Both under the guard, so it steps aside; inside that band the known
     // week still outranks the absent one.
     name: "inside the below-guard band a known week still beats a missing one",
@@ -293,6 +202,27 @@ const MATRIX: readonly Row[] = [
     ],
     order: ["provider-2", "provider"],
     reason: "seven-day-telemetry-preferred",
+    spawn: "provider-2",
+  },
+  {
+    // The two signals colliding: the guard has stepped aside because nothing
+    // clears it, and neither survivor reported a week either. The pool must
+    // still run, on the like-for-like five-hour figures — 15%/h against
+    // 2.5%/h — and the reason names the degraded fallback it actually used
+    // rather than a weekly rate neither credential has.
+    name: "a below-guard pool with no weekly telemetry anywhere still runs",
+    candidates: [
+      {
+        label: "provider",
+        fiveHour: { remaining: 0.1, resetInHours: 4 },
+      },
+      {
+        label: "provider-2",
+        fiveHour: { remaining: 0.15, resetInHours: 1 },
+      },
+    ],
+    order: ["provider-2", "provider"],
+    reason: "no-seven-day-telemetry-degraded-fallback",
     spawn: "provider-2",
   },
   {
@@ -456,7 +386,7 @@ Deno.test("claude pool telemetry quality - the degraded fallback is deterministi
 Deno.test("claude pool telemetry quality - a later snapshot with a week restores normal ranking, with no lingering penalty (Issue #1731)", async () => {
   let probes = 0;
   const pool = createClaudeCredentialPool({
-    provider: CLAUDE,
+    provider: CLAUDE_PROVIDER,
     now: () => NOW,
     discover: () =>
       Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
