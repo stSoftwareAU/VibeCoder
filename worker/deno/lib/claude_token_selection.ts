@@ -20,29 +20,34 @@
  * a parameter rather than a clock of its own — so every rule below is a plain
  * unit test:
  *
- * - **The five-hour window is a gate, not a score.** A token that has used
- *   less than {@link CLAUDE_FIVE_HOUR_GATE_MAX_USED} of it passes; one that
- *   has used 80% or more cannot spend whatever its week still holds, so every
- *   passing token ranks ahead of every failing one.
- * - **Passing tokens are ordered by remaining budget per hour** on the
- *   seven-day window: its remaining share divided by the hours until it
- *   resets. A response that reported no seven-day window is ranked on the
- *   rate of the window it did report.
- * - **A passing token under {@link CLAUDE_SEVEN_DAY_LOW_REMAINING} of its
- *   seven-day window ranks behind every passing token above that floor**,
- *   whatever its rate — a near-exhausted week divided by an imminent reset
- *   scores highly and would stall a run almost immediately. Sub-floor tokens
- *   are ordered among themselves by rate, and still beat every gate failure.
+ * - **Exhaustion is the only hard condition** (Issue #1685). A token whose
+ *   reported window has nothing left — 0% remaining, or a usage-limit result
+ *   recorded as spent — cannot serve a call at all, so it ranks behind every
+ *   token that can, until that window resets.
+ * - **The five-hour window is a soft guard, not a score.** A token holding at
+ *   least {@link CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING} of it can carry an
+ *   approximately hour-long Vibe Coder run, so while any usable token clears
+ *   the guard the choice is restricted to those. When **no** usable token
+ *   clears it the guard steps aside rather than idling the pool: the same
+ *   weekly ranking picks between what is left. Exactly 20% remaining is
+ *   usable — the guard bites below it.
+ * - **Candidates are ordered by remaining budget per hour** on the seven-day
+ *   window: its remaining share divided by the hours until it resets. A
+ *   response that reported no seven-day window is ranked on the rate of the
+ *   window it did report. Nothing overrides that rate for a usable token — in
+ *   particular there is no weekly floor, because a nearly spent week that
+ *   resets within the hour is exactly the budget that would otherwise lapse.
  * - A token whose `resetAt` has already passed is treated as a fresh, FULL
- *   window, in both the gate and the rate. The probe reports the window that
+ *   window, in both the guard and the rate. The probe reports the window that
  *   was current when the figure was produced; once that instant is behind us
  *   the window has rolled over and the old utilisation describes a window that
  *   no longer exists. Its hours-until-reset is the window's nominal length (5
  *   or 168), so a rolled-over window scores a rate rather than dividing by a
  *   negative number.
  * - A tie on rate goes to the **soonest** reset, then to discovery order.
- * - **Gate failures are ordered by the soonest five-hour reset**, so the
- *   token that refills first is the one used when nothing can be spent now.
+ * - **Exhausted tokens are ordered by when they become usable again** — the
+ *   last of their spent windows to reset — so when nothing can be spent now
+ *   the token that recovers first is the one used.
  * - A token whose budget is unknown (`{ known: false }`) ranks **last**,
  *   behind every token with a known budget. It is never dropped: a probe
  *   failure must not make a configured subscription disappear, and with every
@@ -112,49 +117,36 @@ const LOG_PREFIX = "[SECURITY] claude token";
 const HOUR_MS = 3_600_000;
 
 /**
- * Five-hour **remaining** share a token must hold to be worth running
- * against: 20%, above which the gate passes and at or below which it fails.
+ * Five-hour **remaining** share that carries an approximately hour-long Vibe
+ * Coder run: 20%, at and above which the guard is met.
  *
- * The one figure behind both spellings of the gate (Issue #1668). It is also
- * `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "worth restarting for" and
- * "worth switching to" are the same question, and two floors that drifted
- * would let a host restart for a token the gate then refuses to select.
+ * A *preference* boundary, not an eligibility condition (Issue #1685). While
+ * any usable token holds this much, selection is restricted to those tokens;
+ * when none does, the guard steps aside and the weekly ranking chooses from
+ * what is left, because a pool holding usable quota must never idle.
  *
  * A fixed constant, deliberately not an environment variable (Issue #1623):
  * the figure describes how Anthropic's windows behave, not how one host is
  * configured, so a per-host override would only let a fleet drift apart.
  */
-export const CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING = 0.2;
+export const CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING = 0.2;
 
 /**
- * Five-hour usage share a token must stay **below** to pass the gate: a token
- * that has used 80% or more of its five-hour window fails it. Past it the
- * token cannot spend whatever its seven-day window still holds, so no rate it
- * scores is worth acting on.
+ * Five-hour usage share a token may reach and still meet the guard: a token
+ * that has used **more** than 80% of its five-hour window falls under it.
  *
- * The complement of {@link CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING}, and derived
+ * The complement of {@link CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING}, and derived
  * from it rather than restated, so the two cannot drift. Derived in this
  * direction because only this one is exact: `1 - 0.2` is exactly `0.8`, while
  * `1 - 0.8` is `0.19999999999999996`.
  *
- * The gate compares usage rather than the remaining share, because that is
+ * The guard compares usage rather than the remaining share, because that is
  * the comparison it makes: at exactly 20% remaining the token has used
- * exactly 80% and fails, which no `remaining >= 0.2` spelling gets right on
- * both sides of the boundary.
+ * exactly 80% and is usable, which a `remaining >= 0.2` spelling gets wrong
+ * on figures the probe actually produces.
  */
-export const CLAUDE_FIVE_HOUR_GATE_MAX_USED = 1 -
-  CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING;
-
-/**
- * Seven-day remaining share below which a gate-passing token ranks behind
- * every gate-passing token above it, whatever its rate.
- *
- * A near-exhausted week divided by an imminent reset produces an enormous
- * rate, and starting a run on a token with 5% of its week left would stall
- * almost immediately. The floor keeps the rate rule from selecting a token
- * that has nothing left to give.
- */
-export const CLAUDE_SEVEN_DAY_LOW_REMAINING = 0.1;
+export const CLAUDE_FIVE_HOUR_GUARD_MAX_USED = 1 -
+  CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING;
 
 /** Nominal length of each window, used when its reset has already passed. */
 const WINDOW_HOURS: Record<ClaudeBudgetWindowName, number> = {
@@ -165,11 +157,8 @@ const WINDOW_HOURS: Record<ClaudeBudgetWindowName, number> = {
 /** Why the winning token won — stable, greppable, and safe to log. */
 export type ClaudeTokenSelectionReason =
   /**
-   * Strictly the most remaining budget per hour of every candidate that
-   * passed the five-hour gate **and** holds at least
-   * {@link CLAUDE_SEVEN_DAY_LOW_REMAINING} of its seven-day window. A
-   * near-exhausted token demoted by that floor can still score a higher rate
-   * — the floor is applied before the rate, not after it.
+   * Strictly the most remaining budget per hour of every usable candidate
+   * that meets the five-hour guard.
    */
   | "highest-remaining-per-hour"
   /** Level on budget per hour; won on the sooner reset. */
@@ -177,15 +166,16 @@ export type ClaudeTokenSelectionReason =
   /** Level on rate and reset; won on #917's discovery order. */
   | "tied-discovery-order"
   /**
-   * Every candidate that passed the five-hour gate is under the seven-day
-   * floor; the winner is the fastest-burning of them.
+   * No usable candidate meets the five-hour guard, so the guard stepped
+   * aside; the winner is the highest weekly remaining-per-hour of them
+   * (Issue #1685).
    */
-  | "low-seven-day-remaining-highest-rate"
+  | "below-five-hour-guard-highest-remaining-per-hour"
   /**
-   * No candidate passed the five-hour gate; the winner is the one whose
-   * five-hour window refills first.
+   * Every candidate is exhausted; the winner is the one whose spent windows
+   * reset first.
    */
-  | "five-hour-gate-failed-soonest-reset"
+  | "exhausted-soonest-reset"
   /** No candidate had a known budget; #917's discovery order decided. */
   | "budget-unknown-discovery-order";
 
@@ -211,14 +201,24 @@ export interface RankedClaudeToken {
   readonly index: number;
   /** The probe outcome this ranking was computed from. */
   readonly budget: ClaudeTokenBudget;
-  /** The five-hour window the gate was applied to, or null when absent. */
+  /** The five-hour window the guard was applied to, or null when absent. */
   readonly fiveHour: RankedClaudeWindow | null;
   /** The window the rate was computed on — seven-day when reported. */
   readonly rateWindow: RankedClaudeWindow | null;
   /** Remaining share per hour until {@link rateWindow} resets, or null. */
   readonly ratePerHour: number | null;
-  /** True when the five-hour window still holds the gate's minimum share. */
-  readonly passesFiveHourGate: boolean;
+  /** True when the five-hour window still holds the guard's minimum share. */
+  readonly meetsFiveHourGuard: boolean;
+  /**
+   * True when a reported window has nothing left and has not yet reset, so
+   * the token cannot serve a call at all until it does.
+   */
+  readonly exhausted: boolean;
+  /**
+   * When an {@link exhausted} token becomes usable again — the last of its
+   * spent windows to reset — or null when it is not exhausted.
+   */
+  readonly availableAt: number | null;
   /**
    * Remaining share of {@link rateWindow}, in `[0, 1]`, or null when the
    * budget is unknown. 1 for a token whose window had already reset.
@@ -304,7 +304,9 @@ function rankingView(
       fiveHour: null,
       rateWindow: null,
       ratePerHour: null,
-      passesFiveHourGate: false,
+      meetsFiveHourGuard: false,
+      exhausted: false,
+      availableAt: null,
       remainingFraction: null,
       resetAt: null,
       windowElapsed: false,
@@ -318,6 +320,11 @@ function rankingView(
   // ranked on the window it did report rather than dropped.
   const rateWindow = windows.find((w) => w.window === "seven_day") ??
     windows[0] ?? null;
+  // A window with nothing left and a reset still ahead of us is spent: the
+  // token cannot serve a call against it, whatever its other window holds.
+  // `rankWindow` has already counted a rolled-over window as full, so an
+  // exhaustion lapses of its own accord at the reset.
+  const spent = windows.filter((w) => w.remainingFraction <= 0);
   return {
     label: budget.label,
     index,
@@ -327,9 +334,15 @@ function rankingView(
     ratePerHour: rateWindow === null
       ? null
       : rateWindow.remainingFraction / rateWindow.hoursUntilReset,
-    // A response carrying no five-hour window has no gate to fail.
-    passesFiveHourGate: fiveHour === null ||
-      1 - fiveHour.remainingFraction < CLAUDE_FIVE_HOUR_GATE_MAX_USED,
+    // A response carrying no five-hour window has no guard to fall under.
+    meetsFiveHourGuard: fiveHour === null ||
+      1 - fiveHour.remainingFraction <= CLAUDE_FIVE_HOUR_GUARD_MAX_USED,
+    exhausted: spent.length > 0,
+    // Usable again only once every spent window has reset, so the latest of
+    // them is the instant that matters.
+    availableAt: spent.length === 0
+      ? null
+      : spent.reduce((latest, w) => Math.max(latest, w.resetAt), -Infinity),
     remainingFraction: rateWindow?.remainingFraction ?? null,
     resetAt: rateWindow?.resetAt ?? null,
     windowElapsed: rateWindow?.elapsed ?? false,
@@ -340,23 +353,22 @@ function rankingView(
  * Which band a candidate falls in. Bands are compared before anything else,
  * so every candidate in a lower band beats every candidate above it.
  *
- * 0. passed the gate and holds at least the seven-day floor;
- * 1. passed the gate but is under the floor;
- * 2. failed the five-hour gate — it cannot spend what it holds right now;
+ * 0. usable and meets the five-hour guard;
+ * 1. usable but under the guard — chosen only when band 0 is empty, which is
+ *    the guard stepping aside rather than idling a pool that has quota;
+ * 2. exhausted: nothing can be spent against it until its window resets;
  * 3. budget unknown, which never drops a candidate, only ranks it last.
  */
 function band(candidate: RankedClaudeToken): 0 | 1 | 2 | 3 {
   if (candidate.ratePerHour === null) return 3;
-  if (!candidate.passesFiveHourGate) return 2;
-  return (candidate.remainingFraction ?? 0) < CLAUDE_SEVEN_DAY_LOW_REMAINING
-    ? 1
-    : 0;
+  if (candidate.exhausted) return 2;
+  return candidate.meetsFiveHourGuard ? 0 : 1;
 }
 
 /**
- * Order two candidates: by band, then — inside a passing band — by remaining
- * budget per hour, soonest reset, and finally discovery order. Gate failures
- * are ordered by which five-hour window refills first.
+ * Order two candidates: by band, then — inside a usable band — by remaining
+ * budget per hour, soonest reset, and finally discovery order. Exhausted
+ * candidates are ordered by which becomes usable again first.
  */
 function compareCandidates(
   a: RankedClaudeToken,
@@ -367,9 +379,9 @@ function compareCandidates(
   if (bandA !== bandB) return bandA - bandB;
   if (bandA === 3) return a.index - b.index;
   if (bandA === 2) {
-    // Nothing here can be spent now, so the first to refill is used first.
-    const leftReset = a.fiveHour?.resetAt ?? Number.MAX_SAFE_INTEGER;
-    const rightReset = b.fiveHour?.resetAt ?? Number.MAX_SAFE_INTEGER;
+    // Nothing here can be spent now, so the first to recover is used first.
+    const leftReset = a.availableAt ?? Number.MAX_SAFE_INTEGER;
+    const rightReset = b.availableAt ?? Number.MAX_SAFE_INTEGER;
     if (leftReset !== rightReset) return leftReset - rightReset;
     return a.index - b.index;
   }
@@ -391,8 +403,10 @@ function winningReason(
   if (winner === undefined) return null;
   const winnerBand = band(winner);
   if (winnerBand === 3) return "budget-unknown-discovery-order";
-  if (winnerBand === 2) return "five-hour-gate-failed-soonest-reset";
-  if (winnerBand === 1) return "low-seven-day-remaining-highest-rate";
+  if (winnerBand === 2) return "exhausted-soonest-reset";
+  if (winnerBand === 1) {
+    return "below-five-hour-guard-highest-remaining-per-hour";
+  }
   const runnerUp = ranked[1];
   if (runnerUp === undefined || band(runnerUp) !== 0) {
     return "highest-remaining-per-hour";
@@ -477,9 +491,15 @@ function describeCandidate(candidate: RankedClaudeToken): string {
   const rate = candidate.ratePerHour === null
     ? "rate=unknown"
     : `rate=${formatRate(candidate.ratePerHour)}`;
-  const gate = candidate.passesFiveHourGate ? "gate=pass" : "gate=fail";
+  // One field with three values, so a reader never has to combine two:
+  // exhausted is the hard condition, below the soft guard, pass neither.
+  const guard = candidate.exhausted
+    ? "guard=exhausted"
+    : candidate.meetsFiveHourGuard
+    ? "guard=pass"
+    : "guard=below";
   return `${describeWindow("five_hour", candidate.fiveHour)} ` +
-    `${describeWindow("seven_day", sevenDay)} ${rate} ${gate}`;
+    `${describeWindow("seven_day", sevenDay)} ${rate} ${guard}`;
 }
 
 /**
@@ -502,15 +522,15 @@ export function formatClaudeTokenSelectionLog(
     `${LOG_PREFIX} candidate ${candidate.label} (#${candidate.index + 1}): ` +
     describeCandidate(candidate)
   );
-  // A gate failure was decided on the five-hour reset, so the line that
-  // records the decision has to carry it.
-  const gateDetail = winner.passesFiveHourGate || winner.fiveHour === null
+  // A winner that did not meet the guard was chosen despite its five-hour
+  // window, so the line that records the decision has to carry it.
+  const guardDetail = winner.meetsFiveHourGuard || winner.fiveHour === null
     ? ""
     : `${describeWindow("five_hour", winner.fiveHour)} `;
   const detail =
     winner.remainingFraction === null || winner.ratePerHour === null
       ? `remaining=unknown`
-      : `${gateDetail}rate=${formatRate(winner.ratePerHour)} ` +
+      : `${guardDetail}rate=${formatRate(winner.ratePerHour)} ` +
         `remaining=${formatShare(winner.remainingFraction)} resets=${
           winner.resetAt === null ? "unknown" : formatReset(winner.resetAt)
         }`;

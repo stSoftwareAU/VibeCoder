@@ -7,8 +7,8 @@
  * failed the run while another token in the pool sat untouched, and no log
  * line said which candidates existed or why one was chosen. The pool keeps a
  * per-token budget snapshot, refreshes only what has gone stale, applies
- * #1623's gate and ranking on demand, and replaces the run's single exported
- * token when asked.
+ * #1623's ranking and #1685's five-hour guard on demand, and replaces the
+ * run's single exported token when asked.
  *
  * Each test below pins a rule that would degrade silently rather than fail
  * visibly if it regressed:
@@ -17,10 +17,12 @@
  *   ineligible with **no** probe — the figures are already known;
  * - a stale snapshot costs exactly one probe per stale candidate, even when
  *   two selections run concurrently;
- * - the gate is applied on `selectEligible` (0% five-hour loses to 60%), and
- *   every candidate is logged whichever way the decision goes;
- * - with every token at or below the gate, `selectEligible` refuses — while
- *   `selectToken`, which starts the run, never does;
+ * - exhaustion is applied on `selectEligible` (0% five-hour loses to 60%),
+ *   and every candidate is logged whichever way the decision goes;
+ * - with every token under the five-hour guard but none exhausted,
+ *   `selectEligible` still names one (Issue #1685) — it refuses only when
+ *   every candidate is exhausted, while `selectToken`, which starts the run,
+ *   never refuses at all;
  * - `applySelection` leaves exactly ONE Claude token variable in the
  *   environment, carrying the new value (Issue #919's guarantee);
  * - a single-token host makes no request and logs nothing at all.
@@ -36,7 +38,7 @@ import {
   CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS,
   createClaudeCredentialPool,
 } from "../lib/claude_credential_pool.ts";
-import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "../lib/claude_token_selection.ts";
+import { CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING } from "../lib/claude_token_selection.ts";
 import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 import {
   type AgentProviderDescriptor,
@@ -299,13 +301,79 @@ Deno.test("claude credential pool - the higher seven-day remaining-per-hour wins
   );
 });
 
-Deno.test("claude credential pool - every token at or below the gate selects nothing, and still logs", async () => {
-  // Exactly at the gate, and below it: neither can spend what its week holds.
+Deno.test("claude credential pool - every token under the guard still selects the best of them (Issue #1685)", async () => {
+  // Both are under the 20% five-hour guard and neither is exhausted, so the
+  // guard steps aside: a pool holding usable quota must never idle. provider
+  // holds the better weekly rate — 40% over eight hours against 90% over 160
+  // — so it is the one to switch to.
   const probe = fetchWith({
     "token-provider": healthy({
-      fiveHourRemaining: CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING,
+      fiveHourRemaining: 0.19,
+      sevenDayRemaining: 0.4,
+      sevenDayResetAt: NOW + 8 * HOUR,
     }),
-    "token-provider-2": healthy({ fiveHourRemaining: 0.05 }),
+    "token-provider-2": healthy({
+      fiveHourRemaining: 0.05,
+      sevenDayRemaining: 0.9,
+      sevenDayResetAt: NOW + 160 * HOUR,
+    }),
+  });
+  const lines: string[] = [];
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+    log: (line) => lines.push(line),
+  });
+
+  assertEquals((await pool.selectEligible(NOW))?.label, "provider");
+  const log = lines.join("\n");
+  assert(lines.some((line) => line.includes("candidate provider (")));
+  assert(lines.some((line) => line.includes("candidate provider-2 (")));
+  assertStringIncludes(log, "guard=below");
+  assertStringIncludes(
+    log,
+    "below-five-hour-guard-highest-remaining-per-hour",
+  );
+});
+
+Deno.test("claude credential pool - exactly 20% of the five-hour window is eligible (Issue #1685)", async () => {
+  // The guard's boundary belongs to the usable side, so a token holding
+  // exactly the guard's share is switched to like any other.
+  const probe = fetchWith({
+    "token-provider": healthy({
+      fiveHourRemaining: CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING,
+      sevenDayRemaining: 0.5,
+      sevenDayResetAt: NOW + 5 * HOUR,
+    }),
+    "token-provider-2": healthy({
+      fiveHourRemaining: 0.9,
+      sevenDayRemaining: 0.5,
+      sevenDayResetAt: NOW + 150 * HOUR,
+    }),
+  });
+  const lines: string[] = [];
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+    log: (line) => lines.push(line),
+  });
+
+  assertEquals((await pool.selectEligible(NOW))?.label, "provider");
+  assertStringIncludes(lines.join("\n"), "highest-remaining-per-hour");
+});
+
+Deno.test("claude credential pool - only an exhausted pool selects nothing, and still logs (Issue #1685)", async () => {
+  // Exhaustion is the hard condition: with every window spent there is
+  // nothing to switch to until one of them resets.
+  const probe = fetchWith({
+    "token-provider": healthy({ fiveHourRemaining: 0 }),
+    "token-provider-2": healthy({ fiveHourRemaining: 0 }),
   });
   const lines: string[] = [];
   const pool = createClaudeCredentialPool({
@@ -320,21 +388,57 @@ Deno.test("claude credential pool - every token at or below the gate selects not
   assertEquals(await pool.selectEligible(NOW), null);
   const log = lines.join("\n");
   assert(lines.some((line) => line.includes("candidate provider (")));
-  assert(lines.some((line) => line.includes("candidate provider-2 (")));
-  assertStringIncludes(log, "gate=fail");
+  assertStringIncludes(log, "guard=exhausted");
 });
 
-Deno.test("claude credential pool - a start never refuses, even when the gate would", async () => {
-  // selectEligible protects a mid-run switch; selectToken starts the run, and
-  // a run that refuses to start because every token is low is worse than a
-  // run that starts on the token which refills first.
+Deno.test("claude credential pool - a start never refuses, and neither does a switch while quota is left (Issue #1685)", async () => {
+  // Both are under the five-hour guard and neither is exhausted, so the
+  // weekly rate decides on both surfaces: provider-2's 30% over six hours
+  // beats provider's 80% over 120.
+  const probe = fetchWith({
+    "token-provider": healthy({ fiveHourRemaining: 0.05 }),
+    "token-provider-2": healthy({
+      fiveHourRemaining: 0.05,
+      sevenDayRemaining: 0.3,
+      sevenDayResetAt: NOW + 6 * HOUR,
+    }),
+  });
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+
+  const started = await pool.selectToken(
+    [tokenFile("provider"), tokenFile("provider-2")],
+    CLAUDE,
+  );
+  assertEquals(
+    started?.label,
+    "provider-2",
+    "the most weekly quota per hour starts the run",
+  );
+  assertEquals(
+    (await pool.selectEligible(NOW))?.label,
+    "provider-2",
+    "and the same credential is worth switching to",
+  );
+  // Start-up and mid-run share one snapshot, so the second call probes nothing.
+  assertEquals(probe.calls(), 2);
+});
+
+Deno.test("claude credential pool - a start on an exhausted pool takes the soonest reset (Issue #1685)", async () => {
+  // Nothing can be spent now, so the run starts on the credential that
+  // recovers first rather than refusing to start at all.
   const probe = fetchWith({
     "token-provider": healthy({
-      fiveHourRemaining: 0.05,
+      fiveHourRemaining: 0,
       fiveHourResetAt: NOW + 4 * HOUR,
     }),
     "token-provider-2": healthy({
-      fiveHourRemaining: 0.05,
+      fiveHourRemaining: 0,
       fiveHourResetAt: NOW + HOUR,
     }),
   });
@@ -353,15 +457,35 @@ Deno.test("claude credential pool - a start never refuses, even when the gate wo
   assertEquals(
     started?.label,
     "provider-2",
-    "the soonest refill starts the run",
+    "the soonest reset starts the run",
   );
   assertEquals(
     await pool.selectEligible(NOW),
     null,
-    "but no switch is worth it",
+    "but there is nothing worth switching to",
   );
-  // Start-up and mid-run share one snapshot, so the second call probes nothing.
   assertEquals(probe.calls(), 2);
+});
+
+Deno.test("claude credential pool - an unmeasured pool is not a switch target (Issue #1685)", async () => {
+  // Every probe fails, so nothing is known about either credential.
+  // Switching on figures we do not have is a guess; staying put is the
+  // measured option, while the start still falls through to discovery order.
+  const probe = fetchWith({});
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+
+  assertEquals(await pool.selectEligible(NOW), null);
+  const started = await pool.selectToken(
+    [tokenFile("provider"), tokenFile("provider-2")],
+    CLAUDE,
+  );
+  assertEquals(started?.label, "provider", "the start never refuses");
 });
 
 Deno.test("claude credential pool - applySelection leaves exactly one Claude token variable", async () => {

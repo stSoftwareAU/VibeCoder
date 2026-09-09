@@ -4,9 +4,9 @@
  *
  * A quota pause belongs to the **token** that ran out, not to the host. Worker
  * start already ranks the pool and takes the token worth the most per hour
- * (Issue #1623), so once a
- * second subscription still has quota the only thing keeping the host idle is
- * the supervisor's hour-long re-probe cadence. On 2026-09-06 a host slept 59
+ * (Issue #1623, corrected by #1685), so once a second subscription still has
+ * quota the only thing keeping the host idle is the supervisor's hour-long
+ * re-probe cadence. On 2026-09-06 a host slept 59
  * minutes waiting for the spent token's window while its other subscription
  * sat at 99% of its five-hour budget — the exact outcome a pool is bought to
  * prevent.
@@ -28,47 +28,67 @@ import {
   type ClaudeTokenBudget,
   probeClaudeTokenBudget,
 } from "./claude_token_budget.ts";
-import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "./claude_token_selection.ts";
 import {
   providerPoolCandidates,
   type ProviderTokenFile,
 } from "./credential_preflight.ts";
 
 /**
- * At or below this share of a window, a token is not worth restarting for.
+ * At or below this share of a window, a token is not worth restarting for:
+ * **exhaustion**, and nothing above it (Issue #1685).
  *
- * A token with a sliver left would be selected, exhaust almost immediately and
- * pause again — turning the hour-long wait into a restart loop, which is worse
- * than waiting.
- *
- * It is {@link CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING}, the five-hour gate of
- * Issue #1623, and not a floor of its own (Issue #1668): "worth restarting
- * for" and "worth switching to" are one question — worth running against —
- * and two floors that drifted would let a host restart for a token the
- * selection gate then refuses to choose.
+ * "Worth restarting for" and "worth switching to" are still one question —
+ * can this subscription serve the next call? — and exhaustion is the only
+ * answer that says no. Issue #1668 read the 20% five-hour figure here, but
+ * that figure is a selection *preference* between credentials
+ * (`CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING`), so applying it to this yes/no
+ * question idled a host whose other subscription still held usable quota —
+ * the exact outcome a pool is bought to prevent.
  */
-export const POOL_BUDGET_FLOOR = CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING;
+export const POOL_BUDGET_FLOOR = 0;
 
 /**
- * The five-hour share {@link POOL_BUDGET_FLOOR} is read against.
+ * The share {@link POOL_BUDGET_FLOOR} is read against: the **most
+ * constrained** window the response reported.
  *
- * The floor IS the five-hour selection gate, so it has to be applied to the
- * same window the gate is (Issue #1668). The headline `remainingFraction` is
- * the *most constrained* window, so measuring against it would refuse a
- * restart for a token with a fresh five hours and a nearly spent week — which
- * `rankClaudeTokenBudgets` would happily select and run against.
+ * The floor is exhaustion (Issue #1685), and `rankClaudeTokenBudgets` counts
+ * a token as exhausted when *any* window it reported has nothing left — a
+ * spent week cannot be spent from however fresh the five hours are. Reading
+ * the five-hour window alone would answer "worth restarting for" about a
+ * token the selection then refuses to switch to, which is a restart loop
+ * dressed as a recovery. Under Issue #1668's 20% floor the most-constrained
+ * figure was the wrong one to read, because a merely low week would have
+ * blocked a restart the ranking would have allowed; at a floor of zero it is
+ * the right one, since only an actually spent window answers no.
+ *
+ * A window whose `resetAt` is already behind us counts as **full**, exactly as
+ * `rankWindow` in `claude_token_selection.ts` counts it. The probe reports the
+ * window that was current when the figure was produced; once that instant has
+ * passed the window has rolled over and the old figure describes a window that
+ * no longer exists. Without this the two surfaces disagree on the one case the
+ * comment above says they cannot: a probe reporting 0% against a reset already
+ * in the past would answer "not worth restarting for" while the ranking calls
+ * the same token fresh and selects it.
  *
  * @param budget - A known probe result.
- * @returns The five-hour remaining share, or the headline figure for a
- *   response that reported no five-hour window.
+ * @param now - Current time in epoch milliseconds, used to spot a window that
+ *   has already rolled over.
+ * @returns The smallest remaining share it reported, or the headline figure
+ *   for a response that reported no windows of its own.
  */
-function fiveHourRemaining(
+function usableRemaining(
   budget: Extract<ClaudeTokenBudget, { known: true }>,
+  now: number,
 ): number {
-  const fiveHour = budget.windows.find((window) =>
-    window.window === "five_hour"
+  const windows = budget.windows.length > 0 ? budget.windows : [{
+    window: budget.window,
+    remainingFraction: budget.remainingFraction,
+    resetAt: budget.resetAt,
+  }];
+  const shares = windows.map((window) =>
+    window.resetAt <= now ? 1 : window.remainingFraction
   );
-  return Math.max(0, fiveHour?.remainingFraction ?? budget.remainingFraction);
+  return Math.max(0, Math.min(...shares));
 }
 
 /** Injection points; production passes nothing. */
@@ -79,8 +99,10 @@ export interface PoolBudgetOptions {
   timeoutMs?: number;
   /** Endpoint override, for tests that assert what was called. */
   url?: string;
-  /** Minimum remaining share worth restarting for. */
+  /** Share every reported window must exceed to be worth restarting for. */
   floor?: number;
+  /** Current time source; defaults to the wall clock. */
+  now?: () => number;
   /** Sink for the decision line; defaults to discarding it. */
   log?: (message: string) => void;
 }
@@ -107,6 +129,7 @@ export async function poolHasAnotherTokenWithBudget(
 ): Promise<boolean> {
   const log = options.log ?? (() => {});
   const floor = options.floor ?? POOL_BUDGET_FLOOR;
+  const now = (options.now ?? (() => Date.now()))();
 
   const pool = providerPoolCandidates(tokens);
   // Fewer than two subscriptions is nothing to go back for. Checked on the
@@ -137,13 +160,13 @@ export async function poolHasAnotherTokenWithBudget(
 
   for (const { label, budget } of probes) {
     if (!budget.known) continue;
-    const remaining = fiveHourRemaining(budget);
-    // Strictly above, exactly as the five-hour gate reads it: at precisely
-    // the floor the token has nothing worth restarting for.
+    const remaining = usableRemaining(budget, now);
+    // Strictly above: at precisely the floor a window is spent and the token
+    // cannot serve the next call at all.
     if (remaining > floor) {
       log(
         `[SECURITY] claude token pool: ${label} still has ` +
-          `${(remaining * 100).toFixed(1)}% of its five-hour window — ` +
+          `${(remaining * 100).toFixed(1)}% of its tightest window — ` +
           `restarting rather than waiting out ${
             spentLabel ?? "the spent token"
           }`,
