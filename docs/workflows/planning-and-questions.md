@@ -662,8 +662,8 @@ redundant.
 
 When a planning run breaks an issue into **two or more** sub-issues **and the
 parent issue has no milestone of its own**, the worker auto-creates a GitHub
-milestone named `#<N> <title>` (from the parent issue) and assigns every
-sub-issue it created to that milestone. This opts the whole batch into the
+milestone named `#<N> <short description>` (from the parent issue) and assigns
+every sub-issue it created to that milestone. This opts the whole batch into the
 existing milestone-branch delivery workflow: each sub-issue PR
 auto-merges into a shared `milestone/<name>` branch, and the default branch is
 only updated via the single final milestone PR once all sub-issues close — the
@@ -671,7 +671,8 @@ only updated via the single final milestone PR once all sub-issues close — the
 
 The behaviour is **always on** (no opt-out flag or label) and **idempotent** —
 re-running planning on the same parent never creates a duplicate milestone, and
-a long parent title is truncated to fit. Two gates keep it out of the way:
+a long parent title is shortened to a safe, bounded description (Issue #1690 —
+see [Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)). Two gates keep it out of the way:
 
 - **Parent already has a milestone** → no new milestone; the existing
   inheritance behaviour assigns sub-issues to the parent's
@@ -725,8 +726,8 @@ never worse than it was before self-critique existed.
 
 When a planning run breaks an issue into **2 or more** sub-issues and the parent
 planning issue has **no milestone**, the worker automatically creates a GitHub
-milestone named `#<N> <title>` (from the parent issue number and title) and
-assigns every sub-issue it created to that milestone. This routes the batch
+milestone named `#<N> <short description>` (from the parent issue number and
+title) and assigns every sub-issue it created to that milestone. This routes the batch
 through the existing **milestone-branch delivery** model: each sub-issue PR
 auto-merges into a shared `milestone/<name>` branch, and the default branch is
 updated via a **single final PR** once all sub-issues close — the "review once /
@@ -739,9 +740,22 @@ run overnight" workflow (see [milestones.md](milestones.md)).
 - **Parent already has a milestone → unchanged.** The existing inheritance
   behaviour is preserved — sub-issues inherit the parent's
   milestone via `--milestone` and no new milestone is created.
-- **Idempotent.** Re-running planning on the same issue matches the existing
-  milestone of the same title (it is never duplicated) and re-assigns the same
-  sub-issues harmlessly.
+- **Short, safe titles.** The title is at most **60 characters** including the
+  `#<N> ` prefix and is cut on a word boundary, so a long parent title is
+  never copied verbatim. Quotes are removed, and newlines, control
+  characters, shell metacharacters and glob characters become spaces — only
+  letters, digits, spaces and `- _ . , :` survive — so the title is easy to
+  type, search and slug into `milestone/<name>`. The `#<N>` prefix keeps two similar titles
+  apart. For example, the parent title
+  `The CLI now says "hit your session limit", which is misleading …` becomes
+  `#1653 The CLI now says hit your session limit, which is`.
+- **Idempotent, and never renamed.** Re-running planning on the same parent
+  reuses the same milestone: it is matched first by the
+  `<!-- planning-milestone parent="N" -->` marker the worker writes into the
+  milestone description, then by exact title, then by a leading `#<N>`. An
+  older, long-titled milestone (milestone #50 and its kind) is therefore found
+  and reused **exactly as it is** — the worker never renames a milestone, so
+  active milestone branches and in-flight work are untouched.
 - **Non-fatal.** A milestone create/assign hiccup is logged and swallowed — it
   never aborts closing the planning issue.
 
@@ -751,13 +765,14 @@ flowchart TD
     B -- Yes --> C[: sub-issues inherit it]
     B -- No --> D{N ≥ 2?}
     D -- No --> E[Single sub-issue — no milestone]
-    D -- Yes --> F[Auto-create '#N title' milestone]
+    D -- Yes --> F[Auto-create '#N short description' milestone]
     F --> G[Assign every sub-issue to it]
     G --> H[Milestone-branch delivery: shared branch + one final PR]
 ```
 
 Implementation: `worker/deno/lib/planning_milestone.ts`
-(`ensurePlanningMilestone`), called from `closePlanningIssue` in
+(`buildPlanningMilestoneTitle` for the name, `ensurePlanningMilestone` for the
+lookup/reuse), called from `closePlanningIssue` in
 `worker/deno/lib/planning_processor.ts`.
 
 #### 📈 Degraded-model observability

@@ -840,18 +840,36 @@ details.
 
 When a planning run creates **2+ sub-issues** and the parent issue has **no
 milestone of its own**, the worker auto-creates a GitHub milestone named
-`#<N> <title>` (from the parent) and assigns every sub-issue it created to that
-milestone. Assigning the milestone opts the batch into the existing
-milestone-branch delivery workflow — sub-issue PRs auto-merge into
+`#<N> <short description>` (from the parent) and assigns every sub-issue it
+created to that milestone. Assigning the milestone opts the batch into the
+existing milestone-branch delivery workflow — sub-issue PRs auto-merge into
 a shared `milestone/<name>` branch and the default branch is only updated via the
 single final milestone PR.
 
 - **Always on, no opt-out.** A milestone can be detached manually if unwanted.
 - **Two gates.** Parent already has a milestone → keep the inheritance path
   (no new milestone). Fewer than two sub-issues → no milestone.
-- **Idempotent.** The milestone is matched by title before any POST, so
-  re-running planning on the same parent never duplicates it; long titles are
-  truncated to `MAX_MILESTONE_TITLE_LENGTH`.
+- **Safe, short names (Issue #1690).** `buildPlanningMilestoneTitle()` is the
+  one helper that names a planning milestone. The title is `#<N> <short
+  description>`, at most `MAX_MILESTONE_TITLE_LENGTH` (60) characters
+  including the prefix, cut on a word boundary. The description is an
+  explicit short planning title when the caller has one, otherwise the parent
+  issue title reduced to an allowlist of letters, digits, spaces and
+  `- _ . , :` — quotes are dropped, and newlines, control characters, shell
+  metacharacters and glob characters all become spaces, so the title stays
+  workable in a terminal and in a `gh` search expression. Truncation cuts on
+  whole characters, so an astral-plane character is never split in half. The `#<N>` prefix is what makes it unambiguous: two
+  parents with near-identical titles cannot collide. Milestone #50 predates
+  this and copied a raw issue title verbatim
+  (`#1653 The CLI now says "hit your session limit", which …`).
+- **Idempotent, and never renames.** An existing milestone is matched by the
+  structured `<!-- planning-milestone parent="N" -->` marker in its
+  description, then by exact title, then by a leading `#<N>` on the title — so
+  re-running planning on the same parent never duplicates it, a milestone
+  renamed in the UI is still found, and a legacy #50-style milestone is reused
+  **as it stands**. Nothing is renamed automatically: an in-flight milestone
+  branch is never disturbed, and sub-issues are assigned to the title the
+  milestone actually has.
 - **Native sub-issues are authoritative.** The sub-issue set is the
   union of the parent's **native GitHub sub-issues** (the `sub_issues` API) and
   the issue URLs text-extracted from Claude's output. Earlier the milestone
