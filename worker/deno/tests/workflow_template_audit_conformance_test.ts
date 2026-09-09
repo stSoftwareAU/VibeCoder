@@ -10,19 +10,36 @@
  *
  * Rather than hand-writing per-template assertions — which drift from the
  * audit the moment a scanner changes — this test renders every template
- * and runs the audit's own native pre-filers over the rendered YAML:
+ * and runs `WORKFLOW_FILE_CHECKS` (`worker/deno/lib/workflow_file_checks.ts`)
+ * over the rendered YAML. That table is the audit's own file-scoped checks:
+ * nine native pre-filers —
  *
- *   - `scanCheckoutPersistCredentials` — credential persistence on checkout
- *   - `scanMilestoneBranchFilters`     — `pull_request` branch filter gaps
  *   - `scanActionPins`                 — 40-char SHA pins on `uses:`
- *   - `scanCiInstallPins`              — exact version pins on `run:` installs
  *   - `scanWorkflowPermissions`        — least-privilege `permissions:`
  *   - `scanWorkflowTriggers`           — push-to-default-branch triggers
+ *   - `scanCheckoutPersistCredentials` — credential persistence on checkout
+ *   - `scanMilestoneBranchFilters`     — `pull_request` branch filter gaps
+ *   - `scanCiInstallPins`              — exact version pins on `run:` installs
+ *   - `scanRunInjection`               — `${{ github.* }}` into the shell
+ *   - `scanArtifactUploads`            — whole-workspace artefact uploads
+ *   - `scanGitleaksDrift`              — the gitleaks copy has drifted
+ *
+ * — plus the two workflow-hygiene rules `quality.sh` applies to this
+ * repository's own workflows: `scanWorkflowForStrictMode` (multi-line
+ * `run:` opens with `set -euo pipefail`) and `findVersionCommentDrift`
+ * over `collectActionPins` (one pinned SHA carries one version comment).
  *
  * A scanner change that starts flagging a template fails here — the
  * templates and the audit cannot drift apart unnoticed.
  *
- * Two of those pre-filers only act on workflows `classifyWorkflow` rates
+ * The audit's remaining checks are absent by construction, not by
+ * oversight: runner deprecation reads recent **run logs**, gitleaks PR
+ * coverage reads recent **pull requests**, action advisories query the
+ * **GHSA database**, and the repository-settings and worker-token-privilege
+ * scans read **repository state**. None of them reads the workflow file, so
+ * no template can satisfy or fail them.
+ *
+ * Two of the pre-filers only act on workflows `classifyWorkflow` rates
  * `test`/`high`, so the three templates that classify `ambiguous`
  * (dependency-review, java-dependency-check, shellcheck) would slip past
  * them. The branch-filter and push-trigger rules are therefore *also*
@@ -30,10 +47,11 @@
  * coverage decision — otherwise a regression in those three would go
  * unnoticed.
  *
- * The two remaining audit checks the pre-filers do not cover natively —
- * concurrency groups and job `timeout-minutes` (audit checks #4 and #5) —
- * are asserted structurally too. Every structural assertion is a loop over
- * the whole catalogue, never a hand-written per-template expectation.
+ * The remaining audit checks with no native pre-filer — concurrency groups
+ * and job `timeout-minutes` (audit checks #4 and #5), and the trailing
+ * `# <version>` comment the stale-pin check (#16) reads — are asserted
+ * structurally too. Every structural assertion is a loop over the whole
+ * catalogue, never a hand-written per-template expectation.
  *
  * Australian English throughout (behaviour, organisation, authorised).
  */
@@ -43,15 +61,8 @@ import { parse as parseYaml } from "@std/yaml/parse";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
 import type { WorkflowSpec } from "../lib/workflow_definitions.ts";
 import type { WorkflowFile } from "../lib/workflow_scan_common.ts";
-import { scanCheckoutPersistCredentials } from "../lib/checkout_persist_credentials_scanner.ts";
-import { scanMilestoneBranchFilters } from "../lib/milestone_branch_filter_scanner.ts";
-import { scanActionPins } from "../lib/action_pin_scanner.ts";
-import { scanCiInstallPins } from "../lib/ci_install_pin_scanner.ts";
-import { scanWorkflowPermissions } from "../lib/workflow_permissions_scanner.ts";
-import {
-  readOnBlock,
-  scanWorkflowTriggers,
-} from "../lib/workflow_trigger_scanner.ts";
+import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
+import { readOnBlock } from "../lib/workflow_trigger_scanner.ts";
 import { workflowMilestoneCoverage } from "../lib/milestone_branch_filter_scanner.ts";
 
 /**
@@ -103,15 +114,6 @@ function renderedWorkflowFiles(): WorkflowFile[] {
   }));
 }
 
-/** Format scanner findings into an assertion message. */
-function describe(
-  findings: ReadonlyArray<{ findingId: string; file: string; lines: number }>,
-): string {
-  return findings
-    .map((f) => `${f.findingId} (${f.file}:${f.lines})`)
-    .join("; ");
-}
-
 Deno.test(
   "workflow templates - the non-workflow specs are exactly the Dependabot configs",
   () => {
@@ -131,92 +133,69 @@ Deno.test(
   },
 );
 
+/** The exact set of file-scoped checks a rendered template is held to. */
+const EXPECTED_CHECK_IDS: readonly string[] = [
+  "action-pins",
+  "workflow-permissions",
+  "workflow-triggers",
+  "checkout-persist-credentials",
+  "milestone-branch-filters",
+  "ci-install-pins",
+  "run-injection",
+  "artifact-uploads",
+  "gitleaks-drift",
+  "strict-mode",
+  "version-comment-drift",
+];
+
+/** Format a check's findings into an assertion message. */
+function describe(
+  findings: ReadonlyArray<{ id: string; file: string; line: number }>,
+): string {
+  return findings
+    .map((f) => `${f.id} (${f.file}:${f.line})`)
+    .join("; ");
+}
+
 Deno.test(
-  "workflow templates - no checkout persists credentials",
+  "workflow file checks - the table is exactly the eleven expected checks",
   () => {
-    const findings = scanCheckoutPersistCredentials(renderedWorkflowFiles());
+    const ids = WORKFLOW_FILE_CHECKS.map((check) => check.id);
     assertEquals(
-      findings.length,
-      0,
-      "provisioned templates leave the job token in .git/config — add " +
-        `\`persist-credentials: false\` to: ${describe(findings)}`,
+      new Set(ids).size,
+      ids.length,
+      `WORKFLOW_FILE_CHECKS carries a duplicate id: ${ids.join(", ")}`,
+    );
+    assertEquals(
+      ids,
+      [...EXPECTED_CHECK_IDS],
+      "adding or dropping a file-scoped audit check must be a deliberate " +
+        "edit to both WORKFLOW_FILE_CHECKS and this list — otherwise a " +
+        "check silently stops covering the provisioned templates " +
+        "(Issue #1822)",
     );
   },
 );
 
-Deno.test(
-  "workflow templates - no pull_request branch filter skips milestone PRs",
-  () => {
-    const findings = scanMilestoneBranchFilters(renderedWorkflowFiles());
-    assertEquals(
-      findings.length,
-      0,
-      "provisioned templates never gate milestone/<slug> PRs — list the " +
-        `targets explicitly as [Develop, main, milestone/*]: ${
-          describe(findings)
-        }`,
-    );
-  },
-);
-
-Deno.test(
-  "workflow templates - every action reference is SHA-pinned",
-  () => {
-    const findings = scanActionPins(renderedWorkflowFiles());
-    assertEquals(
-      findings.length,
-      0,
-      `provisioned templates reference a mutable action ref: ${
-        describe(findings)
-      }`,
-    );
-  },
-);
-
-Deno.test(
-  "workflow templates - every run: install is pinned to an exact version",
-  () => {
-    const findings = scanCiInstallPins(renderedWorkflowFiles());
-    assertEquals(
-      findings.length,
-      0,
-      "provisioned templates fetch a package outside the dependency " +
-        `quarantine: ${describe(findings)}`,
-    );
-  },
-);
-
-Deno.test(
-  "workflow templates - every workflow declares least-privilege permissions",
-  () => {
-    const findings = scanWorkflowPermissions(renderedWorkflowFiles());
-    assertEquals(
-      findings.length,
-      0,
-      `provisioned templates inherit the broad default token: ${
-        describe(findings)
-      }`,
-    );
-  },
-);
-
-Deno.test(
-  "workflow templates - no test/lint workflow triggers on push to default",
-  () => {
-    for (const defaultBranch of DEFAULT_BRANCHES) {
-      const findings = scanWorkflowTriggers(renderedWorkflowFiles(), {
-        defaultBranch,
-      });
-      assertEquals(
-        findings.length,
-        0,
-        `provisioned templates re-run post-merge on ${defaultBranch}: ${
-          describe(findings)
-        }`,
-      );
-    }
-  },
-);
+// Every file-scoped audit check, over every rendered template, on every
+// default branch a provisioned repository may carry. One test per check so
+// a failure names the rule that broke rather than "some scanner".
+for (const check of WORKFLOW_FILE_CHECKS) {
+  Deno.test(
+    `workflow templates - ${check.label}`,
+    () => {
+      for (const defaultBranch of DEFAULT_BRANCHES) {
+        const findings = check.run(renderedWorkflowFiles(), { defaultBranch });
+        assertEquals(
+          findings.length,
+          0,
+          `provisioned templates break \`${check.label}\` on ` +
+            `${defaultBranch}: ${describe(findings)}`,
+        );
+      }
+    },
+  );
+}
 
 Deno.test(
   "workflow templates - the markdownlint-cli2 pin matches the fleet's pin",
@@ -305,6 +284,32 @@ Deno.test(
 // ---------------------------------------------------------------------------
 // Audit checks #4 and #5 — no native pre-filer, so asserted structurally
 // ---------------------------------------------------------------------------
+
+Deno.test(
+  "workflow templates - every pinned uses: carries a trailing version comment",
+  () => {
+    // The audit's stale-pin check (prompt check #16, "a pinned action is
+    // several majors behind the latest") reads the human-readable version
+    // from the comment beside the SHA — a bare 40-char SHA tells neither a
+    // reviewer nor the check what release it names. `pinnedAction()`
+    // renders the comment; this asserts no template hand-writes a `uses:`
+    // that skips it (Issue #1822).
+    const usesLine = /^\s*(?:- )?uses:\s*\S+@([0-9a-f]{40})\b/;
+    for (const spec of workflowSpecs()) {
+      const lines = spec.template.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? "";
+        if (!usesLine.test(line)) continue;
+        assert(
+          /@[0-9a-f]{40}\s+#\s*\S/.test(line),
+          `${spec.id}:${i + 1}: SHA-pinned \`uses:\` carries no trailing ` +
+            "`# <version>` comment, so nothing records which release the " +
+            `SHA names: ${line.trim()}`,
+        );
+      }
+    }
+  },
+);
 
 Deno.test(
   "workflow templates - every workflow declares a cancelling concurrency group",

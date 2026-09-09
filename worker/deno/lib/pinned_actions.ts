@@ -59,9 +59,13 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
     version: "v3.0.0",
   },
   // Latest upstream release at time of pinning.
+  // Issue #1822: v5.6.0 was a full major behind (audit check 16). v6.0.0 is
+  // the newest release outside the 24h supply-chain quarantine; upstream
+  // records the v6 ESM migration as not user-facing breaking, and the Java
+  // template passes only `distribution:`/`java-version:`.
   "actions/setup-java": {
-    sha: "03ad4de0992f5dab5e18fcb136590ce7c4a0ac95",
-    version: "v5.6.0",
+    sha: "dd06d9cba3e5552c54d9f8ea23572deb30010f7c",
+    version: "v6.0.0",
   },
   "actions/dependency-review-action": {
     sha: "a1d282b36b6f3519aa1f3fc636f609c47dddb294",

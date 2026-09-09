@@ -13,7 +13,9 @@
  *
  * 2. **One pinned SHA carries one version comment.** Actions are pinned to
  *    40-character commit SHAs (Issue #2123) and the corresponding tag is
- *    recorded in a leading comment. When the same SHA is annotated
+ *    recorded in a comment beside the pin — leading (`# owner/action@v1`
+ *    above the `uses:`) or trailing (`uses: owner/action@<sha> # v1`, the
+ *    form emitted workflow templates render). When the same SHA is annotated
  *    `v6.0.0` in one workflow and `v6.0.2` in another, the comment — the
  *    only human-readable signal that makes SHA pinning auditable — is
  *    worthless.
@@ -58,6 +60,9 @@ const USES_SHA_RE =
 
 /** Matches an `# owner/action@version` pin comment. */
 const PIN_COMMENT_RE = /#\s*([\w.\-]+\/[\w.\-]+(?:\/[\w.\-]+)*)@(v?[\w.\-]+)/;
+
+/** Matches a same-line trailing comment on a SHA-pinned `uses:` line. */
+const TRAILING_COMMENT_RE = /@[0-9a-f]{40}\s+(#\s*\S.*?)\s*$/;
 
 /** Matches a step-level `shell:` key. */
 const SHELL_KEY_RE = /^\s*(- )?shell:\s*(\S+)/;
@@ -173,7 +178,7 @@ export function scanWorkflowForStrictMode(
 export interface ActionPinComment {
   action: string;
   sha: string;
-  /** Version from the leading comment, or `undefined` when absent. */
+  /** Version from the trailing or leading comment; absent when neither. */
   version?: string;
   file: string;
   /** 1-based line of the `uses:` reference. */
@@ -181,9 +186,27 @@ export interface ActionPinComment {
 }
 
 /**
- * Collect every SHA-pinned `uses:` reference and the version recorded in
- * its leading comment (searched up to three lines above, so an
- * intervening `- name:`/blank line does not hide it).
+ * Version claimed by a same-line trailing comment on a SHA-pinned `uses:`
+ * line — `uses: owner/action@<sha> # v1.2.3`, the form `pinnedAction()`
+ * renders into every emitted workflow template.
+ *
+ * A trailing comment written in the fuller `# owner/action@v1.2.3` form is
+ * read the same way, and one naming a *different* action is not borrowed —
+ * the same rule the leading-comment search applies.
+ */
+function trailingVersion(line: string, action: string): string | undefined {
+  const comment = line.match(TRAILING_COMMENT_RE)?.[1];
+  if (comment === undefined) return undefined;
+  const qualified = comment.match(PIN_COMMENT_RE);
+  if (qualified) return qualified[1] === action ? qualified[2] : undefined;
+  return comment.replace(/^#\s*/, "");
+}
+
+/**
+ * Collect every SHA-pinned `uses:` reference and the version its comment
+ * records: a same-line trailing comment when present, otherwise a leading
+ * comment (searched up to three lines above, so an intervening
+ * `- name:`/blank line does not hide it).
  */
 export function collectActionPins(
   content: string,
@@ -196,17 +219,17 @@ export function collectActionPins(
     const uses = (lines[i] ?? "").match(USES_SHA_RE);
     if (!uses) continue;
 
-    let version: string | undefined;
-    for (let j = i - 1; j >= 0 && j >= i - 3; j--) {
+    const [, action, sha] = uses;
+    if (action === undefined || sha === undefined) continue;
+
+    let version = trailingVersion(lines[i] ?? "", action);
+    for (let j = i - 1; version === undefined && j >= 0 && j >= i - 3; j--) {
       const comment = (lines[j] ?? "").match(PIN_COMMENT_RE);
-      if (comment && comment[1] === uses[1]) {
+      if (comment && comment[1] === action) {
         version = comment[2];
         break;
       }
     }
-
-    const [, action, sha] = uses;
-    if (action === undefined || sha === undefined) continue;
 
     pins.push({
       action,
