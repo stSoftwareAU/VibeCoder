@@ -927,6 +927,27 @@ Deno.test("with every credential exhausted the soonest reset wins and a winner i
   );
 });
 
+Deno.test("an exhausted token becomes usable again only when its LAST spent window resets (Issue #1685)", () => {
+  // provider's five hours reopen within the hour but its week is spent for
+  // another thirty, so it cannot serve a call until then. provider-2 is spent
+  // on one window alone and recovers in two hours, which is sooner.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0, NOW + HOUR),
+      sevenDay(0, NOW + 30 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0, NOW + 2 * HOUR),
+      sevenDay(0.50, NOW + 100 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.winner?.availableAt, NOW + 2 * HOUR);
+  assertEquals(ranking.ranked[1]?.availableAt, NOW + 30 * HOUR);
+  assertEquals(ranking.reason, "exhausted-soonest-reset");
+});
+
 Deno.test("an exhausted window whose reset has passed is usable again (Issue #1685)", () => {
   // The figures describe the window that was current when they were taken;
   // once its reset is behind us the window has rolled over and is full.

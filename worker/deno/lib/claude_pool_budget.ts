@@ -48,25 +48,30 @@ import {
 export const POOL_BUDGET_FLOOR = 0;
 
 /**
- * The five-hour share {@link POOL_BUDGET_FLOOR} is read against.
+ * The share {@link POOL_BUDGET_FLOOR} is read against: the **most
+ * constrained** window the response reported.
  *
- * The next call is spent against the five-hour window, so that is the window
- * the floor reads (Issue #1668). The headline `remainingFraction` is the
- * *most constrained* window, so measuring against it would refuse a restart
- * for a token with a fresh five hours and a nearly spent week — which
- * `rankClaudeTokenBudgets` would happily select and run against.
+ * The floor is exhaustion (Issue #1685), and `rankClaudeTokenBudgets` counts
+ * a token as exhausted when *any* window it reported has nothing left — a
+ * spent week cannot be spent from however fresh the five hours are. Reading
+ * the five-hour window alone would answer "worth restarting for" about a
+ * token the selection then refuses to switch to, which is a restart loop
+ * dressed as a recovery. Under Issue #1668's 20% floor the most-constrained
+ * figure was the wrong one to read, because a merely low week would have
+ * blocked a restart the ranking would have allowed; at a floor of zero it is
+ * the right one, since only an actually spent window answers no.
  *
  * @param budget - A known probe result.
- * @returns The five-hour remaining share, or the headline figure for a
- *   response that reported no five-hour window.
+ * @returns The smallest remaining share it reported, or the headline figure
+ *   for a response that reported no windows of its own.
  */
-function fiveHourRemaining(
+function usableRemaining(
   budget: Extract<ClaudeTokenBudget, { known: true }>,
 ): number {
-  const fiveHour = budget.windows.find((window) =>
-    window.window === "five_hour"
-  );
-  return Math.max(0, fiveHour?.remainingFraction ?? budget.remainingFraction);
+  const shares = budget.windows.length > 0
+    ? budget.windows.map((window) => window.remainingFraction)
+    : [budget.remainingFraction];
+  return Math.max(0, Math.min(...shares));
 }
 
 /** Injection points; production passes nothing. */
@@ -77,7 +82,7 @@ export interface PoolBudgetOptions {
   timeoutMs?: number;
   /** Endpoint override, for tests that assert what was called. */
   url?: string;
-  /** Share a five-hour window must exceed to be worth restarting for. */
+  /** Share every reported window must exceed to be worth restarting for. */
   floor?: number;
   /** Sink for the decision line; defaults to discarding it. */
   log?: (message: string) => void;
@@ -135,13 +140,13 @@ export async function poolHasAnotherTokenWithBudget(
 
   for (const { label, budget } of probes) {
     if (!budget.known) continue;
-    const remaining = fiveHourRemaining(budget);
-    // Strictly above: at precisely the floor the window is spent and the
-    // token cannot serve the next call at all.
+    const remaining = usableRemaining(budget);
+    // Strictly above: at precisely the floor a window is spent and the token
+    // cannot serve the next call at all.
     if (remaining > floor) {
       log(
         `[SECURITY] claude token pool: ${label} still has ` +
-          `${(remaining * 100).toFixed(1)}% of its five-hour window — ` +
+          `${(remaining * 100).toFixed(1)}% of its tightest window — ` +
           `restarting rather than waiting out ${
             spentLabel ?? "the spent token"
           }`,

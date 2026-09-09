@@ -228,7 +228,7 @@ Deno.test("poolHasAnotherTokenWithBudget - the restart floor is exhaustion, not 
   );
 });
 
-Deno.test("poolHasAnotherTokenWithBudget - the floor is read on the five-hour window, not the most constrained one (Issue #1668)", async () => {
+Deno.test("poolHasAnotherTokenWithBudget - the floor is read on every window the response reported (Issue #1685)", async () => {
   // A fresh five hours and a nearly spent week: selection would run against
   // this token, so refusing the restart on the seven-day figure would idle
   // the host for nothing.
@@ -261,17 +261,20 @@ Deno.test("poolHasAnotherTokenWithBudget - the floor is read on the five-hour wi
     true,
   );
 
-  // Spent, though, is spent: a five-hour window with nothing left cannot
-  // serve the next call whatever the week holds, so the wait stands.
-  const spentHoursFreshWeek = fetchWindows({
+  // Spent, though, is spent, on whichever window: a token whose week has
+  // nothing left cannot serve the next call however fresh its five hours
+  // are, and `rankClaudeTokenBudgets` would refuse to switch to it. The two
+  // answers have to agree, or the host restarts for a token the selection
+  // then rejects.
+  const spentWeekFreshHours = fetchWindows({
     "token-provider": { fiveHour: 1, sevenDay: 1 },
-    "token-provider-2": { fiveHour: 1, sevenDay: 0 },
+    "token-provider-2": { fiveHour: 0, sevenDay: 1 },
   });
   assertEquals(
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: spentHoursFreshWeek },
+      { fetchFn: spentWeekFreshHours },
     ),
     false,
   );
@@ -280,7 +283,8 @@ Deno.test("poolHasAnotherTokenWithBudget - the floor is read on the five-hour wi
 Deno.test("poolHasAnotherTokenWithBudget - exactly at the floor is not worth restarting for (Issue #1668)", async () => {
   // The floor's own boundary: a five-hour window with exactly nothing left
   // cannot serve a call, so the restart check refuses it rather than going
-  // back for a token that would stall on its first request.
+  // back for a token that would stall on its first request. The week beside
+  // it is untouched, so only the boundary itself can decide the answer.
   const atTheBoundary = fetchWindows({
     "token-provider": { fiveHour: 1, sevenDay: 1 },
     "token-provider-2": { fiveHour: 1 - POOL_BUDGET_FLOOR, sevenDay: 0 },

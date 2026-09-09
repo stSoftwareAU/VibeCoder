@@ -8,8 +8,9 @@
  * nothing on the record said which candidates existed or why one was chosen.
  *
  * This module is the missing middle. It holds one **budget snapshot per
- * token**, refreshes only what has gone stale, applies #1623's gate and
- * ranking on demand, and replaces the run's single exported token when asked:
+ * token**, refreshes only what has gone stale, applies #1623's ranking and
+ * #1685's five-hour guard on demand, and replaces the run's single exported
+ * token when asked:
  *
  * - {@link ClaudeCredentialPool.recordBudget} takes figures the run already
  *   has — the latest `rate_limit_event`, or a probe made elsewhere — so a

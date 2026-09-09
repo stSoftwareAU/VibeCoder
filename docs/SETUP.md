@@ -832,8 +832,8 @@ The candidates are ordered:
    — cannot serve a call at all, so it ranks behind every token that can until
    that window resets. `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "is
    another subscription worth restarting for?" — is this same condition read
-   against the five-hour window, because *worth restarting for* and *worth
-   switching to* are one question.
+   against every window the probe reported, because *worth restarting for* and
+   *worth switching to* are one question and the two answers have to agree.
 3. **The five-hour guard, which is a preference and not a filter.** A token
    holding **at least 20%** of its five-hour window can carry an approximately
    hour-long Vibe Coder run, so while any usable token holds that much the

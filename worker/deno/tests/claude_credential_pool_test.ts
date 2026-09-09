@@ -467,6 +467,27 @@ Deno.test("claude credential pool - a start on an exhausted pool takes the soone
   assertEquals(probe.calls(), 2);
 });
 
+Deno.test("claude credential pool - an unmeasured pool is not a switch target (Issue #1685)", async () => {
+  // Every probe fails, so nothing is known about either credential.
+  // Switching on figures we do not have is a guess; staying put is the
+  // measured option, while the start still falls through to discovery order.
+  const probe = fetchWith({});
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+
+  assertEquals(await pool.selectEligible(NOW), null);
+  const started = await pool.selectToken(
+    [tokenFile("provider"), tokenFile("provider-2")],
+    CLAUDE,
+  );
+  assertEquals(started?.label, "provider", "the start never refuses");
+});
+
 Deno.test("claude credential pool - applySelection leaves exactly one Claude token variable", async () => {
   const env = new Map<string, string>([[
     "CLAUDE_CODE_OAUTH_TOKEN",
