@@ -125,6 +125,14 @@ export interface MergeConflictResult {
   escalated: boolean;
   /** Human-readable summary. */
   summary: string;
+  /**
+   * Explicitly `false` when this pass opened an attempt and then withdrew it
+   * (Issue #1693): the watchdog SIGTERMed the agent because the cycle ended,
+   * which is the worker's decision and not the PR's fault, so the attempt
+   * marker is deleted and the PR's budget is untouched. Absent everywhere
+   * else — those paths either concluded their attempt or never opened one.
+   */
+  attemptCharged?: boolean;
 }
 
 /** Dependencies for {@link processMergeConflict}. */
@@ -876,7 +884,13 @@ async function resolveConflict(
       // deepen step, name the refusal for what it is rather than spend an
       // attempt on a generic "did not conflict but failed".
       if (/refusing to merge unrelated histories/i.test(merge.stderr)) {
-        await deleteAttemptMarker(deps, repo, attemptCommentId, logger);
+        await deleteAttemptMarker(
+          deps,
+          repo,
+          attemptCommentId,
+          logger,
+          "no common ancestor even in full history (Issue #1458)",
+        );
         return await escalateNoCommonAncestor(
           input,
           processorDeps,
@@ -959,6 +973,16 @@ async function resolveConflict(
           processorDeps,
           conflictedFiles,
           agentOutcome.error.message,
+          attemptNumber,
+        );
+      }
+      if (agentOutcome.value.terminated) {
+        await abortMerge(run, workDir);
+        return await withdrawCutShortAttempt(
+          input,
+          processorDeps,
+          attemptCommentId,
+          conflictedFiles,
           attemptNumber,
         );
       }
@@ -1191,16 +1215,31 @@ async function gatherIssueContext(
 }
 
 /**
+ * What one agent run left behind.
+ *
+ * `terminated` is the run the worker itself ended (Issue #1693): the
+ * maintenance-lane watchdog abandoned the handler at the cycle deadline and
+ * SIGTERMed the agent mid-edit. The tree is then half-resolved through no
+ * fault of the PR, so it is not a verdict on the conflict and must not be
+ * judged as one.
+ */
+interface ResolutionAgentOutcome {
+  /** The run was ended by the worker (SIGTERM, exit 143). */
+  terminated: boolean;
+}
+
+/**
  * Run the resolution agent against the conflicted working tree.
  *
- * @returns An error result when the agent could not run or timed out.
+ * @returns An error result when the agent could not run or timed out;
+ *   otherwise whether the worker itself ended the run.
  */
 async function runResolutionAgent(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
   conflictedFiles: readonly string[],
   issueContext: ConflictIssueContext | null,
-): Promise<Result<void>> {
+): Promise<Result<ResolutionAgentOutcome>> {
   const {
     logger,
     deps,
@@ -1256,6 +1295,13 @@ async function runResolutionAgent(
       error: new Error(`agent run failed: ${claudeResult.error.message}`),
     };
   }
+  // Issue #1693: the worker ended this run — the handler was abandoned by the
+  // watchdog, or the run is shutting down. Reported, never judged: the caller
+  // withdraws the attempt instead of reading the half-edited tree as a
+  // failure the PR must pay for.
+  if (claudeResult.value.terminated) {
+    return { ok: true, value: { terminated: true } };
+  }
   if (claudeResult.value.timedOut) {
     return {
       ok: false,
@@ -1267,22 +1313,38 @@ async function runResolutionAgent(
     };
   }
 
-  return { ok: true, value: undefined };
+  return { ok: true, value: { terminated: false } };
 }
 
 /**
- * Withdraw an attempt marker that was opened before a clone fault surfaced
- * (Issue #1458), so the fault is not later read as a disrupted attempt. A
- * marker that cannot be deleted is left; the escalation comment below says
- * what happened, and the disruption bound still holds.
+ * Withdraw an attempt marker opened before the attempt turned out not to be
+ * one the PR should pay for — a clone fault (Issue #1458), or a run that
+ * ended under the agent (Issue #1693).
+ *
+ * A marker that cannot be withdrawn is left and said out loud, `why` and all,
+ * so the cause is never misattributed: the PR then reads as *disrupted* on
+ * the next scan, which is retried rather than judged, and that bound holds.
+ *
+ * @param why - What withdrew it, named in the warning if the delete fails.
  */
 async function deleteAttemptMarker(
   deps: WorkerDeps,
   repo: string,
   commentId: number | null,
   logger: Logger,
+  why: string,
 ): Promise<void> {
-  if (commentId === null) return;
+  if (commentId === null) {
+    // `gh pr comment` printed no comment URL, so the marker on the PR cannot
+    // be addressed. Never silent: the attempt would otherwise be left open
+    // with nothing saying why (Issue #1693).
+    logger.warn(
+      "Could not withdraw the attempt marker — no comment id was reported " +
+        "when it was posted",
+      { repo, why },
+    );
+    return;
+  }
   try {
     await deps.github.runGhCommand([
       "api",
@@ -1291,9 +1353,10 @@ async function deleteAttemptMarker(
       `repos/${repo}/issues/comments/${commentId}`,
     ]);
   } catch (err) {
-    logger.warn("Could not withdraw the attempt marker after a clone fault", {
+    logger.warn("Could not withdraw the attempt marker", {
       repo,
       commentId,
+      why,
       detail: err instanceof Error ? err.message : String(err),
     });
   }
@@ -1364,6 +1427,67 @@ async function escalateNoCommonAncestor(
       summary: `PR #${prNumber}: no common ancestor between '${branchName}' ` +
         `and 'origin/${baseBranch}' even in full history — escalated to a ` +
         `human, no attempt spent (Issue #1458)`,
+    },
+  };
+}
+
+/**
+ * Withdraw an attempt the worker itself cut short (Issue #1693).
+ *
+ * The maintenance-lane watchdog SIGTERMs the agent when the handler is
+ * abandoned at the cycle deadline. The tree it leaves is half-resolved, and
+ * reading that as "the agent left N path(s) unmerged" charged the kill to the
+ * PR. The kill is the worker's decision, so this spends nothing — the same
+ * principle the pass already applies to markers the fleet did not author.
+ *
+ * The attempt marker is deleted, so the next scan sees neither a concluded
+ * attempt (which would spend the two-attempt budget) nor an open one (which
+ * would spend the three-disruption budget). A marker that cannot be deleted
+ * is left and said out loud: the PR then reads as disrupted on the next scan,
+ * which is retried rather than judged, and that bound still holds.
+ */
+async function withdrawCutShortAttempt(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  attemptCommentId: number | null,
+  conflictedFiles: readonly string[],
+  attemptNumber: number,
+): Promise<Result<MergeConflictResult>> {
+  const { logger, deps } = processorDeps;
+  const { repo, prNumber } = input;
+
+  await deleteAttemptMarker(
+    deps,
+    repo,
+    attemptCommentId,
+    logger,
+    "the run ended under the agent (Issue #1693)",
+  );
+
+  logger.warn(
+    "Merge-conflict resolution cut short by the run ending — no attempt " +
+      "spent, the PR will be retried at the same attempt number",
+    {
+      repo,
+      prNumber,
+      attempt: attemptNumber,
+      conflictedFiles,
+      attemptCharged: false,
+    },
+  );
+
+  return {
+    ok: true,
+    value: {
+      // Nothing concluded, so the pass did no work on this PR: the attempt is
+      // withdrawn, not judged.
+      processed: false,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      summary:
+        `Merge-conflict resolution on PR #${prNumber} was cut short by ` +
+        `the run ending — the attempt was withdrawn, not spent`,
     },
   };
 }
