@@ -31,6 +31,7 @@ import {
 } from "../lib/idle_task_template.ts";
 import type { AlertDedupAuthorOptions } from "../lib/alert_dedup_authors.ts";
 import { MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES } from "../lib/marker_dedup_author_manifest.ts";
+import { findFleetAuthoredIssuesTitled } from "../lib/idle_task_wrapper_dedup.ts";
 import { fileBaselineCarryoverTracker } from "../lib/baseline_carryover_tracker.ts";
 import { notifyAuditFailure } from "../lib/audit_failure_notifier.ts";
 
@@ -497,4 +498,70 @@ Deno.test("audit failure notifier - a failed lookup is still reported, not swall
 
   assertEquals(result.action, "error");
   assert(result.reason?.includes("rate limit"));
+});
+
+// ---------------------------------------------------------------------------
+// The `titleMatches` predicate (Issue #1769) — a looser title, the same author
+// check. The milestone-sync conflict diagnostic is titled per conflicting
+// commit, so its close-out matches on a prefix rather than the whole title.
+// ---------------------------------------------------------------------------
+
+/** Rows the `gh issue list` stub answers with, whoever asks. */
+function listingGh(
+  rows: { number: number; title: string; author: { login: string } }[],
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> =>
+    args[0] === "issue" && args[1] === "list"
+      ? Promise.resolve(JSON.stringify(rows))
+      : Promise.resolve("");
+}
+
+const PREFIX = "Milestone sync merged with conflicts: milestone/v1-0 @ ";
+
+Deno.test("findFleetAuthoredIssuesTitled - a titleMatches predicate matches a variable tail", async () => {
+  const rows = await findFleetAuthoredIssuesTitled({
+    repo: REPO,
+    title: PREFIX,
+    context: "prefix match",
+    ghCommand: listingGh([
+      { number: 7, title: `${PREFIX}abc12345`, author: { login: "vibe-bot" } },
+      { number: 8, title: "Something else", author: { login: "vibe-bot" } },
+    ]),
+    titleMatches: (title) => title.startsWith(PREFIX),
+    fleetAuthors: FLEET,
+    log: () => {},
+  });
+
+  assertEquals(rows.map((r) => r.number), [7]);
+});
+
+Deno.test("findFleetAuthoredIssuesTitled - a looser title does not widen who a match may be attributed to", async () => {
+  const rows = await findFleetAuthoredIssuesTitled({
+    repo: REPO,
+    title: PREFIX,
+    context: "prefix match",
+    ghCommand: listingGh([
+      { number: 9, title: `${PREFIX}abc12345`, author: { login: "passer-by" } },
+    ]),
+    titleMatches: (title) => title.startsWith(PREFIX),
+    fleetAuthors: FLEET,
+    log: () => {},
+  });
+
+  assertEquals(rows, [], "a stranger's issue is still not the fleet's");
+});
+
+Deno.test("findFleetAuthoredIssuesTitled - without the predicate the match is still exact", async () => {
+  const rows = await findFleetAuthoredIssuesTitled({
+    repo: REPO,
+    title: PREFIX,
+    context: "exact match",
+    ghCommand: listingGh([
+      { number: 7, title: `${PREFIX}abc12345`, author: { login: "vibe-bot" } },
+    ]),
+    fleetAuthors: FLEET,
+    log: () => {},
+  });
+
+  assertEquals(rows, [], "the default comparison is unchanged");
 });

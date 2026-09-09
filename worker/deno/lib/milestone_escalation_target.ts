@@ -59,7 +59,7 @@ export interface MilestoneEscalationCandidates {
   /** Tracking issue the milestone title leads with, or `null` when none. */
   parentIssue: number | null;
   /** The milestone's open non-tracking children, in any order. */
-  children: readonly Pick<OpenMilestoneChild, "number">[];
+  children: readonly Pick<OpenMilestoneChild, "number" | "kind">[];
 }
 
 /**
@@ -68,6 +68,10 @@ export interface MilestoneEscalationCandidates {
  * Pure: no `gh`, no clock, no filesystem. "Oldest child" is the lowest issue
  * number — GitHub numbers monotonically, so the smallest number is the child
  * that has been open longest, and it needs no extra API field to read.
+ *
+ * Child **PRs** are never a destination: merging the milestone summary PR
+ * deletes the branch and auto-closes them, which would bury the escalation in
+ * a closed PR nobody reads again.
  *
  * @param candidates - The parent issue and the open children.
  * @returns The parent, else the oldest child, else `none`.
@@ -82,6 +86,7 @@ export function decideMilestoneEscalationTarget(
 
   let oldest: number | null = null;
   for (const child of candidates.children) {
+    if (child.kind === "pr") continue;
     if (!Number.isInteger(child.number) || child.number <= 0) continue;
     if (oldest === null || child.number < oldest) oldest = child.number;
   }
@@ -96,8 +101,6 @@ export interface EscalationMilestone {
   title: string;
   /** GitHub milestone number, needed to read the milestone's children. */
   number?: number;
-  /** Milestone branch — open PRs based on it count as children. */
-  branch?: string;
 }
 
 /** Everything {@link resolveMilestoneEscalationTarget} needs. */
@@ -169,12 +172,12 @@ async function readOpenChildren(
     return [];
   }
 
+  // No `milestoneBranch`: the PRs based on the branch are read only to be
+  // discarded here, and asking for them costs an extra API call per
+  // escalation.
   const result = await fetchOpenMilestoneChildren({
     repo,
     milestoneNumber: milestone.number!,
-    ...(milestone.branch !== undefined
-      ? { milestoneBranch: milestone.branch }
-      : {}),
     ...(options.verification !== undefined
       ? { verification: options.verification }
       : {}),

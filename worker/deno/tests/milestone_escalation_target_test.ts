@@ -19,7 +19,6 @@ import {
 } from "../lib/milestone_escalation_target.ts";
 
 const REPO = "owner/repo";
-const BRANCH = "milestone/1730-resolve-merge-conflicts";
 
 /** A `gh` stub that records every argv and answers from a routing table. */
 function ghStub(
@@ -49,7 +48,10 @@ Deno.test("decideMilestoneEscalationTarget - the parent planning issue wins", ()
   assertEquals(
     decideMilestoneEscalationTarget({
       parentIssue: 1730,
-      children: [{ number: 12 }, { number: 9 }],
+      children: [
+        { number: 12, kind: "issue" },
+        { number: 9, kind: "issue" },
+      ],
     }),
     { kind: "parent", issue: 1730, reopened: false },
   );
@@ -59,9 +61,32 @@ Deno.test("decideMilestoneEscalationTarget - with no parent, the oldest open chi
   assertEquals(
     decideMilestoneEscalationTarget({
       parentIssue: null,
-      children: [{ number: 42 }, { number: 12 }, { number: 87 }],
+      children: [
+        { number: 42, kind: "issue" },
+        { number: 12, kind: "issue" },
+        { number: 87, kind: "issue" },
+      ],
     }),
     { kind: "child", issue: 12 },
+  );
+});
+
+Deno.test("decideMilestoneEscalationTarget - a child PR is never the destination", () => {
+  // Merging the summary PR deletes the milestone branch and auto-closes its
+  // child PRs, which would bury the escalation in a closed PR.
+  assertEquals(
+    decideMilestoneEscalationTarget({
+      parentIssue: null,
+      children: [{ number: 3, kind: "pr" }, { number: 41, kind: "issue" }],
+    }),
+    { kind: "child", issue: 41 },
+  );
+  assertEquals(
+    decideMilestoneEscalationTarget({
+      parentIssue: null,
+      children: [{ number: 3, kind: "pr" }],
+    }),
+    { kind: "none" },
   );
 });
 
@@ -76,7 +101,7 @@ Deno.test("decideMilestoneEscalationTarget - a nonsense issue number is not a de
   assertEquals(
     decideMilestoneEscalationTarget({
       parentIssue: 0,
-      children: [{ number: -3 }, { number: 0 }],
+      children: [{ number: -3, kind: "issue" }, { number: 0, kind: "issue" }],
     }),
     { kind: "none" },
   );
@@ -163,24 +188,29 @@ Deno.test("resolveMilestoneEscalationTarget - no parent falls through to the mil
     if (key.includes("issues?milestone=7")) {
       return JSON.stringify([
         { number: 88, title: "Later child" },
+        // A milestone-assigned PR: lower-numbered, and still not a
+        // destination — the milestone merge auto-closes it.
+        { number: 9, title: "A child PR", pull_request: {} },
         { number: 41, title: "Earliest child" },
       ]);
-    }
-    if (key.startsWith("pr list")) {
-      return JSON.stringify([{ number: 90, title: "In-flight PR" }]);
     }
     return "";
   });
 
   const target = await resolveMilestoneEscalationTarget({
     repo: REPO,
-    milestone: { title: "Resolve merge conflicts", number: 7, branch: BRANCH },
+    milestone: { title: "Resolve merge conflicts", number: 7 },
     ghCommandFn: gh,
     log: () => {},
     verification: { authorOptions: { fleetAuthors: ["vibe-coder"] } },
   });
 
   assertEquals(target, { kind: "child", issue: 41 });
+  assertEquals(
+    calls.filter((c) => c[0] === "pr" && c[1] === "list").length,
+    0,
+    "PRs based on the branch are not even asked for",
+  );
   assertEquals(createCalls(calls).length, 0);
 });
 

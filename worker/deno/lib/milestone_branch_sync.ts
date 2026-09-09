@@ -940,7 +940,6 @@ async function escalateToExistingIssue(
       milestone: {
         title: milestone.milestoneTitle,
         number: milestone.milestoneNumber,
-        branch: milestone.milestoneBranch,
       },
       ghCommandFn,
       log,

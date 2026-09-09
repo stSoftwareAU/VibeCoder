@@ -3107,7 +3107,7 @@ flowchart TD
     P --> F["Report the same cycle:<br/>decisions + both sides' commits"]
     F --> G{Parent planning issue?}
     G -- open --> H[Comment on it]
-    G -- closed --> R["Reopen it (needs-human,<br/>never a pickup label)"] --> H
+    G -- closed --> RO["Reopen it (needs-human,<br/>never a pickup label)"] --> H
     G -- none --> C2{Oldest open child?}
     C2 -- yes --> H2[Comment on it]
     C2 -- no --> L["One log line —<br/>no issue is filed"]
