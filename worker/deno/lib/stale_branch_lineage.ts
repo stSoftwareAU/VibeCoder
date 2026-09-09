@@ -56,6 +56,7 @@ import {
   buildPushArgs,
 } from "./git_ref_args.ts";
 import { buildForceWithLeaseArgs } from "./git_push_lease_args.ts";
+import { describePaths, parsePorcelainPaths } from "./pending_work.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -466,13 +467,16 @@ export async function rebaseOntoBase(
     return { ok: false, error: new Error("git status could not be read") };
   }
   if (dirty !== "") {
+    // Issue #1684: name the paths, not just a count. The refusal is the only
+    // record of what stopped the rebase, and "2 path(s) modified" cannot tell
+    // a reader which files were left behind.
+    const paths = parsePorcelainPaths(dirty);
     return {
       ok: false,
       error: new Error(
         `the working tree carries uncommitted changes, so the branch cannot ` +
-          `be rebased without destroying them: ${
-            dirty.split("\n").length
-          } path(s) modified`,
+          `be rebased without destroying them: ${paths.length} path(s) ` +
+          `modified — ${describePaths(paths)}`,
       ),
     };
   }
