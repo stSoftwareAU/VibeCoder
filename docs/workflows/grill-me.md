@@ -82,6 +82,7 @@ flowchart TD
   Final["## Grill-Me — Ready for Next Phase<br/>adaptive recommendation (planning and/or work-on)"]
   Rm["Worker removes grill-me, keeps/adds needs-human<br/>labels: needs-human"]
   Dev["Developer applies planning, work-on, or top-priority<br/>and clears needs-human when ready"]
+  Reopen["Developer re-adds grill-me and clears needs-human<br/>labels: grill-me"]
   Plan["Planning workflow creates sub-issues"]
   Work["Implementation workflow"]
   Label --> R1
@@ -94,6 +95,8 @@ flowchart TD
   Done -->|No more questions| Final
   Final --> Rm
   Rm --> Dev
+  Rm -->|not settled yet| Reopen
+  Reopen --> RN
   Dev -->|planning| Plan
   Dev -->|work-on| Work
   style Label fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
@@ -106,6 +109,7 @@ flowchart TD
   style Final fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Rm fill:#e8d44d,stroke:#8b7500,color:#1a1a1a
   style Dev fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+  style Reopen fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
   style Plan fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Work fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
@@ -447,6 +451,29 @@ next worker scan after you do so picks the issue up via the matching
 workflow: `planning` creates sub-issues; `work-on` (or `top-priority`)
 queues the issue for implementation.
 
+### ↩️ Reopening grilling after Ready
+
+A Ready comment is the worker's judgement that grilling has converged —
+not a door that locks behind it. If you read the Ready comment and the
+requirement still is not settled, **re-add `grill-me` and clear
+`needs-human`**. The next scan starts a fresh round: the worker reads
+the existing `## Current Understanding` block, posts the next
+`## Grill-Me Round N` (numbering continues where the issue left off),
+and adds `needs-human` back so the turn signal still reads correctly.
+
+Three details worth knowing:
+
+- **The safety cap resets.** `maxGrillMeRounds` counts only the rounds
+  posted *after* the latest Ready comment, so a reopened grilling gets
+  the full budget again even when the previous grilling used all of it.
+- **It must be your re-add.** The worker only reopens on a `grill-me`
+  label event made by a non-fleet account after the Ready comment. A
+  `grill-me` label left behind by a failed removal is cleaned up as
+  before — removed, with `needs-human` re-applied.
+- **One round per re-add.** The re-add unblocks the next round only; the
+  reopened grilling then waits for your reply exactly like any other
+  round, so it cannot run to the cap unanswered.
+
 ## 📛 Whose turn is it? (read the labels)
 
 The label list at the top of the issue is the single source of truth
@@ -456,7 +483,7 @@ for whose turn it is. Read it before scrolling through comments:
 | --- | --- |
 | `grill-me` only | Worker — will grill on the next scan |
 | `grill-me` + `needs-human` | You — read the latest `## Grill-Me Round N` comment, reply, then remove `needs-human` |
-| `needs-human` only (after a `## Grill-Me — Ready for Next Phase` comment) | You — apply `planning`, `work-on`, or `top-priority`, then clear `needs-human` |
+| `needs-human` only (after a `## Grill-Me — Ready for Next Phase` comment) | You — apply `planning`, `work-on`, or `top-priority`, then clear `needs-human` (or re-add `grill-me` to reopen grilling) |
 | `needs-human` (no `grill-me`, no Ready comment) | Human triager — workflow has escalated (two failures or safety cap) |
 
 The `**⏳ Awaiting your reply.**` footer on each round comment carries

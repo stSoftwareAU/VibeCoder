@@ -48,7 +48,7 @@ the largest download, so it sits last and a Rust bump rebuilds only itself.
 
 The fetch-verify-extract toolchains in that block are **fragments**
 (Issue #1594): `COPY toolchains/*.sh` puts them in the image, then
-`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell`
+`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
 blocks. `markdownlint-cli2` sits between the two runs, unchanged — it is
@@ -196,6 +196,24 @@ covers both architectures (nothing compiled is bundled), and the install is
 `--no-deps`, because codespell 2.4.3 declares no required runtime dependencies
 — so unlike semgrep it leaves no unverified wheel coming from the index. Its
 cost is a few megabytes rather than 350.
+
+`pyyaml` is the one wheel that is **not** installed into a venv (Issue #1628).
+Its consumer is the image's own interpreter — NEAT-AI-core's BATS suites parse
+workflow YAML with `python3 -c "import yaml"`, and 31 of them failed here with
+`ModuleNotFoundError` once bats-core made those suites execute — so a
+`/opt/<tool>` virtualenv would never satisfy it.
+`container/toolchains/pyyaml.sh` fetches the pinned `pip` and the pinned
+wheel, verifies both digests, then installs with `pip --target` into the
+directory `sysconfig.get_path("purelib")` reports: the interpreter's own admin
+install location, already on its `sys.path`. `--target` is also what keeps the
+PEP 668 externally-managed environment untouched — the wheel lands beside it,
+not in it — and virtualenvs created later do not inherit that directory, so
+nothing here shadows semgrep's or codespell's pinned dependencies. PyYAML
+bundles a C extension, so the digest is per-architecture and the wheel name
+carries the `cp<major><minor>` interpreter tag; the fragment derives that tag
+and the target directory from the running `python3`, so a base-image
+interpreter bump 404s the fetch rather than installing bytes the manifest
+never pinned. Its cost is under a megabyte.
 
 ## Playwright + headless Chromium
 

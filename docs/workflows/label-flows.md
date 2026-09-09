@@ -48,6 +48,7 @@ flowchart TD
   Reply --> More{"More questions?"}
   More -->|yes| Round
   More -->|Ready| Ready["Remove grill-me, keep needs-human"]
+  Ready -->|not settled: re-add grill-me| Round
   Ready --> Choose["You apply planning OR work tier"]
   Choose -->|planning| Plan["Sub-issues — milestone if 2+ and none set"]
   Plan --> Triage["You label each sub-issue"]
@@ -83,7 +84,7 @@ you have answered or unblocked the worker.
 | -------------- | ---------- | ---------- |
 | `grill-me` alone | Worker | Wait for the next round |
 | `grill-me` + `needs-human` | You | Reply to the round, then remove `needs-human` |
-| `needs-human` after Ready (no `grill-me`) | You | Apply `planning` or a work-tier label; clear `needs-human` when the worker should pick up |
+| `needs-human` after Ready (no `grill-me`) | You | Apply `planning` or a work-tier label; clear `needs-human` when the worker should pick up — or re-add `grill-me` (clearing `needs-human`) to reopen grilling |
 | `needs-human` on a work issue | You | Read the escalation comment; fix the blocker; remove `needs-human` |
 
 The worker may also add `needs-human` for clarity failures, merge
@@ -110,6 +111,7 @@ run.
 | Add `grill-me` (trusted author) | Posts `## Grill-Me Round N` with choices, updates `## Current Understanding` in the body, adds `needs-human` |
 | Reply (checkboxes or free text), remove `needs-human` | Next round — or **Ready** when there are no more meaningful questions |
 | On Ready: apply `planning`, `work-on`, or `top-priority` (and clear `needs-human` when ready for pickup) | Removes `grill-me`, **keeps / adds `needs-human`**. Never swaps in the next-phase label for you |
+| Not settled yet? Re-add `grill-me` and clear `needs-human` | Reopens grilling — posts the next round (numbering continues) and resets the round cap |
 
 ```mermaid
 flowchart TD
@@ -122,6 +124,7 @@ flowchart TD
   Done -->|Ready| Final["Ready for Next Phase"]
   Final --> Rm["Remove grill-me, keep needs-human"]
   Rm --> Dev["You apply planning or work tier"]
+  Rm -->|not settled: re-add grill-me| RN
   style Label fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style R1 fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Body fill:#e0a050,stroke:#8b4500,color:#1a1a1a
