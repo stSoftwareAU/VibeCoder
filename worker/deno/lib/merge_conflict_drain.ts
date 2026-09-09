@@ -20,9 +20,8 @@
  *   The bound has two halves (Issue #1693): the drain refuses to start at all
  *   below {@link DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT}, and what it does start
  *   is granted an agent timeout that fits inside the budget that is left —
- *   never the configured one when the cycle cannot cover it. A six-file
- *   conflict handed a 736 s handler budget and a 3600 s agent timeout was
- *   SIGTERMed mid-edit and charged the kill to the PR as a failed attempt.
+ *   never the configured one when the cycle cannot cover it. See
+ *   `docs/workflows/merge-conflicts.md` for the incident behind it.
  * - **A per-cycle cap**, so one repository's backlog cannot take the whole run.
  * - **The exclusion set**, so a PR already taken — or one deferred because an
  *   issue slot holds its repository — is not re-selected by the next scan.
@@ -78,26 +77,29 @@ import {
 export const DEFAULT_MAX_CONFLICTS_PER_CYCLE = 5;
 
 /**
- * Cycle time that must remain before the drain starts another resolution.
+ * Agent time that must remain before the drain starts another resolution —
+ * the cycle time left less {@link DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS}.
  *
  * Sized for an AI-fallback resolution rather than for a token gesture
- * (Issue #1693): the agent that was killed mid-edit on NEAT-AI-core#637 had
- * already spent 11m13s and 83 tool calls on six conflicted files. Ten minutes
- * was enough to *start* that resolution and never enough to finish it, so the
- * pass spent one of the PR's two attempts on a budget it never had.
+ * (Issue #1693): the agent killed mid-edit on NEAT-AI-core#637 had already
+ * spent 11m13s and 83 tool calls on six conflicted files. Ten minutes was
+ * enough to *start* that resolution and never enough to finish it.
  */
 export const DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT = 20 * 60 * 1000;
 
 /**
- * Budget reserved after the agent returns, for the work the resolution still
- * has to do: the unmerged/marker guards, the commit, the push, the conclusion
- * comment and the label clear (Issue #1693).
+ * Budget one resolution spends outside the agent (Issue #1693): the clone,
+ * the base fetch, the merge and the attempt marker before it, and the
+ * unmerged/marker guards, the commit, the push, the conclusion comment and
+ * the label clear after it.
  *
- * The agent's own timeout is granted out of the budget left *after* this, so
- * an agent that runs to its full timeout still concludes its attempt inside
- * the handler's budget instead of being killed on the way to the conclusion.
+ * The agent's own timeout is granted out of what is left once this is
+ * reserved, so an agent that runs to its full grant still has room to
+ * conclude its attempt rather than being killed on the way to the conclusion.
+ * It is an allowance, not a measurement — the drain cannot know what a
+ * particular clone will cost — so it is deliberately generous.
  */
-export const DEFAULT_CONFLICT_POST_AGENT_TAIL_MS = 2 * 60 * 1000;
+export const DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS = 4 * 60 * 1000;
 
 /**
  * What one attempt may grant its coding agent, decided by the drain from the
@@ -193,8 +195,11 @@ export interface ConflictDrainOptions {
    * watchdog then breaks.
    */
   agentTimeoutMs?: number;
-  /** Budget reserved for the post-agent tail. Defaults to two minutes. */
-  postAgentTailMs?: number;
+  /**
+   * Budget reserved for everything a resolution does outside the agent.
+   * Defaults to {@link DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS}.
+   */
+  attemptOverheadMs?: number;
   /**
    * Fairness cursor and starvation notice (Issue #1111). Omit it and the
    * drain keeps no cursor at all.
@@ -264,7 +269,7 @@ export async function drainConflictingPrs(
     maxPerCycle = DEFAULT_MAX_CONFLICTS_PER_CYCLE,
     minMsPerAttempt = DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
     agentTimeoutMs,
-    postAgentTailMs = DEFAULT_CONFLICT_POST_AGENT_TAIL_MS,
+    attemptOverheadMs = DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
     deferrals,
   } = options;
 
@@ -276,6 +281,8 @@ export async function drainConflictingPrs(
   let processed = false;
   let maxDeferralStreak = 0;
   let deferralNotices = 0;
+  /** An attempt was withdrawn because the run ended under it (Issue #1693). */
+  let cutShort = false;
 
   /**
    * The cursor the previous pass left (Issue #1111). Read once, so the order
@@ -361,18 +368,38 @@ export async function drainConflictingPrs(
    * exit in the scan cannot be added without a reason (Issue #1109).
    */
   const runDrain = async (): Promise<ConflictDrainStop> => {
+    /**
+     * The agent timeout this attempt may grant (Issue #1693), or undefined
+     * when the pass declared none and the resolution keeps its own.
+     *
+     * Read as late as the drain can read it — after the lease, immediately
+     * before the resolution starts — so the listing and the lease do not come
+     * out of the agent's share.
+     */
+    const grantFor = (): ConflictAttemptBudget | undefined => {
+      if (deadlineEpochMs === undefined || agentTimeoutMs === undefined) {
+        return undefined;
+      }
+      const attemptBudgetMs = deadlineEpochMs - now() - attemptOverheadMs;
+      // Never more than the budget that is left: an agent promised more time
+      // than the handler has is an agent the watchdog kills mid-edit, and
+      // that kill was charged to the PR (Issue #1693). Never below a second
+      // either — a nonsense bound must not become a nonsense grant.
+      return {
+        agentTimeoutSeconds: Math.max(
+          1,
+          Math.floor(Math.min(agentTimeoutMs, attemptBudgetMs) / 1000),
+        ),
+      };
+    };
+
     for (let taken = 0; taken < maxPerCycle; taken++) {
-      /**
-       * The agent timeout this attempt may grant (Issue #1693), or undefined
-       * when the pass declared none and the resolution keeps its own.
-       */
-      let budget: ConflictAttemptBudget | undefined;
       if (deadlineEpochMs !== undefined) {
         const remaining = deadlineEpochMs - now();
-        // The tail after the agent returns — guards, commit, push, the
-        // conclusion comment — is not the agent's to spend, so the floor is
-        // measured against what the agent would actually get.
-        const attemptBudgetMs = remaining - postAgentTailMs;
+        // What the agent would actually get: the clone, the merge and the
+        // conclusion are not its to spend, so the floor is measured against
+        // the agent's own share rather than the whole budget.
+        const attemptBudgetMs = remaining - attemptOverheadMs;
         if (attemptBudgetMs < minMsPerAttempt) {
           // Said out loud only once the drain has done something: a pass that
           // starts late and takes nothing is the ordinary quiet case.
@@ -390,16 +417,6 @@ export async function drainConflictingPrs(
             );
           }
           return { kind: "deadline", remainingMs: remaining };
-        }
-        if (agentTimeoutMs !== undefined) {
-          // Never more than the budget that is left: an agent promised more
-          // time than the handler has is an agent the watchdog kills
-          // mid-edit, and that kill was charged to the PR (Issue #1693).
-          budget = {
-            agentTimeoutSeconds: Math.floor(
-              Math.min(agentTimeoutMs, attemptBudgetMs) / 1000,
-            ),
-          };
         }
       }
 
@@ -440,7 +457,7 @@ export async function drainConflictingPrs(
       });
 
       try {
-        const outcome = await resolve(next, budget);
+        const outcome = await resolve(next, grantFor());
         if (outcome && outcome.attemptCharged !== false) {
           // The attempt ran, so the PR is not starved — whatever it then
           // concluded (Issue #1111). A `null` outcome is an attempt that never
@@ -454,8 +471,25 @@ export async function drainConflictingPrs(
           processed = processed || outcome.processed;
           if (outcome.merged) merged++;
         }
+        if (outcome && outcome.attemptCharged === false) {
+          // The run itself ended under this attempt (Issue #1693). Taking the
+          // next PR would open an attempt marker and withdraw it again, so
+          // the pass stops here and the queue keeps its place.
+          cutShort = true;
+        }
       } finally {
         lease.release();
+      }
+      if (cutShort) {
+        const remaining = deadlineEpochMs !== undefined
+          ? deadlineEpochMs - now()
+          : 0;
+        logger.info(
+          "Merge-conflict drain stopping: the run ended under the last " +
+            "resolution, which was withdrawn rather than judged",
+          { taken: taken + 1, merged, remainingMs: remaining },
+        );
+        return { kind: "deadline", remainingMs: remaining };
       }
     }
     // The loop ran out rather than breaking: the per-cycle cap.

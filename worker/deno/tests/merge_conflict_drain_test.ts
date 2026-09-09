@@ -416,12 +416,13 @@ Deno.test("drainConflictingPrs - never grants an agent more time than the budget
   assertEquals(granted.length, 1);
   const seconds = granted[0];
   assert(seconds !== undefined, "the resolution was given no budget");
-  // Strictly inside the handler budget, with the post-agent tail reserved.
+  // Strictly inside the handler budget, with the attempt's non-agent work
+  // (clone, merge, conclusion) reserved out of it.
   assert(
     seconds * 1000 < remainingMs,
     `granted ${seconds}s of a ${remainingMs / 1000}s budget`,
   );
-  assertEquals(seconds, (30 - 2) * 60);
+  assertEquals(seconds, (30 - 4) * 60);
 });
 
 Deno.test("drainConflictingPrs - grants the configured agent timeout when it fits", async () => {
@@ -457,4 +458,30 @@ Deno.test("drainConflictingPrs - a pass that declares no agent timeout grants no
   });
 
   assertEquals(granted, [undefined]);
+});
+
+Deno.test("drainConflictingPrs - an attempt the run ended stops the pass", async () => {
+  // The withdrawal means the run itself is ending (Issue #1693). Taking the
+  // next PR would open an attempt marker and immediately withdraw it too.
+  const resolved: number[] = [];
+  const result = await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]),
+    acquireLease: alwaysLease,
+    resolve: (conflict) => {
+      resolved.push(conflict.prNumber);
+      return Promise.resolve({
+        processed: false,
+        merged: false,
+        attemptCharged: false,
+      });
+    },
+    now: () => 1_000_000,
+    deadlineEpochMs: 1_000_000 + 90 * 60 * 1000,
+    agentTimeoutMs: 30 * 60 * 1000,
+  });
+
+  assertEquals(resolved, [1]);
+  assertEquals(result.stopReason, "deadline");
+  assertEquals(result.merged, 0);
 });

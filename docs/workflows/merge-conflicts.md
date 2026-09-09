@@ -625,7 +625,7 @@ Three bounds keep the drain from becoming a monopoly:
 
 | Bound | Value | Why |
 | --- | --- | --- |
-| Cycle deadline | 20 minutes of agent budget must remain, and the agent is granted no more time than is left | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. See [A resolution is never started on time the cycle does not have](#-a-resolution-is-never-started-on-time-the-cycle-does-not-have). |
+| Cycle deadline | 20 minutes of agent budget must remain (after a four-minute allowance for the rest of the attempt), and the agent is granted no more time than is left | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. See [A resolution is never started on time the cycle does not have](#-a-resolution-is-never-started-on-time-the-cycle-does-not-have). |
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
@@ -647,22 +647,27 @@ PR's two attempts on a budget it never had.
 Two halves now hold, both in `worker/deno/lib/merge_conflict_drain.ts`:
 
 - **The floor is sized for an AI-fallback resolution**, not for a token
-  gesture: **20 minutes** of agent budget must remain, measured after reserving
-  a two-minute tail for the guards, the commit, the push and the conclusion
-  comment. Below that the drain takes nothing — before the *first* resolution
-  as well as between them — and the PR is deferred, so the cursor below offers
-  it first next pass.
+  gesture: **20 minutes** of *agent* budget must remain, measured after
+  reserving a four-minute allowance for everything a resolution does outside
+  the agent — the clone, the base fetch, the merge and the attempt marker
+  before it, the guards, the commit, the push and the conclusion comment
+  after. Below that the drain takes nothing — before the *first* resolution as
+  well as between them — and the PR is deferred, so the cursor below offers it
+  first next pass.
 - **The agent is granted the time that is actually left**, never the configured
   timeout when the cycle cannot cover it: the grant is
-  `min(configured, budget left − tail)`. An agent that runs to its full grant
-  therefore stops itself *inside* the handler's budget and concludes its
-  attempt, rather than being killed on the way to one.
+  `min(configured, budget left − allowance)`, read immediately before the
+  resolution starts rather than at the top of the pass. An agent that runs to
+  its full grant therefore normally stops itself *inside* the handler's budget
+  and concludes its attempt, rather than being killed on the way to one. The
+  allowance is an estimate, not a measurement — a pathologically slow clone
+  can still overrun it, which is what the withdrawal below is for.
 
 ```mermaid
 flowchart TD
     A[Next due PR] --> B{"Agent budget left<br/>≥ 20 min?"}
     B -->|no| C[Stop the drain:<br/>deferred, nothing spent]
-    B -->|yes| D["Grant min(configured,<br/>budget − 2 min tail)"]
+    B -->|yes| D["Grant min(configured,<br/>budget − 4 min allowance)"]
     D --> E[Resolve]
     style C fill:#e9c46a,stroke:#b07d2b,color:#000
     style E fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -685,9 +690,12 @@ kill is the **worker's** decision, so it spends nothing (Issue #1693):
   will be retried at the same attempt number"* — and returns
   `attemptCharged: false`, which also leaves the PR's deferral streak standing
   so it leads the next pass.
-- A marker that cannot be deleted is left and warned about. The PR then reads
-  as *disrupted* on the next scan, which is retried rather than judged, and
-  that bound still holds.
+- A marker that cannot be deleted — the delete failed, or `gh` reported no
+  comment id when it was posted — is left, and the warning names which
+  withdrawal it was. The PR then reads as *disrupted* on the next scan, which
+  is retried rather than judged, and that bound still holds.
+- **The pass stops there.** A withdrawal means the run itself is ending, so
+  taking the next PR would only open another marker and withdraw it too.
 
 This is the same principle the pass already applies to markers the fleet did
 not author: a budget is spent by a verdict on the conflict, never by something

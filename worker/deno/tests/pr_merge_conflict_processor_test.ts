@@ -44,6 +44,7 @@ import {
   heartbeatFilePath,
   markerStateFilePath,
 } from "../lib/heartbeat_storage.ts";
+import type { ClaudeRunResult } from "../lib/claude_runner.ts";
 import type { LogContext, Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -317,7 +318,7 @@ function makeClaude(
    * Fields merged over the successful run's result — `terminated: true` is
    * the watchdog SIGTERM the run-end delivers (Issue #1693).
    */
-  resultOverrides?: Record<string, unknown>,
+  resultOverrides?: Partial<ClaudeRunResult>,
 ): Partial<ClaudeDeps> {
   return {
     runClaudeWithRetry: (async (options: { prompt?: string }) => {
@@ -364,7 +365,7 @@ async function runProcessor(
     workDirFiles?: Record<string, string>;
     crashHandling?: Partial<CrashHandlingDeps>;
     /** Fields merged over the agent result (Issue #1693). */
-    claudeResult?: Record<string, unknown>;
+    claudeResult?: Partial<ClaudeRunResult>;
     /** Id `gh pr comment` reports for each posted comment (Issue #1693). */
     postedCommentId?: number;
   },
@@ -1265,4 +1266,33 @@ Deno.test("processMergeConflict - an agent that finishes still spends its attemp
   );
   assertEquals(failed.length, 1);
   assertStringIncludes(failed[0] ?? "", "left 1 path(s) unmerged");
+});
+
+Deno.test("processMergeConflict - a marker that cannot be withdrawn is never silent", async () => {
+  // Issue #1693: `gh pr comment` reported no comment URL, so the attempt
+  // marker on the PR cannot be addressed. The attempt still spends nothing,
+  // but the orphaned marker must be said out loud — it is what the next scan
+  // reads as a disrupted attempt.
+  const warnings: string[] = [];
+  const logger: Logger = {
+    ...makeSilentLogger(),
+    warn: (message: string, _context?: LogContext) => {
+      warnings.push(message);
+    },
+  };
+
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    { logger },
+    { claudeResult: { terminated: true } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(captured.commentsDeleted, []);
+  assert(
+    warnings.some((w) => w.includes("Could not withdraw the attempt marker")),
+    `an unwithdrawable marker must warn, got: ${warnings.join(" | ")}`,
+  );
 });

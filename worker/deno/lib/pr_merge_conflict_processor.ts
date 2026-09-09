@@ -884,7 +884,13 @@ async function resolveConflict(
       // deepen step, name the refusal for what it is rather than spend an
       // attempt on a generic "did not conflict but failed".
       if (/refusing to merge unrelated histories/i.test(merge.stderr)) {
-        await deleteAttemptMarker(deps, repo, attemptCommentId, logger);
+        await deleteAttemptMarker(
+          deps,
+          repo,
+          attemptCommentId,
+          logger,
+          "no common ancestor even in full history (Issue #1458)",
+        );
         return await escalateNoCommonAncestor(
           input,
           processorDeps,
@@ -1311,18 +1317,34 @@ async function runResolutionAgent(
 }
 
 /**
- * Withdraw an attempt marker that was opened before a clone fault surfaced
- * (Issue #1458), so the fault is not later read as a disrupted attempt. A
- * marker that cannot be deleted is left; the escalation comment below says
- * what happened, and the disruption bound still holds.
+ * Withdraw an attempt marker opened before the attempt turned out not to be
+ * one the PR should pay for — a clone fault (Issue #1458), or a run that
+ * ended under the agent (Issue #1693).
+ *
+ * A marker that cannot be withdrawn is left and said out loud, `why` and all,
+ * so the cause is never misattributed: the PR then reads as *disrupted* on
+ * the next scan, which is retried rather than judged, and that bound holds.
+ *
+ * @param why - What withdrew it, named in the warning if the delete fails.
  */
 async function deleteAttemptMarker(
   deps: WorkerDeps,
   repo: string,
   commentId: number | null,
   logger: Logger,
+  why: string,
 ): Promise<void> {
-  if (commentId === null) return;
+  if (commentId === null) {
+    // `gh pr comment` printed no comment URL, so the marker on the PR cannot
+    // be addressed. Never silent: the attempt would otherwise be left open
+    // with nothing saying why (Issue #1693).
+    logger.warn(
+      "Could not withdraw the attempt marker — no comment id was reported " +
+        "when it was posted",
+      { repo, why },
+    );
+    return;
+  }
   try {
     await deps.github.runGhCommand([
       "api",
@@ -1331,9 +1353,10 @@ async function deleteAttemptMarker(
       `repos/${repo}/issues/comments/${commentId}`,
     ]);
   } catch (err) {
-    logger.warn("Could not withdraw the attempt marker after a clone fault", {
+    logger.warn("Could not withdraw the attempt marker", {
       repo,
       commentId,
+      why,
       detail: err instanceof Error ? err.message : String(err),
     });
   }
@@ -1414,11 +1437,8 @@ async function escalateNoCommonAncestor(
  * The maintenance-lane watchdog SIGTERMs the agent when the handler is
  * abandoned at the cycle deadline. The tree it leaves is half-resolved, and
  * reading that as "the agent left N path(s) unmerged" charged the kill to the
- * PR: `attempt=1 maxAttempts=2` on NEAT-AI-core#637, one more cycle-end kill
- * from being abandoned as unresolvable without ever having had a full
- * attempt. The kill is the worker's decision, so this spends nothing — the
- * same principle the pass already applies to markers the fleet did not
- * author.
+ * PR. The kill is the worker's decision, so this spends nothing — the same
+ * principle the pass already applies to markers the fleet did not author.
  *
  * The attempt marker is deleted, so the next scan sees neither a concluded
  * attempt (which would spend the two-attempt budget) nor an open one (which
@@ -1436,7 +1456,13 @@ async function withdrawCutShortAttempt(
   const { logger, deps } = processorDeps;
   const { repo, prNumber } = input;
 
-  await deleteAttemptMarker(deps, repo, attemptCommentId, logger);
+  await deleteAttemptMarker(
+    deps,
+    repo,
+    attemptCommentId,
+    logger,
+    "the run ended under the agent (Issue #1693)",
+  );
 
   logger.warn(
     "Merge-conflict resolution cut short by the run ending — no attempt " +
