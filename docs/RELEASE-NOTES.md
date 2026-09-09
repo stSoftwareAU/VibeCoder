@@ -27,6 +27,7 @@ if your worker login is read-only on any monitored repository.**
 | Change | Issue |
 | ------ | ----- |
 | The post-creation reserved-label strip reads who applied each label and keeps one a login outside the fleet granted, so a maintainer labelling fresh planning sub-issues `work-on` while the run is still closing no longer has the grant removed; the summary records kept labels and the log names the adder | #1791 |
+| The idle-task wrapper finaliser closes a finished wrapper and posts its summary (or the failure comment) through the REST `issues` endpoints on the core quota, so the primary GraphQL quota latch no longer leaves a wrapper open for the next scan to re-run; the result reports whether each write landed instead of assuming the close happened | #1753 |
 | A run whose HEAD diverged from its branch because the agent's work landed through its own PR and the issue closed takes the stale-claim exit instead of a completion failure, so no health failure is recorded for a run that succeeded; a diverged HEAD on an open issue is still refused | #1793 |
 | A monitored repo the worker's login cannot list (404, or 403 "Must have push access") is skipped and named once instead of failing every cycle | #1453 |
 | A successful trusted-author resolve is reused for `trusted_authors_cache_hours` (new key, default `1`; `0` restores the per-cycle refresh), and a transient failure serves the snapshot, with its age logged, for up to six hours | #1453 |
