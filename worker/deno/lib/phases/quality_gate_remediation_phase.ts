@@ -32,6 +32,7 @@ import { formatBaselineCarryoverNote } from "../quality_helpers.ts";
 import { fenceQualityOutput } from "../untrusted_quality_output.ts";
 import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
 import { commitPendingWork, describePaths } from "../pending_work.ts";
+import { resolvePreFlightSpec } from "../git_push.ts";
 
 /**
  * Result of a single quality-gate body pass — see `runQualityGateBody`.
@@ -133,8 +134,10 @@ export function buildVerifiedTreeCommitMessage(issueNumber: number): string {
  * final-mile chokepoint (Issue #1684).
  *
  * Returns the paths still uncommitted afterwards — empty when the branch now
- * carries the work, or when there was nothing to carry. Never throws and
- * never fails the phase itself: the callers below decide what a leftover
+ * carries the work or there was nothing to carry, and `null` when `git
+ * status` could not be read at all. `null` is deliberately not `[]`: an
+ * unanswerable question must never pass for a clean tree. Never throws and
+ * never fails the phase itself — the callers below decide what a leftover
  * means, because after a fix run it is a warning and at the pass verdict it
  * is a failure.
  */
@@ -143,41 +146,44 @@ async function commitWorkingTree(
   state: PhaseState,
   deps: WorkerDeps,
   message: string,
-): Promise<string[]> {
+): Promise<string[] | null> {
   const outcome = await commitPendingWork({
     git: deps.git,
     repoPath: state.repoPath,
     branchName: state.branchName,
     message,
+    // The repo's mandatory pre-flight gate (Issue #3577) applies to this
+    // automated commit exactly as it does to the PR processors'.
+    preFlight: resolvePreFlightSpec(ctx.config.repoConfig, ctx.repo),
   });
 
-  if (outcome.pending.length === 0) {
-    if (outcome.statusUnknown) {
-      // `git status` could not be read. Say so rather than letting an
-      // unanswerable question pass silently for a clean tree.
-      deps.logger.warn(
-        "Could not read the working tree while committing quality-gate work " +
-          "(Issue #1684) — treating it as clean",
-        { repo: ctx.repo, branch: state.branchName },
-      );
-    }
-    return [];
+  // A push that failed after a good commit leaves a clean tree, so it would
+  // otherwise be invisible here. The commit is safe on the branch and the
+  // completion phase pushes again, but the failure is still reported.
+  if (outcome.error) {
+    deps.logger.warn(
+      "The commit-and-push chokepoint reported a failure while committing " +
+        "quality-gate work (Issue #1684)",
+      { branch: state.branchName, error: outcome.error },
+    );
   }
 
   if (outcome.statusUnknown) {
-    // The commit ran but the verifying read did not. Trust the chokepoint's
-    // own answer rather than inventing either verdict.
+    // `git status` could not be read. "Unknown" is not "clean" — the caller
+    // decides, and the pass verdict refuses rather than guessing.
     deps.logger.warn(
-      "Could not verify the working tree after committing quality-gate work " +
+      "Could not read the working tree while committing quality-gate work " +
         "(Issue #1684)",
       {
+        repo: ctx.repo,
         branch: state.branchName,
         committed: outcome.committed,
-        paths: describePaths(outcome.pending),
       },
     );
-    return outcome.committed ? [] : outcome.pending;
+    return null;
   }
+
+  if (outcome.pending.length === 0) return [];
 
   if (outcome.remaining.length === 0) {
     deps.logger.info(
@@ -318,6 +324,12 @@ async function attemptBumpAudit(
   });
 
   // Drop the bump (and any later commits) for the audit run.
+  //
+  // Issue #1714: since #1684 those later commits may already be PUSHED — the
+  // remediation loop commits its fix through `commitAndPushPending`. This
+  // reset then leaves the local branch behind origin, and the rejected bump
+  // survives on the remote head the PR is raised from. Tracked separately
+  // because the fix belongs to #1613's audit mechanism, not to #1684.
   const reset = await deps.git.runGitCommand(
     ["reset", "--hard", bumpInfo.beforeBumpSha],
     { cwd: state.repoPath },
@@ -419,6 +431,18 @@ async function runQualityGateBody(
         deps,
         buildVerifiedTreeCommitMessage(ctx.issueNumber),
       );
+      if (leftover === null) {
+        return {
+          phaseResult: {
+            status: "failure",
+            reason:
+              `Quality gate passed on attempt ${attempt}, but \`git status\` ` +
+              `could not be read, so the passing tree cannot be shown to be ` +
+              `the head of \`${state.branchName}\`. Refusing to report a ` +
+              `pass that may not describe the PR (Issue #1684).`,
+          },
+        };
+      }
       if (leftover.length > 0) {
         return {
           phaseResult: {
@@ -562,7 +586,7 @@ async function runQualityGateBody(
       deps,
       buildQualityFixCommitMessage(ctx.issueNumber),
     );
-    if (leftover.length > 0) {
+    if (leftover !== null && leftover.length > 0) {
       // Not fatal here — the rerun still happens — but the pass verdict above
       // refuses to call it a pass while these paths are uncommitted.
       logger.warn(

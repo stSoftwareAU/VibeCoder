@@ -2779,11 +2779,11 @@ Three rules now keep the verdict and the branch the same thing:
   CI ran twice. The completion phase commits them before either rebase guard
   looks.
 
-Every refusal that names a dirty tree now names the paths (bounded at ten,
+`rebaseOntoBase`'s dirty-tree refusal now names the paths (bounded at ten,
 control characters scrubbed) instead of a bare count — the log was the only
 record of what was lost, and "2 path(s) modified" could not say what.
-`pending_work.ts` is the one place that lists, names and commits pending work,
-so the two phases cannot drift.
+[pending_work.ts](../worker/deno/lib/pending_work.ts) is the single place these
+three paths list, name and commit pending work, so they cannot drift.
 
 ```mermaid
 flowchart TD

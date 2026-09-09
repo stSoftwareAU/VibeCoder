@@ -17,6 +17,7 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { CheckResult } from "../lib/quality_helpers.ts";
+import { isWipCommitSubject } from "../lib/wip_markers.ts";
 
 const BRANCH = "issue-1684-quality-fix";
 
@@ -68,6 +69,8 @@ interface Harness {
   fixEditsFiles?: boolean;
   /** Does `commitAndPushPending` succeed? */
   commitSucceeds?: boolean;
+  /** Can `git status` be read at all? Defaults to yes. */
+  statusReadable?: boolean;
 }
 
 interface HarnessRun {
@@ -122,7 +125,15 @@ async function runPhase(options: Harness): Promise<HarnessRun> {
       runGitCommand: ((args: string[]) => {
         const ok = (stdout: string) =>
           Promise.resolve({ ok: true, value: { code: 0, stdout, stderr: "" } });
-        if (args[0] === "status") return ok(dirty ? options.dirtyStatus : "");
+        if (args[0] === "status") {
+          if (options.statusReadable === false) {
+            return Promise.resolve({
+              ok: true,
+              value: { code: 128, stdout: "", stderr: "fatal: not a git repo" },
+            });
+          }
+          return ok(dirty ? options.dirtyStatus : "");
+        }
         return ok("");
       }) as never,
       commitAndPushPending: ((branch: string, message: string) => {
@@ -173,8 +184,10 @@ Deno.test(
     assertEquals(run.commits[0]!.branch, BRANCH);
     assertStringIncludes(run.commits[0]!.message, "quality-gate fixes");
     assert(
-      !run.commits[0]!.message.startsWith("wip:"),
-      "a quality fix is finished work, not parked WIP",
+      !isWipCommitSubject(run.commits[0]!.message),
+      `a quality fix is finished work, not parked WIP: ${
+        run.commits[0]!.message
+      }`,
     );
     assertEquals(run.passLogs, [2]);
   },
@@ -226,5 +239,20 @@ Deno.test(
     assertEquals(run.status, "continue");
     assertEquals(run.commits.length, 0, "worker state is never committed here");
     assertEquals(run.passLogs, [1]);
+  },
+);
+
+Deno.test(
+  "quality gate - an unreadable working tree refuses the pass rather than assuming it is clean (Issue #1684)",
+  async () => {
+    const run = await runPhase({
+      verdicts: [true],
+      dirtyStatus: "",
+      statusReadable: false,
+    });
+
+    assertEquals(run.status, "failure");
+    assertStringIncludes(run.reason ?? "", "could not be read");
+    assertEquals(run.passLogs, [], "an unknown tree is not a pass");
   },
 );

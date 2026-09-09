@@ -23,6 +23,7 @@ import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
 import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import { resolvePreFlightSpec } from "../git_push.ts";
 import {
   commitPendingWork,
   describePaths,
@@ -597,10 +598,10 @@ export function buildAheadBranchRescueCommitMessage(
  * is #218's business and its WIP semantics, not this one's.
  */
 async function commitDirtyTreeOnAheadBranch(
+  ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
   baseBranch: string,
-  issueNumber: number,
 ): Promise<void> {
   const logger = deps.logger;
   const pending = await listPendingWorkPaths(deps.git, state.repoPath);
@@ -648,7 +649,12 @@ async function commitDirtyTreeOnAheadBranch(
     git: deps.git,
     repoPath: state.repoPath,
     branchName: state.branchName,
-    message: buildAheadBranchRescueCommitMessage(issueNumber, pending.length),
+    message: buildAheadBranchRescueCommitMessage(
+      ctx.issueNumber,
+      pending.length,
+    ),
+    // The repo's mandatory pre-flight gate (Issue #3577) applies here too.
+    preFlight: resolvePreFlightSpec(ctx.config.repoConfig, ctx.repo),
   });
 
   // A verification read that failed is not proof of success: fall back to the
@@ -658,6 +664,15 @@ async function commitDirtyTreeOnAheadBranch(
     : outcome.remaining;
 
   if (unresolved.length === 0) {
+    // A push that failed after a good commit leaves a clean tree, so the
+    // chokepoint's own error is reported even when the rescue looks clean.
+    if (outcome.error) {
+      logger.warn(
+        "The commit-and-push chokepoint reported a failure while preserving " +
+          "the run's uncommitted work (Issue #1684)",
+        { branch: state.branchName, error: outcome.error },
+      );
+    }
     logger.warn(
       `Committed ${pending.length} uncommitted path(s) onto ` +
         `'${state.branchName}' before its PR — the run left them behind ` +
@@ -916,7 +931,7 @@ async function completionBody(
   // made both guards below decline (they refuse to rebase a dirty tree). The
   // work goes onto the branch first, so the PR carries it and the rebase can
   // run.
-  await commitDirtyTreeOnAheadBranch(state, deps, baseBranch, issueNumber);
+  await commitDirtyTreeOnAheadBranch(ctx, state, deps, baseBranch);
 
   // Stale-lineage guard (Issue #534) — before anything is pushed. Two runs
   // held one issue branch: the first rebased, force-pushed and squash-merged;

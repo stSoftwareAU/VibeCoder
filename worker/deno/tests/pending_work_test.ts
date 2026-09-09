@@ -9,6 +9,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import type { PreFlightGateSpec } from "../lib/git_push.ts";
 import {
   commitPendingWork,
   describePaths,
@@ -21,6 +22,8 @@ import {
 function gitStub(options: {
   statuses: string[];
   commit?: (branch: string, message: string) => { ok: boolean; error?: string };
+  /** Observe the pre-flight spec the chokepoint was handed. */
+  onCommit?: (preFlight: PreFlightGateSpec | undefined) => void;
 }): {
   git: PendingWorkGit;
   commits: Array<{ branch: string; message: string }>;
@@ -49,8 +52,15 @@ function gitStub(options: {
         value: { code: 0, stdout: "", stderr: "" },
       });
     }) as never,
-    commitAndPushPending: ((branch: string, message: string) => {
+    commitAndPushPending: ((
+      branch: string,
+      message: string,
+      _options?: unknown,
+      _allowDefaultBranch?: boolean,
+      preFlight?: PreFlightGateSpec,
+    ) => {
       commits.push({ branch, message });
+      options.onCommit?.(preFlight);
       const outcome = options.commit?.(branch, message) ?? { ok: true };
       if (!outcome.ok) {
         return Promise.resolve({
@@ -95,6 +105,13 @@ Deno.test("describePaths - names the paths and bounds the list at ten", () => {
   const described = describePaths(many);
   assertEquals(described.split(", ").length, 10, described);
   assertEquals(described.endsWith("(+3 more)"), true, described);
+});
+
+Deno.test("describePaths - scrubs control characters so a name cannot forge a line", () => {
+  assertEquals(
+    describePaths(["docs/a\nrm -rf /.md", "lib/b\u0000.ts"]),
+    "docs/a?rm -rf /.md, lib/b?.ts",
+  );
 });
 
 Deno.test("listPendingWorkPaths - excludes worker-owned state files (Issue #1661)", async () => {
@@ -159,4 +176,38 @@ Deno.test("commitPendingWork - a refused commit leaves the paths remaining and n
   assertEquals(outcome.remaining, ["lib/a.ts"]);
   assertEquals(outcome.committed, false);
   assertEquals(outcome.error, "pre-commit gate refused");
+});
+
+Deno.test("commitPendingWork - an unreadable status after the commit is reported, never assumed clean", async () => {
+  const { git } = gitStub({ statuses: [" M lib/a.ts\n", "GIT-FAILED"] });
+
+  const outcome = await commitPendingWork({
+    git,
+    repoPath: "/repo",
+    branchName: "issue-1684",
+    message: "fix: quality",
+  });
+
+  assertEquals(outcome.statusUnknown, true);
+  assertEquals(outcome.committed, true);
+  // The pre-commit paths stand in for an answer git could not give.
+  assertEquals(outcome.remaining, ["lib/a.ts"]);
+});
+
+Deno.test("commitPendingWork - passes the repo's pre-flight gate spec to the chokepoint (Issue #3577)", async () => {
+  const seen: Array<PreFlightGateSpec | undefined> = [];
+  const { git } = gitStub({
+    statuses: [" M lib/a.ts\n", ""],
+    onCommit: (spec) => seen.push(spec),
+  });
+
+  await commitPendingWork({
+    git,
+    repoPath: "/repo",
+    branchName: "issue-1684",
+    message: "fix: quality",
+    preFlight: { commands: ["./preflight.sh"] },
+  });
+
+  assertEquals(seen, [{ commands: ["./preflight.sh"] }]);
 });

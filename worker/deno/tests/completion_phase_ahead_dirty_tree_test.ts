@@ -17,6 +17,7 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubClient } from "../types.ts";
+import { isWipCommitSubject } from "../lib/wip_markers.ts";
 
 const BRANCH = "issue-1684-quality-fix";
 const DIRTY =
@@ -151,7 +152,7 @@ Deno.test(
     assertEquals(run.commits.length, 1, "the work reaches the branch");
     assertEquals(run.commits[0]!.branch, BRANCH);
     assert(
-      !run.commits[0]!.message.startsWith("wip:"),
+      !isWipCommitSubject(run.commits[0]!.message),
       `work that ships in the PR is not parked WIP: ${run.commits[0]!.message}`,
     );
     assertEquals(

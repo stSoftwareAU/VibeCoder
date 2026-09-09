@@ -26,7 +26,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { commitAndPushPending } from "./git_push.ts";
+import type { commitAndPushPending, PreFlightGateSpec } from "./git_push.ts";
 import type { runGitCommand } from "./git_timeout.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
 
@@ -179,6 +179,13 @@ export async function commitPendingWork(options: {
   repoPath: string;
   branchName: string;
   message: string;
+  /**
+   * The repo's mandatory pre-flight gate (Issue #3577), as
+   * `resolvePreFlightSpec` returns it. Passed straight to the chokepoint so an
+   * automated commit here is held to the same gate as one from a PR
+   * processor; `undefined` on a repo with no gate configured.
+   */
+  preFlight?: PreFlightGateSpec;
 }): Promise<PendingWorkCommitResult> {
   const { git, repoPath, branchName, message } = options;
 
@@ -195,9 +202,13 @@ export async function commitPendingWork(options: {
     return { pending, remaining: [], committed: false, statusUnknown: false };
   }
 
-  const commit = await git.commitAndPushPending(branchName, message, {
-    cwd: repoPath,
-  });
+  const commit = await git.commitAndPushPending(
+    branchName,
+    message,
+    { cwd: repoPath },
+    false,
+    options.preFlight,
+  );
 
   const remaining = await listPendingWorkPaths(git, repoPath);
   return {
