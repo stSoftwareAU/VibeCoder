@@ -753,6 +753,16 @@ The operator workflow is therefore:
 The tracker therefore acts as a checklist for the human operator rather than a
 queue for the worker.
 
+**Bounded-sweep visibility.** After a tracker names chunks that were not
+reached, the coverage ledger at
+[`docs/audits/lib-sweep-coverage.json`](audits/lib-sweep-coverage.json)
+is what tells a follow-up scan *which modules those chunks already read*,
+and at which commit. `deno run … mod.ts sweep-drift` prints, for every
+slice, the modules added or modified since that slice's `sweptAt` — the
+file list a delta sweep regenerates from, rather than from stale counts
+in an overflow issue. Drift is a report, not a merge gate: rewriting a
+swept module must not turn CI red.
+
 ## Vulnerability taxonomy covered
 
 From the `prompts/security_scan/` v16 prompt the Phase 2 taxonomy

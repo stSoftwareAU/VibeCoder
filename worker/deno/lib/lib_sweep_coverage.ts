@@ -1,18 +1,17 @@
 /**
- * Coverage ledger for the chunk-12 security sweep of `worker/deno/lib/`
- * (Issue #1219, parent #1209).
+ * Coverage ledger for the security sweeps of `worker/deno/lib/`,
+ * `worker/deno/commands/` and `worker/deno/setup/` (Issue #1609, parents
+ * #1219 / #1209).
  *
- * The sweep was cut into five slices — four organised around taint sinks
- * (#1214 subprocess, #1215 filesystem, #1216 GitHub ingestion, #1217
- * environment/secrets) and one closing pass over everything they left behind
- * (#1219). `lib/` became a 750-file coverage gap in the first place because
- * nothing recorded which paths had been read, so a module added after a sweep
- * was indistinguishable from one the sweep skipped.
+ * The lib/ sweep was cut into sink-organised slices and later top-ups.
+ * `commands/` and `setup/` were read under #1218 and #1220 but were never
+ * partitioned, so a later scan could not tell a swept module from an
+ * unread one. Each slice now records `sweptAt` — the commit its written
+ * record landed at — so `driftSince` and the `sweep-drift` command can
+ * list the modules added or rewritten since that read.
  *
- * This module makes that distinction checkable: the ledger names every
- * non-test module under `worker/deno/lib/` and the slice that swept it, and
- * `diffCoverage` fails loud on any module that is missing, stale, or claimed
- * twice. The enforcing test is
+ * `diffCoverage` still fails loud on any module that is missing, stale,
+ * or claimed twice. The enforcing test is
  * `worker/deno/tests/lib_sweep_coverage_test.ts`.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
@@ -21,8 +20,18 @@
 /** Repo-relative path of the ledger this module reads. */
 export const LIB_SWEEP_LEDGER_PATH = "docs/audits/lib-sweep-coverage.json";
 
-/** Repo-relative directory the ledger covers. */
+/** Repo-relative directory the original ledger covered. */
 export const LIB_SWEEP_ROOT = "worker/deno/lib";
+
+/** The three trees the ledger now partitions (Issue #1609). */
+export const SWEEP_COVERAGE_ROOTS = [
+  "worker/deno/lib",
+  "worker/deno/commands",
+  "worker/deno/setup",
+] as const;
+
+/** A 40-character lowercase git commit. */
+const SWEPT_AT_RE = /^[0-9a-f]{40}$/;
 
 /** Whether a slice has actually been read, or is only claimed by an open issue. */
 export type SweepSliceStatus = "swept" | "claimed";
@@ -41,21 +50,41 @@ export interface SweepSlice {
   readonly definition: string;
   /** `swept` once the slice has been read; `claimed` while its issue is open. */
   readonly status: SweepSliceStatus;
+  /**
+   * Full commit the slice's written record landed at (Issue #1609).
+   * Drift is measured from this SHA to HEAD.
+   */
+  readonly sweptAt: string;
   /** Repo-relative paths owned by this slice. */
   readonly paths: readonly string[];
 }
 
 /** The whole ledger. */
 export interface SweepCoverageLedger {
-  /** Repo-relative directory the ledger covers. */
-  readonly root: string;
+  /** Repo-relative directories the ledger partitions. */
+  readonly roots: readonly string[];
   /** Parent issue that ordered the sweep. */
   readonly parent: number;
   /** Prose describing what the ledger is for. */
   readonly description: string;
-  /** Every slice; together they must partition `root`. */
+  /** Every slice; together they must partition `roots`. */
   readonly slices: readonly SweepSlice[];
 }
+
+/** One slice's added/modified/unowned modules since `sweptAt`. */
+export interface SliceDrift {
+  /** Modules the slice owns that git reports as added since `sweptAt`. */
+  readonly added: string[];
+  /** Modules the slice owns that git reports as modified since `sweptAt`. */
+  readonly modified: string[];
+  /** Modules on disk under the slice's roots that no slice claims. */
+  readonly unowned: string[];
+}
+
+/** Injected git runner for {@link driftSince}. */
+export type SweepGitRunner = (
+  args: readonly string[],
+) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** What `diffCoverage` found wrong. Every list empty means the sweep is closed. */
 export interface CoverageDiff {
@@ -106,6 +135,12 @@ function parseSlice(raw: unknown, index: number): SweepSlice {
       `${LIB_SWEEP_LEDGER_PATH}: slices[${index}].status must be "swept" or "claimed"`,
     );
   }
+  const sweptAt = requireString(slice.sweptAt, `slices[${index}].sweptAt`);
+  if (!SWEPT_AT_RE.test(sweptAt)) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: slices[${index}].sweptAt must be a 40-hex commit`,
+    );
+  }
   const paths = slice.paths;
   if (!Array.isArray(paths)) {
     throw new SweepLedgerError(
@@ -119,10 +154,20 @@ function parseSlice(raw: unknown, index: number): SweepSlice {
     ledger: requireString(slice.ledger, `slices[${index}].ledger`),
     definition: requireString(slice.definition, `slices[${index}].definition`),
     status,
+    sweptAt,
     paths: paths.map((p, i) =>
       requireString(p, `slices[${index}].paths[${i}]`)
     ),
   };
+}
+
+function parseRoots(raw: unknown): string[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: "roots" must be a non-empty array`,
+    );
+  }
+  return raw.map((value, i) => requireString(value, `roots[${i}]`));
 }
 
 /**
@@ -166,11 +211,101 @@ export function parseCoverageLedger(json: string): SweepCoverageLedger {
     );
   }
   return {
-    root: requireString(ledger.root, "root"),
+    roots: parseRoots(ledger.roots),
     parent,
     description: requireString(ledger.description, "description"),
     slices: slices.map(parseSlice),
   };
+}
+
+function splitGitNames(stdout: string): string[] {
+  return stdout.split("\n").map((line) => line.trim()).filter((line) =>
+    line.length > 0 && !line.endsWith("_test.ts")
+  );
+}
+
+function rootsForSlice(
+  slice: SweepSlice,
+  roots: readonly string[],
+): string[] {
+  return roots.filter((root) =>
+    slice.paths.some((path) => path === root || path.startsWith(`${root}/`))
+  );
+}
+
+/**
+ * Modules a slice owns that changed since `sweptAt`, plus unowned modules
+ * on disk under that slice's roots (Issue #1609).
+ *
+ * Git is an injected runner so unit tests never spawn. A non-zero exit
+ * throws with the stderr; an empty diff is an empty report.
+ *
+ * @param ledger - Parsed ledger (roots + every claimed path).
+ * @param slice - The slice whose drift to measure.
+ * @param onDisk - Non-test modules currently on disk (repo-relative).
+ * @param runGit - Git runner. Receives `diff --name-only` argument lists.
+ */
+export async function driftSince(
+  ledger: SweepCoverageLedger,
+  slice: SweepSlice,
+  onDisk: readonly string[],
+  runGit: SweepGitRunner,
+): Promise<SliceDrift> {
+  const claimed = new Set(ledger.slices.flatMap((s) => s.paths));
+  const owned = new Set(slice.paths);
+  const sliceRoots = rootsForSlice(slice, ledger.roots);
+  const added: string[] = [];
+  const modified: string[] = [];
+  for (const root of sliceRoots) {
+    for (const filter of ["A", "M"] as const) {
+      const result = await runGit([
+        "diff",
+        "--name-only",
+        `--diff-filter=${filter}`,
+        slice.sweptAt,
+        "HEAD",
+        "--",
+        root,
+      ]);
+      if (result.code !== 0) {
+        throw new SweepLedgerError(
+          result.stderr.length > 0
+            ? result.stderr
+            : `git diff --diff-filter=${filter} exited ${result.code}`,
+        );
+      }
+      const target = filter === "A" ? added : modified;
+      for (const path of splitGitNames(result.stdout)) {
+        if (owned.has(path)) target.push(path);
+      }
+    }
+  }
+  const unowned = onDisk.filter((path) =>
+    sliceRoots.some((root) => path === root || path.startsWith(`${root}/`)) &&
+    !claimed.has(path)
+  ).sort();
+  return {
+    added: [...new Set(added)].sort(),
+    modified: [...new Set(modified)].sort(),
+    unowned,
+  };
+}
+
+/**
+ * Walk every ledger root and return the sorted non-test module list.
+ *
+ * @param repoRoot - Absolute path of the repository root.
+ * @param roots - Repo-relative directories to walk.
+ */
+export async function listSweptModulesForRoots(
+  repoRoot: string,
+  roots: readonly string[],
+): Promise<string[]> {
+  const paths: string[] = [];
+  for (const root of roots) {
+    paths.push(...await listSweptModules(repoRoot, root));
+  }
+  return [...new Set(paths)].sort();
 }
 
 /**
@@ -313,7 +448,7 @@ export function describeCoverageDiff(diff: CoverageDiff): string | null {
   const parts: string[] = [];
   if (diff.unswept.length > 0) {
     parts.push(
-      `${diff.unswept.length} module(s) under ${LIB_SWEEP_ROOT} are claimed by no sweep slice — ` +
+      `${diff.unswept.length} module(s) under the ledger roots are claimed by no sweep slice — ` +
         `read them for the shapes in ${LIB_SWEEP_LEDGER_PATH}, then add them to a slice:\n` +
         diff.unswept.map((p) => `  - ${p}`).join("\n"),
     );
