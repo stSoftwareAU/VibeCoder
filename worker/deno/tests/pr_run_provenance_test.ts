@@ -69,13 +69,103 @@ Deno.test("decideCompletionPr - an open PR on our exact branch is recovered", ()
   assertEquals(d.prUrl, "https://github.com/o/r/pull/176");
 });
 
-Deno.test("decideCompletionPr - an open PR for the issue is still recovered (pre-#174 behaviour)", () => {
+Deno.test("decideCompletionPr - an open PR for the issue whose head could not be read is still recovered (pre-#174 behaviour)", () => {
+  // No head to compare, so the by-issue match stands: a duplicate PR on a
+  // branch that already has one is the loud failure, a lost branch is the
+  // silent one, and without the head we cannot tell which this would be.
   const d = decideCompletionPr({
     openPrForBranch: null,
     branchCommitsAhead: 2,
     prForIssue: { url: "https://github.com/o/r/pull/50", state: "OPEN" },
+    runBranch: OURS,
   });
   assertEquals(d.kind, "recover");
+  if (d.kind !== "recover") return;
+  assertStringIncludes(d.why, "could not be read");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1799: the OPEN half of #174. VibeCoder#1786's run had two commits on
+// `issue-1786-fix-merge-issues`; the agent had also opened a draft side PR
+// #1794 from `sync/1786-milestone-1653` that mentioned the issue. Completion
+// recovered #1794 and the run's own branch never got a PR.
+// ---------------------------------------------------------------------------
+
+const RUN_BRANCH_1786 = "issue-1786-fix-merge-issues";
+const SIDE_PR_1794 = {
+  url: "https://github.com/stSoftwareAU/VibeCoder/pull/1794",
+  state: "OPEN" as const,
+  headRefName: "sync/1786-milestone-1653",
+};
+
+Deno.test("decideCompletionPr #1799 - an open PR on another head does not swallow a branch with work on it", () => {
+  const d = decideCompletionPr({
+    openPrForBranch: null,
+    branchCommitsAhead: 2,
+    prForIssue: SIDE_PR_1794,
+    runBranch: RUN_BRANCH_1786,
+  });
+  assertEquals(d.kind, "create");
+  assertStringIncludes(d.why, "2 commit(s) ahead");
+  assertStringIncludes(
+    d.why,
+    "pull/1794 is open on 'sync/1786-milestone-1653'",
+  );
+  assertStringIncludes(d.why, "not the PR for this branch");
+});
+
+Deno.test("decideCompletionPr #1799 - an open PR whose head IS our branch is recovered even when the by-branch lookup missed it", () => {
+  const d = decideCompletionPr({
+    openPrForBranch: null,
+    branchCommitsAhead: 2,
+    prForIssue: {
+      url: "https://github.com/o/r/pull/60",
+      state: "OPEN",
+      headRefName: RUN_BRANCH_1786,
+    },
+    runBranch: RUN_BRANCH_1786,
+  });
+  assertEquals(d.kind, "recover");
+  if (d.kind !== "recover") return;
+  assertEquals(d.prUrl, "https://github.com/o/r/pull/60");
+  assertStringIncludes(d.why, "has this branch as its head");
+});
+
+Deno.test("decideCompletionPr #1799 - a level branch still recovers an open PR on another head (nothing of ours to represent)", () => {
+  const d = decideCompletionPr({
+    openPrForBranch: null,
+    branchCommitsAhead: 0,
+    prForIssue: SIDE_PR_1794,
+    runBranch: RUN_BRANCH_1786,
+  });
+  assertEquals(d.kind, "recover");
+  if (d.kind !== "recover") return;
+  assertEquals(d.prUrl, SIDE_PR_1794.url);
+});
+
+Deno.test("decideCompletionPr #1799 - an unknown commit count still recovers an open PR on another head", () => {
+  const d = decideCompletionPr({
+    openPrForBranch: null,
+    branchCommitsAhead: null,
+    prForIssue: SIDE_PR_1794,
+    runBranch: RUN_BRANCH_1786,
+  });
+  assertEquals(d.kind, "recover");
+});
+
+Deno.test("decideCompletionPr #1799 - the branch shape alone proves nothing on the OPEN side either", () => {
+  // Same `issue-42-*` shape as ours, different branch: still not ours.
+  const d = decideCompletionPr({
+    openPrForBranch: null,
+    branchCommitsAhead: 3,
+    prForIssue: {
+      url: "https://github.com/o/r/pull/173",
+      state: "OPEN",
+      headRefName: THEIRS,
+    },
+    runBranch: OURS,
+  });
+  assertEquals(d.kind, "create");
 });
 
 Deno.test("decideCompletionPr - a level branch with a merged PR still recovers (Issue #1559 stays fixed)", () => {
