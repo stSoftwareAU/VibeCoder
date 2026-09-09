@@ -21,6 +21,12 @@
  * `needs-human` is the correct signal that the ball is back in the
  * user's court — it is no longer removed on convergence.
  *
+ * Reopening (Issue #1634): a Ready comment no longer ends grilling for
+ * good. When the developer re-applies `grill-me` after it (clearing
+ * `needs-human`, which the discovery filter requires anyway), the worker
+ * starts a fresh round instead of stripping the label straight back off,
+ * and the safety cap counts only the rounds of that reopened grilling.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -63,7 +69,11 @@ import {
 } from "./requirements_rubric.ts";
 import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { invalidateComments } from "./comment_cache.ts";
-import { getLabelLastRemoveInfo } from "./issue_query.ts";
+import {
+  getLabelLastAddInfoComplete,
+  getLabelLastRemoveInfo,
+  type LabelLastAddInfo,
+} from "./issue_query.ts";
 import {
   isFleetAuthor,
   resolveSuppressionExcludedLogins,
@@ -296,14 +306,22 @@ export function countGrillMeRounds(
 ): number {
   let count = 0;
   for (const c of comments) {
-    if (
-      carriesMarkerHeading(c.body, GRILL_ME_ROUND_MARKER) ||
-      carriesMarkerHeading(c.body, GRILL_ME_FINAL_MARKER)
-    ) {
-      count++;
-    }
+    if (carriesRoundMarker(c.body)) count++;
   }
   return count;
+}
+
+/**
+ * Is this comment a grilling round? The `## Grill-Me Round N` marker, or the
+ * final-confirmation marker — finalisation is itself the last round.
+ *
+ * One predicate shared by every round scanner ({@link countGrillMeRounds},
+ * {@link countGrillMeRoundsSince}, {@link findLatestWorkerRoundTimestamp}) so
+ * the three cannot drift apart.
+ */
+function carriesRoundMarker(body: string): boolean {
+  return carriesMarkerHeading(body, GRILL_ME_ROUND_MARKER) ||
+    carriesMarkerHeading(body, GRILL_ME_FINAL_MARKER);
 }
 
 /**
@@ -509,10 +527,84 @@ export function synthesiseRoundComment(
 export function hasReadyMarkerBeenPosted(
   comments: readonly GitHubComment[],
 ): boolean {
+  return countReadyMarkers(comments) > 0;
+}
+
+/**
+ * Count the Ready-for-Next-Phase markers on the issue (Issue #1634).
+ *
+ * A boolean "has one been posted" was enough while a Ready comment ended
+ * grilling for good. Now that re-applying `grill-me` reopens it, the old Ready
+ * comment stays in the thread for every later round, so "a Ready marker is
+ * present" no longer means "Claude just converged". The race guard and the
+ * post-Claude outcome check both compare counts instead, so only a *new* Ready
+ * marker registers.
+ *
+ * Author-agnostic and heading-anchored for the same reasons as
+ * {@link hasReadyMarkerBeenPosted}.
+ *
+ * @param comments - Issue comments (chronological order)
+ */
+export function countReadyMarkers(comments: readonly GitHubComment[]): number {
+  let count = 0;
   for (const c of comments) {
-    if (carriesMarkerHeading(c.body, GRILL_ME_READY_MARKER)) return true;
+    if (carriesMarkerHeading(c.body, GRILL_ME_READY_MARKER)) count++;
   }
-  return false;
+  return count;
+}
+
+/**
+ * Find the `createdAt` ISO timestamp of the most recent Ready marker, or
+ * `null` when none has been posted (Issue #1634).
+ *
+ * The reopen check needs the moment grilling last converged: only a
+ * `labeled grill-me` event *after* that moment is a developer reopening it,
+ * rather than the original label add that started the grilling.
+ *
+ * @param comments - Issue comments (chronological order)
+ */
+export function findLatestReadyMarkerTimestamp(
+  comments: readonly GitHubComment[],
+): string | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const c = comments[i]!;
+    if (carriesMarkerHeading(c.body, GRILL_ME_READY_MARKER)) return c.createdAt;
+  }
+  return null;
+}
+
+/**
+ * Count grill-me rounds posted after `sinceTimestamp` (Issue #1634).
+ *
+ * The safety cap compares against this rather than the issue-wide total once
+ * grilling has been reopened: a developer who re-applies `grill-me` to an
+ * issue that already burned all `maxGrillMeRounds` rounds would otherwise be
+ * escalated to `needs-human` on the very first reopened round. A reopened
+ * grilling gets the full cap again; the round *heading* still continues the
+ * issue-wide numbering, which is {@link countGrillMeRounds}.
+ *
+ * A comment whose `createdAt` is unparseable counts, so a malformed timestamp
+ * can only make the cap stricter — never hand a fresh budget to an issue that
+ * has not earned one.
+ *
+ * @param comments - Issue comments (chronological order)
+ * @param sinceTimestamp - ISO timestamp to count after; `null` counts all
+ * @returns The number of rounds posted strictly after `sinceTimestamp`
+ */
+export function countGrillMeRoundsSince(
+  comments: readonly GitHubComment[],
+  sinceTimestamp: string | null,
+): number {
+  if (sinceTimestamp === null) return countGrillMeRounds(comments);
+  const sinceMs = Date.parse(sinceTimestamp);
+  if (Number.isNaN(sinceMs)) return countGrillMeRounds(comments);
+  let count = 0;
+  for (const c of comments) {
+    if (!carriesRoundMarker(c.body)) continue;
+    const createdMs = Date.parse(c.createdAt);
+    if (Number.isNaN(createdMs) || createdMs > sinceMs) count++;
+  }
+  return count;
 }
 
 /**
@@ -594,14 +686,23 @@ export function findLatestWorkerRoundTimestamp(
 ): string | null {
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!;
-    if (
-      carriesMarkerHeading(c.body, GRILL_ME_ROUND_MARKER) ||
-      carriesMarkerHeading(c.body, GRILL_ME_FINAL_MARKER)
-    ) {
-      return c.createdAt;
-    }
+    if (carriesRoundMarker(c.body)) return c.createdAt;
   }
   return null;
+}
+
+/**
+ * The later of two ISO timestamps; `null` only when both are null, and the
+ * parseable one when the other is malformed.
+ */
+function laterTimestamp(a: string | null, b: string | null): string | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  const aMs = Date.parse(a);
+  const bMs = Date.parse(b);
+  if (Number.isNaN(aMs)) return b;
+  if (Number.isNaN(bMs)) return a;
+  return aMs >= bMs ? a : b;
 }
 
 /**
@@ -652,6 +753,54 @@ export function isNonWorkerRemovalAfterRound(
   const roundMs = Date.parse(latestRoundTimestamp);
   if (Number.isNaN(roundMs)) return false;
   return removeInfo.removedAt * 1000 > roundMs;
+}
+
+/**
+ * Decide whether a non-worker user applied a label after the comment named by
+ * `sinceTimestamp` — the developer reopening grilling (Issue #1634).
+ *
+ * Once a Ready comment existed, every later `grill-me` re-add was skipped as
+ * "Ready already posted": the worker stripped `grill-me` straight back off and
+ * re-applied `needs-human`, so grilling could never be reopened
+ * (GRQ-AutoTrader#13 flipped back twice within four hours). The Ready comment
+ * no longer ends grilling for good — a deliberate re-add starts a fresh round.
+ *
+ * Asked twice, against two different timestamps:
+ *   - against the newest **Ready** comment, to decide whether grilling has
+ *     been reopened at all; and
+ *   - against the newest **round** comment, to decide whether the re-add is
+ *     still the newest signal on the issue. Once the reopened grilling has
+ *     posted its own round the ordinary "wait for the developer" gate applies
+ *     again — a re-add buys one round, not an unanswered run to the cap.
+ *
+ * Returns true only when the timeline holds the label-add event, its actor is
+ * NOT a fleet identity (a peer worker's re-add is a fleet action, not a
+ * developer's request — mirroring {@link isNonWorkerRemovalAfterRound}), and
+ * the add occurred AFTER `sinceTimestamp`. Every other answer — no event, no
+ * such comment, an unreadable timeline — is false, which preserves whichever
+ * behaviour the caller had before.
+ *
+ * @param addInfo - Latest `labeled <label>` event, or null
+ * @param sinceTimestamp - `createdAt` of the comment the add must post-date
+ * @param githubUser - This host's GitHub login
+ * @param fleetLogins - Sibling fleet logins (`fleet_pr_authors` /
+ *   `service_accounts`); human `allowed_authors` are deliberately excluded so
+ *   a maintainer's re-add still counts as the developer's signal
+ */
+export function isNonWorkerLabelAddAfter(
+  addInfo: { addedAt: number; addedBy: string } | null,
+  sinceTimestamp: string | null,
+  githubUser: string,
+  fleetLogins: readonly string[] = [],
+): boolean {
+  if (addInfo === null) return false;
+  if (sinceTimestamp === null) return false;
+  if (isFleetAuthor(addInfo.addedBy, [githubUser, ...fleetLogins])) {
+    return false;
+  }
+  const sinceMs = Date.parse(sinceTimestamp);
+  if (Number.isNaN(sinceMs)) return false;
+  return addInfo.addedAt * 1000 > sinceMs;
 }
 
 /**
@@ -760,9 +909,14 @@ export async function buildGrillMePrompt(
  *   5. If the Ready marker has already been posted → no-op (developer
  *      must apply the next-phase label); remove any lingering
  *      `grill-me` label and ensure `needs-human` is applied as the
- *      completion turn signal (Issue #2064).
+ *      completion turn signal (Issue #2064). Unless a non-fleet actor
+ *      re-applied `grill-me` after that Ready comment, which reopens
+ *      grilling for a fresh round (Issue #1634).
  *   6. If the safety cap `maxGrillMeRounds` has been reached without
  *      convergence → escalate to needs-human with a recommendation.
+ *      After a reopen the cap counts only the rounds posted since the
+ *      Ready comment, so a reopened grilling gets the full budget
+ *      again (Issue #1634).
  *   7. Build the grill-me prompt and invoke Claude.
  *   8. If Claude posted the Ready marker, remove `grill-me` and ensure
  *      `needs-human` is applied (defence in depth — Issue #2064).
@@ -955,8 +1109,75 @@ async function _processGrillMeWithHeartbeat(
   }
 
   // 3) Skip when the worker has already posted the Ready marker — it is
-  //    the developer's turn to apply the next-phase label (Issue #1648).
-  if (hasReadyMarkerBeenPosted(comments)) {
+  //    the developer's turn to apply the next-phase label (Issue #1648) —
+  //    unless the developer has since re-applied `grill-me`, which reopens
+  //    grilling for a fresh round (Issue #1634).
+  // A peer identity's label move is a fleet action, never the developer's
+  // signal (Issue #1560) — shared by the reopen check and the #1878 override.
+  const fleetLogins = resolveSuppressionExcludedLogins({
+    githubUser,
+    fleetPrAuthors: config.fleetPrAuthors,
+    serviceAccounts: config.serviceAccounts,
+  });
+  const latestReadyTimestamp = findLatestReadyMarkerTimestamp(comments);
+  // The `labeled grill-me` event that reopened grilling, or null when nothing
+  // reopened it.
+  let reopenAddInfo: LabelLastAddInfo | null = null;
+  if (latestReadyTimestamp !== null) {
+    // A `labeled grill-me` event by a non-fleet actor after the newest Ready
+    // comment is the developer asking for more grilling. Anything else — no
+    // such event, a peer worker's re-add, or a timeline lookup that could not
+    // answer — takes the clean-up path below unchanged.
+    try {
+      // Exhaustive, not the page-1 `getLabelLastAddInfo`: this answer decides
+      // whether to invoke Claude and post a round. A grilling with several
+      // rounds, replies and claim comments easily exceeds 100 timeline events,
+      // and a page-1 read returns the *oldest* slice — the developer's fresh
+      // re-add would fall outside it and the label be stripped again, leaving
+      // the reported bug unfixed on exactly the issues this targets.
+      const addInfo = await getLabelLastAddInfoComplete(
+        repo,
+        issueNumber,
+        grillMeLabel,
+        deps.github.runGhCommand,
+      );
+      if (addInfo === null) {
+        logger.warn(
+          "Could not read a grill-me label-add event from the timeline — treating Ready as final",
+          { repo, issueNumber },
+        );
+      } else if (
+        isNonWorkerLabelAddAfter(
+          addInfo,
+          latestReadyTimestamp,
+          githubUser,
+          fleetLogins,
+        )
+      ) {
+        reopenAddInfo = addInfo;
+        logger.info(
+          "grill-me was re-applied by a non-worker after the Ready marker — reopening grilling",
+          {
+            repo,
+            issueNumber,
+            addedBy: addInfo.addedBy,
+            addedAt: addInfo.addedAt,
+            latestReadyTimestamp,
+          },
+        );
+      }
+    } catch (err) {
+      // Fail-safe: preserve the existing Ready clean-up behaviour when the
+      // timeline lookup fails, rather than grilling an issue nobody reopened.
+      logger.warn(
+        "Failed to inspect timeline for a grill-me re-add — treating Ready as final",
+        { error: err instanceof Error ? err.message : String(err) },
+      );
+    }
+  }
+  const reopened = reopenAddInfo !== null;
+
+  if (latestReadyTimestamp !== null && !reopened) {
     logger.info(
       "Ready-for-Next-Phase marker already posted — skipping Claude invocation",
       { repo, issueNumber },
@@ -1061,7 +1282,29 @@ async function _processGrillMeWithHeartbeat(
   //     Round 1. `hasGrillMeRoundAwaitingReply` sees any identity's
   //     unanswered round, so the invocation is prevented, not merely
   //     recovered from after the fact by the #3768 post-run check.
-  if (hasGrillMeRoundAwaitingReply(comments, githubUser)) {
+  //
+  //     Skipped while a reopen is the newest signal on the issue (Issue
+  //     #1634): the newest marker is then the Ready comment the re-add
+  //     deliberately overrides, so the gate would block the very round the
+  //     developer asked for. Once the reopened grilling has posted its own
+  //     round the re-add is no longer newest and this gate resumes — a re-add
+  //     buys one round, not an unanswered run to the cap.
+  const reopenSupersedesLatestRound = isNonWorkerLabelAddAfter(
+    reopenAddInfo,
+    // The newest worker marker, not merely the newest round: a grilling that
+    // converged without ever posting a round has no round timestamp, and the
+    // Ready comment is then the marker the re-add has to out-date.
+    laterTimestamp(
+      findLatestWorkerRoundTimestamp(comments),
+      latestReadyTimestamp,
+    ),
+    githubUser,
+    fleetLogins,
+  );
+  if (
+    !reopenSupersedesLatestRound &&
+    hasGrillMeRoundAwaitingReply(comments, githubUser)
+  ) {
     // Issue #1878: Treat an explicit non-worker removal of
     // `needs-human` after the latest Round N as the developer's "go"
     // signal — even when no separate reply comment has been posted.
@@ -1084,11 +1327,7 @@ async function _processGrillMeWithHeartbeat(
         githubUser,
         // A peer identity's operational-label strip is a fleet action, not
         // the developer's "proceed" signal (Issue #1560).
-        resolveSuppressionExcludedLogins({
-          githubUser,
-          fleetPrAuthors: config.fleetPrAuthors,
-          serviceAccounts: config.serviceAccounts,
-        }),
+        fleetLogins,
       );
       if (explicitRemoval && removeInfo !== null) {
         logger.info(
@@ -1191,10 +1430,14 @@ async function _processGrillMeWithHeartbeat(
   //    safety cap (Issue #1648) — when the next round would exceed it,
   //    escalate to needs-human instead of forcing finalisation.
   const priorRounds = countGrillMeRounds(comments);
-  if (priorRounds >= maxRounds) {
+  // The cap counts only the rounds of the *current* grilling (Issue #1634):
+  // after a reopen the rounds that preceded the Ready comment are spent
+  // budget, not this grilling's. With no Ready comment the two are identical.
+  const cappedRounds = countGrillMeRoundsSince(comments, latestReadyTimestamp);
+  if (cappedRounds >= maxRounds) {
     logger.warn(
       "Grill-me safety cap reached without convergence — escalating to needs-human",
-      { repo, issueNumber, priorRounds, maxRounds },
+      { repo, issueNumber, priorRounds, cappedRounds, maxRounds },
     );
     await escalateToHuman({
       ghClient,
@@ -1273,7 +1516,12 @@ async function _processGrillMeWithHeartbeat(
   }
 
   const guardPriorRounds = countGrillMeRounds(raceGuardComments);
-  const guardReadyPosted = hasReadyMarkerBeenPosted(raceGuardComments);
+  // Only a *new* Ready marker means a peer converged while we were preparing.
+  // On a reopen the old Ready comment is still in the thread, so a boolean
+  // "a Ready marker exists" would abort every reopened round (Issue #1634).
+  const readyMarkersAtStart = countReadyMarkers(comments);
+  const guardReadyPosted = countReadyMarkers(raceGuardComments) >
+    readyMarkersAtStart;
 
   if (guardPriorRounds > priorRounds || guardReadyPosted) {
     logger.warn(
@@ -1316,13 +1564,26 @@ async function _processGrillMeWithHeartbeat(
   // most current developer reply.
   comments = raceGuardComments;
 
+  // Baseline for "did Claude post a Ready marker *this* round" (Issue #1634),
+  // taken from the same list the prompt is built from.
+  const readyMarkersBeforeClaude = countReadyMarkers(comments);
+
   const roundNumber = priorRounds + 1;
+
+  // The prompt compares `ROUND_NUMBER >= MAX_ROUNDS` to decide when to prefer
+  // converging. `roundNumber` is the issue-wide heading number, so on a reopen
+  // the cap has to be expressed in that same scale — otherwise the first
+  // reopened round already reads as "out of budget" and converges immediately
+  // (Issue #1634). With no reopen the two are identical.
+  const spentBeforeReopen = priorRounds - cappedRounds;
+  const effectiveMaxRounds = maxRounds + spentBeforeReopen;
 
   logger.info("Starting grill-me round", {
     repo,
     issueNumber,
     roundNumber,
     maxRounds,
+    effectiveMaxRounds,
   });
 
   // 5) Build the prompt.
@@ -1348,7 +1609,7 @@ async function _processGrillMeWithHeartbeat(
 
   const promptResult = await buildGrillMePrompt({
     roundNumber,
-    maxRounds,
+    maxRounds: effectiveMaxRounds,
     issueBody,
     commentHistory: history.formattedComments,
     commentBoundaryId: history.boundaryId,
@@ -1474,7 +1735,12 @@ async function _processGrillMeWithHeartbeat(
   }
 
   const newRoundCount = countGrillMeRounds(postCommentList);
-  const readyPostedNow = hasReadyMarkerBeenPosted(postCommentList);
+  // A Ready marker Claude posted *this round*, not the one a reopened grilling
+  // inherited from the previous convergence (Issue #1634). Keyed on presence,
+  // a reopened round was read as a fresh convergence: `grill-me` was stripped
+  // and `needs-human` re-applied the moment Round N+1 was posted.
+  const readyPostedNow = countReadyMarkers(postCommentList) >
+    readyMarkersBeforeClaude;
   const workerCommentPosted = newRoundCount > priorRounds || readyPostedNow;
 
   // Issue #1876: duplicate-post detection. If `newRoundCount` jumped by
@@ -1719,11 +1985,14 @@ async function _processGrillMeWithHeartbeat(
       needsHumanRemoved,
       workerUnassigned,
       degraded,
+      // `effectiveMaxRounds` keeps the ratio in the same scale as
+      // `roundNumber`, so a reopened grilling reads "Round 4/6" rather than
+      // the impossible "Round 4/3" (Issue #1634).
       summary: readyPostedNow
-        ? `Round ${roundNumber}/${maxRounds} posted Ready marker — awaiting developer label change${
+        ? `Round ${roundNumber}/${effectiveMaxRounds} posted Ready marker — awaiting developer label change${
           defenceInDepthApplied ? " (grill-me removed defence-in-depth)" : ""
         }`
-        : `Round ${roundNumber}/${maxRounds} posted`,
+        : `Round ${roundNumber}/${effectiveMaxRounds} posted`,
     },
   };
 }
