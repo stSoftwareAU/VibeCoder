@@ -9,6 +9,9 @@
  *     `rejected_by_audit`.
  *   - Audit fail — original HEAD restored, gate fails as before.
  *
+ * Issue #1714: the bump is undone with `git revert`, not `reset --hard`,
+ * so commits made (and pushed) after the bump are never rewound.
+ *
  * Australian English used throughout (behaviour, organisation, etc.).
  */
 
@@ -132,17 +135,28 @@ Deno.test(
       "audit must record a rejection reason",
     );
 
-    // Audit must reset --hard to beforeBumpSha. We don't assert the exact
-    // sequence (tests for git_history.ts cover that) but we do require at
-    // least one reset --hard <beforeBumpSha> happened.
-    const resetCall = gitCalls.find(
+    // Issue #1714: the audit undoes the bump with a forward-moving revert of
+    // the bump commit, never a `reset --hard` to beforeBumpSha — that reset
+    // also dropped (possibly pushed) later commits. See
+    // quality_gate_bump_audit_history_test.ts for the real-repository proof.
+    const revertCall = gitCalls.find(
+      (args) =>
+        args[0] === "revert" && args[1] === "--no-edit" &&
+        args[2] === "bumpsha",
+    );
+    assertEquals(
+      revertCall !== undefined,
+      true,
+      "audit must revert the bump commit",
+    );
+    const rewind = gitCalls.find(
       (args) =>
         args[0] === "reset" && args[1] === "--hard" && args[2] === "beforesha",
     );
     assertEquals(
-      resetCall !== undefined,
-      true,
-      "audit must reset --hard to beforeBumpSha",
+      rewind,
+      undefined,
+      "audit must never reset --hard to beforeBumpSha (Issue #1714)",
     );
   },
 );
