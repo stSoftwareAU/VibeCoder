@@ -335,6 +335,19 @@ export function createClaudeCredentialPool(
             `to switch the run environment to`,
         );
       }
+      // A switch replaces ONE variable. Start-up exports every recognised
+      // entry of the file it chose, so a pool file carrying a second
+      // credential beside its OAuth token would leave the previous file's
+      // second credential standing next to the new token — two subscriptions
+      // in one environment, which is the one thing #919 rules out. Refuse
+      // loudly rather than half-switch.
+      if (token.entries.length > 1) {
+        throw new Error(
+          `${LOG_PREFIX}: ${token.label} carries ${token.entries.length} ` +
+            `credential variables, so switching to it cannot leave exactly ` +
+            `one in the environment — keep one credential per pool file`,
+        );
+      }
       // Replacing, not adding: exactly one Claude token variable is left in
       // the environment, carrying the newly selected file's value.
       setEnv(name, value);
@@ -398,13 +411,24 @@ export function createClaudeCredentialPool(
     }
     const pending = inFlight.get(token.label);
     if (pending) return pending;
-    const refresh = probe(token).finally(() => inFlight.delete(token.label));
+    const refresh = probe(token, now).finally(() =>
+      inFlight.delete(token.label)
+    );
     inFlight.set(token.label, refresh);
     return refresh;
   }
 
-  /** One probe, recorded as a snapshot. Never throws: a failure is unknown. */
-  async function probe(token: ProviderTokenFile): Promise<ClaudeTokenBudget> {
+  /**
+   * One probe, recorded as a snapshot. Never throws: a failure is unknown.
+   *
+   * Stamped with the `now` the selection was made against rather than a
+   * second clock reading, so staleness is always measured on the same time
+   * source that decided the refresh was due.
+   */
+  async function probe(
+    token: ProviderTokenFile,
+    observedAtMs: number,
+  ): Promise<ClaudeTokenBudget> {
     let budget: ClaudeTokenBudget;
     try {
       budget = await probeClaudeTokenBudget(token.value ?? "", {
@@ -423,7 +447,7 @@ export function createClaudeCredentialPool(
         detail: error instanceof Error ? error.name : "probe threw",
       };
     }
-    snapshots.set(token.label, { budget, observedAtMs: clock() });
+    snapshots.set(token.label, { budget, observedAtMs });
     return budget;
   }
 }

@@ -409,6 +409,32 @@ Deno.test("claude credential pool - applySelection refuses a file carrying no su
   assertEquals(threw, true, "a switch that cannot switch must fail loudly");
 });
 
+Deno.test("claude credential pool - applySelection refuses a file carrying a second credential", () => {
+  // Start-up exports every recognised entry of the file it chose, so a pool
+  // file holding an API key beside its OAuth token would leave the previous
+  // file's key standing next to the new token — two subscriptions in one
+  // environment. Refusing beats half-switching.
+  const pool = createClaudeCredentialPool({ provider: CLAUDE });
+  const twoCredentials = tokenFile("provider-2", {
+    entries: [
+      { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "token-provider-2" },
+      { name: "ANTHROPIC_API_KEY", value: "sk-not-a-subscription" },
+    ],
+  });
+  const env = new Map<string, string>();
+  let threw = false;
+  try {
+    pool.applySelection(twoCredentials, (name, value) => env.set(name, value));
+  } catch (error: unknown) {
+    threw = true;
+    assertStringIncludes(String(error), "provider-2");
+    // The refusal names the file, never either credential's value.
+    assertEquals(String(error).includes("sk-not-a-subscription"), false);
+  }
+  assertEquals(threw, true);
+  assertEquals(env.size, 0, "nothing is switched when the switch is refused");
+});
+
 Deno.test("claude credential pool - a single-token host makes no request and logs nothing", async () => {
   const probe = fetchWith({ "token-provider": healthy() });
   const lines: string[] = [];
