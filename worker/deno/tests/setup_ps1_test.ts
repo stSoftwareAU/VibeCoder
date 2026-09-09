@@ -89,6 +89,28 @@ ${body}
   };
 }
 
+/**
+ * Environment for the cases that run `setup.ps1 -File …` end to end
+ * (Issue #1656). Those delegate to the Deno setup CLI, so they need the
+ * runner's own `PATH` (and Deno cache) to find `deno` — but nothing else
+ * of the runner's: inheriting everything carried the worker image's
+ * `CONFIG_PATH` beside the case's `CONFIG_FILE`, and setup.ps1 rightly
+ * refuses two config variables that disagree.
+ */
+function cliCaseEnv(
+  home: string,
+  configPath: string,
+): Record<string, string> {
+  const env: Record<string, string> = {
+    PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+    HOME: home,
+    CONFIG_FILE: configPath,
+  };
+  const denoDir = Deno.env.get("DENO_DIR");
+  if (denoDir !== undefined) env.DENO_DIR = denoDir;
+  return env;
+}
+
 /** Register a test that needs PowerShell, skipping when there is none. */
 function pwshTest(name: string, fn: () => Promise<void>): void {
   Deno.test({ name, ignore: PWSH === null, fn });
@@ -576,10 +598,8 @@ Deno.test({
         }),
       );
 
-      // An explicit environment, as every other case in this suite spawns
-      // with (Issue #1656): inheriting the runner's own carried the worker
-      // image's `CONFIG_PATH` alongside this `CONFIG_FILE`, and setup.ps1
-      // rightly refuses two config variables that disagree.
+      // An explicit environment, never the runner's (Issue #1656) — see
+      // `cliCaseEnv`.
       const proc = await new Deno.Command(PWSH!, {
         args: [
           "-NoProfile",
@@ -588,7 +608,7 @@ Deno.test({
           SETUP_PS1,
           "-ListRepos",
         ],
-        env: { PATH: "/usr/bin:/bin", HOME: dir, CONFIG_FILE: configPath },
+        env: cliCaseEnv(dir, configPath),
         clearEnv: true,
         stdout: "piped",
         stderr: "piped",
@@ -623,11 +643,11 @@ Deno.test({
       );
 
       const run = async (...args: string[]) => {
-        // Explicit environment, never the runner's (Issue #1656) — see the
-        // -ListRepos case above.
+        // Explicit environment, never the runner's (Issue #1656) — see
+        // `cliCaseEnv`.
         const proc = await new Deno.Command(PWSH!, {
           args: ["-NoProfile", "-NonInteractive", "-File", SETUP_PS1, ...args],
-          env: { PATH: "/usr/bin:/bin", HOME: dir, CONFIG_FILE: configPath },
+          env: cliCaseEnv(dir, configPath),
           clearEnv: true,
           stdout: "piped",
           stderr: "piped",
