@@ -17,6 +17,7 @@
 import type { Logger } from "../types.ts";
 import type { GitDeps } from "./issue_worker_wiring.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { PR_RESPONSE_MESSAGE_FILE } from "./worker_state_paths.ts";
 import {
   assertSafeGitRef,
   buildCheckoutArgs,
@@ -173,6 +174,17 @@ export async function preparePrBranch(
 }
 
 /**
+ * Where the agent's `.pr_response_message` lives for a working directory.
+ *
+ * Shares its filename with `worker_state_paths.ts` (Issue #1711), so the
+ * final-mile chokepoint that keeps the reply out of the commit and this reader
+ * that consumes it after the push cannot drift apart.
+ */
+export function prResponseMessagePath(workDir: string): string {
+  return `${workDir}/${PR_RESPONSE_MESSAGE_FILE}`;
+}
+
+/**
  * Read and consume the `.pr_response_message` file if Claude created one.
  *
  * Claude writes a per-fix summary into this file; callers use it as the PR
@@ -197,7 +209,7 @@ export async function readPrResponseMessage(
   workDir: string | undefined,
 ): Promise<string | undefined> {
   if (!workDir) return undefined;
-  const path = `${workDir}/.pr_response_message`;
+  const path = prResponseMessagePath(workDir);
   try {
     const content = await Deno.readTextFile(path);
     // Remove the file so it cannot be reused on the next invocation.
