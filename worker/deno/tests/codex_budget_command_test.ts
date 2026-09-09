@@ -9,7 +9,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   codexBudgetCommand,
   defaultCodexHome,
@@ -81,7 +81,7 @@ Deno.test("codex-budget - renders no credential for an API-key account", async (
       `${home}/auth.json`,
       JSON.stringify({
         auth_mode: "apikey",
-        OPENAI_API_KEY: "sk-proj-not-a-real-key-000000000000",
+        OPENAI_API_KEY: "sk-" + "0".repeat(48),
       }),
     );
     const result = await codexBudgetCommand.execute(
@@ -90,7 +90,7 @@ Deno.test("codex-budget - renders no credential for an API-key account", async (
     );
     assertStringIncludes(result.message, "auth mode: api-key");
     assertStringIncludes(result.message, "api-key-account");
-    assertEquals(result.message.includes("sk-proj-not-a-real-key"), false);
+    assertEquals(result.message.includes("sk-"), false);
     assertEquals(containsSecret(result.message), false);
   } finally {
     await Deno.remove(home, { recursive: true });
@@ -102,11 +102,11 @@ Deno.test("describeCodexBudgetSnapshot - renders exhaustion without a reset gues
     budget: {
       known: true,
       remainingFraction: 0,
-      window: "primary",
       windows: [],
     },
     source: "exhaustion-event",
     readAt: 1_788_000_000_000,
+    evidenceAt: 1_788_000_000_000,
     exhaustion: { kind: "rate_limit_reached" },
     authMode: "chatgpt",
   }, "/tmp/codex");
@@ -130,7 +130,14 @@ Deno.test("defaultCodexHome - honours CODEX_HOME, else ~/.codex", () => {
   assertEquals(defaultCodexHome(() => undefined), ".codex");
 });
 
-Deno.test("codex-budget - is registered with a read-only description", () => {
-  assertEquals(codexBudgetCommand.name, "codex-budget");
-  assert(codexBudgetCommand.description.includes("read-only"));
+Deno.test("codex-budget - reads nothing it was not pointed at", async () => {
+  // The diagnostic's read-only claim, asserted as behaviour: running it
+  // against an empty CODEX_HOME leaves that directory exactly as it was.
+  const home = await Deno.makeTempDir({ prefix: "codex-budget-ro-" });
+  try {
+    await codexBudgetCommand.execute({ "codex-home": home }, CONFIG);
+    assertEquals([...Deno.readDirSync(home)].length, 0);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
 });

@@ -94,6 +94,18 @@ export type CodexBudgetWindowName = "primary" | "secondary";
  */
 export const MAX_PLAUSIBLE_RESET_EPOCH_SECONDS = 4_102_444_800;
 
+/**
+ * Smallest `resets_at` accepted as epoch **seconds** — 2020-01-01T00:00:00Z.
+ *
+ * Without a floor, a *relative* value — `3600`, the `resets_in_seconds`
+ * convention earlier Codex releases used for this very field — passes every
+ * other check and becomes a reset instant in 1970: a fabricated rollover
+ * silently in the past, which reads as "the window has already reset, go
+ * again". Anything below the floor is not an absolute epoch, so the reset is
+ * dropped and the utilisation kept.
+ */
+export const MIN_PLAUSIBLE_RESET_EPOCH_SECONDS = 1_577_836_800;
+
 /** One rolling window, as the pinned CLI reports it. */
 export interface CodexBudgetWindow {
   /** Which window this is. */
@@ -124,16 +136,21 @@ export type CodexBudgetUnknownReason =
   | "no-session-file"
   /** Session files exist but none carries a `token_count` with rate limits. */
   | "no-rate-limit-event"
-  /** The session directory could not be read. */
+  /** A session directory or file could not be read. */
   | "read-error"
+  /**
+   * A transient `429` throttle, which is NOT evidence of a spent window: the
+   * pinned CLI words a genuine usage limit as `UsageLimitReached`, so a bare
+   * `unexpected status 429` is a per-request throttle and the remaining
+   * budget is simply unknown.
+   */
+  | "transient-rate-limit"
   /**
    * The credential is an API key, so no subscription window exists — spend is
    * bounded by the account's own rate limits and billing, NOT by a weekly
    * allowance the worker could invent.
    */
   | "api-key-account"
-  /** Which credential kind is in use could not be established. */
-  | "auth-mode-unknown"
   /** The CLI reported an authentication failure (401/403-shaped). */
   | "auth-rejected";
 
@@ -142,8 +159,14 @@ export interface CodexBudgetKnown {
   readonly known: true;
   /** Remaining share of the most constrained window, in `[0, 1]`. */
   readonly remainingFraction: number;
-  /** Which window {@link remainingFraction} came from. */
-  readonly window: CodexBudgetWindowName;
+  /**
+   * Which window {@link remainingFraction} came from.
+   *
+   * Absent when no window was reported — an exhaustion message evidences that
+   * *a* window is spent without ever naming which, and naming one anyway would
+   * be an inference the CLI never made.
+   */
+  readonly window?: CodexBudgetWindowName;
   /** Rollover of the most constrained window, epoch ms, when reported. */
   readonly resetAt?: number;
   /** Every window parsed, primary first. */
@@ -156,6 +179,17 @@ export interface CodexBudgetKnown {
   readonly planType?: string;
   /** Credit state, when present. */
   readonly credits?: CodexCreditsState;
+  /**
+   * Exhaustion the backend itself declared on this snapshot.
+   *
+   * `RateLimitSnapshot.rate_limit_reached_type` is machine-readable, carries
+   * no timezone and costs nothing to read, so it is better evidence than the
+   * prose message — and it arrives on the same rollout line as the
+   * percentages.
+   */
+  readonly rateLimitReachedType?: CodexExhaustionKind;
+  /** Backend-reported spend-control state, when it reported one. */
+  readonly spendControlReached?: boolean;
 }
 
 /** A Codex budget that could not be determined. */
@@ -200,6 +234,19 @@ export interface CodexExhaustion {
   readonly resetAt?: undefined;
 }
 
+/**
+ * `RateLimitReachedType`'s own `snake_case` names, mapped to the kinds this
+ * module reports. Owner and member differ only in whom the CLI tells to fix
+ * it, which is not a distinction a budget cares about.
+ */
+const REACHED_TYPE_KINDS: Readonly<Record<string, CodexExhaustionKind>> = {
+  rate_limit_reached: "rate_limit_reached",
+  workspace_owner_credits_depleted: "workspace_credits_depleted",
+  workspace_member_credits_depleted: "workspace_credits_depleted",
+  workspace_owner_usage_limit_reached: "workspace_spend_cap_reached",
+  workspace_member_usage_limit_reached: "workspace_spend_cap_reached",
+};
+
 /** Read a finite number from an unknown field, or `undefined`. */
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
@@ -223,14 +270,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Convert a `resets_at` epoch-seconds field to epoch milliseconds.
  *
  * @param value - The raw `resets_at` field.
- * @returns Epoch milliseconds, or `undefined` when absent, non-integral,
- *   non-positive or beyond {@link MAX_PLAUSIBLE_RESET_EPOCH_SECONDS}.
+ * @returns Epoch milliseconds, or `undefined` when absent, non-integral, or
+ *   outside {@link MIN_PLAUSIBLE_RESET_EPOCH_SECONDS} —
+ *   {@link MAX_PLAUSIBLE_RESET_EPOCH_SECONDS}.
  */
 export function codexResetAtToEpochMs(value: unknown): number | undefined {
   const seconds = finiteNumber(value);
   if (seconds === undefined) return undefined;
   if (!Number.isInteger(seconds)) return undefined;
-  if (seconds <= 0 || seconds > MAX_PLAUSIBLE_RESET_EPOCH_SECONDS) {
+  if (
+    seconds < MIN_PLAUSIBLE_RESET_EPOCH_SECONDS ||
+    seconds > MAX_PLAUSIBLE_RESET_EPOCH_SECONDS
+  ) {
     return undefined;
   }
   return seconds * 1000;
@@ -310,6 +361,14 @@ export function parseCodexRateLimitSnapshot(value: unknown): CodexBudget {
     ? { hasCredits: creditsRaw.has_credits, unlimited: creditsRaw.unlimited }
     : undefined;
 
+  const reachedTypeRaw = nonEmptyString(value.rate_limit_reached_type);
+  const rateLimitReachedType = reachedTypeRaw !== undefined
+    ? REACHED_TYPE_KINDS[reachedTypeRaw.toLowerCase()]
+    : undefined;
+  const spendControlReached = typeof value.spend_control_reached === "boolean"
+    ? value.spend_control_reached
+    : undefined;
+
   const limitId = nonEmptyString(value.limit_id);
   const limitName = nonEmptyString(value.limit_name);
   const planType = nonEmptyString(value.plan_type);
@@ -326,6 +385,8 @@ export function parseCodexRateLimitSnapshot(value: unknown): CodexBudget {
     ...(limitName !== undefined ? { limitName } : {}),
     ...(planType !== undefined ? { planType } : {}),
     ...(credits !== undefined ? { credits } : {}),
+    ...(rateLimitReachedType !== undefined ? { rateLimitReachedType } : {}),
+    ...(spendControlReached !== undefined ? { spendControlReached } : {}),
   };
 }
 
@@ -366,9 +427,13 @@ export function parseCodexRolloutLine(
 
   const payload = parsed.payload;
   if (!isRecord(payload) || payload.type !== "token_count") return null;
-  // A `token_count` with `rate_limits: null` is the common case — the CLI
-  // emits one per turn and only some carry a snapshot. Not an error.
-  if (!isRecord(payload.rate_limits)) return null;
+  // A `token_count` with `rate_limits: null` (or no such key) is the common
+  // case — the CLI emits one per turn and only some carry a snapshot, so that
+  // line is simply not a reading. A field that is *present* but the wrong
+  // shape is a different thing, and is retained as `no-rate-limit-data`
+  // rather than silently skipped.
+  const rateLimits = payload.rate_limits;
+  if (rateLimits === undefined || rateLimits === null) return null;
 
   const timestamp = nonEmptyString(parsed.timestamp);
   const capturedAt = timestamp !== undefined
@@ -377,7 +442,7 @@ export function parseCodexRolloutLine(
 
   return {
     ...(Number.isFinite(capturedAt) ? { capturedAt } : {}),
-    budget: parseCodexRateLimitSnapshot(payload.rate_limits),
+    budget: parseCodexRateLimitSnapshot(rateLimits),
   };
 }
 

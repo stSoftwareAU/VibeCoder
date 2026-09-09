@@ -25,7 +25,7 @@
  */
 
 import { CODEX_CREDENTIAL_ENV_VARS } from "./codex_auth.ts";
-import type { EnvLookup } from "./env_lookup.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** How Codex is authenticated, as far as the budget question is concerned. */
 export type CodexAuthMode =
@@ -79,7 +79,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function resolveCodexAuthMode(
   codexHome: string,
-  env: EnvLookup = (name) => Deno.env.get(name),
+  env: EnvLookup = processEnvLookup,
 ): CodexAuthModeResult {
   for (const name of CODEX_CREDENTIAL_ENV_VARS) {
     if ((env(name) ?? "").trim().length > 0) {

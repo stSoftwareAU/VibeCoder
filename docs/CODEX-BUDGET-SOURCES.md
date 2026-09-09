@@ -159,6 +159,22 @@ returned or logged.
 | Bounds      | Only the newest 3 session files, only their last 256 KiB, only 14 day directories                                                                                                           |
 | Secrets     | Reads credential _presence_ only; the diagnostic's output is passed through `redactSecrets`                                                                                                 |
 
+## Two honest limitations
+
+**A bare `429` is not exhaustion.** The pinned CLI words a genuine usage limit
+as `UsageLimitReached`, so an `unexpected status 429 Too Many Requests` is a
+per-request throttle. It is recorded as `transient-rate-limit` — an unknown
+budget with the throttle attached — not as a spent window, because a credential
+with plenty of window left can be throttled for a minute.
+
+**Today's provisioning yields no percentage.** The worker provisions Codex with
+`OPENAI_API_KEY` / `CODEX_API_KEY` (`worker/deno/lib/codex_env.ts`), and an
+API-key credential has no subscription window at all — so against a
+worker-provisioned Codex this adapter honestly answers `api-key-account` every
+time. A percentage requires a ChatGPT-login `CODEX_HOME`, which is what the
+credential pooling of #1698 introduces. Saying so is the point: the alternative
+is a number nobody can justify.
+
 ## The live diagnostic
 
 Opt-in, read-only, and safe to run against a production `CODEX_HOME`:

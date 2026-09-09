@@ -14,6 +14,7 @@ import {
   type CodexBudgetKnown,
   codexResetAtToEpochMs,
   MAX_PLAUSIBLE_RESET_EPOCH_SECONDS,
+  MIN_PLAUSIBLE_RESET_EPOCH_SECONDS,
   parseCodexExhaustion,
   parseCodexRateLimitSnapshot,
   parseCodexRolloutLine,
@@ -99,6 +100,17 @@ Deno.test("codexResetAtToEpochMs - rejects implausible, non-integral and absent 
   assertEquals(codexResetAtToEpochMs(1788483600.5), undefined);
   // A millisecond value would read as a reset 1000x too far away.
   assertEquals(codexResetAtToEpochMs(1788483600000), undefined);
+  // A *relative* value — the `resets_in_seconds` convention earlier releases
+  // used for this field — would otherwise become a reset instant in 1970.
+  assertEquals(codexResetAtToEpochMs(3600), undefined);
+  assertEquals(
+    codexResetAtToEpochMs(MIN_PLAUSIBLE_RESET_EPOCH_SECONDS - 1),
+    undefined,
+  );
+  assertEquals(
+    codexResetAtToEpochMs(MIN_PLAUSIBLE_RESET_EPOCH_SECONDS),
+    MIN_PLAUSIBLE_RESET_EPOCH_SECONDS * 1000,
+  );
   assertEquals(
     codexResetAtToEpochMs(MAX_PLAUSIBLE_RESET_EPOCH_SECONDS),
     MAX_PLAUSIBLE_RESET_EPOCH_SECONDS * 1000,
@@ -188,9 +200,12 @@ Deno.test("parseCodexRolloutLine - malformed lines are unknown or skipped, never
   const readings = fixtureLines("rollout_malformed.jsonl")
     .map(parseCodexRolloutLine);
 
-  // Truncated JSON and a non-object `rate_limits` are skipped entirely.
-  assertEquals(readings[2], null);
+  // Truncated JSON is skipped entirely; a `rate_limits` of the wrong shape is
+  // retained with its own reason code rather than silently dropped.
   assertEquals(readings[3], null);
+  const wrongShape = readings[2];
+  assert(wrongShape && !wrongShape.budget.known);
+  assertEquals(wrongShape.budget.reason, "no-rate-limit-data");
   // Wrong-typed and missing figures survive as explicit unknowns.
   for (const index of [0, 1]) {
     const budget = readings[index]?.budget;
@@ -273,4 +288,54 @@ Deno.test("parseCodexExhaustion - ordinary failures are not exhaustion", () => {
   for (const message of notExhaustion) {
     assertEquals(parseCodexExhaustion(message), null, message);
   }
+});
+
+Deno.test("parseCodexRateLimitSnapshot - a relative reset is dropped, not fabricated", () => {
+  const budget = known(parseCodexRateLimitSnapshot({
+    primary: { used_percent: 20, window_minutes: 300, resets_at: 3600 },
+  }));
+  // 3600 seconds after the epoch is 1970 — a rollover silently in the past,
+  // which reads as "the window has already reset, go again".
+  assertEquals(budget.windows[0]?.resetAt, undefined);
+  assertEquals(budget.windows[0]?.usedPercent, 20);
+});
+
+Deno.test("parseCodexRateLimitSnapshot - reads the backend's own exhaustion declaration", () => {
+  const budget = known(parseCodexRateLimitSnapshot({
+    primary: { used_percent: 100, window_minutes: 300 },
+    spend_control_reached: true,
+    rate_limit_reached_type: "workspace_member_usage_limit_reached",
+  }));
+  assertEquals(budget.rateLimitReachedType, "workspace_spend_cap_reached");
+  assertEquals(budget.spendControlReached, true);
+});
+
+Deno.test("parseCodexRateLimitSnapshot - an unknown reached type is dropped, not guessed", () => {
+  const budget = known(parseCodexRateLimitSnapshot({
+    primary: { used_percent: 10 },
+    rate_limit_reached_type: "something_new_openai_added",
+  }));
+  assertEquals(budget.rateLimitReachedType, undefined);
+});
+
+Deno.test("parseCodexRolloutLine - a present-but-malformed rate_limits is retained", () => {
+  // Absent or null is simply not a reading; the wrong *shape* is a fact worth
+  // keeping, with its own reason code.
+  assertEquals(
+    parseCodexRolloutLine(
+      '{"type":"event_msg","payload":{"type":"token_count"}}',
+    ),
+    null,
+  );
+  assertEquals(
+    parseCodexRolloutLine(
+      '{"type":"event_msg","payload":{"type":"token_count","rate_limits":null}}',
+    ),
+    null,
+  );
+  const reading = parseCodexRolloutLine(
+    '{"type":"event_msg","payload":{"type":"token_count","rate_limits":[]}}',
+  );
+  assert(reading && !reading.budget.known);
+  assertEquals(reading.budget.reason, "no-rate-limit-data");
 });

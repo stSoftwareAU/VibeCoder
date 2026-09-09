@@ -28,12 +28,14 @@ import {
   CodexBudgetAdapter,
   type CodexBudgetSnapshot,
 } from "../lib/codex_budget.ts";
+import type { CodexBudgetWindow } from "../lib/codex_budget_source.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { redactSecrets } from "../lib/secret_redaction.ts";
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 
 /** Default `CODEX_HOME`, matching the Codex CLI's own default. */
 export function defaultCodexHome(
-  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+  env: EnvLookup = processEnvLookup,
 ): string {
   const explicit = (env("CODEX_HOME") ?? "").trim();
   if (explicit.length > 0) return explicit;
@@ -42,15 +44,7 @@ export function defaultCodexHome(
 }
 
 /** Render one window as a single metadata line. */
-function describeWindow(
-  window: {
-    window: string;
-    usedPercent: number;
-    remainingFraction: number;
-    windowMinutes?: number;
-    resetAt?: number;
-  },
-): string {
+function describeWindow(window: CodexBudgetWindow): string {
   const parts = [
     `  ${window.window}: ${
       (window.remainingFraction * 100).toFixed(1)
@@ -91,12 +85,18 @@ export function describeCodexBudgetSnapshot(
   if (snapshot.budget.known) {
     const budget = snapshot.budget;
     lines.push(
-      `  remaining: ${(budget.remainingFraction * 100).toFixed(1)}% ` +
-        `(${budget.window} window)`,
+      `  remaining: ${(budget.remainingFraction * 100).toFixed(1)}%` +
+        (budget.window !== undefined ? ` (${budget.window} window)` : ""),
     );
     if (budget.limitId) lines.push(`  limit id: ${budget.limitId}`);
     if (budget.limitName) lines.push(`  limit name: ${budget.limitName}`);
     if (budget.planType) lines.push(`  plan: ${budget.planType}`);
+    if (budget.rateLimitReachedType) {
+      lines.push(`  backend reported: ${budget.rateLimitReachedType}`);
+    }
+    if (budget.spendControlReached !== undefined) {
+      lines.push(`  spend control reached: ${budget.spendControlReached}`);
+    }
     if (budget.credits) {
       lines.push(
         `  credits: has=${budget.credits.hasCredits} ` +

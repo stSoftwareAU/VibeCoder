@@ -9,7 +9,7 @@
  * Australian English spelling throughout (behaviour, organisation, utilise).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   CodexBudgetAdapter,
   findRecentRolloutFiles,
@@ -56,8 +56,15 @@ async function withCodexHome(
   }
 }
 
-/** A clock the test advances by hand. */
-function clock(start = 1_788_000_000_000) {
+/**
+ * A clock the test advances by hand.
+ *
+ * The default start is after every fixture's own timestamps, so a snapshot the
+ * test records is genuinely newer evidence than a fixture line — the adapter
+ * orders the two, and a clock set in the fixtures' past would silently test
+ * the opposite case.
+ */
+function clock(start = Date.parse("2026-09-09T04:00:00.000Z")) {
   let value = start;
   return {
     now: () => value,
@@ -276,7 +283,10 @@ Deno.test("CodexBudgetAdapter - a malformed snapshot is retained as unknown", as
     const snapshot = await adapter.refresh();
     assertEquals(snapshot.source, "rollout-token-count");
     assert(!snapshot.budget.known);
-    assertEquals(snapshot.budget.reason, "unrecognised-snapshot-shape");
+    // The newest rate-limit-bearing line in the fixture carries
+    // `rate_limits: []` — present but the wrong shape, so it is retained with
+    // its own reason code rather than skipped as if it were never there.
+    assertEquals(snapshot.budget.reason, "no-rate-limit-data");
   });
 });
 
@@ -304,6 +314,8 @@ Deno.test("CodexBudgetAdapter - exhaustion is recorded immediately and overrides
     assert(recorded.budget.known);
     assertEquals(recorded.budget.remainingFraction, 0);
     assertEquals(recorded.exhaustion?.kind, "rate_limit_reached");
+    // The window is NOT named: the message never said which one is spent.
+    assertEquals(recorded.budget.window, undefined);
     // The local-time reset in the message is never converted to an instant.
     assertEquals(recorded.exhaustion?.resetAt, undefined);
     assertEquals(adapter.latest(), recorded);
@@ -342,11 +354,13 @@ Deno.test("CodexBudgetAdapter - a rejected credential is auth-rejected, not zero
     assert(snapshot && !snapshot.budget.known);
     assertEquals(snapshot.budget.reason, "auth-rejected");
     assertEquals(snapshot.budget.detail, "unexpected status 401 Unauthorized");
+    // A refused credential is not filed as exhaustion evidence.
+    assertEquals(snapshot.source, "auth-rejection");
   });
 });
 
 Deno.test("findRecentRolloutFiles - newest first, bounded, ignoring other files", async () => {
-  await withCodexHome(async (home) => {
+  await withCodexHome((home) => {
     home.writeRollout("2026-09-07", "rollout-2026-09-07T01-00-00-a.jsonl", "");
     home.writeRollout("2026-09-08", "rollout-2026-09-08T01-00-00-b.jsonl", "");
     home.writeRollout("2026-09-09", "rollout-2026-09-09T01-00-00-c.jsonl", "");
@@ -358,12 +372,11 @@ Deno.test("findRecentRolloutFiles - newest first, bounded, ignoring other files"
     assert(files[1]?.endsWith("rollout-2026-09-08T01-00-00-b.jsonl"));
 
     assertEquals(findRecentRolloutFiles(`${home.path}/nowhere`, 3), []);
-    await Promise.resolve();
   });
 });
 
 Deno.test("readFileTail - keeps the tail and drops the partial first line", async () => {
-  await withCodexHome(async (home) => {
+  await withCodexHome((home) => {
     const file = home.writeRollout(
       "2026-09-09",
       "rollout-2026-09-09T01-00-00-tail.jsonl",
@@ -375,7 +388,6 @@ Deno.test("readFileTail - keeps the tail and drops the partial first line", asyn
     );
     assertEquals(readFileTail(file, 20), "second\nthird\n");
     assertEquals(readFileTail(`${file}.missing`, 4096), null);
-    await Promise.resolve();
   });
 });
 
@@ -407,5 +419,168 @@ Deno.test("CodexBudgetAdapter - the tail bound still finds the newest snapshot i
     const snapshot = await adapter.refresh();
     assert(snapshot.budget.known);
     assertEquals(snapshot.budget.remainingFraction, 0.23);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Evidence ordering — the two ways an exhaustion record used to be lost
+// ---------------------------------------------------------------------------
+
+Deno.test("CodexBudgetAdapter - a later refresh cannot overwrite exhaustion with an older reading", async () => {
+  await withCodexHome(async (home) => {
+    home.writeFixture(
+      "2026-09-09",
+      "rollout-2026-09-09T01-00-00-4444.jsonl",
+      "rollout_chatgpt_subscription.jsonl",
+    );
+    const time = clock();
+    const adapter = new CodexBudgetAdapter({
+      codexHome: home.path,
+      now: time.now,
+      env: NO_ENV,
+      minRefreshIntervalMs: 60_000,
+    });
+
+    await adapter.refresh();
+    time.advance(1_000);
+    adapter.recordExhaustion("You've hit your usage limit. Try again later.");
+
+    // Past the recheck interval the adapter re-reads the same unchanged file.
+    // Its newest line predates the exhaustion, so it must not replace it.
+    time.advance(61_000);
+    const after = await adapter.refresh();
+    assertEquals(adapter.readCount, 2, "the recheck did happen");
+    assertEquals(after.source, "exhaustion-event");
+    assertEquals(after.exhaustion?.kind, "rate_limit_reached");
+    assert(after.budget.known);
+    assertEquals(after.budget.remainingFraction, 0);
+    // The read instant advances, so the next recheck is still bounded.
+    assertEquals(after.readAt, time.now());
+  });
+});
+
+Deno.test("CodexBudgetAdapter - exhaustion recorded during an in-flight read survives it", async () => {
+  await withCodexHome(async (home) => {
+    home.writeFixture(
+      "2026-09-09",
+      "rollout-2026-09-09T01-00-00-5555.jsonl",
+      "rollout_chatgpt_subscription.jsonl",
+    );
+    const time = clock();
+    const adapter = new CodexBudgetAdapter({
+      codexHome: home.path,
+      now: time.now,
+      env: NO_ENV,
+    });
+
+    const inFlight = adapter.refresh();
+    time.advance(1_000);
+    adapter.recordExhaustion("Your workspace is out of credits.");
+    await inFlight;
+
+    const latest = adapter.latest();
+    assertEquals(latest?.source, "exhaustion-event");
+    assertEquals(latest?.exhaustion?.kind, "workspace_credits_depleted");
+  });
+});
+
+Deno.test("CodexBudgetAdapter - a rollout line newer than the exhaustion does replace it", async () => {
+  await withCodexHome(async (home) => {
+    const file = home.writeFixture(
+      "2026-09-09",
+      "rollout-2026-09-09T01-00-00-6666.jsonl",
+      "rollout_chatgpt_subscription.jsonl",
+    );
+    // The exhaustion is recorded at the adapter clock's start; the new rollout
+    // line is stamped well after it, so it is genuinely newer evidence.
+    const time = clock();
+    const adapter = new CodexBudgetAdapter({
+      codexHome: home.path,
+      now: time.now,
+      env: NO_ENV,
+      minRefreshIntervalMs: 60_000,
+    });
+
+    adapter.recordExhaustion("You've hit your usage limit. Try again later.");
+    Deno.writeTextFileSync(
+      file,
+      '{"timestamp":"2026-09-09T05:00:00.000Z","type":"event_msg","payload":' +
+        '{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex",' +
+        '"primary":{"used_percent":5,"window_minutes":300,' +
+        '"resets_at":1788483600}}}}\n',
+    );
+
+    time.advance(61_000);
+    const after = await adapter.refresh();
+    assertEquals(after.source, "rollout-token-count");
+    assert(after.budget.known);
+    assertEquals(after.budget.remainingFraction, 0.95);
+    assertEquals(after.exhaustion, undefined);
+  });
+});
+
+Deno.test("CodexBudgetAdapter - a bare 429 is a throttle, not a spent window", async () => {
+  await withCodexHome(async (home) => {
+    const adapter = new CodexBudgetAdapter({
+      codexHome: home.path,
+      env: NO_ENV,
+    });
+    const recorded = adapter.recordExhaustion(
+      "unexpected status 429 Too Many Requests: slow down, request id: req_1",
+    );
+    assert(recorded);
+    assertEquals(recorded.exhaustion?.kind, "http_429");
+    // Never a manufactured zero for a credential that may have budget left.
+    assert(!recorded.budget.known);
+    assertEquals(recorded.budget.reason, "transient-rate-limit");
+  });
+});
+
+Deno.test("CodexBudgetAdapter - an unwalkable sessions path fails loud, not as 'no sessions'", async () => {
+  await withCodexHome(async (home) => {
+    // `sessions` exists but is a file: readDirSync throws NotADirectory, which
+    // must never be reported as an empty CODEX_HOME.
+    Deno.writeTextFileSync(`${home.path}/sessions`, "not a directory");
+    const adapter = new CodexBudgetAdapter({
+      codexHome: home.path,
+      env: NO_ENV,
+    });
+
+    const snapshot = await adapter.refresh();
+    assert(!snapshot.budget.known);
+    assertEquals(snapshot.budget.reason, "read-error");
+    assert(snapshot.budget.detail?.includes("could not"));
+
+    // And the bare walker propagates rather than answering an empty list.
+    assertThrows(() => findRecentRolloutFiles(home.path, 3));
+  });
+});
+
+Deno.test("CodexBudgetAdapter - backend-declared exhaustion rides in on the snapshot", async () => {
+  await withCodexHome(async (home) => {
+    home.writeRollout(
+      "2026-09-09",
+      "rollout-2026-09-09T01-00-00-7777.jsonl",
+      '{"timestamp":"2026-09-09T01:00:00.000Z","type":"event_msg","payload":' +
+        '{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex",' +
+        '"primary":{"used_percent":100,"window_minutes":300,' +
+        '"resets_at":1788483600},"spend_control_reached":true,' +
+        '"rate_limit_reached_type":"workspace_owner_credits_depleted"}}}\n',
+    );
+    const adapter = new CodexBudgetAdapter({
+      codexHome: home.path,
+      env: NO_ENV,
+    });
+
+    const snapshot = await adapter.refresh();
+    assert(snapshot.budget.known);
+    // Machine-readable, timezone-free and free of charge — better evidence
+    // than the prose message, and it arrives on the same line.
+    assertEquals(
+      snapshot.budget.rateLimitReachedType,
+      "workspace_credits_depleted",
+    );
+    assertEquals(snapshot.budget.spendControlReached, true);
+    assertEquals(snapshot.budget.remainingFraction, 0);
   });
 });

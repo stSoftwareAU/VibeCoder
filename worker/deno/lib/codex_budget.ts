@@ -30,7 +30,7 @@
  *     A -->|chatgpt / unknown| S["newest rollout session file"]
  *     S -->|token_count + rate_limits| B["known budget"]
  *     S -->|none| N["unknown: no-rate-limit-event"]
- *     E["turn.failed message"] --> Z["recordExhaustion()<br/>immediate, overrides cache"]
+ *     E["turn.failed message"] --> Z["recordExhaustion()<br/>immediate; never overwritten<br/>by older evidence"]
  * ```
  *
  * Australian English spelling throughout (behaviour, organisation, utilise).
@@ -43,7 +43,7 @@ import {
   parseCodexRolloutLine,
 } from "./codex_budget_source.ts";
 import { type CodexAuthMode, resolveCodexAuthMode } from "./codex_auth_mode.ts";
-import type { EnvLookup } from "./env_lookup.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** Sessions subdirectory of `CODEX_HOME` (`codex-rs/rollout/src/lib.rs`). */
 export const CODEX_SESSIONS_SUBDIR = "sessions";
@@ -82,6 +82,8 @@ export type CodexBudgetSourceKind =
   | "rollout-token-count"
   /** An explicit exhaustion message from a run. */
   | "exhaustion-event"
+  /** The credential itself was rejected — not a budget reading at all. */
+  | "auth-rejection"
   /** The credential kind alone settled it (an API key has no window). */
   | "auth-mode"
   /** Nothing was readable. */
@@ -97,6 +99,14 @@ export interface CodexBudgetSnapshot {
   readonly readAt: number;
   /** When the CLI produced the evidence, in epoch ms, when known. */
   readonly capturedAt?: number;
+  /**
+   * When the evidence itself was produced, in epoch ms.
+   *
+   * `capturedAt` for a rollout line (the CLI's own timestamp) and the moment
+   * of the report for an exhaustion or a rejection. This is what orders two
+   * snapshots against each other — see {@link CodexBudgetAdapter}'s `#store`.
+   */
+  readonly evidenceAt: number;
   /** Explicit exhaustion evidence, when this snapshot carries any. */
   readonly exhaustion?: CodexExhaustion;
   /** The credential kind in force when the reading was taken. */
@@ -124,11 +134,21 @@ function byNameDescending(a: string, b: string): number {
   return a < b ? 1 : a > b ? -1 : 0;
 }
 
-/** List a directory's entries by name, or `[]` when it cannot be read. */
-function safeEntryNames(
-  dir: string,
-  wanted: "dir" | "file",
-): string[] {
+/**
+ * List a directory's entries by name, newest first.
+ *
+ * A directory that is simply not there is `[]` — a `CODEX_HOME` that has never
+ * run a session is the ordinary case, not a fault. Every **other** failure —
+ * a permissions error, a broken mount, a path that is a file rather than a
+ * directory — is rethrown, because reporting it as "no sessions" would hide a
+ * broken host behind a benign reason code.
+ *
+ * @param dir - Directory to list.
+ * @param wanted - Whether to return subdirectories or files.
+ * @returns Matching entry names, descending.
+ * @throws Whatever `Deno.readDirSync` threw, unless it was `NotFound`.
+ */
+function entryNames(dir: string, wanted: "dir" | "file"): string[] {
   const names: string[] = [];
   try {
     for (const entry of Deno.readDirSync(dir)) {
@@ -136,8 +156,9 @@ function safeEntryNames(
         names.push(entry.name);
       }
     }
-  } catch {
-    return [];
+  } catch (error: unknown) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw error;
   }
   return names.sort(byNameDescending);
 }
@@ -154,6 +175,7 @@ function safeEntryNames(
  * @param codexHome - The `CODEX_HOME` directory.
  * @param limit - Most files to return.
  * @returns Newest-first absolute paths; empty when there are none.
+ * @throws When a directory exists but cannot be read — never silently empty.
  */
 export function findRecentRolloutFiles(
   codexHome: string,
@@ -163,15 +185,15 @@ export function findRecentRolloutFiles(
   const found: string[] = [];
   let dayDirs = 0;
 
-  for (const year of safeEntryNames(sessions, "dir")) {
-    for (const month of safeEntryNames(`${sessions}/${year}`, "dir")) {
+  for (const year of entryNames(sessions, "dir")) {
+    for (const month of entryNames(`${sessions}/${year}`, "dir")) {
       for (
-        const day of safeEntryNames(`${sessions}/${year}/${month}`, "dir")
+        const day of entryNames(`${sessions}/${year}/${month}`, "dir")
       ) {
         if (dayDirs >= MAX_DAY_DIRECTORIES) return found;
         dayDirs++;
         const dir = `${sessions}/${year}/${month}/${day}`;
-        for (const name of safeEntryNames(dir, "file")) {
+        for (const name of entryNames(dir, "file")) {
           if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) {
             continue;
           }
@@ -225,6 +247,45 @@ export function readFileTail(path: string, maxBytes: number): string | null {
   } finally {
     file.close();
   }
+}
+
+/**
+ * Build the snapshot one piece of exhaustion evidence justifies — and no more.
+ *
+ * The window is **not** named. An exhaustion message evidences that *a* window
+ * is spent without saying which, and copying the previously most-constrained
+ * one would record a five-hour exhaustion as the weekly window at zero — an
+ * inference the CLI never made, on the very field #1696 would rank.
+ *
+ * @param exhaustion - The parsed evidence.
+ * @param at - When it was reported, epoch ms.
+ * @param previous - The cached snapshot, for the credential kind only.
+ * @returns The snapshot to store.
+ */
+function exhaustionSnapshot(
+  exhaustion: CodexExhaustion,
+  at: number,
+  previous: CodexBudgetSnapshot | undefined,
+): CodexBudgetSnapshot {
+  const budget: CodexBudget = exhaustion.kind === "http_429"
+    ? { known: false, reason: "transient-rate-limit" }
+    : {
+      known: true,
+      remainingFraction: 0,
+      windows: [],
+      ...(exhaustion.limitName !== undefined
+        ? { limitName: exhaustion.limitName }
+        : {}),
+    };
+
+  return {
+    budget,
+    source: "exhaustion-event",
+    readAt: at,
+    evidenceAt: at,
+    exhaustion,
+    authMode: previous?.authMode ?? "unknown",
+  };
 }
 
 /**
@@ -304,9 +365,9 @@ export class CodexBudgetAdapter {
       // `await` once so concurrent synchronous callers observe `#inFlight`
       // before any reading happens.
       await Promise.resolve();
-      const snapshot = this.#read();
-      this.#snapshot = snapshot;
-      return snapshot;
+      // Stored through `#store`, so an exhaustion recorded *while* this read
+      // was in flight is not overwritten by the older reading it returns.
+      return this.#store(this.#read());
     })().finally(() => {
       this.#inFlight = undefined;
     });
@@ -318,11 +379,16 @@ export class CodexBudgetAdapter {
   /**
    * Record explicit exhaustion from a run's own failure message.
    *
-   * Immediate and unconditional: exhaustion is the one fact worth more than a
-   * fresh percentage, so it replaces the cache without waiting for the recheck
-   * interval. The reset instant stays unknown — the CLI prints it in the
-   * host's local timezone with no offset, so recovering an instant from it
-   * would be a guess.
+   * Immediate: exhaustion is the one fact worth more than a fresh percentage,
+   * so it lands without waiting for the recheck interval and is not overwritten
+   * by an older reading (see `#store`). The reset instant stays unknown — the
+   * CLI prints it in the host's local timezone with no offset, so recovering
+   * an instant from it would be a guess.
+   *
+   * A bare `429` is deliberately **not** recorded as a spent window: the
+   * pinned CLI words a genuine usage limit as `UsageLimitReached`, so an
+   * `unexpected status 429` is a per-request throttle and the remaining budget
+   * is honestly unknown.
    *
    * @param message - A `turn.failed` / `error` event message.
    * @param at - Instant to record; defaults to the injected clock.
@@ -334,41 +400,58 @@ export class CodexBudgetAdapter {
   ): CodexBudgetSnapshot | null {
     const exhaustion = parseCodexExhaustion(message);
     if (!exhaustion) return null;
-
-    const snapshot: CodexBudgetSnapshot = {
-      budget: {
-        known: true,
-        remainingFraction: 0,
-        window: this.#snapshot?.budget.known
-          ? this.#snapshot.budget.window
-          : "primary",
-        windows: [],
-        ...(exhaustion.limitName !== undefined
-          ? { limitName: exhaustion.limitName }
-          : {}),
-      },
-      source: "exhaustion-event",
-      readAt: at,
-      capturedAt: at,
-      exhaustion,
-      authMode: this.#snapshot?.authMode ?? "unknown",
-    };
-    this.#snapshot = snapshot;
-    return snapshot;
+    return this.#store(exhaustionSnapshot(exhaustion, at, this.#snapshot));
   }
 
   /** Record a rejected credential, so 401/403 is never read as "no budget". */
-  recordAuthRejected(detail?: string, at: number = this.#now()): void {
-    this.#snapshot = {
+  recordAuthRejected(
+    detail?: string,
+    at: number = this.#now(),
+  ): CodexBudgetSnapshot {
+    return this.#store({
       budget: {
         known: false,
         reason: "auth-rejected",
         ...(detail !== undefined ? { detail } : {}),
       },
-      source: "exhaustion-event",
+      // A rejected credential is not exhaustion evidence, and must not be
+      // filed as any: the whole point of the reason code is to keep "spent"
+      // and "refused" apart.
+      source: "auth-rejection",
       readAt: at,
+      evidenceAt: at,
       authMode: this.#snapshot?.authMode ?? "unknown",
-    };
+    });
+  }
+
+  /**
+   * Adopt a snapshot unless the cached one rests on newer evidence.
+   *
+   * Two orderings meet here and both used to lose an exhaustion. A `refresh()`
+   * in flight when a run reports exhaustion finished *after* it and wrote its
+   * older reading over the newer fact; and the next due `refresh()` re-read
+   * the same unchanged rollout file and did it again. Both are the same bug —
+   * nothing compared the two pieces of evidence — so both are fixed here,
+   * once, rather than at each call site.
+   *
+   * `readAt` still advances on a rejected replacement, so the recheck interval
+   * moves on and the adapter does not re-read the same file every call.
+   *
+   * @param next - The snapshot just produced.
+   * @returns Whichever snapshot now stands.
+   */
+  #store(next: CodexBudgetSnapshot): CodexBudgetSnapshot {
+    const current = this.#snapshot;
+    if (current && next.evidenceAt < current.evidenceAt) {
+      const kept: CodexBudgetSnapshot = {
+        ...current,
+        readAt: Math.max(current.readAt, next.readAt),
+      };
+      this.#snapshot = kept;
+      return kept;
+    }
+    this.#snapshot = next;
+    return next;
   }
 
   /** One disk read: auth mode, then the newest rollout rate-limit line. */
@@ -377,36 +460,52 @@ export class CodexBudgetAdapter {
     const readAt = this.#now();
     const auth = resolveCodexAuthMode(
       this.#codexHome,
-      this.#env ?? ((name) => Deno.env.get(name)),
+      this.#env ?? processEnvLookup,
     );
+    /** Every non-reading outcome shares this envelope. */
+    const unknown = (
+      budget: CodexBudget,
+      source: CodexBudgetSourceKind,
+    ): CodexBudgetSnapshot => ({
+      budget,
+      source,
+      readAt,
+      evidenceAt: readAt,
+      authMode: auth.mode,
+    });
 
     if (auth.mode === "api-key") {
-      return {
-        budget: {
-          known: false,
-          reason: "api-key-account",
-          detail:
-            "API-key credentials are metered by the account's own rate limits " +
-            "and billing; Codex reports no subscription window for them",
-        },
-        source: "auth-mode",
-        readAt,
-        authMode: auth.mode,
-      };
+      return unknown({
+        known: false,
+        reason: "api-key-account",
+        detail:
+          "API-key credentials are metered by the account's own rate limits " +
+          "and billing; Codex reports no subscription window for them",
+      }, "auth-mode");
     }
 
-    const files = findRecentRolloutFiles(this.#codexHome);
+    let files: string[];
+    try {
+      files = findRecentRolloutFiles(this.#codexHome);
+    } catch (error: unknown) {
+      // A sessions directory that exists but cannot be walked is a fault, and
+      // must not be reported as "this credential has never run" — that reads
+      // as an ordinary empty CODEX_HOME and hides a broken mount or a
+      // permissions error behind a benign-looking reason code.
+      return unknown({
+        known: false,
+        reason: "read-error",
+        detail: `the sessions directory under ${this.#codexHome} could not ` +
+          `be walked: ${error instanceof Error ? error.name : "unknown error"}`,
+      }, "none");
+    }
+
     if (files.length === 0) {
-      return {
-        budget: {
-          known: false,
-          reason: "no-session-file",
-          detail: `no rollout session files under ${this.#codexHome}`,
-        },
-        source: "none",
-        readAt,
-        authMode: auth.mode,
-      };
+      return unknown({
+        known: false,
+        reason: "no-session-file",
+        detail: `no rollout session files under ${this.#codexHome}`,
+      }, "none");
     }
 
     let unreadable = 0;
@@ -424,6 +523,10 @@ export class CodexBudgetAdapter {
           budget: reading.budget,
           source: "rollout-token-count",
           readAt,
+          // The CLI's own timestamp is what orders this against an exhaustion
+          // report; a line with none cannot outrank anything, so it falls back
+          // to the read instant only for freshness, never for precedence.
+          evidenceAt: reading.capturedAt ?? 0,
           ...(reading.capturedAt !== undefined
             ? { capturedAt: reading.capturedAt }
             : {}),
@@ -433,28 +536,18 @@ export class CodexBudgetAdapter {
     }
 
     if (unreadable === files.length) {
-      return {
-        budget: {
-          known: false,
-          reason: "read-error",
-          detail: `${unreadable} rollout session file(s) could not be read`,
-        },
-        source: "none",
-        readAt,
-        authMode: auth.mode,
-      };
+      return unknown({
+        known: false,
+        reason: "read-error",
+        detail: `${unreadable} rollout session file(s) could not be read`,
+      }, "none");
     }
 
-    return {
-      budget: {
-        known: false,
-        reason: "no-rate-limit-event",
-        detail: `no token_count event carrying rate_limits in the newest ` +
-          `${files.length} rollout session file(s)`,
-      },
-      source: "none",
-      readAt,
-      authMode: auth.mode,
-    };
+    return unknown({
+      known: false,
+      reason: "no-rate-limit-event",
+      detail: `no token_count event carrying rate_limits in the newest ` +
+        `${files.length} rollout session file(s)`,
+    }, "none");
   }
 }
