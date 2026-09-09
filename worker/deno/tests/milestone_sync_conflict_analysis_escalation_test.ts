@@ -86,8 +86,6 @@ function deps(
     },
     syncBranchFn: () => Promise.resolve({ ok: false, error: options.error }),
     log: () => undefined,
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
     streakPath: options.streakPath,
   };
 }

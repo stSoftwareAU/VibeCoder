@@ -10,15 +10,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   findActiveMilestoneBranches,
-  type GhCommandFn,
   type MilestoneBranchSyncDeps,
   shouldSyncMilestone,
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
-import {
-  milestoneActivityPath,
-  type MilestoneActivityState,
-} from "../lib/milestone_activity_gate.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
 import { stuckSyncDiagnosticTitle } from "../lib/milestone_sync_diagnostic_closeout.ts";
@@ -28,7 +23,8 @@ import { milestoneSyncStreakPath } from "../lib/milestone_sync_streak.ts";
 // findActiveMilestoneBranches
 // ============================================================================
 
-Deno.test("findActiveMilestoneBranches - returns milestones with at least one closed issue", async () => {
+Deno.test("findActiveMilestoneBranches - returns every open milestone (Issue #1776)", async () => {
+  const closedQueries: string[][] = [];
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key.includes("repos/owner/repo/milestones")) {
@@ -41,7 +37,7 @@ Deno.test("findActiveMilestoneBranches - returns milestones with at least one cl
       return "main";
     }
     if (key.includes("issue list") && key.includes("--state closed")) {
-      // Issue #1908: single closed batch, milestone tags filtered locally.
+      closedQueries.push([...args]);
       return JSON.stringify([
         { number: 10, title: "ten", milestone: { title: "v1.0" } },
       ]);
@@ -52,11 +48,15 @@ Deno.test("findActiveMilestoneBranches - returns milestones with at least one cl
   const result = await findActiveMilestoneBranches("owner/repo", ghFn);
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertEquals(result.value.length, 1);
+    assertEquals(result.value.length, 2);
     assertEquals(result.value[0]!.milestoneTitle, "v1.0");
     assertEquals(result.value[0]!.milestoneBranch, "milestone/v1-0");
     assertEquals(result.value[0]!.defaultBranch, "main");
+    assertEquals(result.value[1]!.milestoneTitle, "v2.0");
   }
+  // The closed-issue query is gone entirely (Issue #1776): it decided which
+  // milestones had "started", and every open milestone drifts regardless.
+  assertEquals(closedQueries.length, 0);
 });
 
 Deno.test("findActiveMilestoneBranches - returns empty when no milestones exist", async () => {
@@ -122,7 +122,7 @@ Deno.test(
   },
 );
 
-Deno.test("findActiveMilestoneBranches - skips milestones with zero closed issues", async () => {
+Deno.test("findActiveMilestoneBranches - includes a milestone with zero closed issues (Issue #1776)", async () => {
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key.includes("repos/owner/repo/milestones")) {
@@ -140,7 +140,11 @@ Deno.test("findActiveMilestoneBranches - skips milestones with zero closed issue
   const result = await findActiveMilestoneBranches("owner/repo", ghFn);
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertEquals(result.value.length, 0);
+    // Nothing closed yet, and it still drifts against a default branch
+    // taking ~27 commits a day.
+    assertEquals(result.value.length, 1);
+    assertEquals(result.value[0]!.milestoneBranch, "milestone/empty-milestone");
+    assertEquals(result.value[0]!.defaultBranch, "Develop");
   }
 });
 
@@ -154,396 +158,31 @@ Deno.test("findActiveMilestoneBranches - handles API failure gracefully", async 
 });
 
 // ============================================================================
-// findActiveMilestoneBranches — REST closed_issues gate (Issue #1488)
-// ============================================================================
-
-/**
- * Build a gh stub whose milestone payload carries REST counts, and which
- * records every closed-issue (GraphQL) query it is asked for.
- */
-function makeGatedGhFn(
-  milestones: Array<{ title: string; number: number; closed_issues?: number }>,
-  closedIssues: Array<{ number: number; title: string; milestone: string }>,
-): { ghFn: GhCommandFn; closedQueries: string[][] } {
-  const closedQueries: string[][] = [];
-  const ghFn = async (args: string[]): Promise<string> => {
-    const key = args.join(" ");
-    if (key.includes("repos/owner/repo/milestones")) {
-      return JSON.stringify(milestones);
-    }
-    if (key.includes("repos/owner/repo") && key.includes("default_branch")) {
-      return "main";
-    }
-    if (key.includes("issue list") && key.includes("--state closed")) {
-      closedQueries.push([...args]);
-      return JSON.stringify(
-        closedIssues.map((i) => ({
-          number: i.number,
-          title: i.title,
-          milestone: { title: i.milestone },
-        })),
-      );
-    }
-    return "[]";
-  };
-  return { ghFn, closedQueries };
-}
-
-Deno.test("findActiveMilestoneBranches - zero REST closed_issues skips the query (Issue #1488)", async () => {
-  const { ghFn, closedQueries } = makeGatedGhFn(
-    [{ title: "v1.0", number: 1, closed_issues: 0 }],
-    [],
-  );
-  const state: MilestoneActivityState = { observations: {}, dirty: false };
-
-  const result = await findActiveMilestoneBranches(
-    "owner/repo",
-    ghFn,
-    undefined,
-    undefined,
-    state,
-  );
-
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.length, 0);
-  // The expensive half was never reached.
-  assertEquals(closedQueries.length, 0);
-});
-
-Deno.test("findActiveMilestoneBranches - unchanged closed_issues reuses the verdict (Issue #1488)", async () => {
-  const { ghFn, closedQueries } = makeGatedGhFn(
-    [{ title: "v1.0", number: 1, closed_issues: 2 }],
-    [{ number: 10, title: "ten", milestone: "v1.0" }],
-  );
-  const state: MilestoneActivityState = {
-    observations: { "owner/repo|1": { closedIssues: 2, active: true } },
-    dirty: false,
-  };
-
-  const result = await findActiveMilestoneBranches(
-    "owner/repo",
-    ghFn,
-    undefined,
-    undefined,
-    state,
-  );
-
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.length, 1);
-    assertEquals(result.value[0]!.milestoneTitle, "v1.0");
-  }
-  assertEquals(closedQueries.length, 0);
-});
-
-Deno.test("findActiveMilestoneBranches - a gained closed issue re-queries (Issue #1488)", async () => {
-  const { ghFn, closedQueries } = makeGatedGhFn(
-    [{ title: "v1.0", number: 1, closed_issues: 3 }],
-    [{ number: 10, title: "ten", milestone: "v1.0" }],
-  );
-  const state: MilestoneActivityState = {
-    observations: { "owner/repo|1": { closedIssues: 2, active: true } },
-    dirty: false,
-  };
-
-  const result = await findActiveMilestoneBranches(
-    "owner/repo",
-    ghFn,
-    undefined,
-    undefined,
-    state,
-  );
-
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.length, 1);
-  assertEquals(closedQueries.length, 1);
-  assertEquals(state.observations["owner/repo|1"], {
-    closedIssues: 3,
-    active: true,
-  });
-  assertEquals(state.dirty, true);
-});
-
-Deno.test("findActiveMilestoneBranches - a lost closed issue re-queries (Issue #1488)", async () => {
-  // The milestone's only closed issue was reopened: the REST count fell,
-  // and the cached "active" verdict must not stand.
-  const { ghFn, closedQueries } = makeGatedGhFn(
-    [{ title: "v1.0", number: 1, closed_issues: 1 }],
-    [], // no closed issues left
-  );
-  const state: MilestoneActivityState = {
-    observations: { "owner/repo|1": { closedIssues: 2, active: true } },
-    dirty: false,
-  };
-
-  const result = await findActiveMilestoneBranches(
-    "owner/repo",
-    ghFn,
-    undefined,
-    undefined,
-    state,
-  );
-
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.length, 0);
-  assertEquals(closedQueries.length, 1);
-  assertEquals(state.observations["owner/repo|1"], {
-    closedIssues: 1,
-    active: false,
-  });
-});
-
-Deno.test("findActiveMilestoneBranches - first observation queries and records (Issue #1488)", async () => {
-  const { ghFn, closedQueries } = makeGatedGhFn(
-    [{ title: "v1.0", number: 1, closed_issues: 2 }],
-    [{ number: 10, title: "ten", milestone: "v1.0" }],
-  );
-  const state: MilestoneActivityState = { observations: {}, dirty: false };
-
-  const result = await findActiveMilestoneBranches(
-    "owner/repo",
-    ghFn,
-    undefined,
-    undefined,
-    state,
-  );
-
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.length, 1);
-  assertEquals(closedQueries.length, 1);
-  assertEquals(state.observations["owner/repo|1"], {
-    closedIssues: 2,
-    active: true,
-  });
-});
-
-Deno.test("findActiveMilestoneBranches - a REST payload without counts still queries (Issue #1488)", async () => {
-  // Older/partial payloads carry no `closed_issues`; the gate must fail
-  // open rather than skip a milestone it cannot judge.
-  const { ghFn, closedQueries } = makeGatedGhFn(
-    [{ title: "v1.0", number: 1 }],
-    [{ number: 10, title: "ten", milestone: "v1.0" }],
-  );
-  const state: MilestoneActivityState = { observations: {}, dirty: false };
-
-  const result = await findActiveMilestoneBranches(
-    "owner/repo",
-    ghFn,
-    undefined,
-    undefined,
-    state,
-  );
-
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.length, 1);
-  assertEquals(closedQueries.length, 1);
-  assertEquals(state.observations, {});
-});
-
-Deno.test("syncMilestoneBranches - a second cycle with unchanged milestones issues no closed-issue query (Issue #1488)", async () => {
-  const dir = await Deno.makeTempDir();
-  try {
-    const { ghFn, closedQueries } = makeGatedGhFn(
-      [{ title: "v1.0", number: 1, closed_issues: 2 }],
-      [{ number: 10, title: "ten", milestone: "v1.0" }],
-    );
-    const makeDeps = (): MilestoneBranchSyncDeps => ({
-      repos: ["owner/repo"],
-      ghCommandFn: async (args: string[]) => {
-        if (args.join(" ").includes("repos/owner/repo/branches/")) {
-          return "milestone/v1-0";
-        }
-        return await ghFn(args);
-      },
-      syncBranchFn: () =>
-        Promise.resolve({
-          ok: true as const,
-          value: { message: "up to date" },
-        }),
-      log: () => {},
-      cooldownSeconds: 0,
-      lastSyncTimes: new Map(),
-      activityPath: milestoneActivityPath(dir),
-    });
-
-    const first = await syncMilestoneBranches(makeDeps());
-    assertEquals(first.ok, true);
-    if (first.ok) assertEquals(first.value.synced, 1);
-    assertEquals(closedQueries.length, 1);
-
-    // Second cycle: nothing changed, so the expensive half is skipped —
-    // and the branch still syncs.
-    const second = await syncMilestoneBranches(makeDeps());
-    assertEquals(second.ok, true);
-    if (second.ok) assertEquals(second.value.synced, 1);
-    assertEquals(closedQueries.length, 1);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("syncMilestoneBranches - a milestone that gains a closed issue syncs on the next cycle (Issue #1488)", async () => {
-  const dir = await Deno.makeTempDir();
-  try {
-    let closedCount = 0;
-    let closed: Array<{ number: number; title: string; milestone: string }> =
-      [];
-    const closedQueries: string[][] = [];
-    const ghCommandFn = async (args: string[]): Promise<string> => {
-      const key = args.join(" ");
-      if (key.includes("repos/owner/repo/milestones")) {
-        return JSON.stringify([
-          { title: "v1.0", number: 1, closed_issues: closedCount },
-        ]);
-      }
-      if (key.includes("repos/owner/repo/branches/")) return "milestone/v1-0";
-      if (key.includes("repos/owner/repo") && key.includes("default_branch")) {
-        return "main";
-      }
-      if (key.includes("issue list") && key.includes("--state closed")) {
-        closedQueries.push([...args]);
-        return JSON.stringify(
-          closed.map((i) => ({
-            number: i.number,
-            title: i.title,
-            milestone: { title: i.milestone },
-          })),
-        );
-      }
-      return "[]";
-    };
-    const makeDeps = (): MilestoneBranchSyncDeps => ({
-      repos: ["owner/repo"],
-      ghCommandFn,
-      syncBranchFn: () =>
-        Promise.resolve({ ok: true as const, value: { message: "merged" } }),
-      log: () => {},
-      cooldownSeconds: 0,
-      lastSyncTimes: new Map(),
-      activityPath: milestoneActivityPath(dir),
-    });
-
-    // Cycle 1: nothing completed yet — no query, nothing to sync.
-    const first = await syncMilestoneBranches(makeDeps());
-    assertEquals(first.ok, true);
-    if (first.ok) assertEquals(first.value.synced, 0);
-    assertEquals(closedQueries.length, 0);
-
-    // Cycle 2: an issue was completed — the count moved, so the pass
-    // re-queries and the branch syncs.
-    closedCount = 1;
-    closed = [{ number: 10, title: "ten", milestone: "v1.0" }];
-    const second = await syncMilestoneBranches(makeDeps());
-    assertEquals(second.ok, true);
-    if (second.ok) assertEquals(second.value.synced, 1);
-    assertEquals(closedQueries.length, 1);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("syncMilestoneBranches - a milestone that loses its last closed issue stops syncing on the next cycle (Issue #1488)", async () => {
-  const dir = await Deno.makeTempDir();
-  try {
-    let closedCount = 1;
-    let closed = [{ number: 10, title: "ten", milestone: "v1.0" }];
-    const closedQueries: string[][] = [];
-    const ghCommandFn = async (args: string[]): Promise<string> => {
-      const key = args.join(" ");
-      if (key.includes("repos/owner/repo/milestones")) {
-        return JSON.stringify([
-          { title: "v1.0", number: 1, closed_issues: closedCount },
-        ]);
-      }
-      if (key.includes("repos/owner/repo/branches/")) return "milestone/v1-0";
-      if (key.includes("repos/owner/repo") && key.includes("default_branch")) {
-        return "main";
-      }
-      if (key.includes("issue list") && key.includes("--state closed")) {
-        closedQueries.push([...args]);
-        return JSON.stringify(
-          closed.map((i) => ({
-            number: i.number,
-            title: i.title,
-            milestone: { title: i.milestone },
-          })),
-        );
-      }
-      return "[]";
-    };
-    const makeDeps = (): MilestoneBranchSyncDeps => ({
-      repos: ["owner/repo"],
-      ghCommandFn,
-      syncBranchFn: () =>
-        Promise.resolve({ ok: true as const, value: { message: "merged" } }),
-      log: () => {},
-      cooldownSeconds: 0,
-      lastSyncTimes: new Map(),
-      activityPath: milestoneActivityPath(dir),
-    });
-
-    // Cycle 1: one closed issue — active, and it syncs.
-    const first = await syncMilestoneBranches(makeDeps());
-    assertEquals(first.ok, true);
-    if (first.ok) assertEquals(first.value.synced, 1);
-    assertEquals(closedQueries.length, 1);
-
-    // Cycle 2: the issue was reopened, so the REST count fell. The cached
-    // "active" verdict must not stand — the pass re-queries and finds the
-    // milestone inactive.
-    closedCount = 0;
-    closed = [];
-    const second = await syncMilestoneBranches(makeDeps());
-    assertEquals(second.ok, true);
-    if (second.ok) assertEquals(second.value.synced, 0);
-    // A zero count is answered by the cheap call alone — still one query.
-    assertEquals(closedQueries.length, 1);
-
-    // Cycle 3: it is closed again, but under a different count than the
-    // one last recorded, so the verdict is recomputed and it syncs.
-    closedCount = 2;
-    closed = [{ number: 10, title: "ten", milestone: "v1.0" }];
-    const third = await syncMilestoneBranches(makeDeps());
-    assertEquals(third.ok, true);
-    if (third.ok) assertEquals(third.value.synced, 1);
-    assertEquals(closedQueries.length, 2);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-// ============================================================================
 // shouldSyncMilestone
 // ============================================================================
 
-Deno.test("shouldSyncMilestone - returns true when no recent sync", () => {
-  const lastSyncTimes = new Map<string, number>();
-  const result = shouldSyncMilestone("owner/repo", "v1.0", lastSyncTimes, 3600);
-  assertEquals(result, true);
+Deno.test("shouldSyncMilestone - a branch with no ledger entry syncs (Issue #1776)", () => {
+  assertEquals(shouldSyncMilestone(undefined, "sha-a"), true);
 });
 
-Deno.test("shouldSyncMilestone - returns false when synced recently", () => {
-  const lastSyncTimes = new Map<string, number>();
-  const now = Date.now();
-  lastSyncTimes.set("owner/repo|v1.0", now - 1000); // 1 second ago
-  const result = shouldSyncMilestone("owner/repo", "v1.0", lastSyncTimes, 3600);
-  assertEquals(result, false);
+Deno.test("shouldSyncMilestone - the recorded tip is the one tip that skips (Issue #1776)", () => {
+  const entry = { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" };
+  assertEquals(shouldSyncMilestone(entry, "sha-a"), false);
+  assertEquals(shouldSyncMilestone(entry, "sha-b"), true);
 });
 
-Deno.test("shouldSyncMilestone - returns true when cooldown has elapsed", () => {
-  const lastSyncTimes = new Map<string, number>();
-  const now = Date.now();
-  lastSyncTimes.set("owner/repo|v1.0", now - 3601 * 1000); // Over 1 hour ago
-  const result = shouldSyncMilestone("owner/repo", "v1.0", lastSyncTimes, 3600);
-  assertEquals(result, true);
+Deno.test("shouldSyncMilestone - a failed branch carrying no tip still syncs (Issue #1776)", () => {
+  // Only a success records a tip, so a branch that has only ever failed has
+  // none — and is tried again rather than waiting anything out.
+  assertEquals(
+    shouldSyncMilestone({ count: 2, escalated: false }, "sha-a"),
+    true,
+  );
 });
 
-Deno.test("shouldSyncMilestone - different milestones tracked independently", () => {
-  const lastSyncTimes = new Map<string, number>();
-  const now = Date.now();
-  lastSyncTimes.set("owner/repo|v1.0", now - 100); // recent
-  const result = shouldSyncMilestone("owner/repo", "v2.0", lastSyncTimes, 3600);
-  assertEquals(result, true); // v2.0 not synced yet
+Deno.test("shouldSyncMilestone - an unreadable tip never reads as unchanged (Issue #1776)", () => {
+  const entry = { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" };
+  assertEquals(shouldSyncMilestone(entry, undefined), true);
 });
 
 // ============================================================================
@@ -589,8 +228,6 @@ Deno.test("syncMilestoneBranches - syncs active milestones across repos", async 
       };
     },
     log: (msg: string) => logs.push(msg),
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -602,47 +239,6 @@ Deno.test("syncMilestoneBranches - syncs active milestones across repos", async 
   }
   assertEquals(syncedMilestones.length, 1);
   assertEquals(syncedMilestones[0], "milestone/v1-0");
-});
-
-Deno.test("syncMilestoneBranches - skips milestones on cooldown", async () => {
-  const logs: string[] = [];
-  const lastSyncTimes = new Map<string, number>();
-  lastSyncTimes.set("owner/repo|v1.0", Date.now() - 100); // recently synced
-
-  const deps: MilestoneBranchSyncDeps = {
-    repos: ["owner/repo"],
-    ghCommandFn: async (args: string[]): Promise<string> => {
-      const key = args.join(" ");
-      if (key.includes("repos/owner/repo/milestones")) {
-        return JSON.stringify([{ title: "v1.0", number: 1 }]);
-      }
-      if (key.includes("repos/owner/repo") && key.includes("default_branch")) {
-        return "main";
-      }
-      if (key.includes("issue list") && key.includes("--state closed")) {
-        // Issue #1908: closed-batch payload tagged with milestone for local filter.
-        return JSON.stringify([{
-          number: 10,
-          title: "ten",
-          milestone: { title: "v1.0" },
-        }]);
-      }
-      return "[]";
-    },
-    syncBranchFn: async () => {
-      throw new Error("Should not be called");
-    },
-    log: (msg: string) => logs.push(msg),
-    cooldownSeconds: 3600,
-    lastSyncTimes,
-  };
-
-  const result = await syncMilestoneBranches(deps);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.synced, 0);
-    assertEquals(result.value.skipped, 1);
-  }
 });
 
 Deno.test("syncMilestoneBranches - handles sync failure gracefully", async () => {
@@ -675,8 +271,6 @@ Deno.test("syncMilestoneBranches - handles sync failure gracefully", async () =>
       return { ok: false as const, error: new Error("Merge conflict") };
     },
     log: (msg: string) => logs.push(msg),
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -701,8 +295,6 @@ Deno.test("syncMilestoneBranches - returns empty result for no repos", async () 
       value: { message: "done" },
     }),
     log: () => {},
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -749,8 +341,6 @@ Deno.test("syncMilestoneBranches - handles multiple repos", async () => {
       return { ok: true as const, value: { message: "synced" } };
     },
     log: () => {},
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -759,95 +349,6 @@ Deno.test("syncMilestoneBranches - handles multiple repos", async () => {
     assertEquals(result.value.synced, 2);
   }
   assertEquals(syncedMilestones.length, 2);
-});
-
-Deno.test("syncMilestoneBranches - updates lastSyncTimes after successful sync", async () => {
-  const lastSyncTimes = new Map<string, number>();
-
-  const deps: MilestoneBranchSyncDeps = {
-    repos: ["owner/repo"],
-    ghCommandFn: async (args: string[]): Promise<string> => {
-      const key = args.join(" ");
-      if (key.includes("repos/owner/repo/milestones")) {
-        return JSON.stringify([{ title: "v1.0", number: 1 }]);
-      }
-      if (key.includes("repos/owner/repo") && key.includes("default_branch")) {
-        return "main";
-      }
-      if (key.includes("issue list") && key.includes("--state closed")) {
-        // Issue #1908: closed-batch payload tagged with milestone for local filter.
-        return JSON.stringify([{
-          number: 10,
-          title: "ten",
-          milestone: { title: "v1.0" },
-        }]);
-      }
-      if (key.includes("branches/milestone")) {
-        return "milestone/v1-0";
-      }
-      return "[]";
-    },
-    syncBranchFn: async () => ({
-      ok: true as const,
-      value: { message: "synced" },
-    }),
-    log: () => {},
-    cooldownSeconds: 3600,
-    lastSyncTimes,
-  };
-
-  // Issue #2434: bracket the call with test-captured clock readings and assert
-  // the recorded timestamp falls within that window, rather than comparing a
-  // wall-clock `elapsed` against a fixed 5s budget (which depends on machine
-  // speed and CI load). This stays correct however long the call took.
-  const before = Date.now();
-  await syncMilestoneBranches(deps);
-  const after = Date.now();
-  assertEquals(lastSyncTimes.has("owner/repo|v1.0"), true);
-  const syncTime = lastSyncTimes.get("owner/repo|v1.0")!;
-  assert(
-    syncTime >= before && syncTime <= after,
-    `sync timestamp ${syncTime} should be within [${before}, ${after}]`,
-  );
-});
-
-Deno.test("syncMilestoneBranches - does not update lastSyncTimes on failure", async () => {
-  const lastSyncTimes = new Map<string, number>();
-
-  const deps: MilestoneBranchSyncDeps = {
-    repos: ["owner/repo"],
-    ghCommandFn: async (args: string[]): Promise<string> => {
-      const key = args.join(" ");
-      if (key.includes("repos/owner/repo/milestones")) {
-        return JSON.stringify([{ title: "v1.0", number: 1 }]);
-      }
-      if (key.includes("repos/owner/repo") && key.includes("default_branch")) {
-        return "main";
-      }
-      if (key.includes("issue list") && key.includes("--state closed")) {
-        // Issue #1908: closed-batch payload tagged with milestone for local filter.
-        return JSON.stringify([{
-          number: 10,
-          title: "ten",
-          milestone: { title: "v1.0" },
-        }]);
-      }
-      if (key.includes("branches/milestone")) {
-        return "milestone/v1-0";
-      }
-      return "[]";
-    },
-    syncBranchFn: async () => ({
-      ok: false as const,
-      error: new Error("conflict"),
-    }),
-    log: () => {},
-    cooldownSeconds: 3600,
-    lastSyncTimes,
-  };
-
-  await syncMilestoneBranches(deps);
-  assertEquals(lastSyncTimes.has("owner/repo|v1.0"), false);
 });
 
 Deno.test("syncMilestoneBranches - continues processing after one repo fails", async () => {
@@ -886,8 +387,6 @@ Deno.test("syncMilestoneBranches - continues processing after one repo fails", a
       return { ok: true as const, value: { message: "synced" } };
     },
     log: () => {},
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -977,8 +476,6 @@ Deno.test("syncMilestoneBranches - uses injected defaultBranchFn when provided",
       return { ok: true as const, value: { message: "synced" } };
     },
     log: () => {},
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -1006,8 +503,6 @@ Deno.test("syncMilestoneBranches - skips repo when defaultBranchFn errors", asyn
       value: { message: "synced" },
     }),
     log: () => {},
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -1048,8 +543,6 @@ Deno.test("syncMilestoneBranches - skips milestone branch that does not exist on
       throw new Error("Should not be called");
     },
     log: (msg: string) => logs.push(msg),
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -1106,8 +599,6 @@ Deno.test("syncMilestoneBranches - skips repo when localCloneExistsFn returns fa
       };
     },
     log: (msg: string) => logs.push(msg),
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -1179,8 +670,6 @@ Deno.test("syncMilestoneBranches - an empty branch-probe answer reads as missing
       };
     },
     log: (msg: string) => logs.push(msg),
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -1230,8 +719,6 @@ Deno.test("syncMilestoneBranches - a failed sync emits a self-heal event when wi
       return Promise.resolve(true);
     },
     log: () => undefined,
-    cooldownSeconds: 3600,
-    lastSyncTimes: new Map(),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -1364,8 +851,6 @@ function escalationDeps(
     },
     syncBranchFn: () => escalationOutcome(options),
     log: options.log ?? (() => undefined),
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
   };
   if (options.streakPath) deps.streakPath = options.streakPath;
   return deps;
@@ -1561,8 +1046,6 @@ Deno.test("syncMilestoneBranches - a successful sync closes the branch's own dia
     syncBranchFn: () =>
       Promise.resolve({ ok: true as const, value: { message: "merged" } }),
     log: () => undefined,
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
     dedupAuthors: { fleetAuthors: ["vibe-coder"] },
   };
 

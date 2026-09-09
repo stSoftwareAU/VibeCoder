@@ -83,8 +83,6 @@ function deps(
         },
       }),
     log: () => undefined,
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
   };
   if (options.streakPath) built.streakPath = options.streakPath;
   return built;

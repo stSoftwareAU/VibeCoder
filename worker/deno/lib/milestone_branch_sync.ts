@@ -4,8 +4,11 @@
  * Proactively merges the default branch into active milestone branches
  * to reduce drift and avoid merge conflicts on the final summary PR.
  *
- * Active milestones are those that are open and have at least one closed
- * issue (meaning work has started). The sync is best-effort — failures
+ * Every open milestone whose branch exists is swept on every cycle in which
+ * the default-branch tip moved (Issue #1776): the cadence is one comparison
+ * between the tip git reports and the tip the branch was last successfully
+ * synced against. There is no cooldown and no closed-issue gate — a milestone
+ * that has completed nothing still drifts. The sync is best-effort — failures
  * are logged but do not block other work.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
@@ -13,23 +16,13 @@
 
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
-import type { IssueCache } from "./issue_cache.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
-import { fetchClosedIssuesByMilestone } from "./issue_query.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
 import {
   buildMergeGateEscalationComment,
   isMergeGateFailure,
 } from "./milestone_merge_gate.ts";
-import {
-  decideMilestoneQuery,
-  loadMilestoneActivity,
-  milestoneActivityKey,
-  type MilestoneActivityState,
-  recordMilestoneActivity,
-  saveMilestoneActivity,
-} from "./milestone_activity_gate.ts";
 import {
   buildConflictEscalationComment,
   describeBranchTips,
@@ -52,8 +45,10 @@ import { closeResolvedSyncDiagnostics } from "./milestone_sync_diagnostic_closeo
 import {
   loadSyncStreaks,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
+  recordDefaultSha,
   saveSyncStreaks,
   type SyncStreakEntry,
+  type SyncStreaks,
   trackingIssueFromMilestoneTitle,
 } from "./milestone_sync_streak.ts";
 
@@ -93,6 +88,20 @@ export type SyncBranchFn = (
  */
 export type LocalCloneExistsFn = (repo: string) => Promise<boolean>;
 
+/**
+ * Function signature for reading the default branch's tip as local git sees
+ * it (Issue #1776).
+ *
+ * The cadence gate spends this instead of an API call: one
+ * `git rev-parse origin/<default>` after the fetch that makes the ref
+ * current. `undefined` means the tip could not be read — the gate then syncs
+ * rather than reading an unknown tip as "unchanged".
+ */
+export type DefaultTipShaFn = (
+  repo: string,
+  defaultBranch: string,
+) => Promise<string | undefined>;
+
 /** An active milestone discovered from the GitHub API. */
 export interface ActiveMilestone {
   /** The milestone title (e.g., "v1.0"). */
@@ -107,13 +116,6 @@ export interface ActiveMilestone {
   milestoneBranch: string;
   /** The repository's default branch (e.g., "main", "Develop"). */
   defaultBranch: string;
-  /**
-   * True when this milestone's REST closed count moved since the previous
-   * cycle — a sub-issue PR merged (Issue #1558). Such a milestone syncs now
-   * rather than waiting out the cooldown, because that is exactly the moment
-   * the branch and the default branch have both just moved.
-   */
-  closedCountChanged?: boolean;
 }
 
 /** Dependencies for the milestone branch sync orchestration. */
@@ -133,11 +135,12 @@ export interface MilestoneBranchSyncDeps {
   /** Function to sync a milestone branch with the default branch. */
   syncBranchFn: SyncBranchFn;
   /**
-   * Optional IssueCache for read-through (Issue #1786). When provided,
-   * the per-milestone closed-issue check shares a cache key with other
-   * milestone helpers within the same iteration.
+   * Optional reader for the default branch's local tip (Issue #1776). When
+   * supplied, a milestone whose branch was last synced against this very tip
+   * is skipped; when omitted, or when it cannot read the tip, every milestone
+   * is synced.
    */
-  cache?: IssueCache;
+  defaultTipShaFn?: DefaultTipShaFn;
   /**
    * Optional check for whether the repo has a local clone (Issue #1519).
    * When supplied and it returns `false`, the repo is skipped with no
@@ -147,10 +150,6 @@ export interface MilestoneBranchSyncDeps {
   localCloneExistsFn?: LocalCloneExistsFn;
   /** Logging function. */
   log: (message: string) => void;
-  /** Cooldown in seconds between sync attempts for the same milestone. */
-  cooldownSeconds: number;
-  /** Map tracking last sync time per repo|milestone key. */
-  lastSyncTimes: Map<string, number>;
   /**
    * Optional self-heal event sink (Issue #4260). Production wires
    * `emitSelfHealEventAuto` so every failed sync leaves a forensic
@@ -176,13 +175,6 @@ export interface MilestoneBranchSyncDeps {
    * the fleet instead of writing a config file.
    */
   dedupAuthors?: AlertDedupAuthorOptions;
-  /**
-   * Path of the milestone activity file (Issue #1488). When set, the
-   * REST `closed_issues` count observed for each milestone is persisted
-   * across cycles so an unchanged milestone costs no closed-issue query.
-   * Unset (tests, ad hoc callers): every milestone is queried.
-   */
-  activityPath?: string;
 }
 
 /**
@@ -216,7 +208,7 @@ function makeGhDefaultBranchFn(ghFn: GhCommandFn): DefaultBranchFn {
 export interface MilestoneSyncResult {
   /** Number of milestone branches successfully synced. */
   synced: number;
-  /** Number of milestone branches skipped (cooldown or branch missing). */
+  /** Number of milestone branches skipped (tip unchanged or branch missing). */
   skipped: number;
   /** Number of milestone branches that failed to sync. */
   failed: number;
@@ -226,8 +218,6 @@ export interface MilestoneSyncResult {
 interface GitHubMilestone {
   title: string;
   number: number;
-  /** REST closed issue + PR count, when the payload carries it (#1488). */
-  closed_issues?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,31 +225,26 @@ interface GitHubMilestone {
 // ---------------------------------------------------------------------------
 
 /**
- * Find active milestones for a repository.
+ * Find the milestones this repository's sync covers.
  *
- * An active milestone is one that is open and has at least one closed issue,
- * indicating that work has started. Milestones with no closed issues are
- * skipped — there is nothing to drift from yet.
+ * Every OPEN milestone counts (Issue #1776) — the closed-issue query that
+ * once decided whether work had "started" is gone. A milestone with nothing
+ * closed yet still accumulates drift against a default branch taking ~27
+ * commits a day, and it was exactly the milestone the old gate never swept.
+ * Branch existence is checked by the caller, on the cycle it syncs.
  *
- * The closed-issue lookup is the expensive half, and it is gated on the
- * REST `closed_issues` count the milestone listing already returns
- * (Issue #1488): a milestone that has closed nothing, or whose count has
- * not moved since the previous cycle, is answered from the cheap call.
+ * The one exclusion stays: an idle-task milestone never carries a branch
+ * (Issue #2125).
  *
  * @param repo - Repository in "owner/repo" format
  * @param ghCommandFn - Function to execute gh CLI commands
  * @param defaultBranchFn - Optional cached default-branch resolver
- * @param cache - Optional per-iteration issue cache
- * @param activity - Optional cross-cycle observation state for the gate.
- *   Omitted (tests, one-shot callers) means every milestone is queried.
- * @returns Result with list of active milestones
+ * @returns Result with list of open milestones
  */
 export async function findActiveMilestoneBranches(
   repo: string,
   ghCommandFn: GhCommandFn,
   defaultBranchFn?: DefaultBranchFn,
-  cache?: IssueCache,
-  activity?: MilestoneActivityState,
 ): Promise<Result<ActiveMilestone[]>> {
   try {
     // Resolve default branch via injected function (Issue #1509). When the
@@ -309,56 +294,11 @@ export async function findActiveMilestoneBranches(
         continue;
       }
 
-      // Issue #1488: decide from the cheap REST count whether the
-      // expensive closed-issue query is worth making at all.
-      const previous = activity
-        ?.observations[milestoneActivityKey(repo, milestone.number)];
-      const decision = decideMilestoneQuery(previous, milestone.closed_issues);
-
-      // Issue #1558: a count that has MOVED since the previous cycle means
-      // something closed — a sub-issue PR merged. The same cheap listing
-      // that gates the query above therefore also answers "has this
-      // milestone just moved?", at no extra API cost.
-      const closedCountChanged = previous !== undefined &&
-        typeof milestone.closed_issues === "number" &&
-        previous.closedIssues !== milestone.closed_issues;
-
-      if (decision.query) {
-        // Check if milestone has at least one closed issue (Issue #1786:
-        // routes through `fetchClosedIssuesByMilestone` so concurrent
-        // milestones share a cached payload per iteration).
-        let active: boolean;
-        try {
-          const closedIssues = await fetchClosedIssuesByMilestone(
-            repo,
-            milestone.title,
-            cache,
-            ghCommandFn,
-          );
-          active = closedIssues.length > 0;
-        } catch {
-          continue; // Cannot check — skip this milestone, record nothing
-        }
-        recordMilestoneActivity(
-          activity,
-          repo,
-          milestone.number,
-          milestone.closed_issues,
-          active,
-        );
-        if (!active) {
-          continue; // No work started yet — skip
-        }
-      } else if (!decision.active) {
-        continue; // Known inactive from the cheap call — no query spent
-      }
-
       activeMilestones.push({
         milestoneTitle: milestone.title,
         milestoneNumber: milestone.number,
         milestoneBranch: createMilestoneBranchName(milestone.title),
         defaultBranch,
-        closedCountChanged,
       });
     }
 
@@ -379,31 +319,98 @@ export async function findActiveMilestoneBranches(
 // ---------------------------------------------------------------------------
 
 /**
- * Determine whether a milestone branch should be synced based on cooldown.
+ * Determine whether a milestone branch has anything to merge down
+ * (Issue #1776).
  *
- * Prevents excessive sync attempts by tracking the last sync time per
- * repo|milestone combination. Only allows a sync if the cooldown period
- * has elapsed since the last successful sync.
+ * The question the old cooldown answered was "has enough time passed?", which
+ * on a default branch taking ~27 commits a day meant a branch sat up to an
+ * hour behind for no reason. The question now is the only one that matters:
+ * has the default tip moved since the last **successful** sync of this
+ * branch? A failure records nothing, so a failed sync is retried on the next
+ * cycle rather than waited out.
  *
- * @param repo - Repository in "owner/repo" format
- * @param milestoneTitle - The milestone title
- * @param lastSyncTimes - Map tracking last sync time per repo|milestone key
- * @param cooldownSeconds - Minimum seconds between sync attempts
+ * A tip git could not report is never read as "unchanged" — an unreadable
+ * tip would otherwise silently park the branch for ever.
+ *
+ * @param entry - The branch's ledger entry, or undefined when it has none
+ * @param defaultSha - The default branch's tip now, or undefined if unknown
  * @returns true if sync should proceed
  */
 export function shouldSyncMilestone(
-  repo: string,
-  milestoneTitle: string,
-  lastSyncTimes: Map<string, number>,
-  cooldownSeconds: number,
+  entry: SyncStreakEntry | undefined,
+  defaultSha: string | undefined,
 ): boolean {
-  const key = `${repo}|${milestoneTitle}`;
-  const lastSync = lastSyncTimes.get(key);
-  if (lastSync === undefined) {
-    return true; // Never synced
+  if (!defaultSha) return true;
+  return entry?.lastSyncedDefaultSha !== defaultSha;
+}
+
+/**
+ * Read the default branch's tip for the cadence gate (Issue #1776).
+ *
+ * A tip that cannot be read is reported and returned as `undefined`, which
+ * the gate treats as "sync it" — reading an unreadable tip as "unchanged"
+ * would park every milestone branch silently, the failure mode this sweep
+ * exists to prevent.
+ */
+async function readDefaultTip(
+  repo: string,
+  defaultBranch: string,
+  defaultTipShaFn: DefaultTipShaFn | undefined,
+  log: (message: string) => void,
+): Promise<string | undefined> {
+  if (!defaultTipShaFn) return undefined;
+  let reason = "git reported no commit";
+  try {
+    const sha = (await defaultTipShaFn(repo, defaultBranch))?.trim();
+    if (sha) return sha;
+  } catch (err) {
+    reason = err instanceof Error ? err.message : String(err);
   }
-  const elapsedMs = Date.now() - lastSync;
-  return elapsedMs >= cooldownSeconds * 1000;
+  log(
+    `WARNING: Could not read the tip of '${defaultBranch}' in ${repo} ` +
+      `(${reason}) — every milestone branch is synced this cycle ` +
+      `(Issue #1776)`,
+  );
+  return undefined;
+}
+
+/**
+ * Record a successful sync against the branch's ledger entry (Issue #1776).
+ *
+ * Success is the only thing that writes `lastSyncedDefaultSha`, so a failure
+ * leaves the previous tip in place and the next cycle tries again. The
+ * failure streak ends here (Issue #4260); the reported-conflict marker and
+ * the synced tip are what survive it.
+ *
+ * @param reportedSha - A conflicting default-branch commit already reported,
+ *   when there is one to remember.
+ * @returns True when the ledger changed and needs persisting.
+ */
+function recordSuccess(
+  streaks: SyncStreaks,
+  streakKey: string,
+  defaultSha: string | undefined,
+  reportedSha: string | undefined,
+): boolean {
+  const existing = streaks[streakKey];
+  const carried = existing?.lastSyncedDefaultSha;
+  let next: SyncStreakEntry = {
+    count: 0,
+    escalated: false,
+    ...(reportedSha ? { conflictEscalatedSha: reportedSha } : {}),
+    // With no tip to record, the last one known still stands.
+    ...(carried ? { lastSyncedDefaultSha: carried } : {}),
+  };
+  if (defaultSha) next = recordDefaultSha(next, defaultSha);
+
+  // An entry carrying neither a marker nor a tip holds nothing worth keeping.
+  if (!next.conflictEscalatedSha && !next.lastSyncedDefaultSha) {
+    if (!existing) return false;
+    delete streaks[streakKey];
+    return true;
+  }
+  streaks[streakKey] = next;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -418,12 +425,13 @@ export function shouldSyncMilestone(
  * priority dispatch at priority 1.72.
  *
  * For each repo:
- * 1. Find active milestones (open, with at least one closed issue)
- * 2. For each milestone, check the cooldown guard
- * 3. Verify the milestone branch exists on the remote
- * 4. Attempt to merge the default branch into the milestone branch
- * 5. On success: push and record the sync time
- * 6. On failure: log a warning (do not block other work)
+ * 1. Read the default branch's tip once, from local git (Issue #1776)
+ * 2. Find its open milestones
+ * 3. Skip any whose branch was last synced against that very tip
+ * 4. Verify the milestone branch exists on the remote
+ * 5. Attempt to merge the default branch into the milestone branch
+ * 6. On success: push and record the tip it synced against
+ * 7. On failure: log a warning and record nothing (do not block other work)
  *
  * @param deps - Injected dependencies
  * @returns Result with sync summary
@@ -431,15 +439,7 @@ export function shouldSyncMilestone(
 export async function syncMilestoneBranches(
   deps: MilestoneBranchSyncDeps,
 ): Promise<Result<MilestoneSyncResult>> {
-  const {
-    repos,
-    ghCommandFn,
-    syncBranchFn,
-    localCloneExistsFn,
-    log,
-    cooldownSeconds,
-    lastSyncTimes,
-  } = deps;
+  const { repos, ghCommandFn, syncBranchFn, localCloneExistsFn, log } = deps;
   const defaultBranchFn = deps.defaultBranchFn ??
     makeGhDefaultBranchFn(ghCommandFn);
   let synced = 0;
@@ -457,17 +457,6 @@ export async function syncMilestoneBranches(
   const streaks = streakPath ? await loadSyncStreaks(streakPath) : {};
   let streaksDirty = false;
 
-  // Closed-issue query gate (Issue #1488): observations of the cheap REST
-  // count, carried across cycles so an unchanged milestone is answered
-  // without the expensive half.
-  const activityPath = deps.activityPath;
-  const activity: MilestoneActivityState | undefined = activityPath
-    ? {
-      observations: await loadMilestoneActivity(activityPath, log),
-      dirty: false,
-    }
-    : undefined;
-
   for (const repo of repos) {
     try {
       // Issue #1519: sync is a local-git operation. Skip repos that have
@@ -482,8 +471,6 @@ export async function syncMilestoneBranches(
         repo,
         ghCommandFn,
         defaultBranchFn,
-        deps.cache,
-        activity,
       );
       if (!milestonesResult.ok) {
         log(
@@ -492,23 +479,29 @@ export async function syncMilestoneBranches(
         continue;
       }
 
+      // The cadence signal, read once per repo (Issue #1776): the default
+      // branch's tip as local git sees it. No API call — the repo's default
+      // branch was resolved above from the 7-day cache, and the tip itself
+      // comes from the fetch the sync needs anyway.
+      const defaultSha = milestonesResult.value.length > 0
+        ? await readDefaultTip(
+          repo,
+          milestonesResult.value[0]!.defaultBranch,
+          deps.defaultTipShaFn,
+          log,
+        )
+        : undefined;
+
       for (const milestone of milestonesResult.value) {
-        // Frequency guard: skip if synced recently — unless a sub-issue PR
-        // has just merged (Issue #1558). The default branch is merged down
-        // after each closure, not once per cooldown window, because that is
-        // when both sides have just moved and a conflict is still one day
-        // wide rather than a week of divergence.
-        if (
-          !milestone.closedCountChanged &&
-          !shouldSyncMilestone(
-            repo,
-            milestone.milestoneTitle,
-            lastSyncTimes,
-            cooldownSeconds,
-          )
-        ) {
+        const streakKey = `${repo}|${milestone.milestoneBranch}`;
+
+        // Cadence guard (Issue #1776): the branch already carries this tip,
+        // so there is nothing to merge down. Checked before the branch probe
+        // so an idle cycle costs no API call at all.
+        if (!shouldSyncMilestone(streaks[streakKey], defaultSha)) {
           log(
-            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — cooldown active`,
+            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+              `default tip unchanged (${defaultSha!.slice(0, 7)})`,
           );
           skipped++;
           continue;
@@ -548,9 +541,6 @@ export async function syncMilestoneBranches(
           log(
             `Synced milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.value.message}`,
           );
-          // Record successful sync time
-          const key = `${repo}|${milestone.milestoneTitle}`;
-          lastSyncTimes.set(key, Date.now());
           synced++;
 
           // The branch has synced, so any diagnostic the old escalation path
@@ -568,7 +558,6 @@ export async function syncMilestoneBranches(
           // now, while the divergence is one day wide — once per conflicting
           // default-branch commit, so a branch that keeps conflicting against
           // the same commit is not reported every cycle.
-          const streakKey = `${repo}|${milestone.milestoneBranch}`;
           const conflict = syncResult.value.conflict;
           if (conflict) {
             // A conflict whose default-branch commit could not be read still
@@ -587,31 +576,18 @@ export async function syncMilestoneBranches(
               // that failed must be retried next cycle, not marked done.
               if (escalated) reportedSha = conflictKey;
             }
-            if (streakPath) {
-              // The sync succeeded, so any failure streak ends here
-              // (Issue #4260) while the reported-conflict marker survives.
-              const existing = streaks[streakKey];
-              if (reportedSha) {
-                if (
-                  existing?.conflictEscalatedSha !== reportedSha ||
-                  existing.count !== 0 || existing.escalated
-                ) {
-                  streaks[streakKey] = {
-                    count: 0,
-                    escalated: false,
-                    conflictEscalatedSha: reportedSha,
-                  };
-                  streaksDirty = true;
-                }
-              } else if (existing) {
-                delete streaks[streakKey];
-                streaksDirty = true;
-              }
+            if (
+              streakPath &&
+              recordSuccess(streaks, streakKey, defaultSha, reportedSha)
+            ) {
+              streaksDirty = true;
             }
-          } else if (streakPath && streaks[streakKey]) {
-            // A clean success ends the failure streak (Issue #4260): clear it
-            // so a branch that recovers is not still counted as diverging.
-            delete streaks[streakKey];
+          } else if (
+            streakPath &&
+            recordSuccess(streaks, streakKey, defaultSha, undefined)
+          ) {
+            // A clean success ends the failure streak (Issue #4260) and
+            // records the tip the branch now carries (Issue #1776).
             streaksDirty = true;
           }
         } else {
@@ -633,7 +609,6 @@ export async function syncMilestoneBranches(
           // the milestone's tracking issue.
           let entry: SyncStreakEntry | undefined;
           if (streakPath) {
-            const streakKey = `${repo}|${milestone.milestoneBranch}`;
             entry = streaks[streakKey] ?? { count: 0, escalated: false };
             entry.count++;
             streaks[streakKey] = entry;
@@ -721,19 +696,6 @@ export async function syncMilestoneBranches(
       await saveSyncStreaks(streakPath, streaks);
     } catch {
       // Persistence is an optimisation — never fail the sweep over it.
-    }
-  }
-
-  if (activityPath && activity?.dirty) {
-    try {
-      await saveMilestoneActivity(activityPath, activity.observations);
-    } catch (err) {
-      // Losing the observations only costs the next cycle a query — but it
-      // is a fault, so it is said out loud rather than swallowed.
-      const message = err instanceof Error ? err.message : String(err);
-      log(
-        `WARNING: Could not persist milestone activity to ${activityPath}: ${message}`,
-      );
     }
   }
 
