@@ -61,6 +61,8 @@ check:manifests`.
       have a 400k context window.
 - [x] Codex `summarise` never receives `sonnet` or `haiku`.
 - [x] `promptViaStdin` puts `-` last and keeps a 200k prompt off argv.
+- [x] Per-invocation spawn tests: Codex argv ends in `-` and the prompt
+      is on stdin, not argv, even when Claude is the active provider.
 - [x] Playwright JSON becomes `-c mcp_servers.playwright.*`; a missing path
       fails closed.
 - [x] Codex `command_execution` items count as tool calls; started+completed
