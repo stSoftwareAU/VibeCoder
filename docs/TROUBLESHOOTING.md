@@ -767,16 +767,21 @@ Two different things, handled two different ways:
   limit`, `5-hour limit`, `weekly limit`, `out of extra usage`): **terminal
   for the call**. The worker does not retry and does not fall back to a
   cheaper model — the window is account-wide, so every model bills the same
-  exhausted budget. It parses the reset time from the message when there is
-  one (`resets 3am`, `|<epoch>`), writes the durable `.rate_limit_signal` in
-  `WORK_DIR` for that long (an hour when no time is given), and the main loop
-  pauses agent work until the window resets. Every other worker on the same
-  volume sees the signal and waits too. The issue is **not** blamed: the
-  failure classifies as infrastructure, so it keeps its `failed-once` retry
-  rather than being labelled failed.
+  exhausted budget. It prefers the CLI's structured stream-json
+  `rate_limit_event` (`resetsAt` and `unifiedWindows`) when one is on
+  stdout, and otherwise parses the reset time from the message when there
+  is one (`resets 3am`, `|<epoch>`), writes the durable `.rate_limit_signal`
+  in `WORK_DIR` for that long (an hour when no time is given), and the
+  main loop pauses agent work until the window resets. Every other worker
+  on the same volume sees the signal and waits too. The issue is **not**
+  blamed: the failure classifies as infrastructure, so it keeps its
+  `failed-once` retry rather than being labelled failed.
 
 Both stderr and stdout are scanned — the CLI writes refusals to stderr, and a
-refused run has no stream-json result on stdout at all.
+refused run has no stream-json `result` on stdout at all. The structured
+`rate_limit_event` still lands on that stdout stream and is enough on its
+own: a rejected five-hour or seven-day event is a usage limit even when
+there is no assistant prose.
 
 The agent **health check** returns the same classification: a limited probe
 writes the signal instead of the loop re-running a billed probe every 30 s for
