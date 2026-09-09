@@ -77,11 +77,97 @@ a _different_ session cannot pass for the same one.
 Issue #1669 landed on the `milestone/1653-…` branch, not on `main`, so the
 producer of this flag is not in this PR's base. On `main` the flag is simply
 never set: an exhausted run still checkpoints, still saves the pointer, makes
-its one switch, and parks on the second limit via the switch bound — all
-behaviours the tests cover. When the milestone branch merges, the two halves
-compose, and the field declaration in `claude_runner.ts` may need a trivial
-conflict resolution (both sides add the same optional field beside
+its one `--resume` switch, and parks on the second limit via the switch bound —
+all behaviours the tests cover. The runner also still writes the durable
+`.rate_limit_signal`, so the fleet-wide pause that #1669 removes is unchanged by
+this PR; what changed here is that the phase no longer asserts a pause it does
+not own, and no longer loses the work to it. When the milestone branch merges,
+the two halves compose, and the field declaration in `claude_runner.ts` may need
+a trivial conflict resolution (both sides add the same optional field beside
 `usageLimit`).
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — on a usage-limit result the WIP is pushed to the issue branch with
+  the handover note and the resume-state file is written before any further
+  invocation — evidence: `worker/deno/lib/phases/execute_phase.ts:715-741`
+  (preserve with `cause: "usage-limit"` and the handover, then
+  `saveCheckpointState()`; the switch is below at :780) and
+  `worker/deno/tests/execute_phase_usage_limit_test.ts::execute #1670 - a
+  usage limit checkpoints the work and the resume pointer BEFORE switching
+  credential`,
+  which asserts the order through a call log — reviewer: met
+- **met** — with an eligible credential the same session id is resumed on it and
+  the phase continues to completion in the test — evidence:
+  `worker/deno/lib/phases/execute_phase.ts:760-784` and the same test, which
+  compares the two invocations' session ids and asserts the switch would carry
+  `--resume` (`resumeFlags === [false, true]`) — reviewer: partial — reason: the
+  reviewer proved the switch re-sent `--session-id` with an id already in use,
+  because `buildSessionResumeFlags` emits `--resume` only once a phase is
+  recorded; fixed in `3f17059`, and the assertion that catches it was observed
+  failing against the unfixed code
+- **met** — with none, the run ends as an infrastructure failure whose release
+  comment names the branch and handover file, and the loop moves on to other
+  work — evidence: `worker/deno/lib/phases/execute_phase.ts:1210-1248`,
+  `state.preservedWip` → `issue_worker.ts:166` → `run_outcome.ts:213`, and
+  `…::with no eligible credential the run parks on the branch and stops`
+  (branch, handover path, `preservedWip.branch`, and
+  `detectFailureCategory(reason) === "rate_limit"`) — reviewer: met
+- **met** — a subsequent attempt on the issue resumes from that branch and
+  session — evidence:
+  `worker/deno/lib/phases/setup_branch_phase.ts:383,
+  460-465` and
+  `worker/deno/tests/wip_resume_handoff_test.ts::setup #148 - a
+  matching resume pointer resumes the checkpointed branch`,
+  extended here to assert the saved session id reaches
+  `state.sessionResumeState` — reviewer: met
+- **met** — quality gate passes — evidence: `./quality.sh` after the final edit:
+  `Result: PASSED (with skipped checks)`, the skip being `config
+  integration`,
+  which this environment skips on `main` too — reviewer: met
+- **partial** — "the `deps.runClaudeWithRetry` call in
+  `worker/deno/lib/execute_claude_phase.ts`" was named as one of the two sites
+  and is untouched — evidence: `worker/deno/lib/execute_claude_phase.ts:1205` —
+  reviewer: partial — reason: that module is the standalone
+  `execute-claude-phase` command, not the main loop; it holds no `PhaseState`,
+  no branch and no `commitAndPushPending` seam, so preserving there would mean a
+  second, duplicate preservation path rather than a call site. Every stated
+  acceptance criterion is about the main loop, which is where the change landed
+- **partial** — "bound the loop to one switch per token exhausted (at most the
+  pool size)" — evidence: `worker/deno/lib/phases/execute_phase.ts:130` —
+  reviewer: partial — reason: the pool instance lives in the run-worker deps and
+  is not reachable from a phase, so the bound is a fixed one rather than the
+  pool size; #1669's `noEligibleCredential` is the real terminator, and a fixed
+  bound can only under-spend, never over-spend
+- **unrequested** — the usage-limit failure now skips the Issue #1550 in-process
+  infrastructure retry — evidence:
+  `worker/deno/lib/phases/execute_phase.ts:279-292` — reviewer: unrequested —
+  reason: the issue's own test spec requires "no third invocation", which that
+  retry would make; a retry seconds later meets the same shut window
+- **unrequested** — `MIN_CREDENTIAL_SWITCH_RUNWAY_SECONDS = 60`, a park when too
+  little execute budget remains — evidence:
+  `worker/deno/lib/phases/execute_phase.ts:138` — reviewer: unrequested —
+  reason: the issue bounds the switch by "the phase deadline"; this is what that
+  bound looks like in code, and it is covered by its own test
+- **unrequested** — the exhausted invocation's output survives a refused spawn,
+  and the failure snippet reads `state.claudeOutput` — evidence:
+  `worker/deno/lib/phases/execute_phase.ts:715, 797, 1219` — reviewer:
+  unrequested — reason: a consequence of re-invoking; without it a parked run's
+  diagnostics would be the refused spawn's empty output instead of the work that
+  was actually done
+- **unrequested** — the runner reports `invocationsBilled` — evidence:
+  `worker/deno/lib/claude_runner.ts:251-257` — reviewer: unrequested — reason:
+  the issue requires the switch to stay "inside the existing invocation budget
+  (Issue #3648)", and that ceiling is call-scoped, so the phase cannot honour it
+  without knowing what the first call spent
+- **unrequested** — `waitSeconds` no longer appears in the failure message (a
+  limit with no parsed reset now says the message named none) — evidence:
+  `worker/deno/lib/phases/execute_phase.ts:1221-1232` — reviewer: unrequested —
+  reason: the issue asks the message to name the reset and drop the pause;
+  `waitSeconds` is the pause duration, not the reset, so keeping it would keep
+  the sentence the issue removes
 
 ## Standards Review
 
@@ -95,18 +181,18 @@ conflict resolution (both sides add the same optional field beside
 - **violation** — the comment justifying the dropped pause sentence asserted
   that agent work "is no longer paused", which `claude_runner.ts`'s durable
   `.rate_limit_signal` write still contradicts on this base — evidence:
-  `worker/deno/lib/phases/execute_phase.ts:1184` — reason: fixed here; the
+  `worker/deno/lib/phases/execute_phase.ts:1221` — reason: fixed here; the
   comment now says only what this phase does, and leaves the loop's pause policy
   to #1669 in the runner.
 - **violation** — the switch log line and the new doc paragraph claimed the
   phase resumes "on another credential", which no code in this base does —
-  evidence: `worker/deno/lib/phases/execute_phase.ts:731`,
+  evidence: `worker/deno/lib/phases/execute_phase.ts:768`,
   `docs/TROUBLESHOOTING.md:786` — reason: fixed here; both now say the phase
   re-invokes so the pre-spawn quota gate can place the session on an eligible
   credential, which is true whether or not that gate is present.
 - **violation** — two park branches (the switch bound, the runway floor) and
   `isUsageLimitResult`'s named edge case had no test — evidence:
-  `worker/deno/lib/phases/execute_phase.ts:158-165` — reason: fixed here; three
+  `worker/deno/lib/phases/execute_phase.ts:152-172` — reason: fixed here; three
   tests added, listed below.
 - **violation** — the fake runner reported `session=same` whenever any session
   id was present, so the assertion could not fail for the behaviour it named —
@@ -128,8 +214,10 @@ New — `worker/deno/tests/execute_phase_usage_limit_test.ts`:
 - `execute #1670 - a usage limit checkpoints the work and the resume pointer
   BEFORE switching credential`
   — asserts the exact call order (invoke → `wip:` commit carrying the handover
-  note → invoke with the same session and the pointer already on disk) and that
-  the phase then runs to completion.
+  note → invoke with the same session and the pointer already on disk), that
+  the switch would carry `--resume` rather than re-declaring the id, that it
+  gets no more execute budget than the first invocation had, and that the
+  phase then runs to completion.
 - `execute #1670 - with no eligible credential the run parks on the branch and
   stops`
   — two invocations only, `status: "failure"`, `preservedWip.branch` set, the
