@@ -440,9 +440,14 @@ export function detectRateLimit(
  * these into the short-backoff + fallback ladder, burning the exhausted
  * window further. Vocabulary ported from the operator-side check in
  * setup.sh, which had known these strings all along.
+ *
+ * Issue #1665 added `session limit`: the CLI now refuses with "You've hit
+ * your session limit · resets 1:50pm (UTC)". Without it that line fell
+ * through to the secondary rate-limit pattern (`/limit/`) and drove the
+ * short-backoff ladder against an exhausted subscription window.
  */
 const USAGE_LIMIT_RE =
-  /(claude (ai )?usage limit reached|(you'?ve|you have) (hit|reached) your (usage )?limit|\b(5|five)[- ]hour (usage )?(limit|window)\b|\bweekly (usage )?limit\b|out of extra usage)/i;
+  /(claude (ai )?usage limit reached|(you'?ve|you have) (hit|reached) your (usage |session )?limit|\b(5|five)[- ]hour (usage )?(limit|window)\b|\bweekly (usage )?limit\b|out of extra usage)/i;
 
 /**
  * Check whether the tail of `output` reports a subscription usage limit.

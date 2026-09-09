@@ -764,17 +764,17 @@ Two different things, handled two different ways:
   the model-fallback ladder. Transient — the right response is to wait a
   little and try again.
 - **Usage limit** (the Max subscription's 5-hour / weekly window: `Claude
-  usage limit reached`, `You've hit your limit`, `5-hour limit`, `weekly
-  limit`, `out of extra usage`): **terminal for the call**. The worker does
-  not retry and does not fall back to a cheaper model — the window is
-  account-wide, so every model bills the same exhausted budget. It parses the
-  reset time from the message when there is one (`resets 3am`, `|<epoch>`),
-  writes the durable `.rate_limit_signal` in `WORK_DIR` for that long (an
-  hour when no time is given), and the main loop pauses agent work until the
-  window resets. Every other worker on the same volume sees the signal and
-  waits too. The issue is **not** blamed: the failure classifies as
-  infrastructure, so it keeps its `failed-once` retry rather than being
-  labelled failed.
+  usage limit reached`, `You've hit your limit`, `You've hit your session
+  limit`, `5-hour limit`, `weekly limit`, `out of extra usage`): **terminal
+  for the call**. The worker does not retry and does not fall back to a
+  cheaper model — the window is account-wide, so every model bills the same
+  exhausted budget. It parses the reset time from the message when there is
+  one (`resets 3am`, `|<epoch>`), writes the durable `.rate_limit_signal` in
+  `WORK_DIR` for that long (an hour when no time is given), and the main loop
+  pauses agent work until the window resets. Every other worker on the same
+  volume sees the signal and waits too. The issue is **not** blamed: the
+  failure classifies as infrastructure, so it keeps its `failed-once` retry
+  rather than being labelled failed.
 
 Both stderr and stdout are scanned — the CLI writes refusals to stderr, and a
 refused run has no stream-json result on stdout at all.
