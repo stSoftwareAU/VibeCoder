@@ -166,6 +166,16 @@ Measured on the three-repo, two-author fixture in
 
 ### One cache key, one limit (Issue #1486)
 
+Two per-issue reads on the scan path are cached too (Issue #1818): the
+dependency fetcher's `issue_state_v1_<n>`, `issue_body_v1_<n>` and
+`issue_sub_issues_v1_<n>` (a referenced issue is viewed once per iteration,
+not once per idle re-scan), and the scan-time content-integrity check reads
+the candidate's title and body from the listing instead of a live
+`gh issue view` — the claimed issue is still re-verified live at pickup
+(Issue #3647). Before this one cycle spent ~735 `issue view` calls on 94
+candidates re-scanned four times, and exhausted the fleet's shared GraphQL
+quota mid-window.
+
 `fetchAllIssues` shares a single `issues_all` entry between callers asking
 for different limits (200 from `find_oldest_issue`, 100 from
 `stuck_recovery` and `find_planning_issues`). Whichever call ran first used
@@ -284,7 +294,7 @@ trade-off.
 | Worker adds/removes a label | The repo's issue/PR list (so the next read sees the change) | `IssueCache.invalidate(repo, "issues_all")` or `IssueCache.invalidateRepo(repo)` |
 | Worker writes a claim comment | Repo's issue list (claim is reflected in the issue body / labels) | `IssueCache.invalidateRepo(repo)` |
 | Worker creates/closes a PR | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`) | `IssueCache.invalidate(repo, key)` |
-| Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}` and `pr_linkage_open_v2_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181) |
+| Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}`, `pr_linkage_open_v2_${number}` and `issue_state_v1_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181, #1818) |
 | Milestone REST `closed_issues` moves | That milestone's recorded closed-issue verdict (Issue #1488) | `decideMilestoneQuery` in `milestone_activity_gate.ts` |
 | Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
 | Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
