@@ -208,6 +208,54 @@ Deno.test("collectActionPins - a trailing comment for another action is not borr
   }]);
 });
 
+Deno.test("collectActionPins - one pin annotated both ways yields both claims", () => {
+  const yaml = `      # actions/checkout@v6.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v7.0.1
+`;
+  assertEquals(
+    collectActionPins(yaml, "wf.yml").map((p) => p.version),
+    ["v7.0.1", "v6.0.0"],
+  );
+});
+
+Deno.test("collectActionPins - two agreeing comments on one pin yield one entry", () => {
+  const yaml = `      # actions/checkout@v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v7.0.1
+`;
+  assertEquals(collectActionPins(yaml, "wf.yml").length, 1);
+});
+
+Deno.test("findVersionCommentDrift - the two forms disagreeing on one pin is drift", () => {
+  // Neither annotation silently wins: a single `uses:` whose leading and
+  // trailing comments claim different versions is exactly the "one SHA,
+  // two versions" defect the rule exists to catch.
+  const pins = collectActionPins(
+    `      # actions/checkout@v6.0.0
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v7.0.1
+`,
+    "wf.yml",
+  );
+  const violations = findVersionCommentDrift(pins);
+  assertEquals(violations.length, 2);
+  assertEquals(violations[0]?.kind, "version-comment-drift");
+  assertStringIncludes(violations[0]?.detail ?? "", "v6.0.0, v7.0.1");
+});
+
+Deno.test("collectActionPins - a trailing comment need not be a bare version", () => {
+  // `pinnedAction()` records branch-HEAD pins as `# master HEAD 2024-06-20`
+  // (see PINNED_ACTIONS), so the trailing comment is read verbatim rather
+  // than being held to a `vX.Y.Z` shape. The drift rule then compares
+  // whatever two annotations of one SHA claim, which is the point: two
+  // different claims about one SHA are the defect, whatever their spelling.
+  const yaml =
+    `      - uses: ludeeus/action-shellcheck@de0fac2e4500dabe0009e67214ff5f5447ce83dd # master HEAD 2024-06-20
+`;
+  assertEquals(
+    collectActionPins(yaml, "wf.yml")[0]?.version,
+    "master HEAD 2024-06-20",
+  );
+});
+
 Deno.test("findVersionCommentDrift - a trailing and a leading comment may disagree", () => {
   const trailing = collectActionPins(
     `      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

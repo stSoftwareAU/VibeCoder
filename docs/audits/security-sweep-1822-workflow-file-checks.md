@@ -19,8 +19,8 @@ the reading of it.
 
 The module is a data table: eleven `{ id, label, run }` entries, each a thin
 adapter over a pure scanner that already lives in `worker/deno/lib/` and is
-already swept (nine native pre-filers under 12e, the two hygiene rules in
-`workflow_hygiene_check.ts` under 12b). It adds two private normalising
+already swept — the nine native pre-filers and `workflow_hygiene_check.ts`
+all sit in slice 12e. It adds two private normalising
 functions — `fromScanner` and `fromHygiene` — that copy four fields off a
 finding and return a new object. No scanner logic is reimplemented here.
 

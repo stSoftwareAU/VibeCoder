@@ -203,10 +203,30 @@ function trailingVersion(line: string, action: string): string | undefined {
 }
 
 /**
- * Collect every SHA-pinned `uses:` reference and the version its comment
- * records: a same-line trailing comment when present, otherwise a leading
- * comment (searched up to three lines above, so an intervening
- * `- name:`/blank line does not hide it).
+ * Version a leading `# owner/action@version` comment claims for `action`,
+ * searched up to three lines above `index` so an intervening
+ * `- name:`/blank line does not hide it.
+ */
+function leadingVersion(
+  lines: string[],
+  index: number,
+  action: string,
+): string | undefined {
+  for (let j = index - 1; j >= 0 && j >= index - 3; j--) {
+    const comment = (lines[j] ?? "").match(PIN_COMMENT_RE);
+    if (comment && comment[1] === action) return comment[2];
+  }
+  return undefined;
+}
+
+/**
+ * Collect every SHA-pinned `uses:` reference and the version its comments
+ * record — a same-line trailing comment, a leading comment, or both.
+ *
+ * A pin annotated **both** ways emits one entry per *distinct* version, so
+ * two forms disagreeing about one SHA reach {@link findVersionCommentDrift}
+ * as a drift violation instead of one silently losing to the other. The
+ * ordinary case — one comment, or two that agree — is a single entry.
  */
 export function collectActionPins(
   content: string,
@@ -222,22 +242,21 @@ export function collectActionPins(
     const [, action, sha] = uses;
     if (action === undefined || sha === undefined) continue;
 
-    let version = trailingVersion(lines[i] ?? "", action);
-    for (let j = i - 1; version === undefined && j >= 0 && j >= i - 3; j--) {
-      const comment = (lines[j] ?? "").match(PIN_COMMENT_RE);
-      if (comment && comment[1] === action) {
-        version = comment[2];
-        break;
-      }
-    }
+    const claimed = [
+      trailingVersion(lines[i] ?? "", action),
+      leadingVersion(lines, i, action),
+    ].filter((v): v is string => v !== undefined);
+    const versions = [...new Set(claimed)];
 
-    pins.push({
-      action,
-      sha,
-      ...(version === undefined ? {} : { version }),
-      file: repoRelPath,
-      line: i + 1,
-    });
+    for (const version of versions.length === 0 ? [undefined] : versions) {
+      pins.push({
+        action,
+        sha,
+        ...(version === undefined ? {} : { version }),
+        file: repoRelPath,
+        line: i + 1,
+      });
+    }
   }
 
   return pins;

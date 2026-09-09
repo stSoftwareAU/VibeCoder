@@ -64,6 +64,7 @@ import type { WorkflowFile } from "../lib/workflow_scan_common.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 import { readOnBlock } from "../lib/workflow_trigger_scanner.ts";
 import { workflowMilestoneCoverage } from "../lib/milestone_branch_filter_scanner.ts";
+import { collectActionPins } from "../lib/workflow_hygiene_check.ts";
 
 /**
  * Specs whose template is a Dependabot **configuration** file rather than
@@ -282,7 +283,7 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// Audit checks #4 and #5 — no native pre-filer, so asserted structurally
+// Audit checks #4, #5 and #16 — no native pre-filer, asserted structurally
 // ---------------------------------------------------------------------------
 
 Deno.test(
@@ -305,6 +306,16 @@ Deno.test(
           `${spec.id}:${i + 1}: SHA-pinned \`uses:\` carries no trailing ` +
             "`# <version>` comment, so nothing records which release the " +
             `SHA names: ${line.trim()}`,
+        );
+      }
+      // …and the hygiene parser the audit shares must actually resolve
+      // that comment, so the assertion above cannot pass on text the real
+      // code path fails to read.
+      for (const pin of collectActionPins(spec.template, spec.id)) {
+        assert(
+          pin.version !== undefined,
+          `${spec.id}:${pin.line}: collectActionPins resolved no version ` +
+            `for ${pin.action}@${pin.sha.slice(0, 8)}`,
         );
       }
     }

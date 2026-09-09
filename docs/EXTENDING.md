@@ -328,15 +328,16 @@ flowchart LR
     R --> A["GitHub Actions audit<br/>native pre-filers"]
     T --> C["workflow_template_audit<br/>_conformance_test.ts"]
     C --> K["WORKFLOW_FILE_CHECKS<br/>(11 file-scoped checks)"]
-    A --> K
+    K -. "adapts the same<br/>pure scanners" .-> A
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
 `worker/deno/tests/workflow_template_audit_conformance_test.ts` renders
 every template and runs `WORKFLOW_FILE_CHECKS`
 (`worker/deno/lib/workflow_file_checks.ts`) over the result, on both
-`Develop` and `main`. That table is the single ordered list of every audit
-check decidable from the workflow **file** alone: nine native pre-filers
+`Develop` and `main`. That table is the single ordered list of the audit
+checks a **template** can be held to — every check decidable from the
+workflow file alone, without a repository around it: nine native pre-filers
 (`action_pin_scanner`, `workflow_permissions_scanner`,
 `workflow_trigger_scanner`, `checkout_persist_credentials_scanner`,
 `milestone_branch_filter_scanner`, `ci_install_pin_scanner`,
@@ -353,13 +354,19 @@ a scanner change and the templates cannot drift apart unnoticed.
 The audit's remaining checks are absent by construction: runner deprecation
 reads recent run logs, gitleaks PR coverage reads recent pull requests,
 action advisories query the GHSA database, and the repository-settings and
-worker-token-privilege scans read repository state — none of them reads the
-workflow file, so no template can satisfy them. Two of the pre-filers only
-act on workflows the classifier rates `test`/`high`, which the
-dependency-review, java-dependency-check and shellcheck templates are not, so
-the branch-filter and push-trigger rules are additionally asserted over the
-whole catalogue, as is the trailing `# <version>` comment on every
-SHA-pinned `uses:` — the text the audit's stale-pin check reads. The branch-filter, credential-persistence and
+worker-token-privilege scans read repository state. `checkLinterInCI` is the
+near miss — it reads workflow text, but it takes a repo path and answers a
+repository-level question ("does *this repo* run a linter in CI"), which no
+single template can decide.
+
+Two of the pre-filers only act on workflows the classifier rates
+`test`/`high`, which the dependency-review, java-dependency-check and
+shellcheck templates are not, so the branch-filter and push-trigger rules are
+additionally asserted over the whole catalogue, as is the trailing
+`# <version>` comment on every SHA-pinned `uses:` — the text the audit's
+stale-pin check reads.
+
+The branch-filter, credential-persistence and
 concurrency/timeout rules are also stated in
 `prompts/workflow_setup/prompt.md` ("CI Hardening Defaults") so
 agent-generated workflows match the deterministic templates.

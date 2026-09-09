@@ -23,6 +23,15 @@
  *   - `scanActionAdvisories`          — queries the **GHSA database**
  *   - `scanRepoSettings`              — reads **repository settings**
  *   - `scanWorkerTokenPrivileges`     — reads **token privileges**
+ *   - `checkLinterInCI`               — reads the **repository tree**
+ *
+ * The last one is the near miss worth stating: it decides from workflow
+ * text, but it takes a `repoPath`, walks `.github/workflows` and the repo
+ * root, and answers a **repository-level** question — "does *this repo*
+ * run a linter in CI". No single template can satisfy it, because the
+ * answer depends on the whole set of workflows a repository ends up with,
+ * so it is excluded on the same "a template cannot control it" ground as
+ * the five above rather than being a check this table drops.
  *
  * Australian English throughout (behaviour, organisation, authorised).
  */
