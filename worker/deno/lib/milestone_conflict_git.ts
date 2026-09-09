@@ -18,6 +18,7 @@
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
+import { unionIsWellFormed } from "./both_inserted_conflict_rule.ts";
 import {
   buildAddPathArgs,
   buildCheckoutStrategyArgs,
@@ -368,9 +369,7 @@ export async function unionMergeConflictedFile(
   // A JSON ledger whose union does not parse is not a resolution (Issue
   // #1768): two entries appended into the same array leave the document
   // invalid, and an invalid document must never be written or staged.
-  if (
-    file.path.toLowerCase().endsWith(".json") && !parsesAsJson(merged.stdout)
-  ) {
+  if (!unionIsWellFormed(file.path, merged.stdout)) {
     return "the union of both sides does not parse as JSON, so it was not " +
       "written";
   }
@@ -391,16 +390,6 @@ export async function unionMergeConflictedFile(
     }`;
   }
   return null;
-}
-
-/** Whether text is valid JSON — the guard on a union of a `.json` ledger. */
-function parsesAsJson(text: string): boolean {
-  try {
-    JSON.parse(text);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Build the refusal for a conflicted path whose chosen side would not take. */

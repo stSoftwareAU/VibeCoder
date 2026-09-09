@@ -270,12 +270,22 @@ export async function applyDependencyConflictRules(
 
     // A rule that has to know what the merge base said reads it from the
     // conflicted index, because the PR merge runs without `diff3` markers
-    // (Issue #1768). A stage git will not give up is null, never "empty" — the
-    // rule then defers rather than resolving on an assumption.
+    // (Issue #1768). A base git would not give up — an absent stage 1, a
+    // timeout, a spawn failure — defers the file with git's own words, rather
+    // than being read as "the base was empty".
     let base: string | null = null;
     if (rule.needsBase) {
       const shown = await git(["show", `:1:${path}`]);
-      base = shown.code === 0 ? shown.stdout : null;
+      if (shown.code !== 0) {
+        manifestOutcomes.set(path, "unresolved");
+        defer(
+          path,
+          `the merge base of ${path} could not be read from the conflicted ` +
+            `index: ${formatConflictGitDetail(shown)}`,
+        );
+        continue;
+      }
+      base = shown.stdout;
     }
 
     const outcome = rule.resolve(parsed.value, { path, base });

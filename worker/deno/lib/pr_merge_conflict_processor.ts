@@ -56,6 +56,7 @@ import { resolvePreFlightSpec } from "./git_push.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
+import { BOTH_INSERTED_RULE_NAME } from "./both_inserted_conflict_rule.ts";
 import {
   applyDependencyConflictRules,
   type DependencyRuleApplier,
@@ -395,6 +396,17 @@ export function buildRuleResolutionSection(
       );
       continue;
     }
+    if (file.resolvedBy === BOTH_INSERTED_RULE_NAME) {
+      // Not a dependency decision at all (Issue #1768): both sides only added
+      // to this file, so the per-dependency wording below would describe a
+      // pick that was never made.
+      lines.push(
+        `- \`${file.path}\` (rule \`${file.resolvedBy}\`) — both sides only ` +
+          `added to this file, so both additions were kept, ` +
+          `\`${baseBranch}\`'s first`,
+      );
+      continue;
+    }
     lines.push(`- \`${file.path}\` (rule \`${file.resolvedBy}\`)`);
     if (file.decisionsUnattributed) {
       lines.push(
@@ -411,12 +423,16 @@ export function buildRuleResolutionSection(
       lines.push(describeDependencyDecision(decision, baseBranch, branchName));
     }
   }
-  lines.push(
-    "",
-    "Per dependency key the higher published version wins and every other " +
-      "entry from both sides survives, so nothing either branch changed was " +
-      "dropped. Audit the picks above rather than in the diff.",
-  );
+  if (
+    ruleResolved.some((file) => file.resolvedBy !== BOTH_INSERTED_RULE_NAME)
+  ) {
+    lines.push(
+      "",
+      "Per dependency key the higher published version wins and every other " +
+        "entry from both sides survives, so nothing either branch changed was " +
+        "dropped. Audit the picks above rather than in the diff.",
+    );
+  }
   return lines;
 }
 

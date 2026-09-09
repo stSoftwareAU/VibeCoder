@@ -20,8 +20,9 @@
  *      nothing was deleted and both additions are kept, the default branch's
  *      first (Issue #1768).
  *   4. **Two designs for the same problem** (`IndirectSpawnRules` versus
- *      `scanContentForVariableBinarySpawn`) — neither contains the other, so a
- *      human chooses. The expensive preparation is still done here: each
+ *      `scanContentForVariableBinarySpawn`) — neither contains the other and
+ *      one of them changed what the base had, so a human chooses. Rival
+ *      designs that are *both* purely additive are case 3's union instead. The expensive preparation is still done here: each
  *      side's exports, each side's test names, and the difference between them.
  *
  * One rule outranks all four: **no resolution may reduce test coverage**. A

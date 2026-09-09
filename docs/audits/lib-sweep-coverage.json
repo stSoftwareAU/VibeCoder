@@ -171,6 +171,7 @@
         "worker/deno/lib/backlog_fetch.ts",
         "worker/deno/lib/batch_api.ts",
         "worker/deno/lib/blocking_pr_stall_detector.ts",
+        "worker/deno/lib/both_inserted_conflict_rule.ts",
         "worker/deno/lib/branch_push_policy.ts",
         "worker/deno/lib/bulk_triage.ts",
         "worker/deno/lib/bump_age_audit.ts",

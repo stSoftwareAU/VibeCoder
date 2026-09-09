@@ -450,3 +450,42 @@ Deno.test("planConflictResolution - a conflicted test file is still decided by t
   assertEquals(plan.resolved[0]?.case, "test-union");
   assertEquals(plan.resolved[0]?.action, "union");
 });
+
+Deno.test("planConflictResolution - two rival designs that are both purely additive are unioned, not escalated", () => {
+  // The canonical rival-designs pair, but with a merge base showing that each
+  // side only added: nothing either branch wrote is dropped by keeping both,
+  // and the resolution gate verifies the union before it lands (Issue #1768).
+  const base = "export const a = 1;\n";
+  const plan = planConflictResolution([
+    file({
+      path: "lib/scan.ts",
+      base,
+      ours: `${base}export class IndirectSpawnRules {}\n`,
+      theirs: `${base}export function scanContentForVariableBinarySpawn() {}\n`,
+      oursFixes: [1378],
+      theirsFixes: [1227],
+    }),
+  ]);
+
+  assertEquals(plan.decisions[0]?.case, "both-inserted");
+  assertEquals(plan.decisions[0]?.action, "union");
+});
+
+Deno.test("planConflictResolution - rival designs still escalate once a side changed a base line", () => {
+  const base = "export const a = 1;\nexport const shared = true;\n";
+  const plan = planConflictResolution([
+    file({
+      path: "lib/scan.ts",
+      base,
+      // The milestone side rewrote `shared`, so this is no longer two pure
+      // insertions and only a human can choose.
+      ours: "export const a = 1;\nexport const shared = false;\n" +
+        "export class IndirectSpawnRules {}\n",
+      theirs: `${base}export function scanContentForVariableBinarySpawn() {}\n`,
+      oursFixes: [1378],
+      theirsFixes: [1227],
+    }),
+  ]);
+
+  assertEquals(plan.escalations[0]?.case, "rival-designs");
+});

@@ -17,7 +17,6 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  bothInsertedRule,
   isBothInsertedCandidate,
   resolveBothInserted,
 } from "../lib/both_inserted_conflict_rule.ts";
@@ -153,7 +152,7 @@ Deno.test("resolveBothInserted - a hunk that deletes a base line defers", () => 
   assertEquals(outcome.kind, "unresolved");
   assertStringIncludes(
     outcome.kind === "unresolved" ? outcome.reason : "",
-    "differs from the merge base",
+    "does not survive outside the conflict hunks",
   );
 });
 
@@ -315,7 +314,41 @@ Deno.test("isBothInsertedCandidate - ordinary text files are candidates", () => 
   }
 });
 
-Deno.test("bothInsertedRule - declares that it needs the merge base", () => {
-  assertEquals(bothInsertedRule.needsBase, true);
-  assertEquals(bothInsertedRule.name, "both-inserted");
+Deno.test("resolveBothInserted - another insertion that merged cleanly does not stop the rule", () => {
+  // `- a clean addition` is in neither hunk: only one side added it, so git
+  // merged it without asking and it sits in the common text.
+  const base = "# Changelog\n\n## Unreleased\n\n## 1.0.0\n";
+  const conflicted = `# Changelog
+
+## Unreleased
+
+<<<<<<< HEAD
+- the PR's entry
+=======
+- the base branch's entry
+>>>>>>> origin/main
+- a clean addition
+
+## 1.0.0
+`;
+
+  const outcome = resolveBothInserted(segments(conflicted), {
+    path: "CHANGELOG.md",
+    base,
+  });
+
+  assertEquals(outcome.kind, "resolved");
+  assertEquals(
+    outcome.kind === "resolved" ? outcome.text : "",
+    `# Changelog
+
+## Unreleased
+
+- the base branch's entry
+- the PR's entry
+- a clean addition
+
+## 1.0.0
+`,
+  );
 });

@@ -3064,8 +3064,10 @@ not write. Four rules decide what is mechanical:
   milestone branches. A base that was not read decides nothing, and a `.json`
   ledger whose union does not parse escalates rather than being written.
 - **Two designs for the same problem** — `IndirectSpawnRules` (#1378) against
-  `scanContentForVariableBinarySpawn` (#1227) — neither contains the other, so
-  the merge is **aborted** and a human chooses. The escalation carries the
+  `scanContentForVariableBinarySpawn` (#1227) — neither contains the other and
+  at least one side changed a line the merge base had, so the merge is
+  **aborted** and a human chooses. Two rival designs that are *both* purely
+  additive are a union by the rule above, and are verified before they land. The escalation carries the
   preparation, not the compiler output #1542 was a wall of: what each side
   exports, what each side tests, and which cases exist on one side only.
 

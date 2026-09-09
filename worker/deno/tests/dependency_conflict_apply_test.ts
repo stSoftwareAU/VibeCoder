@@ -387,7 +387,12 @@ Deno.test("applyDependencyConflictRules - a ledger whose merge base cannot be re
   assertEquals(report.resolved, []);
   assertStringIncludes(
     report.deferred[0]?.reason ?? "",
-    "no merge-base version",
+    "could not be read from the conflicted index",
+  );
+  assertStringIncludes(
+    report.deferred[0]?.reason ?? "",
+    "fatal: path does not exist",
+    "git's own words are quoted rather than a guess at why",
   );
   assertEquals(
     await Deno.readTextFile(`${workingDir}/CHANGELOG.md`),
@@ -412,4 +417,84 @@ Deno.test("applyDependencyConflictRules - a manifest still reaches its own rule,
   });
 
   assertEquals(report.resolved[0]?.resolvedBy, "deno.json");
+});
+
+/** Run git in `cwd`, failing the test when it will not run. */
+async function realGit(
+  args: string[],
+  cwd: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const out = await new Deno.Command("git", {
+    args: ["-c", "user.email=t@example.com", "-c", "user.name=Test", ...args],
+    cwd,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const decode = new TextDecoder();
+  return {
+    code: out.code,
+    stdout: decode.decode(out.stdout),
+    stderr: decode.decode(out.stderr),
+  };
+}
+
+Deno.test("applyDependencyConflictRules - resolves a real git CHANGELOG conflict, both entries kept", async () => {
+  // A real merge, because the shape of a conflicted file — which lines git
+  // puts inside the hunk and which it leaves as common text — is exactly what
+  // this rule reads, and a hand-written fixture only proves what its author
+  // assumed (Issue #1768).
+  const dir = await Deno.makeTempDir({ prefix: "vibe-1768-" });
+  const ok = async (args: string[]) => {
+    const r = await realGit(args, dir);
+    if (r.code !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+  };
+  try {
+    await ok(["init", "--initial-branch=main", "."]);
+    await Deno.writeTextFile(
+      `${dir}/CHANGELOG.md`,
+      "# Changelog\n\n## Unreleased\n\n## 1.0.0\n\n- the first release\n",
+    );
+    await ok(["add", "-A"]);
+    await ok(["commit", "-m", "Seed"]);
+
+    await ok(["checkout", "-b", "feature"]);
+    await Deno.writeTextFile(
+      `${dir}/CHANGELOG.md`,
+      "# Changelog\n\n## Unreleased\n\n- the PR's entry\n\n## 1.0.0\n\n- the first release\n",
+    );
+    await ok(["commit", "-am", "The PR's entry"]);
+
+    await ok(["checkout", "main"]);
+    await Deno.writeTextFile(
+      `${dir}/CHANGELOG.md`,
+      "# Changelog\n\n## Unreleased\n\n- main's entry\n\n## 1.0.0\n\n- the first release\n",
+    );
+    await ok(["commit", "-am", "main's entry"]);
+
+    await ok(["checkout", "feature"]);
+    const merge = await realGit(["merge", "main", "--no-edit"], dir);
+    assertEquals(merge.code === 0, false, "the merge must conflict");
+
+    const report = await applyDependencyConflictRules({
+      workingDir: dir,
+      conflictedFiles: ["CHANGELOG.md"],
+      git: (args) => realGit([...args], dir),
+    });
+
+    assertEquals(report.deferred, []);
+    assertEquals(report.resolved[0]?.resolvedBy, "both-inserted");
+    assertEquals(
+      await Deno.readTextFile(`${dir}/CHANGELOG.md`),
+      "# Changelog\n\n## Unreleased\n\n- main's entry\n- the PR's entry\n" +
+        "\n## 1.0.0\n\n- the first release\n",
+      "both entries survive, the base branch's first",
+    );
+    assertEquals(
+      (await realGit(["diff", "--name-only", "--diff-filter=U"], dir)).stdout,
+      "",
+      "the resolved ledger is staged, so no unmerged path is left",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

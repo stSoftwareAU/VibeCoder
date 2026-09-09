@@ -6,8 +6,9 @@
  * `docs/audits/` are written by appending. Two branches that each append to the
  * same list conflict on every merge, and the resolution is never a judgement:
  * both entries were written deliberately, neither removed anything, so the
- * merge keeps both. Round 5 measured that shape as the second-largest conflict
- * class on the milestone branches, and each one currently costs an AI call.
+ * merge keeps both. Round 5 of #1730 measured that shape as the second-largest
+ * conflict class on the milestone branches, and each one currently costs an AI
+ * call.
  *
  * This rule settles it deterministically, registered beside the manifest rules
  * so the pass in `dependency_conflict_apply.ts` offers it every conflicted
@@ -20,14 +21,19 @@
  * out of the conflicted index instead (`git show :1:<path>`) and handed to the
  * rule as {@link RuleContext.base}.
  *
- * A conflicted file is literal (common) regions interleaved with hunks, and the
- * base's own text is those same literals interleaved with each hunk's base
- * region. So when the literals **concatenate to exactly the base file**, every
- * hunk's base region is empty: both sides only inserted, and nothing that was
- * in the base was removed or edited. That equality is the whole test — precise,
- * cheap, and conservative in the right direction, because anything else (a
- * deleted line, an edited line, a line both sides added identically outside a
- * hunk) makes the two texts differ and the file defers to the agent.
+ * A conflicted file is literal (common) regions interleaved with hunks. A base
+ * line that survived on both sides is common, so it sits in a literal; a base
+ * line one side deleted or edited does not, because the two sides then differ
+ * over it and git puts it inside a hunk. So the test is: **every line of the
+ * merge base still appears, in order, outside the conflict hunks.** When it
+ * does, nothing the base had was removed or edited and each hunk holds only
+ * what the two sides added.
+ *
+ * It is a subsequence rather than an equality, because the literals legitimately
+ * carry more than the base: a blank line both sides added around their entry,
+ * and any *other* insertion in the same file that merged cleanly, are both
+ * common text and both appear there. Requiring equality would defer the very
+ * merges this rule exists for.
  *
  * ## What it refuses
  *
@@ -92,6 +98,29 @@ function defer(reason: string): RuleOutcome {
   return { kind: "unresolved", reason };
 }
 
+/** Lines of a file, terminators dropped, with no trailing empty element. */
+function lines(text: string): string[] {
+  const split = text.split("\n");
+  if (split.length > 0 && split[split.length - 1] === "") split.pop();
+  return split;
+}
+
+/**
+ * Whether every line of `subset` appears in `superset`, in order.
+ *
+ * Order matters: it is what separates "the base survived and more was added
+ * around it" from "a base line was replaced by a different one".
+ */
+export function isLineSubsequence(subset: string, superset: string): boolean {
+  const want = lines(subset);
+  const have = lines(superset);
+  let i = 0;
+  for (const line of have) {
+    if (i < want.length && line === want[i]) i++;
+  }
+  return i === want.length;
+}
+
 /**
  * Resolve a conflict in which both sides only inserted.
  *
@@ -131,11 +160,11 @@ export function resolveBothInserted(
     .filter((s) => s.kind === "literal")
     .map((s) => s.text)
     .join("");
-  if (literals !== context.base) {
+  if (!isLineSubsequence(context.base, literals)) {
     return defer(
-      `${context.path} does not read as two pure insertions: its unconflicted ` +
-        `text differs from the merge base, so a base line was changed, moved ` +
-        `or deleted`,
+      `${context.path} does not read as two pure insertions: a line the merge ` +
+        `base had does not survive outside the conflict hunks, so it was ` +
+        `changed, moved or deleted`,
     );
   }
 
@@ -146,7 +175,7 @@ export function resolveBothInserted(
       : segment.theirs + segment.ours;
   }
 
-  if (baseName(context.path).endsWith(".json") && !parsesAsJson(merged)) {
+  if (!unionIsWellFormed(context.path, merged)) {
     return defer(
       `keeping both sides of ${context.path} does not parse as JSON, so the ` +
         `union was not written`,
@@ -156,8 +185,19 @@ export function resolveBothInserted(
   return { kind: "resolved", text: merged };
 }
 
-/** Whether text is valid JSON — the guard for a `.json` ledger. */
-function parsesAsJson(text: string): boolean {
+/**
+ * Whether keeping both sides of `path` leaves a well-formed document.
+ *
+ * JSON is the one format cheap enough to check and common enough to matter: a
+ * union of two ledger entries readily leaves an array with a missing or
+ * doubled comma, and an invalid ledger must never be written. A path in any
+ * other format has no such check and is not blocked by one.
+ *
+ * Shared with the milestone ladder's union merge (`milestone_conflict_git.ts`)
+ * so both rungs apply the same guard rather than two copies of it.
+ */
+export function unionIsWellFormed(path: string, text: string): boolean {
+  if (!baseName(path).endsWith(".json")) return true;
   try {
     JSON.parse(text);
     return true;
