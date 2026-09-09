@@ -49,12 +49,26 @@
  * conjure the issue, and the ERROR it ended in reported a fault that could
  * not exist.
  *
+ * **A label a human applied is not the model's to lose (Issue #1791).** The
+ * strip runs minutes after the agent's `gh issue create` calls, and a human
+ * triaging a fresh plan in real time labels the new sub-issues inside that
+ * window: nine `work-on` grants on VibeCoder#1766–#1774 were removed 40 s
+ * after a maintainer applied them, and the log called each a strip from a
+ * "worker-created issue" — true of the issue, false of the label. When the
+ * caller supplies an {@link ReservedLabelApplierCheck}, each reserved label's
+ * most recent `labeled` event is read first: an adder outside the fleet keeps
+ * the label, and the summary says so. An adder that cannot be read is treated
+ * as the model's — the security stance #2822 exists for — and the strip says
+ * that too.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import { isReservedLabel } from "./config_defaults.ts";
 import { isDefinitiveNotFound } from "./github_not_found.ts";
+import { getLabelLastAddInfoComplete } from "./issue_query.ts";
+import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
 
 /**
  * A single issue to scrub, identified by its repository and number.
@@ -80,6 +94,73 @@ export interface StrippedLabel {
   /** The reserved label that was removed. */
   label: string;
 }
+
+/** A reserved label left in place because a human applied it (Issue #1791). */
+export interface KeptLabel {
+  /** Repository in "owner/repo" format. */
+  repo: string;
+  /** Issue the label stays on. */
+  issueNumber: number;
+  /** The reserved label that was kept. */
+  label: string;
+  /** The login whose `labeled` event put it there. */
+  appliedBy: string;
+}
+
+/**
+ * How the strip tells a label the run applied from one a human granted
+ * (Issue #1791). Optional on every entry point: a caller without one gets
+ * the pre-#1791 behaviour, where every reserved label present is removed.
+ */
+export interface ReservedLabelApplierCheck {
+  /**
+   * Logins whose label additions are the fleet's own — this host, its
+   * siblings and the service accounts. A label whose most recent `labeled`
+   * event names any of these is stripped; any other named adder keeps it.
+   */
+  fleetAuthors: readonly string[];
+  /**
+   * The login that most recently added `label` to the issue, or `null` when
+   * the timeline could not be read or carries no such event.
+   */
+  lastAddedBy: (
+    repo: string,
+    issueNumber: number,
+    label: string,
+  ) => Promise<string | null>;
+}
+
+/**
+ * Build the production {@link ReservedLabelApplierCheck}: the fleet set is
+ * {@link resolveFleetMaintenanceAuthorSet} (this host ∪ `fleet_pr_authors` ∪
+ * `service_accounts`), and the adder comes from the exhaustive,
+ * partial-refusing timeline read `stripUntrustedWorkOnLabel` uses for the
+ * same kind of decision (Issue #3709) — this one also removes a label on the
+ * answer.
+ */
+export function fleetReservedLabelApplierCheck(args: {
+  githubUser: string;
+  fleetPrAuthors?: readonly string[];
+  serviceAccounts?: readonly string[];
+  ghFn: (args: string[]) => Promise<string>;
+}): ReservedLabelApplierCheck {
+  const fleetAuthors = resolveFleetMaintenanceAuthorSet({
+    githubUser: args.githubUser,
+    ...(args.fleetPrAuthors ? { fleetPrAuthors: args.fleetPrAuthors } : {}),
+    ...(args.serviceAccounts ? { serviceAccounts: args.serviceAccounts } : {}),
+  });
+  return {
+    fleetAuthors,
+    lastAddedBy: async (repo, issueNumber, label) =>
+      (await getLabelLastAddInfoComplete(repo, issueNumber, label, args.ghFn))
+        ?.addedBy ?? null,
+  };
+}
+
+/** The one log message a kept label emits (Issue #1791). */
+export const RESERVED_LABEL_KEPT_MESSAGE =
+  "Reserved label on worker-created issue was applied by a login outside " +
+  "the fleet — not stripped (Issue #1791)";
 
 /** A step of the strip that did not complete (Issue #3708). */
 export interface StripFailure {
@@ -110,11 +191,17 @@ export interface ReservedLabelStripSummary {
   unresolved: IssueRef[];
   /** Steps that did not complete, so the guard may not have applied. */
   failures: StripFailure[];
+  /**
+   * Reserved labels deliberately left in place because a login outside the
+   * fleet applied them (Issue #1791). Not failures: the guard applied and
+   * found nothing of the model's to remove.
+   */
+  kept: KeptLabel[];
 }
 
 /** An empty (nothing-to-do) summary. */
 export function emptyStripSummary(): ReservedLabelStripSummary {
-  return { stripped: [], skipped: [], unresolved: [], failures: [] };
+  return { stripped: [], skipped: [], unresolved: [], failures: [], kept: [] };
 }
 
 /**
@@ -197,9 +284,14 @@ export async function stripReservedLabelsFromIssueRefs(args: {
   allowedRepos?: string[];
   ghClient: Pick<GitHubClient, "getIssue" | "removeLabel">;
   logger: Logger;
+  /** Who-applied-it check (Issue #1791). Omitted: every reserved label goes. */
+  applier?: ReservedLabelApplierCheck;
 }): Promise<Result<ReservedLabelStripSummary, ReservedLabelStripError>> {
-  const { refs, currentRepo, allowedRepos, ghClient, logger } = args;
+  const { refs, currentRepo, allowedRepos, ghClient, logger, applier } = args;
   const summary = emptyStripSummary();
+  const fleet = new Set(
+    (applier?.fleetAuthors ?? []).map((login) => login.trim().toLowerCase()),
+  );
 
   // Issue #3662: build the permitted-destination set once. Repo names are
   // compared case-insensitively (GitHub treats them so) and blanks are dropped
@@ -265,12 +357,49 @@ export async function stripReservedLabelsFromIssueRefs(args: {
     }
 
     for (const label of reserved) {
+      // Issue #1791: only the fleet's own additions are the model's to lose.
+      let appliedBy: string | null | undefined;
+      if (applier) {
+        try {
+          appliedBy = await applier.lastAddedBy(repo, issueNumber, label);
+        } catch (err) {
+          appliedBy = null;
+          logger.warn(
+            "Could not read who applied a reserved label — stripping it as " +
+              "the model's own (Issue #1791)",
+            {
+              repo,
+              issueNumber,
+              label,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        }
+        if (
+          typeof appliedBy === "string" && appliedBy !== "" &&
+          !fleet.has(appliedBy.trim().toLowerCase())
+        ) {
+          logger.info(RESERVED_LABEL_KEPT_MESSAGE, {
+            repo,
+            issueNumber,
+            label,
+            appliedBy,
+          });
+          summary.kept.push({ repo, issueNumber, label, appliedBy });
+          continue;
+        }
+      }
       try {
         await ghClient.removeLabel(repo, issueNumber, label);
         logger.warn("Stripped reserved label from worker-created issue", {
           repo,
           issueNumber,
           label,
+          ...(applier
+            ? {
+              appliedBy: appliedBy ?? "(unreadable — treated as the model's)",
+            }
+            : {}),
         });
         summary.stripped.push({ repo, issueNumber, label });
       } catch (err) {
@@ -318,11 +447,14 @@ export function stripReservedLabelsFromIssues(args: {
   issueNumbers: number[];
   ghClient: Pick<GitHubClient, "getIssue" | "removeLabel">;
   logger: Logger;
+  /** Who-applied-it check (Issue #1791). */
+  applier?: ReservedLabelApplierCheck;
 }): Promise<Result<ReservedLabelStripSummary, ReservedLabelStripError>> {
   return stripReservedLabelsFromIssueRefs({
     refs: args.issueNumbers.map((number) => ({ repo: args.repo, number })),
     currentRepo: args.repo,
     ghClient: args.ghClient,
     logger: args.logger,
+    ...(args.applier ? { applier: args.applier } : {}),
   });
 }
