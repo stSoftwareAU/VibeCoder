@@ -449,6 +449,14 @@ Two changes close that window:
   was raised. It lists **live**, not from the iteration-scoped `prs_${author}`
   cache the 1.65 sweep filled before those PRs existed. An idle cycle skips it
   and says so — it raised nothing to sweep.
+- **Drafts are skipped, not failed** (Issue #1800). GitHub refuses to arm
+  auto-merge on a draft ("Pull Request is still a draft"), and the sweep used
+  to log that refusal as a failure every cycle for as long as the draft stayed
+  open. The fleet listing now carries `isDraft`; the sweep skips a draft with
+  one line the first time this process sees it, and an arming call that still
+  meets a draft (at creation, or from a listing written before the field
+  existed) returns the typed `draft` outcome, logged at info. A draft is the
+  author asking for eyes — marking it ready is what puts it back in the sweep.
 
 ```mermaid
 sequenceDiagram

@@ -35,6 +35,27 @@ export interface SweepablePr {
   headRefName?: string;
   /** Base branch — decides native auto-merge versus the gated direct merge. */
   baseRefName?: string;
+  /**
+   * True when the PR is a draft (Issue #1800): GitHub refuses to arm
+   * auto-merge on one, so the sweep skips it. Unset means unknown, and an
+   * unknown is attempted as before.
+   */
+  isDraft?: boolean;
+}
+
+/**
+ * Draft PRs already announced by this process, keyed `repo#pr` (Issue #1800).
+ *
+ * A draft stays a draft for as long as its author wants eyes on it — hours,
+ * sometimes days — and the sweep runs every cycle. One line when the draft
+ * is first seen says everything the next hundred would; the outcome is
+ * recorded every sweep regardless.
+ */
+const announcedDrafts = new Set<string>();
+
+/** Reset the announced-draft registry. Tests only. */
+export function resetAnnouncedDraftsForTest(): void {
+  announcedDrafts.clear();
 }
 
 /** Dependencies for {@link sweepAutoMerge}. */
@@ -156,6 +177,22 @@ export async function sweepAutoMerge(
 
       let mutated = false;
       for (const pr of prs) {
+        // Issue #1800: `gh pr merge --auto` on a draft is refused with
+        // "Pull Request is still a draft", and every cycle used to log that
+        // refusal as a failure. A draft is the author asking for eyes, not
+        // a merge candidate — skip it, and say so once per process.
+        if (pr.isDraft === true) {
+          const key = `${repo}#${pr.number}`;
+          if (!announcedDrafts.has(key)) {
+            announcedDrafts.add(key);
+            logger.info(
+              "Auto-merge sweep: skipping draft PR — auto-merge cannot be " +
+                "armed until it is marked ready for review (Issue #1800)",
+              { repo, prNumber: pr.number },
+            );
+          }
+          continue;
+        }
         try {
           const outcome = await attemptMerge(repo, pr);
           recordOutcome(repo, pr.number, outcome);

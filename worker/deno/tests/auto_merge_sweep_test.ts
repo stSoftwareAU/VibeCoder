@@ -11,7 +11,11 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { type SweepablePr, sweepAutoMerge } from "../lib/auto_merge_sweep.ts";
+import {
+  resetAnnouncedDraftsForTest,
+  type SweepablePr,
+  sweepAutoMerge,
+} from "../lib/auto_merge_sweep.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { Logger } from "../types.ts";
 
@@ -337,4 +341,48 @@ Deno.test("an exhausted quota costs one listing and one warning, and skips the r
   assertEquals(mine.length, 1, mine.join("\n"));
   assert(mine[0]!.startsWith("Auto-merge sweep: GraphQL quota exhausted"));
   assert(mine[0]!.includes("skipped 3 of 3 repo(s)"));
+});
+
+// ---------------------------------------------------------------------------
+// Draft PRs (Issue #1800)
+// ---------------------------------------------------------------------------
+
+Deno.test("a draft PR is skipped: no attempt, no outcome, announced once per process (Issue #1800)", async () => {
+  resetAnnouncedDraftsForTest();
+  infos.length = 0;
+  warnings.length = 0;
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [
+      { number: 1794, headRefName: "sync/1786-milestone-1653", isDraft: true },
+      { number: 1792, headRefName: "issue-1753-x", isDraft: false },
+    ],
+  });
+
+  const first = await sweepAutoMerge(options);
+  assert(first.ok);
+  assertEquals(state.attempted.map((a) => a.prNumber), [1792]);
+  assertEquals(state.recorded.map((r) => r.prNumber), [1792]);
+  assertEquals(first.value.prsAttempted, 1);
+  const announced = () =>
+    infos.filter((i) => i.message.includes("skipping draft PR"));
+  assertEquals(announced().length, 1);
+  assertEquals(announced()[0]!.context?.prNumber, 1794);
+  assertEquals(warnings.length, 0);
+
+  // The next sweep in the same process skips it silently.
+  const second = await sweepAutoMerge(options);
+  assert(second.ok);
+  assertEquals(state.attempted.map((a) => a.prNumber), [1792, 1792]);
+  assertEquals(announced().length, 1);
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("a PR whose draft state is unknown (older cache entry) is attempted as before (Issue #1800)", async () => {
+  resetAnnouncedDraftsForTest();
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 7, headRefName: "issue-7-x" }],
+  });
+  const result = await sweepAutoMerge(options);
+  assert(result.ok);
+  assertEquals(state.attempted.map((a) => a.prNumber), [7]);
 });
