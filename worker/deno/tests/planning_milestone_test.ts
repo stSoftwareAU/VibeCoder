@@ -456,3 +456,49 @@ Deno.test("maybeCreatePlanningMilestone — new milestone carries the safe title
   assertEquals(result.milestoneTitle, postedTitle);
   assertEquals(result.milestoneNumber, 21);
 });
+
+Deno.test("buildPlanningMilestoneTitle — shell metacharacters become spaces", () => {
+  assertEquals(
+    buildPlanningMilestoneTitle(3, "Fix $HOME & CI/CD (staging) <prod>"),
+    "#3 Fix HOME CI CD staging prod",
+  );
+});
+
+Deno.test("buildPlanningMilestoneTitle — truncation never splits an astral character", () => {
+  // Each CJK Extension B ideograph is two UTF-16 units; slicing by unit would
+  // leave a lone surrogate that GitHub rejects.
+  const title = buildPlanningMilestoneTitle(1, "\u{20000}".repeat(80));
+  assertEquals(title.length <= MAX_MILESTONE_TITLE_LENGTH, true);
+  for (const character of title) {
+    const code = character.codePointAt(0)!;
+    assertEquals(code < 0xd800 || code > 0xdfff, true);
+  }
+});
+
+Deno.test("maybeCreatePlanningMilestone — lists a full page of milestones", async () => {
+  const calls: string[][] = [];
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "api" && args[1]?.includes("/milestones?")) {
+      return Promise.resolve("[]");
+    }
+    if (args.includes("POST")) {
+      return Promise.resolve(JSON.stringify({ number: 4, title: "#5 Parent" }));
+    }
+    return Promise.resolve("");
+  };
+
+  await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 5,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11],
+    ghCommandFn,
+    logger: silentLogger,
+  });
+
+  // The default page is 30 — an existing milestone past it would be missed and
+  // duplicated.
+  const listing = calls.find((c) => c[1]?.includes("/milestones?"));
+  assertStringIncludes(listing?.[1] ?? "", "per_page=100");
+});

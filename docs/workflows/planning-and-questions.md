@@ -742,10 +742,10 @@ run overnight" workflow (see [milestones.md](milestones.md)).
   milestone via `--milestone` and no new milestone is created.
 - **Short, safe titles.** The title is at most **60 characters** including the
   `#<N> ` prefix and is cut on a word boundary, so a long parent title is
-  never copied verbatim. Quotes are removed and newlines, tabs and control
-  characters become spaces — only letters, digits, spaces and
-  `- _ . , : + & ( ) /` survive — so the title is easy to type, search and
-  slug into `milestone/<name>`. The `#<N>` prefix keeps two similar titles
+  never copied verbatim. Quotes are removed, and newlines, control
+  characters, shell metacharacters and glob characters become spaces — only
+  letters, digits, spaces and `- _ . , :` survive — so the title is easy to
+  type, search and slug into `milestone/<name>`. The `#<N>` prefix keeps two similar titles
   apart. For example, the parent title
   `The CLI now says "hit your session limit", which is misleading …` becomes
   `#1653 The CLI now says hit your session limit, which is`.

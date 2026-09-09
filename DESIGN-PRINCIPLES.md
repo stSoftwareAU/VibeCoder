@@ -855,9 +855,10 @@ single final milestone PR.
   including the prefix, cut on a word boundary. The description is an
   explicit short planning title when the caller has one, otherwise the parent
   issue title reduced to an allowlist of letters, digits, spaces and
-  `- _ . , : + & ( ) /` — quotes are dropped and newlines, tabs and control
-  characters become spaces, so the title stays workable in a terminal and in a
-  `gh` search expression. The `#<N>` prefix is what makes it unambiguous: two
+  `- _ . , :` — quotes are dropped, and newlines, control characters, shell
+  metacharacters and glob characters all become spaces, so the title stays
+  workable in a terminal and in a `gh` search expression. Truncation cuts on
+  whole characters, so an astral-plane character is never split in half. The `#<N>` prefix is what makes it unambiguous: two
   parents with near-identical titles cannot collide. Milestone #50 predates
   this and copied a raw issue title verbatim
   (`#1653 The CLI now says "hit your session limit", which …`).

@@ -47,11 +47,14 @@ import type { Logger } from "../types.ts";
  * Maximum length of a generated milestone title, in characters, including the
  * `#<N> ` prefix.
  *
- * 60 keeps the title readable in the GitHub milestone list, short enough to
- * type and search from a terminal, and comfortably inside the 50-character
- * slug `createMilestoneBranchName` derives for `milestone/<name>`. Milestone
- * #50 was created from a raw issue title and ran to `#1653 The CLI now says
- * "hit your session limit", which …` — long, quoted, and awkward everywhere.
+ * 60 keeps the title readable in the GitHub milestone list and short enough to
+ * type and search from a terminal, while still leaving enough words after the
+ * `#<N> ` prefix to say what the milestone is about. (The
+ * `milestone/<name>` branch slug `createMilestoneBranchName` derives is capped
+ * at 50 characters of its own, so the tail of a full-length title does not
+ * reach the branch name.) Milestone #50 was created from a raw issue title and
+ * ran to `#1653 The CLI now says "hit your session limit", which …` — long,
+ * quoted, and awkward everywhere.
  */
 export const MAX_MILESTONE_TITLE_LENGTH = 60;
 
@@ -63,16 +66,18 @@ export const MAX_MILESTONE_TITLE_LENGTH = 60;
 const QUOTE_CHARS = /['"`‘’“”«»]/gu;
 
 /**
- * Allowlist of characters a milestone title may contain: letters, digits,
- * spaces, and a small punctuation set that survives a terminal, a `gh` search
- * expression and a branch slug unchanged. Everything else — control
- * characters, newlines, brackets, shell metacharacters — becomes a space.
- * An allowlist, not a denylist, so an unforeseen character is safe by default.
+ * Allowlist of characters a milestone title may keep: letters, digits, spaces
+ * and `- _ . , :` — punctuation that needs no quoting in a shell, a `gh`
+ * search expression or a branch slug. Everything else becomes a space:
+ * control characters and newlines, but also the shell metacharacters
+ * (`& | ; $ ( ) < >`) and glob characters that make a title awkward to type
+ * or search for. An allowlist, not a denylist, so a character nobody
+ * anticipated is safe by default.
  */
-const UNSAFE_CHARS = /[^\p{L}\p{N} \-_.,:+&()/]/gu;
+const UNSAFE_CHARS = /[^\p{L}\p{N} \-_.,:]/gu;
 
 /** Trailing punctuation left dangling by a truncation, stripped from the end. */
-const TRAILING_PUNCTUATION = /[\s,.:;+&\-_/()]+$/u;
+const TRAILING_PUNCTUATION = /[\s.,:_-]+$/u;
 
 /**
  * Reduce free text to the safe character set: quotes removed, every other
@@ -88,6 +93,22 @@ function sanitiseMilestoneTitleText(text: string): string {
 }
 
 /**
+ * Cut `text` to at most `limit` UTF-16 units without splitting a character.
+ * Iterating code points rather than slicing means an astral-plane character
+ * (an emoji, a CJK extension ideograph) is either kept whole or dropped — a
+ * half-character lone surrogate is not a string GitHub will accept.
+ */
+function cutToLength(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  let kept = "";
+  for (const character of text) {
+    if (kept.length + character.length > limit) break;
+    kept += character;
+  }
+  return kept;
+}
+
+/**
  * Cut `text` to at most `limit` characters on a word boundary, so the title
  * ends on a whole word rather than mid-word. A boundary is only honoured when
  * it keeps at least half the budget — otherwise one very long first word would
@@ -96,7 +117,7 @@ function sanitiseMilestoneTitleText(text: string): string {
 function boundToWords(text: string, limit: number): string {
   if (limit <= 0) return "";
   if (text.length <= limit) return text;
-  const cut = text.slice(0, limit);
+  const cut = cutToLength(text, limit);
   const lastSpace = cut.lastIndexOf(" ");
   const kept = lastSpace >= Math.floor(limit / 2)
     ? cut.slice(0, lastSpace)
@@ -256,25 +277,39 @@ export async function maybeCreatePlanningMilestone(
     };
   }
 
-  // Naming and the idempotent ensure share one try: an invalid parent number
-  // throws out of the title helper, and this flow is best-effort by contract,
-  // so the failure is logged rather than aborting planning closure.
+  // Naming and ensuring fail for different reasons — an unusable parent issue
+  // number is a caller bug, a failed listing is a GitHub hiccup — so they are
+  // logged apart. Both are non-fatal by contract: planning closure is never
+  // aborted for a milestone.
+  let title: string;
+  try {
+    title = buildPlanningMilestoneTitle(
+      parentIssueNumber,
+      parentIssueTitle,
+      plannedShortTitle,
+    );
+  } catch (err) {
+    logger.warn("Failed to name planning milestone (non-fatal)", {
+      repo,
+      parentIssueNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { created: false, assigned: [] };
+  }
+
   let milestone: ResolvedMilestone;
   try {
     milestone = await ensurePlanningMilestone(
       repo,
       parentIssueNumber,
-      buildPlanningMilestoneTitle(
-        parentIssueNumber,
-        parentIssueTitle,
-        plannedShortTitle,
-      ),
+      title,
       gh,
     );
   } catch (err) {
     logger.warn("Failed to ensure planning milestone (non-fatal)", {
       repo,
       parentIssueNumber,
+      milestoneTitle: title,
       error: err instanceof Error ? err.message : String(err),
     });
     return { created: false, assigned: [] };
@@ -347,7 +382,7 @@ async function ensurePlanningMilestone(
 ): Promise<ResolvedMilestone> {
   const endpoint = `repos/${repo}/milestones`;
 
-  const listingRaw = await gh(["api", `${endpoint}?state=open`]);
+  const listingRaw = await gh(["api", `${endpoint}?state=open&per_page=100`]);
   const existing = findPlanningMilestone(
     listingRaw,
     parentIssueNumber,
