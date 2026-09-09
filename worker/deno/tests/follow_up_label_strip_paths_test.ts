@@ -34,6 +34,7 @@ import type {
   Logger,
   WorkerConfig,
 } from "../types.ts";
+import { isPrStateRead } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -119,6 +120,8 @@ function makeGithubDeps(capture: StripCapture): Partial<GitHubDeps> {
   return {
     createClient: (_logger: Logger) => makeStripClient(capture),
     runGhCommand: (args: string[]) => {
+      // Issue #1774: the claim-point live-state read — this PR is open.
+      if (isPrStateRead(args)) return Promise.resolve("OPEN");
       if (args[0] === "label" && args[1] === "list") {
         return Promise.resolve("[]");
       }

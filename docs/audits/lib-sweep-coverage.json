@@ -971,6 +971,17 @@
       "paths": [
         "worker/deno/lib/milestone_rollback.ts"
       ]
+    },
+    {
+      "issue": 1774,
+      "chunk": "12p",
+      "title": "the claim-point PR state read",
+      "ledger": "docs/audits/security-sweep-1774-pr-live-state.md",
+      "definition": "modules added to lib/ after 12a-12o recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/pr_live_state.ts"
+      ]
     }
   ]
 }
