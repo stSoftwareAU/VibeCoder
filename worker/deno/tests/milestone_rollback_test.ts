@@ -697,3 +697,104 @@ Deno.test("executeRollback - a listing gh will not give up fails, never reads as
     await Deno.remove(fixture.tmp, { recursive: true });
   }
 });
+
+Deno.test("executeRollback - a child merged as a merge commit is reverted with -m 1", async () => {
+  const fixture = await makeFixture("milestone_rollback_merge_commit_");
+  try {
+    // A child PR that did NOT squash: its merge commit has two parents, and
+    // `git revert` refuses such a commit unless told which side is mainline.
+    await runGit(["checkout", "-b", "issue-71-shared"], fixture.clone);
+    await commitFiles(fixture.clone, "child work", {
+      "shared.txt": "child B\n",
+    });
+    await runGit(["checkout", MILESTONE_BRANCH], fixture.clone);
+    await runGit(
+      ["merge", "--no-ff", "-m", "Merge child #71", "issue-71-shared"],
+      fixture.clone,
+    );
+    const mergeSha = (await runGit(["rev-parse", "HEAD"], fixture.clone)).stdout
+      .trim();
+    const parents = (await runGit(
+      ["rev-list", "--parents", "-n", "1", "HEAD"],
+      fixture.clone,
+    ))
+      .stdout.trim().split(/\s+/);
+    assertEquals(parents.length, 3, "the fixture built a two-parent merge");
+    await runGit(["push", "origin", MILESTONE_BRANCH], fixture.clone);
+    await advanceDefaultBranch(fixture, { "shared.txt": "default\n" });
+
+    const result = await executeRollback(depsFor(
+      fixture,
+      ghStub([
+        {
+          number: 71,
+          title: "Child B",
+          mergedAt: "2026-09-02T10:00:00Z",
+          headRefName: "issue-71-shared",
+          sha: mergeSha,
+        },
+      ], []),
+      { conflictingPaths: ["shared.txt"] },
+    ));
+
+    assert(result.ok, `roll-back failed: ${result.ok ? "" : result.error}`);
+    assertEquals(result.value.merged, true);
+    assertEquals(result.value.reverted.map((c) => c.prNumber), [71]);
+    assertEquals(
+      await Deno.readTextFile(`${fixture.clone}/shared.txt`),
+      "default\n",
+    );
+  } finally {
+    await Deno.remove(fixture.tmp, { recursive: true });
+  }
+});
+
+Deno.test("executeRollback - a stale conflicting-path list cannot revert a branch that merges cleanly", async () => {
+  const fixture = await makeFixture("milestone_rollback_stale_paths_");
+  try {
+    const shaB = await commitFiles(fixture.clone, "child B", {
+      "shared.txt": "child B\n",
+    });
+    await runGit(["push", "origin", MILESTONE_BRANCH], fixture.clone);
+    const preRollbackSha = (await runGit(["rev-parse", "HEAD"], fixture.clone))
+      .stdout.trim();
+    // The default branch moved somewhere else entirely: nothing conflicts.
+    await advanceDefaultBranch(fixture, { "other.txt": "default\n" });
+
+    const result = await executeRollback(depsFor(
+      fixture,
+      ghStub([
+        {
+          number: 81,
+          title: "Child B",
+          mergedAt: "2026-09-02T10:00:00Z",
+          headRefName: "issue-81",
+          sha: shaB,
+        },
+      ], []),
+      { conflictingPaths: ["shared.txt"] },
+    ));
+
+    assert(result.ok, `roll-back failed: ${result.ok ? "" : result.error}`);
+    assertEquals(result.value.reason, ALREADY_CLEAN_REASON);
+    assertEquals(result.value.reverted, []);
+    assertEquals(
+      (await runGit(["rev-parse", "HEAD"], fixture.clone)).stdout.trim(),
+      preRollbackSha,
+      "the child was not reverted on a stale list",
+    );
+  } finally {
+    await Deno.remove(fixture.tmp, { recursive: true });
+  }
+});
+
+Deno.test("parseRevertedChildPrs - a body merely quoting the phrase excludes nothing", () => {
+  const log = [
+    "Some child PR",
+    "",
+    "The reviewer asked whether a Revert child PR #7 commit was needed.",
+    "",
+    revertCommitMessage(9, "Real one"),
+  ].join("\n");
+  assertEquals(parseRevertedChildPrs(log), [9]);
+});

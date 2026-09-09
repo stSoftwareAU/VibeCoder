@@ -74,7 +74,13 @@ export interface RevertedChild {
 
 /** What {@link executeRollback} achieved. */
 export interface RollbackOutcome {
-  /** True when the default branch now merges cleanly and the merge landed. */
+  /**
+   * True when the default branch merged cleanly and that merge was published
+   * — pushed to the milestone branch, or, where a ruleset refused the push,
+   * raised as the sync PR that lands it. The branch itself has not moved yet
+   * in that second case, so a caller reading this as "the remote branch is
+   * synced now" must wait for the sync PR (Issue #589).
+   */
   merged: boolean;
   /** The children reverted to get there; empty whenever `merged` is false. */
   reverted: RevertedChild[];
@@ -155,7 +161,10 @@ export function revertCommitMessage(prNumber: number, title: string): string {
  */
 export function parseRevertedChildPrs(log: string): number[] {
   const numbers = new Set<number>();
-  for (const match of log.matchAll(/Revert child PR #(\d+)\b/g)) {
+  // Anchored to the start of a line, which is where {@link
+  // revertCommitMessage} puts it: a commit whose body merely quotes the
+  // phrase must not exclude that child from every future roll-back.
+  for (const match of log.matchAll(/^Revert child PR #(\d+)\b/gm)) {
     const value = Number.parseInt(match[1]!, 10);
     if (Number.isFinite(value) && value > 0) numbers.add(value);
   }
@@ -206,12 +215,26 @@ export function planRollback(
   const reverted = new Set(alreadyReverted);
   return candidates
     .filter((candidate) =>
-      !isMilestoneSyncBranch(candidate.headRefName) &&
-      !reverted.has(candidate.prNumber) &&
-      isCommitSha(candidate.sha) &&
+      isRevertable(candidate, reverted) &&
       candidate.files.some((file) => conflicting.has(file))
     )
     .sort((a, b) => mergedAtMs(b) - mergedAtMs(a) || b.prNumber - a.prNumber);
+}
+
+/**
+ * Whether this candidate could be reverted at all, before its files are known.
+ *
+ * The half of {@link planRollback}'s filter that needs no git, so a candidate
+ * the plan would drop anyway is never looked up in the clone — a sync PR's
+ * merge commit, or an already-reverted child's, may not even be there.
+ */
+function isRevertable(
+  candidate: RollbackCandidate,
+  alreadyReverted: Set<number>,
+): boolean {
+  return !isMilestoneSyncBranch(candidate.headRefName) &&
+    !alreadyReverted.has(candidate.prNumber) &&
+    isCommitSha(candidate.sha);
 }
 
 /** A merged child PR as `gh pr list --json …` reports it. */
@@ -371,6 +394,7 @@ async function readTouchedFiles(
  */
 async function collectCandidates(
   deps: MilestoneRollbackDeps,
+  alreadyReverted: Set<number>,
 ): Promise<Result<RollbackCandidate[]>> {
   let listed = "";
   try {
@@ -411,6 +435,9 @@ async function collectCandidates(
       );
       continue;
     }
+    // A candidate the plan would drop whatever it touched is dropped here,
+    // before git is asked about a commit that need not be in this clone.
+    if (!isRevertable(candidate, alreadyReverted)) continue;
     const parents = await parentCount(deps, candidate.sha);
     if (!parents.ok) return parents;
     const files = await readTouchedFiles(deps, candidate.sha, parents.value);
@@ -641,39 +668,43 @@ export async function executeRollback(
   }
   const preRollbackSha = head.stdout.trim();
 
-  let conflictingPaths = deps.conflictingPaths ?? [];
-  if (deps.conflictingPaths === undefined) {
-    const probed = await tryMerge(deps);
-    if (!probed.ok) {
-      const reset = await resetTo(deps, preRollbackSha);
-      return reset.ok ? probed : reset;
-    }
-    const probe = probed.value;
-    if (probe.clean) {
-      const reset = await resetTo(deps, preRollbackSha);
-      if (!reset.ok) return reset;
-      deps.log?.(
-        `WARNING: milestone roll-back of '${deps.milestoneBranch}' was asked ` +
-          `for a branch that merges '${deps.defaultBranch}' cleanly, so ` +
-          `nothing was reverted (Issue #1771)`,
-      );
-      return {
-        ok: true,
-        value: { merged: false, reverted: [], reason: ALREADY_CLEAN_REASON },
-      };
-    }
-    conflictingPaths = probe.conflicting;
+  // The merge is tried before anything is reverted, whether or not the caller
+  // named the conflicting paths. A branch that merges cleanly is left alone
+  // either way: reverting a child because a stale list said it was in the way
+  // would undo work that never needed undoing.
+  const probed = await tryMerge(deps);
+  if (!probed.ok) {
+    const reset = await resetTo(deps, preRollbackSha);
+    return reset.ok ? probed : reset;
   }
+  if (probed.value.clean) {
+    const reset = await resetTo(deps, preRollbackSha);
+    if (!reset.ok) return reset;
+    deps.log?.(
+      `WARNING: milestone roll-back of '${deps.milestoneBranch}' was asked ` +
+        `for a branch that merges '${deps.defaultBranch}' cleanly, so ` +
+        `nothing was reverted (Issue #1771)`,
+    );
+    return {
+      ok: true,
+      value: { merged: false, reverted: [], reason: ALREADY_CLEAN_REASON },
+    };
+  }
+  const conflictingPaths = deps.conflictingPaths ?? probed.value.conflicting;
 
-  const candidates = await collectCandidates(deps);
-  if (!candidates.ok) return candidates;
   const previouslyReverted = await revertedOnBranch(deps);
   if (!previouslyReverted.ok) return previouslyReverted;
+  const alreadyReverted = new Set([
+    ...(deps.alreadyReverted ?? []),
+    ...previouslyReverted.value,
+  ]);
+  const candidates = await collectCandidates(deps, alreadyReverted);
+  if (!candidates.ok) return candidates;
 
   const plan = planRollback(
     candidates.value,
     conflictingPaths,
-    [...(deps.alreadyReverted ?? []), ...previouslyReverted.value],
+    [...alreadyReverted],
   );
 
   const reverted: RevertedChild[] = [];
