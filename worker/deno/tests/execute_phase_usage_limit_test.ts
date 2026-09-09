@@ -296,3 +296,15 @@ Deno.test("execute #1670 - a refused spawn keeps the exhausted invocation's outp
   const run = await runExhausted([USAGE_LIMIT, NO_ELIGIBLE_CREDENTIAL]);
   assertStringIncludes(run.reason, "edited the parser");
 });
+
+Deno.test("execute #1670 - a refused first spawn parks at once, with no switch to make", async () => {
+  const run = await runExhausted([NO_ELIGIBLE_CREDENTIAL]);
+
+  assertEquals(
+    run.calls.filter((c) => c.startsWith("invoke")).length,
+    1,
+    run.calls.join("\n"),
+  );
+  assertEquals(run.status, "failure");
+  assertStringIncludes(run.reason, "Claude usage limit reached");
+});
