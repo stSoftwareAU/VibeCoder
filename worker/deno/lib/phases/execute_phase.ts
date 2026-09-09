@@ -1012,7 +1012,12 @@ async function executeClaudeBody(
   // and the next spawn either switches credential or is refused.
   if (claudeResult.value.exitCode === 2) {
     const limit = claudeResult.value.usageLimit;
-    const heading = limit
+    // Issue #1669: the gate refuses a spawn when every credential in the
+    // pool is spent, so this exit 2 can also mean "no agent ran at all".
+    const refused = claudeResult.value.noEligibleCredential === true;
+    const heading = refused
+      ? "No Claude credential with quota — the agent was not run"
+      : limit
       ? "Claude usage limit reached (subscription window)"
       : "Claude rate limit — retries exhausted";
     const elapsedSeconds = Math.round(
@@ -1031,7 +1036,13 @@ async function executeClaudeBody(
         limit.resetEpochMs
           ? ` (${new Date(limit.resetEpochMs).toISOString()})`
           : ""
-      }; the credential pool has recorded it as spent (Issue #1669).`
+      }.${
+        refused
+          ? " No invocation was billed — every credential in the pool is " +
+            "spent (Issue #1669)."
+          : " The credential pool has recorded that credential's window as " +
+            "spent (Issue #1669)."
+      }`
       : "");
     logger.warn(heading, { exitCode: 2, waitSeconds: limit?.waitSeconds });
     return { status: "failure", reason };

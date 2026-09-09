@@ -581,9 +581,9 @@ Deno.test("claude credential pool - a single-token host makes no request and log
   assertEquals(lines.length, 0);
 });
 
-Deno.test("claude credential pool - poolSize tells a spent pool from no pool at all (Issue #1669)", async () => {
-  // Both answer null from `selectEligible`, and only this figure separates
-  // them: one host must spawn on its single token, the other must not spawn.
+Deno.test("claude credential pool - poolStatus separates a spent pool from no pool and from unmeasured (Issue #1669)", async () => {
+  // All three answer null from `selectEligible`, and only this reading tells
+  // them apart: only the spent pool may stop a spawn.
   const probe = fetchWith({});
   const spent = createClaudeCredentialPool({
     provider: CLAUDE,
@@ -599,10 +599,13 @@ Deno.test("claude credential pool - poolSize tells a spent pool from no pool at 
     { window: "five_hour", resetAt: NOW + HOUR },
     { window: "seven_day", resetAt: NOW + 40 * HOUR },
   ]);
-  assertEquals(await spent.poolSize(), 2);
   assertEquals(await spent.selectEligible(NOW), null);
-  // The soonest five-hour reset across the pool is what it is waiting on.
-  assertEquals(spent.soonestFiveHourReset(), NOW + HOUR);
+  assertEquals(await spent.poolStatus(NOW), {
+    candidates: 2,
+    spent: 2,
+    // The soonest five-hour reset across the pool is what it is waiting on.
+    soonestFiveHourReset: NOW + HOUR,
+  });
 
   const single = createClaudeCredentialPool({
     provider: CLAUDE,
@@ -610,11 +613,28 @@ Deno.test("claude credential pool - poolSize tells a spent pool from no pool at 
     fetchFn: probe.fn,
     now: () => NOW,
   });
-  assertEquals(await single.poolSize(), 1);
   assertEquals(await single.selectEligible(NOW), null);
-  // Nothing measured, nothing to report — never a guessed instant.
-  assertEquals(single.soonestFiveHourReset(), null);
+  assertEquals(await single.poolStatus(NOW), {
+    candidates: 1,
+    spent: 0,
+    // Nothing measured, nothing to report — never a guessed instant.
+    soonestFiveHourReset: null,
+  });
   assertEquals(probe.calls(), 0);
+
+  // A pool nobody could measure: NOT spent. Refusing to spawn because a
+  // budget endpoint was unreachable would stop a host that has quota.
+  const blind = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+  assertEquals(await blind.selectEligible(NOW), null);
+  const blindStatus = await blind.poolStatus(NOW);
+  assertEquals(blindStatus.candidates, 2);
+  assertEquals(blindStatus.spent, 0);
 });
 
 Deno.test("claude credential pool - activeLabel names the credential the environment carries (Issue #1669)", async () => {

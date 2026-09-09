@@ -107,6 +107,24 @@ export interface ClaudeExhaustedWindow {
   readonly resetAt: number;
 }
 
+/** What the pool holds right now, from its snapshots (Issue #1669). */
+export interface ClaudePoolStatus {
+  /** How many pool candidates this host has; fewer than two is "no pool". */
+  readonly candidates: number;
+  /**
+   * How many of them are **known** to be spent. Equal to
+   * {@link candidates} means the pool as a whole has nothing to spend; less
+   * than it means at least one candidate is either usable or unmeasured, and
+   * an unmeasured one is not a reason to stop working.
+   */
+  readonly spent: number;
+  /**
+   * The soonest five-hour reset among the measured candidates, in epoch
+   * milliseconds, or null when none reported one.
+   */
+  readonly soonestFiveHourReset: number | null;
+}
+
 /** One token's last known budget, and when it was observed. */
 export interface ClaudeBudgetSnapshot {
   /** The figures themselves. */
@@ -181,26 +199,17 @@ export interface ClaudeCredentialPool {
   selectEligible(now?: number): Promise<ProviderTokenFile | null>;
 
   /**
-   * How many pool candidates this host has (Issue #1669).
+   * What the pool looks like right now, from the snapshots it already holds
+   * (Issue #1669).
    *
-   * Fewer than two is "no pool": {@link selectEligible} answers null for that
-   * host exactly as it does for a pool whose every candidate is spent, and
-   * only this figure tells the two apart — the first must spawn on today's
-   * path, the second must not spawn at all.
-   *
-   * Costs one credential-directory read per process; the answer is cached
-   * with the discovery it comes from.
+   * {@link selectEligible} answers null for three different hosts — one with
+   * no pool, one whose every candidate is spent, and one whose figures could
+   * not be measured — and they need opposite treatment: only the spent pool
+   * must stop a spawn. This is the reading that tells them apart. It never
+   * probes, so a caller asks it straight after a selection, when the
+   * snapshots are as fresh as that selection made them.
    */
-  poolSize(): Promise<number>;
-
-  /**
-   * The soonest five-hour reset among the tokens measured so far, in epoch
-   * milliseconds, or null when none reported one (Issue #1669).
-   *
-   * Read only when every candidate is spent, to say when the pool as a whole
-   * next has something to spend. Snapshots only — never a probe.
-   */
-  soonestFiveHourReset(): number | null;
+  poolStatus(now?: number): Promise<ClaudePoolStatus>;
 
   /**
    * The label of the credential the run environment currently carries, or
@@ -361,22 +370,38 @@ export function createClaudeCredentialPool(
       return poolProvider().id;
     },
 
-    async poolSize() {
-      return (await candidates()).length;
-    },
-
-    soonestFiveHourReset() {
+    async poolStatus(now = clock()) {
+      const pool = await candidates();
+      // The same exhaustion rule the selection applies, read off the
+      // snapshots rather than re-derived here, so "spent" cannot come to
+      // mean one thing to the gate and another to the ranking.
+      const ranking = rankClaudeTokenBudgets(
+        pool.map((token) =>
+          snapshots.get(token.label)?.budget ??
+            ({
+              known: false,
+              label: token.label,
+              reason: "network-error",
+              detail: "never measured",
+            } as ClaudeTokenBudget)
+        ),
+        now,
+      );
       let soonest: number | null = null;
-      for (const snapshot of snapshots.values()) {
-        if (!snapshot.budget.known) continue;
-        for (const window of snapshot.budget.windows) {
+      for (const candidate of ranking.ranked) {
+        if (!candidate.budget.known) continue;
+        for (const window of candidate.budget.windows) {
           if (window.window !== "five_hour") continue;
           if (soonest === null || window.resetAt < soonest) {
             soonest = window.resetAt;
           }
         }
       }
-      return soonest;
+      return {
+        candidates: pool.length,
+        spent: ranking.ranked.filter((candidate) => candidate.exhausted).length,
+        soonestFiveHourReset: soonest,
+      };
     },
 
     async activeLabel() {

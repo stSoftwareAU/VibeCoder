@@ -721,10 +721,30 @@ export function usageLimitWaitSeconds(
   resetMs: number | null,
   nowMs: number,
 ): number {
-  const untilReset = resetMs !== null
+  return Math.min(
+    usageLimitSecondsUntilReset(resetMs, nowMs),
+    USAGE_LIMIT_MAX_WAIT_SECONDS,
+  );
+}
+
+/**
+ * Seconds until a usage window reopens, **uncapped** — what the operator is
+ * told, as opposed to the capped cadence the worker acts on (Issue #333).
+ *
+ * Floored at a minute so a reset that has just passed is never reported as
+ * zero or negative, and the default hour when the refusal named no time.
+ *
+ * @param resetMs - The window's reset in epoch milliseconds, or null.
+ * @param nowMs - Current time in epoch milliseconds.
+ * @returns The time until the reset, in seconds.
+ */
+export function usageLimitSecondsUntilReset(
+  resetMs: number | null,
+  nowMs: number,
+): number {
+  return resetMs !== null
     ? Math.max(60, Math.ceil((resetMs - nowMs) / 1000))
     : USAGE_LIMIT_DEFAULT_WAIT_SECONDS;
-  return Math.min(untilReset, USAGE_LIMIT_MAX_WAIT_SECONDS);
 }
 
 /**
@@ -2937,29 +2957,29 @@ export async function runClaudeWithRetry(
         // Issue #333: cap the pause so an extended quota is picked up within
         // the hour, whatever the stated reset. The reset is reported, not
         // slept on.
-        const untilResetSeconds = resetMs !== null
-          ? Math.max(60, Math.ceil((resetMs - clock.now()) / 1000))
-          : USAGE_LIMIT_DEFAULT_WAIT_SECONDS;
+        const untilResetSeconds = usageLimitSecondsUntilReset(
+          resetMs,
+          clock.now(),
+        );
         const waitSeconds = usageLimitWaitSeconds(resetMs, clock.now());
         currentOptions.logger?.error(
           `Claude usage limit reached (subscription window) — exit code ` +
             `${exitCode}. Not retrying and not falling back (every model ` +
-            `bills the same window). Recording the window as spent for ` +
-            `${waitSeconds}s` +
+            `bills the same window). The credential pool has recorded the ` +
+            `window as spent` +
             // Issue #333: say what the message actually said. This used to
             // claim "no reset time in the message" against a message reading
             // `resets Aug 25, 1am (UTC)`, which is what hid the missing
             // dated-form parse for a day and a half.
             (resetMs === null
               ? " (the message carried no parseable reset time)"
-              : waitSeconds < untilResetSeconds
-              ? ` — the window reopens in ${
-                formatCoarseDuration(untilResetSeconds)
-              } (${
+              : ` — it reopens in ${formatCoarseDuration(untilResetSeconds)} (${
                 new Date(resetMs).toISOString()
-              }); re-probing every ${waitSeconds}s in case the quota is extended`
-              : ` (until ${new Date(resetMs).toISOString()})`) +
-            ".",
+              })`) +
+            // Issue #1669: no durable signal is written, so nothing here
+            // stops the loop; the next spawn switches credential or is
+            // refused by the gate.
+            ". Agent work is not paused.",
         );
         currentOptions.logger?.security?.(
           "USAGE_LIMIT",
@@ -3275,7 +3295,11 @@ export async function checkClaudeHealth(
         provider.id,
       );
       const verdict = await gate.beforeSpawn(provider.id);
-      if (verdict.outcome === "selected") {
+      // `switched: false` means the pool named the credential this probe was
+      // already running — the one that just refused. Reporting that healthy
+      // would be a recovery that never happened, and the next cycle would
+      // bill the same refusal again, so it falls through to the pause below.
+      if (verdict.outcome === "selected" && verdict.switched) {
         logger?.warn(
           `${provider.displayName} hit its subscription usage limit — ` +
             `switched the run environment to credential ${verdict.label} ` +

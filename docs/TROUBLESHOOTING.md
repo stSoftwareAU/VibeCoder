@@ -802,15 +802,20 @@ flowchart TD
     style A fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-The host does **not** idle either way. With no credential left the runner
-returns without spawning and the dispatch loop moves to the next priority —
-everything that needs no agent keeps running.
+No `.rate_limit_signal` is written on either path, so the fleet-wide pause
+that used to drain every slot pool on the volume does not happen: the runner
+returns without spawning and the dispatch loop moves to the next priority.
 
 The agent **health check** does the same: a usage-limit probe records the
 window as spent, switches to an eligible credential and reports **healthy**
 (one probe, not two). With none eligible it reports unhealthy with **no**
-pause. A rate limit — not a subscription window — keeps its old exit-3 pause,
-and so does a host with a single token.
+pause and no signal — the loop still skips that cycle, as it does for any
+unhealthy agent, but no other worker on the volume is stopped by it. A rate
+limit — not a subscription window — keeps its old exit-3 pause, and so does a
+host with a single token. A pool whose budgets could not be **measured** is
+not a spent pool: the spawn goes ahead on the credential the run already
+carries, because refusing on figures we do not have would idle a host that
+may have plenty of quota.
 
 Look for `USAGE_LIMIT` / `NO_ELIGIBLE_CREDENTIAL` security-log lines and
 `[SECURITY] claude token pool` selection lines in the worker log. A

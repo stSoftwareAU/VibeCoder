@@ -26,12 +26,22 @@
  *
  * ## Why a refusal, not a pause
  *
- * When every credential is spent the gate says so and the runner returns at
- * once **without spawning**: an invocation against a closed window is a
- * request spent to be refused. The refusal is terminal for that call and the
- * dispatch loop moves to the next priority — the host keeps working on
- * everything that does not need the agent, which a `usage` signal would have
- * stopped.
+ * When every credential is **known** to be spent the gate says so and the
+ * runner returns at once **without spawning**: an invocation against a closed
+ * window is a request spent to be refused. The refusal is terminal for that
+ * call and the dispatch loop moves to the next priority — no durable signal
+ * is written, so the slot pools of every worker on the volume keep running,
+ * which a `usage` signal would have stopped.
+ *
+ * Budgets that could not be *measured* are deliberately not a refusal: an
+ * unreachable budget endpoint must not stop a host that may have quota, so
+ * an unmeasured pool takes the ungated path.
+ *
+ * One thing the gate cannot promise: the run environment is shared by every
+ * slot on the host, so between one slot's selection and its spawn another
+ * slot may switch the variable. A switch therefore holds for spawns that
+ * start after it, and a concurrent spawn can carry a sibling's choice —
+ * which is a credential the pool ranked, never an unmeasured one.
  *
  * Tokens are identified by **label** (`provider`, `provider-2`) throughout;
  * no token value is an input to anything logged here.
@@ -46,13 +56,26 @@ import type {
 
 /** What the gate decided about the spawn that is about to happen. */
 export type ClaudeSpawnGateVerdict =
-  /** Fewer than two pool candidates: nothing was consulted, spawn as before. */
-  | { readonly outcome: "no-pool" }
-  /** A credential was chosen and applied to the run environment. */
-  | { readonly outcome: "selected"; readonly label: string }
   /**
-   * Every candidate is spent. `resetEpochMs` is the soonest five-hour reset
-   * among them, when any candidate reported one.
+   * Nothing was consulted — fewer than two pool candidates, another
+   * vendor's spawn, or a pool whose figures could not be measured. Spawn on
+   * the credential the run already carries, exactly as before.
+   */
+  | { readonly outcome: "no-pool" }
+  /**
+   * A credential was chosen. `switched` is true only when it was a
+   * *different* one from the credential the run was already carrying —
+   * "chose the same token again" is not a recovery, and a caller that
+   * treats it as one loops.
+   */
+  | {
+    readonly outcome: "selected";
+    readonly label: string;
+    readonly switched: boolean;
+  }
+  /**
+   * Every candidate is **known** to be spent. `resetEpochMs` is the soonest
+   * five-hour reset among them, when any candidate reported one.
    */
   | { readonly outcome: "none-eligible"; readonly resetEpochMs: number | null };
 
@@ -117,27 +140,34 @@ export function createClaudeSpawnGate(
   return {
     async beforeSpawn(providerId) {
       if (!ours(providerId)) return { outcome: "no-pool" };
-      if (await pool.poolSize() < 2) return { outcome: "no-pool" };
       const token = await pool.selectEligible();
-      if (token === null) {
-        // The pool's own candidate log line is the record of why; this line
-        // says what the refusal means for the spawn.
-        return {
-          outcome: "none-eligible",
-          resetEpochMs: pool.soonestFiveHourReset(),
-        };
+      if (token !== null) {
+        // Already on it: nothing to switch, and no line saying we did.
+        if (token.label === await pool.activeLabel()) {
+          return { outcome: "selected", label: token.label, switched: false };
+        }
+        pool.applySelection(token, setEnv);
+        return { outcome: "selected", label: token.label, switched: true };
       }
-      // Already on it: nothing to switch, and no line saying we did.
-      if (token.label === await pool.activeLabel()) {
-        return { outcome: "selected", label: token.label };
+      // No winner. Which of the three reasons decides whether a spawn is
+      // refused, and only one of them does: a pool KNOWN to be spent.
+      // Figures we could not measure are not evidence of exhaustion, and
+      // refusing on them would stop a host from working because a budget
+      // endpoint was unreachable.
+      const status = await pool.poolStatus();
+      if (status.candidates < 2 || status.spent < status.candidates) {
+        return { outcome: "no-pool" };
       }
-      pool.applySelection(token, setEnv);
-      return { outcome: "selected", label: token.label };
+      // The pool's own candidate log line is the record of why.
+      return {
+        outcome: "none-eligible",
+        resetEpochMs: status.soonestFiveHourReset,
+      };
     },
 
     async recordUsageLimit(windows, providerId) {
       if (!ours(providerId)) return;
-      if (await pool.poolSize() < 2) return;
+      if ((await pool.poolStatus()).candidates < 2) return;
       const label = await pool.activeLabel();
       if (label === null) {
         // Which credential hit the limit is not knowable — the run

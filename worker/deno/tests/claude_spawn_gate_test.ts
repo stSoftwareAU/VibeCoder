@@ -82,6 +82,21 @@ Deno.test("claude spawn gate - a spent pool refuses the spawn, a single-token ho
     resetEpochMs: NOW + 2 * HOUR,
   });
 
+  // A pool nobody could measure is NOT a spent pool: refusing every spawn
+  // because a budget endpoint was unreachable would stop a host that still
+  // has quota, and no signal would say why.
+  const blind = createClaudeSpawnGate(
+    createClaudeCredentialPool({
+      provider: CLAUDE,
+      discover: () =>
+        Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+      fetchFn: () => Promise.resolve(new Response("nope", { status: 503 })),
+      now: () => NOW,
+    }),
+    { setEnv },
+  );
+  assertEquals(await blind.beforeSpawn(), { outcome: "no-pool" });
+
   // The same spent window on a host with nothing to switch to: today's path,
   // because refusing there would idle a host that has no alternative anyway.
   const single = createClaudeSpawnGate(spentPool(["provider"]), { setEnv });
@@ -105,5 +120,102 @@ Deno.test("claude spawn gate - another vendor's spawn is gated on nothing", asyn
   );
   assertEquals(applied, []);
   // The Claude figures are untouched by the foreign refusal.
-  assertEquals(pool.soonestFiveHourReset(), NOW + 2 * HOUR);
+  assertEquals(
+    (await pool.poolStatus(NOW)).soonestFiveHourReset,
+    NOW + 2 * HOUR,
+  );
+});
+
+Deno.test("claude spawn gate - an unrecognisable credential drops nothing silently", async () => {
+  const lines: string[] = [];
+  const applied: string[] = [];
+  // The run environment carries a token none of the pool files hold, so the
+  // gate cannot know which credential hit the limit.
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: () => {
+      throw new Error("no probe is needed to answer this");
+    },
+    now: () => NOW,
+    env: () => "token-from-somewhere-else",
+    log: (line) => lines.push(line),
+  });
+  pool.recordBudget("provider", {
+    known: true,
+    label: "provider",
+    remainingFraction: 0.9,
+    resetAt: NOW + 2 * HOUR,
+    window: "five_hour",
+    windows: [
+      { window: "five_hour", remainingFraction: 0.9, resetAt: NOW + 2 * HOUR },
+    ],
+  }, NOW);
+  const gate = createClaudeSpawnGate(pool, {
+    setEnv: (name) => applied.push(name),
+    log: (line) => lines.push(line),
+  });
+
+  await gate.recordUsageLimit([{ window: "five_hour", resetAt: NOW + HOUR }]);
+
+  // Recording it against a guessed label would strand a credential that
+  // still has quota, so it says so instead of doing it quietly.
+  assertEquals(
+    lines.some((line) => line.includes("does not recognise")),
+    true,
+    lines.join(" | "),
+  );
+  // And the selection that follows must not claim a switch it did not make.
+  const verdict = await gate.beforeSpawn();
+  assertEquals(verdict, {
+    outcome: "selected",
+    label: "provider",
+    switched: true,
+  });
+  assertEquals(applied, ["CLAUDE_CODE_OAUTH_TOKEN"]);
+});
+
+Deno.test("claude spawn gate - the credential already in use is not re-applied", async () => {
+  const applied: string[] = [];
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: () => {
+      throw new Error("no probe is needed to answer this");
+    },
+    now: () => NOW,
+    env: (name) =>
+      name === "CLAUDE_CODE_OAUTH_TOKEN" ? "token-provider" : undefined,
+  });
+  const usable = (label: string, remaining: number) => ({
+    known: true as const,
+    label,
+    remainingFraction: remaining,
+    resetAt: NOW + 2 * HOUR,
+    window: "five_hour" as const,
+    windows: [
+      {
+        window: "five_hour" as const,
+        remainingFraction: remaining,
+        resetAt: NOW + 2 * HOUR,
+      },
+    ],
+  });
+  pool.recordBudget("provider", usable("provider", 0.9), NOW);
+  pool.recordBudget("provider-2", usable("provider-2", 0.3), NOW);
+
+  const gate = createClaudeSpawnGate(pool, {
+    setEnv: (name) => applied.push(name),
+  });
+
+  // The winner is the credential the run already carries: a selection, but
+  // not a switch, and nothing is written to the environment for it.
+  assertEquals(await gate.beforeSpawn(), {
+    outcome: "selected",
+    label: "provider",
+    switched: false,
+  });
+  assertEquals(applied, []);
 });

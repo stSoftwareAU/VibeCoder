@@ -246,3 +246,42 @@ Deno.test({
     assertEquals(applied, []);
   },
 });
+
+Deno.test({
+  name:
+    "checkClaudeHealth - a credential the pool cannot identify is still switched away from, and named afterwards (Issue #1669)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const now = Date.now();
+    const applied: string[] = [];
+    // The run environment carries a token none of the pool files hold, so
+    // the exhaustion cannot be attributed to a label. Recording it against a
+    // guess would strand a credential that still has quota; what the check
+    // may still do is move the run onto a credential the pool has measured.
+    const pool = createClaudeCredentialPool({
+      provider: CLAUDE,
+      env: () => "token-from-somewhere-else",
+      discover: () =>
+        Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+      fetchFn: () => {
+        throw new Error("the health check must not probe a recorded figure");
+      },
+    });
+    pool.recordBudget("provider", budget("provider", 0.9, now), now);
+    pool.recordBudget("provider-2", budget("provider-2", 0.5, now), now);
+    const gate = createClaudeSpawnGate(pool, {
+      setEnv: (name, value) => applied.push(`${name}=${value}`),
+    });
+
+    const { result } = await healthCheckAgainst(SESSION_LIMIT, gate);
+
+    // A real change was made, so healthy is honest here.
+    assertEquals(result.healthy, true);
+    assertEquals(applied, ["CLAUDE_CODE_OAUTH_TOKEN=token-provider"]);
+    // And the pool now knows what the run carries, so the NEXT limit is
+    // attributed rather than dropped — the gap closes itself after one
+    // switch instead of looping.
+    assertEquals(await pool.activeLabel(), "provider");
+  },
+});
