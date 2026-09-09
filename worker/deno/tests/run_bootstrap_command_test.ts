@@ -69,11 +69,25 @@ Deno.test("run-bootstrap command - shell-exports emits export lines on success",
     });
     await runGitCommand(["config", "user.name", "Test"], { cwd: repoDir });
 
+    // The caller's own PATH, never a fabricated one (Issue #1656 CI).
+    //
+    // Exporting the bootstrapped PATH into the calling process is the
+    // command's job — `run.sh` evaluates the exports and the in-process copy
+    // is what the rest of the run reads. A test is not that caller: the
+    // sharded CI legs run hundreds of files in ONE process, so a PATH
+    // bootstrapped from `/usr/bin` replaced the runner's own and outlived
+    // this file. `path_bootstrap.ts` names no tool-cache directory, and that
+    // is where CI installs Deno, so three `setup_ps1_test.ts` cases later in
+    // the same shard spawned setup.ps1 with no `deno` reachable at all.
+    // Starting from the real PATH keeps the export a superset of what every
+    // later suite already had.
+    const currentPath = Deno.env.get("PATH") ?? "";
+
     const result = await runBootstrapCommand.execute(
       {
         "repo-dir": repoDir,
         "log-dir": logDir,
-        "current-path": "/usr/bin",
+        "current-path": currentPath,
         "home": tmpDir,
         "pid": 555,
         "default-branch": "Develop",
@@ -99,6 +113,17 @@ Deno.test("run-bootstrap command - shell-exports emits export lines on success",
     // The worker log file was actually created in-process.
     const logContent = await Deno.readTextFile(exportMatch[1]!);
     assertStringIncludes(logContent, "run_core pid=555 start=");
+
+    // Nothing the rest of this process needs was dropped from PATH: the
+    // bootstrap only ever adds directories, so every entry the suite started
+    // with is still there for the suites that run after it.
+    const bootstrapped = Deno.env.get("PATH") ?? "";
+    for (const dir of currentPath.split(":").filter((d) => d.length > 0)) {
+      assert(
+        bootstrapped.split(":").includes(dir),
+        `run-bootstrap dropped ${dir} from the process PATH: ${bootstrapped}`,
+      );
+    }
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
