@@ -78,12 +78,16 @@ the list is empty for this run.
    scratch artefact, or a temporary report would breach this constraint —
    there is no exception for intermediates.
 2. **No code execution.** Static analysis only: `cat`, `grep`, `rg`,
-   `ls`, `find`, and structured file readers are permitted. `bash`,
+   `ls`, `find`, `git log`, `git diff`, and structured file readers are
+   permitted. `git log` and `git diff` are read-only inspection of history
+   already in the clone — they run no repository code — and are what the
+   Phase 1 prior-sweep-record step uses. `bash`,
    `node`, `deno run`, `python`, `make`, `cargo run`, `npm test`, and any
    other repo-executing command are forbidden. Nothing here reaches a
    package registry, so a check that would need registry metadata is out
    of scope — see "Registry-dependent checks" in Phase 2. The only
-   permitted `gh` calls are `gh issue list` (Phase 4 dedup),
+   permitted `gh` calls are `gh issue list` (Phase 1 prior-sweep-record
+   inventory, Phase 4 dedup),
    `gh label create` (Phase 4 defensive label creation, before filing),
    `gh issue create` (Phase 4 filing) and `gh issue edit` (Phase 4
    exit-check correction of an issue this run just filed — labels, body,
@@ -223,6 +227,31 @@ Inventory the codebase and record:
   always `LLM-using = YES` via the always-on allowlist floor, so its scan
   always includes the LLM chunk.
 
+- **Prior sweep records** — what an earlier bounded sweep already
+  covered, so this run does not re-declare a recorded tree unaudited.
+  Look for `docs/audits/security-sweep-*.md`, a sweep coverage ledger
+  (in this repository `docs/audits/lib-sweep-coverage.json`, which maps
+  each module to the record that swept it; elsewhere whatever file the
+  repo keeps its swept-module list in), and closed
+  `security-scan-overflow` issues
+  (`gh issue list --label security-scan-overflow --state closed`). For
+  each tree a record names, take the commit the record was written at
+  with `git log -1 --format=%H -- <record>`, then list what moved since
+  with `git diff --name-only <commit> HEAD -- <tree>`. A module a record
+  names and that diff does not is **previously swept**; a module the diff
+  names, or that no record names at all, is not. Record, per recorded
+  tree, the record path, its commit, and the count of modules changed
+  since — Phase 2 and Phase 4 both read it. **A git command that cannot
+  answer means never recorded, never "unchanged".** The worker's clones
+  are shallow, so `git log -1 --format=%H -- <record>` can come back
+  empty and the follow-up diff can fail with `fatal: bad object`. When
+  either happens, treat every module of that tree as never-recorded and
+  say so in the tracker line — an unanswerable history must not read as a
+  clean sweep. This is a repository-shaped
+  question, not a Vibe Coder one: where no such records exist, this item
+  inventories nothing, every module is never-recorded, and the scan
+  proceeds unchanged.
+
 From the inventory, produce a **chunk plan**: a numbered list of focused
 review chunks, each scoped to a single trust boundary or
 security-sensitive module, listing the files it covers and the taxonomy
@@ -261,10 +290,16 @@ chunk so Phase 3 can reuse it when recalibrating severity. This ordering
 is a priority hint only — it does **not** drop any chunk; every chunk in
 the plan is still audited in Phase 2.
 
+**Confirm every path the plan names with `ls` before fixing the
+numbering.** A chunk that lists a file which does not exist sends Phase 2
+looking for nothing and reports a phantom module as covered. Check the
+paths in one batch, drop the ones `ls` cannot find, and re-scope the
+chunk around what is actually there.
+
 The plan is complete when every entry point and every security-sensitive
-file is covered by at least one chunk, the chunks are ordered by
-trust-boundary exposure, and the dependency-update tooling files are
-listed in the quarantine chunk.
+file is covered by at least one chunk, every path it names exists, the
+chunks are ordered by trust-boundary exposure, and the dependency-update
+tooling files are listed in the quarantine chunk.
 
 ## Phase 2 — Per-chunk detection (evidence-backed findings)
 
@@ -296,9 +331,19 @@ is ordered by exposure, the chunks most worth sweeping come first:
   lower-exposure chunks and go straight to Phase 3 — triage of the
   candidates you already hold outranks detection in a lower-exposure
   chunk.
+- **Drop the previously-swept-and-unchanged chunks first.** When the rule
+  trips, the chunks to stop at are the ones whose modules the Phase 1
+  prior-sweep-record inventory already accounts for, before any chunk no
+  record covers. A remaining chunk holding one never-recorded or changed
+  module outranks a chunk holding none; within one of those groups the
+  exposure ordering still decides, and the highest-exposure chunk is still
+  never the one skipped.
 - **Record which chunks were not reached**, by number and name, and list
   them in the Phase 4 overflow tracker (step 4) so the omission is visible
-  rather than silent. Never present a partial sweep as a complete one.
+  rather than silent. Never present a partial sweep as a complete one. A
+  chunk whose every module is previously swept is not "not reached" — it
+  is **covered by <record> at <commit>**, and Phase 4 records it in the
+  second line shape rather than counting it as unswept.
 - The rule bounds *work*, never *rigour*: a chunk you do sweep is swept
   against every class relevant to it, and the highest-exposure chunk is
   never the one skipped. When the whole plan fits under the threshold,
@@ -1774,11 +1819,26 @@ reconcile pass has nothing to repaint.
    findings`, whose body lists each leftover as `- <id> — <severity>
    <class> in <file>: <short why-it-is-a-bug>`. When the Phase 2 stopping
    rule left chunks unswept, add a `## Chunks not reached` section to the
-   same tracker listing each one as `- <n>. <chunk name> (exposure:
-   <band>)`, so the bounded sweep is recorded rather than silent. If the
-   cap was not exceeded but chunks were left unswept, file the tracker for
-   that reason alone, titled
-   `security-scan-overflow: N chunks not reached`. The tracker body also
+   same tracker, so the bounded sweep is recorded rather than silent. Each
+   chunk takes one of exactly two line shapes, chosen by what the Phase 1
+   prior-sweep-record inventory holds for its modules:
+
+   ```
+   - <n>. <chunk name> (exposure: <band>) — never recorded
+   - <n>. <chunk name> (exposure: <band>) — recorded in <record path> at <commit>; N modules changed since
+   ```
+
+   The first is for a chunk no record covers; the second for one a record
+   does, with the commit that record was written at and the count from
+   `git diff --name-only <commit> HEAD -- <tree>` (`0 modules changed
+   since` for a tree untouched since its sweep). If the cap was not
+   exceeded but chunks were left unswept, file the tracker for that reason
+   alone, titled `security-scan-overflow: N chunks not reached`, where `N`
+   counts only the never-recorded chunks — a recorded chunk is listed for
+   the reader but is already covered, so counting it would re-report a
+   swept tree as unaudited. When every unswept chunk is recorded, `N` is
+   zero and no tracker is filed for the stopping rule alone. The tracker
+   body also
    ends with the attribution footer line from the Inputs section.
 
 5. **Zero surviving findings = file nothing.** Do not file an "all clear"
@@ -1798,8 +1858,8 @@ label:
 
 Re-read every issue this run filed before exiting, and confirm: one
 `gh issue create` per surviving finding (capped at 6, plus one overflow
-tracker when more than 6 survived, or when the stopping rule left chunks
-unswept); every filed issue carries
+tracker when more than 6 survived, or when the stopping rule left
+never-recorded chunks unswept); every filed issue carries
 `security`, exactly one `severity:*`, and exactly one `confidence:*` label,
 and no operational label; no suppressed or known-open id was filed; every
 body whose finding was assigned a CWE in Phase 3 step 8 carries its
