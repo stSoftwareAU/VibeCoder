@@ -104,10 +104,29 @@ export interface ContainerToolchainPin {
   fragment?: string;
   /** Architecture (`amd64`, `arm64`, `noarch`) to SHA-256 of the asset. */
   sha256: Record<string, string>;
-  /** Commands the toolchain puts on the image PATH. */
+  /** Commands the toolchain puts on the image PATH; empty for a library. */
   commands: string[];
-  /** The command whose `--version` must report {@link version}. */
-  versionCommand: string;
+  /**
+   * Python modules the toolchain makes importable by the image's `python3`
+   * (Issue #1628).
+   *
+   * A library toolchain has no command surface at all: PyYAML ships no
+   * console script, and the consumer NEAT-AI-core's BATS suites drive is
+   * `python3 -c "import yaml"`. Empty for a toolchain that installs binaries.
+   */
+  modules: string[];
+  /**
+   * The command whose `--version` must report {@link version}.
+   *
+   * Present exactly when {@link commands} is non-empty.
+   */
+  versionCommand?: string;
+  /**
+   * The module whose `__version__` must report {@link version}.
+   *
+   * Present exactly when {@link modules} is non-empty.
+   */
+  versionModule?: string;
   /** `owner/repo` slugs whose quality gate needs this toolchain. */
   repos: string[];
 }
@@ -192,6 +211,25 @@ export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "pwsh",
   "bats",
   "codespell",
+];
+
+/**
+ * Python modules the monitored repositories' own gates import (Issue #1628).
+ *
+ * `bats-core` in the image (Issue #1595) made NEAT-AI-core's
+ * `bats tests/scripts` suite *execute* rather than skip, and 31 of its tests
+ * then failed with `ModuleNotFoundError: No module named 'yaml'`: its
+ * workflow-assertion suites (`actionlint_workflow.bats`,
+ * `ci_job_permissions.bats`, `workflow_sha_pinning.bats`) parse workflow YAML
+ * with an inline `python3` script that imports PyYAML, which their CI runners
+ * carry and the image did not.
+ *
+ * A module the image does not install is as absent as a missing binary, so it
+ * is held to the same invariant: each must be supplied by a manifest
+ * toolchain, never by whatever a host interpreter happens to have.
+ */
+export const REQUIRED_REPO_TOOLCHAIN_MODULES: readonly string[] = [
+  "yaml",
 ];
 
 /** Aliases that resolve to "whatever upstream published most recently". */
@@ -365,6 +403,62 @@ function parseTool(value: unknown, index: number): ContainerToolPin {
 /** `owner/repo`, as `.config.json` records a monitored repository. */
 const REPO_SLUG_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
+/** A name `import <name>` accepts: a Python identifier, no dots or dashes. */
+const PYTHON_MODULE_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Parse an optional list of names, defaulting to empty.
+ *
+ * Unlike {@link asArray} an absent or empty list is allowed: which of a
+ * toolchain's two surfaces may be empty is a rule of its own, checked once
+ * both have been read.
+ */
+function parseNameList(
+  value: unknown,
+  field: string,
+  pattern?: RegExp,
+  detail?: string,
+): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) fail(field, "must be an array");
+  return (value as unknown[]).map((entry, index) => {
+    const name = asString(entry, `${field}[${index}]`);
+    if (pattern !== undefined && !pattern.test(name)) {
+      fail(`${field}[${index}]`, detail ?? "is malformed");
+    }
+    return name;
+  });
+}
+
+/**
+ * Parse the command or module whose reported version must equal the pin.
+ *
+ * Required when the toolchain installs that kind of artefact and rejected
+ * when it does not, so the build never verifies a toolchain against something
+ * it never installed — and never installs one nothing verifies.
+ */
+function parseVersionSurface(
+  value: unknown,
+  field: string,
+  installed: readonly string[],
+  kind: "command" | "module",
+): string | undefined {
+  if (installed.length === 0) {
+    if (value !== undefined) {
+      fail(field, `must be absent: the toolchain installs no ${kind}`);
+    }
+    return undefined;
+  }
+  const name = asString(value, field);
+  if (!installed.includes(name)) {
+    fail(
+      field,
+      `must be one of the ${kind}s the toolchain installs (got "${name}")`,
+    );
+  }
+  return name;
+}
+
 function parseToolchain(value: unknown, index: number): ContainerToolchainPin {
   const field = `toolchains[${index}]`;
   const raw = asRecord(value, field);
@@ -407,19 +501,36 @@ function parseToolchain(value: unknown, index: number): ContainerToolchainPin {
     }
   }
 
-  const commands = asArray(raw.commands, `${field}.commands`)
-    .map((entry, i) => asString(entry, `${field}.commands[${i}]`));
-
-  const versionCommand = asString(
-    raw.versionCommand,
-    `${field}.versionCommand`,
+  // A toolchain supplies commands, importable Python modules, or both
+  // (Issue #1628). PyYAML is the library case: it ships no console script, so
+  // an empty command list is legitimate there and nowhere else.
+  const commands = parseNameList(raw.commands, `${field}.commands`);
+  const modules = parseNameList(
+    raw.modules,
+    `${field}.modules`,
+    PYTHON_MODULE_RE,
+    'must be a module name python3 can import (e.g. "yaml")',
   );
-  if (!commands.includes(versionCommand)) {
+  if (commands.length === 0 && modules.length === 0) {
     fail(
-      `${field}.versionCommand`,
-      `must be one of the commands the toolchain installs (got "${versionCommand}")`,
+      `${field}.commands`,
+      "must list at least one command, unless the toolchain declares the " +
+        '"modules" it makes importable instead',
     );
   }
+
+  const versionCommand = parseVersionSurface(
+    raw.versionCommand,
+    `${field}.versionCommand`,
+    commands,
+    "command",
+  );
+  const versionModule = parseVersionSurface(
+    raw.versionModule,
+    `${field}.versionModule`,
+    modules,
+    "module",
+  );
 
   // A toolchain exists for named monitored repositories: without that the
   // image accumulates weight nobody can prove is still needed.
@@ -442,7 +553,9 @@ function parseToolchain(value: unknown, index: number): ContainerToolchainPin {
     ...(fragment === undefined ? {} : { fragment }),
     sha256: parseSha256(raw.sha256, `${field}.sha256`),
     commands,
-    versionCommand,
+    modules,
+    ...(versionCommand === undefined ? {} : { versionCommand }),
+    ...(versionModule === undefined ? {} : { versionModule }),
     repos,
   };
 }
@@ -625,6 +738,30 @@ export function findMissingRuntimeTools(
   return required.filter((command) => !supplied.has(command));
 }
 
+/**
+ * Report the Python modules the image would not supply (Issue #1628).
+ *
+ * The command counterpart of this check is {@link findMissingRuntimeTools};
+ * a module is supplied only when a manifest toolchain installs it, because
+ * the base image's interpreter carries no third-party module of its own —
+ * `python3 -c "import yaml"` failed on the image until PyYAML was pinned.
+ *
+ * @param manifest - The parsed manifest.
+ * @param required - Modules the image must supply; defaults to the modules
+ *   the monitored repositories' gates import.
+ * @returns The missing module names, in the order given; empty when covered.
+ */
+export function findMissingRuntimePythonModules(
+  manifest: ContainerManifest,
+  required: readonly string[] = REQUIRED_REPO_TOOLCHAIN_MODULES,
+): string[] {
+  const supplied = new Set<string>();
+  for (const toolchain of manifest.toolchains) {
+    for (const module of toolchain.modules) supplied.add(module);
+  }
+  return required.filter((module) => !supplied.has(module));
+}
+
 /** Build argument carrying the set of providers the image installs. */
 export const PROVIDER_SET_ARG = "AGENT_PROVIDERS";
 
@@ -799,7 +936,7 @@ export function findToolchainInstallViolations(
       violations.push(
         `Containerfile never installs toolchain "${toolchain.id}": ` +
           `container/tools.json pins it with ${path}, so the image would ` +
-          `ship without ${toolchain.versionCommand}`,
+          `ship without ${toolchain.versionCommand ?? toolchain.versionModule}`,
       );
     }
 
