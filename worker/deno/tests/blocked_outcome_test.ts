@@ -308,3 +308,73 @@ Deno.test("deferBlockedIssue reports 'none' when nothing could be recorded", asy
   assertEquals(result.recorded, "none");
   assertEquals(calls.unassigned, 1);
 });
+
+// ---------------------------------------------------------------------------
+// The declared dependency wins over a passing mention (Issue #1634)
+// ---------------------------------------------------------------------------
+
+Deno.test("detectBlockedOutcome prefers the reference on the Depends on line", () => {
+  // The shape the real run produced on NEAT-AI-core#592: the prose names the
+  // issue that *caused* the block (#588) and the closing line declares the
+  // issue actually depended on (#591). Taking the first reference in the
+  // section deferred the issue on the wrong number.
+  const output = `## Blocked: the rule bodies are still stubs
+
+The stub landed with #588, so \`creature_validate\` returns an unconditional
+failure and nothing here can be validated yet.
+
+Depends on #591
+`;
+  const blocked = detectBlockedOutcome(output, SELF);
+  assert(blocked);
+  assertEquals(blocked.dependency.number, 591);
+  assertEquals(buildDependencyLine(blocked.dependency), "Depends on #591");
+  // Every reference is still reported, in the order they appear.
+  assertEquals(blocked.dependencies.map((d) => d.number), [588, 591]);
+});
+
+Deno.test("detectBlockedOutcome honours a cross-repo Depends on line", () => {
+  const output = `## Blocked: parser rewrite unfinished
+
+Traced back to org/other#9 while reading the parser.
+
+- Depends on stSoftwareAU/NEAT-AI-core#591
+`;
+  const blocked = detectBlockedOutcome(output, SELF);
+  assert(blocked);
+  assertEquals(blocked.dependency.repo, "stSoftwareAU/NEAT-AI-core");
+  assertEquals(blocked.dependency.number, 591);
+});
+
+Deno.test("detectBlockedOutcome honours a 'Blocked by' declaration line", () => {
+  const output = `## Blocked: schema missing
+
+The failure surfaces in #588.
+
+Blocked by #591
+`;
+  const blocked = detectBlockedOutcome(output, SELF);
+  assert(blocked);
+  assertEquals(blocked.dependency.number, 591);
+});
+
+Deno.test("detectBlockedOutcome falls back to the first reference with no declaration line", () => {
+  const output = `## Blocked: waiting on org/dep#5
+
+Nothing declares a dependency explicitly, so the first reference stands.
+`;
+  const blocked = detectBlockedOutcome(output, SELF);
+  assert(blocked);
+  assertEquals(blocked.dependency.repo, "org/dep");
+  assertEquals(blocked.dependency.number, 5);
+});
+
+Deno.test("detectBlockedOutcome skips a declaration line naming only itself", () => {
+  const output = `## Blocked: see org/dep#5
+
+Depends on #${SELF.issueNumber}
+`;
+  const blocked = detectBlockedOutcome(output, SELF);
+  assert(blocked);
+  assertEquals(blocked.dependency.number, 5);
+});
