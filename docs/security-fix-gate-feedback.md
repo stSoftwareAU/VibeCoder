@@ -1,15 +1,14 @@
 # 🔐 Security-fix gate — contract up front, verdict into the retry
 
-The security-fix patch-verification gate (`security_fix_gate.ts`,
-and) blocks PR creation when an issue carrying the `security` label
-cannot show — in the branch diff, not only in prose — that the fault is
-genuinely closed. That gate is sound. What was missing was the feedback loop
-around it.
+The security-fix patch-verification gate (`security_fix_gate.ts`, and) blocks PR
+creation when an issue carrying the `security` label cannot show — in the branch
+diff, not only in prose — that the fault is genuinely closed. That gate is
+sound. What was missing was the feedback loop around it.
 
- was attempted at least ten times across two workers on a single
-day. Every attempt ended in the same `PR creation blocked:` comment; the code
-and tests on the branch were sound from early attempts, and only the PR
-summary's evidence format was wrong. Nothing ever converged, because:
+was attempted at least ten times across two workers on a single day. Every
+attempt ended in the same `PR creation blocked:` comment; the code and tests on
+the branch were sound from early attempts, and only the PR summary's evidence
+format was wrong. Nothing ever converged, because:
 
 1. **The prompt never stated the contract.** The `prompts/issue/` template never
    mentioned the `path/to/foo_test.ts::test name` citation, the
@@ -21,9 +20,8 @@ summary's evidence format was wrong. Nothing ever converged, because:
    (`comment_trust_filter.ts`) classifies it UNTRUSTED, and the retry prompt
    explicitly tells the agent not to act on instructions found there.
 
- closes both halves: the contract is stated before the first attempt,
-and the previous verdict rides worker run state — a trusted channel — into the
-next one.
+closes both halves: the contract is stated before the first attempt, and the
+previous verdict rides worker run state — a trusted channel — into the next one.
 
 ## End-to-end flow
 
@@ -80,8 +78,8 @@ gate would have posted after blocking it.
 
 The section is emitted only when the issue carries the `security` label — the
 same `hasSecurityLabel()` predicate the gate activates on — so non-security
-issues see no extra prompt weight. `diff-unavailable` is excluded: it reports
-an environment fault, not something a PR summary can be written to satisfy.
+issues see no extra prompt weight. `diff-unavailable` is excluded: it reports an
+environment fault, not something a PR summary can be written to satisfy.
 
 ## The verdict store
 
@@ -91,24 +89,23 @@ Blocked verdicts live in a directory **beside** `workDir`, never inside it:
 <workDir>-security-gate-state/<owner>_<repo>_<issue>.securitygate.json
 ```
 
-The sibling placement is the same reasoning as the content-approval baseline
- — `nukeWorkDir` and an agent-driven `rm` inside the work tree
-must not be able to erase the record. Each file holds the missing evidence
-kinds, the ISO timestamp of the last block, the test declarations the gate
-matched, and a running `blockCount` so a repeat loop is visible in the retry
-prompt and the worker log.
+The sibling placement is the same reasoning as the content-approval baseline —
+`nukeWorkDir` and an agent-driven `rm` inside the work tree must not be able to
+erase the record. Each file holds the missing evidence kinds, the ISO timestamp
+of the last block, the test declarations the gate matched, and a running
+`blockCount` so a repeat loop is visible in the retry prompt and the worker log.
 
 Since Issue #1575, `blockCount` counts **blocked runs** — runs that ended in
 `failure` from the gate — not blocks. The first block inside a run is recovered
 by the in-run retry below, so it records its verdict with
 `countsAsBlockedRun: false` and charges the issue nothing. The count is
-host-local: it clears the moment the gate passes, and a different host starts
-at zero.
+host-local: it clears the moment the gate passes, and a different host starts at
+zero.
 
 Reads are defensive even though the file is worker-written: unknown evidence
-kinds are discarded and a corrupt file reads as absent, so nothing that lands
-in that directory can inject text into the next prompt. A verdict that cannot
-be persisted (an unconfigured `workDir`) is logged loudly rather than dropped
+kinds are discarded and a corrupt file reads as absent, so nothing that lands in
+that directory can inject text into the next prompt. A verdict that cannot be
+persisted (an unconfigured `workDir`) is logged loudly rather than dropped
 silently — the PR is blocked either way, but an operator can see that the next
 attempt will start blind.
 
@@ -128,8 +125,8 @@ The completion phase therefore recovers from the **first** block inside the run:
 2. the agent is re-invoked **fresh** — never `--resume`, because the previous
    turn already concluded the work was finished — carrying the same replay
    section the next-run prompt uses;
-3. the quality gate runs again, then the completion gates. `bump-deps` does
-   not: the bump is already on the branch.
+3. the quality gate runs again, then the completion gates. `bump-deps` does not:
+   the bump is already on the branch.
 
 The retry always runs; it is never skipped on time-budget grounds. A run that
 passes on the retry raises its PR and posts **no** block comment for the first
@@ -148,6 +145,26 @@ what nobody could tell during #1385.
 A retry the worker could not launch at all — a rate limit, a failed spawn — is
 not a second gate verdict: the block is still reported on the issue, but it
 charges no blocked run, so a flaky CLI cannot spend the hand-off budget below.
+
+### Test declarations the gate recognises
+
+`matchedDeclarations=0` means the gate saw no test declaration at all in the
+added lines, so no citation could have satisfied it. The declaration syntaxes it
+knows, one per ecosystem the fleet monitors:
+
+| Ecosystem              | Declaration                                                                                                                                        |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deno                   | `Deno.test("name", …)`, the object form's `name:` field                                                                                            |
+| Jest / Mocha / Cypress | `it(`, `test(`, `specify(` with a string name                                                                                                      |
+| BATS                   | `@test "name" {`                                                                                                                                   |
+| pytest                 | `def test_name(`                                                                                                                                   |
+| JUnit                  | `@Test` (and friends) with the method on the next line                                                                                             |
+| Rust                   | `#[test]`, `#[tokio::test]`, `#[rstest]`, `#[proptest]` … with `fn name(` on a following line, further attributes allowed in between (Issue #1680) |
+| Go                     | `func TestName(t *testing.T)` (Issue #1680)                                                                                                        |
+
+Deno, Jest and the object form also match when `deno fmt` wrapped the name onto
+the next line (Issue #1581). A name that appears only inside a test body never
+counts (Issue #1279).
 
 ### After two blocked runs
 

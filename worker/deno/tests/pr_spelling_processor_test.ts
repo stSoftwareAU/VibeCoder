@@ -58,6 +58,15 @@ function makeSilentLogger(): Logger {
   };
 }
 
+/** A remote that confirms the push, as the CI-fix and feedback tests use. */
+const REMOTE_CONFIRMS_PUSH = () =>
+  Promise.resolve({
+    landed: true,
+    localSha: "f".repeat(40),
+    remoteSha: "f".repeat(40),
+    reason: "verified in test",
+  });
+
 function makeInput(overrides?: Partial<SpellingFixInput>): SpellingFixInput {
   const annotations: CheckAnnotation[] = [
     { path: "src/main.ts", start_line: 10, message: "Unknown word: colour" },
@@ -184,6 +193,9 @@ Deno.test("processSpellingFailure - succeeds with mock Claude output", async () 
     deps,
     workDir: "/tmp/test",
     workRoot: "/tmp/test-work-root",
+    // Issue #1679: the pass now claims a push only when the remote
+    // confirms it, so the verification is stubbed as landed here.
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -528,6 +540,9 @@ Deno.test("processSpellingFailure - pushes commits after Claude makes changes (I
     deps,
     workDir: "/tmp/test-repo",
     workRoot: "/tmp/test-work-root",
+    // Issue #1679: the pass now claims a push only when the remote
+    // confirms it, so the verification is stubbed as landed here.
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
   };
 
   const input = makeInput();
@@ -733,6 +748,9 @@ Deno.test("processSpellingFailure - retries push after recovery from rejection (
     deps,
     workDir: "/tmp/test-repo",
     workRoot: "/tmp/test-work-root",
+    // Issue #1679: the pass now claims a push only when the remote
+    // confirms it, so the verification is stubbed as landed here.
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -814,6 +832,9 @@ Deno.test("processSpellingFailure - Claude self-pushed: HEAD moved triggers succ
     deps,
     workDir: "/tmp/test-repo",
     workRoot: "/tmp/test-work-root",
+    // Issue #1679: the pass now claims a push only when the remote
+    // confirms it, so the verification is stubbed as landed here.
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
   };
 
   const result = await processSpellingFailure(makeInput(), processorDeps);
@@ -994,8 +1015,142 @@ Deno.test("processSpellingFailure - checks out PR branch before running Claude (
 });
 
 // ============================================================================
-// Issue #1673: repo context comes from the clone, not <clone>/<repo>
+// Issue #1679: a refused push is never claimed as a landed one
 // ============================================================================
+
+Deno.test("processSpellingFailure - a refused push with a moved HEAD is not claimed as pushed (Issue #1679)", async () => {
+  let commentBody = "";
+
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed spelling", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: (args: string[]) => {
+      const idx = args.indexOf("--body");
+      if (idx >= 0 && args[idx + 1] !== undefined) {
+        commentBody = args[idx + 1] as string;
+      }
+      return Promise.resolve("");
+    },
+  };
+
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      // The GRQ#4702 refusal: the ruleset declines the push outright.
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: false,
+          error: new Error(
+            "Failed to push unpushed commits: remote: error: GH013: " +
+              "Repository rule violations found for refs/heads/milestone/4690-x",
+          ),
+        })) as unknown as GitDeps["commitAndPushPending"],
+      captureBranchHead: (() =>
+        Promise.resolve({
+          ok: true,
+          value: "sha-before",
+        })) as unknown as GitDeps["captureBranchHead"],
+      // The agent committed locally, so HEAD moved — but nothing landed.
+      branchHeadChanged: (() =>
+        Promise.resolve({ ok: true, value: true })) as unknown as GitDeps[
+          "branchHeadChanged"
+        ],
+    },
+  });
+
+  const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processSpellingFailure(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(
+      result.value.changesPushed,
+      false,
+      "a commitAndPushPending failure is not a push, whatever the local HEAD did",
+    );
+  }
+  assertEquals(
+    commentBody.includes("failed to push"),
+    true,
+    "the reply must say the fixes were not pushed",
+  );
+  assertEquals(
+    commentBody.includes("I've pushed fixes"),
+    false,
+    "must not claim a refused push landed",
+  );
+});
+
+Deno.test("processSpellingFailure - a push the remote does not confirm is not claimed as pushed (Issue #1679)", async () => {
+  let commentBody = "";
+
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed spelling", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: (args: string[]) => {
+      const idx = args.indexOf("--body");
+      if (idx >= 0 && args[idx + 1] !== undefined) {
+        commentBody = args[idx + 1] as string;
+      }
+      return Promise.resolve("");
+    },
+  };
+
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-repo",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: () =>
+      Promise.resolve({
+        landed: false,
+        localSha: "a".repeat(40),
+        reason: "'branch' does not exist on the remote",
+      }),
+  };
+
+  const result = await processSpellingFailure(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.changesPushed, false);
+  }
+  assertEquals(commentBody.includes("failed to push"), true);
+});
 
 Deno.test("processSpellingFailure - injects the clone's CLAUDE.md into the prompt (Issue #1673)", async () => {
   const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });

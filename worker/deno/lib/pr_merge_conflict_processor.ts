@@ -37,6 +37,7 @@ import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildMergeConflictPrompt } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
+import { guardGatedHead } from "./gated_head_guard.ts";
 import {
   preparePrBranch,
   readPrResponseMessage,
@@ -622,6 +623,32 @@ export async function processMergeConflict(
     baseBranch: input.baseBranch,
     attemptCount: input.attemptCount,
   });
+
+  // Issue #1679: a head under a ruleset that refuses direct pushes can never
+  // receive the resolved merge — the push is declined with GH013. Stand down
+  // before the lock, the lock comment and the heartbeat, so a PR the worker
+  // will never work leaves one comment rather than churn on every run, and
+  // before the attempt marker below, so the refusal spends no attempt.
+  const pushGate = await guardGatedHead({
+    repo,
+    prNumber,
+    branchName: input.branchName,
+    pass: "Merge-conflict resolution",
+    logger,
+    runGhCommand: processorDeps.deps.github.runGhCommand,
+  });
+  if (pushGate.gated) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        merged: false,
+        escalated: false,
+        summary:
+          `PR #${prNumber} head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
+      },
+    };
+  }
 
   let lockCommentId: number | undefined;
   if (workerId) {

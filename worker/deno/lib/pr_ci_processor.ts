@@ -43,6 +43,7 @@ import {
   type QualityGateRunResult,
   runQualityGateCheck,
 } from "./quality_gate_phase.ts";
+import { guardGatedHead } from "./gated_head_guard.ts";
 import {
   preparePrBranch,
   readPrResponseMessage,
@@ -509,6 +510,33 @@ async function _processCiFailureLocked(
         retryCount: currentRetries,
         summary:
           `CI check '${checkName}' exceeded max retries (${currentRetries}/${maxCiRetries})`,
+      },
+    };
+  }
+
+  // Issue #1679: a head under a ruleset that refuses direct pushes can never
+  // receive this pass's commits — the push is declined with GH013, once per
+  // run. Standing down here, before the heartbeat, the claim comment and
+  // `recordCiCheckRetry`, means the refusal spends no retry and leaves no
+  // per-run churn on a PR this pass will never fix.
+  const pushGate = await guardGatedHead({
+    repo,
+    prNumber,
+    branchName: input.branchName,
+    pass: "CI fix",
+    logger,
+    runGhCommand: ghFn,
+  });
+  if (pushGate.gated) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: 0,
+        retryCount: currentRetries,
+        summary:
+          `PR head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
       },
     };
   }

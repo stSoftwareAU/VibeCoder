@@ -924,6 +924,17 @@
       "paths": [
         "worker/deno/lib/claude_credential_pool.ts"
       ]
+    },
+    {
+      "issue": 1679,
+      "chunk": "12l",
+      "title": "the gated-head guard",
+      "ledger": "docs/audits/security-sweep-1679-gated-head-guard.md",
+      "definition": "modules added to lib/ after 12a-12k recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/gated_head_guard.ts"
+      ]
     }
   ]
 }
