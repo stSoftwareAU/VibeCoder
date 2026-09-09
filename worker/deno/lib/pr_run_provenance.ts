@@ -38,6 +38,11 @@ export type LinkedPrState = "OPEN" | "MERGED" | "CLOSED";
 export interface LinkedPr {
   url: string;
   state: LinkedPrState;
+  /**
+   * The PR's head branch, when the lookup could read it (Issue #1799).
+   * `null`/absent means unknown — never assumed to be this run's branch.
+   */
+  headRefName?: string | null;
 }
 
 /** Inputs to {@link decideCompletionPr}. */
@@ -51,6 +56,12 @@ export interface CompletionPrInput {
   branchCommitsAhead: number | null;
   /** PR found by issue-number linking, which may be anyone's. */
   prForIssue: LinkedPr | null;
+  /**
+   * The branch this run pushed (Issue #1799), so a linked open PR whose head
+   * is exactly this branch is recognised as ours even when the by-branch
+   * lookup missed it. Optional for callers that have no branch to compare.
+   */
+  runBranch?: string | null;
 }
 
 /** What completion should do. */
@@ -87,6 +98,7 @@ export function decideCompletionPr(
   input: CompletionPrInput,
 ): CompletionPrDecision {
   const { openPrForBranch, branchCommitsAhead, prForIssue } = input;
+  const runBranch = (input.runBranch ?? "").trim();
 
   if (openPrForBranch) {
     return {
@@ -96,18 +108,44 @@ export function decideCompletionPr(
     };
   }
 
-  if (prForIssue?.state === "OPEN") {
+  // Issue #1799: an open PR that references the issue is ours only when its
+  // head is this run's branch. VibeCoder#1786's run had two commits on
+  // `issue-1786-fix-merge-issues` and recovered the agent's own draft side
+  // PR on `sync/1786-milestone-1653` instead — the by-issue match, taken
+  // before the commit count, swallowed the run's branch exactly as #42's
+  // merged PR had. So a linked open PR on a known different head yields to
+  // the branch's own work; one whose head is unknown, or that has no work
+  // of ours to compete with, is still recovered.
+  const linkedHead = (prForIssue?.headRefName ?? "").trim();
+  const linkedOpenOnOurBranch = prForIssue?.state === "OPEN" &&
+    runBranch !== "" && linkedHead === runBranch;
+  if (linkedOpenOnOurBranch) {
     return {
       kind: "recover",
-      prUrl: prForIssue.url,
-      why: "an open PR references this issue",
+      prUrl: prForIssue!.url,
+      why: "an open PR referencing this issue has this branch as its head",
     };
   }
 
-  if (branchCommitsAhead !== null && branchCommitsAhead > 0) {
+  const hasWork = branchCommitsAhead !== null && branchCommitsAhead > 0;
+  const linkedOpenElsewhere = prForIssue?.state === "OPEN" &&
+    linkedHead !== "" && linkedHead !== runBranch;
+
+  if (prForIssue?.state === "OPEN" && !(hasWork && linkedOpenElsewhere)) {
+    return {
+      kind: "recover",
+      prUrl: prForIssue.url,
+      why: hasWork
+        ? "an open PR references this issue and its head could not be read"
+        : "an open PR references this issue",
+    };
+  }
+
+  if (hasWork) {
     const other = prForIssue
-      ? ` — ${prForIssue.url} is ${prForIssue.state.toLowerCase()} and is not ` +
-        `the PR for this branch`
+      ? ` — ${prForIssue.url} is ${prForIssue.state.toLowerCase()}` +
+        (linkedOpenElsewhere ? ` on '${linkedHead}'` : "") +
+        ` and is not the PR for this branch`
       : "";
     return {
       kind: "create",
