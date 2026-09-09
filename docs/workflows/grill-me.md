@@ -470,6 +470,9 @@ Two details worth knowing:
   label event made by a non-fleet account after the Ready comment. A
   `grill-me` label left behind by a failed removal is cleaned up as
   before — removed, with `needs-human` re-applied.
+- **One round per re-add.** The re-add unblocks the next round only; the
+  reopened grilling then waits for your reply exactly like any other
+  round, so it cannot run to the cap unanswered.
 
 ## 📛 Whose turn is it? (read the labels)
 
