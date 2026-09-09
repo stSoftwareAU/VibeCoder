@@ -1,14 +1,15 @@
 ## Summary
 
 Every agent spawn now passes a quota gate over the Claude credential pool
-(#1668), and a subscription usage limit no longer pauses the host. Closes
-#1669.
+(#1668), and a subscription usage limit no longer pauses the host.
+
+Closes #1669.
 
 - **`runClaudeWithRetry`** consults the gate beside the existing
   `agentRunsTerminating` check. An eligible credential is applied to the run
   environment *before* the child environment is copied from it; when every
-  candidate is spent the call returns terminally — `exitCode: 2`,
-  `noEligibleCredential: true`, and `usageLimit` carrying the soonest
+  candidate is spent the call returns terminally — `exitCode: 2`, the
+  `noEligibleCredential` flag, and `usageLimit` carrying the soonest
   five-hour reset among the pool — **with no child process spawned**, so no
   invocation is billed against a closed window.
 - **The usage-limit branch no longer writes `writeRateLimitSignal(…, "usage")`.**
