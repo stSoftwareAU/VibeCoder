@@ -753,7 +753,7 @@ Deno.test("commitAndPushPending - a secret is still refused when .pr_response_me
 /**
  * End-to-end regression for the PR 58 shape (Issue #1654).
  *
- * On stSoftwareAU/GRQ-AutoTrader#58 the merge-conflict pass resolved every
+ * On a downstream repo's PR 58 the merge-conflict pass resolved every
  * conflicted file, then lost the whole resolution: `git add -A` at the final
  * mile staged the worker's own state files sitting in the clone and the
  * pre-commit safety gate (Issue #1758) refused the commit. Both attempts
@@ -797,7 +797,12 @@ Deno.test("commitAndPushPending - commits a merge-conflict resolution despite wo
     );
     await runGit(["add", "-A"], downstream);
     await runGit(["commit", "-m", "feature change"], downstream);
-    await runGit(["push", "origin", branch], downstream);
+    const featurePush = await runGit(["push", "origin", branch], downstream);
+    assertEquals(
+      featurePush.code,
+      0,
+      `feature push failed: ${featurePush.stderr}`,
+    );
 
     // The merge-conflict pass: fetch, then `git merge origin/<base>
     // --no-edit`, which stops with both files unmerged.
