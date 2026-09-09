@@ -32,6 +32,13 @@
  * - the old `< 10% weekly => always rank behind >= 10%` override, which spent
  *   the fuller week first and let the urgent one lapse (row 8 would invert).
  *
+ * One case here records behaviour rather than endorsing it: a credential whose
+ * response carried no seven-day window is ranked on its five-hour rate, which
+ * is a figure on a different scale and lets it outrank every healthy
+ * credential. That is Issue #1731, and correcting it is a change to the
+ * ranking algorithm which Issue #1686 excludes; the assertion exists so the
+ * fix flips a test deliberately rather than moving the policy in silence.
+ *
  * Every row uses deterministic timestamps and synthetic budget snapshots
  * recorded straight into the pool, so nothing here touches the network, the
  * clock, the filesystem or the process environment.
@@ -50,6 +57,7 @@ import {
   type ClaudeTokenSelectionReason,
   rankClaudeTokenBudgets,
 } from "../lib/claude_token_selection.ts";
+
 import { createClaudeCredentialPool } from "../lib/claude_credential_pool.ts";
 import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 import {
@@ -311,10 +319,10 @@ const MATRIX: readonly Row[] = [
     candidates: [
       {
         label: "provider",
-        fiveHour: {
-          remaining: CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING,
-          resetInHours: 4,
-        },
+        // The literal figure, deliberately not the constant: this row is
+        // what pins 20%, so reading the constant would let a change to it
+        // move the boundary and keep the row green.
+        fiveHour: { remaining: 0.2, resetInHours: 4 },
         sevenDay: { remaining: 0.6, resetInHours: 24 },
       },
       {
@@ -506,6 +514,14 @@ for (const row of MATRIX) {
 // Boundary precision: the comparison must not become `<= 20%`
 // ---------------------------------------------------------------------------
 
+Deno.test("claude pool policy - the guard's boundary is 20%, the figure every row above is written against (Issue #1686)", () => {
+  // The rows state 0.19 / 0.2 / 0.21 as literals so a change to the constant
+  // cannot move the boundary and leave them green. This is the one place the
+  // constant is read, so such a change fails exactly here and a reader is
+  // sent to the rows that must be restated with it.
+  assertEquals(CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING, 0.2);
+});
+
 Deno.test("claude pool policy - 19.999%, 20% and 20.001% land on the right side of the guard (Issue #1686)", () => {
   const contender: Candidate = {
     label: "provider-2",
@@ -643,7 +659,7 @@ Deno.test("claude pool policy - equal weekly rates break towards the soonest res
   assertEquals(reversed.reason, "tied-discovery-order");
 });
 
-Deno.test("claude pool policy - a credential reporting no seven-day window is ranked on the window it did report (Issue #1686)", () => {
+Deno.test("claude pool policy - a credential reporting no seven-day window is ranked on the window it did report, and that lets it outrank a healthy one (Issue #1686)", () => {
   const ranking = rankClaudeTokenBudgets([
     // Five-hour only: the documented fallback ranks it on that window's rate,
     // 60% over four hours = 15%/h, rather than dropping it.
@@ -661,7 +677,23 @@ Deno.test("claude pool policy - a credential reporting no seven-day window is ra
   const fallback = ranking.ranked.find((c) => c.label === "provider");
   assertEquals(fallback?.rateWindow?.window, "five_hour");
   assertEquals(fallback?.ratePerHour, 0.6 / 4);
+
+  // Recorded, NOT endorsed. Issue #1686 asked that this fallback "cannot
+  // outrank a known healthy candidate accidentally", and today it can: the
+  // five-hour share is divided by five-hour units and then compared straight
+  // against weekly rates, so 15%/h beats provider-2's healthy 0.35%/h by
+  // roughly forty times on a figure that says nothing about its week. The
+  // scale mismatch is Issue #1731; fixing it is a change to the ranking
+  // algorithm, which Issue #1686 explicitly excludes. This assertion is here
+  // so that fix flips a test deliberately instead of moving the policy in
+  // silence.
   assertEquals(ranking.winner?.label, "provider");
+  const healthy = ranking.ranked.find((c) => c.label === "provider-2");
+  assert(healthy?.ratePerHour !== null && healthy?.ratePerHour !== undefined);
+  assert(
+    (fallback?.ratePerHour ?? 0) > healthy.ratePerHour * 10,
+    "the scale mismatch of Issue #1731 has changed — restate this test with it",
+  );
 });
 
 Deno.test("claude pool policy - an unknown budget ranks last without being dropped, and cannot outrank a healthy credential (Issue #1686)", () => {
