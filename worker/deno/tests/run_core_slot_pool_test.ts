@@ -11,6 +11,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createDefaultRunCoreConfig,
   type DiscoveredIssue,
+  liveSlotRunCount,
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
@@ -2084,4 +2085,77 @@ Deno.test("slot pool #245/#425 - a long job is still deferred when the hard cap 
     `expected the skip line, got: ${logs.join(" | ")}`,
   );
   assertStringIncludes(skip!, "hard-cap runway");
+});
+
+// ============================================================================
+// A terminated agent's slot finishes its tail before the run ends (Issue #1815)
+// ============================================================================
+
+Deno.test("slot pool - a slot abandoned at the shutdown grace still finishes its release and callbacks before the run ends (Issue #1815)", async () => {
+  // VibeCoder#1773: the run ended with a slot mid-agent; the agent was
+  // terminated, the slot started its scheduled-release callbacks, and the
+  // exit cleanup's descendant sweep killed them one second later. The
+  // run-ending path must wait for the slot's tail.
+  const events: string[] = [];
+  const logs: string[] = [];
+  const handlers: Record<string, () => void> = {};
+  let now = 0;
+  let clock: ReturnType<typeof setInterval> | undefined;
+  let hangResolve: (() => void) | undefined;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    slotDrainGraceSeconds: 30,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      // The run-ending grace is the one wait that must give the tail a
+      // moment of real time; every other sleep is the fake clock.
+      return (ms ?? 0) >= 30_000
+        ? new Promise<void>((r) => setTimeout(r, 200))
+        : Promise.resolve();
+    },
+    addSignalListener: (signal, handler) => {
+      handlers[signal] = handler;
+    },
+    // The run-ending termination (Issue #4369): here it "kills" the hung
+    // agent, after which the slot runs its tail.
+    terminateActiveAgentRuns: () => {
+      events.push("agents terminated");
+      hangResolve?.();
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/fast", 1), issue("o/hang", 2)]),
+    processIssue: async (i) => {
+      if (i.repo === "o/fast") {
+        await new Promise((r) => setTimeout(r, 5));
+        handlers["SIGTERM"]?.();
+        clock = setInterval(() => {
+          now += 31_000;
+        }, 20);
+        return { ok: true, value: { success: true } };
+      }
+      await new Promise<void>((r) => {
+        hangResolve = r;
+      });
+      // The tail: what the release and the callbacks cost after the agent
+      // is gone.
+      await new Promise((r) => setTimeout(r, 30));
+      events.push("tail done");
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runOneCycle(deps, 2);
+  events.push("run returned");
+  if (clock !== undefined) clearInterval(clock);
+
+  assertEquals(events, ["agents terminated", "tail done", "run returned"]);
+  assert(
+    logs.some((l) =>
+      l.includes("still finishing") && l.includes("Issue #1815")
+    ),
+    logs.filter((l) => l.includes("slot run")).join("\n"),
+  );
+  assertEquals(liveSlotRunCount(), 0);
 });
