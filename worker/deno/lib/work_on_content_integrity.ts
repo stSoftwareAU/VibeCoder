@@ -958,8 +958,19 @@ export async function verifyWorkOnContentIntegrityDetailed(
   contentDeps?: ContentApprovalDeps,
   timelineCache?: TimelineCache,
   labelName?: string,
+  /**
+   * The title and body the scan already holds for this issue, from the
+   * repository listing (Issue #1818). When supplied, no live `gh issue
+   * view` is made: the scan re-ran that view for every work-on candidate on
+   * every idle re-scan — ~700 GraphQL calls a cycle — for issues it then
+   * skipped, while the pickup path re-verifies the one issue it claims
+   * against a live read anyway (`verifyPickupContentIntegrity`, #3647).
+   */
+  listedContent?: { title: string; body: string },
 ): Promise<WorkOnContentIntegrityOutcome> {
-  const fetched = await fetchIssueTitleAndBody(repo, issue.number, ghFn);
+  const fetched = listedContent
+    ? { ok: true as const, value: listedContent }
+    : await fetchIssueTitleAndBody(repo, issue.number, ghFn);
   if (!fetched.ok) {
     // Issue #2534: a gh failure or malformed JSON for a single issue must not
     // abort the surrounding per-issue scan loop. Fail safe by skipping just

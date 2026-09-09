@@ -72,6 +72,8 @@ export function closeInvalidatedCacheKeys(issueNumber: number): string[] {
     "issues_closed_all",
     `issue_labels_${issueNumber}`,
     `pr_linkage_open_v2_${issueNumber}`,
+    // Issue #1818: the dependency fetcher's cached state for this issue.
+    `issue_state_v1_${issueNumber}`,
   ];
 }
 
