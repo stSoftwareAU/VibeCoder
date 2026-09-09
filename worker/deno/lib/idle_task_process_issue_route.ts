@@ -38,6 +38,7 @@ import {
   type HandleIdleTaskIssueResult,
 } from "./idle_task_claim_handler.ts";
 import { runGhCommand as defaultRunGhCommand } from "./github.ts";
+import { resolveIdleTaskClaimRunway } from "./idle_task_claude_budget.ts";
 import { ensureRepoClone as defaultEnsureRepoClone } from "./ensure_repo_clone.ts";
 import { finaliseIdleTaskWrapper } from "./idle_task_wrapper_closure.ts";
 
@@ -62,7 +63,18 @@ export interface RouteIdleTaskDeps extends RouteClaimDeps {
   findTemplateFn?: typeof defaultFindIdleTaskTemplate;
   /** Lazy clone helper — same `setupRepo` the setup phase uses. */
   ensureCloneFn?: typeof defaultEnsureRepoClone;
+  /** Clock for the claim-runway decision (Issue #1757). Test seam. */
+  nowFn?: () => number;
 }
+
+/**
+ * The one log line a declined claim emits (Issue #1757). Exported so tests
+ * and log greps share the wording.
+ */
+export const IDLE_TASK_RUNWAY_DECLINED_MESSAGE =
+  "idle-task claim declined this cycle: the cycle deadline would bound the " +
+  "scan below the least budget worth starting — leaving the wrapper for the " +
+  "next cycle (Issue #1757)";
 
 /**
  * Outcome:
@@ -74,7 +86,9 @@ export interface RouteIdleTaskDeps extends RouteClaimDeps {
  *   `success` mirrors `HandleIdleTaskIssueResult.ok`.
  * - `{ routed: true, success: false, claimLost: true, … }` — this host does
  *   not hold the wrapper (Issue #1139). Nothing was scanned and nothing was
- *   written to the wrapper.
+ *   written to the wrapper. `claimReason: "insufficient_runway"` is the
+ *   route's own refusal (Issue #1757): the claim was never attempted because
+ *   the cycle deadline would have bounded the scan below the floor.
  */
 export type RouteIdleTaskOutcome =
   | { routed: false }
@@ -120,6 +134,36 @@ export async function routeIdleTaskInProcessIssue(
   // An issue this route does not recognise is not ours to claim — the
   // standard pipeline's setup phase claims it, as it always has.
   if (template === undefined) return await scan();
+
+  // Issue #1757: decide BEFORE the claim whether the run could be a scan at
+  // all. Issue #186 bounds a scan to the cycle deadline after the claim, so
+  // near the end of a cycle the two rules used to combine into "claim it,
+  // then give it a budget that cannot fit": a 3600 s security scan granted
+  // 60 s, killed by construction, and recorded as a host health failure. A
+  // declined wrapper is untouched on GitHub and drawn by the next cycle.
+  const runway = resolveIdleTaskClaimRunway(
+    input.cycleDeadlineEpochMs,
+    (deps.nowFn ?? Date.now)(),
+  );
+  if (runway.belowFloor) {
+    const claimDetail = `the cycle deadline would bound the scan to ` +
+      `${runway.budgetSeconds}s, below the ${runway.floorSeconds}s floor`;
+    deps.logger.info(IDLE_TASK_RUNWAY_DECLINED_MESSAGE, {
+      route: "idle-task",
+      repo: input.repo,
+      issueNumber: input.issueNumber,
+      template: template.name,
+      budgetSeconds: runway.budgetSeconds,
+      floorSeconds: runway.floorSeconds,
+    });
+    return {
+      routed: true,
+      success: false,
+      claimLost: true,
+      claimReason: "insufficient_runway",
+      claimDetail,
+    };
+  }
 
   // Issue #1139: take the cross-host claim BEFORE the clone and the scan.
   // This route bypasses `workOnIssue`, whose setup phase held the only

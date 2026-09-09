@@ -61,6 +61,72 @@ export const IDLE_TASK_TIMEOUT_SECONDS = OPERATIONAL_DEFAULTS.claudeTimeout;
 export const IDLE_TASK_NO_OUTPUT_TIMEOUT_SECONDS =
   OPERATIONAL_DEFAULTS.claudeNoOutputTimeout;
 
+/**
+ * Least deadline-bounded budget worth taking a claim for (Issue #1757).
+ *
+ * Issue #186 bounds a scan to the cycle deadline; Issue #397's runway floor
+ * gates an *issue* claim against the supervisor hard cap, because issue work
+ * may outlive the cycle. Nothing gated an idle-task claim against the bound
+ * it would receive, so a wrapper claimed with 60 s of cycle left was granted
+ * 60 s for a 3600 s scan, spent them reading a 130 KB prompt, was killed by
+ * construction, and went through the full failure path — claim released,
+ * failure callback, a health failure recorded against the host — for a run
+ * that could never have succeeded (NEAT-AI-Explore#629).
+ *
+ * Ten minutes is the silence watchdog's window
+ * ({@link IDLE_TASK_NO_OUTPUT_TIMEOUT_SECONDS}): a scan that cannot be given
+ * even the time in which it is expected to show a sign of life is not a scan.
+ * A wrapper the floor declines stays unclaimed and is drawn by the next cycle,
+ * which is exactly what a cycle-bounded task wants.
+ */
+export const IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS = 10 * 60;
+
+/** Outcome of {@link resolveIdleTaskClaimRunway}. */
+export interface IdleTaskClaimRunway {
+  /** The budget the scan would be granted if claimed now. */
+  budgetSeconds: number;
+  /** True when the cycle deadline, not the idle-task budget, would bind it. */
+  deadlineBound: boolean;
+  /** The floor the budget was judged against. */
+  floorSeconds: number;
+  /** True when the claim should be declined this cycle. */
+  belowFloor: boolean;
+}
+
+/**
+ * Decide, before a wrapper is claimed, whether the run it would get can be
+ * a scan at all (Issue #1757).
+ *
+ * The arithmetic is the one {@link resolveIdleTaskBudget} applies after the
+ * claim — `min(requested, runway + kill grace)`, floored at the execute
+ * floor — so the decision and the bound can never disagree. With no cycle
+ * deadline (the `work-on-issue` CLI path) nothing binds and the claim is
+ * always taken.
+ *
+ * @param cycleDeadlineEpochMs - Epoch-ms cycle deadline, or undefined.
+ * @param nowMs - Current epoch-ms (injected for testing).
+ * @param floorSeconds - Least budget worth claiming for.
+ * @returns The budget the claim would receive and whether it clears the floor.
+ */
+export function resolveIdleTaskClaimRunway(
+  cycleDeadlineEpochMs: number | undefined,
+  nowMs: number = Date.now(),
+  floorSeconds: number = IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS,
+): IdleTaskClaimRunway {
+  const bounded = resolveExecuteTimeoutSeconds(
+    IDLE_TASK_TIMEOUT_SECONDS,
+    OPERATIONAL_DEFAULTS.claudeKillAfter,
+    cycleDeadlineEpochMs,
+    nowMs,
+  );
+  return {
+    budgetSeconds: bounded.timeoutSeconds,
+    deadlineBound: bounded.deadlineBound,
+    floorSeconds,
+    belowFloor: bounded.deadlineBound && bounded.timeoutSeconds < floorSeconds,
+  };
+}
+
 /** Signature of the underlying runner, so tests can inject a fake. */
 export type IdleTaskClaudeRunner = (
   options: RunClaudeOptions,
