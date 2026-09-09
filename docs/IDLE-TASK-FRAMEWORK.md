@@ -134,7 +134,14 @@ Key points:
   cooldown (`issue_retry_cooldown`) then gates the retry, and a later claim runs
   the scan again. The route used to close every handled wrapper regardless of
   `ok`, so an infrastructure failure was recorded as the scan's result and
-  nothing re-raised it until the next cadence tick.
+  nothing re-raised it until the next cadence tick. Both writes — the summary
+  comment and the close, or the failure comment — are REST `gh api` calls on
+  the **core** quota (Issue #1753): the `gh issue close` / `gh issue comment`
+  subcommands are GraphQL-backed, and while the primary-quota latch is set the
+  spawn chokepoint refuses them, which left a finished wrapper open for the
+  next scan to claim and run all over again (GRQ-health#204). The finaliser
+  reports whether each write actually landed, and a close that did not is
+  logged with `wrapperStillOpen: true`.
 - **The repo is cloned on demand before a template runs** (Issue #179). A
   template walks `${workDir}/<repo>`, and nothing on the idle-task path had ever
   cloned it — a repo freshly added to `.config.json` failed every scan with

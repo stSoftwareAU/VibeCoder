@@ -26,6 +26,7 @@ if your worker login is read-only on any monitored repository.**
 
 | Change | Issue |
 | ------ | ----- |
+| The idle-task wrapper finaliser closes a finished wrapper and posts its summary (or the failure comment) through the REST `issues` endpoints on the core quota, so the primary GraphQL quota latch no longer leaves a wrapper open for the next scan to re-run; the result reports whether each write landed instead of assuming the close happened | #1753 |
 | A monitored repo the worker's login cannot list (404, or 403 "Must have push access") is skipped and named once instead of failing every cycle | #1453 |
 | A successful trusted-author resolve is reused for `trusted_authors_cache_hours` (new key, default `1`; `0` restores the per-cycle refresh), and a transient failure serves the snapshot, with its age logged, for up to six hours | #1453 |
 | The `graphql-calls:` line counts every GraphQL-backed `gh` call (`issue list`, `pr view`, `search`, … as well as `api graphql`), and both the counter and the primary-quota latch are enforced at the `gh` spawn chokepoint, so the thirty-odd modules that spawn `gh` directly are counted and short-circuited too | #1485 |

@@ -9,8 +9,8 @@
  *
  * These tests pin the wiring shape:
  *   1. Wrappers whose scan SUCCEEDED (claim handler returns
- *      `handled: true, ok: true`) are closed via
- *      `gh issue close --comment <summary>` and the routing reports
+ *      `handled: true, ok: true`) get the summary as a REST comment and a
+ *      REST close (core quota, Issue #1753) and the routing reports
  *      `{ routed: true, success: true }`.
  *   2. Non-wrappers (claim handler returns `handled: false`) report
  *      `{ routed: false }` and are NEVER closed — the caller falls
@@ -135,16 +135,27 @@ Deno.test(
 
     assertEquals(outcome, { routed: true, success: true });
 
-    // Exactly one gh call — closing the wrapper with the summary.
-    assertEquals(ghCalls.length, 1);
-    const closeArgs = ghCalls[0]!;
-    assertEquals(closeArgs[0], "issue");
-    assertEquals(closeArgs[1], "close");
-    assertEquals(closeArgs[2], "2726");
-    assertEquals(closeArgs[3], "--repo");
-    assertEquals(closeArgs[4], "owner/widget");
-    assertEquals(closeArgs[5], "--comment");
-    assertEquals(closeArgs[6], "security-scan complete: filed 3 findings");
+    // Exactly two gh calls — the summary comment, then the close — both
+    // REST on the core quota so they land under the primary-quota latch
+    // (Issue #1753).
+    assertEquals(ghCalls, [
+      [
+        "api",
+        "-X",
+        "POST",
+        "repos/owner/widget/issues/2726/comments",
+        "-f",
+        "body=security-scan complete: filed 3 findings",
+      ],
+      [
+        "api",
+        "-X",
+        "PATCH",
+        "repos/owner/widget/issues/2726",
+        "-f",
+        "state=closed",
+      ],
+    ]);
 
     // No warnings — the close succeeded cleanly.
     assertEquals(records.filter((r) => r.level === "warn").length, 0);
@@ -181,13 +192,18 @@ Deno.test(
     assertEquals(outcome, { routed: true, success: false });
     assertEquals(ghCalls.length, 1);
     const args = ghCalls[0]!;
-    assertEquals(args[1], "comment");
+    assertEquals(args.slice(0, 4), [
+      "api",
+      "-X",
+      "POST",
+      "repos/owner/widget/issues/2726/comments",
+    ]);
     assert(
-      !args.includes("close"),
+      !args.some((a) => a === "PATCH" || a.startsWith("state=")),
       "a failed scan must never close its wrapper",
     );
-    assertStringIncludes(String(args[6]), IDLE_TASK_FAILURE_COMMENT_PREFIX);
-    assertStringIncludes(String(args[6]), "security-scan threw: timeout");
+    assertStringIncludes(String(args[5]), IDLE_TASK_FAILURE_COMMENT_PREFIX);
+    assertStringIncludes(String(args[5]), "security-scan threw: timeout");
   },
 );
 
@@ -246,12 +262,17 @@ Deno.test(
     // close call failed.
     assertEquals(outcome, { routed: true, success: true });
 
-    const warn = records.find((r) => r.level === "warn");
-    assert(warn !== undefined, "expected a warn log for the failed close");
-    assertEquals(warn.message, "Failed to close idle-task issue");
-    const ctx = warn.context as Record<string, unknown>;
+    // Both REST writes were refused: the summary comment and then the
+    // close, each named (Issue #1753).
+    const warns = records.filter((r) => r.level === "warn");
+    assertEquals(warns.map((w) => w.message), [
+      "Failed to post idle-task summary comment",
+      "Failed to close idle-task issue",
+    ]);
+    const ctx = warns[1]!.context as Record<string, unknown>;
     assertEquals(ctx.repo, "owner/widget");
     assertEquals(ctx.issueNumber, 2726);
+    assertEquals(ctx.wrapperStillOpen, true);
     assertStringIncludes(String(ctx.error), "rate limited");
   },
 );
@@ -273,7 +294,7 @@ Deno.test(
       },
     });
 
-    assertEquals(ghCalls[0]?.[6], "idle-task processed");
+    assertEquals(ghCalls[0]?.[5], "body=idle-task processed");
   },
 );
 
@@ -351,8 +372,9 @@ Deno.test(
     assertEquals(handlerCalled, false);
     assertEquals(outcome, { routed: true, success: false });
     assertEquals(ghCalls.length, 1);
-    assertEquals(ghCalls[0]?.[1], "comment");
-    assertStringIncludes(String(ghCalls[0]?.[6]), "network unreachable");
+    assertEquals(ghCalls[0]?.[2], "POST");
+    assertEquals(ghCalls[0]?.[3], "repos/owner/widget/issues/2726/comments");
+    assertStringIncludes(String(ghCalls[0]?.[5]), "network unreachable");
     assert(
       records.some((r) =>
         r.level === "warn" && r.message === "idle-task clone preparation failed"
