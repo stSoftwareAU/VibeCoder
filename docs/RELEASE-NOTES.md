@@ -38,6 +38,7 @@ if your worker login is read-only on any monitored repository.**
 | The security-fix verification gate recognises a test name that `deno fmt` wrapped onto the line after `Deno.test(` (and the `it(` / `test(` and object-form `name:` equivalents), so a correctly cited regression test no longer blocks a security PR | #1581 |
 | The primary-quota latch is now set at the `gh` spawn chokepoint, so a rate-limit refusal seen by any of the thirty-odd modules that spawn `gh` directly latches the process and writes the shared signal, instead of only a refusal seen through `runGhCommandRaw` | #1540 |
 | The launcher writes a fresh host-disk reading to the worker log directory on every tick (`host-disk.json`), and the worker adopts it mid-run, so the host-disk estimate can rise when the host frees space and fall when another account consumes it, instead of standing on a launch-time baseline that could only fall | #1550 |
+| The attached launcher refreshes `host-disk.json` itself every five minutes while its container runs (`VIBE_HOST_DISK_REFRESH_SECONDS`, tests only), so the #1550 refresh also reaches hosts whose scheduler never starts a second tick while the job is running (launchd's `StartInterval`), where the reading otherwise stood at its launch value for the whole run | #1691 |
 | An issue lane detaches its worktree from the feature branch when its run ends, and the PR passes release a branch held by one of this host's own lane worktrees before checking it out (any other holder is reported and left alone), so a finished lane no longer blocks the CI-fix pass for the PR it raised; a checkout refused for a held branch is skipped as `branch_held` and no longer spends a CI-fix retry — the retry is recorded only once the PR branch is checked out | #1677 |
 
 ### In detail
@@ -166,7 +167,11 @@ up; on the ticks where it does not launch it now writes the host's `df`
 reading to `host-disk.json` in the worker log directory — the one host path
 the container mounts read-write — and the worker adopts a reading that is
 newer than the one it holds and less than fifteen minutes old, re-basing its
-volume-growth term at that moment. A host that frees space mid-run resumes
+volume-growth term at that moment. Because the launcher stays attached to its
+container for the whole run, a scheduler that never overlaps a running job
+(launchd's `StartInterval`) delivers no such tick until the worker exits, so
+the attached launcher also rewrites the file itself every five minutes while
+the container runs (Issue #1691). A host that frees space mid-run resumes
 claiming within one tick rather than at the next launch; a host where another
 account consumes space stops claiming within one tick rather than claiming
 into a shortage. With no file (an older launcher, native mode) the launch
