@@ -116,14 +116,35 @@ Deno.test("pwsh suites - every run.ps1 suite is in the gate (Issue #1598)", asyn
   );
 });
 
-Deno.test("pwsh suites - the manifest names exactly those suites (Issue #1598)", async () => {
+Deno.test("pwsh suites - the manifest names every one of them (Issue #1598)", async () => {
   // The manifest is what carries the reason and the measured cost, so it
-  // has to agree with the tree in both directions: an entry for a suite
-  // that drives nothing is an exception nobody needed, and a run.ps1 suite
-  // with no entry is one the gate pays for with no reason recorded.
+  // has to agree with the tree in both directions: a run.ps1 suite with no
+  // entry is one the gate pays for with no reason recorded, and an entry for
+  // a file that starts no interpreter is an exception nobody needed.
+  //
+  // The gate's set is no longer the run.ps1 suites alone — Issue #1656 added
+  // the two setup.ps1 suites — so the run.ps1 half is asserted as a subset
+  // rather than as equality, and the reverse direction is checked against
+  // every PowerShell-driving suite in the tree.
+  const unnamed = (await runPs1Suites()).filter((file) =>
+    !IN_GATE_SCRIPT_SUITES.has(file)
+  );
   assertEquals(
-    [...IN_GATE_SCRIPT_SUITES.keys()].sort(),
-    await runPs1Suites(),
+    unnamed,
+    [],
+    "these drive run.ps1 and the gate runs them, but the manifest records " +
+      "no reason or cost for them:\n" + unnamed.join("\n"),
+  );
+
+  const suites = new Set(await powerShellSuites());
+  const phantom = [...IN_GATE_SCRIPT_SUITES.keys()].filter((file) =>
+    !suites.has(file)
+  );
+  assertEquals(
+    phantom,
+    [],
+    "named as PowerShell suites the gate runs, but they start no " +
+      "interpreter — drop the entry:\n" + phantom.join("\n"),
   );
 });
 
@@ -143,9 +164,11 @@ Deno.test("pwsh suites - a host without PowerShell fails the gate (Issue #1598)"
 });
 
 Deno.test("pwsh suites - every other one is placed deliberately (Issue #1598)", async () => {
-  // The `setup.ps1` suites stay out of the gate, and staying out is a
-  // decision with an owner rather than a default: a new PowerShell-driving
-  // suite fails here until it is put in one list or the other.
+  // Where a PowerShell suite runs is a decision with an owner rather than a
+  // default: a new one fails here until it is put in one list or the other.
+  // The `setup.ps1` suites are in the gate since Issue #1656 removed the
+  // environment leak that failed two of their cases inside the image; this
+  // asserts placement, not which list won.
   const inGate = new Set(IN_GATE_SCRIPT_SUITES.keys());
   const excluded = new Set(INTEGRATION_TEST_FILES);
   const unplaced = (await powerShellSuites()).filter((file) =>

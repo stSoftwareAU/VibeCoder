@@ -74,7 +74,6 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/container_entrypoint_test.ts",
   "tests/container_store_prune_test.ts",
   "tests/container_tools_env_test.ts",
-  "tests/host_config_path_test.ts",
   "tests/multi_provider_credentials_test.ts",
   "tests/next_release_tag_test.ts",
   "tests/secrets_mount_test.ts",
@@ -84,7 +83,6 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/setup_lockfile_test.ts",
   "tests/setup_provider_credential_flow_test.ts",
   "tests/setup_provider_env_parse_test.ts",
-  "tests/setup_ps1_test.ts",
   "tests/setup_token_transcript_cleanup_test.ts",
   "tests/setup_workdir_reminder_test.ts",
   "tests/volume_init_script_test.ts",
@@ -106,19 +104,25 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
  * Windows containment boundary — that prerequisite is now met wherever the
  * worker runs its gate, and #971's exclusion has outlived its reason.
  *
- * The three entries below cost about 97s of the gate on the image (76s, 15s
- * and 6s, measured serially inside the container at PowerShell 7.6.5). What
- * they buy is a verdict on `run.ps1` **before the push**, from the same gate
+ * The three `run.ps1` entries below cost about 97s of the gate on the image
+ * (76s, 15s and 6s, measured serially inside the container at PowerShell
+ * 7.6.5). What they buy is a verdict on `run.ps1` **before the push**, from the same gate
  * that decides everything else about the change. CI's cover was uneven:
  * `deno task test:run-mode` already ran two of them in the required
  * `validate (container)` / `validate (no-runtime)` legs, while
  * `launcher_egress_probe_test.ts` was only ever in the `integration tests`
  * job, which deliberately cannot block a merge.
  *
- * The `setup.ps1` suites stay excluded: nothing in this repository's
- * containment story turns on them being verified locally, and one of them
- * reads the ambient environment it inherits, so the image's own
- * `CONFIG_PATH` fails two of its cases inside the container (Issue #1656).
+ * The two `setup.ps1` suites joined them once the reason they could not was
+ * removed (Issue #1656). `setup_ps1_test.ts` inherited the caller's whole
+ * environment for two of its cases, so the image's own `CONFIG_PATH` failed
+ * them inside the container for a reason no change of theirs could affect;
+ * with the environment built rather than inherited, both suites are green in
+ * the image and cost 11s and 3s. What that buys is the Windows onboarding
+ * path — the drift Issue #672 was about — and the one rule this bug came
+ * from, `CONFIG_FILE` and `CONFIG_PATH` resolved identically by setup.sh,
+ * setup.ps1 and the resolver, verified before the push instead of only in
+ * CI's `integration tests` job, which deliberately cannot block a merge.
  *
  * An entry here is a **named exception with a reason**, exactly as
  * {@link SCRIPT_READING_UNIT_TESTS} is: the classifier claims these files,
@@ -145,6 +149,20 @@ export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
     "tests/launcher_egress_probe_test.ts",
     "holds run.ps1's egress probe to the same behaviour as run.sh's " +
     "wherever PowerShell is installed — 6s",
+  ],
+  [
+    "tests/setup_ps1_test.ts",
+    "drives setup.ps1, the Windows onboarding path, whose flags shipped " +
+    "on the bash side alone once already (Issue #672); it stopped " +
+    "inheriting the caller's config variables in Issue #1656, so the " +
+    "image's own CONFIG_PATH no longer fails it — 11s",
+  ],
+  [
+    "tests/host_config_path_test.ts",
+    "proves setup.sh, setup.ps1 and resolveHostConfigPath answer the " +
+    "CONFIG_FILE / CONFIG_PATH matrix identically — the rule Issue #1656 " +
+    "was found breaking — so a shell that drifts from the resolver fails " +
+    "here rather than on an operator's host — 3s",
   ],
 ]);
 

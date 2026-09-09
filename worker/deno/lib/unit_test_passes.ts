@@ -21,9 +21,10 @@
  * pass to the fast one and nothing else has to change. Both passes exclude
  * `INTEGRATION_TEST_FILES` (#907), which CI runs where the environment is
  * provisioned for them. The three `run.ps1` launcher suites are the named
- * exception (#1598): the image ships PowerShell 7 (#1596), so the gate's own
- * environment provides what they need and `IN_GATE_SCRIPT_SUITES` keeps them
- * in the passes rather than in the exclusion.
+ * exception (#1598), and the two `setup.ps1` suites joined them (#1656): the
+ * image ships PowerShell 7 (#1596), so the gate's own environment provides
+ * what they need and `IN_GATE_SCRIPT_SUITES` keeps them in the passes rather
+ * than in the exclusion.
  *
  * That exclusion used to be described here as what "keeps the 32 pre-existing
  * pwsh failures out of the verdict". There are no such failures to keep out,

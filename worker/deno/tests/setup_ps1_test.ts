@@ -25,6 +25,7 @@ import {
 } from "../lib/agent_provider.ts";
 import { resolvePowerShell } from "./support/pwsh.ts";
 import { exposed, withMkdirObserver } from "./support/mkdir_observer.ts";
+import { buildUntrustedCommandEnv } from "../lib/untrusted_command_env.ts";
 
 const SETUP_PS1 = new URL("../../../setup.ps1", import.meta.url).pathname;
 
@@ -525,6 +526,36 @@ pwshTest("setup.ps1 - dot-sourcing runs no setup step", async () => {
 // setup.sh alone, which is precisely the drift these tests exist to stop.
 // ===========================================================================
 
+/**
+ * The environment a `setup.ps1` CLI spawn runs with (Issue #1656).
+ *
+ * These cases run the script as a *file* rather than dot-sourcing it, so they
+ * need the caller's real toolchain — `deno` and its cache — instead of the
+ * sanitised `PATH` {@link runPwsh} hands the harness. They used to get it by
+ * inheriting the whole environment, which also brought the container's own
+ * `CONFIG_PATH` along: setup.ps1 rightly refuses a run where `CONFIG_FILE`
+ * and `CONFIG_PATH` name different files, so both cases died inside the image
+ * for a reason neither was about.
+ *
+ * So the environment is BUILT from the same allowlist every other
+ * repository-controlled spawn uses. It carries `PATH`, `HOME` and `DENO_DIR`
+ * and carries no config variable at all, which is why `CONFIG_FILE` is the
+ * only one the child sees.
+ *
+ * @param configFile the `.config.json` this spawn must read and write.
+ * @param source the environment to build from; injected by the case that
+ *   proves an ambient `CONFIG_PATH` cannot reach the child.
+ */
+function setupCliEnv(
+  configFile: string,
+  source: Record<string, string> = Deno.env.toObject(),
+): Record<string, string> {
+  return buildUntrustedCommandEnv({
+    source,
+    overrides: { CONFIG_FILE: configFile },
+  });
+}
+
 Deno.test({
   name: "setup.ps1 - declares the single-repo parameters (Issue #672)",
   ignore: PWSH === null,
@@ -584,7 +615,10 @@ Deno.test({
           SETUP_PS1,
           "-ListRepos",
         ],
-        env: { ...Deno.env.toObject(), CONFIG_FILE: configPath },
+        env: setupCliEnv(configPath),
+        // Built, not merged: without this the child inherits the caller's
+        // CONFIG_PATH on top of what was built for it.
+        clearEnv: true,
         stdout: "piped",
         stderr: "piped",
       }).output();
@@ -594,6 +628,55 @@ Deno.test({
       assertEquals(proc.code, 0, text);
       assertStringIncludes(text, "owner/alpha");
       assertStringIncludes(text, "owner/beta");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "setup.ps1 - -ListRepos ignores the caller's own CONFIG_PATH (Issue #1656)",
+  ignore: PWSH === null,
+  async fn() {
+    // The container exports CONFIG_PATH=/home/vibe/.vibe-coder/run-config/
+    // .config.json, so a case that inherited the caller's environment handed
+    // setup.ps1 two config variables naming different files and it exited 1 —
+    // a failure about the host, not about the flag under test. The ambient
+    // value is supplied here rather than depended on, so the guarantee holds
+    // on a host that exports nothing.
+    const dir = await Deno.makeTempDir({ prefix: "vibe-ps1-config-path-" });
+    try {
+      const configPath = `${dir}/.config.json`;
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify({
+          allowed_authors: ["nleck"],
+          repos: ["owner/gamma"],
+        }),
+      );
+
+      const proc = await new Deno.Command(PWSH!, {
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-File",
+          SETUP_PS1,
+          "-ListRepos",
+        ],
+        env: setupCliEnv(configPath, {
+          ...Deno.env.toObject(),
+          CONFIG_PATH: `${dir}/ambient/.config.json`,
+        }),
+        clearEnv: true,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+
+      const text = new TextDecoder().decode(proc.stdout) +
+        new TextDecoder().decode(proc.stderr);
+      assertEquals(proc.code, 0, text);
+      assertStringIncludes(text, "owner/gamma");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
@@ -620,7 +703,10 @@ Deno.test({
       const run = async (...args: string[]) => {
         const proc = await new Deno.Command(PWSH!, {
           args: ["-NoProfile", "-NonInteractive", "-File", SETUP_PS1, ...args],
-          env: { ...Deno.env.toObject(), CONFIG_FILE: configPath },
+          env: setupCliEnv(configPath),
+          // Built, not merged: without this the child inherits the caller's
+          // CONFIG_PATH on top of what was built for it.
+          clearEnv: true,
           stdout: "piped",
           stderr: "piped",
         }).output();

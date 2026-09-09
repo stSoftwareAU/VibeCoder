@@ -331,9 +331,12 @@ and its measured cost, and the gate runs them — about 97s for the Windows
 containment boundary being verified before the push rather than in a job that
 cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
 host without PowerShell rather than letting those suites report "ignored"
-while the gate reports green. The `setup.ps1` suites stay excluded. An entry
-there is an exception a change has to argue for, never a place to move a slow
-suite into.
+while the gate reports green. The two `setup.ps1` suites joined them in
+Issue #1656, once the environment leak that failed two of their cases inside
+the image was fixed — 11s and 3s for the Windows onboarding path and the one
+`CONFIG_FILE` / `CONFIG_PATH` rule, verified before the push. An entry there
+is an exception a change has to argue for, never a place to move a slow suite
+into.
 
 A test that **reads** a repository script without running it is a unit test,
 not an integration test — but the classifier still claims it, so it must be
@@ -404,8 +407,8 @@ bash linting is owned by each repo's own CI. See
 optional checks (`markdownlint-cli2`, `semgrep`).
 
 **A quality run executes the unit suite only** — no benchmarks, and no
-integration tests beyond the three `run.ps1` launcher suites
-`IN_GATE_SCRIPT_SUITES` names (Issue #1598). Its `deno test` stage is the two
+integration tests beyond the five script suites `IN_GATE_SCRIPT_SUITES`
+names (Issues #1598 and #1656). Its `deno test` stage is the two
 unit passes and nothing else: both of them ignore `INTEGRATION_TEST_FILES`
 (Issue #907), and no gate has ever run a benchmark. The sharded
 `validate (tests N/4)` legs run exactly the same two unit passes, built from

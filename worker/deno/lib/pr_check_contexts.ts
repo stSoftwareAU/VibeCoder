@@ -68,9 +68,10 @@ export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
       "the integration suites (PR #1170); they copy one of the repository's " +
       "own `.sh`/`.ps1` scripts into a temp tree and spawn `bash` or `pwsh`, " +
       "and requiring the job would gate every merge on the whole set — the " +
-      "cost #907 took out of the gate. The three `run.ps1` suites are the " +
+      "cost #907 took out of the gate. The PowerShell suites are the " +
       "exception and no longer run here: the image provisions their " +
-      "interpreter, so they moved into the required shards (Issue #1598). " +
+      "interpreter, so the `run.ps1` three moved into the required shards " +
+      "(Issue #1598) and the `setup.ps1` two followed (Issue #1656). " +
       "This job still runs on every PR and its result is still read; it just " +
       "cannot block one",
   },
