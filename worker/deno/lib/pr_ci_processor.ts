@@ -43,6 +43,7 @@ import {
   type QualityGateRunResult,
   runQualityGateCheck,
 } from "./quality_gate_phase.ts";
+import { guardGatedHead } from "./gated_head_guard.ts";
 import {
   preparePrBranch,
   readPrResponseMessage,
@@ -634,6 +635,32 @@ async function _processCiWithHeartbeat(
     count: annotations.length,
     retryCount: newRetryCount,
   });
+
+  // Issue #1679: a head under a ruleset that refuses direct pushes can never
+  // receive this pass's commits. Standing down here — before the checkout and
+  // before `recordCiCheckRetry` below — means the GH013 refusal spends no
+  // retry, so the budget survives for a failure the pass can actually fix.
+  const pushGate = await guardGatedHead({
+    repo,
+    prNumber,
+    branchName: input.branchName,
+    pass: "CI fix",
+    logger,
+    runGhCommand: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+  });
+  if (pushGate.gated) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: 0,
+        retryCount: newRetryCount - 1,
+        summary:
+          `PR head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
+      },
+    };
+  }
 
   // Checkout the PR branch before running Claude (Issue #1455).
   // Shell work_on_ci_failure did this; the Deno migration missed it, which

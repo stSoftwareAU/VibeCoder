@@ -37,6 +37,7 @@ import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildMergeConflictPrompt } from "./prompt_builder.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
+import { guardGatedHead } from "./gated_head_guard.ts";
 import {
   preparePrBranch,
   readPrResponseMessage,
@@ -731,6 +732,30 @@ async function resolveConflict(
   } = processorDeps;
   const run = deps.git.runGitCommand;
   const attemptNumber = input.attemptCount + 1;
+
+  // Issue #1679: a head under a ruleset that refuses direct pushes can never
+  // receive the resolved merge — the push is declined with GH013. Stand down
+  // before the attempt is opened below, so the refusal spends no attempt.
+  const pushGate = await guardGatedHead({
+    repo,
+    prNumber,
+    branchName,
+    pass: "Merge-conflict resolution",
+    logger,
+    runGhCommand: deps.github.runGhCommand,
+  });
+  if (pushGate.gated) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        merged: false,
+        escalated: false,
+        summary:
+          `PR #${prNumber} head '${branchName}' refuses direct pushes — ${pushGate.detail}`,
+      },
+    };
+  }
 
   // Check out the PR branch. A branch that no longer exists on origin means
   // the PR closed or merged since the scan listed it — nothing to do.

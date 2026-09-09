@@ -26,6 +26,7 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
+import { guardGatedHead } from "./gated_head_guard.ts";
 import {
   formatVerifiedPushSuffix,
   type PushVerification,
@@ -272,6 +273,31 @@ async function _processSpellingWithHeartbeat(
   const annotationDetails = formatAnnotations(annotations);
 
   logger.info("Decoded annotations", { count: annotations.length });
+
+  // Issue #1679: a head under a ruleset that refuses direct pushes can never
+  // receive this pass's commits — the push is declined with GH013, once per
+  // run, for as long as the PR is open. Stand down before the branch is
+  // checked out, so no agent run and no push is spent on it.
+  const pushGate = await guardGatedHead({
+    repo,
+    prNumber,
+    branchName: input.branchName,
+    pass: "Spelling fix",
+    logger,
+    runGhCommand: deps.github.runGhCommand,
+  });
+  if (pushGate.gated) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: 0,
+        summary:
+          `PR head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
+      },
+    };
+  }
 
   // Checkout the PR branch before running Claude (Issue #1458).
   // Shell work_on_spelling_failure did this; the Deno migration missed it,
