@@ -237,6 +237,13 @@ export type ConflictSkipReason =
   /** Another host holds the cross-host PR lock. */
   | { kind: "lock-held"; lockHolder: string }
   /**
+   * The PR is no longer open, or its live state could not be read at the
+   * claim point (Issue #1774). The queue is built from a listing up to ten
+   * minutes old; `UNKNOWN` skips this cycle rather than guessing "open",
+   * so nothing is written to a PR whose state we could not confirm.
+   */
+  | { kind: "pr-not-open"; state: "CLOSED" | "MERGED" | "UNKNOWN" }
+  /**
    * An issue slot holds the repository's shared clone (Issue #213).
    * `deferralStreak` is the consecutive passes that have now deferred this PR
    * without attempting it (Issue #1111), absent when no cursor is kept.
@@ -281,6 +288,7 @@ const CONFLICT_SKIP_REASON_KIND_SET: Record<ConflictSkipReasonKind, true> = {
   "cooldown": true,
   "disrupted-bound": true,
   "lock-held": true,
+  "pr-not-open": true,
   "repo-leased": true,
   "deferred-bound": true,
   "queue-empty": true,
@@ -344,6 +352,7 @@ export function isQueuedConflictReason(kind: ConflictSkipReasonKind): boolean {
     case "cooldown":
     case "disrupted-bound":
     case "lock-held":
+    case "pr-not-open":
     case "repo-leased":
     // Issue #1111: a PR the deadline or the cap left behind is queued and
     // labelled, unlike the pass-level stop of the same name.
@@ -402,6 +411,8 @@ export function conflictReasonOperands(
       };
     case "lock-held":
       return { lockHolder: reason.lockHolder };
+    case "pr-not-open":
+      return { state: reason.state };
     case "repo-leased":
       return reason.deferralStreak !== undefined
         ? { deferralStreak: reason.deferralStreak }

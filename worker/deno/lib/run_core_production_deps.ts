@@ -88,6 +88,7 @@ import {
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
 import { clearCommentCache } from "./comment_cache.ts";
@@ -2149,6 +2150,11 @@ export async function createProductionRunCoreDeps(
         // merge, so this pass and an issue slot never write one tree.
         acquireLease: (conflict) =>
           acquireMaintenanceRepoLease(conflict.repo, conflict.prNumber),
+        // Issue #1774: the queue comes from a listing up to ten minutes old,
+        // so the live state is re-read before the clone, the agent and the
+        // merge push.
+        prLiveState: (conflict) =>
+          readPrLiveState(conflict.repo, conflict.prNumber, runGhCommand),
         resolve: async (conflict, budget) => {
           const repoSetupResult = await setupRepo(conflict.repo, workDir);
           if (!repoSetupResult.success) {
@@ -2446,6 +2452,10 @@ export async function createProductionRunCoreDeps(
             undefined,
             refreshOpenPrs,
           ),
+        // Issue #1774: a PR closed since the cached listing receives no
+        // merge attempt — and an unreadable state is never assumed open.
+        prLiveState: (repo, pr) =>
+          readPrLiveState(repo, pr.number, runGhCommand),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,
@@ -2488,6 +2498,8 @@ export async function createProductionRunCoreDeps(
       logger.info("Auto-merge sweep complete", {
         repos: sweep.value.reposVisited.length,
         prsAttempted: sweep.value.prsAttempted,
+        // Issue #1774: PRs the live-state re-read stood the sweep down on.
+        prsSkippedNotOpen: sweep.value.prsSkippedNotOpen,
         // Issue #1136: name the repos that offered nothing, and which pass
         // this was, so "swept and found nothing" is legible in the log.
         reposWithNoCandidates: sweep.value.reposWithNoCandidates.join(", ") ||

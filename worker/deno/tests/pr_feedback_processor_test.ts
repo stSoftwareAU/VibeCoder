@@ -33,6 +33,7 @@ import {
   heartbeatStrays,
   trackHeartbeatDirs,
 } from "./support/heartbeat_placement.ts";
+import { isPrStateRead, openPrGh } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -153,7 +154,7 @@ Deno.test("processPrFeedback - succeeds with mock Claude output", async () => {
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
   const deps = createMockDeps({
     claude: mockClaude,
@@ -264,6 +265,8 @@ Deno.test("processPrFeedback - skips processing when claim lost to another worke
   let apiCallCount = 0;
   const mockGithub: Partial<GitHubDeps> = {
     runGhCommand: (args: string[]) => {
+      // Issue #1774: the claim-point live-state read — this PR is open.
+      if (isPrStateRead(args)) return Promise.resolve("OPEN");
       if (args[0] === "api" && !args.includes("-X")) {
         const endpoint = String(args[1]);
         if (endpoint.includes("/comments")) {
@@ -316,6 +319,8 @@ Deno.test("processPrFeedback - proceeds when claim won", async () => {
   };
   const mockGithub: Partial<GitHubDeps> = {
     runGhCommand: (args: string[]) => {
+      // Issue #1774: the claim-point live-state read — this PR is open.
+      if (isPrStateRead(args)) return Promise.resolve("OPEN");
       if (args[0] === "api" && !args.includes("-X")) {
         const endpoint = String(args[1]);
         if (endpoint.includes("/comments")) {
@@ -372,7 +377,7 @@ Deno.test("processPrFeedback - works without workerId (backward compatible)", as
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
   const deps = createMockDeps({
     claude: mockClaude,
@@ -423,7 +428,7 @@ Deno.test("processPrFeedback - starts and stops heartbeat during processing", as
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
   const deps = createMockDeps({
     claude: mockClaude,
@@ -489,7 +494,7 @@ Deno.test("processPrFeedback - the heartbeat state lands in the work root, not t
     };
     const deps = createMockDeps({
       claude: mockClaude,
-      github: { runGhCommand: () => Promise.resolve("") },
+      github: { runGhCommand: openPrGh() },
       git: {
         commitAndPushPending: (() =>
           Promise.resolve({
@@ -546,7 +551,7 @@ Deno.test("processPrFeedback - stops heartbeat even when Claude fails", async ()
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
   const deps = createMockDeps({
     claude: mockClaude,
@@ -597,7 +602,7 @@ Deno.test("processPrFeedback - reports no changes when Claude output empty", asy
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
   const deps = createMockDeps({ claude: mockClaude, github: mockGithub });
 
@@ -634,7 +639,7 @@ Deno.test("processPrFeedback - passes workDir as cwd to Claude invocation", asyn
     }) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
   const deps = createMockDeps({
     claude: mockClaude,
@@ -735,7 +740,7 @@ Deno.test("processPrFeedback - pushes commits after Claude makes changes (Issue 
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
 
   const deps = createMockDeps({
@@ -806,7 +811,7 @@ Deno.test("processPrFeedback - checks out PR branch before running Claude (Issue
       }) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -894,6 +899,8 @@ Deno.test("processPrFeedback - uses .pr_response_message as comment body when pr
     };
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
+        // Issue #1774: the claim-point live-state read — this PR is open.
+        if (isPrStateRead(args)) return Promise.resolve("OPEN");
         if (args[0] === "pr" && args[1] === "comment") {
           const bodyIdx = args.indexOf("--body");
           if (bodyIdx >= 0) {
@@ -961,6 +968,8 @@ Deno.test("processPrFeedback - falls back to default message when .pr_response_m
     };
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
+        // Issue #1774: the claim-point live-state read — this PR is open.
+        if (isPrStateRead(args)) return Promise.resolve("OPEN");
         if (args[0] === "pr" && args[1] === "comment") {
           const bodyIdx = args.indexOf("--body");
           if (bodyIdx >= 0) {
@@ -1025,6 +1034,8 @@ Deno.test("processPrFeedback - reports push failure accurately (Issue #1458)", a
   };
   const mockGithub: Partial<GitHubDeps> = {
     runGhCommand: (args: string[]) => {
+      // Issue #1774: the claim-point live-state read — this PR is open.
+      if (isPrStateRead(args)) return Promise.resolve("OPEN");
       const bodyIdx = args.indexOf("--body");
       if (bodyIdx >= 0 && args[bodyIdx + 1]) {
         commentBody = args[bodyIdx + 1]!;
@@ -1094,7 +1105,7 @@ Deno.test("processPrFeedback - reports no changes when Claude does nothing (Issu
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
 
   const deps = createMockDeps({
@@ -1157,6 +1168,8 @@ Deno.test("processPrFeedback - a local commit with a failed push never claims su
   };
   const mockGithub: Partial<GitHubDeps> = {
     runGhCommand: (args: string[]) => {
+      // Issue #1774: the claim-point live-state read — this PR is open.
+      if (isPrStateRead(args)) return Promise.resolve("OPEN");
       const bodyIdx = args.indexOf("--body");
       if (bodyIdx >= 0 && args[bodyIdx + 1]) commentBody = args[bodyIdx + 1]!;
       return Promise.resolve("");
@@ -1217,6 +1230,8 @@ Deno.test("processPrFeedback - a push the remote does not confirm is reported, n
   };
   const mockGithub: Partial<GitHubDeps> = {
     runGhCommand: (args: string[]) => {
+      // Issue #1774: the claim-point live-state read — this PR is open.
+      if (isPrStateRead(args)) return Promise.resolve("OPEN");
       const bodyIdx = args.indexOf("--body");
       if (bodyIdx >= 0 && args[bodyIdx + 1]) commentBody = args[bodyIdx + 1]!;
       return Promise.resolve("");
@@ -1273,6 +1288,8 @@ Deno.test("processPrFeedback - a verified push claims success and names the SHA 
   };
   const mockGithub: Partial<GitHubDeps> = {
     runGhCommand: (args: string[]) => {
+      // Issue #1774: the claim-point live-state read — this PR is open.
+      if (isPrStateRead(args)) return Promise.resolve("OPEN");
       const bodyIdx = args.indexOf("--body");
       if (bodyIdx >= 0 && args[bodyIdx + 1]) commentBody = args[bodyIdx + 1]!;
       return Promise.resolve("");
@@ -1341,7 +1358,7 @@ Deno.test("processPrFeedback - injects the clone's CLAUDE.md into the prompt (Is
           });
         }) as unknown as ClaudeDeps["runClaudeWithRetry"],
       },
-      github: { runGhCommand: () => Promise.resolve("") },
+      github: { runGhCommand: openPrGh() },
       git: {
         commitAndPushPending: (() =>
           Promise.resolve({
@@ -1390,7 +1407,7 @@ Deno.test("processPrFeedback - warns when the checkout directory is missing (Iss
           value: { output: "Fixed the issue", exitCode: 0, timedOut: false },
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     },
-    github: { runGhCommand: () => Promise.resolve("") },
+    github: { runGhCommand: openPrGh() },
     git: {
       commitAndPushPending: (() =>
         Promise.resolve({
@@ -1420,5 +1437,146 @@ Deno.test("processPrFeedback - warns when the checkout directory is missing (Iss
     warnings.some((w) => w.includes("Repo context directory does not exist")),
     true,
     `expected a missing-directory warning, got: ${warnings.join(" | ")}`,
+  );
+});
+
+// ============================================================================
+// Issue #1774 — the cached listing is not proof the PR is still open
+// ============================================================================
+
+/**
+ * A `gh` stub that answers the claim-point state read with `state` and
+ * records every call, so a write to a dead PR is visible.
+ */
+function makeStateGh(
+  calls: string[][],
+  state: string,
+): GitHubDeps["runGhCommand"] {
+  return (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (isPrStateRead(args)) return Promise.resolve(state);
+    return Promise.resolve("");
+  };
+}
+
+/** Every gh call that writes to a PR — a comment, a label, a reaction. */
+function feedbackWriteCalls(calls: readonly string[][]): string[][] {
+  return calls.filter((args) =>
+    args.includes("--body") || args.includes("--add-label") ||
+    args.includes("--remove-label") ||
+    (args[0] === "api" && args.includes("-X"))
+  );
+}
+
+Deno.test("processPrFeedback - a PR closed since the cached listing gets no push, comment or label (Issue #1774)", async () => {
+  const ghCalls: string[][] = [];
+  let claudeRuns = 0;
+  let pushes = 0;
+  const deps = createMockDeps({
+    github: { runGhCommand: makeStateGh(ghCalls, "CLOSED") },
+    claude: {
+      runClaudeWithRetry: (() => {
+        claudeRuns++;
+        return Promise.resolve({
+          ok: true,
+          value: { output: "fixed", exitCode: 0, timedOut: false },
+        });
+      }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    },
+    git: {
+      commitAndPushPending: (() => {
+        pushes++;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        });
+      }) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+  const messages: string[] = [];
+  const logger = makeSilentLogger();
+  logger.info = (message: string) => {
+    messages.push(message);
+  };
+
+  const result = await processPrFeedback(makeInput({ prNumber: 1732 }), {
+    promptsDir: PROMPTS_DIR,
+    logger,
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    workerId: "test-host-abcdef",
+    claimAuthorOptions: FLEET_OPTIONS,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.processed, false);
+    assertEquals(result.value.changesPushed, false);
+    assertStringIncludes(result.value.summary, "skipped: PR closed");
+  }
+  assertEquals(claudeRuns, 0, "no agent runs against a closed PR");
+  assertEquals(pushes, 0, "no push lands on a closed PR");
+  assertEquals(
+    feedbackWriteCalls(ghCalls),
+    [],
+    `a closed PR must receive no claim comment or reply; got ${
+      JSON.stringify(feedbackWriteCalls(ghCalls))
+    }`,
+  );
+  assertEquals(
+    messages.some((m) => m.includes("skipped: PR closed")),
+    true,
+    `expected the skip line; got: ${messages.join(" | ")}`,
+  );
+});
+
+Deno.test("processPrFeedback - an unreadable PR state skips the cycle, never claims (Issue #1774)", async () => {
+  const ghCalls: string[][] = [];
+  let claudeRuns = 0;
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: ((args: string[]) => {
+        ghCalls.push(args);
+        return isPrStateRead(args)
+          ? Promise.reject(new Error("gh: connection reset"))
+          : Promise.resolve("");
+      }) as GitHubDeps["runGhCommand"],
+    },
+    claude: {
+      runClaudeWithRetry: (() => {
+        claudeRuns++;
+        return Promise.resolve({
+          ok: true,
+          value: { output: "fixed", exitCode: 0, timedOut: false },
+        });
+      }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    },
+  });
+
+  const result = await processPrFeedback(makeInput(), {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    workerId: "test-host-abcdef",
+    claimAuthorOptions: FLEET_OPTIONS,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.processed, false);
+    assertStringIncludes(result.value.summary, "skipped: PR state unknown");
+  }
+  assertEquals(claudeRuns, 0, "unknown is never treated as open");
+  assertEquals(
+    feedbackWriteCalls(ghCalls),
+    [],
+    "an unreadable state must produce no claim comment",
   );
 });

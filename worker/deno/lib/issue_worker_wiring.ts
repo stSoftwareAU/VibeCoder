@@ -738,7 +738,13 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         },
       })
     ),
-    runGhCommand: () => Promise.resolve(""),
+    // Issue #1774: every PR pass re-reads live PR state before its first
+    // write. A mock fleet's PRs are open, so the default answers that one
+    // read; a test that wants a closed PR overrides `runGhCommand` itself.
+    runGhCommand: (args: string[]) =>
+      args[0] === "pr" && args[1] === "view" && args.includes("state")
+        ? Promise.resolve("OPEN")
+        : Promise.resolve(""),
     ensureLabelExists: mockFn<GitHubDeps["ensureLabelExists"]>(() =>
       Promise.resolve({ ok: true, value: undefined })
     ),

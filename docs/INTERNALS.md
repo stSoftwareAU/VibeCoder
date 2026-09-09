@@ -1666,6 +1666,35 @@ Every worker sharing the same GitHub account sees the same set of open PRs.
 The discovery scan iterates through all configured repositories (shuffled for
 fairness).
 
+### 🔎 Live PR state at the claim point (`pr_live_state.ts`, Issue #1774)
+
+That listing is cached for ten minutes (`issue_cache.ts`), so a PR closed after
+it was taken still looks open to every pass that reads it — the only freshness
+check any of them made was "does the head branch still exist on origin".
+VibeCoder#1732 was closed as superseded and, eight minutes later, the CI-fix
+pass claimed it from the cached listing and started writing to it. All four PR
+passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge**
+— therefore call `readPrLiveState(repo, prNumber, gh)` at their claim point,
+before the first write: one `gh pr view --json state`, no cache. A `CLOSED` or
+`MERGED` PR is skipped with `skipped: PR closed` / `skipped: PR merged` naming
+the repo and the number, and no push, comment or label follows. An unreadable
+state is **never** treated as open: it logs `skipped: PR state unknown` at WARN
+and skips the PR for this cycle only — no CI retry is recorded, no conflict
+attempt is opened and no merge is tried, so the next scan gets the PR back with
+its budget intact. The listing cache is unchanged; the cost is one round trip on
+the path that was about to spend an agent run.
+
+```mermaid
+flowchart LR
+    L["🗂️ Cached listing<br/>(≤10 min old)"] --> V{"🔎 gh pr view<br/>--json state"}
+    V -->|OPEN| W["✍️ Claim: lock, comment,<br/>agent, push"]
+    V -->|CLOSED / MERGED| S["⏭️ skipped: PR closed/merged"]
+    V -->|unreadable| U["⚠️ skipped: PR state unknown<br/>(retry next cycle, budget intact)"]
+    style W fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#adb5bd,stroke:#6c757d,color:#000
+    style U fill:#e9c46a,stroke:#b08968,color:#000
+```
+
 ### ⏱️ Timeout wrappers (`worker/deno/lib/gh_wrapper.ts`, `worker/deno/lib/git_timeout.ts`)
 
 All GitHub CLI and git operations are wrapped with configurable timeouts to
