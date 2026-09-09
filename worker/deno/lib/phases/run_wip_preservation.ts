@@ -28,6 +28,7 @@ import {
   type PreservedWip,
 } from "../preserved_wip_branch.ts";
 import { writeHandoverNote } from "../handover_note.ts";
+import { parsePorcelainPaths } from "../pending_work.ts";
 
 /** What preservation found and did. */
 export interface PreservedRunWip {
@@ -100,64 +101,7 @@ async function listDirtyFiles(
     );
     return null;
   }
-  return statusResult.value.stdout.split("\n")
-    .filter((line) => line.trim().length > 0)
-    // Porcelain v1: two status columns, a space, then the path. A rename
-    // reads `R  old -> new`; the new path is the one that matters.
-    .map((line) => line.slice(3).trim())
-    .map((path) => path.split(" -> ").pop() ?? path)
-    .map(decodePorcelainPath)
-    .filter((path) => path.length > 0);
-}
-
-/** The one-character escapes git's C-style quoting emits. */
-const C_QUOTE_ESCAPES: Record<string, number> = {
-  n: 0x0a,
-  t: 0x09,
-  r: 0x0d,
-  f: 0x0c,
-  b: 0x08,
-  v: 0x0b,
-  a: 0x07,
-  '"': 0x22,
-  "\\": 0x5c,
-};
-
-/**
- * Undo git's C-style quoting of a porcelain path, so a path with a space or a
- * non-ASCII character reads as itself in the handover note rather than as its
- * escape sequence.
- *
- * Git quotes each non-ASCII *byte* as a three-digit octal escape, so the
- * escapes are decoded to bytes and the bytes decoded as UTF-8 — `JSON.parse`
- * cannot do this, because `\303` is not a JSON escape.
- */
-function decodePorcelainPath(path: string): string {
-  if (!path.startsWith('"') || !path.endsWith('"')) return path;
-  const body = path.slice(1, -1);
-  const encoder = new TextEncoder();
-  const bytes: number[] = [];
-  for (let i = 0; i < body.length; i++) {
-    if (body[i] !== "\\") {
-      bytes.push(...encoder.encode(body[i]));
-      continue;
-    }
-    const next = body[++i];
-    if (next === undefined) break;
-    const simple = C_QUOTE_ESCAPES[next];
-    if (simple !== undefined) {
-      bytes.push(simple);
-      continue;
-    }
-    const octal = body.slice(i, i + 3);
-    if (/^[0-7]{3}$/.test(octal)) {
-      bytes.push(parseInt(octal, 8));
-      i += 2;
-      continue;
-    }
-    bytes.push(...encoder.encode(next));
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
+  return parsePorcelainPaths(statusResult.value.stdout);
 }
 
 /**

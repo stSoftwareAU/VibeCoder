@@ -935,6 +935,17 @@
       "paths": [
         "worker/deno/lib/gated_head_guard.ts"
       ]
+    },
+    {
+      "issue": 1684,
+      "chunk": "12m",
+      "title": "top-up: the pending working-tree helpers added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1684-pending-work.md",
+      "definition": "modules added to lib/ after 12a-12l recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/pending_work.ts"
+      ]
     }
   ]
 }
