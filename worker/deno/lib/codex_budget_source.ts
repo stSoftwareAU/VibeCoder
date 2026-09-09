@@ -53,6 +53,10 @@
  *   it cannot be converted back to an instant. This module therefore records
  *   the exhaustion and its kind and leaves the reset **unknown** rather than
  *   guessing a timezone — see {@link parseCodexExhaustion}.
+ * - **There is no retry-after for a caller to read.** `CodexErr` carries a
+ *   `retry_delay: Option<Duration>`, but it drives the CLI's *own* retry loop
+ *   and is never serialised: `ThreadErrorEvent`, the only error shape `--json`
+ *   emits, is `{ message: String }` and nothing else.
  *
  * ## What was rejected, and why
  *
