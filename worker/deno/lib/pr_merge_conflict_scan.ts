@@ -1098,6 +1098,9 @@ export async function findConflictingPr(
         gh: ghCommandFn,
         logger,
         trustedAuthors,
+        // The rung hands an issue it may not re-queue to a human, so it
+        // needs the configured escalation label, not a second literal.
+        needsHumanLabel,
       }));
 
   /**

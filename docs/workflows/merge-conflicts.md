@@ -28,10 +28,11 @@ off the current base; and only when that is declined or fails does the worker
 escalate with `needs-human` and a conflict summary. Where the issue's pickup
 label is one only a human may apply, the PR is still closed and the issue still
 reopened — it rests at `needs-human` naming the label to re-apply, rather than
-re-queued (Issue #1773). One restart per originating issue: if the fresh PR conflicts irreconcilably too, that is a human's call
-rather than another lap. A PR whose originating issue cannot be found never
-reaches the third rung at all — closing what the fleet cannot re-raise would
-lose the work — so it falls straight through to a human.
+re-queued (Issue #1773). One restart per originating issue: if the fresh PR
+conflicts irreconcilably too, that is a human's call rather than another lap. A
+PR whose originating issue cannot be found never reaches the third rung at
+all — closing what the fleet cannot re-raise would lose the work — so it falls
+straight through to a human.
 
 Every attempt ends visibly: merged, failed, or escalated. An attempt that
 opened and then went silent was disrupted, not judged — it does not spend the
@@ -103,6 +104,7 @@ flowchart TD
     style Abort fill:#707070,stroke:,color:#fff
     style Abandon fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Restart fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style Unlabelled fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
     style Human fill:#c96868,stroke:#7a2020,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
@@ -353,20 +355,23 @@ originating issue, and the pipeline raises a fresh PR off the current base.
   and linked from the abandon comment. A regenerated branch force-pushed over
   the same PR would destroy its commits and its review history — the same class
   of harm as the side-picking the contract forbids.
-- **Four preconditions run before anything is destroyed**, in this order: the
+- **Three preconditions run before anything is destroyed**, in this order: the
   PR's originating issue is known; that issue has not already been restarted;
-  it has no *other* open PR of its own; and it can be re-queued *by the
-  worker* — it carries the work label already, or the worker is permitted to
-  apply one. A failed lookup is never read as an absence.
+  and it has no *other* open PR of its own. A failed lookup is never read as
+  an absence. A fourth check decides *who* re-queues the issue, not whether
+  the abandon happens.
 - **A pickup label the worker may not apply no longer stops the rung**
   (Issue #1773). `work-on` on an existing issue is refused by
   `worker_label_guard.ts` and stripped by the discovery collectors, so the
   worker cannot re-queue that issue itself — but the abandon still runs: the
-  PR is closed, the issue is reopened, it is labelled `needs-human`, and the
-  restart comment says **re-apply `<label>` to re-queue this issue**. The
-  outcome is `abandoned-unlabelled`, which spends the one restart exactly as a
-  plain abandon does, and no `needs-human` goes on the closed PR. Before
-  #1773 this declined, and nothing was redone.
+  PR is closed, the issue is reopened, and it is handed to a human through
+  `escalateToHuman` (the one sanctioned path to `needs-human`, which creates
+  the label if the repo has never used it). Both comments then say **remove
+  `needs-human` and re-apply `<label>`** — both halves, because `needs-human`
+  blocks discovery on its own, so naming only the pickup label would promise a
+  re-queue that cannot happen. The outcome is `abandoned-unlabelled`, which
+  spends the one restart exactly as a plain abandon does, and no `needs-human`
+  goes on the closed PR. Before #1773 this declined, and nothing was redone.
 - **No originating issue, no abandon.** Closing a PR the fleet cannot re-raise
   loses the work outright, so that PR is left open and goes to a human instead
   — the fall-through the flowchart above shows.

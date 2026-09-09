@@ -78,6 +78,7 @@ import {
   abandonAndRestart,
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
+  DEFAULT_NEEDS_HUMAN_LABEL,
   describeExhaustedRoute,
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
@@ -1577,6 +1578,9 @@ async function failAttempt(
         gh: deps.github.runGhCommand,
         logger,
         trustedAuthors: processorDeps.trustedAuthors ?? [],
+        // Same configured label the escalation below would use.
+        needsHumanLabel: processorDeps.needsHumanLabel ??
+          DEFAULT_NEEDS_HUMAN_LABEL,
       })))({
       repo,
       prNumber,
