@@ -1,9 +1,9 @@
 /**
  * Tests for the dependency-bump phase orchestrator (Issue #1613).
  *
- * Verifies the three scenarios called out in the issue's acceptance
- * criteria, exercised through `workOnIssueBumpDeps` with an injected
- * `BumpDepsDeps` stub:
+ * Verifies the scenarios called out in the issue's acceptance criteria,
+ * exercised through `workOnIssueBumpDeps` with an injected `BumpDepsDeps`
+ * stub:
  *   1. Script absent — phase is a no-op, behaves as before.
  *   2. Script present + clean bump — `state.bumpInfo` records the
  *      applied bump.
@@ -12,7 +12,9 @@
  *
  * Plus environment-variable propagation — the phase reads
  * `GH_TOKEN_HAS_WORKFLOW_SCOPE` and `VIBE_BUMP_QUARANTINE_HOURS` from
- * the parent process and threads them into the script's environment.
+ * the parent process and threads them into the script's environment — and
+ * the milestone-child skip (Issue #1775): a run whose PR targets a
+ * milestone branch never invokes the script.
  *
  * Australian English used throughout (behaviour, organisation, etc.).
  */
@@ -823,7 +825,7 @@ Deno.test(
 );
 
 // =============================================================================
-// Scenario 5 — milestone child run skips the bump (Issue #1775)
+// Milestone child run skips the bump (Issue #1775)
 // =============================================================================
 
 Deno.test(
@@ -857,7 +859,11 @@ Deno.test(
     assertEquals(state.bumpInfo?.status, "skipped_milestone_child");
     assertEquals(state.bumpInfo?.files, []);
     assertEquals(runScriptCalled, false, "must not run bump-deps.sh");
-    assertEquals(fileExistsCalled, false, "must not even look for the script");
+    assertEquals(
+      fileExistsCalled,
+      true,
+      "the skip is claimed only for a repo that actually has a script",
+    );
   },
 );
 
@@ -921,5 +927,30 @@ Deno.test(
 
     assertEquals(runScriptCalled, true, "default-branch runs still bump");
     assertEquals(state.bumpInfo?.status, "applied");
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - milestone child with no script reports absent, not skipped",
+  async () => {
+    const ctx = makeContext();
+    const state = makeState({ milestoneBranch: "milestone/1730-sync" });
+    let runScriptCalled = false;
+    const bumpDeps = makeBumpDeps({
+      fileExists: () => Promise.resolve(false),
+      runScript: () => {
+        runScriptCalled = true;
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+    });
+
+    await workOnIssueBumpDeps(ctx, state, createMockDeps(), bumpDeps);
+
+    assertEquals(
+      state.bumpInfo?.status,
+      "absent",
+      "a repo with no bump script has no bump to claim it skipped",
+    );
+    assertEquals(runScriptCalled, false);
   },
 );

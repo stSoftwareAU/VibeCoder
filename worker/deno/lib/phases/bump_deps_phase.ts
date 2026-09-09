@@ -30,6 +30,7 @@ import {
   BUMP_OUTPUT_TAIL_LINES,
   type BumpDepsDeps,
   type BumpInfo,
+  bumpScriptPath,
   DEFAULT_BUMP_QUARANTINE_HOURS,
   DEFAULT_BUMP_SCRIPT_NAME,
   runBumpDeps,
@@ -439,7 +440,14 @@ export async function workOnIssueBumpDeps(
   // well only rewrites those lines a second time, handing every child PR a
   // conflict against the sync for no new dependency versions. Skip the script
   // entirely and record why, so the PR says it was deliberate.
-  if (state.milestoneBranch) {
+  //
+  // Only when the repo actually has a script: a repo without one has no bump
+  // to suppress, and a PR body claiming a skip there would assert something
+  // that never happened. That case falls through to the `absent` path below.
+  if (
+    state.milestoneBranch &&
+    await bumpDeps.fileExists(bumpScriptPath(state.repoPath))
+  ) {
     deps.logger.info(
       "bump-deps: skipped — this run's PR targets a milestone branch",
       { milestoneBranch: state.milestoneBranch },

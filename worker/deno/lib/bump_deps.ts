@@ -170,6 +170,18 @@ export interface BumpDepsDeps {
 /** Default name of the per-repo bump script. */
 export const DEFAULT_BUMP_SCRIPT_NAME = "bump-deps.sh";
 
+/**
+ * Absolute path to a repo's bump script. One source of truth so a caller
+ * asking "does this repo have a bump script?" looks where `runBumpDeps`
+ * looks (Issue #1775).
+ */
+export function bumpScriptPath(
+  repoPath: string,
+  scriptName: string = DEFAULT_BUMP_SCRIPT_NAME,
+): string {
+  return `${repoPath}/${scriptName}`;
+}
+
 /** Default quarantine window in hours. */
 export const DEFAULT_BUMP_QUARANTINE_HOURS = 24;
 
@@ -282,9 +294,9 @@ export const MILESTONE_CHILD_BUMP_NOTE =
 /**
  * Build the PR-body note for a skipped bump (Issue #1775).
  *
- * Returns a markdown section for `skipped_milestone_child` and an empty
- * string for every other status (including no bump phase at all), so the
- * caller can append it unconditionally.
+ * Returns the note as its own paragraph for `skipped_milestone_child` and
+ * an empty string for every other status (including no bump phase at all),
+ * so the caller can append it unconditionally.
  *
  * @param info - The bump outcome, or `undefined` when the phase never ran.
  */
@@ -311,7 +323,7 @@ export async function runBumpDeps(
   deps: BumpDepsDeps,
 ): Promise<BumpInfo> {
   const scriptName = params.scriptName ?? DEFAULT_BUMP_SCRIPT_NAME;
-  const scriptPath = `${params.repoPath}/${scriptName}`;
+  const scriptPath = bumpScriptPath(params.repoPath, scriptName);
   const quarantineHours = params.quarantineHours ??
     DEFAULT_BUMP_QUARANTINE_HOURS;
 
