@@ -56,8 +56,15 @@
  * Selection happens **once per worker-process start** and the chosen token
  * serves the whole run: {@link createClaudeBudgetTokenSelector} remembers the
  * decision per provider, so a second call issues no further requests and
- * re-decides nothing. Mid-run exhaustion keeps today's failure behaviour; the
- * next process start reselects.
+ * re-decides nothing.
+ *
+ * Worker start now reaches these rules through `claude_credential_pool.ts`
+ * (Issue #1668), which keeps the probe results as snapshots so a later
+ * selection re-measures only what has gone stale.
+ * {@link rankClaudeTokenBudgets} and {@link formatClaudeTokenSelectionLog} are
+ * the rule both surfaces share; {@link createClaudeBudgetTokenSelector} stays
+ * as the standalone once-per-start selector for a caller that wants nothing
+ * more than that.
  *
  * With fewer than two pool candidates there is nothing to choose between, so
  * **no request is made at all** and selection falls straight through to
@@ -92,6 +99,7 @@ import {
   probeClaudeTokenBudget,
 } from "./claude_token_budget.ts";
 import {
+  providerPoolCandidates,
   type ProviderTokenFile,
   type ProviderTokenSelector,
   selectFirstProviderToken,
@@ -104,21 +112,38 @@ const LOG_PREFIX = "[SECURITY] claude token";
 const HOUR_MS = 3_600_000;
 
 /**
- * Five-hour usage share a token must stay **below** to pass the gate: a token
- * that has used 80% or more of its five-hour window fails it.
+ * Five-hour **remaining** share a token must hold to be worth running
+ * against: 20%, above which the gate passes and at or below which it fails.
+ *
+ * The one figure behind both spellings of the gate (Issue #1668). It is also
+ * `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "worth restarting for" and
+ * "worth switching to" are the same question, and two floors that drifted
+ * would let a host restart for a token the gate then refuses to select.
  *
  * A fixed constant, deliberately not an environment variable (Issue #1623):
  * the figure describes how Anthropic's windows behave, not how one host is
- * configured, so a per-host override would only let a fleet drift apart. Past
- * it the token cannot spend whatever its seven-day window still holds, so no
- * rate it scores is worth acting on.
- *
- * Stated as usage rather than as the remaining share it complements, because
- * that is the comparison the gate makes: at exactly 20% remaining the token
- * has used exactly 80% and fails, which no `remaining >= 0.2` spelling gets
- * right on both sides of the boundary.
+ * configured, so a per-host override would only let a fleet drift apart.
  */
-export const CLAUDE_FIVE_HOUR_GATE_MAX_USED = 0.8;
+export const CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING = 0.2;
+
+/**
+ * Five-hour usage share a token must stay **below** to pass the gate: a token
+ * that has used 80% or more of its five-hour window fails it. Past it the
+ * token cannot spend whatever its seven-day window still holds, so no rate it
+ * scores is worth acting on.
+ *
+ * The complement of {@link CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING}, and derived
+ * from it rather than restated, so the two cannot drift. Derived in this
+ * direction because only this one is exact: `1 - 0.2` is exactly `0.8`, while
+ * `1 - 0.8` is `0.19999999999999996`.
+ *
+ * The gate compares usage rather than the remaining share, because that is
+ * the comparison it makes: at exactly 20% remaining the token has used
+ * exactly 80% and fails, which no `remaining >= 0.2` spelling gets right on
+ * both sides of the boundary.
+ */
+export const CLAUDE_FIVE_HOUR_GATE_MAX_USED = 1 -
+  CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING;
 
 /**
  * Seven-day remaining share below which a gate-passing token ranks behind
@@ -547,9 +572,7 @@ export function createClaudeBudgetTokenSelector(
     const remembered = decided.get(provider.id);
     if (remembered !== undefined) return remembered;
 
-    const pool = tokens.filter(
-      (token) => token.poolMember && (token.value ?? "").length > 0,
-    );
+    const pool = providerPoolCandidates(tokens);
     // Nothing to choose between: no probe, no log, no change from today.
     const selected = pool.length < 2
       ? await fallback(tokens, provider)

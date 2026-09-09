@@ -66,7 +66,7 @@ import {
 import type { AgentProviderDescriptor } from "./agent_provider.ts";
 import { getPromptsDir } from "./prompt_manager.ts";
 import { checkPromptsImmutable } from "./prompt_immutability.ts";
-import { createClaudeBudgetTokenSelector } from "./claude_token_selection.ts";
+import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
 import {
   NETWORK_UNAVAILABLE_MARKER,
   resolveGithubUserWithRetry,
@@ -309,10 +309,11 @@ export function createDefaultRunWorkerDeps(
   setEnv: (name: string, value: string) => void = processSetEnv,
 ): RunWorkerDeps {
   const logger = createLogger({ debug: Deno.env.get("DEBUG") === "true" });
-  // Built ONCE per process (Issue #919): the selector remembers which token it
-  // chose, so the run's coding-agent credential is fixed at startup and no
-  // later call can re-select or issue a second round of probes.
-  const selectToken = createClaudeBudgetTokenSelector({
+  // Built ONCE per process (Issue #1668): start-up and every later selection
+  // share this pool's one budget snapshot per token and one ranking rule, so
+  // a mid-run switch is decided on the same figures — and logged in the same
+  // shape — as the choice the run started on.
+  const claudePool = createClaudeCredentialPool({
     log: (message) => logger.info(message),
   });
   return {
@@ -339,7 +340,7 @@ export function createDefaultRunWorkerDeps(
     checkCredentials: () =>
       checkWorkerCredentials({
         log: (message) => logger.info(message),
-        selectToken,
+        selectToken: claudePool.selectToken,
         setEnv,
       }),
     resolveGithubUser: async () => {

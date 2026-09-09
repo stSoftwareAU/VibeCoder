@@ -24,18 +24,52 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-import { probeClaudeTokenBudget } from "./claude_token_budget.ts";
-import type { ProviderTokenFile } from "./credential_preflight.ts";
+import {
+  type ClaudeTokenBudget,
+  probeClaudeTokenBudget,
+} from "./claude_token_budget.ts";
+import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "./claude_token_selection.ts";
+import {
+  providerPoolCandidates,
+  type ProviderTokenFile,
+} from "./credential_preflight.ts";
 
 /**
- * Below this share of a window, a token is not worth restarting for.
+ * At or below this share of a window, a token is not worth restarting for.
  *
  * A token with a sliver left would be selected, exhaust almost immediately and
  * pause again — turning the hour-long wait into a restart loop, which is worse
- * than waiting. Five per cent is comfortably above that and far below anything
- * a run could use up in one cycle.
+ * than waiting.
+ *
+ * It is {@link CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING}, the five-hour gate of
+ * Issue #1623, and not a floor of its own (Issue #1668): "worth restarting
+ * for" and "worth switching to" are one question — worth running against —
+ * and two floors that drifted would let a host restart for a token the
+ * selection gate then refuses to choose.
  */
-export const POOL_BUDGET_FLOOR = 0.05;
+export const POOL_BUDGET_FLOOR = CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING;
+
+/**
+ * The five-hour share {@link POOL_BUDGET_FLOOR} is read against.
+ *
+ * The floor IS the five-hour selection gate, so it has to be applied to the
+ * same window the gate is (Issue #1668). The headline `remainingFraction` is
+ * the *most constrained* window, so measuring against it would refuse a
+ * restart for a token with a fresh five hours and a nearly spent week — which
+ * `rankClaudeTokenBudgets` would happily select and run against.
+ *
+ * @param budget - A known probe result.
+ * @returns The five-hour remaining share, or the headline figure for a
+ *   response that reported no five-hour window.
+ */
+function fiveHourRemaining(
+  budget: Extract<ClaudeTokenBudget, { known: true }>,
+): number {
+  const fiveHour = budget.windows.find((window) =>
+    window.window === "five_hour"
+  );
+  return Math.max(0, fiveHour?.remainingFraction ?? budget.remainingFraction);
+}
 
 /** Injection points; production passes nothing. */
 export interface PoolBudgetOptions {
@@ -74,9 +108,7 @@ export async function poolHasAnotherTokenWithBudget(
   const log = options.log ?? (() => {});
   const floor = options.floor ?? POOL_BUDGET_FLOOR;
 
-  const pool = tokens.filter((token) =>
-    token.poolMember && (token.value ?? "").trim().length > 0
-  );
+  const pool = providerPoolCandidates(tokens);
   // Fewer than two subscriptions is nothing to go back for. Checked on the
   // whole pool rather than on the candidates, so a single-token host makes no
   // request even when the spent token is unknown — every such host stays
@@ -105,11 +137,13 @@ export async function poolHasAnotherTokenWithBudget(
 
   for (const { label, budget } of probes) {
     if (!budget.known) continue;
-    const remaining = Math.max(0, budget.remainingFraction);
-    if (remaining >= floor) {
+    const remaining = fiveHourRemaining(budget);
+    // Strictly above, exactly as the five-hour gate reads it: at precisely
+    // the floor the token has nothing worth restarting for.
+    if (remaining > floor) {
       log(
         `[SECURITY] claude token pool: ${label} still has ` +
-          `${(remaining * 100).toFixed(1)}% of its most constrained window — ` +
+          `${(remaining * 100).toFixed(1)}% of its five-hour window — ` +
           `restarting rather than waiting out ${
             spentLabel ?? "the spent token"
           }`,
