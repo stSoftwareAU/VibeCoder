@@ -42,7 +42,10 @@ Deno.test("merge_conflict - carries every required placeholder plus verbosity", 
   const body = await loadMergeConflict();
   for (
     const placeholder of [
-      "PR_NUMBER",
+      // Issue #1767: the opening names a PR *or* a milestone branch, so the
+      // template carries `TARGET_DESCRIPTION` where it once carried a bare
+      // `PR_NUMBER`.
+      "TARGET_DESCRIPTION",
       "QUALITY_INSTRUCTIONS",
       "BASE_BRANCH",
       "CONFLICTED_FILES",
@@ -56,7 +59,7 @@ Deno.test("merge_conflict - carries every required placeholder plus verbosity", 
 Deno.test("merge_conflict - builds with every placeholder substituted", async () => {
   const built = await buildMergeConflictPrompt({
     repo: "stSoftwareAU/VibeCoder",
-    prNumber: "4321",
+    target: { kind: "pr", prNumber: 4321 },
     baseBranch: "main",
     conflictedFiles: ["worker/deno/lib/foo.ts"],
     qualityInstructions: "Run ./quality.sh",
@@ -222,7 +225,7 @@ Deno.test("merge_conflict - an intent-justified resolution still meets the guard
 Deno.test("merge_conflict - the built prompt fences the issue context", async () => {
   const built = await buildMergeConflictPrompt({
     repo: "stSoftwareAU/VibeCoder",
-    prNumber: "4321",
+    target: { kind: "pr", prNumber: 4321 },
     baseBranch: "main",
     conflictedFiles: ["worker/deno/lib/timeouts.ts"],
     promptsDir: PROMPTS_DIR,
@@ -278,7 +281,7 @@ Deno.test("merge_conflict - the built prompt fences the issue context", async ()
 Deno.test("merge_conflict - no issue context leaves no block behind", async () => {
   const built = await buildMergeConflictPrompt({
     repo: "stSoftwareAU/VibeCoder",
-    prNumber: "4321",
+    target: { kind: "pr", prNumber: 4321 },
     baseBranch: "main",
     conflictedFiles: ["worker/deno/lib/timeouts.ts"],
     promptsDir: PROMPTS_DIR,

@@ -935,6 +935,17 @@
       "paths": [
         "worker/deno/lib/gated_head_guard.ts"
       ]
+    },
+    {
+      "issue": 1767,
+      "chunk": "12m",
+      "title": "the shared merge-conflict agent",
+      "ledger": "docs/audits/security-sweep-1767-merge-conflict-agent.md",
+      "definition": "modules added to lib/ after 12a-12l recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/merge_conflict_agent.ts"
+      ]
     }
   ]
 }

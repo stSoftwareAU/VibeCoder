@@ -794,6 +794,12 @@ branch at the same time. A host that loses the race returns immediately.
 - [CI fix](ci-fix.md) — the queue that takes over once CI can run again.
 - `worker/deno/lib/pr_merge_conflict_scan.ts` and
   `worker/deno/lib/pr_merge_conflict_processor.ts` — the implementation.
+- `worker/deno/lib/merge_conflict_agent.ts` — the resolution agent itself
+  (`runMergeConflictAgent`), shared by every target (Issue #1767). It takes
+  either a PR or a bare branch pair, builds the `merge_conflict` prompt for
+  that target, runs the agent under the run's bounds, and reports what the run
+  left behind. The reply file is read through the one memoised reader
+  (`createMergeConflictReplyReader`), so both targets get the same reply.
 - `worker/deno/lib/merge_conflict_drain.ts` — the per-cycle drain loop and its
   three bounds.
 - `worker/deno/lib/conflict_issue_context.ts` — the gather that answers *what
