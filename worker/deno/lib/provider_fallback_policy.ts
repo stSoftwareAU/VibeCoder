@@ -46,7 +46,26 @@ export interface ProviderFallbackPolicy {
 export const DEFAULT_PROVIDER_FALLBACK_MAX_SWITCHES = 1;
 
 /**
- * Build the policy from config.
+ * Resolve the policy from a loaded worker config (Issue #1700).
+ *
+ * `agentProviderFallback` omitted or empty → pinned (no substitution).
+ * A list → ordered, preferring `agentProvider` first, then the listed
+ * ids that are in `enabledAgentProviders` and installed.
+ */
+export function fallbackPolicyFromWorkerConfig(config: {
+  readonly agentProvider: string;
+  readonly enabledAgentProviders: readonly string[];
+  readonly agentProviderFallback?: readonly string[];
+}): ProviderFallbackPolicy {
+  return resolveProviderFallbackPolicy({
+    preferred: config.agentProvider,
+    enabled: config.enabledAgentProviders,
+    fallback: config.agentProviderFallback,
+  });
+}
+
+/**
+ * Build the policy from raw ids.
  *
  * `fallback` omitted or empty → pinned (no substitution).
  * `fallback` a list → ordered, preferring `preferred` first, then the

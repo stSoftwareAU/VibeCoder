@@ -235,6 +235,7 @@ import {
   writeRateLimitSignal,
 } from "./rate_limit_signal.ts";
 import { isHostRateLimitPauseActive } from "./provider_quota_scope.ts";
+import { fallbackPolicyFromWorkerConfig } from "./provider_fallback_policy.ts";
 import { deriveIdleReason } from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
@@ -592,6 +593,15 @@ export async function createProductionRunCoreDeps(
         : undefined,
     });
   }
+
+  const providerFallback = fallbackPolicyFromWorkerConfig(config);
+  logger.info(
+    `[quota] provider fallback ${providerFallback.mode} ` +
+      `preferred=${providerFallback.preferred}` +
+      (providerFallback.alternatives.length > 0
+        ? ` alternatives=${providerFallback.alternatives.join(",")}`
+        : ""),
+  );
 
   // --- Daily spend ceiling (Issue #3684) ---
   // Opt-in: unset or `0` leaves the hook unwired and behaviour unchanged. A

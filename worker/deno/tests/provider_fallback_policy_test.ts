@@ -6,10 +6,28 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  fallbackPolicyFromWorkerConfig,
   mayFallbackOn,
   nextFallbackProvider,
   resolveProviderFallbackPolicy,
 } from "../lib/provider_fallback_policy.ts";
+
+Deno.test("fallbackPolicyFromWorkerConfig - reads agentProviderFallback", () => {
+  const pinned = fallbackPolicyFromWorkerConfig({
+    agentProvider: "claude",
+    enabledAgentProviders: ["claude", "codex"],
+  });
+  assertEquals(pinned.mode, "pinned");
+  assertEquals(pinned.preferred, "claude");
+
+  const ordered = fallbackPolicyFromWorkerConfig({
+    agentProvider: "claude",
+    enabledAgentProviders: ["claude", "codex"],
+    agentProviderFallback: ["codex"],
+  });
+  assertEquals(ordered.mode, "ordered");
+  assertEquals(ordered.alternatives, ["codex"]);
+});
 
 Deno.test("resolveProviderFallbackPolicy - omitted fallback is pinned", () => {
   const policy = resolveProviderFallbackPolicy({
