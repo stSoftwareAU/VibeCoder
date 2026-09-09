@@ -46,6 +46,10 @@ import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { formatReleaseNotice } from "../lib/release_notice.ts";
 import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import {
+  HOST_DISK_REFRESH_FILE,
+  HOST_DISK_REFRESH_INTERVAL_ENV,
+} from "../lib/host_disk.ts";
+import {
   BASH_LAUNCHER,
   buildCount,
   builderHealed,
@@ -694,6 +698,54 @@ Deno.test("run.sh - refuses to launch when another worker is already running on 
       "measured now, not copied from anywhere",
     );
     assertEquals(await recorded(harness, "run"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the attached launcher refreshes host-disk.json while the container runs (Issue #1691)", async () => {
+  // Under launchd the launcher is one long-lived job attached to its
+  // container, so the "another worker is already running" tick that #1550
+  // relied on never fires: the reading stood at its launch value for a whole
+  // run while the host freed 23 GB. The refresher runs inside this launcher
+  // and rewrites the file every interval for as long as the client is alive.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "12",
+    STUB_RUN_EXIT: "0",
+    [HOST_DISK_REFRESH_INTERVAL_ENV]: "1",
+  });
+  const file = `${harness.logDir}/${HOST_DISK_REFRESH_FILE}`;
+  try {
+    const child = spawnLauncher(harness);
+    assert(
+      await waitForRecord(harness, "run"),
+      "the container never started",
+    );
+    // The launch itself wrote one reading. Remove it: only the refresher can
+    // put it back while the client is still running.
+    await Deno.remove(file).catch(() => undefined);
+
+    const started = Date.now();
+    let reading: Record<string, unknown> | null = null;
+    while (Date.now() - started < 8_000) {
+      try {
+        reading = JSON.parse(await Deno.readTextFile(file));
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
+    assert(reading !== null, "host-disk.json was not rewritten mid-run");
+    assertEquals(typeof reading.availableBytes, "number");
+    assertEquals(typeof reading.totalBytes, "number");
+    assert(
+      Math.abs((reading.measuredAt as number) - Date.now() / 1000) < 60,
+      "the rewrite carries a fresh measurement",
+    );
+
+    const output = await child.output();
+    assertEquals(output.code, 0, new TextDecoder().decode(output.stderr));
   } finally {
     await harness.cleanup();
   }
