@@ -692,6 +692,12 @@ flowchart TD
 - **The agent never runs on a gated head**, so nothing is committed that cannot
   be pushed, and no attempt or retry is spent — the guard runs before
   `recordCiCheckRetry` and before the merge-conflict attempt marker is posted.
+- **The CI-nudge pass asks too** (Issue #1762). Its `none` path adds an empty
+  commit and pushes it to the head, so on VibeCoder#1741's own milestone head
+  it was refused with GH013 every cycle the PR stayed a nudge candidate. The
+  guard now runs before that checkout; a gated head is recorded as a `noop`
+  nudge and left for the milestone completion path. The `queued` path only
+  re-runs a workflow and pushes nothing, so it is not gated.
 - **One comment per branch, not one per run.** The comment carries a hidden
   `<!-- vibe-gated-head branch="…" -->` marker; a later run that finds the
   marker stays silent. A comment thread that cannot be read posts nothing and
