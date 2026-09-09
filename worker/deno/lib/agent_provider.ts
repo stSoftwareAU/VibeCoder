@@ -63,10 +63,14 @@ import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
 import {
   buildSessionResumeArgs,
   buildSessionResumeFlags,
+  codexResumeSessionId,
+  sessionResumeForProvider,
   type SessionResumeState,
 } from "./session_resume.ts";
 import {
   buildCodexArgs,
+  buildCodexMcpConfigArgs,
+  composeCodexPrompt,
   resolveCodexEffort,
   resolveCodexModel,
 } from "./codex_executor.ts";
@@ -266,9 +270,10 @@ export interface AgentInvocationRequest {
   /** Session continuity state, when session resume is enabled. */
   sessionResumeState?: SessionResumeState;
   /**
-   * MCP server configuration file for this run (Issue #4355) — the
-   * Playwright headless browser. Absent → no `--mcp-config` flag, exactly
-   * as before.
+   * MCP server configuration for this run (Issue #4355) — the Playwright
+   * headless browser. Claude takes the path as `--mcp-config`. Codex has
+   * no such flag: the descriptor turns the same JSON into `-c mcp_servers.*`
+   * overrides (Issue #1702). Absent → no browser capability.
    */
   mcpConfigPath?: string;
   /**
@@ -338,6 +343,13 @@ export interface AgentProviderDescriptor {
   cheaperModel?(model: string): string | null;
   /** Build the CLI argument list for one invocation. */
   buildInvocation(request: AgentInvocationRequest): string[];
+  /**
+   * Body written to the child's stdin when {@link promptTransport} is
+   * `stdin` (Issue #1702). Absent → the runner writes {@link AgentInvocationRequest.prompt}
+   * unchanged. Codex folds the system prompt and disallowed-tools list
+   * into this body because it has no separate flags for them.
+   */
+  stdinBody?(request: AgentInvocationRequest): string;
   /** Build the child subprocess environment, minus worker-only secrets. */
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string>;
   /**
@@ -530,7 +542,16 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {
-    return buildClaudeCliArgs(request, resolveInvocationRouting(this, request));
+    return buildClaudeCliArgs(
+      {
+        ...request,
+        sessionResumeState: sessionResumeForProvider(
+          request.sessionResumeState,
+          this.id,
+        ),
+      },
+      resolveInvocationRouting(this, request),
+    );
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {
@@ -570,7 +591,10 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     denylist: CODEX_ENV_DENYLIST,
   },
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/codex.sh` },
-  promptTransport: "argv",
+  // The prompt travels on stdin (Issue #1702): Linux caps one argv element
+  // at 128 KiB, and a long issue thread exceeds that. Codex reads `-` as
+  // "the prompt is on stdin".
+  promptTransport: "stdin",
   // The `codex exec --json` decoder and failure classifier (Issue #1695),
   // deferred for the same import cycle as Claude's above.
   get output(): AgentOutputAdapter {
@@ -589,15 +613,47 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
 
   buildInvocation(request: AgentInvocationRequest): string[] {
     const routing = resolveInvocationRouting(this, request);
+    let mcpConfigOverrides: readonly string[] | undefined;
+    if (request.mcpConfigPath) {
+      let json: string;
+      try {
+        json = Deno.readTextFileSync(request.mcpConfigPath);
+      } catch (error) {
+        throw new Error(
+          `Codex MCP config at ${request.mcpConfigPath} could not be read: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      mcpConfigOverrides = buildCodexMcpConfigArgs(json);
+      if (mcpConfigOverrides.length === 0) {
+        throw new Error(
+          `Codex MCP config at ${request.mcpConfigPath} produced no ` +
+            `mcp_servers overrides; refusing to run without the requested ` +
+            `browser server (Issue #1702).`,
+        );
+      }
+    }
     return buildCodexArgs({
       prompt: request.prompt,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
       model: routing.model,
       effort: routing.effort,
-      // Codex resumes its own most recent session; the first phase of an issue
-      // starts one instead (`phaseCount === 0`).
-      resumeSession: buildSessionResumeFlags(request.sessionResumeState).resume,
+      // Resume the thread this issue's previous Codex phase reported
+      // (Issue #1699). A Claude UUID, a missing capture, or `--last` is
+      // never a substitute — concurrent slots share a working directory.
+      resumeSessionId: codexResumeSessionId(request.sessionResumeState),
+      promptViaStdin: request.promptViaStdin,
+      ...(mcpConfigOverrides ? { mcpConfigOverrides } : {}),
+    });
+  },
+
+  stdinBody(request: AgentInvocationRequest): string {
+    return composeCodexPrompt({
+      prompt: request.prompt,
+      systemPrompt: request.systemPrompt,
+      disallowedTools: request.disallowedTools,
     });
   },
 
@@ -759,7 +815,16 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     if (routing.effort) {
       warnDeepSeekEffortUnsupported(routing.effort, request.phase);
     }
-    return buildClaudeCliArgs(request, { model: routing.model });
+    return buildClaudeCliArgs(
+      {
+        ...request,
+        sessionResumeState: sessionResumeForProvider(
+          request.sessionResumeState,
+          this.id,
+        ),
+      },
+      { model: routing.model },
+    );
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {

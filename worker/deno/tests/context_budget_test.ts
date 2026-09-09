@@ -646,6 +646,9 @@ Deno.test("context_budget - MODEL_CONTEXT_WINDOWS has entries for known models",
   assert((MODEL_CONTEXT_WINDOWS["sonnet"] ?? 0) > 0);
   assert((MODEL_CONTEXT_WINDOWS["haiku"] ?? 0) > 0);
   assert((MODEL_CONTEXT_WINDOWS["default"] ?? 0) > 0);
+  assert((MODEL_CONTEXT_WINDOWS["gpt-5-codex"] ?? 0) > 0);
+  assert((MODEL_CONTEXT_WINDOWS["gpt-5"] ?? 0) > 0);
+  assert((MODEL_CONTEXT_WINDOWS["gpt-5-mini"] ?? 0) > 0);
 });
 
 // =============================================================================
@@ -666,6 +669,15 @@ Deno.test("context_budget - Haiku context window remains 200k tokens (Issue #139
 
 Deno.test("context_budget - default context window is 200k tokens (Issue #1399)", () => {
   assertEquals(MODEL_CONTEXT_WINDOWS["default"], 200_000);
+});
+
+Deno.test("context_budget - Codex GPT-5 ids have a 400k window (Issue #1701)", () => {
+  assertEquals(MODEL_CONTEXT_WINDOWS["gpt-5-codex"], 400_000);
+  assertEquals(MODEL_CONTEXT_WINDOWS["gpt-5"], 400_000);
+  assertEquals(MODEL_CONTEXT_WINDOWS["gpt-5-mini"], 400_000);
+  assertEquals(getContextWindowSize("gpt-5-codex"), 400_000);
+  assertEquals(getContextWindowSize("gpt-5-mini"), 400_000);
+  assertEquals(getContextWindowSize("gpt-5"), 400_000);
 });
 
 Deno.test("context_budget - getContextWindowSize returns 1M for claude-opus-4-7 (Issue #1399)", () => {

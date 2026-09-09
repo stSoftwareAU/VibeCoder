@@ -21,10 +21,27 @@
  * (subsequent phases) to the Claude CLI.
  */
 export interface SessionResumeState {
-  /** UUID session ID for this issue invocation (Issue #204). */
+  /**
+   * CLI session id for this issue invocation.
+   *
+   * Claude (and DeepSeek) require a UUID (Issue #204). Codex names its own
+   * thread; the worker captures it from the CLI after the first run
+   * (Issue #1699) and must never invent one or pass Claude's UUID into
+   * `codex exec resume`.
+   */
   sessionId: string;
   /** Number of phases completed using this session. */
   phaseCount: number;
+  /**
+   * Provider that owns {@link sessionId} (Issue #1699). Absent on records
+   * written before this field existed — those ids are Claude UUIDs.
+   */
+  providerId?: string;
+  /**
+   * Credential label that opened the session (Issue #1699), when known.
+   * A later spawn on a different account must not resume this id.
+   */
+  credentialScope?: string;
 }
 
 /**
@@ -122,6 +139,63 @@ export function recordPhaseCompletion(
 }
 
 /**
+ * Record the CLI's own session id after a run (Issue #1699).
+ *
+ * Codex (and any provider that names sessions itself) reports the id on
+ * its event stream. The worker-generated UUID used to open a Claude
+ * conversation is not that id, and passing it to another vendor resumes
+ * nothing useful — or worse, another issue's thread when `--last` is used.
+ */
+export function adoptProviderSession(
+  state: SessionResumeState,
+  input: {
+    sessionId?: string;
+    providerId: string;
+    credentialScope?: string;
+  },
+): SessionResumeState {
+  // A missing capture must not relabel a worker-generated Claude UUID as a
+  // Codex thread: the next phase would then `exec resume` an id the CLI
+  // never minted (Issue #1699).
+  if (!input.sessionId) return state;
+  return {
+    sessionId: input.sessionId,
+    phaseCount: state.phaseCount,
+    providerId: input.providerId,
+    ...(input.credentialScope !== undefined
+      ? { credentialScope: input.credentialScope }
+      : state.credentialScope !== undefined
+      ? { credentialScope: state.credentialScope }
+      : {}),
+  };
+}
+
+/**
+ * The session id Codex may pass to `exec resume <id>`.
+ *
+ * Empty until a Codex run has reported one: a pre-generated Claude UUID
+ * must not be sent, and `--last` is never a substitute (Issue #1699).
+ */
+export function codexResumeSessionId(
+  state: SessionResumeState | undefined,
+): string | undefined {
+  if (!state) return undefined;
+  if (!buildSessionResumeFlags(state).resume) return undefined;
+  if (state.providerId !== "codex") return undefined;
+  return state.sessionId || undefined;
+}
+
+/** A session id the store may persist for this provider. */
+export function isPersistableSessionId(
+  sessionId: string,
+  providerId: string | undefined,
+): boolean {
+  if (!sessionId) return false;
+  if (providerId === "codex") return true;
+  return isValidSessionId(sessionId);
+}
+
+/**
  * Build the CLI argument array for session resume flags.
  *
  * Converts the structured flags into an array of CLI arguments
@@ -146,4 +220,28 @@ export function buildSessionResumeArgs(
     return flags.sessionId ? ["--resume", flags.sessionId] : ["--resume"];
   }
   return flags.sessionId ? ["--session-id", flags.sessionId] : [];
+}
+
+/**
+ * Session state this provider may resume (Issue #1699).
+ *
+ * A stored id belongs to one vendor. Feeding a Claude UUID to Codex, or a
+ * Codex thread to Claude, is not continuity — it is a start-up refusal or
+ * another issue's conversation. Legacy records with no `providerId` are
+ * Claude (or DeepSeek) UUIDs.
+ */
+export function sessionResumeForProvider(
+  state: SessionResumeState | undefined,
+  providerId: string,
+): SessionResumeState | undefined {
+  if (!state) return undefined;
+  if (state.providerId && state.providerId !== providerId) return undefined;
+  if (
+    !state.providerId &&
+    providerId !== "claude" &&
+    providerId !== "deepseek"
+  ) {
+    return undefined;
+  }
+  return state;
 }

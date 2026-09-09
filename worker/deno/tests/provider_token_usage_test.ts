@@ -73,7 +73,7 @@ Deno.test("provider_token_usage - Claude run without a usage line does not warn"
 // Non-Claude providers — unparseable usage is loud and marked unknown
 // =============================================================================
 
-Deno.test("provider_token_usage - Codex run with unparseable usage warns and is unknown", () => {
+Deno.test("provider_token_usage - Codex run with parseable usage is measured, not unknown (Issue #1701)", () => {
   const result = extractProviderTokenUsage(CODEX_JSONL, {
     provider: "codex",
     displayName: "Codex CLI",
@@ -82,16 +82,36 @@ Deno.test("provider_token_usage - Codex run with unparseable usage warns and is 
     model: "gpt-5-codex",
   });
 
+  assertEquals(result.usage, {
+    inputTokens: 1200,
+    outputTokens: 300,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 900,
+  });
+  assertEquals(result.usageUnknown, false);
+  assertEquals(result.warning, undefined);
+});
+
+Deno.test("provider_token_usage - Codex run with unparseable usage warns and is unknown", () => {
+  const result = extractProviderTokenUsage(
+    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+    {
+      provider: "codex",
+      displayName: "Codex CLI",
+      repo: "org/repo",
+      phase: "issue",
+      model: "gpt-5-codex",
+    },
+  );
+
   assertEquals(result.usage, undefined);
   assertEquals(result.usageUnknown, true);
   assert(result.warning, "a warning must name the unparseable run");
-  // Names the provider and the run it belongs to.
   assertStringIncludes(result.warning, "codex");
   assertStringIncludes(result.warning, "Codex CLI");
   assertStringIncludes(result.warning, "org/repo");
   assertStringIncludes(result.warning, "issue");
   assertStringIncludes(result.warning, "gpt-5-codex");
-  // Says plainly that this is unknown, not zero.
   assertStringIncludes(result.warning, "not zero");
 });
 

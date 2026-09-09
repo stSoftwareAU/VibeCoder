@@ -129,6 +129,45 @@ Deno.test("resume_state_store - save sweeps sibling files older than the freshne
   }
 });
 
+Deno.test("resume_state_store - Codex thread id round-trips with providerId (Issue #1699)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "resume_store_" });
+  try {
+    const threadId = "0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e77";
+    const saved = await saveResumeState(workDir, REPO, 1699, {
+      sessionId: threadId,
+      phaseCount: 1,
+      branch: "issue-1699-codex",
+      providerId: "codex",
+      credentialScope: "chatgpt-plus",
+    }, 2_000_000);
+    assert(saved);
+    const loaded = await loadResumeState(workDir, REPO, 1699, 2_000_000);
+    assert(loaded);
+    assertEquals(loaded.sessionId, threadId);
+    assertEquals(loaded.providerId, "codex");
+    assertEquals(loaded.credentialScope, "chatgpt-plus");
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("resume_state_store - a non-UUID Codex thread id is kept when providerId is codex (Issue #1699)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "resume_store_" });
+  try {
+    await saveResumeState(workDir, REPO, 1700, {
+      sessionId: "thread_not_a_uuid",
+      phaseCount: 2,
+      branch: "issue-1700-codex",
+      providerId: "codex",
+    }, 3_000_000);
+    const loaded = await loadResumeState(workDir, REPO, 1700, 3_000_000);
+    assert(loaded);
+    assertEquals(loaded.sessionId, "thread_not_a_uuid");
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
 Deno.test("resume_state_store - save is best-effort, returns false on failure", async () => {
   // workDir path that cannot be created (a file blocks the directory).
   const tmp = await Deno.makeTempDir({ prefix: "resume_store_" });

@@ -130,6 +130,7 @@ import type { SessionResumeState } from "./session_resume.ts";
 import {
   activeAgentProvider,
   type AgentProviderSelector,
+  CLAUDE_PROVIDER_ID,
   selectAgentProvider,
 } from "./agent_provider.ts";
 
@@ -995,7 +996,7 @@ export async function runClaudeWithTimeout(
   // round or a long issue thread exceeds that — "Argument list too long"
   // at spawn, observed live in container mode.
   const promptViaStdin = provider.promptTransport === "stdin";
-  const args = provider.buildInvocation({
+  const invocationRequest = {
     prompt,
     systemPrompt,
     model,
@@ -1005,8 +1006,14 @@ export async function runClaudeWithTimeout(
     disallowedTools,
     sessionResumeState: options.sessionResumeState,
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
+  };
+  const args = provider.buildInvocation({
+    ...invocationRequest,
     promptViaStdin,
   });
+  const stdinPayload = promptViaStdin
+    ? (provider.stdinBody?.(invocationRequest) ?? prompt)
+    : prompt;
 
   const timeoutMs = timeoutSeconds * 1000;
   const noOutputMs = noOutputTimeout > 0 ? noOutputTimeout * 1000 : 0;
@@ -1170,10 +1177,10 @@ export async function runClaudeWithTimeout(
         prefix: "vibe-agent-prompt-",
         suffix: ".md",
       });
-      await Deno.writeTextFile(promptFilePath, prompt);
+      await Deno.writeTextFile(promptFilePath, stdinPayload);
       logger?.info(
         `Prompt file: ${promptFilePath} (${
-          new TextEncoder().encode(prompt).length
+          new TextEncoder().encode(stdinPayload).length
         } bytes, streamed to the agent's stdin)`,
       );
     }
@@ -1996,21 +2003,25 @@ export async function runClaudeWithTimeout(
     // model/effort, token usage, turn count, and durations. Parsed from the
     // same raw stream-json; the effort string is passed through verbatim so
     // new levels (e.g. xhigh, #2620) flow untouched.
-    const runStats = buildRunStats(rawOutput, {
-      requestedModel: resolvedModel,
-      ...(resolvedEffort ? { effort: resolvedEffort } : {}),
-      wallClockMs: clock.now() - startMs,
-      // Attribute the run to the provider that produced it (Issue #4109).
-      provider: provider.id,
-    });
+    const runStats = {
+      ...buildRunStats(rawOutput, {
+        requestedModel: resolvedModel,
+        ...(resolvedEffort ? { effort: resolvedEffort } : {}),
+        wallClockMs: clock.now() - startMs,
+        // Attribute the run to the provider that produced it (Issue #4109).
+        provider: provider.id,
+      }),
+      ...(agentOutput?.usage ? { tokenUsage: agentOutput.usage } : {}),
+    };
 
     // Anthropic prompt-cache effectiveness for this invocation (Issue #4282).
     // Distinct from the disk prompt cache logged above: this is the share of
     // prompt tokens the API served from its own cache. Logging it per
     // invocation makes a prefix regression visible at the run that caused it,
-    // not a fortnight later in the bill.
+    // not a fortnight later in the bill. Codex usage is measured but is not
+    // Anthropic's cache, so the line stays Claude-only (Issue #1701).
     const cacheRate = computeCacheHitRate(runStats.tokenUsage);
-    if (cacheRate.measured) {
+    if (cacheRate.measured && provider.id === CLAUDE_PROVIDER_ID) {
       const context = `${repo ?? "unknown"} phase=${phase ?? "unknown"}`;
       logger?.info(
         `Anthropic prompt cache: ${formatCacheHitRate(cacheRate)} ${context}`,
@@ -2040,11 +2051,16 @@ export async function runClaudeWithTimeout(
       ...(phase ? { phase } : {}),
       ...(billedModel ? { model: billedModel } : {}),
     });
-    if (providerUsage.warning) logger?.warn(providerUsage.warning);
+    const tokenUsage = agentOutput?.usage ?? providerUsage.usage;
+    const usageUnknown = agentOutput?.usage
+      ? false
+      : providerUsage.usageUnknown;
+    if (!agentOutput?.usage && providerUsage.warning) {
+      logger?.warn(providerUsage.warning);
+    }
 
     // Log credit usage (Issue #1074) — fire-and-forget, never block execution
     if (creditLogDir && workerName) {
-      const tokenUsage = providerUsage.usage;
       logInvocation({
         logDir: creditLogDir,
         workerName,
@@ -2056,7 +2072,7 @@ export async function runClaudeWithTimeout(
         provider: provider.id,
         ...(options.fallbackFrom ? { fallbackFrom: options.fallbackFrom } : {}),
         ...(resolvedEffort ? { effort: resolvedEffort } : {}),
-        ...(providerUsage.usageUnknown ? { usageUnknown: true } : {}),
+        ...(usageUnknown ? { usageUnknown: true } : {}),
         tokenUsage,
       }).catch((err: unknown) => {
         // Credit logging must never fail the main flow — but it must never be
@@ -3387,6 +3403,16 @@ export interface SummariseOptions {
   /** Logger instance. */
   logger?: Logger;
   /**
+   * Provider for this summarisation (Issue #1701). Omit and the active
+   * coding-agent provider is used, so a Codex worker never escalates to
+   * Claude aliases such as `sonnet`.
+   */
+  agentProvider?: AgentProviderSelector;
+  /**
+   * Environment lookup the model resolution reads through (Issue #957).
+   */
+  env?: EnvLookup;
+  /**
    * Injectable Claude runner — test seam (Issue #3037).
    *
    * Defaults to {@link runClaudeWithTimeout}. Tests pass a stub so the
@@ -3429,7 +3455,10 @@ export async function summariseLargeContent(
   // exceeds the Haiku window — silently truncating the input degrades the
   // summary without any signal. When the estimate approaches/exceeds the
   // Haiku window we escalate to a larger-window tier for this run only.
-  const escalation = selectModelForLargeInput("summarise", tokenEstimate);
+  const escalation = selectModelForLargeInput("summarise", tokenEstimate, {
+    ...(options.agentProvider ? { provider: options.agentProvider } : {}),
+    ...(options.env ? { env: options.env } : {}),
+  });
   if (escalation.escalated) {
     logger?.info(`Phase model escalation: ${escalation.reason}`);
   }
@@ -3443,6 +3472,8 @@ export async function summariseLargeContent(
     model: escalation.escalated ? escalation.model : undefined,
     logger,
     disallowedTools: [],
+    ...(options.agentProvider ? { agentProvider: options.agentProvider } : {}),
+    ...(options.env ? { env: options.env } : {}),
   });
 
   if (!result.ok) {

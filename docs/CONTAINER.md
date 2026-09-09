@@ -1671,7 +1671,10 @@ the registry:
   prompt — which is how the sandboxed-environment guidance of
   reaches the agent — is composed into that single prompt rather than dropped,
   as is any disallowed-tools list, since Codex has no per-tool disable flag.
-  Session continuity across phases is `codex exec resume --last`.
+  Session continuity across phases is `codex exec resume <SESSION_ID>` with
+  the thread the previous phase of *this* issue reported — never `--last`,
+  which would resume another issue's session when slots share a working
+  directory.
 - **No credential crosses vendors.** Each provider's denylist names the *other*
   vendor's credentials explicitly, so the Anthropic key cannot reach the Codex
   child (or the OpenAI key the Claude child) even if a future allowlist edit
