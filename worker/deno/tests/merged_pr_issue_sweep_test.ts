@@ -22,6 +22,7 @@ import {
 } from "../lib/merged_pr_issue_sweep.ts";
 import type { Logger } from "../types.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
+import { buildRollbackMarker } from "../lib/milestone_rollback_marker.ts";
 import {
   loadSweepWatermarks,
   mergedIssueSweepWatermarkPath,
@@ -376,6 +377,115 @@ Deno.test("sweepMergedPrIssues - a trusted re-label after the merge stops the cl
   assert(
     result.records.some((r) => r.reason.includes("re-label")),
     `expected a re-label skip, got ${JSON.stringify(result.records)}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A milestone roll-back after the merge keeps the reverted child open (#1770)
+// ---------------------------------------------------------------------------
+
+/** The roll-back marker a milestone roll-back posts on a reverted child. */
+const ROLLBACK_COMMENT = buildRollbackMarker({
+  prNumber: 49,
+  revertSha: "beefca7",
+  branch: "milestone/1730-resolve-merge-conflicts",
+});
+
+/** Wrap the world `gh` mock so the issue thread carries one comment. */
+function withComments(
+  inner: (args: string[]) => Promise<string>,
+  comments: Array<Record<string, unknown>>,
+): (args: string[]) => Promise<string> {
+  return (args: string[]) => {
+    if (args[0] === "api" && (args[1] ?? "").includes("/comments")) {
+      // Only the first page carries anything; a short page ends the read.
+      return Promise.resolve(
+        JSON.stringify((args[1] ?? "").includes("page=1") ? comments : []),
+      );
+    }
+    return inner(args);
+  };
+}
+
+Deno.test("sweepMergedPrIssues - a fleet roll-back after the merge skips the close as rolled-back (Issue #1770)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const gh = withComments(makeGh(landedWorld(), calls), [{
+    user: { login: "vibe-bot" },
+    created_at: "2026-08-29T09:00:00Z",
+    body: `Rolled back by the milestone.\n\n${ROLLBACK_COMMENT}`,
+  }]);
+
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: gh,
+    logger: makeLogger(),
+  });
+
+  assertEquals(result.closed, 0);
+  assertEquals(calls.closes.length, 0);
+  assert(
+    result.records.some((r) =>
+      r.outcome === "skipped" && r.reason.startsWith("rolled-back")
+    ),
+    `expected a rolled-back skip, got ${JSON.stringify(result.records)}`,
+  );
+});
+
+Deno.test("sweepMergedPrIssues - the same roll-back marker from a non-fleet author still closes (Issue #1770)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const gh = withComments(makeGh(landedWorld(), calls), [{
+    user: { login: "drive-by" },
+    created_at: "2026-08-29T09:00:00Z",
+    body: ROLLBACK_COMMENT,
+  }]);
+
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: gh,
+    logger: makeLogger(),
+  });
+
+  assertEquals(result.closed, 1);
+  assertEquals(calls.closes[0]?.issue, "48");
+});
+
+Deno.test("sweepMergedPrIssues - a roll-back marker predating the merge does not block the close (Issue #1770)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const gh = withComments(makeGh(landedWorld(), calls), [{
+    user: { login: "vibe-bot" },
+    created_at: "2026-08-27T09:00:00Z",
+    body: ROLLBACK_COMMENT,
+  }]);
+
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: gh,
+    logger: makeLogger(),
+  });
+
+  assertEquals(result.closed, 1);
+  assertEquals(calls.closes[0]?.issue, "48");
+});
+
+Deno.test("sweepMergedPrIssues - an unreadable comment thread leaves the issue open, loudly (Issue #1770)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const inner = makeGh(landedWorld(), calls);
+  const gh = (args: string[]): Promise<string> => {
+    if (args[0] === "api" && (args[1] ?? "").includes("/comments")) {
+      return Promise.reject(new Error("gh: comments unavailable (500)"));
+    }
+    return inner(args);
+  };
+
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: gh,
+    logger: makeLogger(),
+  });
+
+  assertEquals(result.closed, 0);
+  assertEquals(calls.closes.length, 0);
+  assert(
+    result.records.some((r) =>
+      r.outcome === "skipped" && r.reason.includes("comments unavailable")
+    ),
+    `expected an unreadable-thread skip, got ${JSON.stringify(result.records)}`,
   );
 });
 
