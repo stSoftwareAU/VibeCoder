@@ -304,6 +304,66 @@ Deno.test("attemptPrSelfHealing - returns ok with PR URL when PR exists", async 
   }
 });
 
+Deno.test("attemptPrSelfHealing - passes the repository's skip_auto_merge opt-out to finalisePr (Issue #1650)", async () => {
+  let captured: { skipAutoMerge?: boolean } | undefined;
+  const logs: string[] = [];
+  const result = await attemptPrSelfHealing(
+    {
+      repo: "owner/repo",
+      branchName: "issue-42-fix-bug",
+      milestoneBranch: "",
+      issueNumber: 42,
+      githubUser: "bot-user",
+      skipAutoMerge: true,
+    },
+    {
+      findExistingPrForBranch: async () => ({
+        ok: true,
+        value: "https://github.com/owner/repo/pull/99",
+      }),
+      retargetPrToMilestone: async () => ({ ok: true, value: "retargeted" }),
+      finalisePr: async (opts) => {
+        captured = opts;
+        return { ok: true, value: "finalised" };
+      },
+      ensureIssueClosedIfPrMerged: async () => ({ ok: true, value: undefined }),
+      log: (m) => {
+        logs.push(m);
+      },
+    },
+  );
+  assertEquals(result.ok, true);
+  assertEquals(captured?.skipAutoMerge, true);
+  assertEquals(logs.some((m) => m.includes("skip_auto_merge")), true);
+});
+
+Deno.test("attemptPrSelfHealing - without the opt-out finalisePr is asked to arm (Issue #1650)", async () => {
+  let captured: { skipAutoMerge?: boolean } | undefined;
+  await attemptPrSelfHealing(
+    {
+      repo: "owner/repo",
+      branchName: "issue-42-fix-bug",
+      milestoneBranch: "",
+      issueNumber: 42,
+      githubUser: "bot-user",
+    },
+    {
+      findExistingPrForBranch: async () => ({
+        ok: true,
+        value: "https://github.com/owner/repo/pull/99",
+      }),
+      retargetPrToMilestone: async () => ({ ok: true, value: "retargeted" }),
+      finalisePr: async (opts) => {
+        captured = opts;
+        return { ok: true, value: "finalised" };
+      },
+      ensureIssueClosedIfPrMerged: async () => ({ ok: true, value: undefined }),
+      log: () => {},
+    },
+  );
+  assertEquals(captured?.skipAutoMerge, false);
+});
+
 Deno.test("attemptPrSelfHealing - returns error when no PR exists", async () => {
   const result = await attemptPrSelfHealing(
     {

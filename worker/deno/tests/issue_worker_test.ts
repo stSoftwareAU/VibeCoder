@@ -2344,6 +2344,89 @@ Deno.test("completion - enables auto-merge for non-milestone PRs (Issue #1125)",
   );
 });
 
+Deno.test("completion - a repository that opts out with skip_auto_merge is not armed at creation (Issue #1650)", async () => {
+  // The sweep and pr_manager honoured the opt-out; the primary arming path
+  // hard-coded `skipAutoMerge: false`, so a repo an operator marked for human
+  // review had its PRs armed the moment they were raised.
+  const ctx = makeContext({
+    config: makeConfig({
+      repoConfig: { "org/repo": { skipAutoMerge: true } },
+    }),
+  });
+  const state = makeState();
+  let capturedSkipAutoMerge: boolean | undefined;
+  const logMessages: string[] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: () => Promise.resolve("https://github.com/org/repo/pull/5"),
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
+        capturedSkipAutoMerge = opts.skipAutoMerge;
+        return Promise.resolve({ ok: true, value: "finalised" });
+      }) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+  const originalInfo = deps.logger.info;
+  deps.logger.info = ((msg: string, data?: Record<string, unknown>) => {
+    logMessages.push(msg);
+    return originalInfo.call(deps.logger, msg, data);
+  }) as typeof deps.logger.info;
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  assertEquals(
+    capturedSkipAutoMerge,
+    true,
+    "the repository's skip_auto_merge opt-out reaches finalisePr",
+  );
+  assertEquals(
+    logMessages.some((m) => m.includes("skip_auto_merge")),
+    true,
+    `expected the opt-out to be logged: ${logMessages.join(" | ")}`,
+  );
+  assertEquals(
+    logMessages.some((m) => m.includes("Auto-merge armed at creation")),
+    false,
+    "nothing claims the PR was armed",
+  );
+});
+
+Deno.test("completion - a repository without the opt-out is still armed at creation (Issue #1650)", async () => {
+  const ctx = makeContext({
+    config: makeConfig({
+      repoConfig: { "org/other": { skipAutoMerge: true } },
+    }),
+  });
+  const state = makeState();
+  let capturedSkipAutoMerge: boolean | undefined;
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: () => Promise.resolve("https://github.com/org/repo/pull/5"),
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
+        capturedSkipAutoMerge = opts.skipAutoMerge;
+        return Promise.resolve({ ok: true, value: "finalised" });
+      }) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  assertEquals(
+    capturedSkipAutoMerge,
+    false,
+    "another repo's opt-out is not ours",
+  );
+});
+
 Deno.test("completion - the arming outcome is logged at PR creation (Issue #1136)", async () => {
   // Arming is now the primary mechanism, so a refusal on this path must not
   // be silent — the same lesson as Issue #470, applied where the sweep's
@@ -2410,6 +2493,39 @@ Deno.test("completion - arms auto-merge on a recovered milestone child PR (idemp
     capturedSkipAutoMerge,
     false,
     "A recovered milestone child PR is armed too — the sweep is the backstop",
+  );
+});
+
+Deno.test("completion - a recovered PR honours the repository's skip_auto_merge opt-out too (Issue #1650)", async () => {
+  const ctx = makeContext({
+    milestoneTitle: "OIDC Auth",
+    config: makeConfig({
+      repoConfig: { "org/repo": { skipAutoMerge: true } },
+    }),
+  });
+  const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
+  let capturedSkipAutoMerge: boolean | undefined;
+  const deps = createMockDeps({
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({
+          ok: true,
+          value: "https://github.com/org/repo/pull/99",
+        }),
+      finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
+        capturedSkipAutoMerge = opts.skipAutoMerge;
+        return Promise.resolve({ ok: true, value: "finalised" });
+      }) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  assertEquals(
+    capturedSkipAutoMerge,
+    true,
+    "the recovery path reads the same opt-out as the creation path",
   );
 });
 
