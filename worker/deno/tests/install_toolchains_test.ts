@@ -484,6 +484,132 @@ Deno.test("container/toolchains/bats-core.sh - a missing manifest aborts, naming
   );
 });
 
+/** The manifest digest key for the architecture the tests run on. */
+async function currentDigestKey(): Promise<"amd64" | "arm64"> {
+  const arch = new Deno.Command("uname", { args: ["-m"], stdout: "piped" });
+  const machine = new TextDecoder().decode((await arch.output()).stdout).trim();
+  return machine === "aarch64" ? "arm64" : "amd64";
+}
+
+Deno.test("container/toolchains/pyyaml.sh - a missing pin aborts before downloading", async () => {
+  // PyYAML ships a compiled extension, so the wheel — and its digest — are
+  // per-architecture (Issue #1628). Drop the one this architecture needs and
+  // the fragment must stop at the lookup rather than fetching bytes no
+  // committed digest can verify.
+  const key = await currentDigestKey();
+  const run = await runFragmentWithBrokenManifest("pyyaml.sh", (manifest) => {
+    const pyyaml = manifest.toolchains.find((t) => t.id === "pyyaml");
+    assert(pyyaml !== undefined, "container/tools.json must pin pyyaml");
+    const sha256 = pyyaml.sha256 as Record<string, string>;
+    assert(key in sha256, `pyyaml must pin ${key} before it is removed`);
+    delete sha256[key];
+  });
+
+  assert(run.code !== 0, "an unpinned checksum must fail the build");
+  assert(
+    !run.downloaded,
+    "the fragment downloaded before resolving its pin — a missing digest " +
+      "must stop it at the lookup",
+  );
+});
+
+Deno.test("container/toolchains/pyyaml.sh - an unpinned pip installer aborts before downloading", async () => {
+  // The wheel needs two pins: its own, and the pip that installs it. Remove
+  // pip and the fragment must stop before fetching either wheel rather than
+  // reaching for an unpinned installer.
+  const run = await runFragmentWithBrokenManifest("pyyaml.sh", (manifest) => {
+    const index = manifest.tools.findIndex((t) => t.name === "pip");
+    assert(index >= 0, "container/tools.json must pin pip");
+    manifest.tools.splice(index, 1);
+  });
+
+  assert(run.code !== 0, "an unpinned pip must fail the build");
+  assert(
+    !run.downloaded,
+    "the fragment downloaded before resolving the pip pin — an unpinned " +
+      "installer must stop it at the lookup",
+  );
+});
+
+Deno.test("container/toolchains/pyyaml.sh - a module name python could not import aborts", async () => {
+  // The module names reach a `python3 -c` interpolation, so a manifest that
+  // named anything but an importable module must stop the fragment rather
+  // than handing the interpreter whatever it says.
+  const run = await runFragmentWithBrokenManifest("pyyaml.sh", (manifest) => {
+    const pyyaml = manifest.toolchains.find((t) => t.id === "pyyaml");
+    assert(pyyaml !== undefined, "container/tools.json must pin pyyaml");
+    pyyaml.modules = ["yaml; import os"];
+    pyyaml.versionModule = "yaml; import os";
+  });
+
+  assert(run.code !== 0, "a module name python3 cannot import must fail");
+  assertStringIncludes(run.stderr, "is not a module name python3 can import");
+  assert(
+    !run.downloaded,
+    "the fragment downloaded before validating the module names",
+  );
+});
+
+Deno.test("container/toolchains/pyyaml.sh - a tampered download aborts before installing", async () => {
+  // The digest is what makes fetching by pinned URL safe: bytes that do not
+  // match must never reach pip. The stub curl writes files no manifest digest
+  // can match, so the fragment has to stop at the first `sha256sum -c -` and
+  // install nothing into the interpreter's site directory.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    await Deno.mkdir(`${dir}/bin`);
+    // curl -fsSL <retry> -o <path> <url>: write tampered bytes to the -o path.
+    await Deno.writeTextFile(
+      `${dir}/bin/curl`,
+      `#!/bin/sh\nwhile [ $# -gt 0 ]; do\n` +
+        `  if [ "$1" = "-o" ]; then printf 'tampered\\n' > "$2"; fi\n` +
+        `  shift\ndone\nexit 0\n`,
+    );
+    await Deno.chmod(`${dir}/bin/curl`, 0o755);
+    // A python3 that records its arguments. The fragment asks the interpreter
+    // for its own tag and site directory before downloading, so the assertion
+    // is not "python3 was never run" but "nothing was installed".
+    await Deno.writeTextFile(
+      `${dir}/bin/python3`,
+      `#!/bin/sh\necho "$@" >> "${dir}/python.log"\nexit 0\n`,
+    );
+    await Deno.chmod(`${dir}/bin/python3`, 0o755);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/pyyaml.sh`],
+      env: {
+        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
+        CURL_RETRY: "",
+        PIP_RETRY: "",
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(result.code !== 0, "a checksum mismatch must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "did NOT match",
+    );
+
+    let invocations = "";
+    try {
+      invocations = await Deno.readTextFile(`${dir}/python.log`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    assert(
+      !invocations.includes("install"),
+      "the fragment installed from bytes that failed verification: " +
+        invocations,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("container/toolchains/codespell.sh - an unpinned pip installer aborts before downloading", async () => {
   // codespell is a wheel, so the fragment needs two pins: its own, and the
   // pip that installs it — which lives in the manifest's tools[], beside

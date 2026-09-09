@@ -221,7 +221,30 @@ jobs:
               echo "FAILED: ${version_command} reports '${reported}', expected ${version}" >&2
               exit 1
             fi
-          done < <(jq -r '.toolchains[] | "\(.id) \(.version) \(.versionCommand) \(.commands | join(" "))"' container/tools.json)
+          done < <(jq -r '.toolchains[] | select((.commands // []) | length > 0) | "\(.id) \(.version) \(.versionCommand) \(.commands | join(" "))"' container/tools.json)
+
+          # A library toolchain (Issue #1628) puts nothing on the PATH: it
+          # makes a Python module importable, so it is verified through the
+          # image's own interpreter instead. NEAT-AI-core's BATS suites run
+          # exactly this shape — `python3 -c "import yaml"` — and 31 of them
+          # failed with ModuleNotFoundError before PyYAML was pinned.
+          while read -r id version version_module modules; do
+            read -r -a module_list <<< "${modules}"
+            for module in "${module_list[@]}"; do
+              if ! docker run --rm --entrypoint python3 "${IMAGE}" \
+                  -c "import ${module}" < /dev/null; then
+                echo "FAILED: ${id} toolchain module '${module}' is not importable in the image" >&2
+                exit 1
+              fi
+            done
+            reported=$(docker run --rm --entrypoint python3 "${IMAGE}" \
+              -c "import ${version_module}; print(${version_module}.__version__)" < /dev/null)
+            echo "${id}: import ${version_module} -> ${reported}"
+            if [[ "${reported}" != *"${version}"* ]]; then
+              echo "FAILED: ${version_module} reports '${reported}', expected ${version}" >&2
+              exit 1
+            fi
+          done < <(jq -r '.toolchains[] | select((.modules // []) | length > 0) | "\(.id) \(.version) \(.versionModule) \(.modules | join(" "))"' container/tools.json)
 
       - name: Verify the baked Playwright and headless Chromium
         if: env.IMAGE_CHANGED == 'true'
