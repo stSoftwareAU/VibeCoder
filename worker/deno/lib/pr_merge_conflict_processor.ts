@@ -35,13 +35,12 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { buildMergeConflictPrompt } from "./prompt_builder.ts";
-import { loadRepoContextContent } from "./repo_context_reader.ts";
-import { guardGatedHead } from "./gated_head_guard.ts";
 import {
-  preparePrBranch,
-  readPrResponseMessage,
-} from "./pr_branch_preparation.ts";
+  createMergeConflictReplyReader,
+  runMergeConflictAgent,
+} from "./merge_conflict_agent.ts";
+import { guardGatedHead } from "./gated_head_guard.ts";
+import { preparePrBranch } from "./pr_branch_preparation.ts";
 import {
   type HeartbeatHandle,
   startHeartbeat,
@@ -57,7 +56,6 @@ import { resolvePreFlightSpec } from "./git_push.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
-import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import {
   applyDependencyConflictRules,
   type DependencyRuleApplier,
@@ -212,11 +210,6 @@ export interface MergeConflictProcessorDeps {
    */
   trustedAuthors?: readonly string[];
 }
-
-const DEFAULT_CLAUDE_TIMEOUT = OPERATIONAL_DEFAULTS.prFeedbackTimeout;
-const DEFAULT_CLAUDE_NO_OUTPUT_TIMEOUT =
-  OPERATIONAL_DEFAULTS.claudeNoOutputTimeout;
-const DEFAULT_MAX_RATE_LIMIT_RETRIES = 3;
 
 /** What the human must do when the worker gives up on a conflict. */
 export const CONFLICT_ESCALATION_NEXT_STEP =
@@ -856,18 +849,10 @@ async function resolveConflict(
   /** The originating issues behind both sides, when the agent is involved. */
   let issueContext: ConflictIssueContext | null = null;
 
-  // `readPrResponseMessage` consumes the file so a stale reply cannot be
-  // reused, and this attempt reads it in up to three places — the override
-  // guard, the ancestor failure and the resolved comment. Read it once.
-  let replyRead = false;
-  let reply: string | undefined;
-  const agentReply = async (): Promise<string | undefined> => {
-    if (!replyRead) {
-      reply = await readPrResponseMessage(workDir);
-      replyRead = true;
-    }
-    return reply;
-  };
+  // The reply file is consumed on read so a stale reply cannot be reused, and
+  // this attempt reads it in up to three places — the override guard, the
+  // ancestor failure and the resolved comment. Read it once (Issue #1767).
+  const agentReply = createMergeConflictReplyReader(workDir);
   if (merge.code !== 0) {
     const unmerged = await git(
       run,
@@ -960,12 +945,24 @@ async function resolveConflict(
       );
 
       agentRan = true;
-      const agentOutcome = await runResolutionAgent(
-        input,
-        processorDeps,
-        deferredFiles,
+      const agentOutcome = await runMergeConflictAgent({
+        repo,
+        target: { kind: "pr", prNumber },
+        baseBranch,
+        conflictedFiles: deferredFiles,
         issueContext,
-      );
+        workDir,
+        promptsDir: processorDeps.promptsDir,
+        qualityInstructions: processorDeps.qualityInstructions,
+        customInstructions: processorDeps.customInstructions,
+        timeouts: {
+          claudeTimeout: processorDeps.claudeTimeout,
+          claudeNoOutputTimeout: processorDeps.claudeNoOutputTimeout,
+          maxRateLimitRetries: processorDeps.maxRateLimitRetries,
+        },
+        logger,
+        runAgent: deps.claude.runClaudeWithRetry,
+      });
       if (!agentOutcome.ok) {
         await abortMerge(run, workDir);
         return await failAttempt(
@@ -1212,108 +1209,6 @@ async function gatherIssueContext(
     );
     return null;
   }
-}
-
-/**
- * What one agent run left behind.
- *
- * `terminated` is the run the worker itself ended (Issue #1693): the
- * maintenance-lane watchdog abandoned the handler at the cycle deadline and
- * SIGTERMed the agent mid-edit. The tree is then half-resolved through no
- * fault of the PR, so it is not a verdict on the conflict and must not be
- * judged as one.
- */
-interface ResolutionAgentOutcome {
-  /** The run was ended by the worker (SIGTERM, exit 143). */
-  terminated: boolean;
-}
-
-/**
- * Run the resolution agent against the conflicted working tree.
- *
- * @returns An error result when the agent could not run or timed out;
- *   otherwise whether the worker itself ended the run.
- */
-async function runResolutionAgent(
-  input: MergeConflictInput,
-  processorDeps: MergeConflictProcessorDeps,
-  conflictedFiles: readonly string[],
-  issueContext: ConflictIssueContext | null,
-): Promise<Result<ResolutionAgentOutcome>> {
-  const {
-    logger,
-    deps,
-    workDir,
-    qualityInstructions,
-    customInstructions,
-    claudeTimeout = DEFAULT_CLAUDE_TIMEOUT,
-    claudeNoOutputTimeout = DEFAULT_CLAUDE_NO_OUTPUT_TIMEOUT,
-    maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES,
-  } = processorDeps;
-
-  // `workDir` already is the checkout, so the repo context is read directly —
-  // appending the repo name looked one level too deep and injected nothing
-  // (Issue #1673).
-  const repoContextContent = await loadRepoContextContent(workDir, logger);
-
-  const promptResult = await buildMergeConflictPrompt({
-    repo: input.repo,
-    prNumber: String(input.prNumber),
-    baseBranch: input.baseBranch,
-    conflictedFiles,
-    qualityInstructions,
-    customInstructions,
-    repoContextContent,
-    promptsDir: processorDeps.promptsDir,
-    issueContext,
-  });
-  if (!promptResult.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `failed to build the merge-conflict prompt: ${promptResult.error.message}`,
-      ),
-    };
-  }
-
-  const claudeResult = await deps.claude.runClaudeWithRetry(
-    {
-      prompt: promptResult.value.prompt,
-      systemPrompt: promptResult.value.systemPrompt,
-      timeoutSeconds: claudeTimeout,
-      noOutputTimeout: claudeNoOutputTimeout,
-      phase: "merge_conflict",
-      cwd: workDir,
-      logger,
-    },
-    { maxRetries: maxRateLimitRetries },
-  );
-
-  if (!claudeResult.ok) {
-    return {
-      ok: false,
-      error: new Error(`agent run failed: ${claudeResult.error.message}`),
-    };
-  }
-  // Issue #1693: the worker ended this run — the handler was abandoned by the
-  // watchdog, or the run is shutting down. Reported, never judged: the caller
-  // withdraws the attempt instead of reading the half-edited tree as a
-  // failure the PR must pay for.
-  if (claudeResult.value.terminated) {
-    return { ok: true, value: { terminated: true } };
-  }
-  if (claudeResult.value.timedOut) {
-    return {
-      ok: false,
-      error: new Error(
-        claudeResult.value.timeoutReason === "no-output"
-          ? `agent produced no output for ${claudeNoOutputTimeout}s`
-          : `agent timed out after ${claudeTimeout}s`,
-      ),
-    };
-  }
-
-  return { ok: true, value: { terminated: false } };
 }
 
 /**
