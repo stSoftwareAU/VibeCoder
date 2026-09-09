@@ -325,9 +325,21 @@ export function lowFloorBytes(totalBytes: number, floors: DiskFloors): number {
 export const HOST_DISK_REFRESH_FILE = "host-disk.json";
 
 /**
+ * Launcher-side override of the refresh interval (Issue #1691), read by
+ * `run.sh` as `HOST_DISK_REFRESH_SECONDS` while it sits attached to its
+ * container. The launcher rewrites the file itself every five minutes for as
+ * long as the container runs, because a scheduler that never overlaps a
+ * still-running job (launchd's `StartInterval`) gives it no second tick to
+ * do so from. Tests set this to a second or two; production leaves it unset.
+ */
+export const HOST_DISK_REFRESH_INTERVAL_ENV = "VIBE_HOST_DISK_REFRESH_SECONDS";
+
+/**
  * How old a launcher reading may be and still be adopted. The launcher
- * ticks every 300 s; three missed ticks means it is not running, and a
- * figure from a dead launcher is not fresher than what the worker holds.
+ * refreshes every 300 s — from its scheduler tick, or from the attached
+ * launcher itself while the container runs (Issue #1691); three missed
+ * refreshes means it is not running, and a figure from a dead launcher is not
+ * fresher than what the worker holds.
  */
 export const DEFAULT_REFRESH_MAX_AGE_MS = 15 * 60_000;
 
