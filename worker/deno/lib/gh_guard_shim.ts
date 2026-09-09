@@ -68,7 +68,14 @@
  */
 
 import type { AuditMutation } from "./audit_journal.ts";
-import { recordMutation, resolveRunId } from "./audit_journal.ts";
+import {
+  recordMutation,
+  resolveBaseDir,
+  resolveRunId,
+  resolveWorkerId,
+} from "./audit_journal.ts";
+import { rosterPath, rosterSeenPath } from "./audit_anchor.ts";
+import type { GuardAuditTarget } from "./gh_guard_cli.ts";
 import { isAuditJournalEnabled } from "./audit_hook.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 import {
@@ -288,6 +295,14 @@ export function renderGhShimScript(opts: {
    * prepared; see `guard_deno_dir.ts` for why it is the read-only seed.
    */
   denoDir: string;
+  /**
+   * Where the guard child journals a refusal (Issue #1604). Present whenever
+   * the worker's own audit journal is on; absent means refusals are stderr
+   * lines only, as they were before. Baked into the wrapper as arguments, like
+   * everything else the child decides on, so the agent cannot redirect the
+   * journal with an `export`.
+   */
+  audit?: GuardAuditTarget;
 }): string {
   const claim = opts.claimedIssue;
   const guardArgs = [
@@ -308,7 +323,31 @@ export function renderGhShimScript(opts: {
     // dies with it when the spawn site cleans up.
     "--body-dir",
     opts.verdictDir,
+    ...(opts.audit
+      ? [
+        "--audit-dir",
+        opts.audit.baseDir,
+        "--audit-worker",
+        opts.audit.workerId,
+        "--audit-run",
+        opts.audit.runId,
+      ]
+      : []),
   ].map(shellQuote).join(" ");
+
+  // Issue #1604 — the journal's footprint, and only that: the journal
+  // directory (entries, lock, anchors) and the roster pair that sits beside
+  // it. Everything else the child may write is still the verdict buffer.
+  const writeGrant = [
+    opts.verdictDir,
+    ...(opts.audit
+      ? [
+        opts.audit.baseDir,
+        rosterPath(opts.audit.baseDir),
+        rosterSeenPath(opts.audit.baseDir),
+      ]
+      : []),
+  ].map(shellQuote).join(",");
 
   // Issue #3866: clear what the run never sets, pin what it does. `unset`
   // first, so a variable the run has no value for cannot be supplied by the
@@ -366,7 +405,7 @@ fi
 
 status=0
 ${shellQuote(opts.denoPath)} run --quiet --no-config --no-lock --allow-read \\
-  --allow-write=${shellQuote(opts.verdictDir)} \\
+  --allow-write=${writeGrant} \\
   ${shellQuote(opts.guardModulePath)} \\
   \${GUARD_ARGS[@]+"\${GUARD_ARGS[@]}"} -- "$@" >"$GUARD_OUT" || status=$?
 
@@ -571,6 +610,17 @@ export async function installGhGuardShim(
         ...(opts.claimedIssue ? { claimedIssue: opts.claimedIssue } : {}),
         verdictDir: dir,
         denoDir: denoDir.path,
+        // Issue #1604 — refusals reach the same journal as every other
+        // classified mutation, wherever that journal is on for this run.
+        ...(isAuditJournalEnabled(env)
+          ? {
+            audit: {
+              baseDir: resolveBaseDir(undefined, env),
+              workerId: resolveWorkerId(undefined, env),
+              runId: resolveRunId(env),
+            },
+          }
+          : {}),
         pinnedEnv: Object.fromEntries(
           GH_PINNED_ENV_VARS.flatMap((name) => {
             const value = opts.baseEnv[name];
