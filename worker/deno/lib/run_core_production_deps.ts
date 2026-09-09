@@ -375,6 +375,10 @@ import {
   reclaimWorkVolumeTiers,
   summariseWorkVolumeTiers,
 } from "./work_volume_tiers.ts";
+import {
+  pruneWorkVolume,
+  summariseWorkVolumePrune,
+} from "./work_volume_prune.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 import { describeGuestReclaimToHost } from "./work_volume_ratchet.ts";
@@ -2082,6 +2086,11 @@ export async function createProductionRunCoreDeps(
         ...(opts?.deadlineEpochMs !== undefined
           ? { deadlineEpochMs: opts.deadlineEpochMs }
           : {}),
+        // Issue #1693: the agent timeout one resolution would be granted. The
+        // drain never grants more than the handler budget still has, so a
+        // resolution is never started on a promise the watchdog then breaks
+        // by SIGTERMing the agent mid-edit.
+        agentTimeoutMs: config.claudeTimeout * 1000,
         // Issue #1111: the lease, the deadline and the cap each drop a due PR.
         // The cursor on the work volume is what stops the same PR losing that
         // race every cycle in silence, and the notice is what says so on the
@@ -2140,7 +2149,7 @@ export async function createProductionRunCoreDeps(
         // merge, so this pass and an issue slot never write one tree.
         acquireLease: (conflict) =>
           acquireMaintenanceRepoLease(conflict.repo, conflict.prNumber),
-        resolve: async (conflict) => {
+        resolve: async (conflict, budget) => {
           const repoSetupResult = await setupRepo(conflict.repo, workDir);
           if (!repoSetupResult.success) {
             logger.error(
@@ -2165,7 +2174,10 @@ export async function createProductionRunCoreDeps(
               config.repoConfig,
               conflict.repo,
             ),
-            claudeTimeout: config.claudeTimeout,
+            // Issue #1693: the drain's per-attempt grant when the cycle
+            // cannot cover the configured timeout, so the agent stops itself
+            // inside the handler's budget rather than being killed by it.
+            claudeTimeout: budget?.agentTimeoutSeconds ?? config.claudeTimeout,
             claudeNoOutputTimeout: config.claudeNoOutputTimeout,
             maxRateLimitRetries: config.maxRateLimitRetries,
             workerId: getWorkerUniqueId(config.workerName),
@@ -2199,6 +2211,11 @@ export async function createProductionRunCoreDeps(
           return {
             processed: result.value.processed,
             merged: result.value.merged,
+            // Issue #1693: a watchdog kill is not the PR's failure, so the
+            // drain must not treat the attempt as one that ran.
+            ...(result.value.attemptCharged !== undefined
+              ? { attemptCharged: result.value.attemptCharged }
+              : {}),
           };
         },
       });
@@ -2987,11 +3004,27 @@ export async function createProductionRunCoreDeps(
           healed: false,
         };
       }
+      // Issue #1725: regenerable build output first — every `target/` in an
+      // idle clone or lane worktree (a live heartbeat for the repository
+      // protects both). Only what is still short after that comes out of
+      // the disposable tier, whose clones cost a re-download.
+      const artefacts = await pruneWorkVolume({
+        workDir,
+        artefactsOnly: true,
+        artefactMaxTotalBytes: 0,
+      });
+      for (const error of artefacts.errors) {
+        logger.warn(`[HOST_DISK_LOW] build-artefact reclaim: ${error}`);
+      }
+      const stillNeeded = Math.max(
+        0,
+        hostDisk.shortfallBytes - artefacts.artefacts.bytesReclaimed,
+      );
       const result = await reclaimWorkVolumeTiers({
         workDir,
         monitoredRepos: config.repos,
         mode: "disk-low",
-        bytesNeeded: hostDisk.shortfallBytes,
+        bytesNeeded: stillNeeded,
         log: (message: string) => logger.info(message),
       });
       const after = await hostDisk.check({ force: true });
@@ -3010,8 +3043,9 @@ export async function createProductionRunCoreDeps(
         }`
         : "";
       return {
-        bytesReclaimed: result.bytesReclaimed,
-        detail: `${
+        bytesReclaimed: result.bytesReclaimed +
+          artefacts.artefacts.bytesReclaimed,
+        detail: `${summariseWorkVolumePrune(artefacts)}; ${
           summariseWorkVolumeTiers(result)
         }${hostReturn} — host disk now ${after.level}: ${after.detail}`,
         healed: after.level !== "low",

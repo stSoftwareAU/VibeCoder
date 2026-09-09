@@ -12,6 +12,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   type ArtefactRecord,
   findCargoTargets,
+  listLaneWorktrees,
   pruneWorkVolume,
   repoHasHeartbeat,
   selectArtefactsToRemove,
@@ -33,6 +34,34 @@ async function exists(path: string): Promise<boolean> {
 async function touch(path: string, epoch: number): Promise<void> {
   const when = new Date(epoch * 1000);
   await Deno.utime(path, when, when);
+}
+
+/** A lane worktree (`.git` is a file) with a cargo target dir (Issue #1725). */
+async function makeWorktree(
+  workDir: string,
+  lane: string,
+  repo: string,
+  targetAgeDays = 0,
+): Promise<string> {
+  const tree = `${workDir}/worktrees/${lane}/${repo}`;
+  await Deno.mkdir(`${tree}/target/debug`, { recursive: true });
+  await Deno.writeTextFile(
+    `${tree}/.git`,
+    `gitdir: ${workDir}/${repo}/.git/worktrees/${lane}\n`,
+  );
+  await Deno.writeTextFile(`${tree}/Cargo.toml`, "[package]\n");
+  await Deno.writeTextFile(`${tree}/target/debug/a.o`, "x");
+  const age = targetAgeDays * 86400;
+  for (
+    const p of [
+      `${tree}/target/debug/a.o`,
+      `${tree}/target/debug`,
+      `${tree}/target`,
+    ]
+  ) {
+    await touch(p, NOW - age);
+  }
+  return `${tree}/target`;
 }
 
 /** A repo clone with a cargo target dir, aged as asked. */
@@ -240,6 +269,113 @@ Deno.test("pruneWorkVolume - marker state files older than the limit are removed
     });
     assertEquals(result.markers.removed, [".heartbeat-marker_org_repo_1"]);
     assertEquals(await exists(`${tmp}/.heartbeat-marker_org_repo_2`), true);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1725 — lane worktrees are part of the artefact scan
+// ---------------------------------------------------------------------------
+
+Deno.test("listLaneWorktrees - every worktrees/<lane>/<repo> that is a git worktree, nothing else", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    await makeWorktree(tmp, "s1", "NEAT-AI-Discovery", 3);
+    await makeWorktree(tmp, "s2", "GRQ", 0);
+    // Not a worktree: no .git.
+    await Deno.mkdir(`${tmp}/worktrees/s1/scratch`, { recursive: true });
+    const found = await listLaneWorktrees(tmp);
+    assertEquals(found.map((w) => w.label).sort(), [
+      "worktrees/s1/NEAT-AI-Discovery",
+      "worktrees/s2/GRQ",
+    ]);
+    assertEquals(found.find((w) => w.label.endsWith("/GRQ"))?.repo, "GRQ");
+    assertEquals(await listLaneWorktrees(`${tmp}/absent`), []);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("pruneWorkVolume - a stale target in an idle lane worktree goes; a lane worktree of an active repo is skipped (Issue #1725)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const stale = await makeWorktree(tmp, "s1", "NEAT-AI-Discovery", 5);
+    const busy = await makeWorktree(tmp, "s2", "NEAT-AI-core", 9);
+    const cloneTarget = await makeRepo(tmp, "NEAT-AI-core", {
+      targetAgeDays: 9,
+    });
+    const sizes: Record<string, number> = {
+      [stale]: 23 * GIB,
+      [busy]: 5 * GIB,
+      [cloneTarget]: 1 * GIB,
+    };
+    const result = await pruneWorkVolume({
+      workDir: tmp,
+      nowFn: () => NOW,
+      sizeOf: (p) => Promise.resolve(sizes[p] ?? 0),
+      // The heartbeat names the repository; it covers the clone AND the
+      // lane's worktree of it.
+      isRepoActive: (_w, name) => Promise.resolve(name === "NEAT-AI-core"),
+      artefactMaxAgeDays: 2,
+      artefactMaxTotalBytes: 10 * GIB,
+    });
+    assertEquals(result.errors, []);
+    assertEquals(result.artefacts.removed.map((r) => r.repo), [
+      "worktrees/s1/NEAT-AI-Discovery",
+    ]);
+    assertEquals(result.artefacts.skippedActive.sort(), [
+      "NEAT-AI-core",
+      "worktrees/s2/NEAT-AI-core",
+    ]);
+    assertEquals(await exists(stale), false);
+    assertEquals(await exists(busy), true);
+    // The worktree itself, its checkout and its .git link survive.
+    assertEquals(
+      await exists(`${tmp}/worktrees/s1/NEAT-AI-Discovery/.git`),
+      true,
+    );
+    assertEquals(
+      await exists(`${tmp}/worktrees/s1/NEAT-AI-Discovery/Cargo.toml`),
+      true,
+    );
+    assert(
+      summariseWorkVolumePrune(result).includes(
+        "worktrees/s1/NEAT-AI-Discovery",
+      ),
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("pruneWorkVolume - artefactsOnly with a zero cap drops every idle target and touches no scratch or marker (Issue #1725)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const fresh = await makeWorktree(tmp, "s1", "GRQ-AutoTrader", 0);
+    const clone = await makeRepo(tmp, "GRQ-AutoTrader", { targetAgeDays: 0 });
+    await Deno.mkdir(`${tmp}/.old-scratch`, { recursive: true });
+    await touch(`${tmp}/.old-scratch`, NOW - 10 * 86400);
+    await Deno.writeTextFile(`${tmp}/.heartbeat-marker_org_repo_1`, "x");
+    await touch(`${tmp}/.heartbeat-marker_org_repo_1`, NOW - 10 * 86400);
+    const result = await pruneWorkVolume({
+      workDir: tmp,
+      nowFn: () => NOW,
+      sizeOf: (p) => Promise.resolve(p === fresh ? 5 * GIB : GIB),
+      isRepoActive: () => Promise.resolve(false),
+      artefactsOnly: true,
+      artefactMaxTotalBytes: 0,
+    });
+    assertEquals(result.errors, []);
+    assertEquals(result.artefacts.removed.length, 2);
+    assertEquals(result.artefacts.bytesReclaimed, 6 * GIB);
+    assertEquals(await exists(fresh), false);
+    assertEquals(await exists(clone), false);
+    // Nothing else moved.
+    assertEquals(result.scratch.removed, []);
+    assertEquals(result.markers.removed, []);
+    assertEquals(await exists(`${tmp}/.old-scratch`), true);
+    assertEquals(await exists(`${tmp}/.heartbeat-marker_org_repo_1`), true);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

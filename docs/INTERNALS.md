@@ -913,6 +913,8 @@ flowchart LR
   counts towards `usage_blocked_seconds` but not towards `idle_by_reason`: the
   fleet was holding a claim, not idle. This is the one deliberate overlap, and
   it is why the blocked totals can exceed the blocked share of `idle_seconds`.
+  A wait cut short because the handler watchdog abandoned the ladder mid-sleep
+  (Issue #1667) is not recorded at all — it was never served.
 - The metric is `usage_blocked`, not `token_blocked` (renamed): the secret
   redactor masks the value of any `key=value` whose key contains `TOKEN`, so
   the old name published as `token_blocked=***REDACTED***` and the figure was

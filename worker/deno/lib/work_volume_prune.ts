@@ -17,7 +17,13 @@
  *    (the repo root or one level down) is disposable — `cargo` rebuilds
  *    it. It goes when it has not been touched for `maxAgeDays`, or, when
  *    the artefacts across all repos exceed `maxTotalBytes`, oldest first
- *    until they fit. A repo with a live heartbeat is never touched.
+ *    until they fit. A repo with a live heartbeat is never touched. The
+ *    scan covers the shared clones **and** every lane worktree under
+ *    `worktrees/<lane>/<repo>` (Issue #1725): a lane builds in its own
+ *    worktree, and the per-repo clean at setup only reaches a worktree the
+ *    lane next reuses for that repo — 36 GB of `target/` sat in idle lane
+ *    worktrees on GRQ-25 while the host fell to 6 GB free, invisible to a
+ *    reclaim that treated `worktrees` as a reserved name and looked away.
  * 2. **Scratch in the work root.** A dot-prefixed *directory* in the work
  *    root that is not one of the worker's own state directories and has
  *    not been modified for `scratchMaxAgeHours` is an agent's leftover
@@ -36,6 +42,7 @@
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { isReservedWorkRootEntry } from "./stale_workdir.ts";
+import { LANE_WORKTREE_ROOT } from "./lane_worktree.ts";
 import {
   DEFAULT_HEARTBEAT_LIVE_WINDOW_SECONDS,
   isHeartbeatFileLive,
@@ -87,6 +94,12 @@ export interface WorkVolumePruneOptions {
   sizeOf?: (path: string) => Promise<number | null>;
   /** Whether a repo has a live claim on this host, injectable. */
   isRepoActive?: (workDir: string, repoName: string) => Promise<boolean>;
+  /**
+   * Run only the build-artefact rule (Issue #1725). The disk-low reclaim
+   * wants the regenerable output gone now and nothing else touched; the
+   * scratch and marker rules keep their own ages on the housekeeping pass.
+   */
+  artefactsOnly?: boolean;
 }
 
 export interface ArtefactRecord {
@@ -228,6 +241,59 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * A lane worktree under the work root (Issue #1725).
+ *
+ * `repo` is the directory's own name — the repository's — which is also the
+ * segment a heartbeat file names, so the same liveness check that protects
+ * the shared clone protects every lane's worktree of that repository.
+ */
+export interface LaneWorktreeDir {
+  /** Repository directory name, e.g. `NEAT-AI-Discovery`. */
+  repo: string;
+  /** Work-root-relative label, e.g. `worktrees/s1/NEAT-AI-Discovery`. */
+  label: string;
+  /** Absolute path of the worktree. */
+  path: string;
+}
+
+/**
+ * Every `worktrees/<lane>/<repo>` directory that is a git worktree
+ * (Issue #1725). A worktree's `.git` is a *file* pointing at the clone, so
+ * the check is for existence, not for a directory. Unreadable or absent
+ * roots yield nothing — a missing worktree root is the common case.
+ */
+export async function listLaneWorktrees(
+  workDir: string,
+): Promise<LaneWorktreeDir[]> {
+  const root = `${workDir}/${LANE_WORKTREE_ROOT}`;
+  const found: LaneWorktreeDir[] = [];
+  let lanes: Deno.DirEntry[] = [];
+  try {
+    for await (const lane of Deno.readDir(root)) lanes.push(lane);
+  } catch {
+    return found;
+  }
+  lanes = lanes.filter((l) => l.isDirectory && !l.name.startsWith("."));
+  for (const lane of lanes) {
+    try {
+      for await (const repo of Deno.readDir(`${root}/${lane.name}`)) {
+        if (!repo.isDirectory || repo.name.startsWith(".")) continue;
+        const path = `${root}/${lane.name}/${repo.name}`;
+        if (!(await exists(`${path}/.git`))) continue;
+        found.push({
+          repo: repo.name,
+          label: `${LANE_WORKTREE_ROOT}/${lane.name}/${repo.name}`,
+          path,
+        });
+      }
+    } catch {
+      // An unreadable lane directory holds nothing this pass can act on.
+    }
+  }
+  return found;
+}
+
 /** Find cargo `target/` dirs in a repo: the root and one level down. */
 export async function findCargoTargets(repoDir: string): Promise<string[]> {
   const found: string[] = [];
@@ -332,16 +398,25 @@ export async function pruneWorkVolume(
     return result;
   }
 
-  // 1. Build artefacts.
+  // 1. Build artefacts — in the shared clones, and in every lane worktree
+  //    (Issue #1725), which build in their own trees and are only cleaned
+  //    when the lane next reuses that repository.
+  const clones: { repo: string; label: string; path: string }[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory || entry.name.startsWith(".")) continue;
     if (isReservedWorkRootEntry(entry.name)) continue;
     const repoDir = `${workDir}/${entry.name}`;
     if (!(await exists(`${repoDir}/.git`))) continue;
-    const targets = await findCargoTargets(repoDir);
+    clones.push({ repo: entry.name, label: entry.name, path: repoDir });
+  }
+  clones.push(...(await listLaneWorktrees(workDir)));
+  for (const clone of clones) {
+    const targets = await findCargoTargets(clone.path);
     if (targets.length === 0) continue;
-    if (await isRepoActive(workDir, entry.name)) {
-      result.artefacts.skippedActive.push(entry.name);
+    // Keyed on the repository, not the directory: a live heartbeat for the
+    // repository protects the shared clone and every lane's worktree of it.
+    if (await isRepoActive(workDir, clone.repo)) {
+      result.artefacts.skippedActive.push(clone.label);
       continue;
     }
     for (const target of targets) {
@@ -349,7 +424,7 @@ export async function pruneWorkVolume(
       const newest = await newestMtimeShallow(target);
       const ageDays = newest === null ? Infinity : (now - newest) / 86400;
       result.artefacts.scanned.push({
-        repo: entry.name,
+        repo: clone.label,
         path: target,
         bytes,
         ageDays,
@@ -368,6 +443,8 @@ export async function pruneWorkVolume(
       result.artefacts.bytesReclaimed += record.bytes;
     }
   }
+
+  if (options.artefactsOnly) return result;
 
   // 2. Scratch directories in the work root.
   for (const entry of entries) {
@@ -414,6 +491,17 @@ export function summariseWorkVolumePrune(r: WorkVolumePruneResult): string {
     }, removed ${r.artefacts.removed.length} (${
       formatGb(r.artefacts.bytesReclaimed)
     })` +
+    // Name what went, largest first (Issue #1725): a reclaim that says
+    // "removed 3" beside a 36 GB drop should say where the 36 GB was.
+    (r.artefacts.removed.length > 0
+      ? ` — ${
+        [...r.artefacts.removed]
+          .sort((a, b) => b.bytes - a.bytes)
+          .slice(0, 3)
+          .map((a) => `${a.repo}/target ${formatGb(a.bytes)}`)
+          .join(", ")
+      }${r.artefacts.removed.length > 3 ? ", …" : ""}`
+      : "") +
     (r.artefacts.skippedActive.length > 0
       ? `, skipped active ${r.artefacts.skippedActive.join(", ")}`
       : ""),
