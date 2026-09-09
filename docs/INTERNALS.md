@@ -3324,6 +3324,17 @@ paths.
   conflicting, ends at `git reset --hard <pre-roll-back SHA>` with nothing
   pushed, and the result says which: `revert conflicted on #N` or
   `nothing left to revert`. The default branch is never written to.
+- **A merged tree is still only a merged tree.** A conflict-free merge says
+  both sides were internally consistent, not that reverting a child other
+  children call left something that works (Issue #974), so the caller's own
+  `verify` seam decides before the push, and a refused tree is reset away like
+  any other failure. A roll-back run without one logs `UNGATED:` rather than
+  let an unchecked push read like a checked one.
+- **Nothing unreadable is read as nothing.** An unparseable `gh` listing, a
+  `gh` call that failed, an unreadable `diff-tree`, `rev-list` or `log`, and a
+  merge that failed with *no* conflicted files all fail the roll-back with the
+  cause named. Each would otherwise plan an empty roll-back and report
+  `nothing left to revert` with every child still in place.
 
 A `merged: false` result is logged `WARNING` with its reason. The mechanics land
 here as a module; the exhaustion path that calls them is wired separately.

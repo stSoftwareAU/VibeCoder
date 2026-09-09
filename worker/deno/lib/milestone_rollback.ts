@@ -57,6 +57,11 @@ export interface RollbackCandidate {
   files: string[];
   /** The PR's head branch; a sync branch is never a roll-back candidate. */
   headRefName?: string;
+  /**
+   * Parents the merge commit has, when the caller already read them. Two
+   * parents need `git revert -m 1`; a squash-merged child has one.
+   */
+  parents?: number;
 }
 
 /** One child PR this roll-back reverted. */
@@ -79,10 +84,12 @@ export interface RollbackOutcome {
    * `"nothing left to revert"` — every candidate was reverted (or there were
    * none) and the merge still conflicts. `"revert conflicted on #N"` — the
    * revert of child PR N could not be applied, so the roll-back stopped
-   * rather than resolve a second conflict inside the first. The third value,
-   * {@link ALREADY_CLEAN_REASON}, answers a caller that asked for a roll-back
-   * on a branch that turned out to merge cleanly: a state worth reporting
-   * rather than silently reverting work over.
+   * rather than resolve a second conflict inside the first. Two more answer
+   * states the mechanics must not report as either of those:
+   * {@link ALREADY_CLEAN_REASON}, for a caller that asked for a roll-back on
+   * a branch that turned out to merge cleanly, and
+   * {@link VERIFICATION_REFUSED_REASON}, for a merge the caller's own gate
+   * refused.
    */
   reason?: string;
 }
@@ -93,6 +100,9 @@ export const ALREADY_CLEAN_REASON =
 
 /** Reason reported when the candidates ran out with the merge still conflicting. */
 export const NOTHING_LEFT_REASON = "nothing left to revert";
+
+/** Reason prefix reported when the caller's gate refused the merged tree. */
+export const VERIFICATION_REFUSED_REASON = "the merged tree was refused";
 
 /** Injected seams, so the whole path is testable against real git or stubs. */
 export interface MilestoneRollbackDeps {
@@ -121,6 +131,13 @@ export interface MilestoneRollbackDeps {
    * that has lost an entry still cannot revert the same PR twice.
    */
   alreadyReverted?: number[];
+  /**
+   * The gate the merged tree must pass before it is pushed (Issue #974). A
+   * roll-back with none pushes an unverified tree and says so in the log, the
+   * way the sync's own `UNGATED:` note does — silence is what turns an
+   * unchecked push into one that reads exactly like a checked one.
+   */
+  verify?: () => Promise<{ ok: boolean; detail: string }>;
 }
 
 /** The subject line a roll-back revert commit carries. */
@@ -211,15 +228,37 @@ interface MergedChildPr {
  *
  * A PR GitHub reports without a merge commit is kept with an empty SHA rather
  * than dropped: {@link planRollback} refuses it, and the caller can say so.
+ *
+ * A listing that does not parse is an **error**, never an empty list: read as
+ * "this branch has no merged children", it would report the roll-back as
+ * having nothing left to revert while every child was still in place.
  */
-export function parseMergedChildPrs(json: string): RollbackCandidate[] {
+export function parseMergedChildPrs(
+  json: string,
+): Result<RollbackCandidate[]> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json || "[]");
-  } catch {
-    return [];
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to roll back: the merged child PR listing did not parse, ` +
+          `so which children exist is unknown (Issue #1771): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+      ),
+    };
   }
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to roll back: the merged child PR listing is not a list, ` +
+          `so which children exist is unknown (Issue #1771)`,
+      ),
+    };
+  }
   const candidates: RollbackCandidate[] = [];
   for (const entry of parsed as MergedChildPr[]) {
     const prNumber = entry?.number;
@@ -236,7 +275,7 @@ export function parseMergedChildPrs(json: string): RollbackCandidate[] {
         : {}),
     });
   }
-  return candidates;
+  return { ok: true, value: candidates };
 }
 
 /** Run git and report the exit code and both streams, never throwing. */
@@ -260,15 +299,30 @@ function gitDetail(result: { stderr: string }): string {
   return result.stderr.trim() || "git reported no stderr";
 }
 
-/** Number of parents a commit has; -1 when git could not say. */
+/**
+ * Number of parents a commit has.
+ *
+ * An unreadable parent count is an error rather than a guess: guessed low, a
+ * two-parent merge is reverted without `-m 1` and git refuses, which the
+ * roll-back would then misreport as the child's revert conflicting.
+ */
 async function parentCount(
   deps: MilestoneRollbackDeps,
   sha: string,
-): Promise<number> {
+): Promise<Result<number>> {
   const result = await runGit(deps, ["rev-list", "--parents", "-n", "1", sha]);
-  if (result.code !== 0) return -1;
   const tokens = result.stdout.trim().split(/\s+/).filter(Boolean);
-  return tokens.length > 0 ? tokens.length - 1 : -1;
+  if (result.code !== 0 || tokens.length === 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to roll back '${deps.milestoneBranch}': the parents of ` +
+          `merge commit ${sha} could not be read, so how to revert it is ` +
+          `unknown (Issue #1771): ${gitDetail(result)}`,
+      ),
+    };
+  }
+  return { ok: true, value: tokens.length - 1 };
 }
 
 /**
@@ -278,26 +332,46 @@ async function parentCount(
  * added to it — a plain `diff-tree` of a two-parent merge reports nothing at
  * all, and `-m` reports both parents' diffs pooled together, which would plan
  * a roll-back of children that touched none of the conflicting files.
+ *
+ * A diff git refused to produce is an error, never an empty list: read as
+ * "this child touched nothing", the roll-back would skip the very child
+ * holding the conflicting file and report that there was nothing to revert.
  */
-export async function readTouchedFiles(
+async function readTouchedFiles(
   deps: MilestoneRollbackDeps,
   sha: string,
-  parents?: number,
-): Promise<string[]> {
-  if (!isCommitSha(sha)) return [];
-  const count = parents ?? await parentCount(deps, sha);
-  const args = count >= 1
+  parents: number,
+): Promise<Result<string[]>> {
+  const args = parents >= 1
     ? ["diff-tree", "--no-commit-id", "--name-only", "-r", `${sha}^1`, sha]
     : ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha];
   const result = await runGit(deps, args);
-  if (result.code !== 0) return [];
-  return result.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (result.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to roll back '${deps.milestoneBranch}': the files merge ` +
+          `commit ${sha} touched could not be read, so which children are in ` +
+          `the way is unknown (Issue #1771): ${gitDetail(result)}`,
+      ),
+    };
+  }
+  return {
+    ok: true,
+    value: result.stdout.split("\n").map((line) => line.trim()).filter(Boolean),
+  };
 }
 
-/** Every merged child PR of the milestone branch, with its touched files. */
+/**
+ * Every merged child PR of the milestone branch, with its touched files.
+ *
+ * A listing GitHub would not give up fails the roll-back rather than reading
+ * as a branch with no children — the difference between "there is nothing to
+ * revert" and "what there is to revert could not be read".
+ */
 async function collectCandidates(
   deps: MilestoneRollbackDeps,
-): Promise<RollbackCandidate[]> {
+): Promise<Result<RollbackCandidate[]>> {
   let listed = "";
   try {
     listed = await deps.gh([
@@ -313,19 +387,22 @@ async function collectCandidates(
       "number,title,mergeCommit,mergedAt,headRefName",
     ]);
   } catch (error) {
-    deps.log?.(
-      `WARNING: milestone roll-back could not list the merged children of ` +
-        `'${deps.milestoneBranch}' in ${deps.repo}, so nothing can be ` +
-        `reverted (Issue #1771): ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-    );
-    return [];
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to roll back '${deps.milestoneBranch}': the merged children ` +
+          `of the branch could not be listed from ${deps.repo} ` +
+          `(Issue #1771): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+      ),
+    };
   }
 
-  const candidates = parseMergedChildPrs(listed);
+  const parsed = parseMergedChildPrs(listed);
+  if (!parsed.ok) return parsed;
   const withFiles: RollbackCandidate[] = [];
-  for (const candidate of candidates) {
+  for (const candidate of parsed.value) {
     if (!candidate.sha) {
       deps.log?.(
         `WARNING: milestone roll-back skipped child PR #${candidate.prNumber} ` +
@@ -334,20 +411,47 @@ async function collectCandidates(
       );
       continue;
     }
+    const parents = await parentCount(deps, candidate.sha);
+    if (!parents.ok) return parents;
+    const files = await readTouchedFiles(deps, candidate.sha, parents.value);
+    if (!files.ok) return files;
     withFiles.push({
       ...candidate,
-      files: await readTouchedFiles(deps, candidate.sha),
+      files: files.value,
+      parents: parents.value,
     });
   }
-  return withFiles;
+  return { ok: true, value: withFiles };
 }
 
-/** The child PRs the milestone branch's own log says were already reverted. */
+/**
+ * The child PRs the milestone branch's own commits say were already reverted.
+ *
+ * Read from the commits this branch has that the default branch does not,
+ * which is exactly where a previous roll-back's revert commits live — and is
+ * bounded by the branch rather than by an arbitrary depth. A log git would not
+ * produce fails the roll-back: without it the same child could be reverted
+ * twice, and the second revert re-applies the change the first one removed.
+ */
 async function revertedOnBranch(
   deps: MilestoneRollbackDeps,
-): Promise<number[]> {
-  const log = await runGit(deps, ["log", "--format=%B", "-n", "500", "HEAD"]);
-  return log.code === 0 ? parseRevertedChildPrs(log.stdout) : [];
+): Promise<Result<number[]>> {
+  const log = await runGit(deps, [
+    "log",
+    "--format=%B",
+    `origin/${deps.defaultBranch}..HEAD`,
+  ]);
+  if (log.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to roll back '${deps.milestoneBranch}': its commits could ` +
+          `not be read, so which children were already reverted is unknown ` +
+          `(Issue #1771): ${gitDetail(log)}`,
+      ),
+    };
+  }
+  return { ok: true, value: parseRevertedChildPrs(log.stdout) };
 }
 
 /** Undo any merge git left in progress, then put HEAD back where it was. */
@@ -370,17 +474,27 @@ async function resetTo(
   return { ok: true, value: undefined };
 }
 
-/** Try the merge; report the conflicting paths when it does not take. */
+/**
+ * Try the merge; report the conflicting paths when it does not take.
+ *
+ * A merge that failed with **no** conflicted files failed for some other
+ * reason — unrelated histories, a missing `origin/<default>`, a dirty tree —
+ * and git's own explanation is the only thing that says which. Reported as a
+ * conflict with no conflicting paths it would plan an empty roll-back and
+ * finish claiming there was nothing left to revert (Issue #4260's lesson).
+ */
 async function tryMerge(
   deps: MilestoneRollbackDeps,
-): Promise<{ clean: boolean; conflicting: string[]; detail: string }> {
+): Promise<Result<{ clean: boolean; conflicting: string[] }>> {
   const merge = await runGit(deps, [
     "merge",
     "--no-commit",
     "--no-ff",
     `origin/${deps.defaultBranch}`,
   ]);
-  if (merge.code === 0) return { clean: true, conflicting: [], detail: "" };
+  if (merge.code === 0) {
+    return { ok: true, value: { clean: true, conflicting: [] } };
+  }
   const conflicted = await runGit(deps, [
     "diff",
     "--name-only",
@@ -390,7 +504,18 @@ async function tryMerge(
     ? conflicted.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
     : [];
   await runGit(deps, ["merge", "--abort"]);
-  return { clean: false, conflicting, detail: gitDetail(merge) };
+  if (conflicting.length === 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to roll back '${deps.milestoneBranch}': merging ` +
+          `'origin/${deps.defaultBranch}' failed with no conflicted files, ` +
+          `so the failure is not a conflict a roll-back can clear ` +
+          `(Issue #1771): ${gitDetail(merge)}`,
+      ),
+    };
+  }
+  return { ok: true, value: { clean: false, conflicting } };
 }
 
 /**
@@ -518,7 +643,12 @@ export async function executeRollback(
 
   let conflictingPaths = deps.conflictingPaths ?? [];
   if (deps.conflictingPaths === undefined) {
-    const probe = await tryMerge(deps);
+    const probed = await tryMerge(deps);
+    if (!probed.ok) {
+      const reset = await resetTo(deps, preRollbackSha);
+      return reset.ok ? probed : reset;
+    }
+    const probe = probed.value;
     if (probe.clean) {
       const reset = await resetTo(deps, preRollbackSha);
       if (!reset.ok) return reset;
@@ -535,18 +665,28 @@ export async function executeRollback(
     conflictingPaths = probe.conflicting;
   }
 
+  const candidates = await collectCandidates(deps);
+  if (!candidates.ok) return candidates;
+  const previouslyReverted = await revertedOnBranch(deps);
+  if (!previouslyReverted.ok) return previouslyReverted;
+
   const plan = planRollback(
-    await collectCandidates(deps),
+    candidates.value,
     conflictingPaths,
-    [...(deps.alreadyReverted ?? []), ...await revertedOnBranch(deps)],
+    [...(deps.alreadyReverted ?? []), ...previouslyReverted.value],
   );
 
   const reverted: RevertedChild[] = [];
   for (const candidate of plan) {
-    const parents = await parentCount(deps, candidate.sha);
     // A child PR that squash-merged has one parent; one merged as a merge
     // commit has two, and git will not revert that without being told which
     // side is the mainline. `-m 1` is the milestone branch either way.
+    let parents = candidate.parents;
+    if (parents === undefined) {
+      const read = await parentCount(deps, candidate.sha);
+      if (!read.ok) return read;
+      parents = read.value;
+    }
     const revertArgs = parents >= 2
       ? ["revert", "--no-edit", "-m", "1", candidate.sha]
       : ["revert", "--no-edit", candidate.sha];
@@ -600,7 +740,45 @@ export async function executeRollback(
     });
 
     const merge = await tryMerge(deps);
-    if (!merge.clean) continue;
+    if (!merge.ok) {
+      const reset = await resetTo(deps, preRollbackSha);
+      return reset.ok ? merge : reset;
+    }
+    if (!merge.value.clean) continue;
+
+    // A conflict-free merge only says both sides were internally consistent
+    // (Issue #974): a reverted child other children call still compiles into
+    // nothing. The caller's gate decides — and a roll-back that ran without
+    // one says so rather than letting an unverified push read like a verified
+    // one, the way the sync's own `UNGATED:` note does.
+    if (deps.verify) {
+      const verdict = await deps.verify();
+      if (!verdict.ok) {
+        const reset = await resetTo(deps, preRollbackSha);
+        if (!reset.ok) return reset;
+        deps.log?.(
+          `WARNING: milestone roll-back of '${deps.milestoneBranch}' merged ` +
+            `'${deps.defaultBranch}' after reverting ${reverted.length} ` +
+            `child PR(s), and the verification refused the result, so the ` +
+            `branch was reset to ${preRollbackSha} and nothing was pushed ` +
+            `(Issues #974, #1771): ${verdict.detail}`,
+        );
+        return {
+          ok: true,
+          value: {
+            merged: false,
+            reverted: [],
+            reason: `${VERIFICATION_REFUSED_REASON}: ${verdict.detail}`,
+          },
+        };
+      }
+    } else {
+      deps.log?.(
+        `UNGATED: milestone roll-back of '${deps.milestoneBranch}' pushed a ` +
+          `merged tree nothing verified — no verification was supplied ` +
+          `(Issues #974, #1771)`,
+      );
+    }
 
     const landed = await commitAndPushMerge(deps);
     if (!landed.ok) {

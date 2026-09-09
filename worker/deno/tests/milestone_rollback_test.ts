@@ -129,9 +129,21 @@ Deno.test("parseMergedChildPrs - maps gh output, dropping what cannot be reverte
     { number: 6, title: "No merge commit", mergeCommit: null },
     { title: "No number", mergeCommit: { oid: "b".repeat(40) } },
   ]));
-  assertEquals(parsed.length, 2);
-  assertEquals(parsed[0]!.sha, "a".repeat(40));
-  assertEquals(parsed[1]!.sha, "", "an absent merge commit reads as no SHA");
+  assert(parsed.ok, "a well-formed listing parses");
+  assertEquals(parsed.value.length, 2);
+  assertEquals(parsed.value[0]!.sha, "a".repeat(40));
+  assertEquals(
+    parsed.value[1]!.sha,
+    "",
+    "an absent merge commit reads as no SHA",
+  );
+});
+
+Deno.test("parseMergedChildPrs - an unreadable listing fails, never reads as no children", () => {
+  for (const broken of ["{not json", '{"prs": []}']) {
+    const parsed = parseMergedChildPrs(broken);
+    assertEquals(parsed.ok, false, `expected ${broken} to be refused`);
+  }
 });
 
 Deno.test("revertCommitMessage - names the PR, its title and the milestone roll-back", () => {
@@ -538,6 +550,148 @@ Deno.test("executeRollback - a branch that already merges cleanly reverts nothin
     assert(
       warnings.some((line) => line.startsWith("WARNING:")),
       "the anomaly is reported, not swallowed",
+    );
+  } finally {
+    await Deno.remove(fixture.tmp, { recursive: true });
+  }
+});
+
+Deno.test("executeRollback - a revert that conflicts stops the roll-back and restores the branch", async () => {
+  const fixture = await makeFixture("milestone_rollback_revert_conflict_");
+  try {
+    const shaB = await commitFiles(fixture.clone, "child B", {
+      "shared.txt": "child B\n",
+    });
+    // A later hand edit of the same line: reverting child B no longer applies.
+    await commitFiles(fixture.clone, "hand edit on the milestone branch", {
+      "shared.txt": "hand edit\n",
+    });
+    await runGit(["push", "origin", MILESTONE_BRANCH], fixture.clone);
+    const preRollbackSha = (await runGit(["rev-parse", "HEAD"], fixture.clone))
+      .stdout.trim();
+    await advanceDefaultBranch(fixture, { "shared.txt": "default\n" });
+
+    const result = await executeRollback(depsFor(
+      fixture,
+      ghStub([
+        {
+          number: 51,
+          title: "Child B",
+          mergedAt: "2026-09-02T10:00:00Z",
+          headRefName: "issue-51",
+          sha: shaB,
+        },
+      ], []),
+      { conflictingPaths: ["shared.txt"] },
+    ));
+
+    assert(result.ok, `roll-back failed: ${result.ok ? "" : result.error}`);
+    assertEquals(result.value.merged, false);
+    assertEquals(result.value.reverted, []);
+    assertEquals(result.value.reason, "revert conflicted on #51");
+    assertEquals(
+      (await runGit(["rev-parse", "HEAD"], fixture.clone)).stdout.trim(),
+      preRollbackSha,
+      "the branch is back where it started",
+    );
+    await runGit(["fetch", "origin"], fixture.clone);
+    assertEquals(
+      (await runGit(["rev-parse", `origin/${MILESTONE_BRANCH}`], fixture.clone))
+        .stdout.trim(),
+      preRollbackSha,
+      "nothing was pushed",
+    );
+  } finally {
+    await Deno.remove(fixture.tmp, { recursive: true });
+  }
+});
+
+Deno.test("executeRollback - a merged tree the verification refuses is never pushed", async () => {
+  const fixture = await makeFixture("milestone_rollback_verify_");
+  try {
+    const shaB = await commitFiles(fixture.clone, "child B", {
+      "shared.txt": "child B\n",
+    });
+    await runGit(["push", "origin", MILESTONE_BRANCH], fixture.clone);
+    const preRollbackSha = (await runGit(["rev-parse", "HEAD"], fixture.clone))
+      .stdout.trim();
+    await advanceDefaultBranch(fixture, { "shared.txt": "default\n" });
+
+    const result = await executeRollback(depsFor(
+      fixture,
+      ghStub([
+        {
+          number: 61,
+          title: "Child B",
+          mergedAt: "2026-09-02T10:00:00Z",
+          headRefName: "issue-61",
+          sha: shaB,
+        },
+      ], []),
+      {
+        conflictingPaths: ["shared.txt"],
+        verify: () =>
+          Promise.resolve({ ok: false, detail: "the unit suite failed" }),
+      },
+    ));
+
+    assert(result.ok, `roll-back failed: ${result.ok ? "" : result.error}`);
+    assertEquals(result.value.merged, false);
+    assertEquals(result.value.reverted, []);
+    assertStringIncludes(result.value.reason ?? "", "the unit suite failed");
+    assertEquals(
+      (await runGit(["rev-parse", "HEAD"], fixture.clone)).stdout.trim(),
+      preRollbackSha,
+      "the refused merge was reset away",
+    );
+    await runGit(["fetch", "origin"], fixture.clone);
+    assertEquals(
+      (await runGit(["rev-parse", `origin/${MILESTONE_BRANCH}`], fixture.clone))
+        .stdout.trim(),
+      preRollbackSha,
+      "nothing was pushed",
+    );
+  } finally {
+    await Deno.remove(fixture.tmp, { recursive: true });
+  }
+});
+
+Deno.test("executeRollback - an unreadable branch state fails loudly rather than reverting blind", async () => {
+  const result = await executeRollback({
+    repo: "owner/repo",
+    milestoneBranch: MILESTONE_BRANCH,
+    defaultBranch: "main",
+    git: () =>
+      Promise.resolve({
+        code: 128,
+        stdout: "",
+        stderr: "not a git repository",
+      }),
+    gh: () => Promise.resolve("[]"),
+  });
+  assertEquals(result.ok, false);
+  assertStringIncludes(
+    result.ok ? "" : result.error.message,
+    "not a git repository",
+  );
+});
+
+Deno.test("executeRollback - a listing gh will not give up fails, never reads as no children", async () => {
+  const fixture = await makeFixture("milestone_rollback_gh_failure_");
+  try {
+    await commitFiles(fixture.clone, "child B", { "shared.txt": "child B\n" });
+    await runGit(["push", "origin", MILESTONE_BRANCH], fixture.clone);
+    await advanceDefaultBranch(fixture, { "shared.txt": "default\n" });
+
+    const result = await executeRollback(depsFor(
+      fixture,
+      () => Promise.reject(new Error("gh: API rate limit exceeded")),
+      { conflictingPaths: ["shared.txt"] },
+    ));
+    assertEquals(result.ok, false);
+    assertStringIncludes(
+      result.ok ? "" : result.error.message,
+      "API rate limit exceeded",
     );
   } finally {
     await Deno.remove(fixture.tmp, { recursive: true });

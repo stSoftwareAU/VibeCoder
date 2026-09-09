@@ -949,6 +949,17 @@
       "paths": [
         "worker/deno/lib/merge_conflict_agent.ts"
       ]
+    },
+    {
+      "issue": 1771,
+      "chunk": "12n",
+      "title": "the milestone roll-back",
+      "ledger": "docs/audits/security-sweep-1771-milestone-rollback.md",
+      "definition": "modules added to lib/ after 12a-12m recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_rollback.ts"
+      ]
     }
   ]
 }
