@@ -2,10 +2,10 @@
  * Secret redaction for log output (Issue #2417).
  *
  * Self-audit finding: the worker's logger interpolated message and context
- * values verbatim into stderr (captured into worker-*.log and CI output).
- * Any secret that reached a `logger.*` call — most plausibly a tokenised git
- * clone URL inside a `git`/`gh` error string, or a logged tail of external
- * command output — would have leaked into those logs.
+ * values verbatim into stderr (captured into worker-*.log and CI output). A
+ * secret reaching any log line (e.g. a tokenised git clone URL inside a
+ * `git`/`gh` error, or a logged tail of external command output) would have
+ * leaked into those logs.
  *
  * `redactSecrets` is the single chokepoint that masks known secret shapes
  * before any bytes are written. It is wired into the logger's write path
@@ -43,6 +43,7 @@
  */
 
 import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
+import { isPlausibleSecretAssignmentValue } from "./secret_assignment_value.ts";
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -314,16 +315,12 @@ const RULES: readonly RedactionRule[] = [
   //     User name,Access key ID,Secret access key
   //     svc,AKIAIOSFODNN7EXAMPLE,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
   //
-  // The `AWS_SECRET_ACCESS_KEY=…` and `"aws_secret_access_key": "…"` forms
-  // are already covered by `secret-assignment` below; this rule is for the
-  // secret standing on its own beside its id.
-  //
   // MUST precede `aws-access-key-id`: that rule replaces the anchor with the
   // placeholder, and an anchor that is gone matches nothing.
   //
-  // The window is bounded (the Issue #3942 linearity rule) and the value is
-  // excluded from being pure lowercase hex — a git commit SHA is exactly 40
-  // hex characters and appears beside redacted material constantly.
+  // The window is bounded (Issue #3942) and the value is excluded from being
+  // pure lowercase hex — a git commit SHA is exactly 40 hex characters and
+  // appears beside redacted material constantly.
   {
     name: "aws-secret-access-key",
     pattern:
@@ -377,12 +374,21 @@ const RULES: readonly RedactionRule[] = [
   // truncated, invalid JSON. Excluding `{` and `[` costs no coverage: a
   // credential never starts with either, and a secret nested inside the object
   // is still masked by this rule's own pass over the inner `"key": "value"`.
+  //
+  // A trailing credential label may also precede Markdown rather than a
+  // value (Issue #1727). The candidate is checked before replacement: fences,
+  // headings and list markers are not credentials, and ordinary prose is not
+  // masked merely because it follows a label. Known-token signatures remain
+  // independent of this rule. The original bounded pattern still finds both
+  // inline and multiline assignments, including quoted and bold values.
   {
     name: "secret-assignment",
     pattern:
       /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!\*\*\*REDACTED)(?![{[])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|\S+)/gi,
-    replace: (_m, key: string, sep: string) =>
-      `${key}${sep}${REDACTION_PLACEHOLDER}`,
+    replace: (match: string, key: string, sep: string, value: string) =>
+      isPlausibleSecretAssignmentValue(value)
+        ? `${key}${sep}${REDACTION_PLACEHOLDER}`
+        : match,
   },
   // Space-separated CLI flag carrying a secret (Issue #3648). The
   // `secret-assignment` rule above requires an `=` or `:` separator, so a
@@ -405,7 +411,7 @@ const RULES: readonly RedactionRule[] = [
   },
   // Bare 32-hex credential — the ImgBB API key shape (Issue #1387). The two
   // rules above catch that key only while it keeps its wrapper: an
-  // `--imgbb-api-key <key>` flag or a `VIBE_IMGBB_API_KEY=<key>` assignment.
+  // `--imgbb-api-key <key>` flag or `VIBE_IMGBB_API_KEY=<key>` assignment.
   // Stripped of both — an upload client echoing the rejected key into an
   // error string, or the key sitting in an `?key=` query parameter — it is a
   // bare hex blob with no provider prefix, and no rule matched it at all.
@@ -435,20 +441,16 @@ const RULES: readonly RedactionRule[] = [
 
 /**
  * Report whether `text` matches any signature rule, without rewriting it.
- * This is the scan the decode-then-rescan pass applies to each decoded
- * candidate (Issue #188).
  *
- * Detection goes through `String.prototype.search` rather than
- * `RegExp.prototype.test`: every rule pattern is global, and `test()` would
- * advance and carry `lastIndex` across calls, making the result depend on the
- * previous input. `search` saves and restores `lastIndex`, so the literal rule
- * patterns can be reused as-is. Cloning them through `new RegExp(...)` would
- * do the same job but trips semgrep's `detect-non-literal-regexp` rule, and a
- * dynamically-built regex is the wrong primitive here anyway — the patterns
- * are all hardcoded literals.
+ * Useful for the decode-then-rescan pass; it must use the same value-side
+ * predicate as the replacement pass (Issue #1727), so a Markdown fence does
+ * not become a false secret hit merely because it follows `credential:`.
  */
 function matchesSignatureRule(text: string): boolean {
-  return RULES.some((rule) => text.search(rule.pattern) !== -1);
+  return RULES.some((rule) => text.replace(
+    rule.pattern,
+    rule.replace as (substring: string, ...args: unknown[]) => string,
+  ) !== text);
 }
 
 /**
@@ -459,14 +461,13 @@ function matchesSignatureRule(text: string): boolean {
  * transform — base64, hex, `rev`, or a credential split across lines.
  *
  * @param text - Arbitrary text destined for a log sink.
- * @returns The text with any detected secrets replaced by
+ * @returns The text with any detected secrets replaced with
  *          {@link REDACTION_PLACEHOLDER}. Non-secret content is unchanged.
  */
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let out = text;
   for (const rule of RULES) {
-    // Each rule's pattern is global; replace handles every match in the line.
     out = out.replace(
       rule.pattern,
       rule.replace as (substring: string, ...args: unknown[]) => string,
