@@ -23,13 +23,9 @@ import {
 } from "../lib/claude_runner.ts";
 import type { Logger } from "../types.ts";
 import { rateLimitSignalPath } from "../lib/rate_limit_signal.ts";
+import { posixSingleQuote } from "../lib/shell_quote.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
-
-/** Single-quote `value` for POSIX sh, so an apostrophe cannot break the stub. */
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
 
 /**
  * Run `fn` with a stub agent that refuses with `stderrMessage` and logs
@@ -43,7 +39,7 @@ function withUsageLimitStub<T>(
 ): Promise<T> {
   const body = `modelLog="$(dirname "$0")/models.log"\n` +
     `prev=""\nfor arg in "$@"; do\n  if [ "$prev" = "--model" ]; then printf '%s\\n' "$arg" >> "$modelLog"; fi\n  prev="$arg"\ndone\n` +
-    `printf '%s\\n' ${shellQuote(stderrMessage)} >&2\n` +
+    `printf '%s\\n' ${posixSingleQuote(stderrMessage)} >&2\n` +
     "exit 1\n";
   return withAgentStub(
     body,
@@ -220,7 +216,7 @@ Deno.test({
       assertEquals(models, ["fable"]);
       const reset = result.value.usageLimit?.resetEpochMs;
       assert(reset, "the reset time must be parsed from the refusal");
-      assertEquals(new Date(reset!).toISOString().slice(11, 16), "13:50");
+      assertEquals(new Date(reset).toISOString().slice(11, 16), "13:50");
       // The short-backoff ladder was not the branch taken.
       assertEquals(securityTags.includes("RATE_LIMIT"), false);
       assert(securityTags.includes("USAGE_LIMIT"), securityTags.join(","));
