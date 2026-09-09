@@ -22,10 +22,96 @@ import {
   USAGE_LIMIT_MAX_WAIT_SECONDS,
 } from "../lib/claude_runner.ts";
 import type { Logger } from "../types.ts";
-import { rateLimitSignalPath } from "../lib/rate_limit_signal.ts";
+import {
+  isRateLimitActive,
+  rateLimitSignalPath,
+} from "../lib/rate_limit_signal.ts";
 import { posixSingleQuote } from "../lib/shell_quote.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+import { createClaudeCredentialPool } from "../lib/claude_credential_pool.ts";
+import { createClaudeSpawnGate } from "../lib/claude_spawn_gate.ts";
+import type { ClaudeTokenBudget } from "../lib/claude_token_budget.ts";
+import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
+import {
+  CLAUDE_PROVIDER_ID,
+  resolveAgentProvider,
+} from "../lib/agent_provider.ts";
+
+/** One hour, in milliseconds. */
+const HOUR = 3_600_000;
+
+/** The Claude provider descriptor the pool fixtures are built against. */
+const CLAUDE = resolveAgentProvider(CLAUDE_PROVIDER_ID);
+
+/** A discovered pool token file whose value the child environment carries. */
+function tokenFile(label: string): ProviderTokenFile {
+  const name = "CLAUDE_CODE_OAUTH_TOKEN";
+  const value = `token-${label}`;
+  return {
+    label,
+    path: `/creds/claude/${label}.env`,
+    name,
+    value,
+    primary: label === "provider",
+    poolMember: true,
+    entries: [{ name, value }],
+  };
+}
+
+/** Measured figures for one token, as a probe would have reported them. */
+function budget(
+  label: string,
+  fiveHourRemaining: number,
+  now: number,
+): ClaudeTokenBudget {
+  return {
+    known: true,
+    label,
+    remainingFraction: fiveHourRemaining,
+    resetAt: now + 2 * HOUR,
+    window: "five_hour",
+    windows: [
+      {
+        window: "five_hour",
+        remainingFraction: fiveHourRemaining,
+        resetAt: now + 2 * HOUR,
+      },
+      {
+        window: "seven_day",
+        remainingFraction: 0.7,
+        resetAt: now + 100 * HOUR,
+      },
+    ],
+  };
+}
+
+/**
+ * A pool of two tokens with figures already recorded, and the gate over it.
+ *
+ * `fetchFn` throws: every figure these tests need is recorded, so a probe
+ * would mean the gate measured something it had already been told.
+ */
+function pooledGate(
+  record: (pool: ReturnType<typeof createClaudeCredentialPool>) => void,
+  setEnv: (name: string, value: string) => void,
+) {
+  const lines: string[] = [];
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: () => {
+      throw new Error("the gate must not probe figures it already holds");
+    },
+    log: (line) => lines.push(line),
+  });
+  record(pool);
+  return {
+    gate: createClaudeSpawnGate(pool, { setEnv, log: (l) => lines.push(l) }),
+    lines,
+  };
+}
 
 /**
  * Run `fn` with a stub agent that refuses with `stderrMessage` and logs
@@ -105,21 +191,22 @@ Deno.test({
           Date.now() + USAGE_LIMIT_MAX_WAIT_SECONDS * 1000,
         "the fixture's reset must be beyond the cap for this to mean anything",
       );
-      // The signal lands in WORK_DIR, not in the per-issue cwd.
-      const signal = JSON.parse(
-        await Deno.readTextFile(rateLimitSignalPath(workDir)),
-      );
-      assertEquals(
-        signal.waitSeconds,
-        USAGE_LIMIT_MAX_WAIT_SECONDS,
-        JSON.stringify(signal),
-      );
-      let cwdSignal = false;
-      try {
-        await Deno.stat(rateLimitSignalPath(`${workDir}/some-repo-clone`));
-        cwdSignal = true;
-      } catch { /* expected: absent */ }
-      assertEquals(cwdSignal, false, "signal must not be written to cwd");
+      // Issue #1669 changed this assertion deliberately: the usage branch
+      // used to write the durable `usage` signal here, which drained
+      // `run_core`'s slot pool and idled the whole host on one
+      // subscription's window. No signal is written now — not to WORK_DIR,
+      // not to the per-issue cwd — so the loop keeps running.
+      for (const dir of [workDir, `${workDir}/some-repo-clone`]) {
+        let present = false;
+        try {
+          await Deno.stat(rateLimitSignalPath(dir));
+          present = true;
+        } catch { /* expected: absent */ }
+        assertEquals(present, false, `a usage limit wrote a signal in ${dir}`);
+      }
+      const active = await isRateLimitActive(workDir);
+      assert(active.ok);
+      assertEquals(active.value.active, false);
     } finally {
       await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
     }
@@ -230,5 +317,110 @@ Deno.test({
     } finally {
       await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
     }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// The quota gate in front of every spawn (Issue #1669, parent #1653).
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - every candidate spent: no child is spawned and the result says so (Issue #1669)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const now = Date.now();
+    const soonest = now + 90 * 60_000;
+    const { gate } = pooledGate((pool) => {
+      // Both windows are spent, so there is nothing to switch to. The
+      // soonest of the two resets is what the pool as a whole is waiting on.
+      pool.recordExhaustion("provider", [
+        { window: "five_hour", resetAt: soonest },
+      ]);
+      pool.recordExhaustion("provider-2", [
+        { window: "five_hour", resetAt: now + 4 * HOUR },
+      ]);
+    }, () => {
+      throw new Error("no credential should be applied when none is eligible");
+    });
+
+    // The stub records that it ran. It must never run.
+    const body = 'printf ran > "$(dirname "$0")/ran.log"\nprintf OK\n';
+    await withAgentStub(body, async (stub) => {
+      const result = await runClaudeWithRetry({
+        clock: fakeClock(),
+        prompt: "test",
+        model: "opus",
+        timeoutSeconds: 30,
+        killAfterSeconds: 2,
+        agentBinaryPath: stub.path,
+        credentialGate: gate,
+      });
+
+      assert(result.ok);
+      assertEquals(result.value.noEligibleCredential, true);
+      assertEquals(result.value.exitCode, 2);
+      assertEquals(result.value.usageLimit?.resetEpochMs, soonest);
+      // No invocation is billed against a closed window.
+      let ran = false;
+      try {
+        await Deno.stat(`${stub.dir}/ran.log`);
+        ran = true;
+      } catch { /* expected: the stub never ran */ }
+      assertEquals(
+        ran,
+        false,
+        "a child was spawned with no eligible credential",
+      );
+    }, { prefix: "claude_gate_none_" });
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - the spawn is preceded by a selection and the child carries that token only (Issue #1669)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const now = Date.now();
+    // The run started on the token that is now down to 10% of its five-hour
+    // window; the pool's other subscription still holds 60%.
+    const parentEnv: Record<string, string> = {
+      PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+      CLAUDE_CODE_OAUTH_TOKEN: "token-provider",
+    };
+    const { gate, lines } = pooledGate((pool) => {
+      pool.recordBudget("provider", budget("provider", 0.1, now), now);
+      pool.recordBudget("provider-2", budget("provider-2", 0.6, now), now);
+    }, (name, value) => {
+      parentEnv[name] = value;
+    });
+
+    const body = 'env | grep "^CLAUDE_CODE_OAUTH" > "$(dirname "$0")/env.log"' +
+      " || true\nprintf OK\n";
+    await withAgentStub(body, async (stub) => {
+      const result = await runClaudeWithRetry({
+        clock: fakeClock(),
+        prompt: "test",
+        model: "opus",
+        timeoutSeconds: 30,
+        killAfterSeconds: 2,
+        agentBinaryPath: stub.path,
+        parentEnv,
+        credentialGate: gate,
+      });
+
+      assert(result.ok);
+      assertEquals(result.value.noEligibleCredential, undefined);
+      const childEnv = (await Deno.readTextFile(`${stub.dir}/env.log`))
+        .trim().split("\n");
+      // Exactly one Claude token variable, carrying the 60% subscription.
+      assertEquals(childEnv, ["CLAUDE_CODE_OAUTH_TOKEN=token-provider-2"]);
+      // Both shares are on the record, so an operator can see the choice.
+      const log = lines.join("\n");
+      assertStringIncludes(log, "provider-2");
+      assertStringIncludes(log, "provider ");
+    }, { prefix: "claude_gate_switch_" });
   },
 });

@@ -580,3 +580,77 @@ Deno.test("claude credential pool - a single-token host makes no request and log
   assertEquals(probe.calls(), 0);
   assertEquals(lines.length, 0);
 });
+
+Deno.test("claude credential pool - poolSize tells a spent pool from no pool at all (Issue #1669)", async () => {
+  // Both answer null from `selectEligible`, and only this figure separates
+  // them: one host must spawn on its single token, the other must not spawn.
+  const probe = fetchWith({});
+  const spent = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+  spent.recordExhaustion("provider", [
+    { window: "five_hour", resetAt: NOW + 3 * HOUR },
+  ]);
+  spent.recordExhaustion("provider-2", [
+    { window: "five_hour", resetAt: NOW + HOUR },
+    { window: "seven_day", resetAt: NOW + 40 * HOUR },
+  ]);
+  assertEquals(await spent.poolSize(), 2);
+  assertEquals(await spent.selectEligible(NOW), null);
+  // The soonest five-hour reset across the pool is what it is waiting on.
+  assertEquals(spent.soonestFiveHourReset(), NOW + HOUR);
+
+  const single = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () => Promise.resolve([tokenFile("provider")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+  assertEquals(await single.poolSize(), 1);
+  assertEquals(await single.selectEligible(NOW), null);
+  // Nothing measured, nothing to report — never a guessed instant.
+  assertEquals(single.soonestFiveHourReset(), null);
+  assertEquals(probe.calls(), 0);
+});
+
+Deno.test("claude credential pool - activeLabel names the credential the environment carries (Issue #1669)", async () => {
+  const probe = fetchWith({
+    "token-provider": healthy(),
+    "token-provider-2": healthy(),
+  });
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+    // The run environment as worker start left it.
+    env: (name) =>
+      name === "CLAUDE_CODE_OAUTH_TOKEN" ? "token-provider" : undefined,
+  });
+
+  // Derived from the environment before anything has been switched, so a
+  // usage limit hit on the very first spawn is recorded against the right
+  // token rather than nothing at all.
+  assertEquals(await pool.activeLabel(), "provider");
+
+  pool.applySelection(tokenFile("provider-2"), () => {});
+  assertEquals(await pool.activeLabel(), "provider-2");
+});
+
+Deno.test("claude credential pool - an unrecognised environment credential has no active label (Issue #1669)", async () => {
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: fetchWith({}).fn,
+    now: () => NOW,
+    env: () => undefined,
+  });
+  // Guessing here would strand a subscription that still has quota.
+  assertEquals(await pool.activeLabel(), null);
+});

@@ -1007,8 +1007,9 @@ async function executeClaudeBody(
   // branch. This used to fall through to "no changes" (a silent
   // early_exit with no infrastructure retry and no cooldown class). Name
   // it so `detectFailureCategory` classifies it as rate_limit →
-  // infrastructure: the issue is not blamed, and the durable signal the
-  // runner wrote pauses the loop.
+  // infrastructure: the issue is not blamed. Since Issue #1669 a usage
+  // limit pauses nothing — the credential pool records the window as spent
+  // and the next spawn either switches credential or is refused.
   if (claudeResult.value.exitCode === 2) {
     const limit = claudeResult.value.usageLimit;
     const heading = limit
@@ -1026,11 +1027,11 @@ async function executeClaudeBody(
       clarityStatus: state.clarityStatus,
       lastOutputSnippet: snippet || undefined,
     }) + (limit
-      ? ` Agent work is paused for ${limit.waitSeconds}s${
+      ? ` The subscription window reopens in about ${limit.waitSeconds}s${
         limit.resetEpochMs
-          ? ` (until ${new Date(limit.resetEpochMs).toISOString()})`
+          ? ` (${new Date(limit.resetEpochMs).toISOString()})`
           : ""
-      }.`
+      }; the credential pool has recorded it as spent (Issue #1669).`
       : "");
     logger.warn(heading, { exitCode: 2, waitSeconds: limit?.waitSeconds });
     return { status: "failure", reason };

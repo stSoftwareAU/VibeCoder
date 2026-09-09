@@ -17,10 +17,16 @@
 
 import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
 import {
+  type ClaudeRateLimitEvent,
   isUsageLimitRejection,
   parseRateLimitEvents,
 } from "./claude_rate_limit_event.ts";
 import type { ClaudeTokenBudgetWindow } from "./claude_token_budget.ts";
+import type { ClaudeExhaustedWindow } from "./claude_credential_pool.ts";
+import {
+  type ClaudeSpawnGate,
+  defaultClaudeSpawnGate,
+} from "./claude_spawn_gate.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
@@ -246,6 +252,18 @@ export interface ClaudeRunResult {
     resetEpochMs?: number;
     windows?: readonly ClaudeTokenBudgetWindow[];
   };
+  /**
+   * The spawn was refused before it happened because every credential in the
+   * host's pool is spent (Issue #1669, parent #1653).
+   *
+   * Terminal for this call and reported with exit code 2 beside
+   * {@link usageLimit}, which carries the soonest five-hour reset among the
+   * pool. **No child process ran**: an invocation against a closed window is
+   * a request spent to be refused. Nothing is paused — the dispatch loop
+   * moves on to the next priority, and the host keeps doing everything that
+   * does not need the agent.
+   */
+  noEligibleCredential?: boolean;
   /** Path to the output file (if written). */
   outputFile?: string;
   /** The output text from Claude. */
@@ -608,6 +626,16 @@ export interface RunClaudeOptions {
    * the process environment exactly as before.
    */
   parentEnv?: Record<string, string>;
+  /**
+   * The quota gate this invocation's spawns pass through (Issue #1669).
+   *
+   * Omitted — every production caller — the process-wide gate installed by
+   * `createDefaultRunWorkerDeps` is used, and when none was installed the
+   * runner spawns exactly as it did before the gate existed. Supplied, a
+   * test drives the gate without installing one into a process it shares
+   * with every other test in the run.
+   */
+  credentialGate?: ClaudeSpawnGate;
 }
 
 /** Options for retry behaviour. */
@@ -677,6 +705,69 @@ function resolveSignalDir(
   return workDir ?? cwd;
 }
 
+/**
+ * Seconds to pause for a usage window, from its reset instant.
+ *
+ * `min(time-until-reset, `{@link USAGE_LIMIT_MAX_WAIT_SECONDS}`)`, floored at
+ * a minute, and the default hour when no reset was named (Issue #333). Shared
+ * by the spawned refusal and the pre-spawn one (Issue #1669) so the two report
+ * the same figure for the same window.
+ *
+ * @param resetMs - The window's reset in epoch milliseconds, or null.
+ * @param nowMs - Current time in epoch milliseconds.
+ * @returns The capped wait, in seconds.
+ */
+export function usageLimitWaitSeconds(
+  resetMs: number | null,
+  nowMs: number,
+): number {
+  const untilReset = resetMs !== null
+    ? Math.max(60, Math.ceil((resetMs - nowMs) / 1000))
+    : USAGE_LIMIT_DEFAULT_WAIT_SECONDS;
+  return Math.min(untilReset, USAGE_LIMIT_MAX_WAIT_SECONDS);
+}
+
+/**
+ * The windows a usage-limit refusal says are spent (Issue #1669).
+ *
+ * The stream event is preferred when it carried `unifiedWindows`: only the
+ * windows it reported with nothing left are recorded, so a rejection of the
+ * five-hour window never marks a healthy week spent — that would strand a
+ * credential the pool could still be spending. When the event named a
+ * rejected window but reported no figures, that window is the record. With no
+ * event at all, the five-hour window and the reset parsed from the prose are
+ * all the refusal gave us.
+ *
+ * @param event - The `rate_limit_event` this run saw, when it saw one.
+ * @param resetMs - The reset parsed from the message, or null.
+ * @param nowMs - Current time in epoch milliseconds, for the fallback reset.
+ * @returns At least one window, so the record is never an empty exhaustion.
+ */
+export function usageLimitExhaustedWindows(
+  event: ClaudeRateLimitEvent | undefined,
+  resetMs: number | null,
+  nowMs: number,
+): ClaudeExhaustedWindow[] {
+  if (event !== undefined) {
+    const spent = event.windows
+      .filter((window) => window.remainingFraction <= 0)
+      .map((window) => ({ window: window.window, resetAt: window.resetAt }));
+    if (spent.length > 0) return spent;
+    if (event.rateLimitType === "five_hour" ||
+      event.rateLimitType === "seven_day"
+    ) {
+      return [{
+        window: event.rateLimitType,
+        resetAt: event.resetsAtEpochMs,
+      }];
+    }
+  }
+  return [{
+    window: "five_hour",
+    resetAt: resetMs ?? nowMs + USAGE_LIMIT_DEFAULT_WAIT_SECONDS * 1000,
+  }];
+}
+
 export interface RetryOptions {
   /** Maximum retries on rate limit (default from config). */
   maxRetries?: number;
@@ -696,6 +787,17 @@ export interface RetryOptions {
   maxTotalInvocations?: number;
 }
 
+/**
+ * Health-check status for a usage limit no credential in the pool can serve
+ * (Issue #1669).
+ *
+ * Deliberately **not** 3: exit 3 is the consumer's signal to write the
+ * durable `usage` rate-limit signal and pause, which drains `run_core`'s slot
+ * pool and idles the host on every task that needs no agent at all. Four says
+ * "unhealthy, and do not pause".
+ */
+export const NO_ELIGIBLE_CREDENTIAL_EXIT_CODE = 4;
+
 /** Health check result. */
 export interface HealthCheckResult {
   /** Whether Claude is responsive. */
@@ -703,7 +805,10 @@ export interface HealthCheckResult {
   /**
    * 0 = healthy, 1 = unresponsive, 2 = auth failure,
    * 3 = rate/usage limited (Issue #4315 — the caller pauses instead of
-   * re-probing; every probe is a billed invocation).
+   * re-probing; every probe is a billed invocation),
+   * 4 = a usage limit no credential in the pool can serve
+   * ({@link NO_ELIGIBLE_CREDENTIAL_EXIT_CODE}, Issue #1669 — unhealthy, and
+   * the caller writes no signal and pauses nothing).
    */
   exitCode: number;
   /** Human-readable message. */
@@ -2456,6 +2561,50 @@ export async function runClaudeWithRetry(
         }),
       };
     }
+    // Issue #1669: every spawn is gated on the credential pool. The switch
+    // lands in the run environment before the child environment is copied
+    // from it, so the child that follows carries the chosen token — and when
+    // every credential is spent there is no child at all: an invocation
+    // against a closed window is a request spent to be refused.
+    const gate = currentOptions.credentialGate ?? defaultClaudeSpawnGate();
+    if (gate) {
+      const verdict = await gate.beforeSpawn();
+      if (verdict.outcome === "none-eligible") {
+        const waitSeconds = usageLimitWaitSeconds(
+          verdict.resetEpochMs,
+          clock.now(),
+        );
+        currentOptions.logger?.error(
+          `No Claude credential in the pool has quota left — refusing to ` +
+            `spawn the agent (no invocation is billed against a closed ` +
+            `window). The soonest five-hour window reopens ` +
+            (verdict.resetEpochMs === null
+              ? "at a time no candidate reported"
+              : `at ${new Date(verdict.resetEpochMs).toISOString()}`) +
+            "; agent work is not paused — the dispatch loop continues.",
+        );
+        currentOptions.logger?.security?.(
+          "NO_ELIGIBLE_CREDENTIAL",
+          `wait_seconds=${waitSeconds}`,
+        );
+        return {
+          ok: true,
+          value: withPreflight({
+            exitCode: 2,
+            output: "",
+            timedOut: false,
+            fallbackModel,
+            noEligibleCredential: true,
+            usageLimit: {
+              waitSeconds,
+              ...(verdict.resetEpochMs !== null
+                ? { resetEpochMs: verdict.resetEpochMs }
+                : {}),
+            },
+          }),
+        };
+      }
+    }
     totalInvocations++;
     const result = await runClaudeWithTimeout(currentOptions);
 
@@ -2782,14 +2931,12 @@ export async function runClaudeWithRetry(
         const untilResetSeconds = resetMs !== null
           ? Math.max(60, Math.ceil((resetMs - clock.now()) / 1000))
           : USAGE_LIMIT_DEFAULT_WAIT_SECONDS;
-        const waitSeconds = Math.min(
-          untilResetSeconds,
-          USAGE_LIMIT_MAX_WAIT_SECONDS,
-        );
+        const waitSeconds = usageLimitWaitSeconds(resetMs, clock.now());
         currentOptions.logger?.error(
           `Claude usage limit reached (subscription window) — exit code ` +
             `${exitCode}. Not retrying and not falling back (every model ` +
-            `bills the same window). Pausing agent work for ${waitSeconds}s` +
+            `bills the same window). Recording the window as spent for ` +
+            `${waitSeconds}s` +
             // Issue #333: say what the message actually said. This used to
             // claim "no reset time in the message" against a message reading
             // `resets Aug 25, 1am (UTC)`, which is what hid the missing
@@ -2809,25 +2956,21 @@ export async function runClaudeWithRetry(
           "USAGE_LIMIT",
           `exit_code=${exitCode} wait_seconds=${waitSeconds}`,
         );
-        const signalDir = resolveSignalDir(
-          currentOptions.cwd,
-          currentOptions.workDir,
-        );
-        if (signalDir) {
-          // Issue #333: carry the true reset beside the capped wait, so the
-          // FLEET report can say "no quota until Tuesday" rather than only
-          // "unhealthy".
-          const signalResult = await writeRateLimitSignal(
-            signalDir,
-            waitSeconds,
-            resetMs ?? undefined,
-            "usage",
+        // Issue #1669: the durable `usage` signal is NOT written here. It
+        // drained `run_core`'s slot pool and idled the whole host on one
+        // subscription's window — including every task that needs no agent
+        // at all. The exhaustion goes to the credential pool instead, which
+        // is what the next spawn's gate reads: the run switches credential
+        // or refuses the spawn, and the loop keeps going either way. The
+        // rate-limit ladder below still writes its own signal.
+        if (gate) {
+          await gate.recordUsageLimit(
+            usageLimitExhaustedWindows(
+              eventRejection ? lastRateLimitEvent : undefined,
+              resetMs,
+              clock.now(),
+            ),
           );
-          if (!signalResult.ok) {
-            currentOptions.logger?.warn(
-              `Could not write usage-limit signal: ${signalResult.error.message}`,
-            );
-          }
         }
         return {
           ok: true,
@@ -3036,6 +3179,7 @@ export async function checkClaudeHealth(
   logger?: Logger,
   agentProvider?: AgentProviderSelector,
   agentBinaryPath?: string,
+  credentialGate?: ClaudeSpawnGate,
 ): Promise<HealthCheckResult> {
   // Resolve once, per call: the probe, the auth message and the log lines all
   // describe the same agent even while another provider is probed
@@ -3108,6 +3252,46 @@ export async function checkClaudeHealth(
     const resetMs = summary.category === "usage-limit"
       ? parseUsageLimitReset(`${output}\n${stderr}`)
       : null;
+    // Issue #1669: a subscription window belongs to the credential, not to
+    // the host. Record it as spent and ask the pool for another — a switch
+    // is reported healthy on the spot, with no second billed probe: the next
+    // spawn's own gate is what confirms the new credential.
+    const gate = summary.category === "usage-limit"
+      ? credentialGate ?? defaultClaudeSpawnGate()
+      : null;
+    if (gate) {
+      await gate.recordUsageLimit(
+        usageLimitExhaustedWindows(undefined, resetMs, Date.now()),
+      );
+      const verdict = await gate.beforeSpawn();
+      if (verdict.outcome === "selected") {
+        logger?.warn(
+          `${provider.displayName} hit its subscription usage limit — ` +
+            `switched the run environment to credential ${verdict.label} ` +
+            `and carrying on (no pause, no second probe).`,
+        );
+        return {
+          healthy: true,
+          exitCode: 0,
+          message: `${provider.displayName} switched to credential ` +
+            `${verdict.label} after a usage limit`,
+        };
+      }
+      if (verdict.outcome === "none-eligible") {
+        // Unhealthy, but deliberately NOT the pausing exit 3: writing the
+        // `usage` signal would drain the slot pool and idle the host on work
+        // that needs no agent at all.
+        logger?.warn(
+          `No credential in the pool has quota left — reporting the agent ` +
+            `unhealthy without pausing agent work (Issue #1669).`,
+        );
+        return {
+          healthy: false,
+          exitCode: NO_ELIGIBLE_CREDENTIAL_EXIT_CODE,
+          message: summary.message,
+        };
+      }
+    }
     const pauseSeconds = resetMs !== null
       ? Math.max(60, Math.ceil((resetMs - Date.now()) / 1000))
       : summary.category === "usage-limit"

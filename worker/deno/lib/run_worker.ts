@@ -68,6 +68,10 @@ import { getPromptsDir } from "./prompt_manager.ts";
 import { checkPromptsImmutable } from "./prompt_immutability.ts";
 import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
 import {
+  createClaudeSpawnGate,
+  setDefaultClaudeSpawnGate,
+} from "./claude_spawn_gate.ts";
+import {
   NETWORK_UNAVAILABLE_MARKER,
   resolveGithubUserWithRetry,
 } from "./github_user_resolution.ts";
@@ -316,6 +320,17 @@ export function createDefaultRunWorkerDeps(
   const claudePool = createClaudeCredentialPool({
     log: (message) => logger.info(message),
   });
+  // Issue #1669: every agent spawn in this process is gated on that pool —
+  // the runner switches credential rather than pausing the host when a
+  // subscription window runs out, and refuses the spawn outright when none
+  // has quota left. A host with fewer than two pool candidates consults
+  // nothing and behaves exactly as it did.
+  setDefaultClaudeSpawnGate(
+    createClaudeSpawnGate(claudePool, {
+      setEnv,
+      log: (message) => logger.info(message),
+    }),
+  );
   return {
     evaluateRunGuard: (pidFile, maxRunSeconds) =>
       defaultEvaluateRunGuard(pidFile, maxRunSeconds),
