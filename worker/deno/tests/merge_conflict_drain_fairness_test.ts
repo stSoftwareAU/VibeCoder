@@ -427,6 +427,45 @@ Deno.test("drain fairness - an attempt that never ran leaves the streak standing
   );
 });
 
+Deno.test("drain fairness - an attempt the watchdog cut short keeps its streak", async () => {
+  // Issue #1693: the run ended mid-edit and the attempt was withdrawn, so the
+  // PR spent nothing and is still waiting — it must keep its place at the head
+  // of the queue exactly as an attempt that never got off the ground does.
+  const volume = fakeVolume();
+  const nowMs = START;
+  const target = pr("org/held", 1);
+
+  await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([target]),
+    acquireLease: () => null,
+    resolve: () => Promise.resolve(null),
+    now: () => nowMs,
+    deferrals: tracking(volume, () => nowMs),
+  });
+
+  const cutShort = await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([target]),
+    acquireLease: () => ({ release: () => {} }),
+    resolve: () =>
+      Promise.resolve({
+        processed: false,
+        merged: false,
+        attemptCharged: false,
+      }),
+    now: () => nowMs,
+    deferrals: tracking(volume, () => nowMs),
+  });
+
+  assertEquals(cutShort.merged, 0);
+  assertEquals(
+    (await readConflictDeferrals(WORK_DIR, volume.io, nowMs)).get("org/held#1")
+      ?.streak,
+    1,
+  );
+});
+
 Deno.test("drain visibility - a starved PR gets exactly one comment per streak", async () => {
   const volume = fakeVolume();
   const thread = fakeThread();
