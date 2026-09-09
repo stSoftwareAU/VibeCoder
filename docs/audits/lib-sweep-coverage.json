@@ -951,11 +951,22 @@
       ]
     },
     {
-      "issue": 1771,
+      "issue": 1770,
       "chunk": "12n",
+      "title": "the milestone roll-back marker",
+      "ledger": "docs/audits/security-sweep-1770-milestone-rollback-marker.md",
+      "definition": "modules added to lib/ after 12a-12m recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_rollback_marker.ts"
+      ]
+    },
+    {
+      "issue": 1771,
+      "chunk": "12o",
       "title": "the milestone roll-back",
       "ledger": "docs/audits/security-sweep-1771-milestone-rollback.md",
-      "definition": "modules added to lib/ after 12a-12m recorded their coverage",
+      "definition": "modules added to lib/ after 12a-12n recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_rollback.ts"

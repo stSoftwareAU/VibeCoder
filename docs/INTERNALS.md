@@ -337,6 +337,20 @@ bash `worker/run_core.sh` conductor. It sequences:
    trusted-re-label escape hatch all still apply. An issue carrying
    `needs-human` is never closed by it.
 
+   Beside that re-label hatch sits the **roll-back marker** (Issue #1770,
+   [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)).
+   When a milestone roll-back reverts a child's merged PR, the child is
+   reopened and re-queued while its PR stays `merged` for ever — so both
+   merged-PR closers (this sweep and the priority-1.67 "Close Issues for
+   Merged PRs") used to shut it again on the next cycle. A
+   `<!-- vibe-milestone-rollback pr="…" revert="…" branch="…" -->` comment
+   **authored by the fleet** and dated **strictly after** the merge is now
+   honoured the way a trusted re-label is: the issue is skipped with reason
+   `rolled-back` and never closed. The same marker from any other account is
+   ignored — a comment body is text anyone can post — and so is one dated at
+   or before the merge. An unreadable comment thread leaves the issue open,
+   naming the cause, rather than closing on an unproven assumption.
+
    It spends quota the way the rest of the worker does (Issue #1477): one
    rate-limit pre-flight per sweep, a stop at the first primary-quota
    refusal — reported as one skipped sweep that resumes next cycle, never as
@@ -356,7 +370,9 @@ flowchart TD
     D -->|No| Z
     D -->|Yes| E{"Trusted re-label<br/>after the merge?"}
     E -->|Yes| Z
-    E -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
+    E -->|No| R{"Fleet roll-back marker<br/>after the merge? (#1770)"}
+    R -->|Yes| Z
+    R -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
     F -->|No| Z
     F -->|Yes| G["Closed, naming the PR<br/>and the merge commit"]
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -3797,6 +3813,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [live_slot_holds.ts](../worker/deno/lib/live_slot_holds.ts)                                                       | Issues live slots own — recovery passes never touch them                                                                                                                             |
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                |
 |                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                   |
+|                             | [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)                                    | The fleet-authored milestone roll-back marker both merged-PR closers honour, so a reverted child stays reopened (Issue #1770)                                                        |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                             |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                       |
 | **Utilities**               |                                                                                                                   |                                                                                                                                                                                      |
