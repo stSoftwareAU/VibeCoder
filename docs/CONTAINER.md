@@ -1180,7 +1180,9 @@ caches 0.6 GB · other 0.2 GB
   other (reserved names, remaining state directories and the state files in
   the work root) — sum to the total.
 - **Build artefacts are a cross-cut, not a fifth bucket.** A `target/` dir
-  (the same discovery `work-volume-prune` uses) lives *inside* a clone, so
+  (the same discovery `work-volume-prune` uses) lives *inside* a clone — or
+  inside a lane worktree under `worktrees/<lane>/<repo>`, which both the
+  usage line and the prune now descend into (Issue #1725) — so
   its bytes are already counted there; naming it says which clone the space
   is in.
 - The top three side/data clones and artefact dirs are **named inline**, so

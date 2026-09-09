@@ -58,6 +58,7 @@ export const RUN_FAILURE_CLASSES = [
   "interrupted",
   "scheduled-release",
   "out-of-credit",
+  "stale-lineage",
   "oom",
   "killed-unknown",
   "disk-full",
@@ -80,7 +81,7 @@ const OUT_OF_CREDIT_RE =
  * the `killed` category besides, so agent prose alone cannot reach it.
  */
 const OOM_EVIDENCE_RE =
-  /out[- ]of[- ]memory|\boom[- ]?kill|killed process|\bexit(?: code)? 137\b|\(exit 137|heap out of memory|allocation failed|cannot allocate memory/i;
+  /(?<![\w/-])out[- ]of[- ]memory(?![\w/-])|(?<![\w/-])oom[- ]?kill|killed process|\bexit(?: code)? 137\b|\(exit 137|heap out of memory|allocation failed|cannot allocate memory/i;
 
 /** The probe reading the killed branch writes into the diagnostics (Issue #4374). */
 const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
@@ -94,8 +95,34 @@ const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
  * genuinely hit a full disk, which is real environmental evidence the
  * worker can act on. A mention of an exception is different in kind — the
  * agent is describing the user's code, not reporting its own environment.
+ *
+ * Error-shaped text only (Issue #1658): `ENOSPC` is the errno as an
+ * operating system spells it — uppercase, a whole word, and never glued to
+ * a slug, path or URL with `-`, `_` or `/`. The lowercase, unanchored form
+ * matched `enospc` inside the branch name
+ * `milestone/4690-bug-sampler-enospc-on-228-gb-hosts-60-gb-disk` in a push
+ * refusal that had nothing to do with disk, and auto-filed a `disk-full`
+ * worker defect for it. The three prose phrases stay case-insensitive, as
+ * whole phrases.
  */
-const DISK_FULL_RE = /enospc|no space left on device|disk full|disk is full/i;
+const ENOSPC_RE = /(?<![\w/-])ENOSPC(?![\w/-])/;
+const DISK_FULL_PHRASE_RE =
+  /\bno space left on device\b|\bdisk full\b|\bdisk is full\b/i;
+
+/** Whether `message` reports disk exhaustion in error-shaped text. */
+function isDiskFull(message: string): boolean {
+  return ENOSPC_RE.test(message) || DISK_FULL_PHRASE_RE.test(message);
+}
+
+/**
+ * The completion phase's squash-lineage refusal (Issue #534): a merged PR
+ * already squashed this branch's work into the base, and replaying the
+ * branch onto the moved base was refused. The base moved on — a property
+ * of the repository's history, never a worker defect, and (Issue #1658)
+ * not a full disk either, whatever the branch happens to be called.
+ */
+const STALE_LINEAGE_RE =
+  /Refusing to push[\s\S]{0,600}?squashed this branch's work/;
 
 /** An unhandled exception / stack trace from the worker itself. */
 const STACK_TRACE_RE =
@@ -160,19 +187,23 @@ export function splitAgentNarration(
  *    highest-cost false positive is auto-filing on a fleet-wide usage cap,
  *    so these win over everything, including a stack trace in the same
  *    message.
- * 2. Disk exhaustion by message — a full disk kills or crashes whatever ran
+ * 2. A squash-lineage push refusal (Issue #534) — the base moved on; never
+ *    a worker defect, and checked before the disk and crash rules so a
+ *    branch name or a hint line in the refusal cannot be mistaken for
+ *    either (Issue #1658).
+ * 3. Disk exhaustion by message — a full disk kills or crashes whatever ran
  *    on top of it, so it outranks `killed` / `internal_error`.
- * 3. `killed` — with OOM evidence → `oom` (code-fixable); without → the
+ * 4. `killed` — with OOM evidence → `oom` (code-fixable); without → the
  *    cause is unproven, so `killed-unknown` (unknown). An OOM message that
  *    also mentions a timeout classifies as `oom` because the category was
  *    already `killed`, not `timeout`.
- * 4. Worker crashes: `internal_error`, or an unhandled exception / stack
+ * 5. Worker crashes: `internal_error`, or an unhandled exception / stack
  *    trace in the message with any other non-agent category.
- * 5. `missing_tools` — the image/PATH is the worker's to fix.
- * 6. `timeout` / `zero_output` — cause unproven → unknown.
- * 7. `quality_check` / `no_changes` / `evidence_missing` — the AGENT not
+ * 6. `missing_tools` — the image/PATH is the worker's to fix.
+ * 7. `timeout` / `zero_output` — cause unproven → unknown.
+ * 8. `quality_check` / `no_changes` / `evidence_missing` — the AGENT not
  *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
- * 8. Anything else → unknown.
+ * 9. Anything else → unknown.
  */
 export function classifyRunFailure(
   category: FailureCategory,
@@ -223,9 +254,22 @@ export function classifyRunFailure(
     };
   }
 
-  // 2. Disk exhaustion by message — outranks killed/crash because a full
+  // 2. A squash-lineage refusal is the base having moved on (Issue #534),
+  //    stated in the worker's own words — and its text quotes a branch name
+  //    and git's conflict hints, which is exactly what fooled the disk and
+  //    crash rules before (Issue #1658). Named first so neither can.
+  if (STALE_LINEAGE_RE.test(message)) {
+    return {
+      fixability: "not_code_fixable",
+      failureClass: "stale-lineage",
+      rationale:
+        "The completion phase refused to push a branch whose work a merged PR already squashed into the base (Issue #534) — the base moved on, not a worker defect.",
+    };
+  }
+
+  // 3. Disk exhaustion by message — outranks killed/crash because a full
   //    disk is what killed or crashed the run.
-  if (DISK_FULL_RE.test(message)) {
+  if (isDiskFull(message)) {
     return {
       fixability: "code_fixable",
       failureClass: "disk-full",
@@ -236,7 +280,7 @@ export function classifyRunFailure(
 
   switch (category) {
     case "killed":
-      // 3. SIGKILL: memory evidence makes it an OOM the worker can size or
+      // 4. SIGKILL: memory evidence makes it an OOM the worker can size or
       //    throttle for; without evidence the cause is unproven. The probe
       //    reading taken at the kill (Issue #4374) is the strongest evidence
       //    and is named as such — exit 137 alone is an inference.
@@ -263,7 +307,7 @@ export function classifyRunFailure(
           "The run was killed (SIGKILL) with no memory evidence — cause unproven.",
       };
     case "internal_error":
-      // 4. A worker-side error or crash.
+      // 5. A worker-side error or crash.
       return {
         fixability: "code_fixable",
         failureClass: "worker-crash",
@@ -271,14 +315,14 @@ export function classifyRunFailure(
           "The failure is an internal tooling / CLI error or unhandled exception in the worker.",
       };
     case "missing_tools":
-      // 5. The image or PATH is the worker's to fix.
+      // 6. The image or PATH is the worker's to fix.
       return {
         fixability: "code_fixable",
         failureClass: "missing-tools",
         rationale: "A required tool is missing from the worker environment.",
       };
     case "timeout":
-      // 6. Cause unproven: an agent that ran long is not, by itself, a
+      // 7. Cause unproven: an agent that ran long is not, by itself, a
       //    worker defect.
       return crashOr({
         fixability: "unknown",
@@ -296,7 +340,7 @@ export function classifyRunFailure(
     case "quality_check":
     case "no_changes":
     case "evidence_missing":
-      // 7. The agent did not deliver — a property of the attempt, not a
+      // 8. The agent did not deliver — a property of the attempt, not a
       //    worker defect. Stated plainly, never auto-filed: filing an issue
       //    every time the model fails a quality gate would be pure noise.
       return {
@@ -324,7 +368,7 @@ export function classifyRunFailure(
         rationale: "Git push failed; the cause is not proven to be the worker.",
       }, message);
     case "unknown":
-      // 8. The safe default — with one refinement: an unhandled exception /
+      // 9. The safe default — with one refinement: an unhandled exception /
       //    stack trace in the message is a worker crash whatever the
       //    category detector made of it.
       return crashOr({

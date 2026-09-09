@@ -35,9 +35,11 @@
  *   state directories, and the state files in the work root.
  *
  * **Build artefacts are a cross-cut, not a fifth bucket.** A `target/` dir
- * lives *inside* a monitored or side clone, so its bytes are already counted
- * there; naming it separately says which clones the space is in. The four
- * disjoint buckets are what sum to the total.
+ * lives *inside* a monitored or side clone — or inside a lane worktree under
+ * `worktrees/<lane>/<repo>`, which the `other` bucket already holds (Issue
+ * #1725) — so its bytes are already counted there; naming it separately says
+ * which trees the space is in. The four disjoint buckets are what sum to the
+ * total.
  *
  * ## Bounded
  *
@@ -50,7 +52,12 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-import { duBytes, findCargoTargets, formatGb } from "./work_volume_prune.ts";
+import {
+  duBytes,
+  findCargoTargets,
+  formatGb,
+  listLaneWorktrees,
+} from "./work_volume_prune.ts";
 import { monitoredDirNames } from "./work_volume_tiers.ts";
 import { isReservedWorkRootEntry } from "./stale_workdir.ts";
 
@@ -132,6 +139,13 @@ export interface WorkVolumeUsageOptions {
   fileSizeOf?: (path: string) => Promise<number | null>;
   /** Build-artefact discovery, injectable (default Issue #228's). */
   findArtefacts?: (repoDir: string) => Promise<string[]>;
+  /**
+   * Lane worktrees to include in the artefact cross-cut (Issue #1725),
+   * injectable. Defaults to the real `worktrees/<lane>/<repo>` listing.
+   */
+  listWorktrees?: (
+    workDir: string,
+  ) => Promise<{ repo: string; label: string; path: string }[]>;
 }
 
 /**
@@ -278,6 +292,15 @@ export async function scanWorkVolumeUsage(
     usage.totalBytes += bytes;
     usage.measured++;
     if (category === "monitored" || category === "side") cloneDirs.push(path);
+  }
+
+  // Lane worktrees build in their own trees (Issue #1725): the 23 GB
+  // `target/` under `worktrees/s1/NEAT-AI-Discovery` read as "0 target dirs"
+  // while the host fell to 6 GB free, because the walk stopped at the
+  // reserved `worktrees` name.
+  const laneWorktrees = options.listWorktrees ?? listLaneWorktrees;
+  for (const worktree of await laneWorktrees(workDir)) {
+    cloneDirs.push(worktree.path);
   }
 
   for (const cloneDir of cloneDirs) {

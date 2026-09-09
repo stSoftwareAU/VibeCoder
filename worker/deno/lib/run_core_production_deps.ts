@@ -375,6 +375,10 @@ import {
   reclaimWorkVolumeTiers,
   summariseWorkVolumeTiers,
 } from "./work_volume_tiers.ts";
+import {
+  pruneWorkVolume,
+  summariseWorkVolumePrune,
+} from "./work_volume_prune.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 import { describeGuestReclaimToHost } from "./work_volume_ratchet.ts";
@@ -2987,11 +2991,27 @@ export async function createProductionRunCoreDeps(
           healed: false,
         };
       }
+      // Issue #1725: regenerable build output first — every `target/` in an
+      // idle clone or lane worktree (a live heartbeat for the repository
+      // protects both). Only what is still short after that comes out of
+      // the disposable tier, whose clones cost a re-download.
+      const artefacts = await pruneWorkVolume({
+        workDir,
+        artefactsOnly: true,
+        artefactMaxTotalBytes: 0,
+      });
+      for (const error of artefacts.errors) {
+        logger.warn(`[HOST_DISK_LOW] build-artefact reclaim: ${error}`);
+      }
+      const stillNeeded = Math.max(
+        0,
+        hostDisk.shortfallBytes - artefacts.artefacts.bytesReclaimed,
+      );
       const result = await reclaimWorkVolumeTiers({
         workDir,
         monitoredRepos: config.repos,
         mode: "disk-low",
-        bytesNeeded: hostDisk.shortfallBytes,
+        bytesNeeded: stillNeeded,
         log: (message: string) => logger.info(message),
       });
       const after = await hostDisk.check({ force: true });
@@ -3010,8 +3030,9 @@ export async function createProductionRunCoreDeps(
         }`
         : "";
       return {
-        bytesReclaimed: result.bytesReclaimed,
-        detail: `${
+        bytesReclaimed: result.bytesReclaimed +
+          artefacts.artefacts.bytesReclaimed,
+        detail: `${summariseWorkVolumePrune(artefacts)}; ${
           summariseWorkVolumeTiers(result)
         }${hostReturn} — host disk now ${after.level}: ${after.detail}`,
         healed: after.level !== "low",
