@@ -3,11 +3,12 @@
  *
  * When a planning run breaks an issue into two or more sub-issues and the
  * parent issue has no milestone of its own, the worker auto-creates a GitHub
- * milestone named `#<N> <title>` (from the parent issue) and assigns every
- * sub-issue it created to that milestone. Assigning the milestone is enough to
- * opt the sub-issues into the existing milestone-branch delivery workflow
- * (Issue #1300): their PRs auto-merge into a shared `milestone/<name>` branch
- * and the default branch is only updated via the single final milestone PR.
+ * milestone named `#<N> <short description>` (from the parent issue) and
+ * assigns every sub-issue it created to that milestone. Assigning the
+ * milestone is enough to opt the sub-issues into the existing milestone-branch
+ * delivery workflow (Issue #1300): their PRs auto-merge into a shared
+ * `milestone/<name>` branch and the default branch is only updated via the
+ * single final milestone PR.
  *
  * Gating rules (always on, no opt-out):
  *   - Parent already has a milestone → no-op (the #1300 inheritance path keeps
@@ -76,9 +77,9 @@ const TRAILING_PUNCTUATION = /[\s,.:;+&\-_/()]+$/u;
 /**
  * Reduce free text to the safe character set: quotes removed, every other
  * disallowed character replaced by a space, whitespace runs collapsed, ends
- * trimmed. Exported for reuse by anything else that has to name a milestone.
+ * trimmed.
  */
-export function sanitiseMilestoneTitleText(text: string): string {
+function sanitiseMilestoneTitleText(text: string): string {
   return text
     .replace(QUOTE_CHARS, "")
     .replace(UNSAFE_CHARS, " ")

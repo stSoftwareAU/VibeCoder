@@ -662,8 +662,8 @@ redundant.
 
 When a planning run breaks an issue into **two or more** sub-issues **and the
 parent issue has no milestone of its own**, the worker auto-creates a GitHub
-milestone named `#<N> <title>` (from the parent issue) and assigns every
-sub-issue it created to that milestone. This opts the whole batch into the
+milestone named `#<N> <short description>` (from the parent issue) and assigns
+every sub-issue it created to that milestone. This opts the whole batch into the
 existing milestone-branch delivery workflow: each sub-issue PR
 auto-merges into a shared `milestone/<name>` branch, and the default branch is
 only updated via the single final milestone PR once all sub-issues close — the
@@ -671,7 +671,8 @@ only updated via the single final milestone PR once all sub-issues close — the
 
 The behaviour is **always on** (no opt-out flag or label) and **idempotent** —
 re-running planning on the same parent never creates a duplicate milestone, and
-a long parent title is truncated to fit. Two gates keep it out of the way:
+a long parent title is shortened to a safe, bounded description (Issue #1690 —
+see [Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)). Two gates keep it out of the way:
 
 - **Parent already has a milestone** → no new milestone; the existing
   inheritance behaviour assigns sub-issues to the parent's

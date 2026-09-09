@@ -2273,7 +2273,8 @@ async function closePlanningIssue(
   }
 
   // Issue #2863: when the run created 2+ sub-issues and the parent has no
-  // milestone of its own, auto-create a milestone named `#<N> <title>` and
+  // milestone of its own, auto-create a milestone named `#<N> <short
+  // description>` (Issue #1690) and
   // assign every sub-issue to it. This opts the sub-issues into the existing
   // milestone-branch delivery workflow (Issue #1300). Idempotent and
   // best-effort — a failure must never abort planning closure.
