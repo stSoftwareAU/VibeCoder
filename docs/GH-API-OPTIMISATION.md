@@ -302,9 +302,12 @@ closed idle-task wrapper on each of the next three pool entries while
 thirteen open wrappers in the same repo went untouched. Two defences now
 apply, both driven from the single `gh` chokepoint (`spawnGh`):
 
-- **Cache invalidation** — a successful `gh issue close`/`gh issue reopen`
-  drops the repo's close-sensitive entries (the table row above), so the next
-  scan re-reads the list from GitHub.
+- **Cache invalidation** — a successful `gh issue close`/`gh issue reopen`,
+  or its REST form `gh api -X PATCH repos/o/r/issues/N -f state=closed|open`
+  (the idle-task wrapper closure's shape since Issue #1753, read by the same
+  `classifyIssueLifecycle` the agent-side guard uses), drops the repo's
+  close-sensitive entries (the table row above), so the next scan re-reads
+  the list from GitHub.
 - **A per-run registry** — `ProcessedIssueRegistry`
   (`worker/deno/lib/processed_issue_registry.ts`) records the close, and every
   terminal outcome of the scan loop (success, skip, failure) besides.
