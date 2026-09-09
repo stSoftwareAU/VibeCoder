@@ -69,7 +69,11 @@ import {
 } from "./requirements_rubric.ts";
 import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { invalidateComments } from "./comment_cache.ts";
-import { getLabelLastAddInfo, getLabelLastRemoveInfo } from "./issue_query.ts";
+import {
+  getLabelLastAddInfo,
+  getLabelLastRemoveInfo,
+  type LabelLastAddInfo,
+} from "./issue_query.ts";
 import {
   isFleetAuthor,
   resolveSuppressionExcludedLogins,
@@ -743,8 +747,8 @@ export function isNonWorkerRemovalAfterRound(
 }
 
 /**
- * Decide whether a non-worker user has re-applied `grill-me` after grilling
- * converged — the developer reopening it (Issue #1634).
+ * Decide whether a non-worker user applied a label after the comment named by
+ * `sinceTimestamp` — the developer reopening grilling (Issue #1634).
  *
  * Once a Ready comment existed, every later `grill-me` re-add was skipped as
  * "Ready already posted": the worker stripped `grill-me` straight back off and
@@ -752,38 +756,42 @@ export function isNonWorkerRemovalAfterRound(
  * (GRQ-AutoTrader#13 flipped back twice within four hours). The Ready comment
  * no longer ends grilling for good — a deliberate re-add starts a fresh round.
  *
- * Returns true only when:
- *   - the timeline holds a `labeled grill-me` event;
- *   - the actor is NOT a fleet identity (a peer worker re-adding the label is
- *     a fleet action, not a developer's request — mirroring
- *     {@link isNonWorkerRemovalAfterRound}); and
- *   - the add occurred AFTER the most recent Ready comment.
+ * Asked twice, against two different timestamps:
+ *   - against the newest **Ready** comment, to decide whether grilling has
+ *     been reopened at all; and
+ *   - against the newest **round** comment, to decide whether the re-add is
+ *     still the newest signal on the issue. Once the reopened grilling has
+ *     posted its own round the ordinary "wait for the developer" gate applies
+ *     again — a re-add buys one round, not an unanswered run to the cap.
  *
- * Returns false when no Ready comment exists (there is nothing to reopen),
- * when the timeline lookup found nothing, or when the newest add pre-dates the
- * Ready comment — every one of which takes the existing clean-up path.
+ * Returns true only when the timeline holds the label-add event, its actor is
+ * NOT a fleet identity (a peer worker's re-add is a fleet action, not a
+ * developer's request — mirroring {@link isNonWorkerRemovalAfterRound}), and
+ * the add occurred AFTER `sinceTimestamp`. Every other answer — no event, no
+ * such comment, an unreadable timeline — is false, which preserves whichever
+ * behaviour the caller had before.
  *
- * @param addInfo - Latest `labeled grill-me` event, or null
- * @param latestReadyTimestamp - `createdAt` of the newest Ready comment
+ * @param addInfo - Latest `labeled <label>` event, or null
+ * @param sinceTimestamp - `createdAt` of the comment the add must post-date
  * @param githubUser - This host's GitHub login
  * @param fleetLogins - Sibling fleet logins (`fleet_pr_authors` /
  *   `service_accounts`); human `allowed_authors` are deliberately excluded so
  *   a maintainer's re-add still counts as the developer's signal
  */
-export function isNonWorkerAddAfterReady(
+export function isNonWorkerLabelAddAfter(
   addInfo: { addedAt: number; addedBy: string } | null,
-  latestReadyTimestamp: string | null,
+  sinceTimestamp: string | null,
   githubUser: string,
   fleetLogins: readonly string[] = [],
 ): boolean {
   if (addInfo === null) return false;
-  if (latestReadyTimestamp === null) return false;
+  if (sinceTimestamp === null) return false;
   if (isFleetAuthor(addInfo.addedBy, [githubUser, ...fleetLogins])) {
     return false;
   }
-  const readyMs = Date.parse(latestReadyTimestamp);
-  if (Number.isNaN(readyMs)) return false;
-  return addInfo.addedAt * 1000 > readyMs;
+  const sinceMs = Date.parse(sinceTimestamp);
+  if (Number.isNaN(sinceMs)) return false;
+  return addInfo.addedAt * 1000 > sinceMs;
 }
 
 /**
@@ -1095,8 +1103,17 @@ async function _processGrillMeWithHeartbeat(
   //    the developer's turn to apply the next-phase label (Issue #1648) —
   //    unless the developer has since re-applied `grill-me`, which reopens
   //    grilling for a fresh round (Issue #1634).
+  // A peer identity's label move is a fleet action, never the developer's
+  // signal (Issue #1560) — shared by the reopen check and the #1878 override.
+  const fleetLogins = resolveSuppressionExcludedLogins({
+    githubUser,
+    fleetPrAuthors: config.fleetPrAuthors,
+    serviceAccounts: config.serviceAccounts,
+  });
   const latestReadyTimestamp = findLatestReadyMarkerTimestamp(comments);
-  let reopened = false;
+  // The `labeled grill-me` event that reopened grilling, or null when nothing
+  // reopened it.
+  let reopenAddInfo: LabelLastAddInfo | null = null;
   if (latestReadyTimestamp !== null) {
     // A `labeled grill-me` event by a non-fleet actor after the newest Ready
     // comment is the developer asking for more grilling. Anything else — no
@@ -1114,18 +1131,15 @@ async function _processGrillMeWithHeartbeat(
           "Could not read a grill-me label-add event from the timeline — treating Ready as final",
           { repo, issueNumber },
         );
-      }
-      reopened = isNonWorkerAddAfterReady(
-        addInfo,
-        latestReadyTimestamp,
-        githubUser,
-        resolveSuppressionExcludedLogins({
+      } else if (
+        isNonWorkerLabelAddAfter(
+          addInfo,
+          latestReadyTimestamp,
           githubUser,
-          fleetPrAuthors: config.fleetPrAuthors,
-          serviceAccounts: config.serviceAccounts,
-        }),
-      );
-      if (reopened && addInfo !== null) {
+          fleetLogins,
+        )
+      ) {
+        reopenAddInfo = addInfo;
         logger.info(
           "grill-me was re-applied by a non-worker after the Ready marker — reopening grilling",
           {
@@ -1146,6 +1160,7 @@ async function _processGrillMeWithHeartbeat(
       );
     }
   }
+  const reopened = reopenAddInfo !== null;
 
   if (latestReadyTimestamp !== null && !reopened) {
     logger.info(
@@ -1253,10 +1268,22 @@ async function _processGrillMeWithHeartbeat(
   //     unanswered round, so the invocation is prevented, not merely
   //     recovered from after the fact by the #3768 post-run check.
   //
-  //     Skipped on a reopen (Issue #1634): the newest marker in the thread is
-  //     then the Ready comment this reopen deliberately overrides, so the gate
-  //     would block the very round the developer asked for.
-  if (!reopened && hasGrillMeRoundAwaitingReply(comments, githubUser)) {
+  //     Skipped while a reopen is the newest signal on the issue (Issue
+  //     #1634): the newest marker is then the Ready comment the re-add
+  //     deliberately overrides, so the gate would block the very round the
+  //     developer asked for. Once the reopened grilling has posted its own
+  //     round the re-add is no longer newest and this gate resumes — a re-add
+  //     buys one round, not an unanswered run to the cap.
+  const reopenSupersedesLatestRound = isNonWorkerLabelAddAfter(
+    reopenAddInfo,
+    findLatestWorkerRoundTimestamp(comments),
+    githubUser,
+    fleetLogins,
+  );
+  if (
+    !reopenSupersedesLatestRound &&
+    hasGrillMeRoundAwaitingReply(comments, githubUser)
+  ) {
     // Issue #1878: Treat an explicit non-worker removal of
     // `needs-human` after the latest Round N as the developer's "go"
     // signal — even when no separate reply comment has been posted.
@@ -1279,11 +1306,7 @@ async function _processGrillMeWithHeartbeat(
         githubUser,
         // A peer identity's operational-label strip is a fleet action, not
         // the developer's "proceed" signal (Issue #1560).
-        resolveSuppressionExcludedLogins({
-          githubUser,
-          fleetPrAuthors: config.fleetPrAuthors,
-          serviceAccounts: config.serviceAccounts,
-        }),
+        fleetLogins,
       );
       if (explicitRemoval && removeInfo !== null) {
         logger.info(
