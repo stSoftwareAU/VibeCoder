@@ -38,7 +38,10 @@ Deno.test("usageLimitWaitSeconds - a near reset is reported, a distant one is ca
     USAGE_LIMIT_MAX_WAIT_SECONDS,
   );
   // No time in the refusal: the default hour.
-  assertEquals(usageLimitWaitSeconds(null, NOW), USAGE_LIMIT_DEFAULT_WAIT_SECONDS);
+  assertEquals(
+    usageLimitWaitSeconds(null, NOW),
+    USAGE_LIMIT_DEFAULT_WAIT_SECONDS,
+  );
   // A reset already behind us floors at a minute rather than going negative.
   assertEquals(usageLimitWaitSeconds(NOW - 10 * HOUR, NOW), 60);
 });
