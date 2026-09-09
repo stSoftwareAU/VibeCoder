@@ -215,6 +215,12 @@ export type ConflictSkipReason =
     kind: "abandoned-restarted";
     issueNumber: number;
     attemptsSpent: number;
+    /**
+     * Present when the worker may not apply the pickup label (Issue #1773):
+     * the PR was closed and the issue reopened with `needs-human`, and this
+     * is the label a trusted author must re-apply to re-queue it.
+     */
+    awaitingLabel?: string;
   }
   /**
    * Still inside the post-attempt cooldown. `msUntilDue` is null when the
@@ -378,6 +384,9 @@ export function conflictReasonOperands(
       return {
         issueNumber: reason.issueNumber,
         attemptsSpent: reason.attemptsSpent,
+        ...(reason.awaitingLabel !== undefined
+          ? { awaitingLabel: reason.awaitingLabel }
+          : {}),
       };
     case "cooldown":
       return {
@@ -1252,16 +1261,31 @@ export async function findConflictingPr(
         prComments,
       });
 
-      if (abandon.outcome === "abandoned") {
+      if (
+        abandon.outcome === "abandoned" ||
+        abandon.outcome === "abandoned-unlabelled"
+      ) {
+        // Issue #1773: where the pickup label is one the worker may not
+        // apply, the PR is still closed and the issue still reopened — it
+        // rests at `needs-human` naming the label instead of re-queued.
+        const awaitingLabel = abandon.outcome === "abandoned-unlabelled"
+          ? abandon.workLabel
+          : undefined;
         logger.warn(
           `PR #${pr.number} spent its ${maxAttempts} merge-conflict ` +
-            `attempts — closed it and re-queued issue #${abandon.issueNumber}`,
+            (awaitingLabel === undefined
+              ? `attempts — closed it and re-queued issue ` +
+                `#${abandon.issueNumber}`
+              : `attempts — closed it and reopened issue ` +
+                `#${abandon.issueNumber}, which needs \`${awaitingLabel}\` ` +
+                "re-applied by a trusted author"),
           {
             repo,
             prNumber: pr.number,
             issueNumber: abandon.issueNumber,
             attempts: history.count,
             maxAttempts,
+            ...(awaitingLabel !== undefined ? { awaitingLabel } : {}),
           },
         );
         return {
@@ -1270,6 +1294,7 @@ export async function findConflictingPr(
             kind: "abandoned-restarted",
             issueNumber: abandon.issueNumber,
             attemptsSpent: history.count,
+            ...(awaitingLabel !== undefined ? { awaitingLabel } : {}),
           },
         };
       }

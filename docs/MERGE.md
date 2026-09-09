@@ -753,6 +753,14 @@ the first attempt and two retries against a base that has moved on since
 (Issue #1766). The third judged failure runs the abandon-and-restart rung, and
 only then does a human hear about it.
 
+That rung closes the PR — never force-pushes it — and re-queues its originating
+issue. Where the issue's pickup label is one only a human may apply (`work-on`
+and the rest of `worker_label_guard.ts`'s reserved set), it still closes the PR
+and reopens the issue, but labels it `needs-human` and names the label to
+re-apply rather than re-queuing it itself (Issue #1773). Its preconditions,
+its one-restart-per-issue bound and its exits are in
+[the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
+
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
 constant, two consumers — so the PR ladder and the milestone ladder cannot

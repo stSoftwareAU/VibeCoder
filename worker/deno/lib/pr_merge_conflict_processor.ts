@@ -1606,6 +1606,37 @@ async function failAttempt(
     };
   }
 
+  // Issue #1773: the pickup label the fleet reads can be one the worker may
+  // not apply. The rung still abandons — PR closed, issue reopened — and
+  // hands the issue to a human naming that label. `needs-human` belongs on
+  // the issue that must be re-queued, not on the PR that is already closed.
+  if (abandon.outcome === "abandoned-unlabelled") {
+    logger.warn(
+      `Merge-conflict attempts exhausted on PR #${prNumber} — closed it and ` +
+        `reopened issue #${abandon.issueNumber}, which needs ` +
+        `\`${abandon.workLabel}\` re-applied by a trusted author`,
+      {
+        repo,
+        prNumber,
+        issueNumber: abandon.issueNumber,
+        workLabel: abandon.workLabel,
+        maxAttempts,
+      },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        summary:
+          `Merge-conflict attempts exhausted on PR #${prNumber} — abandoned ` +
+          `it and reopened issue #${abandon.issueNumber} for a human to ` +
+          `re-apply \`${abandon.workLabel}\``,
+      },
+    };
+  }
+
   const route = exhaustedEscalationRoute(abandon);
   const escalation = await escalateToHuman({
     ghClient: createGhEscalationClient(deps.github.runGhCommand),

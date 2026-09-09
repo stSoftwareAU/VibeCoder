@@ -411,11 +411,12 @@ Deno.test("abandonAndRestart - an issue with another open PR is left alone", asy
   assertEquals(callsMatching(fake, "pr", "close").length, 0);
 });
 
-Deno.test("abandonAndRestart - an unqueueable issue is refused before the close", async () => {
+Deno.test("abandonAndRestart - an issue the worker cannot re-label is still abandoned, and named (Issue #1773)", async () => {
   // `work-on` on an existing issue is refused by the worker label guard and
-  // stripped by the discovery collectors, so closing here would leave the
-  // issue open, unqueued and invisible — worse than the stall.
-  const fake = makeFake({ issueLabels: [] });
+  // stripped by the discovery collectors. Before #1773 that refused the
+  // abandon and nothing was redone; now the PR is closed, the issue reopened
+  // and handed to a human with the label it needs named.
+  const fake = makeFake({ issueLabels: [], issueState: "CLOSED" });
 
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
@@ -423,14 +424,58 @@ Deno.test("abandonAndRestart - an unqueueable issue is refused before the close"
   });
 
   assertEquals(outcome, {
+    outcome: "abandoned-unlabelled",
+    issueNumber: ISSUE_NUMBER,
+    workLabel: "work-on",
+  });
+
+  // The work is redone-able: the PR is closed and the issue is back open.
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+  assertEquals(callsMatching(fake, "issue", "reopen").length, 1);
+
+  // `needs-human` on the issue — and `work-on` is never applied by the worker.
+  const labelAdds = labelAddCalls(fake, ISSUE_NUMBER);
+  assertEquals(labelAdds.length, 1);
+  assert((labelAdds[0] ?? []).includes("labels[]=needs-human"));
+  assert(
+    !fake.calls.some((args) => args.includes("labels[]=work-on")),
+    "the worker must never apply a reserved pickup label",
+  );
+
+  // The issue comment names the label a trusted author must re-apply.
+  const issueBody = bodyOfCall(fake, "issue", "comment");
+  assertStringIncludes(issueBody, CONFLICT_RESTART_MARKER);
+  assertStringIncludes(issueBody, "re-apply `work-on` to re-queue this issue");
+  // …and the PR comment does not promise a re-queue that is not happening.
+  const prBody = bodyOfCall(fake, "pr", "comment");
+  assertStringIncludes(prBody, "`needs-human`");
+  assertStringIncludes(prBody, "`work-on`");
+  assert(!prBody.includes("is being re-queued"));
+});
+
+Deno.test("abandonAndRestart - an unlabelled abandon is still bound to one restart (Issue #1773)", async () => {
+  const fake = makeFake({ issueLabels: [] });
+
+  const first = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+  assertEquals(first.outcome, "abandoned-unlabelled");
+
+  const second = await abandonAndRestart(
+    makeRequest({ prNumber: 77, branchName: `issue-${ISSUE_NUMBER}-limits-2` }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  assertEquals(second, {
     outcome: "declined",
     reason: {
-      kind: "requeue-not-permitted",
+      kind: "already-restarted",
       issueNumber: ISSUE_NUMBER,
-      workLabel: "work-on",
+      samePr: false,
     },
   });
-  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -977,7 +1022,7 @@ Deno.test("findOtherPrsForIssue - an unanswered listing is not an empty one", as
   );
 });
 
-Deno.test("exhaustedEscalationRoute - the other two declines say what blocked them", () => {
+Deno.test("exhaustedEscalationRoute - the other-PR decline says what blocked it", () => {
   const otherPr = exhaustedEscalationRoute({
     outcome: "declined",
     reason: {
@@ -988,18 +1033,4 @@ Deno.test("exhaustedEscalationRoute - the other two declines say what blocked th
   });
   assertEquals(otherPr.kind, "abandon-declined");
   assertStringIncludes(describeExhaustedRoute(otherPr).join("\n"), "pull/91");
-
-  const unqueueable = exhaustedEscalationRoute({
-    outcome: "declined",
-    reason: {
-      kind: "requeue-not-permitted",
-      issueNumber: ISSUE_NUMBER,
-      workLabel: "work-on",
-    },
-  });
-  assertEquals(unqueueable.kind, "abandon-declined");
-  assertStringIncludes(
-    describeExhaustedRoute(unqueueable).join("\n"),
-    "unqueued",
-  );
 });
