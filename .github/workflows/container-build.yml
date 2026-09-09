@@ -206,6 +206,21 @@ jobs:
           # toolchain's representative command must report the pinned version.
           # A missing or drifted toolchain fails here rather than leaving a
           # monitored repository unbuildable on an unattended host.
+          #
+          # Each loop below counts what it actually verified and asserts that
+          # count against the manifest: a jq that errored or matched nothing
+          # would otherwise run the body zero times and leave the step green,
+          # which is the absence-of-failure-read-as-success shape this
+          # repository forbids. Every toolchain must fall into one loop or the
+          # other, so a third check refuses one that declares neither surface.
+          neither=$(jq -r '[.toolchains[] | select(((.commands // []) | length == 0) and ((.modules // []) | length == 0))] | length' container/tools.json)
+          if [[ "${neither}" -ne 0 ]]; then
+            echo "FAILED: ${neither} toolchain(s) declare neither commands nor modules, so nothing would verify them" >&2
+            exit 1
+          fi
+
+          expected=$(jq -r '[.toolchains[] | select((.commands // []) | length > 0)] | length' container/tools.json)
+          verified=0
           while read -r id version version_command commands; do
             read -r -a command_list <<< "${commands}"
             for command in "${command_list[@]}"; do
@@ -221,7 +236,42 @@ jobs:
               echo "FAILED: ${version_command} reports '${reported}', expected ${version}" >&2
               exit 1
             fi
-          done < <(jq -r '.toolchains[] | "\(.id) \(.version) \(.versionCommand) \(.commands | join(" "))"' container/tools.json)
+            verified=$((verified + 1))
+          done < <(jq -r '.toolchains[] | select((.commands // []) | length > 0) | "\(.id) \(.version) \(.versionCommand) \(.commands | join(" "))"' container/tools.json)
+          if [[ "${verified}" -ne "${expected}" ]]; then
+            echo "FAILED: verified ${verified} of ${expected} command toolchain(s)" >&2
+            exit 1
+          fi
+
+          # A library toolchain (Issue #1628) puts nothing on the PATH: it
+          # makes a Python module importable, so it is verified through the
+          # image's own interpreter instead. NEAT-AI-core's BATS suites run
+          # exactly this shape — `python3 -c "import yaml"` — and 31 of them
+          # failed with ModuleNotFoundError before PyYAML was pinned.
+          expected=$(jq -r '[.toolchains[] | select((.modules // []) | length > 0)] | length' container/tools.json)
+          verified=0
+          while read -r id version version_module modules; do
+            read -r -a module_list <<< "${modules}"
+            for module in "${module_list[@]}"; do
+              if ! docker run --rm --entrypoint python3 "${IMAGE}" \
+                  -c "import ${module}" < /dev/null; then
+                echo "FAILED: ${id} toolchain module '${module}' is not importable in the image" >&2
+                exit 1
+              fi
+            done
+            reported=$(docker run --rm --entrypoint python3 "${IMAGE}" \
+              -c "import ${version_module}; print(${version_module}.__version__)" < /dev/null)
+            echo "${id}: import ${version_module} -> ${reported}"
+            if [[ "${reported}" != *"${version}"* ]]; then
+              echo "FAILED: ${version_module} reports '${reported}', expected ${version}" >&2
+              exit 1
+            fi
+            verified=$((verified + 1))
+          done < <(jq -r '.toolchains[] | select((.modules // []) | length > 0) | "\(.id) \(.version) \(.versionModule) \(.modules | join(" "))"' container/tools.json)
+          if [[ "${verified}" -ne "${expected}" ]]; then
+            echo "FAILED: verified ${verified} of ${expected} library toolchain(s)" >&2
+            exit 1
+          fi
 
       - name: Verify the baked Playwright and headless Chromium
         if: env.IMAGE_CHANGED == 'true'
