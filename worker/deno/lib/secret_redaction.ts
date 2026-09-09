@@ -60,17 +60,22 @@ interface RedactionRule {
 }
 
 /**
- * Markdown structure that can open a `secret-assignment` value (Issue #1727).
+ * Markdown a `secret-assignment` value can never be (Issue #1727).
  *
- * Every alternative is anchored and carries no nested quantifier, so the test
- * is linear in the value length (the Issue #3942 linearity rule). Some markers
- * (`#`, `>`, `|`, a spaced list bullet) cannot reach the predicate today,
- * because the rule already requires an alphanumeric inside the value's first
- * run of non-space characters — they are listed so the intent survives a
- * future loosening of that lookahead.
+ * A code fence (three or more backticks or tildes) and an image (`![`) are
+ * excluded wherever they appear, on the label's own line or a later one: no
+ * credential opens with those bytes, so the exclusion costs no coverage. The
+ * exclusion stops there deliberately. A single backtick, `#`, `>` and `|` are
+ * all legitimate password characters, so `PASSWORD: \`hunter2hunter2\`` and
+ * `SECRET: #hunter2!` stay masked; the remaining Markdown shapes are handled
+ * by the cross-line test below, or never reach this predicate because the
+ * rule already requires an alphanumeric inside the value's first run of
+ * non-space characters (`# Heading`, `> quoted`, `- item` all fail that).
+ *
+ * Both alternatives are anchored with no nested quantifier, so the test is
+ * linear in the value length (the Issue #3942 linearity rule).
  */
-const MARKDOWN_VALUE_START =
-  /^(?:`|~{3,}|#|>|\||!?\[|[-*+](?:\s|$)|\d+[.)](?:\s|$))/;
+const NEVER_A_CREDENTIAL = /^(?:`{3,}|~{3,}|!\[)/;
 
 /** A value in matching quotes: explicit assignment syntax, not prose. */
 const QUOTED_VALUE = /^(?:"[^"]*"|'[^']*')$/;
@@ -84,7 +89,10 @@ const PLAIN_WORD = /^[A-Za-z][a-z]*$/;
 /**
  * Shortest cross-line value still treated as a credential. Eight characters
  * is shorter than anything a credential generator emits and long enough to
- * exclude the short words prose opens with.
+ * exclude the short words prose opens with. The floor applies only across a
+ * line break, so an inline `PASSWORD=12345` is unaffected; a shorter
+ * credential alone on the line after its label is the accepted cost of not
+ * masking the first word of every sentence that follows a label.
  */
 const MIN_CROSS_LINE_LENGTH = 8;
 
@@ -102,10 +110,8 @@ const MIN_CROSS_LINE_LENGTH = 8;
  * The label side of the rule is deliberately blunt and stays that way — it
  * catches real secrets. Only the value is judged, on two axes:
  *
- *  - **Markdown structure is never a credential**, wherever it appears. A
- *    fence, an inline-code span, a heading, a list marker, a table pipe or an
- *    image is excluded outright; no credential opens with those bytes, so the
- *    exclusion costs no coverage.
+ *  - **A fence or an image is never a credential**, wherever it appears —
+ *    see {@link NEVER_A_CREDENTIAL}, which is deliberately that narrow.
  *  - **A value on a later line than its label must earn the mask.** An inline
  *    `secret_scanning: enabled` or `PASSWORD=12345` is genuine assignment
  *    syntax and is masked exactly as before; a value the separator reached
@@ -121,7 +127,7 @@ export function isCredentialShapedValue(
   value: string,
   sameLine: boolean,
 ): boolean {
-  if (MARKDOWN_VALUE_START.test(value)) return false;
+  if (NEVER_A_CREDENTIAL.test(value)) return false;
   if (sameLine) return true;
   if (QUOTED_VALUE.test(value)) return true;
   // Emphasis markers belong to the rendering, not to the value inside them.

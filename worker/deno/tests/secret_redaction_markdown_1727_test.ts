@@ -73,25 +73,48 @@ Deno.test("Issue #1727 - every credential label spelling keeps the fence", () =>
   }
 });
 
-Deno.test("Issue #1727 - Markdown structure is never an assignment value", () => {
+Deno.test("Issue #1727 - a fence or an image is never an assignment value", () => {
+  for (
+    const value of ["```mermaid", "```typescript", "~~~mermaid", "![a](b.png)"]
+  ) {
+    assertEquals(isCredentialShapedValue(value, true), false, value);
+    assertEquals(isCredentialShapedValue(value, false), false, value);
+  }
+});
+
+Deno.test("Issue #1727 - Markdown after a trailing label survives redaction", () => {
   for (
     const value of [
       "```mermaid",
-      "```typescript",
       "~~~mermaid",
-      "`inline code`",
       "![diagram](docs/evidence/a.png)",
+      "`inline code`",
       "# Heading",
       "> quoted",
-      "| table |",
+      "| table cell |",
       "- item",
       "1. item",
     ]
   ) {
-    assertEquals(isCredentialShapedValue(value, true), false, value);
-    assertEquals(isCredentialShapedValue(value, false), false, value);
     const body = `credential:\n\n${value}\n`;
     assertEquals(redactSecrets(body), body, value);
+    assertEquals(containsSecret(body), false, value);
+  }
+});
+
+Deno.test("Issue #1727 - the exclusion does not reach legitimate password characters", () => {
+  // A backtick, `#`, `>` and `|` all occur in real passwords, so an inline
+  // assignment carrying one must stay masked.
+  for (
+    const body of [
+      "PASSWORD: `hunter2hunter2`",
+      "SECRET: #hunter2!",
+      "API_KEY: >hunter2hunter2",
+      "CREDENTIAL: |hunter2hunter2",
+    ]
+  ) {
+    assertStringIncludes(redactSecrets(body), REDACTION_PLACEHOLDER, body);
+    assertEquals(containsSecret(body), true, body);
   }
 });
 
