@@ -69,10 +69,7 @@ import {
 } from "./requirements_rubric.ts";
 import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { invalidateComments } from "./comment_cache.ts";
-import {
-  getLabelLastAddInfo,
-  getLabelLastRemoveInfo,
-} from "./issue_query.ts";
+import { getLabelLastAddInfo, getLabelLastRemoveInfo } from "./issue_query.ts";
 import {
   isFleetAuthor,
   resolveSuppressionExcludedLogins,
@@ -781,7 +778,9 @@ export function isNonWorkerAddAfterReady(
 ): boolean {
   if (addInfo === null) return false;
   if (latestReadyTimestamp === null) return false;
-  if (isFleetAuthor(addInfo.addedBy, [githubUser, ...fleetLogins])) return false;
+  if (isFleetAuthor(addInfo.addedBy, [githubUser, ...fleetLogins])) {
+    return false;
+  }
   const readyMs = Date.parse(latestReadyTimestamp);
   if (Number.isNaN(readyMs)) return false;
   return addInfo.addedAt * 1000 > readyMs;

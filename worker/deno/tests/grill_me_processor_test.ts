@@ -3817,7 +3817,10 @@ Deno.test("findLatestReadyMarkerTimestamp - returns the newest Ready", () => {
       createdAt: "2026-09-08T06:30:00Z",
     }),
   ];
-  assertEquals(findLatestReadyMarkerTimestamp(comments), "2026-09-08T06:00:00Z");
+  assertEquals(
+    findLatestReadyMarkerTimestamp(comments),
+    "2026-09-08T06:00:00Z",
+  );
   assertEquals(findLatestReadyMarkerTimestamp([]), null);
 });
 
