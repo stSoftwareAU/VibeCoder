@@ -1116,3 +1116,47 @@ Deno.test("describeDependencyDecision - renders each decision shape", () => {
     "added by `main`",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1673: repo context comes from the clone, not <clone>/<repo>
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - injects the clone's CLAUDE.md into the agent prompt (Issue #1673)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    {},
+    {
+      workDirFiles: {
+        "CLAUDE.md":
+          "# Repo guidance\n\nSENTINEL-1673-MERGE: prefer Australian English.\n",
+      },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(captured.agentRuns, 1);
+  assertStringIncludes(captured.agentPrompts[0] ?? "", "SENTINEL-1673-MERGE");
+});
+
+Deno.test("processMergeConflict - warns when the checkout directory is missing (Issue #1673)", async () => {
+  const warnings: string[] = [];
+  const logger = makeSilentLogger();
+  logger.warn = (message: string) => {
+    warnings.push(message);
+  };
+
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    { logger, workDir: "/nonexistent/vibe-1673-clone" },
+  );
+
+  assert(result.ok);
+  assertEquals(captured.agentRuns, 1);
+  assertEquals(
+    warnings.some((w) => w.includes("Repo context directory does not exist")),
+    true,
+    `expected a missing-directory warning, got: ${warnings.join(" | ")}`,
+  );
+});

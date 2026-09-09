@@ -1316,3 +1316,109 @@ Deno.test("processPrFeedback - a verified push claims success and names the SHA 
   assertStringIncludes(commentBody, "abc12345");
   assertStringIncludes(commentBody, "Verified on the remote");
 });
+
+// ============================================================================
+// Issue #1673: repo context comes from the clone, not <clone>/<repo>
+// ============================================================================
+
+Deno.test("processPrFeedback - injects the clone's CLAUDE.md into the prompt (Issue #1673)", async () => {
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
+  const workDir = await Deno.makeTempDir({ prefix: "vibe-feedback-clone-" });
+  try {
+    await Deno.writeTextFile(
+      `${workDir}/CLAUDE.md`,
+      "# Repo guidance\n\nSENTINEL-1673-FEEDBACK: prefer Australian English.\n",
+    );
+
+    const prompts: string[] = [];
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: ((options: { prompt?: string }) => {
+          prompts.push(options?.prompt ?? "");
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed the issue", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: { runGhCommand: () => Promise.resolve("") },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const processorDeps: PrFeedbackProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      workDir,
+      workRoot,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      qualityInstructions: "",
+    };
+
+    const result = await processPrFeedback(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(prompts.length, 1);
+    assertStringIncludes(prompts[0]!, "SENTINEL-1673-FEEDBACK");
+  } finally {
+    await Deno.remove(workRoot, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("processPrFeedback - warns when the checkout directory is missing (Issue #1673)", async () => {
+  const warnings: string[] = [];
+  const logger = makeSilentLogger();
+  logger.warn = (message: string) => {
+    warnings.push(message);
+  };
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed the issue", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    },
+    github: { runGhCommand: () => Promise.resolve("") },
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger,
+    deps,
+    workDir: "/nonexistent/vibe-1673-clone",
+    workRoot: "/tmp/vibe-1673-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    qualityInstructions: "",
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  assertEquals(
+    warnings.some((w) => w.includes("Repo context directory does not exist")),
+    true,
+    `expected a missing-directory warning, got: ${warnings.join(" | ")}`,
+  );
+});

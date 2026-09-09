@@ -10,6 +10,7 @@ import {
   POOL_BUDGET_FLOOR,
   poolHasAnotherTokenWithBudget,
 } from "../lib/claude_pool_budget.ts";
+import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "../lib/claude_token_selection.ts";
 import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 
 function tokenFile(
@@ -161,4 +162,115 @@ Deno.test("poolHasAnotherTokenWithBudget - a metered key is not a pool member an
     false,
   );
   assertEquals(probe.calls(), 0, "a non-pool file is never probed");
+});
+
+/** A fetch that answers each token with per-window utilisations. */
+function fetchWindows(
+  byToken: Record<string, { fiveHour: number; sevenDay: number }>,
+) {
+  return (_url: string, init: RequestInit) => {
+    const auth = String(
+      (init.headers as Record<string, string>)["authorization"] ?? "",
+    );
+    const util = byToken[auth.replace("Bearer ", "")];
+    if (util === undefined) {
+      return Promise.resolve(new Response("nope", { status: 401 }));
+    }
+    return Promise.resolve(
+      new Response("{}", {
+        status: 200,
+        headers: {
+          "anthropic-ratelimit-unified-5h-utilization": String(util.fiveHour),
+          "anthropic-ratelimit-unified-5h-reset": "1788660000",
+          "anthropic-ratelimit-unified-7d-utilization": String(util.sevenDay),
+          "anthropic-ratelimit-unified-7d-reset": "1789260000",
+        },
+      }),
+    );
+  };
+}
+
+Deno.test("poolHasAnotherTokenWithBudget - the restart floor is the five-hour selection gate (Issue #1668)", async () => {
+  // One floor, one question: "worth running against?". Two floors that
+  // diverged would let a host restart for a token the selection gate then
+  // refuses to switch to — a restart loop dressed as a recovery.
+  assertEquals(POOL_BUDGET_FLOOR, CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING);
+
+  // 15% left cleared the old 5% floor and does not clear the gate.
+  const belowGate = fetchWith({
+    "token-provider": 1.0,
+    "token-provider-2": 0.85,
+  });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: belowGate.fn },
+    ),
+    false,
+  );
+
+  // 25% left clears it, and is worth going back for.
+  const aboveGate = fetchWith({
+    "token-provider": 1.0,
+    "token-provider-2": 0.75,
+  });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: aboveGate.fn },
+    ),
+    true,
+  );
+});
+
+Deno.test("poolHasAnotherTokenWithBudget - the floor is read on the five-hour window, not the most constrained one (Issue #1668)", async () => {
+  // A fresh five hours and a nearly spent week: the selection gate passes this
+  // token and a run would spend its five hours against it, so refusing the
+  // restart on the seven-day figure would idle the host for nothing.
+  const freshHoursSpentWeek = fetchWindows({
+    "token-provider": { fiveHour: 1, sevenDay: 1 },
+    "token-provider-2": { fiveHour: 0.1, sevenDay: 0.85 },
+  });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: freshHoursSpentWeek },
+    ),
+    true,
+  );
+
+  // The mirror image: the week is untouched but the five hours are gone, so
+  // nothing can be spent now and the wait stands.
+  const spentHoursFreshWeek = fetchWindows({
+    "token-provider": { fiveHour: 1, sevenDay: 1 },
+    "token-provider-2": { fiveHour: 0.85, sevenDay: 0.1 },
+  });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: spentHoursFreshWeek },
+    ),
+    false,
+  );
+});
+
+Deno.test("poolHasAnotherTokenWithBudget - exactly at the floor is not worth restarting for (Issue #1668)", async () => {
+  // The gate's own boundary: at exactly 80% used the token fails it, so the
+  // restart check must refuse the same token rather than going back for it.
+  const atTheBoundary = fetchWindows({
+    "token-provider": { fiveHour: 1, sevenDay: 1 },
+    "token-provider-2": { fiveHour: 1 - POOL_BUDGET_FLOOR, sevenDay: 0 },
+  });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: atTheBoundary },
+    ),
+    false,
+  );
 });
