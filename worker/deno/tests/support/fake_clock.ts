@@ -214,9 +214,24 @@ export function fakeClock(startMs: number = FAKE_CLOCK_EPOCH_MS): FakeClock {
     clearInterval: (handle) => {
       if (handle !== undefined) timers.delete(handle);
     },
-    sleep: (delayMs) =>
+    sleep: (delayMs, signal) =>
       new Promise<void>((resolve) => {
-        arm(resolve, delayMs);
+        // Cancellation (Issue #1667): the fake honours the signal exactly as
+        // `systemClock` does, so a test can abandon a sleeping backoff ladder
+        // without advancing time at all.
+        if (signal?.aborted) {
+          resolve();
+          return;
+        }
+        const handle = arm(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delayMs);
+        const onAbort = () => {
+          timers.delete(handle);
+          resolve();
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
       }),
     get armed() {
       return timers.size;

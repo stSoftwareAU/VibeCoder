@@ -6,7 +6,9 @@
  * {@link systemClock} is `Date.now()` and the runtime's own timers, and a
  * handle it hands back must still cancel. And the fake must be a faithful
  * stand-in: time moves only when the test says so, timers fire in due order,
- * a repeating timer keeps repeating, and a zero delay is not a wait.
+ * a repeating timer keeps repeating, and a zero delay is not a wait. Both must
+ * also honour the sleep cancellation the backoff ladder depends on
+ * (Issue #1667).
  *
  * Nothing here asserts on a duration. The system-clock cases compare two
  * readings of the same clock for order, which is true at any speed.
@@ -148,6 +150,62 @@ Deno.test("fakeClock - sleep resolves when the clock is advanced past it", async
   await clock.advance(1);
   await sleeping;
   assertEquals(done, ["woke"]);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1667 — a cancellable sleep. Both implementations must resolve the
+// moment the signal aborts, so a backoff ladder abandoned by the watchdog
+// ends there rather than sleeping out the rest of its wait.
+// ---------------------------------------------------------------------------
+
+Deno.test("systemClock - sleep resolves early when its signal aborts", async () => {
+  const controller = new AbortController();
+  // An hour: this can only resolve because the abort landed, never because
+  // the delay elapsed, so the assertion holds at any speed.
+  const sleeping = systemClock.sleep(3_600_000, controller.signal);
+  controller.abort();
+  await sleeping;
+});
+
+Deno.test("systemClock - sleep with an already-aborted signal never waits", async () => {
+  await systemClock.sleep(3_600_000, AbortSignal.abort());
+});
+
+Deno.test("systemClock - a signal that never aborts still waits for the timer", async () => {
+  const controller = new AbortController();
+  const done: string[] = [];
+  const sleeping = systemClock.sleep(1, controller.signal).then(() =>
+    done.push("woke")
+  );
+  assertEquals(done, [], "the signal must not short-circuit an unaborted wait");
+  await sleeping;
+  assertEquals(done, ["woke"], "the timer, not the signal, resolved it");
+});
+
+Deno.test("fakeClock - sleep resolves early when its signal aborts, without advancing", async () => {
+  const clock = fakeClock();
+  const controller = new AbortController();
+  const done: string[] = [];
+  const sleeping = clock.sleep(500_000, controller.signal).then(() =>
+    done.push("woke")
+  );
+  await clock.advance(1);
+  assertEquals(done, [], "still sleeping");
+  controller.abort();
+  await sleeping;
+  assertEquals(done, ["woke"]);
+  assertEquals(clock.armed, 0, "the cancelled timer is disarmed, not left set");
+  assertEquals(
+    clock.now(),
+    FAKE_CLOCK_EPOCH_MS + 1,
+    "cancelling does not move time",
+  );
+});
+
+Deno.test("fakeClock - sleep with an already-aborted signal never arms a timer", async () => {
+  const clock = fakeClock();
+  await clock.sleep(500_000, AbortSignal.abort());
+  assertEquals(clock.armed, 0);
 });
 
 Deno.test("fakeClock - a negative delay is clamped, as the globals clamp it", async () => {

@@ -47,8 +47,16 @@ export interface Clock {
   setInterval(handler: () => void, delayMs: number): TimerHandle;
   /** Disarm a repeating timer; `undefined` is a no-op. */
   clearInterval(handle: TimerHandle | undefined): void;
-  /** Resolve after `delayMs` — the in-process backoff wait. */
-  sleep(delayMs: number): Promise<void>;
+  /**
+   * Resolve after `delayMs` — the in-process backoff wait.
+   *
+   * `signal` cancels the wait (Issue #1667): an already-aborted signal
+   * resolves at once, and an abort part-way through resolves immediately
+   * rather than sleeping out the rest of the delay. The sleep always
+   * *resolves* — never rejects — so a cancelled backoff ladder decides what
+   * to do next instead of unwinding through a throw.
+   */
+  sleep(delayMs: number, signal?: AbortSignal): Promise<void>;
 }
 
 /**
@@ -67,5 +75,20 @@ export const systemClock: Clock = {
   clearInterval: (handle) => {
     if (handle !== undefined) clearInterval(handle);
   },
-  sleep: (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  sleep: (delayMs, signal) =>
+    new Promise((resolve) => {
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
+      const timer = Number(setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, delayMs));
+      const onAbort = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    }),
 };
