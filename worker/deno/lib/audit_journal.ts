@@ -525,13 +525,17 @@ export async function recordMutation(
   opts: RecordOptions = {},
 ): Promise<Result<AuditEntry>> {
   try {
-    const baseDir = resolveBaseDir(opts.baseDir, opts.env ?? processEnvLookup);
+    const env = opts.env ?? processEnvLookup;
+    const baseDir = resolveBaseDir(opts.baseDir, env);
     // Issue #1242: a journal directory under the shared temporary root is
     // created 0700 and refused when another account owns it. Appending a
     // hash-chained entry to a directory a local user controls would make the
     // audit trail evidence of nothing; failing here is reported through the
-    // Result the caller already handles.
-    const trust = await ensureStateDir(baseDir);
+    // Result the caller already handles. The same injected lookup decides
+    // what "shared temporary root" means (Issue #1604): the agent-side gh
+    // guard journals from a child with no `--allow-env`, so it hands in a
+    // lookup that answers nothing rather than one that would throw.
+    const trust = await ensureStateDir(baseDir, env);
     if (!trust.trusted) {
       throw new Error(
         `Audit directory ${baseDir} is not worker-private: ${

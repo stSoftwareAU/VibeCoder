@@ -11,6 +11,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { loadEntries } from "../lib/audit_journal.ts";
 import type { AuditMutation } from "../lib/audit_journal.ts";
 import {
   GH_GUARD_SHIM_AUDIT_VERB,
@@ -1546,6 +1547,143 @@ Deno.test({
     } finally {
       await shim.cleanup();
       await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1604 — the wrapper hands the guard child where to journal a refusal
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "gh-guard-shim - with the journal on, the guard child is told where to journal and may write only the journal's footprint (Issue #1604)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeStubGh();
+    const workDir = await Deno.makeTempDir({ prefix: "gh-guard-audit-" });
+    const lookup = (name: string) =>
+      ({ WORK_DIR: workDir, VIBE_RUN_ID: "run-1604", WORKER_UNIQUE_ID: "w7" })[
+        name
+      ];
+    const shim = expectInstalled(
+      await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+        active: true,
+        allowedRepos: ["stSoftwareAU/VibeCoder"],
+        env: lookup,
+      }),
+    );
+    try {
+      const script = await Deno.readTextFile(shim.shimPath);
+      // The wrapper shell-quotes every argument it bakes in.
+      assertStringIncludes(script, `'--audit-dir' '${workDir}/audit'`);
+      assertStringIncludes(script, "'--audit-worker' 'w7'");
+      assertStringIncludes(script, "'--audit-run' 'run-1604'");
+      const grant = script.match(/--allow-write=(\S+)/)?.[1] ?? "";
+      const granted = grant.split(",").map((p) => p.replace(/^'|'$/g, ""));
+      assertEquals(granted[0], shim.dir, "the verdict buffer stays first");
+      assertEquals(granted.includes(`${workDir}/audit`), true);
+      assertEquals(granted.includes(`${workDir}/audit.roster.jsonl`), true);
+      assertEquals(granted.includes(`${workDir}/audit.roster.seen`), true);
+      assertEquals(granted.length, 4, `grant: ${grant}`);
+      assertEquals(
+        granted.includes(workDir),
+        false,
+        "never the whole work root",
+      );
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim - with the journal off, the guard child gets no audit target and only the verdict buffer to write (Issue #1604)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeStubGh();
+    const shim = expectInstalled(
+      await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+        active: true,
+        allowedRepos: ["stSoftwareAU/VibeCoder"],
+        env: () => undefined,
+      }),
+    );
+    try {
+      const script = await Deno.readTextFile(shim.shimPath);
+      assertEquals(script.includes("--audit-dir"), false);
+      assertStringIncludes(script, `--allow-write='${shim.dir}' `);
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim - a refused agent gh call lands in the run's audit journal (Issue #1604)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeStubGh();
+    const workDir = await Deno.makeTempDir({ prefix: "gh-guard-audit-e2e-" });
+    const lookup = (name: string) =>
+      ({ WORK_DIR: workDir, VIBE_RUN_ID: "run-1604" })[name];
+    const shim = expectInstalled(
+      await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+        active: true,
+        allowedRepos: ["stSoftwareAU/VibeCoder"],
+        env: lookup,
+      }),
+    );
+    try {
+      const run = await runShim(shim.shimPath, shim.env, [
+        "issue",
+        "comment",
+        "1",
+        "-R",
+        "other/repo",
+        "--body",
+        "leak",
+      ]);
+      assertEquals(run.code, 1, run.stderr);
+      assertStringIncludes(run.stderr, "[SECURITY] [WRITE_REPO_BLOCKED]");
+      assertEquals(
+        run.stderr.includes("AUDIT_JOURNAL_REFUSED"),
+        false,
+        run.stderr,
+      );
+      assertEquals(await readLog(stub.log), "", "gh never ran");
+
+      const files: string[] = [];
+      for await (const e of Deno.readDir(`${workDir}/audit`)) {
+        if (e.isFile && e.name.endsWith(".jsonl")) files.push(e.name);
+      }
+      assertEquals(files.length, 1, `journal files: ${files.join(",")}`);
+      const loaded = await loadEntries(`${workDir}/audit/${files[0]}`);
+      assert(loaded.ok, loaded.ok ? "" : loaded.error.message);
+      if (loaded.ok) {
+        assertEquals(loaded.value.length, 1);
+        assertEquals(loaded.value[0]!.verb, "gh-guard-refused");
+        assertEquals(loaded.value[0]!.runId, "run-1604");
+        assertStringIncludes(
+          loaded.value[0]!.target ?? "",
+          "WRITE_REPO_BLOCKED: gh issue comment 1 -R other/repo",
+        );
+      }
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+      await Deno.remove(workDir, { recursive: true });
     }
   },
 });

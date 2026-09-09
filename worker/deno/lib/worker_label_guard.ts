@@ -46,6 +46,10 @@
  */
 
 import type { Result } from "../types.ts";
+import type { AuditMutation } from "./audit_entry.ts";
+import { recordMutation, resolveRunId } from "./audit_journal.ts";
+import { isAuditJournalEnabled } from "./audit_hook.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /**
  * Literal label names the worker may apply to an existing issue.
@@ -231,6 +235,25 @@ export function isWorkerAppliableLabel(label: string): boolean {
   return false;
 }
 
+/** Audit-journal verb for a label the worker refused to apply (Issue #1604). */
+export const WORKER_LABEL_REFUSAL_AUDIT_VERB = "worker-label-refused";
+
+/**
+ * Default audit sink for a refused label (Issue #1604): append to the
+ * worker's journal when it is on, and report nothing to do when it is off —
+ * unit tests without `WORK_DIR` therefore incur no journalling side effect,
+ * exactly as the `gh`/`git` chokepoint hooks behave.
+ */
+export function journalLabelRefusal(
+  mutation: AuditMutation,
+  env: EnvLookup = processEnvLookup,
+): Promise<Result<unknown>> {
+  if (!isAuditJournalEnabled(env)) {
+    return Promise.resolve({ ok: true, value: undefined });
+  }
+  return recordMutation(mutation, { env });
+}
+
 /**
  * Assert that the worker may apply `label`. Returns a `Result`:
  *   - `ok: true` when allowed (no log line emitted).
@@ -244,7 +267,16 @@ export function isWorkerAppliableLabel(label: string): boolean {
  */
 export function assertWorkerCanApplyLabel(
   label: string,
-  context: { caller?: string; logFn?: (line: string) => void } = {},
+  context: {
+    caller?: string;
+    logFn?: (line: string) => void;
+    /**
+     * Audit-journal sink for the refusal (Issue #1604; test seam). Defaults
+     * to {@link journalLabelRefusal}, which appends to the worker's journal
+     * whenever it is on.
+     */
+    record?: (mutation: AuditMutation) => Promise<Result<unknown>>;
+  } = {},
 ): Result<void> {
   if (isWorkerAppliableLabel(label)) {
     return { ok: true, value: undefined };
@@ -255,6 +287,33 @@ export function assertWorkerCanApplyLabel(
   log(
     `[SECURITY] [WORKER_LABEL_REFUSED] label=${label} caller=${caller} ` +
       `reason=not_in_worker_allowlist`,
+  );
+  // Issue #1604: the stderr line above is transient; the journal is the
+  // durable, tamper-evident record control C16 promises for a blocked
+  // mutation. Best-effort and off the caller's critical path — this function
+  // stays synchronous — but a failed append is said out loud, never hidden.
+  const record = context.record ?? journalLabelRefusal;
+  void record({
+    runId: resolveRunId(),
+    verb: WORKER_LABEL_REFUSAL_AUDIT_VERB,
+    outcome: "error",
+    target: `label=${label} caller=${caller}`,
+    caller: "worker/deno/lib/worker_label_guard.ts",
+  }).then(
+    (result) => {
+      if (!result.ok) {
+        log(
+          `[SECURITY] [AUDIT_JOURNAL_REFUSED] ${WORKER_LABEL_REFUSAL_AUDIT_VERB}: ` +
+            `${result.error.message}`,
+        );
+      }
+    },
+    (err: unknown) => {
+      log(
+        `[SECURITY] [AUDIT_JOURNAL_REFUSED] ${WORKER_LABEL_REFUSAL_AUDIT_VERB}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    },
   );
 
   return {
