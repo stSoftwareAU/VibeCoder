@@ -65,6 +65,35 @@ that import PyYAML (112 tests), run with the image's pinned bats 1.14.0:
 31 is exactly the count the issue reported. The one remaining skip in the
 "after" run is `cargo-cyclonedx not installed`, unrelated to this issue.
 
+### Outstanding — one block a human with `workflow` scope must apply
+
+`.github/workflows/container-build.yml`'s toolchain verification step cannot
+verify a library toolchain: its inline `jq` reads `.commands` on every entry,
+so it stops at the first entry without one. The replacement block is written,
+rehearsed (`commands: verified 12 of 12`, `modules: verified 1 of 1`, with
+`actionlint` clean) — and unpushable, because the worker's `gh` token has
+scopes `admin:public_key, gist, read:org, repo, user` and GitHub rejects a
+push touching `.github/workflows/**` without `workflow`:
+
+```text
+! [remote rejected] ... (refusing to allow an OAuth App to create or update
+  workflow `.github/workflows/container-build.yml` without `workflow` scope)
+```
+
+It is recorded verbatim in stSoftwareAU/VibeCoder#1705. Until it lands, the
+`pyyaml` entry is deliberately the **last** `toolchains[]` entry, which is
+what keeps this honest:
+
+- all 12 command toolchains are emitted before `jq` stops, so **none of them
+  loses CI verification** — verified by running the workflow's own jq against
+  the committed manifest;
+- the library toolchain is verified by the **image build itself** —
+  `container/toolchains/pyyaml.sh` imports every module the manifest declares
+  and compares the reported version with the pin, so a broken install fails
+  the build rather than the check after it;
+- the placement constraint is recorded in the `pyyaml` entry's own `notes`, and
+  #1705 says to drop that note once the block lands.
+
 ### How a library toolchain reaches the image
 
 ```mermaid
@@ -101,6 +130,14 @@ flowchart LR
   wheels; the fragment fetches by pinned URL, runs `sha256sum -c`, and
   installs `--no-deps --only-binary=:all:` from the local file —
   reviewer: met
+- **partial** — the built image's own CI step verifies the new toolchain —
+  evidence: `container/toolchains/pyyaml.sh` verifies at build time (import +
+  version equality), so a broken install fails the image build —
+  reviewer: met — reason: departure recorded. The reviewer saw the diff while
+  it still carried the `container-build.yml` module loop and judged it met;
+  that block was withheld because the worker's token has no `workflow` scope,
+  so the outside-in CI check is `partial` until
+  stSoftwareAU/VibeCoder#1705 lands
 - **unrequested** — `REQUIRED_REPO_TOOLCHAIN_MODULES` and
   `findMissingRuntimePythonModules` in
   `worker/deno/lib/container_manifest.ts` — reviewer: unrequested — reason:
@@ -119,13 +156,15 @@ flowchart LR
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — two verification loops could report green having verified
-  nothing: the command loop now filters rows out, and the library loop's `jq`
-  runs in a process substitution, so an errored or empty query would run the
-  body zero times and still exit 0 — evidence:
-  `.github/workflows/container-build.yml:223` — reason: fixed here; each loop
-  counts what it verified and asserts that count against the manifest, and a
-  third check refuses any toolchain declaring neither surface (rehearsed with
-  `docker` stubbed: `commands: verified 12 of 12`, `modules: verified 1 of 1`)
+  nothing: the command loop filtered rows out, and the library loop's `jq` ran
+  in a process substitution, so an errored or empty query would run the body
+  zero times and still exit 0 — evidence:
+  `.github/workflows/container-build.yml:223` (as it stood in commit
+  `1954f29`) — reason: fixed, then **withheld from this PR** — the worker's
+  token carries no `workflow` scope, so GitHub rejects any push touching
+  `.github/workflows/**`. The finished block is recorded verbatim in
+  stSoftwareAU/VibeCoder#1705 for a human to apply, and this branch leaves the
+  workflow untouched. See **Outstanding** below for what that costs today
 - **violation** — the fragment's new "names no module" abort shipped with no
   test, out of pattern with its four other covered abort paths — evidence:
   `container/toolchains/pyyaml.sh:76` — reason: fixed here;

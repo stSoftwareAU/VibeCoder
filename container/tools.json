@@ -201,20 +201,6 @@
       "notes": "The spelling checker NEAT-AI-core's gate skips with a warning and NEAT-AI-scorer's scripts/spell-check.sh preflight exits 1 without, so that gate fails outright in an image lacking it (Issue #1595). A pure-Python console script with no standalone binary, so it follows the semgrep pattern: the pinned py3-none-any wheel installed by the pinned pip into its own /opt/codespell virtualenv, off the PEP 668 externally-managed system interpreter. codespell 2.4.3 declares no required runtime dependencies (chardet and tomli are extras only), so --no-deps gives a fully pinned install with no unverified wheel from the index — unlike semgrep, which still resolves its own dependencies there. One noarch checksum covers both architectures."
     },
     {
-      "id": "pyyaml",
-      "version": "6.0.3",
-      "fragment": "toolchains/pyyaml.sh",
-      "modules": ["yaml"],
-      "versionModule": "yaml",
-      "source": "https://pypi.org/project/PyYAML",
-      "sha256": {
-        "amd64": "0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6",
-        "arm64": "ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c"
-      },
-      "repos": ["stSoftwareAU/NEAT-AI-core"],
-      "notes": "The first library toolchain: it puts no command on the PATH, so it declares the modules it makes importable instead of `commands` (Issue #1628). With bats-core in the image (Issue #1595) NEAT-AI-core's `bats tests/scripts` suite executes rather than skips, and 31 of its tests then failed with ModuleNotFoundError: No module named 'yaml' — its workflow-assertion suites parse workflow YAML with an inline python3 script that imports PyYAML, which their CI runners carry and the image did not. Installed by the pinned pip with --target into the interpreter's own purelib directory, so `python3 -c \"import yaml\"` resolves it: a /opt/<tool> virtualenv, as codespell uses, would never satisfy that consumer, and --target leaves the PEP 668 externally-managed system environment untouched. PyYAML ships a C extension, so the wheel is per-architecture and its name carries the cp<major><minor> interpreter tag; the fragment derives that tag from the running python3 rather than restating it, so a base-image interpreter bump 404s the fetch instead of installing bytes this manifest never pinned. PyYAML declares no runtime dependencies, so --no-deps is a fully pinned install."
-    },
-    {
       "id": "node",
       "version": "24.19.0",
       "versionArg": "NODE_VERSION",
@@ -294,6 +280,20 @@
       },
       "repos": ["stSoftwareAU/VibeCoder"],
       "notes": "Backs the semgrep quality-gate stage (worker/deno/lib/semgrep_check.ts, Issue #559): without the binary that stage reported SKIPPED on every fleet run and agents met SAST findings only in CI (Issue #650). The version is not a free choice — it must equal SEMGREP_IMAGE_TAG in worker/deno/lib/pinned_actions.ts, the semgrep/semgrep image .github/workflows/semgrep.yml runs, so a local pass predicts a CI pass; container_manifest_test.ts fails the gate on drift. Semgrep's CLI is a Python application with no standalone binary release, so the pins are the manylinux wheels, one per architecture — each bundles its own ~260 MB semgrep-core. Both are fetched by pinned files.pythonhosted.org URL with curl and the shared CURL_RETRY policy, like every other artefact in the build (Issue #1016); the URL embeds the wheel's compatibility-tag string, so bump that string in the Containerfile with this version or the fetch 404s. The `pip` entry under `tools` is the installer that puts them there; Debian's python3 ships no ensurepip, so the installer is an artefact in its own right and is pinned like everything else. The wheel is installed into a /opt/semgrep virtualenv rather than the system interpreter, which PEP 668 marks externally managed. Only semgrep's own dependency wheels come from the index unverified, the same residual risk `playwright-core install --with-deps` carries for its apt set."
+    },
+    {
+      "id": "pyyaml",
+      "version": "6.0.3",
+      "fragment": "toolchains/pyyaml.sh",
+      "modules": ["yaml"],
+      "versionModule": "yaml",
+      "source": "https://pypi.org/project/PyYAML",
+      "sha256": {
+        "amd64": "0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6",
+        "arm64": "ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c"
+      },
+      "repos": ["stSoftwareAU/NEAT-AI-core"],
+      "notes": "The first library toolchain: it puts no command on the PATH, so it declares the modules it makes importable instead of `commands` (Issue #1628). With bats-core in the image (Issue #1595) NEAT-AI-core's `bats tests/scripts` suite executes rather than skips, and 31 of its tests then failed with ModuleNotFoundError: No module named 'yaml' — its workflow-assertion suites parse workflow YAML with an inline python3 script that imports PyYAML, which their CI runners carry and the image did not. Installed by the pinned pip with --target into the interpreter's own purelib directory, so `python3 -c \"import yaml\"` resolves it: a /opt/<tool> virtualenv, as codespell uses, would never satisfy that consumer, and --target leaves the PEP 668 externally-managed system environment untouched. PyYAML ships a C extension, so the wheel is per-architecture and its name carries the cp<major><minor> interpreter tag; the fragment derives that tag from the running python3 rather than restating it, so a base-image interpreter bump 404s the fetch instead of installing bytes this manifest never pinned. PyYAML declares no runtime dependencies, so --no-deps is a fully pinned install. Deliberately the LAST toolchains[] entry until the container-build workflow learns to verify a library toolchain: its current inline jq reads .commands on every entry, so it stops at the first entry without one — placed last, every command toolchain ahead of it is still verified. The image build itself is what verifies this one: container/toolchains/pyyaml.sh imports the module and compares the reported version with this pin, so a broken install fails the build rather than the check after it."
     }
   ],
   "tools": [
