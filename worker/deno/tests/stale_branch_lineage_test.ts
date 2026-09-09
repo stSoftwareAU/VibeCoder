@@ -502,6 +502,9 @@ Deno.test(
 
       assert(!result.ok, "a dirty tree must refuse the rebase");
       assertStringIncludes(result.error.message, "uncommitted changes");
+      // Issue #1684: the refusal names the paths, not merely a count — the
+      // log is the only record of what stopped the rebase.
+      assertStringIncludes(result.error.message, "uncommitted.md");
       assertEquals(await gitOk(["rev-parse", "HEAD"], writer), headBefore);
       assertEquals(
         await Deno.readTextFile(`${writer}/uncommitted.md`),

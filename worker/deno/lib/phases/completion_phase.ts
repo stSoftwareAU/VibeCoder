@@ -23,6 +23,11 @@ import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
 import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import {
+  commitPendingWork,
+  describePaths,
+  listPendingWorkPaths,
+} from "../pending_work.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
@@ -559,6 +564,118 @@ async function postWorkOnRunStats(
 }
 
 /**
+ * Commit subject for the ahead-branch rescue (Issue #1684).
+ *
+ * Deliberately not `wip:`-prefixed: the branch already carries real commits
+ * and this work belongs in the PR, so the #148 WIP-only gate must not read it
+ * as parked work.
+ */
+export function buildAheadBranchRescueCommitMessage(
+  issueNumber: number,
+  dirtyFiles: number,
+): string {
+  return `fix: commit ${dirtyFiles} uncommitted file(s) this run left behind ` +
+    `(issue #${issueNumber})\n\n` +
+    "The branch is ahead of its base, so Issue #218's level-with-base rescue\n" +
+    "never saw this work and the next `reset --hard` would have discarded it\n" +
+    "(Issue #1684).";
+}
+
+/**
+ * Put a dirty working tree onto a branch that is AHEAD of its base
+ * (Issue #1684).
+ *
+ * Issue #218 preserves a dirty tree only when the branch is level with base;
+ * a branch already ahead got no rescue at all, so the quality-fix agent's
+ * edits were dropped while the PR was raised without them — and the two
+ * rebase guards below declined for that same dirty tree, so CI ran twice.
+ *
+ * Best effort, exactly like #218's rescue: the PR still goes ahead. But a
+ * failure is reported loudly (with the paths, never a bare count) rather than
+ * swallowed, and the ahead-count is required — when it cannot be read the
+ * tree is left alone, because committing on a branch that is level with base
+ * is #218's business and its WIP semantics, not this one's.
+ */
+async function commitDirtyTreeOnAheadBranch(
+  state: PhaseState,
+  deps: WorkerDeps,
+  baseBranch: string,
+  issueNumber: number,
+): Promise<void> {
+  const logger = deps.logger;
+  const pending = await listPendingWorkPaths(deps.git, state.repoPath);
+  if (pending === null) {
+    logger.warn(
+      "Could not read the working tree before the pre-PR rebase — any " +
+        "uncommitted work is left where it is (Issue #1684)",
+      { branch: state.branchName },
+    );
+    return;
+  }
+  if (pending.length === 0) return;
+
+  const comparableBase = await resolveComparableBaseRef(
+    deps.git.runGitCommand,
+    baseBranch,
+    { cwd: state.repoPath },
+  );
+  // Counted the same way — and against the same refs — as the ahead-of-base
+  // guard later in this phase, so the two can never disagree about whether
+  // this branch is level.
+  const aheadResult = comparableBase.ok
+    ? await deps.git.runGitCommand(
+      ["rev-list", "--count", `${comparableBase.value}..${state.branchName}`],
+      { cwd: state.repoPath },
+    )
+    : null;
+  const ahead = aheadResult?.ok && aheadResult.value.code === 0
+    ? Number.parseInt(aheadResult.value.stdout.trim(), 10)
+    : Number.NaN;
+  if (!Number.isFinite(ahead)) {
+    logger.warn(
+      "Could not tell whether the branch is ahead of its base, so " +
+        `${pending.length} uncommitted path(s) were left uncommitted ` +
+        `(Issue #1684): ${describePaths(pending)}`,
+      { branch: state.branchName, baseBranch },
+    );
+    return;
+  }
+  // Level with base — Issue #218's rescue owns this tree, `wip:` marker and
+  // all. Leave it to run later in this phase.
+  if (ahead === 0) return;
+
+  const outcome = await commitPendingWork({
+    git: deps.git,
+    repoPath: state.repoPath,
+    branchName: state.branchName,
+    message: buildAheadBranchRescueCommitMessage(issueNumber, pending.length),
+  });
+
+  // A verification read that failed is not proof of success: fall back to the
+  // paths we know were pending rather than reporting a clean rescue.
+  const unresolved = outcome.statusUnknown && !outcome.committed
+    ? (outcome.remaining.length > 0 ? outcome.remaining : pending)
+    : outcome.remaining;
+
+  if (unresolved.length === 0) {
+    logger.warn(
+      `Committed ${pending.length} uncommitted path(s) onto ` +
+        `'${state.branchName}' before its PR — the run left them behind ` +
+        `(Issue #1684): ${describePaths(pending)}`,
+    );
+    return;
+  }
+
+  logger.error(
+    `Could not preserve ${unresolved.length} uncommitted path(s) on ` +
+      `'${state.branchName}' — the PR will not carry them and the next ` +
+      `\`reset --hard\` discards them (Issue #1684): ` +
+      describePaths(unresolved),
+    { ...(outcome.error ? { error: outcome.error } : {}) },
+  );
+}
+
+/**
  * Refuse a PR built from nothing but an earlier run's WIP commits (Issue #148).
  *
  * WIP preservation (#47) and the periodic checkpoints (#4170) both leave
@@ -791,6 +908,15 @@ async function completionBody(
   // below, the ahead-count guard, the milestone footer (Issue #3911), and
   // `gh pr create --base`, so they can never disagree.
   const baseBranch = state.milestoneBranch ?? state.defaultBranch;
+
+  // Issue #1684: a dirty tree on a branch that is AHEAD of base used to be
+  // discarded in silence. #218's rescue only fires when the branch is LEVEL
+  // with base, so an agent's uncommitted quality fix on a branch that already
+  // carried a commit was dropped by the next `reset --hard` — and it also
+  // made both guards below decline (they refuse to rebase a dirty tree). The
+  // work goes onto the branch first, so the PR carries it and the rebase can
+  // run.
+  await commitDirtyTreeOnAheadBranch(state, deps, baseBranch, issueNumber);
 
   // Stale-lineage guard (Issue #534) — before anything is pushed. Two runs
   // held one issue branch: the first rebased, force-pushed and squash-merged;

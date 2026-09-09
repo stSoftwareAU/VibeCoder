@@ -1,7 +1,7 @@
 {
   "root": "worker/deno/lib",
   "parent": 1209,
-  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts \u2014 a module absent from every slice is an unswept file and fails the test.",
+  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts — a module absent from every slice is an unswept file and fails the test.",
   "slices": [
     {
       "issue": 1214,
@@ -934,6 +934,17 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/gated_head_guard.ts"
+      ]
+    },
+    {
+      "issue": 1684,
+      "chunk": "12m",
+      "title": "top-up: the pending working-tree helpers added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1684-pending-work.md",
+      "definition": "modules added to lib/ after 12a-12l recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/pending_work.ts"
       ]
     }
   ]

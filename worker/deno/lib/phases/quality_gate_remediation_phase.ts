@@ -31,6 +31,7 @@ import { decideGateBypass, formatCarryoverFindings } from "../baseline_gate.ts";
 import { formatBaselineCarryoverNote } from "../quality_helpers.ts";
 import { fenceQualityOutput } from "../untrusted_quality_output.ts";
 import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
+import { commitPendingWork, describePaths } from "../pending_work.ts";
 
 /**
  * Result of a single quality-gate body pass — see `runQualityGateBody`.
@@ -101,6 +102,91 @@ ${block}
 Please fix all failing quality checks. Do not modify any test files unless they are testing code you changed.
 
 ${integrity}`;
+}
+
+/**
+ * Commit subject for the fix run's edits (Issue #1684).
+ *
+ * Deliberately NOT `wip:`-prefixed: this is finished work the PR must carry,
+ * and the completion phase's WIP-only gate (Issue #148) refuses a PR built
+ * entirely from `wip:` commits.
+ */
+export function buildQualityFixCommitMessage(issueNumber: number): string {
+  return `fix: apply quality-gate fixes for issue #${issueNumber}\n\n` +
+    "Committed by the worker so the gate rerun verifies the branch rather " +
+    "than a\nworking tree the PR would never carry (Issue #1684).";
+}
+
+/**
+ * Commit subject for work the gate passed on but nothing had committed
+ * (Issue #1684) — the safety net behind the fix-run commit above.
+ */
+export function buildVerifiedTreeCommitMessage(issueNumber: number): string {
+  return `chore: commit the working-tree changes the quality gate verified ` +
+    `(issue #${issueNumber})\n\n` +
+    "The gate passed on a tree that was not the branch head; committing it " +
+    "is\nwhat makes the verdict describe the PR (Issue #1684).";
+}
+
+/**
+ * Put whatever the working tree carries onto the issue branch, through the
+ * final-mile chokepoint (Issue #1684).
+ *
+ * Returns the paths still uncommitted afterwards — empty when the branch now
+ * carries the work, or when there was nothing to carry. Never throws and
+ * never fails the phase itself: the callers below decide what a leftover
+ * means, because after a fix run it is a warning and at the pass verdict it
+ * is a failure.
+ */
+async function commitWorkingTree(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  message: string,
+): Promise<string[]> {
+  const outcome = await commitPendingWork({
+    git: deps.git,
+    repoPath: state.repoPath,
+    branchName: state.branchName,
+    message,
+  });
+
+  if (outcome.pending.length === 0) {
+    if (outcome.statusUnknown) {
+      // `git status` could not be read. Say so rather than letting an
+      // unanswerable question pass silently for a clean tree.
+      deps.logger.warn(
+        "Could not read the working tree while committing quality-gate work " +
+          "(Issue #1684) — treating it as clean",
+        { repo: ctx.repo, branch: state.branchName },
+      );
+    }
+    return [];
+  }
+
+  if (outcome.statusUnknown) {
+    // The commit ran but the verifying read did not. Trust the chokepoint's
+    // own answer rather than inventing either verdict.
+    deps.logger.warn(
+      "Could not verify the working tree after committing quality-gate work " +
+        "(Issue #1684)",
+      {
+        branch: state.branchName,
+        committed: outcome.committed,
+        paths: describePaths(outcome.pending),
+      },
+    );
+    return outcome.committed ? [] : outcome.pending;
+  }
+
+  if (outcome.remaining.length === 0) {
+    deps.logger.info(
+      "Committed the quality-gate working-tree changes to the issue branch " +
+        "(Issue #1684)",
+      { branch: state.branchName, paths: describePaths(outcome.pending) },
+    );
+  }
+  return outcome.remaining;
 }
 
 /**
@@ -323,6 +409,29 @@ async function runQualityGateBody(
     }
 
     if (qualityResult.value.passed) {
+      // Issue #1684: "passed" must describe the branch, not a working tree
+      // the PR will never carry. Anything still uncommitted here is committed
+      // through the chokepoint first; a leftover the chokepoint refused is a
+      // loud failure, never a pass logged over discarded work.
+      const leftover = await commitWorkingTree(
+        ctx,
+        state,
+        deps,
+        buildVerifiedTreeCommitMessage(ctx.issueNumber),
+      );
+      if (leftover.length > 0) {
+        return {
+          phaseResult: {
+            status: "failure",
+            reason:
+              `Quality gate passed on attempt ${attempt}, but the passing ` +
+              `tree is not the branch head: ${leftover.length} path(s) could ` +
+              `not be committed to \`${state.branchName}\` — ` +
+              `${describePaths(leftover)}. Refusing to report a pass that ` +
+              `the PR would not carry (Issue #1684).`,
+          },
+        };
+      }
       logger.info("Quality gate passed", { attempt });
       return { phaseResult: { status: "continue" } };
     }
@@ -441,6 +550,26 @@ async function runQualityGateBody(
       logger.warn("Claude fix attempt failed", {
         error: fixResult.error.message,
       });
+    }
+
+    // Issue #1684: commit what the fix run edited BEFORE the gate is rerun,
+    // so the rerun verifies the committed branch and the PR carries the fix.
+    // The fix prompt never asked for a commit and nothing else makes one, so
+    // the edits used to survive only until the next `reset --hard`.
+    const leftover = await commitWorkingTree(
+      ctx,
+      state,
+      deps,
+      buildQualityFixCommitMessage(ctx.issueNumber),
+    );
+    if (leftover.length > 0) {
+      // Not fatal here — the rerun still happens — but the pass verdict above
+      // refuses to call it a pass while these paths are uncommitted.
+      logger.warn(
+        "Quality fix changes could not be committed to the issue branch " +
+          "(Issue #1684)",
+        { branch: state.branchName, paths: describePaths(leftover) },
+      );
     }
   }
 

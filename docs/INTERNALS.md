@@ -2751,6 +2751,54 @@ dirty tree, git failure, corrupt cache, expired entry, or an entry lacking the
 diffable findings the baseline-aware gate needs — falls back to the full gate.
 Set `VIBE_CODER_BASELINE_QUALITY_CACHE=0` to disable reuse.
 
+### 🧾 The gate's verdict describes the branch (Issue #1684)
+
+The post-agent quality gate
+([quality_gate_remediation_phase.ts](../worker/deno/lib/phases/quality_gate_remediation_phase.ts))
+runs `quality.sh`, and on a failure hands the output to a Claude fix run. That
+fix run edits the working tree; nothing used to commit it. The loop reran the
+gate against the edited tree, logged `Quality gate passed attempt=2`, and
+returned — while the PR carried the branch, which was still the tree that had
+FAILED attempt 1. On GRQ-health#188 two workflow files were repaired and none
+of the repair reached PR #194.
+
+Three rules now keep the verdict and the branch the same thing:
+
+- **The fix run's edits are committed before the gate is rerun**, through
+  `commitAndPushPending` — so the rerun verifies the branch, and the PR carries
+  the fix. The commit is not `wip:`-prefixed: it is finished work, and the
+  #148 WIP-only gate must not read it as parked.
+- **`Quality gate passed` is only logged on a tree that equals the branch
+  head.** Anything still uncommitted (worker-owned state files excluded, per
+  Issue #1661) is committed first; a path the chokepoint refuses fails the phase
+  and is named in the reason, rather than passing over discarded work.
+- **A dirty tree on a branch that is _ahead_ of base is preserved too.** Issue
+  #218's rescue only fires when the branch is _level_ with base, so an ahead
+  branch simply dropped the work — and the pre-PR rebase
+  (`ensureBranchCurrent` → `rebaseOntoBase`) declined for those very files, so
+  CI ran twice. The completion phase commits them before either rebase guard
+  looks.
+
+Every refusal that names a dirty tree now names the paths (bounded at ten,
+control characters scrubbed) instead of a bare count — the log was the only
+record of what was lost, and "2 path(s) modified" could not say what.
+`pending_work.ts` is the one place that lists, names and commits pending work,
+so the two phases cannot drift.
+
+```mermaid
+flowchart TD
+    A["quality.sh"] --> B{passed?}
+    B -- "no" --> C["Claude fix run edits the tree"]
+    C --> D["commitAndPushPending — the fix lands on the branch"]
+    D --> A
+    B -- "yes" --> E{"tree == branch head?"}
+    E -- "yes" --> F["log 'Quality gate passed' → continue"]
+    E -- "no" --> G["commit the pending work"]
+    G --> H{"committed?"}
+    H -- "yes" --> F
+    H -- "no" --> I["failure naming the paths"]
+```
+
 ### 🏷️ Label-priority ordering
 
 The `ISSUE_LABELS` array order now determines label priority during issue
