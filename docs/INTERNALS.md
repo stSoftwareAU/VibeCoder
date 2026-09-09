@@ -3053,22 +3053,16 @@ Milestone branches are now periodically synchronised with the default branch,
 ensuring they stay up-to-date and reducing merge conflicts when the milestone is
 consolidated.
 
-#### 🚪 The closed-issue query is gated on a cheap REST signal
+#### 🚪 Every open milestone, and no closed-issue query at all
 
-The pass spends against two budgets per repo per cycle: a REST milestone
-listing, and the GraphQL `gh issue list --state closed` that answers only
-"has anything been completed in this milestone yet?". The REST payload already
-carries `closed_issues` per milestone, so
-[milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)
-decides from the cheap call whether the expensive one is worth making
-(Issue #1488): a milestone that has closed nothing is skipped outright, and one
-whose count has not moved since the previous cycle reuses the recorded verdict.
-Any movement — up **or** down, since an issue can be reopened or moved out of a
-milestone — re-runs the query, and the observations are keyed by milestone
-number so a rename keeps them. This is invalidation by change, not a TTL: the
-gate derives from the same authority the answer does, so a skipped cycle cannot
-act on a stale view. Observations live in `milestone_activity.json` in the work
-directory; a missing or corrupt file simply costs one query per milestone.
+The pass once asked GitHub "has anything been completed in this milestone
+yet?" — a GraphQL `gh issue list --state closed` per milestone — and swept only
+the milestones that answered yes. Issue #1776 deleted the question. A milestone
+that has completed nothing still drifts against a default branch taking ~27
+commits a day, and it was exactly the branch nobody was watching; so every
+**open** milestone is swept, and the expensive half of the old pass is gone
+rather than merely gated. The one exclusion stays: an idle-task milestone never
+carries a branch (Issue #2125), so it is filtered before the branch probe.
 
 #### ⏱️ The merge-down happens on closure, and a conflict is reported that day
 
@@ -3077,12 +3071,32 @@ days is a merge, a week is an archaeology exercise because by then the two
 sides have solved the same problem twice. Two behaviours keep the window
 narrow (Issue #1558).
 
-**Cadence.** The sync runs every cycle at priority 1.72 and, ordinarily, honours
-`milestone_sync_cooldown_seconds`. A milestone whose REST `closed_issues` count
-has **moved** since the previous cycle skips that cooldown — something just
-closed, which means a sub-issue PR merged, which is precisely the moment both
-sides have moved. The signal is the same cheap listing the closed-issue gate
-above already fetches, so the extra cadence costs no additional API calls.
+**Cadence.** The sync runs every 30-second cycle at priority 1.72, and syncs
+every open milestone branch on every cycle in which the **default tip moved**
+(Issue #1776). The hourly per-branch cooldown is gone: `main` takes ~27 commits
+a day, so a cooldown left a branch up to an hour behind for no reason other
+than the clock. The signal is one
+`git rev-parse origin/<default>` per repo — read by
+[milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts) after
+the fetch `ensureDefaultBranchCurrent` performs anyway — compared against the
+`lastSyncedDefaultSha` in each branch's ledger entry. It costs nothing against
+either API budget.
+
+Only a **successful** sync records the tip, so a failure is retried on the next
+cycle rather than waited out (subject to the ledger's own attempt pacing,
+below), and a tip git cannot report is never read as "unchanged" — the pass
+logs the failure and syncs, because silently parking every branch is the
+outcome this sweep exists to prevent.
+
+```mermaid
+flowchart LR
+    A["Cycle (30 s)"] --> B["git rev-parse<br/>origin/default"]
+    B --> C{"tip == ledger's<br/>lastSyncedDefaultSha?"}
+    C -- yes --> D["skipped:<br/>default tip unchanged"]
+    C -- "no, or unknown" --> E["merge default down<br/>into every open<br/>milestone branch"]
+    E -- success --> F["record tip in<br/>milestone_sync_failures.json"]
+    E -- failure --> G["WARNING + self-heal event;<br/>tip NOT recorded → retried"]
+```
 
 **Conflict triage.** A conflicting merge is triaged file by file
 ([milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)
@@ -3289,8 +3303,9 @@ itself — one constant, two consumers, so the two ladders cannot drift apart
 A PR carries its attempt history in marker comments on the PR; a milestone
 branch has nowhere to write one, so the ledger is persisted per branch in
 `milestone_sync_failures.json` beside the failure streak and survives worker
-restarts. The ledger and the rules below are the **state and the pure helpers**;
-the milestone sync pass is wired to charge them by Issue #1778. Each entry carries `conflictAttempts` (concluded failures),
+restarts. The ledger and the rules below are the **state and the pure helpers**; the sync
+pass already writes `lastSyncedDefaultSha` through it for the cadence gate
+(Issue #1776), and Issue #1778 wires the conflict *attempts* it charges. Each entry carries `conflictAttempts` (concluded failures),
 `attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
 (`at`, `outcome`, `reason`, `defaultSha`), `deferUntil`, `lastSyncedDefaultSha`
 and `rollbacks`. Every field is optional and every malformed field is dropped,
@@ -3880,7 +3895,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_progress.ts](../worker/deno/lib/milestone_progress.ts)                                                 | Milestone progress notifications                                                                                                                                                     |
 |                             | [milestone_priority.ts](../worker/deno/lib/milestone_priority.ts)                                                 | Configurable issue ordering within milestones                                                                                                                                        |
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |
-|                             | [milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)                                       | Gates the sync's closed-issue query on the cheap REST `closed_issues` count, so an unchanged milestone costs no GraphQL call                                                          |
+|                             | [milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts)                                       | Reads `git rev-parse origin/<default>` for the sync's cadence gate, so a cycle in which the default tip did not move syncs nothing                                                          |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
 |                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |

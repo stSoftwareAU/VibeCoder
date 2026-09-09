@@ -176,36 +176,33 @@ short of its own limit, which proves the listing was exhaustive.
 
 ## A cheap REST signal gates the expensive GraphQL call (Issue #1488)
 
-REST and GraphQL bill against **separate budgets**, so a cheap REST probe
-that decides whether to spend a GraphQL call is close to free. The milestone
-branch sync is the worked example: per repo per cycle it makes a REST
-`repos/<repo>/milestones` listing *and* a GraphQL
-`gh issue list --state closed`, and the GraphQL half exists only to answer
-"has anything been completed in this milestone yet?". The REST payload
-already carries `closed_issues` per milestone, so it answers the gate:
+REST and GraphQL bill against **separate budgets**, so a cheap REST probe that
+decides whether to spend a GraphQL call is close to free. The milestone branch
+sync was the worked example: per repo per cycle it made a REST
+`repos/<repo>/milestones` listing *and* a GraphQL `gh issue list --state closed`,
+and the GraphQL half existed only to answer "has anything been completed in this
+milestone yet?" — which the REST payload's own `closed_issues` count could
+answer for nothing.
 
-| REST `closed_issues` | Decision |
-| --- | --- |
-| Milestone list empty | Nothing to sync — no GraphQL |
-| `0` | Nothing completed, so not active by the pass's own definition — no GraphQL |
-| Unchanged since the last observation | The closed set cannot have moved — reuse the recorded verdict, no GraphQL |
-| Moved, in either direction | Spend the GraphQL query and record the new verdict |
+**That example is now retired, by deleting the question rather than gating it
+(Issue #1776).** A milestone that has completed nothing still drifts against a
+default branch taking ~27 commits a day, so the sync sweeps every open milestone
+and spends no GraphQL call at all; its cadence signal is
+`git rev-parse origin/<default>`, which bills against no API budget whatever.
+The ranking the gate taught still holds, with a third rung above it:
 
-Two properties make this safe where a TTL over the closed-issue list would
-not be:
+1. Answer the question from the cheaper budget (REST over GraphQL).
+2. Answer it from no budget at all — local git, or a persisted observation.
+3. Best of the three: establish that the question never needed asking.
+
+Two properties made that gate safe where a TTL over the closed-issue list would
+not have been, and they are what the next such gate should copy:
 
 - **The gate derives from the same authority the answer does**, so a skipped
   cycle cannot act on a stale view — this is invalidation by change, not by
   clock.
-- **Any** movement invalidates. The count falls when an issue is reopened or
-  moved out of a milestone, so an increase-only check would latch a stale
-  "active".
-
-Observations are keyed by milestone **number**, not title (a rename keeps the
-number), and persist in `milestone_activity.json` in the work directory
-beside `milestone_sync_failures.json`. The first observation after a restart
-has no baseline and queries once — correct, not a miss. See
-[milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts).
+- **Any** movement invalidates. A count falls when an issue is reopened or moved
+  out of a milestone, so an increase-only check would latch a stale verdict.
 
 The general form applies beyond milestones: **any hot GraphQL path with a
 REST-visible change signal is a candidate for the same treatment**, and REST
@@ -285,7 +282,7 @@ trade-off.
 | Worker writes a claim comment | Repo's issue list (claim is reflected in the issue body / labels) | `IssueCache.invalidateRepo(repo)` |
 | Worker creates/closes a PR | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`) | `IssueCache.invalidate(repo, key)` |
 | Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}` and `pr_linkage_open_v2_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181) |
-| Milestone REST `closed_issues` moves | That milestone's recorded closed-issue verdict (Issue #1488) | `decideMilestoneQuery` in `milestone_activity_gate.ts` |
+| Default-branch tip moves | Every milestone branch's "already synced" verdict (Issue #1776) | `git rev-parse origin/<default>` against the ledger's `lastSyncedDefaultSha` |
 | Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
 | Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
 | Worker label change to timeline (planned) | Timeline entry for the affected issue | `IssueCache.invalidate(repo, "${number}#timeline")` (future) |

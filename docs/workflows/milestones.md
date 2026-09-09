@@ -204,25 +204,22 @@ Long-running milestones can drift significantly from the default branch, causing
 
 ### How it works
 
-1. **Active milestone detection:** For each configured repo, the worker finds open milestones with at least one closed issue (meaning work has started).
-
-   The closed-issue lookup is the expensive half — a GraphQL `gh issue list --state closed` — while the milestone listing itself is a cheap REST call billed against a separate budget. Since the REST payload already carries `closed_issues` per milestone, that cheap call decides whether the expensive one is worth making (Issue #1488):
+1. **Milestone detection:** For each configured repo, the worker takes **every open milestone** — except an `idle-task:` one, which never carries a branch (Issue #2125). The closed-issue query that once decided whether work had "started" is gone (Issue #1776): a milestone that has completed nothing still drifts, and it was exactly the branch nobody was watching.
+2. **Cadence guard:** One `git rev-parse origin/<default>` per repo, compared against the tip each branch was last **successfully** synced against (`lastSyncedDefaultSha` in `milestone_sync_failures.json`). A branch already carrying that tip is skipped with `default tip unchanged`; anything else syncs on that cycle, which on a 30-second loop means within 30 seconds of a push to the default branch. A tip git cannot report is logged and synced — never read as "unchanged".
 
    ```mermaid
    flowchart TD
-       A["REST: repos/&lt;repo&gt;/milestones<br/>(cheap, separate budget)"] --> B{closed_issues == 0?}
-       B -- yes --> S["Skip — nothing completed yet<br/>(no GraphQL)"]
-       B -- no --> C{"count unchanged<br/>since last cycle?"}
-       C -- yes --> R["Reuse the previous verdict<br/>(no GraphQL)"]
-       C -- no --> Q["GraphQL: closed issues for the milestone"]
-       Q --> V["Record {number → closed_issues, verdict}"]
+       A["Cycle (30 s)"] --> B["git rev-parse origin/&lt;default&gt;<br/>(no API budget)"]
+       B --> C{"tip == branch's<br/>lastSyncedDefaultSha?"}
+       C -- yes --> S["Skip — default tip unchanged"]
+       C -- "no, or unreadable" --> M["Merge the default branch down"]
+       M -- success --> R["Record the tip"]
+       M -- failure --> W["WARNING, record nothing<br/>→ retried next cycle"]
    ```
 
-   This is invalidation by change, not a time-based cache: the gate reads the same authority the answer comes from, so a skipped cycle cannot act on a stale view. **Any** movement in the count invalidates — a reopened issue, or one moved out of the milestone, lowers it — and the observations are keyed by milestone **number**, so a rename does not lose them. The first observation after a restart has no baseline and queries once. Observations persist in `milestone_activity.json` in the work directory, beside `milestone_sync_failures.json`.
-2. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
-3. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
-4. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). A conflict no rule can settle aborts the merge and escalates with both sides prepared, without blocking other work.
-5. **Frequency guard:** Each milestone is synced at most once per cooldown period (default: 1 hour). The cooldown resets after each successful sync.
+3. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
+4. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
+5. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). A conflict no rule can settle aborts the merge and escalates with both sides prepared, without blocking other work.
 6. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
 
 ### Conflict triage
@@ -353,15 +350,16 @@ Two things hold this in place:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `sync_milestone_branches` | `true` | Enable or disable periodic milestone branch sync |
-| `milestone_sync_cooldown_seconds` | `3600` | Minimum seconds between sync attempts for the same milestone — bypassed for a milestone that has just closed an issue (see below) |
 
 To disable milestone branch sync entirely, set `sync_milestone_branches: false` in `.config.json`.
+
+`milestone_sync_cooldown_seconds` was retired by Issue #1776 — the cadence is the default-branch tip, not a clock. A `.config.json` still carrying the key loads normally and reports it once as an unknown key.
 
 ### Design notes
 
 - The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
-- The cooldown state is held in memory and resets when the worker process restarts.
-- A milestone whose REST `closed_issues` count has **moved** since the previous cycle skips the cooldown and syncs now (Issue #1558): something just closed, which means a sub-issue PR merged, which is exactly when both sides have moved and a conflict is still one day wide.
+- The cadence state is the `lastSyncedDefaultSha` in `milestone_sync_failures.json`, so it survives a worker restart — there is no in-memory cooldown to lose (Issue #1776).
+- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out (subject to the branch's conflict-attempt pacing).
 - A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
 - This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 
