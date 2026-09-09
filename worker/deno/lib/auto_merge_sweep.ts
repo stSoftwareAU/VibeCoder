@@ -177,18 +177,25 @@ export async function sweepAutoMerge(
 
       let mutated = false;
       for (const pr of prs) {
+        // Issue #1774: one live `pr view` before the merge attempt. A PR
+        // closed or merged since the cached listing gets no further write,
+        // and an unreadable state is skipped this cycle rather than assumed
+        // open — the next sweep asks again. Deliberately outside the try
+        // below: a state read that failed is not "the merge attempt threw",
+        // and reporting it as one would name the wrong cause.
+        let reading: PrLiveStateReading;
         try {
-          // Issue #1774: one live `pr view` before the merge attempt. A PR
-          // closed or merged since the cached listing gets no further write,
-          // and an unreadable state is skipped this cycle rather than
-          // assumed open — the next sweep asks again.
-          const reading = await prLiveState(repo, pr);
-          if (!reading.open) {
-            summary.prsSkippedNotOpen++;
-            logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
-            continue;
-          }
+          reading = await prLiveState(repo, pr);
+        } catch (err) {
+          reading = { unknown: true, error: errorMessage(err) };
+        }
+        if (!reading.open) {
+          summary.prsSkippedNotOpen++;
+          logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
+          continue;
+        }
 
+        try {
           const outcome = await attemptMerge(repo, pr);
           recordOutcome(repo, pr.number, outcome);
           summary.prsAttempted++;
