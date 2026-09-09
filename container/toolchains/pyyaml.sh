@@ -67,8 +67,20 @@ checksum="$(jq -er --arg id "${TOOLCHAIN_ID}" --arg key "${digest_key}" \
 # The modules the manifest says this toolchain makes importable, and the one
 # whose reported version must equal the pin. Read from the manifest so the
 # fragment holds no second copy of either.
-mapfile -t modules < <(jq -er --arg id "${TOOLCHAIN_ID}" \
-    '.toolchains[] | select(.id == $id) | .modules[]' "${MANIFEST}")
+# Read in command-substitution position, not a process substitution: a jq
+# that cannot resolve the list must abort the fragment rather than leaving an
+# empty array behind for the loops below to skip over silently.
+modules_raw="$(jq -er --arg id "${TOOLCHAIN_ID}" \
+    '.toolchains[] | select(.id == $id) | .modules[]' "${MANIFEST}")"
+if [[ -z "${modules_raw}" ]]; then
+    echo "[${TOOLCHAIN_ID}] Manifest ${MANIFEST} names no module for this toolchain" >&2
+    exit 1
+fi
+modules=()
+while IFS= read -r module; do
+    [[ -n "${module}" ]] && modules+=("${module}")
+done <<< "${modules_raw}"
+
 version_module="$(jq -er --arg id "${TOOLCHAIN_ID}" \
     '.toolchains[] | select(.id == $id) | .versionModule' "${MANIFEST}")"
 
