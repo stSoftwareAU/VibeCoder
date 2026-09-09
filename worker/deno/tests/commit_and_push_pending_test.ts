@@ -18,6 +18,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { commitAndPushPending } from "../lib/git_push.ts";
+import { readPrResponseMessage } from "../lib/pr_branch_preparation.ts";
 import { RUN_ID_TRAILER_KEY } from "../lib/run_id.ts";
 import { capturingWarningsAsync } from "./support/warnings.ts";
 
@@ -454,17 +455,21 @@ Deno.test("commitAndPushPending - reports finalUnpushedCount=0 after successful 
 });
 
 /**
- * The three worker-owned state files the worker itself can drop into a clone
- * (Issue #1661). Each is untracked and unignored in these temp repos, so
- * `git add -A` stages all three unless the chokepoint unstages them.
+ * The four worker-owned state files that can sit in a clone at the final
+ * mile: the three the worker itself drops there (Issue #1661) and the reply
+ * the worker's own prompts ask the agent to write (Issue #1711). Each is
+ * untracked and unignored in these temp repos — there is no `.*` ignore rule,
+ * exactly as on the repo that hit #1711 — so `git add -A` stages all four
+ * unless the chokepoint unstages them.
  */
 const WORKER_STATE_FILES = [
   ".heartbeat_stSoftwareAU_VibeCoder_1661",
   ".heartbeat-marker_stSoftwareAU_VibeCoder_1661",
   ".vibe_default_branch",
+  ".pr_response_message",
 ];
 
-/** Drop all three worker state files into a clone. */
+/** Drop all four worker state files into a clone. */
 async function plantWorkerStateFiles(dir: string): Promise<void> {
   for (const name of WORKER_STATE_FILES) {
     await Deno.writeTextFile(`${dir}/${name}`, "worker state\n");
@@ -517,7 +522,7 @@ Deno.test("commitAndPushPending - unstages worker state files and still commits 
       );
     }
 
-    // Unstaged, not deleted — all three are still on disk, still untracked.
+    // Unstaged, not deleted — all four are still on disk, still untracked.
     for (const name of WORKER_STATE_FILES) {
       const stat = await Deno.stat(`${downstream}/${name}`);
       assert(stat.isFile, `${name} must still exist on disk`);
@@ -630,6 +635,116 @@ Deno.test("commitAndPushPending - makes no commit when only worker state is pend
       const stat = await Deno.stat(`${downstream}/${name}`);
       assert(stat.isFile, `${name} must still exist on disk`);
     }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - the agent's .pr_response_message is kept out of the commit and still readable afterwards (Issue #1711)", async () => {
+  // The live incident: a CI-fix pass on a repo with no `.*` ignore rule. The
+  // agent fixed the failure and wrote its reply into `.pr_response_message`
+  // as the prompt asks; the final-mile commit then staged the reply and the
+  // #1758 gate refused the fix. The reply must stay out of the commit, and
+  // must still be there for the PR comment that is posted after the push.
+  const branch = "issue-1711-pr-response-message";
+  const { tmp, downstream } = await makeUpstreamAndDownstream(
+    "commit_push_pending_pr_response_",
+    branch,
+  );
+  try {
+    const reply = "Fixed the failing lint step by pinning the formatter.\n";
+    await Deno.writeTextFile(`${downstream}/.pr_response_message`, reply);
+    await Deno.writeTextFile(`${downstream}/fix.txt`, "ci fix\n");
+
+    let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
+    const warnings = await capturingWarningsAsync(async () => {
+      result = await commitAndPush(branch, "Fix CI (Issue #1711)", downstream);
+    });
+
+    assert(result, "expected the chokepoint to return a result");
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+    if (result.ok) {
+      assertEquals(result.value.committedNewChanges, true);
+      assertEquals(result.value.commitsPushed, 1);
+      assertEquals(result.value.finalUnpushedCount, 0);
+    }
+
+    // The fix is in the commit and on origin; the reply is in neither.
+    const committed = await runGit(
+      ["show", "--name-only", "--format=", `origin/${branch}`],
+      downstream,
+    );
+    assert(
+      committed.stdout.includes("fix.txt"),
+      `expected fix.txt on origin, got:\n${committed.stdout}`,
+    );
+    assert(
+      !committed.stdout.includes(".pr_response_message"),
+      `.pr_response_message must not be in the commit, got:\n${committed.stdout}`,
+    );
+    const tracked = await runGit(["ls-files"], downstream);
+    assert(
+      !tracked.stdout.split("\n").includes(".pr_response_message"),
+      `.pr_response_message must not be tracked, got:\n${tracked.stdout}`,
+    );
+
+    // The unstaged reply is named in the warning, like the other state files.
+    assert(
+      warnings.join("\n").includes(".pr_response_message"),
+      `expected a warning naming .pr_response_message, got:\n${
+        warnings.join("\n")
+      }`,
+    );
+
+    // The processors read the reply *after* the push — it must still be there
+    // and carry what the agent wrote.
+    assertEquals(await readPrResponseMessage(downstream), reply.trim());
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - a secret is still refused when .pr_response_message is the only worker state present (Issue #1711)", async () => {
+  const branch = "issue-1711-secret-still-refused";
+  const { tmp, downstream } = await makeUpstreamAndDownstream(
+    "commit_push_pending_pr_response_secret_",
+    branch,
+  );
+  try {
+    await Deno.writeTextFile(`${downstream}/.pr_response_message`, "reply\n");
+    await Deno.writeTextFile(`${downstream}/fix.txt`, "ci fix\n");
+    await Deno.writeTextFile(`${downstream}/.env`, "API_KEY=leak\n");
+
+    let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
+    await capturingWarningsAsync(async () => {
+      result = await commitAndPush(branch, "Fix CI", downstream);
+    });
+
+    assert(result, "expected the chokepoint to return a result");
+    assert(!result.ok, "expected the #1758 safety gate to refuse the commit");
+    if (!result.ok) {
+      const message = result.error.message;
+      assert(
+        message.includes("Issue #1758") && message.includes(".env"),
+        `expected the unchanged #1758 refusal naming .env, got: ${message}`,
+      );
+      assert(
+        !message.includes(".pr_response_message"),
+        `.pr_response_message must not be named by the refusal, got: ${message}`,
+      );
+    }
+
+    const remoteLog = await runGit(
+      ["log", "--format=%s", `origin/${branch}`],
+      downstream,
+    );
+    assert(
+      !remoteLog.stdout.includes("Fix CI"),
+      `secret-bearing commit must not have been pushed, got log:\n${remoteLog.stdout}`,
+    );
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

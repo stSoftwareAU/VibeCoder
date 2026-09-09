@@ -74,6 +74,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/container_entrypoint_test.ts",
   "tests/container_store_prune_test.ts",
   "tests/container_tools_env_test.ts",
+  // Issue #1656: stays here by decision, not by accident — 3s inside the
+  // image, but nothing in the containment story turns on it being verified
+  // locally, so it keeps the integration job's cover rather than the gate's.
   "tests/host_config_path_test.ts",
   "tests/multi_provider_credentials_test.ts",
   "tests/next_release_tag_test.ts",
@@ -84,6 +87,11 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/setup_lockfile_test.ts",
   "tests/setup_provider_credential_flow_test.ts",
   "tests/setup_provider_env_parse_test.ts",
+  // Issue #1656: green inside the image now that its two -ListRepos /
+  // -AddRepo cases spawn with an explicit environment instead of the
+  // runner's (the image's own CONFIG_PATH used to collide with the case's
+  // CONFIG_FILE). Stays here by decision: 9s, and nothing in the
+  // containment story turns on setup.ps1 being verified before the push.
   "tests/setup_ps1_test.ts",
   "tests/setup_token_transcript_cleanup_test.ts",
   "tests/setup_workdir_reminder_test.ts",
@@ -115,10 +123,12 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
  * `launcher_egress_probe_test.ts` was only ever in the `integration tests`
  * job, which deliberately cannot block a merge.
  *
- * The `setup.ps1` suites stay excluded: nothing in this repository's
- * containment story turns on them being verified locally, and one of them
- * reads the ambient environment it inherits, so the image's own
- * `CONFIG_PATH` fails two of its cases inside the container (Issue #1656).
+ * The `setup.ps1` suites stay excluded, by decision rather than by
+ * default (Issue #1656): nothing in this repository's containment story
+ * turns on them being verified locally, and they cost 12s of the gate for
+ * that. They are green inside the image — the two cases that used to
+ * inherit the runner's environment, and so met the image's own
+ * `CONFIG_PATH` beside their `CONFIG_FILE`, now spawn with an explicit one.
  *
  * An entry here is a **named exception with a reason**, exactly as
  * {@link SCRIPT_READING_UNIT_TESTS} is: the classifier claims these files,

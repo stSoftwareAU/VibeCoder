@@ -412,17 +412,23 @@ const RULES: readonly RedactionRule[] = [
   // `export_scrub_gate.ts` has treated this exact shape as a credential since
   // it was written; this closes the same gap on the redaction chokepoint.
   //
-  // Scoped by length, case and neighbours so ordinary text survives: exactly
-  // 32 *lowercase* hex characters with no alphanumeric either side. A 40-hex
-  // git SHA, a 64-hex sha256 digest and a dashed UUID all fail that test, and
-  // the worker logs those constantly. The fixed `{32}` count is linear by
-  // construction (Issue #3942) — there is no quantifier to backtrack over.
+  // Scoped by length and neighbours so ordinary text survives: exactly 32
+  // hex characters with no alphanumeric either side. A 40-hex git SHA, a
+  // 64-hex sha256 digest and a dashed UUID all fail that test, and the worker
+  // logs those constantly. The fixed `{32}` count is linear by construction
+  // (Issue #3942) — there is no quantifier to backtrack over.
+  //
+  // Case-insensitive (Issue #1605): the rule exists for a credential that
+  // has lost every structural clue, and a client that normalises hex to
+  // uppercase before interpolating it into a URL or an error string strips
+  // the case clue along with the wrapper. The lowercase-only shape let an
+  // uppercase rendering of the same key through every rule in this file.
   //
   // Runs last, so a key inside a recognised structure is masked by the
   // structural rule that owns it and this one only sees what is left.
   {
     name: "hex32-credential",
-    pattern: /(?<![0-9A-Za-z])[0-9a-f]{32}(?![0-9A-Za-z])/g,
+    pattern: /(?<![0-9A-Za-z])[0-9a-f]{32}(?![0-9A-Za-z])/gi,
     replace: () => REDACTION_PLACEHOLDER,
   },
 ];

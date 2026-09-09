@@ -33,6 +33,7 @@ import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import type { WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   findBranchEvidenceImages,
@@ -176,6 +177,18 @@ async function runGitOrThrow(
 }
 
 /**
+ * Does this repository opt out of auto-merge (`skip_auto_merge: true` in its
+ * `.config.json` entry)? Exported for the tests; the same lookup the
+ * maintenance sweep and `pr_manager` make (Issue #1650).
+ */
+export function repoOptsOutOfAutoMerge(
+  config: WorkerConfig,
+  repo: string,
+): boolean {
+  return getRepoConfig(config.repoConfig, repo, "skipAutoMerge") === "true";
+}
+
+/**
  * Arm auto-merge on a PR the moment it exists, and say what happened
  * (Issues #1136, #470).
  *
@@ -184,26 +197,44 @@ async function runGitOrThrow(
  * a PR its own cycle created. That makes this the call whose refusals matter:
  * a gate may refuse the merge, but it may not refuse silently, or an unarmed
  * PR blocks its work stream with nothing in the log to say why.
+ *
+ * A repository's `skip_auto_merge` opt-out is honoured here as everywhere
+ * else (Issue #1650). It used to be hard-coded `false`: the sweep and
+ * `pr_manager` read the setting, but the primary path did not, so a
+ * repository an operator had marked for human review had its AI-authored
+ * PRs armed the moment they were raised. The rest of `finalisePr` still
+ * runs; only the arming is withheld, and the log says so.
  */
 async function armAutoMergeAtCreation(
-  repo: string,
+  ctx: IssueContext,
   prNumber: number,
   deps: WorkerDeps,
 ): Promise<void> {
+  const { repo, config } = ctx;
   const logger = deps.logger;
+  const skipAutoMerge = repoOptsOutOfAutoMerge(config, repo);
+  if (skipAutoMerge) {
+    logger.info(
+      "Auto-merge not armed at creation: the repository opts out " +
+        "(skip_auto_merge) — a human lands this PR (Issue #1650)",
+      { repo, prNumber },
+    );
+  }
   const result = await deps.pr.finalisePr({
     repo,
     prNumber,
-    skipAutoMerge: false,
+    skipAutoMerge,
     // Route the milestone gates' warnings into the worker log rather than
     // `console.warn`, which no operator reads.
     log: (message: string) => logger.warn(message, { repo, prNumber }),
   });
   if (result.ok) {
-    logger.info(`Auto-merge armed at creation: ${result.value}`, {
-      repo,
-      prNumber,
-    });
+    if (!skipAutoMerge) {
+      logger.info(`Auto-merge armed at creation: ${result.value}`, {
+        repo,
+        prNumber,
+      });
+    }
     return;
   }
   logger.warn(`Auto-merge NOT armed at creation: ${result.error.message}`, {
@@ -397,7 +428,7 @@ export async function recoverAndFinaliseExistingPr(
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
     if (prNumber > 0) {
-      await armAutoMergeAtCreation(repo, prNumber, deps);
+      await armAutoMergeAtCreation(ctx, prNumber, deps);
     }
   } catch (err) {
     logger.warn("Post-recovery finalisation error (non-fatal)", {
@@ -1774,7 +1805,7 @@ async function completionBody(
     // time (Issue #3909). The sweep already merged these children, so the
     // skip only ever delayed them.
     if (prNumber > 0) {
-      await armAutoMergeAtCreation(repo, prNumber, deps);
+      await armAutoMergeAtCreation(ctx, prNumber, deps);
     }
 
     // Issue #1613: Surface a rejected dependency bump on the PR thread

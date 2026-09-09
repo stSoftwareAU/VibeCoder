@@ -45,6 +45,10 @@ import {
   preserveRunWip,
 } from "./run_wip_preservation.ts";
 import {
+  type ClaudeRunResult,
+  DEFAULT_MAX_TOTAL_INVOCATIONS,
+} from "../claude_runner.ts";
+import {
   classifyExistingPrForIssue,
   type ExistingPrDisposition,
   formatSupersededReason,
@@ -102,6 +106,84 @@ async function branchHasCommitsAhead(
   );
   if (!log.ok || log.value.code !== 0) return false;
   return parseInt(log.value.stdout.trim(), 10) > 0;
+}
+
+/**
+ * Heading of the failure a spent subscription window produces (Issue #4315).
+ *
+ * Exported because it is also the marker `workOnIssueExecuteClaude` reads to
+ * skip the in-process infrastructure retry (Issue #1670): the phase has
+ * already checkpointed the work and tried the pool's other credential, so a
+ * retry would only bill a spawn into the same shut window.
+ */
+export const USAGE_LIMIT_HEADING =
+  "Claude usage limit reached (subscription window)";
+
+/**
+ * Credential switches one exhausted execute phase may make (Issue #1670).
+ *
+ * A switch costs one billed invocation, so the loop is bounded rather than
+ * walking the whole pool: one switch covers the token this phase exhausted,
+ * and #1669's pre-spawn gate — which answers `noEligibleCredential` without
+ * spawning — is what ends the sequence when nothing else can serve.
+ */
+const MAX_USAGE_LIMIT_CREDENTIAL_SWITCHES = 1;
+
+/**
+ * Execute-budget seconds below which a switched-to credential is not worth
+ * spawning: the phase deadline bounds the switch, so a run with minutes left
+ * parks its work for the next claim instead of billing an invocation that
+ * cannot finish (VibeCoder#174 made the same call for the infra retry).
+ */
+const MIN_CREDENTIAL_SWITCH_RUNWAY_SECONDS = 60;
+
+/**
+ * True when the runner gave up on the subscription's usage window
+ * (Issue #4315): exit 2 **carrying the limit evidence**. Exit 2 alone is not
+ * enough — the #3648 invocation budget gives up with the same status and no
+ * `usageLimit`, and switching credential would not help it.
+ */
+function isUsageLimitResult(result: ClaudeRunResult): boolean {
+  return result.exitCode === 2 && result.usageLimit !== undefined;
+}
+
+/**
+ * What is left of the #3648 call ceiling after `result`'s call, so the
+ * credential switch spends the same budget rather than opening a fresh one.
+ * At least 1 — a switch worth making is worth one invocation — and undefined
+ * when the runner did not report what it billed (a test double, an older
+ * result), which leaves the default ceiling exactly as it was.
+ */
+function remainingInvocationBudget(
+  result: ClaudeRunResult,
+): number | undefined {
+  if (result.invocationsBilled === undefined) return undefined;
+  return Math.max(
+    1,
+    DEFAULT_MAX_TOTAL_INVOCATIONS - result.invocationsBilled,
+  );
+}
+
+/**
+ * Why an exhausted run parks on its branch instead of switching credential
+ * (Issue #1670), or `undefined` when a switch is still worth making.
+ */
+function describeUsageLimitPark(
+  result: ClaudeRunResult,
+  context: { credentialSwitches: number; runwaySeconds: number },
+): string | undefined {
+  if (result.noEligibleCredential) {
+    return "no credential in the pool passed the quota gate (Issue #1669)";
+  }
+  if (context.credentialSwitches >= MAX_USAGE_LIMIT_CREDENTIAL_SWITCHES) {
+    return `this phase has already switched credential ` +
+      `${context.credentialSwitches} time(s)`;
+  }
+  if (context.runwaySeconds < MIN_CREDENTIAL_SWITCH_RUNWAY_SECONDS) {
+    return `only ${Math.max(0, Math.round(context.runwaySeconds))}s of the ` +
+      `execute budget remain — too little for another invocation to finish`;
+  }
+  return undefined;
 }
 
 /**
@@ -191,6 +273,20 @@ export async function workOnIssueExecuteClaude(
       "Not retrying the killed run in-process: memory pressure was still " +
         "high at the kill, so a retry would meet the same wall (Issue #4374)",
       { phase: "execute", memoryPressure: describeMemoryPressure(pressure) },
+    );
+    return result;
+  }
+
+  // Issue #1670: a spent subscription window is not a blip a retry outlasts.
+  // The phase has already checkpointed the work on the issue branch, written
+  // the resume pointer, and — where the pool had one — tried another
+  // credential. Retrying in-process would bill a spawn into the same shut
+  // window; the next claim resumes from the branch instead.
+  if (result.reason?.includes(USAGE_LIMIT_HEADING)) {
+    deps.logger.warn(
+      "Not retrying the run in-process: the subscription window is spent " +
+        "and the work is parked on the issue branch (Issue #1670)",
+      { phase: "execute" },
     );
     return result;
   }
@@ -536,59 +632,157 @@ async function executeClaudeBody(
       phaseCount: state.sessionResumeState?.phaseCount ?? 0,
       branch: state.branchName,
     }).then(() => undefined);
-  const checkpoints = config.enableSessionResume
-    ? startWipCheckpoints({
-      repoPath: state.repoPath,
-      branchName: state.branchName,
-      logger: {
-        info: (m: string) => logger.info(m),
-        warn: (m: string) => logger.warn(m),
-      },
-      onCheckpoint: saveCheckpointState,
-    })
-    : undefined;
+  const startCheckpoints = () =>
+    config.enableSessionResume
+      ? startWipCheckpoints({
+        repoPath: state.repoPath,
+        branchName: state.branchName,
+        logger: {
+          info: (m: string) => logger.info(m),
+          warn: (m: string) => logger.warn(m),
+        },
+        onCheckpoint: saveCheckpointState,
+      })
+      : undefined;
 
-  // Execute Claude with timeout and retry
-  let claudeResult: Awaited<ReturnType<typeof deps.claude.runClaudeWithRetry>>;
-  try {
-    claudeResult = await deps.claude.runClaudeWithRetry(
-      {
-        prompt: userPrompt,
-        systemPrompt,
-        // Route the coding run through the documented `issue` phase (Issue
-        // #2709) — the standalone command path already did; this main-loop
-        // path never had it, so fleet runs bypassed the per-phase
-        // model/effort chain and every telemetry line read
-        // `phase=unknown` / `[agent-progress] agent:`. `repo` names the
-        // repository in the credit log and cache-hit lines.
-        phase: "issue",
-        repo,
-        timeoutSeconds: executeTimeoutSeconds,
-        killAfterSeconds: config.claudeKillAfter,
-        model: config.claudeModel || undefined,
-        cwd: state.repoPath,
-        // Opt-in browser (Issue #192) — see `screenshotRequired` above.
-        mcpConfig: screenshotRequired,
-        logger,
-        sessionResumeState: state.sessionResumeState,
-        // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
-        issueNumber,
-        // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
-        ...(progressExtension ? { progressExtension } : {}),
-      },
-      {
-        maxRetries: config.maxRateLimitRetries,
-      },
-    );
-  } finally {
-    if (checkpoints) {
-      checkpoints.stop();
-      // Phase-end checkpoint, before verification (Issue #4170): push
-      // whatever the run produced — including a timed-out or killed run's
-      // partial work — so nothing later in the pipeline can lose it.
-      await checkpoints.runNow();
+  // Execute Claude with timeout and retry.
+  //
+  // One invocation, with the periodic WIP checkpoints (#4170) running for its
+  // duration and the phase-end checkpoint taken before it returns. Called
+  // again — once — when the first invocation's subscription window ran out
+  // and another credential is worth trying (Issue #1670).
+  const invokeAgent = async (
+    timeoutSeconds: number,
+    maxTotalInvocations?: number,
+  ) => {
+    const checkpoints = startCheckpoints();
+    try {
+      return await deps.claude.runClaudeWithRetry(
+        {
+          prompt: userPrompt,
+          systemPrompt,
+          // Route the coding run through the documented `issue` phase (Issue
+          // #2709) — the standalone command path already did; this main-loop
+          // path never had it, so fleet runs bypassed the per-phase
+          // model/effort chain and every telemetry line read
+          // `phase=unknown` / `[agent-progress] agent:`. `repo` names the
+          // repository in the credit log and cache-hit lines.
+          phase: "issue",
+          repo,
+          timeoutSeconds,
+          killAfterSeconds: config.claudeKillAfter,
+          model: config.claudeModel || undefined,
+          cwd: state.repoPath,
+          // Opt-in browser (Issue #192) — see `screenshotRequired` above.
+          mcpConfig: screenshotRequired,
+          logger,
+          sessionResumeState: state.sessionResumeState,
+          // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
+          issueNumber,
+          // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
+          ...(progressExtension ? { progressExtension } : {}),
+        },
+        {
+          maxRetries: config.maxRateLimitRetries,
+          // Issue #3648's ceiling is call-scoped, so a second call would
+          // otherwise start a fresh budget. The switch spends what the
+          // exhausted call left (Issue #1670).
+          ...(maxTotalInvocations !== undefined ? { maxTotalInvocations } : {}),
+        },
+      );
+    } finally {
+      if (checkpoints) {
+        checkpoints.stop();
+        // Phase-end checkpoint, before verification (Issue #4170): push
+        // whatever the run produced — including a timed-out or killed run's
+        // partial work — so nothing later in the pipeline can lose it.
+        await checkpoints.runNow();
+      }
     }
+  };
+
+  let claudeResult = await invokeAgent(executeTimeoutSeconds);
+  /** What the usage-limit checkpoint preserved, when one ran (Issue #1670). */
+  let usageLimitWip: PreservedRunWip | undefined;
+  /** Output of an invocation superseded by a credential switch (#1670). */
+  let supersededOutput = "";
+  let credentialSwitches = 0;
+  while (claudeResult.ok && isUsageLimitResult(claudeResult.value)) {
+    // The work goes to the branch FIRST, and the pointer to it second
+    // (Issue #1670). Whatever happens next — a switch that fails, a park, a
+    // host that dies while the window is shut — the run's progress and the
+    // session that produced it are already durable.
+    state.claudeOutput = claudeResult.value.output || supersededOutput;
+    const elapsedSeconds = Math.round(
+      (Date.now() - state.executeStartTime) / 1000,
+    );
+    // A refused spawn (Issue #1669) ran no agent, so it produced nothing the
+    // checkpoint taken moments earlier does not already hold — re-preserving
+    // would add a note-only commit recording that nothing happened.
+    const spawned = claudeResult.value.noEligibleCredential !== true;
+    if (spawned || usageLimitWip === undefined) {
+      usageLimitWip = await preserveRunWip({
+        state,
+        deps,
+        issueNumber: ctx.issueNumber,
+        repo: ctx.repo,
+        // Zero output means no agent produced anything this phase — the
+        // pre-spawn gate may have refused every spawn — so nothing in the
+        // tree is its work, exactly as on the timeout path.
+        inspectWorkingTree: state.claudeOutput.length > 0,
+        buildMessage: (dirtyFiles) =>
+          buildInterruptedWipCommitMessage({
+            cause: "usage-limit",
+            elapsedSeconds,
+            dirtyFiles,
+          }),
+        handover: { cause: "usage-limit", elapsedSeconds },
+      });
+      await saveCheckpointState();
+    }
+
+    const park = describeUsageLimitPark(claudeResult.value, {
+      credentialSwitches,
+      runwaySeconds: executeTimeoutSeconds - elapsedSeconds,
+    });
+    if (park) {
+      logger.warn(
+        `Parking the work on '${state.branchName}': ${park} (Issue #1670)`,
+        { issueNumber, credentialSwitches },
+      );
+      break;
+    }
+
+    credentialSwitches++;
+    // The exhausted invocation established the CLI session, so the next one
+    // must RESUME it: `buildSessionResumeFlags` emits `--resume` only once a
+    // phase is recorded, and re-sending `--session-id` with an id already in
+    // use is refused by the CLI (Issue #1580). Recorded before the pointer is
+    // saved below, so a later claim reads the same advanced count.
+    if (state.sessionResumeState) {
+      state.sessionResumeState = recordPhaseCompletion(
+        state.sessionResumeState,
+      );
+      await saveCheckpointState();
+    }
+    logger.warn(
+      "Claude's subscription window ran out — the work is checkpointed on " +
+        `'${state.branchName}'; re-invoking so the pre-spawn quota gate can ` +
+        "place the same session on an eligible credential (Issue #1670)",
+      { issueNumber, credentialSwitches },
+    );
+    // Cumulative (Issue #3756): the exhausted invocation's tokens were billed
+    // and must be recorded before its result is replaced.
+    recordClaudeRunStats(state, claudeResult.value);
+    supersededOutput = state.claudeOutput;
+    // Inside the phase deadline: the switched-to invocation gets the budget
+    // this phase has left, never a fresh hour on top of the one just spent.
+    claudeResult = await invokeAgent(
+      executeTimeoutSeconds - elapsedSeconds,
+      remainingInvocationBudget(claudeResult.value),
+    );
   }
+
   if (!claudeResult.ok) {
     return {
       status: "failure",
@@ -596,7 +790,11 @@ async function executeClaudeBody(
     };
   }
 
-  state.claudeOutput = claudeResult.value.output;
+  // A refused spawn (Issue #1669) carries no output of its own, and the work
+  // the exhausted invocation did is still this run's evidence — so it
+  // survives the switch. Without a switch `supersededOutput` is empty and
+  // this is the assignment it always was.
+  state.claudeOutput = claudeResult.value.output || supersededOutput;
 
   // Issue #3756 — retain this invocation's model/token stats. A `work-on`
   // issue is auto-closed by its merged PR with no worker attached, so the
@@ -1014,37 +1212,61 @@ async function executeClaudeBody(
     const limit = claudeResult.value.usageLimit;
     // Issue #1669: the gate refuses a spawn when every credential in the
     // pool is spent, so this exit 2 can also mean "no agent ran at all".
+    // That is said in the note below rather than in the heading — the
+    // heading is the usage limit either way (Issue #1670).
     const refused = claudeResult.value.noEligibleCredential === true;
-    const heading = refused
-      ? "No Claude credential with quota — the agent was not run"
-      : limit
-      ? "Claude usage limit reached (subscription window)"
+    const heading = limit
+      ? USAGE_LIMIT_HEADING
       : "Claude rate limit — retries exhausted";
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
     );
+    // `state.claudeOutput`, not this result's own: after a credential switch
+    // the final result may be a refused spawn carrying no output, and the
+    // exhausted invocation's work is still the evidence (Issue #1670).
     const snippet = joinRedacted([
-      redactedTail(claudeResult.value.output, 300),
+      redactedTail(state.claudeOutput, 300),
       redactedTail((claudeResult.value.stderr ?? "").trim(), 300),
     ], "\n--- stderr ---\n");
-    const reason = formatDetailedFailureMessage(heading, {
-      elapsedSeconds,
-      clarityStatus: state.clarityStatus,
-      lastOutputSnippet: snippet || undefined,
-    }) + (limit
-      ? ` The subscription window reopens in about ${limit.waitSeconds}s${
-        limit.resetEpochMs
-          ? ` (${new Date(limit.resetEpochMs).toISOString()})`
-          : ""
-      }.${
-        refused
-          ? " No invocation was billed — every credential in the pool is " +
-            "spent (Issue #1669)."
-          : " The credential pool has recorded that credential's window as " +
-            "spent (Issue #1669)."
-      }`
-      : "");
-    logger.warn(heading, { exitCode: 2, waitSeconds: limit?.waitSeconds });
+    // The window's reset is still worth naming; the "Agent work is paused
+    // for Ns" sentence is not. This phase does not pause anything — it
+    // checkpoints, re-invokes once behind the pre-spawn quota gate, then
+    // parks — so asserting a pause here stated a policy the phase neither
+    // owns nor can see (whether the loop waits on the durable signal is
+    // #1669's business, in the runner).
+    const resetNote = limit
+      ? limit.resetEpochMs
+        ? ` The window resets at ${new Date(limit.resetEpochMs).toISOString()}.`
+        : " The message named no reset time."
+      : "";
+    // Whether anything was billed (Issue #1669): a refused spawn means every
+    // credential in the pool is spent and no child process ran at all.
+    const credentialNote = limit
+      ? refused
+        ? " No invocation was billed — every credential in the pool is " +
+          "spent (Issue #1669)."
+        : " The credential pool has recorded that credential's window as " +
+          "spent (Issue #1669)."
+      : "";
+    // Where the work went (Issues #770/#1670), so the release comment names
+    // the branch and the handover file rather than describing a loss.
+    const wipNote = usageLimitWip?.wipNote;
+    const reason = formatDetailedFailureMessage(
+      heading + resetNote + credentialNote + (wipNote ? ` — ${wipNote}` : ""),
+      {
+        elapsedSeconds,
+        clarityStatus: state.clarityStatus,
+        lastOutputSnippet: snippet || undefined,
+      },
+    );
+    logger.warn(heading, {
+      exitCode: 2,
+      resetEpochMs: limit?.resetEpochMs,
+      credentialSwitches,
+      ...(usageLimitWip?.preserved
+        ? { preservedBranch: usageLimitWip.preserved.branch }
+        : {}),
+    });
     return { status: "failure", reason };
   }
 

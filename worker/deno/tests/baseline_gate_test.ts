@@ -28,6 +28,7 @@ import {
   type GenericFinding,
   markdownlintFinding,
   mermaidFinding,
+  workflowHygieneFinding,
 } from "../lib/baseline_gate.ts";
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,33 @@ Deno.test("markdownlintFinding - key is markdownlint|file|rule|message", () => {
   assertStringIncludes(v.display, "x.md:5 MD056");
 });
 
+Deno.test("workflowHygieneFinding - key is workflow hygiene|file|kind|detail and is line-insensitive (Issue #1641)", () => {
+  const a = workflowHygieneFinding({
+    file: ".github/workflows/ci.yml",
+    line: 12,
+    kind: "version-comment-drift",
+    detail: "actions/checkout@34e11487 annotated v4 here, v4.3.1 in deploy.yml",
+  });
+  const b = workflowHygieneFinding({
+    ...{
+      file: ".github/workflows/ci.yml",
+      line: 40,
+      kind: "version-comment-drift",
+      detail:
+        "actions/checkout@34e11487 annotated v4 here, v4.3.1 in deploy.yml",
+    },
+  });
+  assertEquals(a.check, "workflow hygiene");
+  assertEquals(
+    a.key,
+    "workflow hygiene|.github/workflows/ci.yml|version-comment-drift|" +
+      "actions/checkout@34e11487 annotated v4 here, v4.3.1 in deploy.yml",
+  );
+  assertEquals(a.key, b.key, "the line is not part of the identity");
+  assertStringIncludes(a.display, ".github/workflows/ci.yml:12");
+  assertStringIncludes(a.display, "version-comment-drift");
+});
+
 // ---------------------------------------------------------------------------
 // collectDiffableGateFindings — flattens all injected runners
 // ---------------------------------------------------------------------------
@@ -90,11 +118,22 @@ Deno.test("collectDiffableGateFindings - flattens mermaid/markdownlint", async (
         violations: [{ file: "x.md", line: 5, rule: "MD056", message: "tbl" }],
         filesChecked: 1,
       }),
+    workflowHygiene: () =>
+      Promise.resolve({
+        violations: [{
+          file: ".github/workflows/ci.yml",
+          line: 9,
+          kind: "missing-strict-mode",
+          detail: "multi-line run block does not start with set -euo pipefail",
+        }],
+        filesScanned: 1,
+      }),
   });
-  assertEquals(findings.length, 2);
+  assertEquals(findings.length, 3);
   assertEquals(findings.map((f) => f.check).sort(), [
     "markdownlint",
     "mermaid",
+    "workflow hygiene",
   ]);
 });
 
@@ -115,8 +154,60 @@ Deno.test("collectDiffableGateFindings - all checks clean contributes no finding
         violations: [],
         filesChecked: 0,
       }),
+    workflowHygiene: () => Promise.resolve({ violations: [], filesScanned: 0 }),
   });
   assertEquals(findings.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// decideGateBypass — workflow hygiene (Issue #1641)
+// ---------------------------------------------------------------------------
+
+const DRIFT = workflowHygieneFinding({
+  file: ".github/workflows/deno-quality.yml",
+  line: 21,
+  kind: "version-comment-drift",
+  detail: "actions/checkout@34e11487 annotated v4 here, v4.3.1 in gitleaks.yml",
+});
+const STRICT = workflowHygieneFinding({
+  file: ".github/workflows/deploy.yml",
+  line: 30,
+  kind: "missing-strict-mode",
+  detail: "multi-line run block does not start with set -euo pipefail",
+});
+
+Deno.test("decideGateBypass - pre-existing workflow-hygiene findings alone → bypass (Issue #1641)", () => {
+  // GRQ-FX-validation#119: every violation was on Develop before the run.
+  const d = decideGateBypass([DRIFT, STRICT], [DRIFT, STRICT], [
+    "workflow hygiene",
+  ]);
+  assertEquals(d.bypass, true);
+  assertEquals(d.reason, "bypassed");
+  assertEquals(d.preExisting.length, 2);
+  assertEquals(d.newFindings.length, 0);
+});
+
+Deno.test("decideGateBypass - a hygiene finding the run introduced → no bypass, named alone (Issue #1641)", () => {
+  const d = decideGateBypass([DRIFT], [DRIFT, STRICT], ["workflow hygiene"]);
+  assertEquals(d.bypass, false);
+  assertEquals(d.reason, "new_findings");
+  assertEquals(d.newFindings.map((f) => f.key), [STRICT.key]);
+  const prompt = formatCarryoverFindings(d.newFindings);
+  assertStringIncludes(
+    prompt,
+    "[workflow hygiene] .github/workflows/deploy.yml:30",
+  );
+  assertEquals(
+    prompt.includes("deno-quality.yml"),
+    false,
+    "the carry-over is not named",
+  );
+});
+
+Deno.test("decideGateBypass - a failing hygiene check with no parsed hygiene findings → no bypass (parser drift)", () => {
+  const d = decideGateBypass([DRIFT], [], ["workflow hygiene"]);
+  assertEquals(d.bypass, false);
+  assertEquals(d.reason, "unparsed_failing_check");
 });
 
 // ---------------------------------------------------------------------------

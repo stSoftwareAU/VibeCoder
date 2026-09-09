@@ -40,10 +40,12 @@ export async function recoverGitState(
   defaultBranch: string,
   options: GitCommandOptions = {},
 ): Promise<Result<RecoveryDetails>> {
-  // The caller's default branch can be repo-derived (setupRepo reads it from
-  // `.vibe_default_branch` inside the clone, Issue #1269), so a dash-leading
-  // name would reach the detached-HEAD `git checkout` as an option slot.
-  // Refuse it loudly before any git command runs.
+  // The caller's default branch was once repo-derived (setupRepo read it
+  // from `.vibe_default_branch` inside the clone, Issue #1269; it now lives
+  // in `.git/vibe/default_branch`, Issue #1652), so a dash-leading name would
+  // reach the detached-HEAD `git checkout` as an option slot. Refuse it
+  // loudly before any git command runs — defence in depth, whatever the
+  // cache's provenance.
   try {
     assertSafeRefComponent(defaultBranch, "recovery default branch");
   } catch (error) {
