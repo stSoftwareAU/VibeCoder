@@ -729,8 +729,8 @@ async function executeClaudeBody(
     credentialSwitches++;
     logger.warn(
       "Claude's subscription window ran out — the work is checkpointed on " +
-        `'${state.branchName}'; resuming the same session on another ` +
-        "credential (Issue #1670)",
+        `'${state.branchName}'; re-invoking so the pre-spawn quota gate can ` +
+        "place the same session on an eligible credential (Issue #1670)",
       { issueNumber, credentialSwitches },
     );
     // Cumulative (Issue #3756): the exhausted invocation's tokens were billed
@@ -1182,9 +1182,11 @@ async function executeClaudeBody(
       redactedTail((claudeResult.value.stderr ?? "").trim(), 300),
     ], "\n--- stderr ---\n");
     // The window's reset is still worth naming; the "Agent work is paused
-    // for Ns" sentence is not, because agent work is no longer paused
-    // (Issues #1669/#1670) — the run switches credential or parks, and the
-    // loop moves on to other work.
+    // for Ns" sentence is not. This phase does not pause anything — it
+    // checkpoints, re-invokes once behind the pre-spawn quota gate, then
+    // parks — so asserting a pause here stated a policy the phase neither
+    // owns nor can see (whether the loop waits on the durable signal is
+    // #1669's business, in the runner).
     const resetNote = limit
       ? limit.resetEpochMs
         ? ` The window resets at ${new Date(limit.resetEpochMs).toISOString()}.`

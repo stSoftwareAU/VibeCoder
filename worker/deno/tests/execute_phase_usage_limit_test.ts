@@ -59,6 +59,10 @@ const SUCCESS = {
 interface UsageLimitRun {
   /** Every event, in the order it happened. */
   calls: string[];
+  /** The `--resume` session id each invocation was given, in order. */
+  sessionIds: string[];
+  /** The execute budget each invocation was given, in seconds. */
+  timeouts: number[];
   /** Commit subjects `commitAndPushPending` was asked to preserve. */
   commits: string[];
   /** The handover note as it stood when the preserving commit ran. */
@@ -72,12 +76,13 @@ interface UsageLimitRun {
   resumeSessionId?: string;
 }
 
-function makeConfig(workDir: string): WorkerConfig {
+function makeConfig(workDir: string, claudeTimeout?: number): WorkerConfig {
   return {
     ...buildDefaultWorkerConfig(),
     workDir,
     infraRetryBackoffMs: 10,
     enableSessionResume: true,
+    ...(claudeTimeout !== undefined ? { claudeTimeout } : {}),
   };
 }
 
@@ -120,6 +125,7 @@ function at(run: UsageLimitRun, index: number): string {
  */
 async function runExhausted(
   results: readonly Record<string, unknown>[],
+  options: { claudeTimeout?: number } = {},
 ): Promise<UsageLimitRun> {
   const repoPath = await Deno.makeTempDir({ prefix: "issue1670-repo-" });
   const workDir = await Deno.makeTempDir({ prefix: "issue1670-work-" });
@@ -127,12 +133,14 @@ async function runExhausted(
   const commits: string[] = [];
   let noteAtCommit: string | undefined;
   let invocations = 0;
+  const sessionIds: string[] = [];
+  const timeouts: number[] = [];
   // The uncommitted work the agent left: preserved by the first `wip:`
   // commit, so git reports a clean tree afterwards, exactly as it would.
   let dirty = ["worker/deno/lib/parser.ts"];
   try {
     await Deno.mkdir(`${repoPath}/.git`);
-    const config = makeConfig(workDir);
+    const config = makeConfig(workDir, options.claudeTimeout);
     const state = makeState(repoPath);
     const deps = createMockDeps({
       claude: {
@@ -141,10 +149,14 @@ async function runExhausted(
             | { sessionId: string }
             | undefined;
           const persisted = await loadResumeState(workDir, REPO, ISSUE);
+          // The id itself, never a "same"/"none" verdict the fake computes:
+          // a verdict cannot disagree with the code that wrote it.
+          sessionIds.push(resume?.sessionId ?? "");
+          timeouts.push(Number(options.timeoutSeconds));
           calls.push(
-            `invoke#${++invocations} session=${
-              resume?.sessionId ? "same" : "none"
-            } resumeState=${persisted ? persisted.branch : "absent"}`,
+            `invoke#${++invocations} resumeState=${
+              persisted ? persisted.branch : "absent"
+            }`,
           );
           const value = results[Math.min(invocations - 1, results.length - 1)];
           return { ok: true, value };
@@ -214,6 +226,8 @@ async function runExhausted(
     const persisted = await loadResumeState(workDir, REPO, ISSUE);
     return {
       calls,
+      sessionIds,
+      timeouts,
       commits,
       noteAtCommit,
       status: result.status,
@@ -248,10 +262,17 @@ Deno.test("execute #1670 - a usage limit checkpoints the work and the resume poi
     "commit:wip: execute hit the Claude subscription usage limit",
   );
   assertStringIncludes(at(run, 2), "invoke#2");
-  // The second invocation resumes the SAME session, and finds the pointer to
-  // the checkpointed branch already on disk.
-  assertStringIncludes(at(run, 2), "session=same");
+  // The second invocation resumes the SAME session — the id itself, compared
+  // — and finds the pointer to the checkpointed branch already on disk.
+  assert(run.sessionIds[0], "the first invocation must carry a session id");
+  assertEquals(run.sessionIds[1], run.sessionIds[0]);
   assertStringIncludes(at(run, 2), `resumeState=${BRANCH}`);
+  // …inside the phase deadline: the switch gets what is left of the execute
+  // budget, never a fresh one on top of it.
+  assert(
+    (run.timeouts[1] ?? 0) <= (run.timeouts[0] ?? 0),
+    `switch budget ${run.timeouts[1]}s must not exceed ${run.timeouts[0]}s`,
+  );
 
   // The handover note (Issue #769) rode the same commit, naming the cause.
   assert(run.noteAtCommit, "the preserving commit must carry the note");
@@ -311,4 +332,50 @@ Deno.test("execute #1670 - a refused first spawn parks at once, with no switch t
   );
   assertEquals(run.status, "failure");
   assertStringIncludes(run.reason, "Claude usage limit reached");
+});
+
+Deno.test("execute #1670 - the switch is bounded: a second usage limit parks rather than switching again", async () => {
+  const run = await runExhausted([USAGE_LIMIT, USAGE_LIMIT]);
+
+  // One switch per phase — the second limit ends the sequence.
+  assertEquals(
+    run.calls.filter((c) => c.startsWith("invoke")).length,
+    2,
+    run.calls.join("\n"),
+  );
+  assertEquals(run.status, "failure");
+  assertStringIncludes(run.reason, BRANCH);
+  assertEquals(run.preservedBranch, BRANCH);
+});
+
+Deno.test("execute #1670 - too little execute budget left to finish parks instead of billing a switch", async () => {
+  // A phase whose whole budget is under the switch floor cannot give a
+  // switched-to credential enough runway to finish: park the work rather
+  // than spend an invocation that must be killed part-way.
+  const run = await runExhausted([USAGE_LIMIT, SUCCESS], { claudeTimeout: 30 });
+
+  assertEquals(
+    run.calls.filter((c) => c.startsWith("invoke")).length,
+    1,
+    run.calls.join("\n"),
+  );
+  assertEquals(run.status, "failure");
+  assertEquals(run.preservedBranch, BRANCH);
+});
+
+Deno.test("execute #1670 - exit 2 without usage-limit evidence is not a credential problem", async () => {
+  // The #3648 invocation budget gives up with the same exit status and no
+  // `usageLimit`. Switching credential would not help it, so nothing is
+  // preserved and nothing is re-invoked.
+  const run = await runExhausted([{
+    output: "ran out of invocations",
+    exitCode: 2,
+    timedOut: false,
+  }]);
+
+  // Nothing was checkpointed and no credential switch was made: the second
+  // invocation in the log is the pre-existing #1550 infrastructure retry.
+  assertEquals(run.commits.length, 0, run.commits.join(" | "));
+  assertEquals(run.status, "failure");
+  assertStringIncludes(run.reason, "Claude rate limit — retries exhausted");
 });
