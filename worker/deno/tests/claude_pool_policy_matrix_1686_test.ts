@@ -32,12 +32,12 @@
  * - the old `< 10% weekly => always rank behind >= 10%` override, which spent
  *   the fuller week first and let the urgent one lapse (row 8 would invert).
  *
- * One case here records behaviour rather than endorsing it: a credential whose
- * response carried no seven-day window is ranked on its five-hour rate, which
- * is a figure on a different scale and lets it outrank every healthy
- * credential. That is Issue #1731, and correcting it is a change to the
- * ranking algorithm which Issue #1686 excludes; the assertion exists so the
- * fix flips a test deliberately rather than moving the policy in silence.
+ * One case here was written to record behaviour rather than endorse it: a
+ * credential whose response carried no seven-day window was ranked on its
+ * five-hour rate, a figure on a different scale that let it outrank every
+ * healthy credential. Issue #1731 corrected exactly that, and the assertion
+ * did its job — it is restated here, deliberately, with the measured week now
+ * leading and the credential missing one ranked behind it.
  *
  * Every row uses deterministic timestamps and synthetic budget snapshots
  * recorded straight into the pool, so nothing here touches the network, the
@@ -47,54 +47,22 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import type {
-  ClaudeTokenBudget,
-  ClaudeTokenBudgetUnknownReason,
-  ClaudeTokenBudgetWindow,
-} from "../lib/claude_token_budget.ts";
 import {
   CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING,
   type ClaudeTokenSelectionReason,
   rankClaudeTokenBudgets,
 } from "../lib/claude_token_selection.ts";
-
 import { createClaudeCredentialPool } from "../lib/claude_credential_pool.ts";
-import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 import {
-  type AgentProviderDescriptor,
-  CLAUDE_PROVIDER_ID,
-  resolveAgentProvider,
-} from "../lib/agent_provider.ts";
-
-/** A fixed "now" for every row — 2026-09-09T00:00:00Z. */
-const NOW = Date.UTC(2026, 8, 9, 0, 0, 0);
-
-/** One hour, in milliseconds. */
-const HOUR = 3_600_000;
-
-const CLAUDE: AgentProviderDescriptor = resolveAgentProvider(
-  CLAUDE_PROVIDER_ID,
-);
-
-/** One window of a synthetic snapshot, stated as a share and an offset. */
-interface Window {
-  /** Unused share of the window, in `[0, 1]`. */
-  readonly remaining: number;
-  /** Hours from {@link NOW} until it resets; negative means already past. */
-  readonly resetInHours: number;
-}
-
-/** One credential in a row, exactly as the probe would have reported it. */
-interface Candidate {
-  /** The file stem the pool identifies it by. */
-  readonly label: string;
-  /** Its five-hour window, or absent when the response reported none. */
-  readonly fiveHour?: Window;
-  /** Its seven-day window, or absent when the response reported none. */
-  readonly sevenDay?: Window;
-  /** Set instead of the windows for a credential that could not be probed. */
-  readonly unknown?: ClaudeTokenBudgetUnknownReason;
-}
+  CLAUDE_PROVIDER,
+  POOL_HOUR as HOUR,
+  POOL_NOW as NOW,
+  type PoolCandidate as Candidate,
+  poolTokenFile as tokenFile,
+  type PoolWindow as Window,
+  snapshotOf,
+  spawnDecision,
+} from "./support/claude_pool_fixtures.ts";
 
 /** One row of the policy matrix. */
 interface Row {
@@ -111,93 +79,6 @@ interface Row {
    * allowed because every candidate is spent.
    */
   readonly spawn: string | null;
-}
-
-/** Resolve one window offset against {@link NOW}. */
-function window(
-  name: ClaudeTokenBudgetWindow["window"],
-  spec: Window,
-): ClaudeTokenBudgetWindow {
-  return {
-    window: name,
-    remainingFraction: spec.remaining,
-    resetAt: NOW + spec.resetInHours * HOUR,
-  };
-}
-
-/** The probe result a candidate stands for. */
-function snapshotOf(candidate: Candidate): ClaudeTokenBudget {
-  if (candidate.unknown !== undefined) {
-    return { known: false, label: candidate.label, reason: candidate.unknown };
-  }
-  const windows: ClaudeTokenBudgetWindow[] = [];
-  if (candidate.fiveHour) {
-    windows.push(window("five_hour", candidate.fiveHour));
-  }
-  if (candidate.sevenDay) {
-    windows.push(window("seven_day", candidate.sevenDay));
-  }
-  if (windows.length === 0) {
-    throw new Error(`${candidate.label}: a known snapshot needs a window`);
-  }
-  // The headline is the most constrained window, exactly as #918 reports it.
-  const headline = windows.reduce((best, candidate) =>
-    candidate.remainingFraction < best.remainingFraction ? candidate : best
-  );
-  return {
-    known: true,
-    label: candidate.label,
-    remainingFraction: headline.remainingFraction,
-    resetAt: headline.resetAt,
-    window: headline.window,
-    windows,
-  };
-}
-
-/** The discovered file for a candidate, as credential discovery returns it. */
-function tokenFile(label: string): ProviderTokenFile {
-  const name = "CLAUDE_CODE_OAUTH_TOKEN";
-  const value = `sk-ant-oat01-${label}`;
-  return {
-    label,
-    path: `/creds/claude/${label}.env`,
-    name,
-    value,
-    primary: label === "provider",
-    poolMember: true,
-    entries: [{ name, value }],
-  };
-}
-
-/**
- * Ask the pool which credential a child may be spawned on, from snapshots
- * recorded rather than probed.
- *
- * @param candidates - The pool, in discovery order.
- * @returns The chosen label, or null when no spawn is allowed, plus the
- *   number of probes the decision cost.
- */
-async function spawnDecision(
-  candidates: readonly Candidate[],
-): Promise<{ label: string | null; probes: number }> {
-  let probes = 0;
-  const pool = createClaudeCredentialPool({
-    provider: CLAUDE,
-    now: () => NOW,
-    discover: () =>
-      Promise.resolve(
-        candidates.map((candidate) => tokenFile(candidate.label)),
-      ),
-    fetchFn: () => {
-      probes += 1;
-      return Promise.resolve(new Response("{}", { status: 500 }));
-    },
-  });
-  for (const candidate of candidates) {
-    pool.recordBudget(candidate.label, snapshotOf(candidate), NOW);
-  }
-  const chosen = await pool.selectEligible(NOW);
-  return { label: chosen?.label ?? null, probes };
 }
 
 // ---------------------------------------------------------------------------
@@ -659,7 +540,7 @@ Deno.test("claude pool policy - equal weekly rates break towards the soonest res
   assertEquals(reversed.reason, "tied-discovery-order");
 });
 
-Deno.test("claude pool policy - a credential reporting no seven-day window is ranked on the window it did report, and that lets it outrank a healthy one (Issue #1686)", () => {
+Deno.test("claude pool policy - a credential reporting no seven-day window is ranked on the window it did report, and no longer outranks a healthy one (Issue #1686, corrected by #1731)", () => {
   const ranking = rankClaudeTokenBudgets([
     // Five-hour only: the documented fallback ranks it on that window's rate,
     // 60% over four hours = 15%/h, rather than dropping it.
@@ -678,22 +559,25 @@ Deno.test("claude pool policy - a credential reporting no seven-day window is ra
   assertEquals(fallback?.rateWindow?.window, "five_hour");
   assertEquals(fallback?.ratePerHour, 0.6 / 4);
 
-  // Recorded, NOT endorsed. Issue #1686 asked that this fallback "cannot
-  // outrank a known healthy candidate accidentally", and today it can: the
-  // five-hour share is divided by five-hour units and then compared straight
-  // against weekly rates, so 15%/h beats provider-2's healthy 0.35%/h by
-  // roughly forty times on a figure that says nothing about its week. The
-  // scale mismatch is Issue #1731; fixing it is a change to the ranking
-  // algorithm, which Issue #1686 explicitly excludes. This assertion is here
-  // so that fix flips a test deliberately instead of moving the policy in
-  // silence.
-  assertEquals(ranking.winner?.label, "provider");
+  // Deliberately flipped by Issue #1731, which is the fix this assertion was
+  // written to make visible. The five-hour share is divided by five-hour
+  // units, so 15%/h and provider-2's weekly 0.35%/h describe different
+  // windows and are never compared: the measured week leads, and the
+  // credential missing one is degraded-but-usable behind it.
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.reason, "seven-day-telemetry-preferred");
+  assertEquals(ranking.ranked.map((c) => c.label), ["provider-2", "provider"]);
   const healthy = ranking.ranked.find((c) => c.label === "provider-2");
   assert(healthy?.ratePerHour !== null && healthy?.ratePerHour !== undefined);
   assert(
     (fallback?.ratePerHour ?? 0) > healthy.ratePerHour * 10,
-    "the scale mismatch of Issue #1731 has changed — restate this test with it",
+    "the scale mismatch is what makes the numbers incomparable — restate " +
+      "this test if the figures change",
   );
+  // Still a candidate, not an exclusion: nothing about it is exhausted or
+  // unknown, and the pool would run on it if it were the only one left.
+  assertEquals(fallback?.exhausted, false);
+  assertEquals(fallback?.hasSevenDayTelemetry, false);
 });
 
 Deno.test("claude pool policy - an unknown budget ranks last without being dropped, and cannot outrank a healthy credential (Issue #1686)", () => {
@@ -767,7 +651,7 @@ Deno.test("claude pool policy - a credential reporting no five-hour window has n
 Deno.test("claude pool policy - a freshly recorded exhaustion beats a cached snapshot that still showed quota (Issue #1686)", async () => {
   let probes = 0;
   const pool = createClaudeCredentialPool({
-    provider: CLAUDE,
+    provider: CLAUDE_PROVIDER,
     now: () => NOW,
     discover: () =>
       Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),

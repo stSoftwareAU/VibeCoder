@@ -851,10 +851,21 @@ The candidates are ordered:
    `claude_token_selection.ts`, with `CLAUDE_FIVE_HOUR_GUARD_MAX_USED` its
    exact complement. A response that reported **no** five-hour window has no
    guard to fall under, so it meets it.
-4. **The highest remaining budget per hour wins**, measured on the seven-day
-   window: its remaining share divided by the hours until it resets. A response
-   that reported no seven-day window is ranked on the rate of the window it did
-   report, rather than dropped. Comparing
+4. **A response that reported no seven-day window ranks behind every
+   candidate beside it that did** — decided *before* the rate below, because
+   it decides which figures may be compared at all (Issue #1731). Such a token
+   is ranked on the window it *did* report, so its rate is a five-hour
+   figure — 60% of five hours resetting in four is `15%/h` against a genuine
+   week's `0.35%/h` — and the two describe different windows, so they are
+   never compared with each other. A missing weekly window is probe **data
+   quality**, not evidence of a spent week: the token is degraded-but-usable,
+   never excluded, and nothing about the gap is remembered — the next probe
+   that carries a week ranks it normally again. When **no** candidate reported
+   a week, those candidates are ranked against each other on the same-scale
+   window they did report, so the host keeps working rather than idling on
+   absent telemetry.
+5. **The highest remaining budget per hour wins**, measured on the seven-day
+   window: its remaining share divided by the hours until it resets. Comparing
    shares per hour rather than absolute totals is what makes subscriptions
    whose windows reset on different days at different times comparable at all.
    A window whose reset instant has already passed counts as **full**: the
@@ -862,16 +873,17 @@ The candidates are ordered:
    that instant is behind us the window has rolled over. Such a window is
    scored over its nominal length — five hours, or seven days — rather than
    over a reset that is already behind it.
-5. **Nothing overrides that rate for a usable token.** There is deliberately
-   no weekly floor: a nearly spent week that resets within the hour is exactly
+6. **No *further* rule overrides that rate for a usable token** — rules 1 to 4
+   decide which candidates are compared, and the rate then decides between
+   them. There is deliberately no weekly floor: a nearly spent week that resets within the hour is exactly
    the budget that would otherwise lapse, so a credential holding 8% of a week
    that resets in two hours is preferred to one holding 80% that resets in six
    days. Issue #1623 demoted every token under a 10% weekly floor; Issue #1685
    removed that floor as the opposite of use-it-or-lose-it.
-6. **Exhausted tokens are ordered by when they become usable again** — the
+7. **Exhausted tokens are ordered by when they become usable again** — the
    last of their spent windows to reset — so when nothing can be spent now the
    token that recovers first is the one chosen.
-7. **A remaining tie goes to the soonest reset, then to discovery order** —
+8. **A remaining tie goes to the soonest reset, then to discovery order** —
    `provider.env` first, then the numbered files in ascending numeric order.
 
 A probe can fail in ordinary ways: the host cannot reach the endpoint, the
@@ -897,7 +909,8 @@ candidate, best first, then the winner:
 found; `of 3` is how many candidates were ranked. Each candidate line carries
 both windows — a window the response did not report reads `absent` — plus
 `rate=`, the remaining share per hour of the seven-day window (or of the only
-window the response reported, when it carried no seven-day one), and
+window the response reported, when it carried no seven-day one — a rate on
+that scale is compared only with other candidates lacking a week), and
 `guard=pass|below|exhausted` — one field, three values, so a reader never has
 to combine two: `exhausted` is the hard condition, `below` the soft guard,
 `pass` neither. A `selected` line for a token that did not meet the guard also
@@ -918,9 +931,11 @@ carrying the credential. The last line names why the winner won:
 | `highest-remaining-per-hour` | Strictly the most remaining budget per hour of every usable candidate that meets the five-hour guard. |
 | `equal-remaining-per-hour-soonest-reset` | Level on budget per hour; won on the sooner reset. |
 | `tied-discovery-order` | Level on both rate and reset; won on discovery order. |
-| `below-five-hour-guard-highest-remaining-per-hour` | No usable candidate meets the five-hour guard, so the guard stepped aside; the highest weekly remaining-per-hour of them won. |
+| `below-five-hour-guard-highest-remaining-per-hour` | No usable candidate meets the five-hour guard, so the guard stepped aside; the highest weekly remaining-per-hour of them won. A winner in that band that reported no week logs the degraded code below instead, because that is the figure it was actually ranked on. |
 | `exhausted-soonest-reset` | Every candidate is exhausted; the one whose spent windows reset first won. |
 | `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
+| `seven-day-telemetry-preferred` | The winner reported a seven-day window and the runner-up beside it did not, so their rates — on different scales — were never compared (Issue #1731). |
+| `no-seven-day-telemetry-degraded-fallback` | The winner reported no seven-day window, so it was ranked on the window it did report — which only happens when nothing else it could be selected against reported one either. Degraded, and deliberately still a selection. |
 
 Absence of these lines is itself informative: a host with one token, or with
 one token plus a metered key, logs none of them, because it makes no probe.
