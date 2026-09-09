@@ -146,7 +146,7 @@ a trivial conflict resolution (both sides add the same optional field beside
   `worker/deno/lib/phases/execute_phase.ts:279-292` — reviewer: unrequested —
   reason: the issue's own test spec requires "no third invocation", which that
   retry would make; a retry seconds later meets the same shut window
-- **unrequested** — `MIN_CREDENTIAL_SWITCH_RUNWAY_SECONDS = 60`, a park when too
+- **unrequested** — a 60-second runway floor, below which the run parks when too
   little execute budget remains — evidence:
   `worker/deno/lib/phases/execute_phase.ts:138` — reviewer: unrequested —
   reason: the issue bounds the switch by "the phase deadline"; this is what that
