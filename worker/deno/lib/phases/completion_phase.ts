@@ -61,7 +61,7 @@ import { createPullRequestViaRest } from "../pr_create_rest.ts";
 import { ensureBranchCurrent } from "../branch_currency.ts";
 import { rebaseOntoBase } from "../stale_branch_lineage.ts";
 import { isPrimaryRateLimitMessage } from "../primary_quota_latch.ts";
-import { buildBumpRejectionComment } from "../bump_deps.ts";
+import { buildBumpRejectionComment, buildBumpSkipNote } from "../bump_deps.ts";
 import {
   formatBuildStamp,
   resolveWorkerBuildInfo,
@@ -1163,6 +1163,11 @@ async function completionBody(
       baseBranch,
     });
   }
+
+  // Issue #1775: a milestone child run skips the dependency bump, so the PR
+  // says so rather than leaving a reviewer to wonder why the lockfile is
+  // untouched. Empty for every other bump outcome.
+  prBody += buildBumpSkipNote(state.bumpInfo);
 
   // Worker footer for multi-worker visibility (Issue #1190)
   prBody += buildWorkerFooter({

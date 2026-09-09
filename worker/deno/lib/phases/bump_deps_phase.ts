@@ -8,7 +8,8 @@
  * can act on it.
  *
  * Backwards compatible: when no `bump-deps.sh` exists the phase is a
- * no-op and the worker behaves exactly as before.
+ * no-op and the worker behaves exactly as before. It is also a deliberate
+ * no-op on a milestone child run (Issue #1775) — see `workOnIssueBumpDeps`.
  *
  * The script's environment carries:
  *   - `GH_TOKEN_HAS_WORKFLOW_SCOPE` — sourced from the same env var
@@ -29,6 +30,7 @@ import {
   BUMP_OUTPUT_TAIL_LINES,
   type BumpDepsDeps,
   type BumpInfo,
+  bumpScriptPath,
   DEFAULT_BUMP_QUARANTINE_HOURS,
   DEFAULT_BUMP_SCRIPT_NAME,
   runBumpDeps,
@@ -432,6 +434,32 @@ export async function workOnIssueBumpDeps(
     : "",
   env: EnvLookup = processEnvLookup,
 ): Promise<PhaseResult> {
+  // Issue #1775: a milestone child PR targets `milestone/**`, and the default
+  // branch's own PRs already bump the same lockfile lines — the every-cycle
+  // sync carries those bumps down into the milestone branch. Bumping here as
+  // well only rewrites those lines a second time, handing every child PR a
+  // conflict against the sync for no new dependency versions. Skip the script
+  // entirely and record why, so the PR says it was deliberate.
+  //
+  // Only when the repo actually has a script: a repo without one has no bump
+  // to suppress, and a PR body claiming a skip there would assert something
+  // that never happened. That case falls through to the `absent` path below.
+  if (
+    state.milestoneBranch &&
+    await bumpDeps.fileExists(bumpScriptPath(state.repoPath))
+  ) {
+    deps.logger.info(
+      "bump-deps: skipped — this run's PR targets a milestone branch",
+      { milestoneBranch: state.milestoneBranch },
+    );
+    state.bumpInfo = {
+      status: "skipped_milestone_child",
+      files: [],
+      output: "",
+    };
+    return { status: "continue" };
+  }
+
   const info = await runBumpDeps(
     {
       repoPath: state.repoPath,
@@ -483,6 +511,10 @@ export async function workOnIssueBumpDeps(
       break;
     case "rejected_by_audit":
       // Set later by the quality-gate audit, never by this phase.
+      break;
+    case "skipped_milestone_child":
+      // Set by the milestone-child early return above, which never reaches
+      // `runBumpDeps` — unreachable here, listed to keep the switch total.
       break;
     default:
       assertNever(info.status);

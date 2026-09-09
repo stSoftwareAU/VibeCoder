@@ -89,7 +89,7 @@ This means: if a non-milestone issue has a stuck PR targeting the default branch
 
 1. **Select** — Issue is in a milestone; no other open PR by the configured GitHub user for **this milestone branch**; issue is otherwise eligible (labels, author, not blocked by dependencies or open children).
 2. **Branch** — Ensure `milestone/<name>` exists (from default); sync it with default (merge); **create feature branch from the milestone branch** (not from default).
-3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push.
+3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push. One deliberate difference: the **dependency-bump phase is skipped** (Issue #1775). The default branch's own PRs bump dependencies and the [periodic sync](#-periodic-milestone-branch-sync) carries those bumps down into the milestone branch, so a child PR that bumped as well would rewrite the same lockfile lines and conflict with the sync for no new versions. The child PR body carries `Dependency bump: skipped — milestone child; the default branch's own PRs bump and the sync carries them down`, and the milestone summary PR therefore inherits the current versions rather than bumping separately.
 4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). Enable auto-merge at create, like any other PR (Issue #1136); the catch-up scan and post-scan sweep are the backstop.
 
 ### ✅ Milestone completion
