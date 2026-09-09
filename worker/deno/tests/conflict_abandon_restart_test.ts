@@ -43,6 +43,7 @@ import {
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
+  DEFAULT_MAX_CONFLICT_ATTEMPTS,
 } from "../lib/pr_merge_conflict_scan.ts";
 
 // ---------------------------------------------------------------------------
@@ -77,7 +78,8 @@ function failedComments(
     user: { login },
     body: [
       `${CONFLICT_FAILED_MARKER} n="${n}" -->`,
-      `❌ **Merge-conflict resolution — attempt ${n} of 2 failed**`,
+      `❌ **Merge-conflict resolution — attempt ${n} of ` +
+      `${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed**`,
       "",
       "Merging `main` in did not produce a mergeable branch: the same " +
       `constant is set to two different values (attempt ${n}).`,

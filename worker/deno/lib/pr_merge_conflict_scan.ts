@@ -101,9 +101,15 @@ export const DEFAULT_CONFLICT_COOLDOWN_HOURS = 4;
 
 /**
  * Attempts allowed before the processor stops retrying and escalates.
- * Two: the first attempt, and one retry against a moved base.
+ *
+ * Three (Issue #1766): the first attempt, and two retries against a base that
+ * has moved on since. Two was one retry short — a conflict whose first
+ * attempt raced a base-branch push had a single judged retry, and the
+ * milestone ladder charges against this same constant, so the two ladders
+ * cannot drift apart. Only a **concluded** attempt spends it; a disrupted one
+ * is counted separately by {@link countDisruptedAttempts}.
  */
-export const DEFAULT_MAX_CONFLICT_ATTEMPTS = 2;
+export const DEFAULT_MAX_CONFLICT_ATTEMPTS = 3;
 
 /**
  * Disrupted attempts allowed before the PR is escalated (Issue #395).
