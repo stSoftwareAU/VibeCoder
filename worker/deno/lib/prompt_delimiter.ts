@@ -9,6 +9,7 @@
  */
 
 import { redactSecrets } from "./secret_redaction.ts";
+import { stripPromptSecurityIgnorables } from "./prompt_security_normalisation.ts";
 
 /**
  * A set of randomised delimiters for a single prompt invocation.
@@ -122,6 +123,12 @@ export function createPromptDelimiters(boundaryId?: string): PromptDelimiters {
  * idempotent — the placeholder matches no rule — so a caller that already
  * redacted its own text is unaffected.
  *
+ * **Invisible-marker normalisation (Issue #1649).** Format and non-document
+ * control characters are removed after secret redaction and before any marker
+ * regex runs. Otherwise an attacker can interleave U+200B (or another `Cf`)
+ * through `BOUNDARY_`, `TRUSTED` or `author=` and make the literal scrubber
+ * miss a visually equivalent forged trust marker.
+ *
  * @param content - The untrusted content to sanitise
  * @returns Sanitised content with secrets masked and delimiter-like patterns
  *          escaped
@@ -129,7 +136,7 @@ export function createPromptDelimiters(boundaryId?: string): PromptDelimiters {
 export function sanitiseDelimiterPatterns(content: string): string {
   if (!content) return content;
 
-  let result = redactSecrets(content);
+  let result = stripPromptSecurityIgnorables(redactSecrets(content));
 
   // Replace angle-bracket delimiters: <<< → ＜＜＜ (fullwidth less-than).
   // An attacker can construct delimiter-shaped markers well beyond the live
