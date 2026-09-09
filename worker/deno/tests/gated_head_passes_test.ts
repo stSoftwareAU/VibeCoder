@@ -12,7 +12,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { processSpellingFailure } from "../lib/pr_spelling_processor.ts";
-import { processCiFailure } from "../lib/pr_ci_processor.ts";
+import {
+  type CiProcessorDeps,
+  processCiFailure,
+} from "../lib/pr_ci_processor.ts";
 import {
   type MergeConflictProcessorDeps,
   processMergeConflict,
@@ -130,6 +133,7 @@ Deno.test("CI-fix pass - a gated head spends no retry (Issue #1679)", async () =
   try {
     const observed: Observed = { ghCalls: [], agentRuns: 0 };
     const stateDir = `${tmpDir}/.ci_check_state`;
+    let renewals = 0;
 
     const result = await processCiFailure({
       repo: "org/repo",
@@ -145,6 +149,23 @@ Deno.test("CI-fix pass - a gated head spends no retry (Issue #1679)", async () =
       stateDir,
       workDir: tmpDir,
       workRoot: tmpDir,
+      // Production runs the pass under the cross-host lock, so the test does
+      // too — the stand-down has to hold on the path the worker takes.
+      workerId: "worker-1",
+      acquireLockFn: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { acquired: true, lockCommentId: 1 },
+        })) as unknown as CiProcessorDeps["acquireLockFn"],
+      releaseLockFn: (() =>
+        Promise.resolve({
+          ok: true,
+          value: undefined,
+        })) as unknown as CiProcessorDeps["releaseLockFn"],
+      startLockRenewalFn: (() => {
+        renewals++;
+        return { stop: () => {} };
+      }) as unknown as CiProcessorDeps["startLockRenewalFn"],
     });
 
     assertEquals(result.ok, true);
@@ -159,6 +180,7 @@ Deno.test("CI-fix pass - a gated head spends no retry (Issue #1679)", async () =
     assertEquals(observed.agentRuns, 0);
     assertEquals(wroteAnythingElse(observed), false);
     assertEquals(standDownComments(observed).length, 1);
+    assertEquals(renewals, 1, "the lock is taken and released as usual");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

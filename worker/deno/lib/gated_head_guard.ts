@@ -41,7 +41,7 @@ import { getBranchRules, type GhExec } from "./repo_rulesets.ts";
 // ---------------------------------------------------------------------------
 
 /** Prefix of the collection branches a chain of child PRs lands into. */
-export const MILESTONE_HEAD_PREFIX = "milestone/";
+const MILESTONE_HEAD_PREFIX = "milestone/";
 
 /**
  * Rule types that refuse a direct push to the branch they cover.
@@ -118,7 +118,8 @@ export async function assessGatedHead(
   if (ruleTypes.length === 0) {
     return {
       gated: false,
-      detail: `no rule on '${branchName}' refuses a direct push`,
+      detail: `the rules endpoint returned no rule refusing a direct push to ` +
+        `'${branchName}'`,
       ruleTypes: [],
     };
   }
@@ -187,8 +188,6 @@ export interface GatedHeadGuardOptions {
   logger: Logger;
   /** `gh` runner, used for the rules read and the comment. */
   runGhCommand: (args: string[]) => Promise<string>;
-  /** Override the assessment. Tests only; production uses the real read. */
-  assessFn?: typeof assessGatedHead;
 }
 
 /**
@@ -206,8 +205,7 @@ export async function guardGatedHead(
   options: GatedHeadGuardOptions,
 ): Promise<GatedHeadAssessment> {
   const { repo, prNumber, branchName, pass, logger, runGhCommand } = options;
-  const assess = options.assessFn ?? assessGatedHead;
-  const assessment = await assess(
+  const assessment = await assessGatedHead(
     repo,
     branchName,
     (args: string[]) => runGhCommand(args),

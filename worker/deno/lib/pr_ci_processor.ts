@@ -514,6 +514,33 @@ async function _processCiFailureLocked(
     };
   }
 
+  // Issue #1679: a head under a ruleset that refuses direct pushes can never
+  // receive this pass's commits — the push is declined with GH013, once per
+  // run. Standing down here, before the heartbeat, the claim comment and
+  // `recordCiCheckRetry`, means the refusal spends no retry and leaves no
+  // per-run churn on a PR this pass will never fix.
+  const pushGate = await guardGatedHead({
+    repo,
+    prNumber,
+    branchName: input.branchName,
+    pass: "CI fix",
+    logger,
+    runGhCommand: ghFn,
+  });
+  if (pushGate.gated) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: 0,
+        retryCount: currentRetries,
+        summary:
+          `PR head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
+      },
+    };
+  }
+
   // The attempt this run will be. It is *recorded* only once the PR branch is
   // checked out (Issue #1677, in `_processCiWithHeartbeat`): a checkout the
   // clone refused — the branch held by another lane's worktree, or gone from
@@ -635,32 +662,6 @@ async function _processCiWithHeartbeat(
     count: annotations.length,
     retryCount: newRetryCount,
   });
-
-  // Issue #1679: a head under a ruleset that refuses direct pushes can never
-  // receive this pass's commits. Standing down here — before the checkout and
-  // before `recordCiCheckRetry` below — means the GH013 refusal spends no
-  // retry, so the budget survives for a failure the pass can actually fix.
-  const pushGate = await guardGatedHead({
-    repo,
-    prNumber,
-    branchName: input.branchName,
-    pass: "CI fix",
-    logger,
-    runGhCommand: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
-  });
-  if (pushGate.gated) {
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        changesPushed: false,
-        annotationCount: 0,
-        retryCount: newRetryCount - 1,
-        summary:
-          `PR head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
-      },
-    };
-  }
 
   // Checkout the PR branch before running Claude (Issue #1455).
   // Shell work_on_ci_failure did this; the Deno migration missed it, which
