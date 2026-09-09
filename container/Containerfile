@@ -179,6 +179,11 @@ COPY tools.json /tmp/toolchain-manifest.json
 # and — for scorer's codespell preflight — failed outright without them.
 # codespell is a wheel in its own /opt/codespell venv, like semgrep below.
 #
+# pyyaml is the odd one out (Issue #1628): a library, not a command. With the
+# BATS suites executing, NEAT-AI-core's workflow assertions parse YAML with
+# `python3 -c "import yaml"`, so its wheel is installed into the system
+# interpreter's own purelib directory rather than a venv.
+#
 # No update nag and no telemetry round trip from an unattended container —
 # the same reasoning as SEMGREP_ENABLE_VERSION_CHECK below. Set before the
 # install so the build's own version assertion is quiet too.
@@ -187,7 +192,7 @@ ENV POWERSHELL_UPDATECHECK="Off" \
 
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml
 
 # markdownlint-cli2 backs the check-markdownlint gate stage. The release
 # tarball is downloaded and checksum-verified first, then installed from that

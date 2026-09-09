@@ -71,7 +71,7 @@ toolchains below were enumerated by reading each `repos` entry in
 leaving the fleet makes its toolchain removable rather than permanent image
 weight.
 
-| Toolchain                                          | Commands                                  | Exists for                                                                                    |
+| Toolchain                                          | Commands (or modules)                     | Exists for                                                                                    |
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `rust` 1.98.0 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
@@ -81,11 +81,12 @@ weight.
 | `pwsh` 7.6.5 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites — the gate runs the `run.ps1` ones and fails loud without it  |
 | `bats-core` 1.14.0                                  | `bats`                                    | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it       |
 | `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
+| `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 
 `rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
-`bats-core` and `codespell` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`bats-core`, `codespell` and `pyyaml` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
 SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
@@ -95,7 +96,7 @@ that exemption honest. Adding one is a fragment, a `container/tools.json`
 entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
 added to one of the Containerfile's `install-toolchains.sh` runs.
 
-Six consequences worth knowing:
+Seven consequences worth knowing:
 
 - **Rust is pinned to 1.98.0, not `stable`.** That is the channel
   NEAT-AI-scorer, NEAT-AI-Lamarck, NEAT-AI-Backpropagation and NEAT-AI-Forests
@@ -154,6 +155,25 @@ Six consequences worth knowing:
   `codespell` is a wheel in a `/opt/codespell` virtualenv, following semgrep
   (see [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md)). Both are pure text, so one
   `noarch` digest covers each.
+- **`pyyaml` is a library, not a command** (Issue #1628). With the BATS suites
+  executing rather than skipping, 31 of NEAT-AI-core's tests failed here with
+  `ModuleNotFoundError: No module named 'yaml'`: its workflow-assertion suites
+  (`actionlint_workflow.bats`, `ci_job_permissions.bats`,
+  `workflow_sha_pinning.bats` and others) parse workflow YAML with an inline
+  `python3` script that imports PyYAML, which their CI runners carry and the
+  image did not. So this toolchain declares the `modules` it makes importable
+  instead of `commands`, and the codespell pattern does not transfer: the
+  consumer is the image's own `python3`, which would never see a
+  `/opt/<tool>` virtualenv. The pinned wheel is installed by the pinned pip
+  with `--target` into the interpreter's own `purelib` directory — the admin
+  install location already on its `sys.path` — which also leaves the PEP 668
+  externally-managed system environment untouched, and leaves virtualenvs
+  built later (semgrep's, codespell's) unable to shadow their own pinned
+  dependencies with it. PyYAML ships a C extension, so the wheel is
+  per-architecture and its name carries the `cp<major><minor>` interpreter
+  tag; the fragment derives that tag from the running `python3` rather than
+  restating it, so a base-image interpreter bump 404s the fetch instead of
+  installing bytes the manifest never pinned.
 
 Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
 provider need; the worker itself is Deno. Its layer is built **before** the
@@ -306,8 +326,8 @@ never neither, and `parseContainerManifest` rejects the manifest otherwise.
 restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
-`cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell` and `rust` are
-fragments (Issues #1594, #1595, #1596) — they are the fetch-verify-extract
+`cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml` and
+`rust` are fragments (Issues #1594, #1595, #1596, #1628) — they are the fetch-verify-extract
 toolchains, whose `ARG` blocks and `RUN` bodies were the bulk of the
 Containerfile's size. `node`, `npm`, `markdownlint-cli2` and
 `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
