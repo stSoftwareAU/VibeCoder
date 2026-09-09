@@ -15,6 +15,26 @@
  */
 
 /**
+ * Unicode format / line / paragraph separators. Invisible format
+ * characters (Cf) are the zero-width interleave; Zl/Zp can hide a
+ * visual line break inside a marker. Scanned one code point at a time
+ * so the source file never carries a control-character regex.
+ */
+const FORMAT_OR_SEPARATOR_RE = /[\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/**
+ * True when `code` is a C0/C1 control that is not document whitespace.
+ *
+ * TAB, LF and CR stay: they are Markdown/document structure. Every other
+ * C0/C1 byte is stripped so it cannot split `BOUNDARY_`, `[TRUSTED]` or
+ * `author=`.
+ */
+function isNonDocumentControl(code: number): boolean {
+  if (code === 0x09 || code === 0x0a || code === 0x0d) return false;
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+}
+
+/**
  * Strip characters that must not be able to split a prompt security marker.
  *
  * @param text Arbitrary prompt-bound or prompt-derived text.
@@ -23,8 +43,13 @@
  */
 export function stripPromptSecurityIgnorables(text: string): string {
   if (!text) return text;
-  return text.replace(
-    /[\p{Cf}\p{Zl}\p{Zp}\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]+/gu,
-    "",
-  );
+  let out = "";
+  for (const char of text) {
+    const code = char.codePointAt(0);
+    if (code === undefined) continue;
+    if (isNonDocumentControl(code)) continue;
+    if (FORMAT_OR_SEPARATOR_RE.test(char)) continue;
+    out += char;
+  }
+  return out;
 }

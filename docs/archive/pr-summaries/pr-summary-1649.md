@@ -43,6 +43,6 @@ Added `worker/deno/tests/prompt_zero_width_security_test.ts` covering:
 - preservation of tab/CR/LF document structure;
 - Unicode line/paragraph separators embedded inside marker vocabulary.
 
-The connected editing environment does not provide the repository's Deno
-runtime, so the full `./quality.sh < /dev/null` gate is delegated to PR CI and
-will be fixed before merge if it reports a regression.
+Local gate on the CI-fix commit: `deno task test` on the #1649 regressions
+and sweep-coverage tests, `deno task lint`, `deno task check`, and
+`deno task check:manifests`.
