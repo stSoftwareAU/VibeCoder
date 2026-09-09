@@ -19,6 +19,14 @@
  *   pin that branch's HEAD so behaviour is preserved while the reference
  *   becomes immutable.
  *
+ * **The catalogue is the fallback floor, not the emitted value**
+ * (Issue #1823). `lib/action_pin_resolver.ts` resolves every `"release"`
+ * entry against upstream's own release history at sync time and emits the
+ * highest release that has cleared the supply-chain quarantine window; the
+ * SHA recorded here is what is emitted when that lookup cannot produce an
+ * answer, and every such fallback is logged. Only the `"catalogue"` entries
+ * below are emitted verbatim without a lookup.
+ *
  * Bumping: change the SHA and the `version` label together, honouring the
  * supply-chain quarantine (Issue #1613) — do not adopt a release younger
  * than 24 hours. `worker/deno/tests/pinned_actions_test.ts` and
@@ -27,12 +35,26 @@
  * cannot regress to a floating tag.
  */
 
+/**
+ * How an entry's emitted pin is chosen at sync time (Issue #1823).
+ *
+ * - `"release"` (the default) — resolve upstream's release history and emit
+ *   the highest release past the quarantine window, falling back to the
+ *   catalogue SHA with a logged reason.
+ * - `"catalogue"` — emit the SHA recorded here verbatim. The action is never
+ *   looked up and a fallback is never logged, because there is no stable
+ *   release series to resolve against.
+ */
+export type ActionPinResolution = "release" | "catalogue";
+
 /** An immutable pin: the commit SHA plus the human-readable version. */
 export interface ActionPin {
   /** 40-character lowercase hex commit SHA. */
   sha: string;
   /** Human-readable label rendered as a trailing YAML comment. */
   version: string;
+  /** Resolution strategy; absent means {@link ActionPinResolution} `"release"`. */
+  resolution?: ActionPinResolution;
 }
 
 /** Action coordinate (`owner/repo`) → immutable pin. */
@@ -78,9 +100,16 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
   },
   // The ref no longer names the toolchain once pinned, so consumers must
   // pass an explicit `toolchain:` input (see the Rust templates).
+  //
+  // `"catalogue"`: upstream publishes exactly one release, the rolling `v1`
+  // tag (published 2022-07-15) — no `MAJOR.MINOR.PATCH` release has ever been
+  // cut, so the resolver has nothing to select and would log a fallback on
+  // every sync. Verified against `gh api repos/dtolnay/rust-toolchain/releases`
+  // (Issue #1823); revisit if upstream ever starts cutting semver releases.
   "dtolnay/rust-toolchain": {
     sha: "e97e2d8cc328f1b50210efc529dca0028893a2d9",
     version: "v1",
+    resolution: "catalogue",
   },
   // The ref no longer names the tool once pinned, so consumers must pass
   // an explicit `tool:` input (see the Rust quality template).
@@ -101,10 +130,12 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
   "dependency-check/Dependency-Check_Action": {
     sha: "1e54355a8b4c8abaa8cc7d0b70aa655a3bb15a6c",
     version: "main HEAD 2025-12-10",
+    resolution: "catalogue",
   },
   "ludeeus/action-shellcheck": {
     sha: "00b27aa7cb85167568cb48a3838b75f4265f2bca",
     version: "master HEAD 2024-06-20",
+    resolution: "catalogue",
   },
 };
 

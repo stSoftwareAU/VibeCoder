@@ -1167,6 +1167,17 @@
       "paths": [
         "worker/deno/lib/workflow_file_checks.ts"
       ]
+    },
+    {
+      "issue": 1823,
+      "chunk": "12o",
+      "title": "top-up: the action pin resolver",
+      "ledger": "docs/audits/security-sweep-1823-action-pin-resolver.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: action_pin_resolver.ts (#1823)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/action_pin_resolver.ts"
+      ]
     }
   ],
   "roots": [

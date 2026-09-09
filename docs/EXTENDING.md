@@ -284,6 +284,13 @@ When you add or bump a template:
   helper throws for an unrecorded one.
 - Bump the SHA and the `version` label together, honouring the 24-hour
   supply-chain quarantine for external dependencies.
+- The catalogue is the **fallback floor**, not the emitted value:
+  `resolveActionPins()` in `worker/deno/lib/action_pin_resolver.ts` resolves
+  each entry to the highest upstream release that has cleared
+  `VIBE_BUMP_QUARANTINE_HOURS`, and falls back to the recorded SHA with one
+  `[workflow-sync] pin resolution failed:` line. Mark an entry
+  `resolution: "catalogue"` only when upstream cuts no stable
+  `MAJOR.MINOR.PATCH` release at all, and say why in a source comment.
 - Actions that read their behaviour from the ref name
   (`dtolnay/rust-toolchain@stable`, `taiki-e/install-action@<tool>`) need
   an explicit `toolchain:` / `tool:` input once pinned, because a SHA
