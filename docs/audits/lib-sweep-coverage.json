@@ -948,6 +948,19 @@
         "worker/deno/lib/codex_budget.ts",
         "worker/deno/lib/codex_budget_source.ts"
       ]
+    },
+    {
+      "issue": 1695,
+      "chunk": "12n",
+      "title": "the agent output adapters",
+      "ledger": "docs/audits/security-sweep-1695-agent-output-adapters.md",
+      "definition": "modules added to lib/ after 12a-12m recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/agent_output.ts",
+        "worker/deno/lib/claude_output_adapter.ts",
+        "worker/deno/lib/codex_output_adapter.ts"
+      ]
     }
   ]
 }

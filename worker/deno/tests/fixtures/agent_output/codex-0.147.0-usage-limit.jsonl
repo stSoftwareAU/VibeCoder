@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e78"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","item_type":"reasoning","text":"Planning the change"}}
+{"type":"turn.failed","error":{"type":"usage_limit_reached","message":"You've hit your weekly usage limit. Your limit resets at 2026-09-12T09:00:00Z.","plan_type":"pro","resets_in_seconds":259200}}

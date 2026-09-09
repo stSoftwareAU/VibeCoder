@@ -15,6 +15,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { AgentDecodedOutput, AgentFailure } from "./agent_output.ts";
 import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
@@ -187,6 +188,11 @@ export function buildClaudeFailureLog(input: {
     (stderrTail ? `; stderr tail:\n${stderrTail}` : " (stderr empty)");
 }
 export type { RunStats } from "./run_stats.ts";
+export type {
+  AgentDecodedOutput,
+  AgentFailure,
+  AgentFailureCategory,
+} from "./agent_output.ts";
 
 /** Default error scan tail lines. */
 const DEFAULT_ERROR_SCAN_TAIL_LINES = 30;
@@ -343,6 +349,30 @@ export interface ClaudeRunResult {
    * (`"fable-unavailable (pre-flight health probe)"`).
    */
   preflightDegradedReason?: string;
+  /**
+   * This invocation decoded into the provider-neutral contract (Issue #1695).
+   *
+   * The agent's answer with its source, the provider's session identity,
+   * usage, progress and terminal status, plus every structured error event
+   * verbatim. Present whenever the run's provider has an output adapter;
+   * absent for a provider whose CLI events are not decoded yet, which is an
+   * absent decode rather than one vendor's events read with another's parser.
+   */
+  agentOutput?: AgentDecodedOutput;
+  /**
+   * This invocation's failure, normalised (Issue #1695).
+   *
+   * A named category — authentication, model-unavailable, quota-exhausted,
+   * rate-limit, network, invalid-session, timeout, out-of-memory, cancelled
+   * or task-failure — with the evidence it was read from, the quota scope and
+   * reset where the provider stated them, and any retry-after. Absent when
+   * the run did not fail, which is what keeps a success that merely *quotes*
+   * a rate limit from reading as a refusal.
+   *
+   * Reporting only: the retry, wait and model-fallback ladder below is
+   * unchanged by it.
+   */
+  agentFailure?: AgentFailure;
   /**
    * Id of the coding-agent provider that produced this result (Issue #4109).
    *
@@ -1938,11 +1968,18 @@ export async function runClaudeWithTimeout(
 
     const stdoutBytes = concatChunks(stdoutChunks);
     const rawOutput = new TextDecoder().decode(stdoutBytes);
-    const output = extractStreamJsonText(rawOutput);
     const stderrBytes = concatChunks(stderrChunks);
     const stderr = stripEscapeCodes(
       new TextDecoder().decode(stderrBytes),
     ).trim();
+
+    // Decode through the provider's own adapter (Issue #1695). The descriptor
+    // names it, so this call site knows no vendor: Claude's adapter returns
+    // exactly what `extractStreamJsonText` returned, and a provider with no
+    // adapter yet keeps that shared extraction rather than being decoded with
+    // another vendor's parser.
+    const agentOutput = provider.output?.decode(rawOutput);
+    const output = agentOutput?.text ?? extractStreamJsonText(rawOutput);
 
     // Resolve the requested model and effort once (Issue #2392, #2647) so both
     // credit logging and the per-run stats reuse the same resolution rather
@@ -2049,6 +2086,19 @@ export async function runClaudeWithTimeout(
     // silent run-end that lets the phase continue over a half-done tree.
     const ourShutdown = isAgentRunsTerminating();
     const terminated = gotSigterm && ourShutdown;
+
+    // Classify the run into the shared failure contract (Issue #1695), now
+    // that the process facts are settled: a cancelled or watchdog-killed run
+    // is never re-explained by whatever its output happened to end with.
+    const normalisedFailure = provider.output && agentOutput
+      ? provider.output.classify({
+        stdout: rawOutput,
+        stderr,
+        exitCode: timedOut ? TIMEOUT_EXIT_CODE : status.code,
+        timedOut,
+        cancelled: terminated || scheduledRelease !== undefined,
+      }, agentOutput)
+      : undefined;
     const externalSigterm = gotSigterm && !ourShutdown;
     // The child died from outside, or our kill never settled: collect the
     // descendants it left behind before anything else starts (Issue #4382).
@@ -2125,6 +2175,11 @@ export async function runClaudeWithTimeout(
           : {}),
         ...(killDiagnostics !== undefined ? { killDiagnostics } : {}),
         ...(extensions ? { extensions } : {}),
+        // The normalised decode/classification (Issue #1695). Additive: every
+        // pre-existing field above is unchanged, so a consumer that has never
+        // heard of the contract reads the same result it always did.
+        ...(agentOutput ? { agentOutput } : {}),
+        ...(normalisedFailure ? { agentFailure: normalisedFailure } : {}),
         runStats,
         provider: provider.id,
       },
@@ -2376,12 +2431,25 @@ export async function runClaudeWithRetry(
   let invokedExtensions: ExtensionTelemetry | undefined;
 
   /**
+   * The last invocation's normalised decode and classification (Issue #1695),
+   * stamped onto every result the retry wrapper builds for itself — a
+   * rate-limit give-up, a fallback exhaustion, an ordinary failure — so the
+   * contract survives the wrapper the way the provider id does. A result that
+   * already carries its own (the invocation's own value, returned verbatim)
+   * keeps it.
+   */
+  let invokedAgentOutput: AgentDecodedOutput | undefined;
+  let invokedAgentFailure: AgentFailure | undefined;
+
+  /**
    * Thread the pre-flight degraded flag, the invoked provider and the
    * extension telemetry onto a run result. The degraded fields stay absent
    * when the reroute did not fire, so a normal run's result shape is
    * otherwise unchanged.
    */
   const withPreflight = (value: ClaudeRunResult): ClaudeRunResult => ({
+    ...(invokedAgentOutput ? { agentOutput: invokedAgentOutput } : {}),
+    ...(invokedAgentFailure ? { agentFailure: invokedAgentFailure } : {}),
     ...value,
     ...(invokedProvider ? { provider: invokedProvider } : {}),
     ...(invokedExtensions ? { extensions: invokedExtensions } : {}),
@@ -2504,6 +2572,10 @@ export async function runClaudeWithRetry(
     } = result.value;
     invokedProvider = result.value.provider ?? invokedProvider;
     invokedExtensions = result.value.extensions ?? invokedExtensions;
+    invokedAgentOutput = result.value.agentOutput ?? invokedAgentOutput;
+    // Cleared, not carried, when this invocation did not fail: a stale
+    // failure from a previous attempt must never describe a later success.
+    invokedAgentFailure = result.value.agentFailure;
 
     // Out of memory (Issue #2741, parent #2721) — TERMINAL. Checked first,
     // before the timeout and rate-limit paths, for two reasons:
@@ -2519,9 +2591,19 @@ export async function runClaudeWithRetry(
     // Both streams are scanned (Issue #4237): a Node/V8 heap abort prints
     // its FATAL ERROR to STDERR, and scanning stdout alone misclassified
     // the agent's own heap ceiling as an external SIGKILL.
+    // The provider's own structured error messages join the scan surface
+    // (Issue #1695): a CLI whose refusal never reaches `output` — Codex says
+    // it in a `turn.failed` event, not in prose — would otherwise be read as
+    // an ordinary failure. Additive: for Claude the same words are already in
+    // `output`, so every existing classification is unchanged.
+    const structuredEvidence = (result.value.agentOutput?.errors ?? [])
+      .map((error) => error.message)
+      .join("\n");
+    const scanSurface = `${output}\n${stderr ?? ""}\n${structuredEvidence}`;
+
     if (
       exitCode !== 0 && !timedOut &&
-      detectOutOfMemory(`${output}\n${stderr ?? ""}`, errorScanTailLines)
+      detectOutOfMemory(scanSurface, errorScanTailLines)
     ) {
       currentOptions.logger?.warn(
         `Out of memory detected (exit code: ${exitCode}). Terminal — no retry, no wait.`,
@@ -2649,10 +2731,11 @@ export async function runClaudeWithRetry(
       // rate-limit pattern, which would otherwise route it into the
       // wait-and-retry loop. Fall back to the next-best model immediately,
       // with no wait.
-      // Both streams (Issue #4315): the CLI writes its refusals to stderr,
-      // and with no stream-json `result` line stdout is empty — scanning
-      // stdout alone made every stderr-only refusal an "unknown" failure.
-      const bothStreams = `${output}\n${stderr ?? ""}`;
+      // Both streams (Issue #4315) plus the provider's structured error
+      // messages (Issue #1695): the CLI writes its refusals to stderr, and
+      // with no stream-json `result` line stdout is empty — scanning stdout
+      // alone made every stderr-only refusal an "unknown" failure.
+      const bothStreams = scanSurface;
 
       // The CLI refused the session id (Issue #204) — checked first because it
       // is a start-up failure: the process died before any model call, so

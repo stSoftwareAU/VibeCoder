@@ -57,6 +57,9 @@ import {
   claudeAuthActionableMessage,
   isClaudeAuthError,
 } from "./claude_auth.ts";
+import type { AgentOutputAdapter } from "./agent_output.ts";
+import { CLAUDE_OUTPUT_ADAPTER } from "./claude_output_adapter.ts";
+import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
 import {
   buildSessionResumeArgs,
   buildSessionResumeFlags,
@@ -337,6 +340,21 @@ export interface AgentProviderDescriptor {
   buildInvocation(request: AgentInvocationRequest): string[];
   /** Build the child subprocess environment, minus worker-only secrets. */
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string>;
+  /**
+   * How this provider's CLI output is decoded and its failures classified
+   * (Issue #1695).
+   *
+   * The adapter owns the CLI's event shapes; the shared contract in
+   * `agent_output.ts` owns the result and failure types every provider is
+   * decoded into. Naming it here is what keeps vendor knowledge out of
+   * `claude_runner.ts` — the runner asks the descriptor, never an id.
+   *
+   * **Absent** means no adapter has been written for this CLI yet: the runner
+   * keeps the shared `stream-json` text extraction it has always used and
+   * reports no normalised result, rather than decoding one vendor's events
+   * with another's parser.
+   */
+  output?: AgentOutputAdapter;
   /** Report whether CLI output indicates a provider authentication failure. */
   isAuthError(output: string): boolean;
   /** Operator-facing message for an authentication failure. */
@@ -484,6 +502,16 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/claude.sh` },
   // `claude -p` with no positional prompt reads it from stdin (Issue #4385).
   promptTransport: "stdin",
+  // The Claude `stream-json` decoder and failure classifier (Issue #1695).
+  // A getter, not a value (the `defaultQuorumPlanners()` precedent): the
+  // adapter module reaches `claude_executor.ts`, which imports
+  // `config_defaults.ts`, which imports this module back, so reading the
+  // constant at module-evaluation time throws a temporal-dead-zone error.
+  // Deferring the read to property access keeps the descriptor declarative
+  // without the cycle.
+  get output(): AgentOutputAdapter {
+    return CLAUDE_OUTPUT_ADAPTER;
+  },
 
   // Claude is the provider with phase routing today: both resolvers delegate
   // to the chain `claude_executor.ts` owns (Issue #362).
@@ -543,6 +571,11 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
   },
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/codex.sh` },
   promptTransport: "argv",
+  // The `codex exec --json` decoder and failure classifier (Issue #1695),
+  // deferred for the same import cycle as Claude's above.
+  get output(): AgentOutputAdapter {
+    return CODEX_OUTPUT_ADAPTER;
+  },
 
   // Codex routes `phase` through its own tables (Issue #363), the way Claude
   // does: the chain lives in `codex_executor.ts` and is never restated here.
@@ -589,6 +622,12 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
  * machine-readable output where a planner's may stay prose. Every field
  * delegates to the Gemini-owned modules (`gemini_executor.ts`,
  * `gemini_env.ts`, `gemini_auth.ts`), so no Gemini CLI knowledge lives here.
+ *
+ * It carries **no** `output` adapter (Issue #1695): its event shapes were not
+ * confirmable against the pinned CLI here, and decoding them with Claude's
+ * parser is exactly the guesswork this seam exists to end. The runner keeps
+ * the shared text extraction for it and reports no normalised result — an
+ * absent decode, never a fabricated one.
  */
 const GEMINI_PROVIDER: AgentProviderDescriptor = {
   id: GEMINI_PROVIDER_ID,
@@ -694,6 +733,11 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
   // The same CLI as Claude, so a bare `-p` reads the prompt from stdin
   // (Issue #4385).
   promptTransport: "stdin",
+  // The same CLI as Claude, so the same event decoder (Issue #1695),
+  // deferred for the same import cycle.
+  get output(): AgentOutputAdapter {
+    return CLAUDE_OUTPUT_ADAPTER;
+  },
 
   // Every phase is pinned to a real DeepSeek model id: Claude's routing
   // resolves to Anthropic tier aliases the endpoint cannot resolve, and a
