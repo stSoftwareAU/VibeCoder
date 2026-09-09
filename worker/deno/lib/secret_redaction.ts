@@ -2,10 +2,10 @@
  * Secret redaction for log output (Issue #2417).
  *
  * Self-audit finding: the worker's logger interpolated message and context
- * values verbatim into stderr (captured into worker-*.log and CI output). A
- * secret reaching any log line (e.g. a tokenised git clone URL inside a
- * `git`/`gh` error, or a logged tail of external command output) would have
- * leaked into those logs.
+ * values verbatim into stderr (captured into worker-*.log and CI output).
+ * Any secret that reached a `logger.*` call — most plausibly a tokenised git
+ * clone URL inside a `git`/`gh` error string, or a logged tail of external
+ * command output — would have leaked into those logs.
  *
  * `redactSecrets` is the single chokepoint that masks known secret shapes
  * before any bytes are written. It is wired into the logger's write path
@@ -43,7 +43,7 @@
  */
 
 import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
-import { isPlausibleSecretAssignmentValue } from "./secret_assignment_value.ts";
+import { isCredentialShapedValue } from "./secret_assignment_value.ts";
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -142,9 +142,12 @@ function redactUniformPemBodyRuns(text: string): string {
   while (i < parsed.length) {
     const start = parsed[i];
     if (
-      !start || !start.isBase64 || start.hasPadding ||
+      !start ||
+      !start.isBase64 ||
+      start.hasPadding ||
       start.payloadLen < PEM_BODY_LINE_MIN ||
-      start.payloadLen > PEM_BODY_LINE_MAX || start.newline === ""
+      start.payloadLen > PEM_BODY_LINE_MAX ||
+      start.newline === ""
     ) {
       out.push(start?.raw ?? "");
       i++;
@@ -156,8 +159,11 @@ function redactUniformPemBodyRuns(text: string): string {
     while (j < parsed.length) {
       const next = parsed[j];
       if (
-        !next || !next.isBase64 || next.hasPadding ||
-        next.payloadLen !== width || next.newline === ""
+        !next ||
+        !next.isBase64 ||
+        next.hasPadding ||
+        next.payloadLen !== width ||
+        next.newline === ""
       ) {
         break;
       }
@@ -166,7 +172,8 @@ function redactUniformPemBodyRuns(text: string): string {
     const fullCount = j - i;
     const last = parsed[j];
     const lastIsPartial = !!last && last.isBase64 &&
-      last.payloadLen >= 1 && last.payloadLen <= width &&
+      last.payloadLen >= 1 &&
+      last.payloadLen <= width &&
       last.payloadLen <= PEM_BODY_LINE_MAX;
 
     if (fullCount >= 2 && lastIsPartial && last) {
@@ -287,10 +294,10 @@ const RULES: readonly RedactionRule[] = [
   // Google / Gemini API key (Issue #36). `GEMINI_API_KEY` / `GOOGLE_API_KEY`
   // reach the Gemini child (see `gemini_env.ts`) and leak in the same bare
   // shape as the OpenAI key above. Google's format is a fixed 39 characters —
-  // the `AIzaSy` prefix plus 33 more charset characters — so the quantifier is
-  // an exact count and is bounded by construction. The fixed length is also
-  // what keeps the rule off ordinary text: a shorter `AIzaSy…` fragment is
-  // left alone.
+  // the `AIzaSy` prefix plus 33 charset characters — so the quantifier is an
+  // exact count and is bounded by construction. The fixed length is also what
+  // keeps the rule off ordinary text: a shorter `AIzaSy…` fragment is left
+  // alone.
   {
     name: "google-api-key",
     pattern: /\bAIzaSy[A-Za-z0-9_-]{33}/g,
@@ -372,31 +379,21 @@ const RULES: readonly RedactionRule[] = [
   // credential never starts with either, and a secret nested inside the object
   // is still masked by this rule's own pass over the inner `"key": "value"`.
   //
-  // A trailing credential label may also precede Markdown rather than a
-  // value (Issue #1727). The candidate is checked before replacement: fences,
-  // headings and list markers are not credentials, and ordinary prose is not
-  // masked merely because it follows a label. Known-token signatures remain
-  // independent of this rule. The original bounded pattern still finds both
-  // inline and multiline assignments, including quoted and bold values.
+  // The separator's `\s*` runs spans line breaks, so a prose line ending in a
+  // credential label adopted the *next* line as its value (Issue #1727) — a
+  // Mermaid fence was published as the placeholder and the diagram stopped
+  // rendering. `isCredentialShapedValue` judges the value before the
+  // substitution: Markdown structure is never a credential, and a value the
+  // separator reached across a line break must look like one. An inline
+  // assignment is unaffected, so the label side stays as blunt as it was.
   {
     name: "secret-assignment",
     pattern:
       /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!\*\*\*REDACTED)(?![{[])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|\S+)/gi,
-    replace: (
-      match: string,
-      key: string,
-      sep: string,
-      value: string,
-      offset: number,
-      source: string,
-    ) => {
-      // The context check is bounded so many assignments on one long line
-      // cannot make the scanner quadratic (Issue #3942).
-      const following = source.slice(offset + match.length, offset + match.length + 128);
-      return isPlausibleSecretAssignmentValue(value, key, sep, following)
+    replace: (match: string, key: string, sep: string, value: string) =>
+      isCredentialShapedValue(value, !/[\r\n]/.test(sep))
         ? `${key}${sep}${REDACTION_PLACEHOLDER}`
-        : match;
-    },
+        : match,
   },
   // Space-separated CLI flag carrying a secret (Issue #3648). The
   // `secret-assignment` rule above requires an `=` or `:` separator, so a
@@ -418,8 +415,8 @@ const RULES: readonly RedactionRule[] = [
       `${flag}${sep}${REDACTION_PLACEHOLDER}`,
   },
   // Bare 32-hex credential — the ImgBB API key shape (Issue #1387). The two
-  // rules above catch that key only while it keeps its wrapper: a
-  // `--imgbb-api-key <key>` flag or `VIBE_IMGBB_API_KEY=<key>` assignment.
+  // rules above catch that key only while it keeps its wrapper: an
+  // `--imgbb-api-key <key>` flag or a `VIBE_IMGBB_API_KEY=<key>` assignment.
   // Stripped of both — an upload client echoing the rejected key into an
   // error string, or the key sitting in an `?key=` query parameter — it is a
   // bare hex blob with no provider prefix, and no rule matched it at all.
@@ -449,16 +446,29 @@ const RULES: readonly RedactionRule[] = [
 
 /**
  * Report whether `text` matches any signature rule, without rewriting it.
+ * This is the scan the decode-then-rescan pass applies to each decoded
+ * candidate (Issue #188).
  *
- * Useful for the decode-then-rescan pass; it must use the same value-side
- * predicate as the replacement pass (Issue #1727), so a Markdown fence does
- * not become a false secret hit merely because it follows `credential:`.
+ * Detection runs each rule's own `replace` and compares, rather than matching
+ * the pattern alone. A pattern match is no longer the whole decision: the
+ * `secret-assignment` rule also judges the matched value (Issue #1727), so a
+ * pattern-only scan reported a secret in text the redaction pass leaves
+ * untouched — `containsSecret` said true for a PR body whose only "secret" was
+ * a Mermaid fence after a `credential:` lead-in. Running the replacement keeps
+ * the two passes answering the same question by construction.
+ *
+ * `replace` also sidesteps the `lastIndex` trap that ruled out
+ * `RegExp.prototype.test` here: every rule pattern is global, and `test()`
+ * would carry `lastIndex` across calls, making the result depend on the
+ * previous input. Cloning the patterns through `new RegExp(...)` would avoid
+ * that too but trips semgrep's `detect-non-literal-regexp` rule, and a
+ * dynamically-built regex is the wrong primitive here anyway — the patterns
+ * are all hardcoded literals.
  */
 function matchesSignatureRule(text: string): boolean {
-  return RULES.some((rule) => text.replace(
-    rule.pattern,
-    rule.replace as (substring: string, ...args: unknown[]) => string,
-  ) !== text);
+  return RULES.some((rule) =>
+    text.replace(rule.pattern, rule.replace) !== text
+  );
 }
 
 /**
