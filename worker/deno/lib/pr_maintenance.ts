@@ -22,6 +22,7 @@ import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
 import {
   findRollbackAfterMerge,
+  type RollbackRecord,
   rollbackSkipReason,
 } from "./milestone_rollback_marker.ts";
 import {
@@ -1725,13 +1726,28 @@ export async function closeIssuesForMergedPrs(
           // child was reopened and re-queued while its PR stayed `merged`.
           // An unreadable thread throws into the catch below, which leaves
           // the issue open rather than closing on an unproven assumption.
-          const rollback = await findRollbackAfterMerge(
-            repo,
-            Number(issueNumber),
-            pr.mergedAt,
-            options.fleetAuthors ?? [],
-            ghCommandFn,
-          );
+          let rollback: RollbackRecord | undefined;
+          try {
+            rollback = await findRollbackAfterMerge(
+              repo,
+              Number(issueNumber),
+              pr.mergedAt,
+              options.fleetAuthors ?? [],
+              ghCommandFn,
+            );
+          } catch (err) {
+            // An unreadable thread cannot prove the issue was NOT rolled
+            // back. Leave it open and name the cause — the outer catch
+            // would report it as an indistinguishable processing failure.
+            logger.warn(
+              `Not closing issue #${issueNumber}: could not read the comment ` +
+                `thread: ${
+                  err instanceof Error ? err.message : String(err)
+                } (Issue #1770)`,
+              { repo, issueNumber, prNumber },
+            );
+            continue;
+          }
           if (rollback) {
             logger.info(
               `Not closing issue #${issueNumber}: ${

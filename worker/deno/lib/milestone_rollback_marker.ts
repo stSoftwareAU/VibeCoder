@@ -17,8 +17,9 @@
  *
  *  - **Author, not body.** A comment body is writable by any GitHub account,
  *    and this marker *suppresses* a close. Only a marker authored by a
- *    configured fleet login counts — the `alert_dedup_authors.ts` control,
- *    applied here. A marker from anyone else is ignored and the issue closes
+ *    configured fleet login counts — `isFleetAuthor` from
+ *    `fleet_authors.ts`, the control `alert_dedup_authors.ts` applies to
+ *    every other marker. A marker from anyone else is ignored and the issue closes
  *    exactly as it does today.
  *  - **No fleet identity, no suppression.** An empty `fleetAuthors` means
  *    nothing can be attributed, so nothing is trusted and the close goes

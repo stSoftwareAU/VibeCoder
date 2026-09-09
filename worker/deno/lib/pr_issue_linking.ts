@@ -25,6 +25,7 @@ import { runGhOrThrow } from "./gh_spawn.ts";
 import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import {
   findRollbackAfterMerge,
+  type RollbackRecord,
   rollbackSkipReason,
 } from "./milestone_rollback_marker.ts";
 import {
@@ -1004,13 +1005,28 @@ export async function closeIssuesForMergedPrs(
           // it now would undo the roll-back on the very next cycle. An
           // unreadable thread throws into the catch below, which holds the
           // PR back rather than closing on an unproven assumption.
-          const rollback = await findRollbackAfterMerge(
-            repo,
-            issueNumber,
-            pr.mergedAt,
-            options?.fleetAuthors ?? [],
-            ghCommandFn,
-          );
+          let rollback: RollbackRecord | undefined;
+          try {
+            rollback = await findRollbackAfterMerge(
+              repo,
+              issueNumber,
+              pr.mergedAt,
+              options?.fleetAuthors ?? [],
+              ghCommandFn,
+            );
+          } catch (err) {
+            // An unreadable thread cannot prove the issue was NOT rolled
+            // back. Leave it open, name the cause, and decide next cycle —
+            // the outer catch would hold it back silently.
+            options?.logFn?.(
+              `[close-merged-pr] ${repo}#${issueNumber}: could not read the ` +
+                `comment thread: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+            );
+            holdBack = Math.min(holdBack, pr.number);
+            continue;
+          }
           if (rollback) {
             options?.logFn?.(
               `[close-merged-pr] ${repo}#${issueNumber}: ` +

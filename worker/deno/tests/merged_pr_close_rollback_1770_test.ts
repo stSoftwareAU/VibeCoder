@@ -85,6 +85,16 @@ function harness(comments: Array<Record<string, unknown>>): Harness {
   };
 }
 
+/** The same world, but the comment thread cannot be read. */
+function unreadableThread(h: Harness): (args: string[]) => Promise<string> {
+  return (args: string[]) => {
+    if (args[0] === "api" && (args[1] ?? "").includes("/comments")) {
+      return Promise.reject(new Error("gh: comments unavailable (500)"));
+    }
+    return h.fn(args);
+  };
+}
+
 function fleetRollbackComment(): Record<string, unknown> {
   return {
     user: { login: "vibe-bot" },
@@ -188,6 +198,31 @@ Deno.test("closeIssuesForMergedPrs - no fleet identity spends no call and closes
   );
 });
 
+Deno.test("closeIssuesForMergedPrs - an unreadable comment thread leaves the child open, loudly (Issue #1770)", async () => {
+  const lines: string[] = [];
+  const h = harness([]);
+
+  const count = await closeIssuesForMergedPrs(
+    ["owner/repo"],
+    "bot-user",
+    unreadableThread(h),
+    "planning",
+    undefined,
+    {
+      verifyMergeLandedFn: alwaysLanded,
+      fleetAuthors: FLEET,
+      logFn: (m) => lines.push(m),
+    },
+  );
+
+  assertEquals(h.closed, []);
+  assertEquals(count, 0);
+  assert(
+    lines.some((l) => l.includes("comments unavailable")),
+    `expected the cause to be named, got ${JSON.stringify(lines)}`,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // pr_maintenance.closeIssuesForMergedPrs — the same check
 // ---------------------------------------------------------------------------
@@ -218,6 +253,23 @@ Deno.test("pr_maintenance closeIssuesForMergedPrs - a fleet roll-back after the 
   assert(result.ok);
   assertEquals(result.value.closedCount, 0);
   assertEquals(h.closed, []);
+});
+
+Deno.test("pr_maintenance closeIssuesForMergedPrs - an unreadable comment thread leaves the child open, loudly (Issue #1770)", async () => {
+  const lines: string[] = [];
+  const h = harness([]);
+  const options = maintenanceOptions(unreadableThread(h), FLEET);
+  options.logger = makeLogger(lines);
+
+  const result = await closeViaMaintenance(options);
+
+  assert(result.ok);
+  assertEquals(result.value.closedCount, 0);
+  assertEquals(h.closed, []);
+  assert(
+    lines.some((l) => l.includes("comments unavailable")),
+    `expected the cause to be named, got ${JSON.stringify(lines)}`,
+  );
 });
 
 Deno.test("pr_maintenance closeIssuesForMergedPrs - a non-fleet marker still closes (Issue #1770)", async () => {
