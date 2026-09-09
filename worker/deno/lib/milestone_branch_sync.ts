@@ -47,6 +47,11 @@ import {
   isConflictEscalation,
 } from "./milestone_conflict_triage.ts";
 import {
+  conflictEscalationKey,
+  conflictEscalationMarker,
+  hasConflictEscalationComment,
+} from "./milestone_conflict_dedup.ts";
+import {
   loadSyncStreaks,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   saveSyncStreaks,
@@ -626,7 +631,21 @@ export async function syncMilestoneBranches(
             // report went out, so escalating would repeat every cycle — the
             // loud WARNING log above stands on its own there, as it does for
             // the Issue #974 gate refusal below.
-            const conflictKey = syncResult.error.defaultSha || UNRESOLVED_SHA;
+            // Issue #1786: keyed on the conflict, not on the default
+            // branch's tip. That tip moves every few minutes on a busy
+            // repository, so keying on it made every cycle look like a new
+            // conflict and posted the same analysis again — four copies on
+            // stSoftwareAU/VibeCoder#1653 in 36 minutes.
+            const conflictKey = conflictEscalationKey({
+              milestoneBranch: milestone.milestoneBranch,
+              ...(syncResult.error.milestoneSha
+                ? { milestoneSha: syncResult.error.milestoneSha }
+                : {}),
+              files: [
+                ...syncResult.error.analyses.map((a) => a.path),
+                ...syncResult.error.resolved.map((d) => d.path),
+              ],
+            });
             if (entry && entry.analysisEscalatedSha !== conflictKey) {
               const escalated = await escalateConflictAnalysis(
                 repo,
@@ -634,6 +653,7 @@ export async function syncMilestoneBranches(
                 syncResult.error.analyses,
                 syncResult.error.resolved,
                 syncResult.error.gateFailure,
+                syncResult.error.defaultSha || UNRESOLVED_SHA,
                 conflictKey,
                 ghCommandFn,
                 log,
@@ -812,6 +832,8 @@ async function escalateConflictAnalysis(
   gateFailure: string | undefined,
   /** The default-branch commit that conflicted, for the diagnostic's title. */
   defaultSha: string,
+  /** The conflict's own identity, carried as a marker for cross-host dedup. */
+  conflictKey: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
 ): Promise<boolean> {
@@ -825,7 +847,8 @@ async function escalateConflictAnalysis(
     log,
   );
 
-  const body = `${
+  const marker = conflictEscalationMarker(conflictKey);
+  const body = `${marker}\n${
     buildConflictAnalysisComment({
       repo,
       milestoneBranch: milestone.milestoneBranch,
@@ -851,6 +874,25 @@ async function escalateConflictAnalysis(
       {},
       conflictDiagnosticTitle(milestone.milestoneBranch, defaultSha),
     );
+  }
+
+  // Issue #1786: each host keeps its own streak file, so the local record
+  // alone cannot stop a second host reporting a conflict the first already
+  // reported — the marker on the issue is the shared record.
+  if (
+    await hasConflictEscalationComment({
+      repo,
+      issueNumber,
+      marker,
+      ghCommandFn,
+      log,
+    })
+  ) {
+    log(
+      `Skipped escalating ${what} in ${repo}: issue #${issueNumber} already ` +
+        `carries this conflict's analysis.`,
+    );
+    return true;
   }
 
   return await postEscalationComment(
