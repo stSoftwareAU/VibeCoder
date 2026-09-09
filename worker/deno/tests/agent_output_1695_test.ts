@@ -68,17 +68,22 @@ Deno.test("parseJsonlEvents - empty input yields no events and no malformed line
   assertEquals(parsed.malformedLines, 0);
 });
 
+// Assembled from parts at run time so the file never carries a PAT-shaped
+// literal for the secret scanner to flag (Issue #1695). Synthetic, not a
+// credential.
+const FAKE_PAT = "ghp_" + "0123456789".repeat(4);
+
 Deno.test("redactedEvidence - redacts secrets and bounds the excerpt", () => {
   const text = [
     "line one",
-    "ghp_0123456789012345678901234567890123456789",
+    FAKE_PAT,
     "line three",
     "line four",
   ].join("\n");
 
   const evidence = redactedEvidence(text, 2);
 
-  assert(!evidence.includes("ghp_0123456789012345678901234567890123456789"));
+  assert(!evidence.includes(FAKE_PAT));
   assertEquals(evidence.split("\n").length, 2);
   // The tail is what a failure ends with, so that is what is kept.
   assert(evidence.includes("line four"));
