@@ -784,6 +784,19 @@ interface ActiveAgentRun {
 const activeAgentRuns = new Map<number, ActiveAgentRun>();
 let agentRunsTerminating = false;
 
+/**
+ * Cancellation for every in-flight `runClaudeWithRetry` backoff ladder
+ * (Issue #1667).
+ *
+ * `activeAgentRuns` holds pids, and a ladder *between* attempts owns none — so
+ * a watchdog abandonment signalled nothing, the ladder slept on, and woke
+ * after `keepTerminating: false` had already cleared the flag, spawning a
+ * third agent with `retry_count=3 max_retries=2` eighteen seconds behind a
+ * `[watchdog] … abandoning handler` line. Registering the ladder's own
+ * `AbortController` closes that gap.
+ */
+const activeRetryLadders = new Set<AbortController>();
+
 /** Live agent subprocesses, for status and tests. */
 export function listActiveAgentRuns(): { pid: number; label: string }[] {
   return [...activeAgentRuns.values()].map(({ pid, label }) => ({
@@ -835,6 +848,12 @@ export async function terminateActiveAgentRuns(
   const keepTerminating = options.keepTerminating ?? true;
   agentRunsTerminating = true;
   try {
+    // Cancel every sleeping backoff ladder BEFORE anything can clear the flag
+    // (Issue #1667). The kill loop below only reaches runs that own a pid, and
+    // a ladder waiting between attempts has none; a ladder consults its own
+    // signal ahead of the process-global flag, so the `keepTerminating: false`
+    // clear in the `finally` cannot race it awake.
+    for (const ladder of activeRetryLadders) ladder.abort();
     const runs = [...activeAgentRuns.values()];
     if (runs.length === 0) return [];
     (logger ?? runs[0]?.logger)?.warn(
@@ -2278,6 +2297,12 @@ async function readMemoryPressureAtKill(
 /**
  * Run Claude CLI with rate-limit retry logic and exponential backoff.
  *
+ * The ladder is registered for cancellation for the whole of its life
+ * (Issue #1667), so {@link terminateActiveAgentRuns} ends one that is asleep
+ * between attempts — the state in which it owns no pid and the kill loop
+ * cannot reach it. A cancelled ladder returns the run-end shape
+ * (`terminated: true`, `exitCode: 143`) without spawning again.
+ *
  * @param options - Execution options
  * @param retryOptions - Retry configuration
  * @returns Result containing the run result
@@ -2285,6 +2310,29 @@ async function readMemoryPressureAtKill(
 export async function runClaudeWithRetry(
   options: RunClaudeOptions,
   retryOptions: RetryOptions = {},
+): Promise<Result<ClaudeRunResult>> {
+  const ladder = new AbortController();
+  activeRetryLadders.add(ladder);
+  try {
+    return await runRetryLadder(options, retryOptions, ladder.signal);
+  } finally {
+    activeRetryLadders.delete(ladder);
+  }
+}
+
+/**
+ * The retry ladder itself — see {@link runClaudeWithRetry}, which owns the
+ * registration this function's `ladderSignal` comes from.
+ *
+ * @param options - Execution options
+ * @param retryOptions - Retry configuration
+ * @param ladderSignal - Aborted when the worker abandons this ladder
+ * @returns Result containing the run result
+ */
+async function runRetryLadder(
+  options: RunClaudeOptions,
+  retryOptions: RetryOptions,
+  ladderSignal: AbortSignal,
 ): Promise<Result<ClaudeRunResult>> {
   const {
     maxRetries = 2,
@@ -2399,6 +2447,26 @@ export async function runClaudeWithRetry(
   // Track the current effective options (may be mutated on fallback)
   let currentOptions = { ...options };
   let fallbackModel: string | undefined;
+
+  /**
+   * The run-end result: this ladder was stopped by the worker, not by the
+   * API. Shared by the cancelled-ladder and terminating-flag branches so the
+   * two cannot drift; `reason` is what the caller is told in the log.
+   */
+  const terminatedRunResult = (reason: string): Result<ClaudeRunResult> => {
+    currentOptions.logger?.warn(reason);
+    return {
+      ok: true,
+      value: withPreflight({
+        exitCode: 143,
+        rawExitCode: 143,
+        output: "",
+        timedOut: false,
+        terminated: true,
+        fallbackModel,
+      }),
+    };
+  };
   let retryCount = 0;
   let totalWaitTime = 0;
   let waitInterval = initialWaitInterval;
@@ -2409,6 +2477,19 @@ export async function runClaudeWithRetry(
   let totalInvocations = 0;
 
   while (true) {
+    // This ladder was cancelled (Issue #1667): a watchdog abandoned the
+    // handler while the loop slept between attempts. Checked ahead of the
+    // process-global flag because a handler abandonment clears that flag
+    // (`keepTerminating: false`, Issue #55) the moment the abandoned agents
+    // are dead — this signal is the one that stays true for this ladder.
+    // First in the loop, ahead of the invocation budget, so an abandoned
+    // ladder always reports the run-end shape rather than a give-up.
+    if (ladderSignal.aborted) {
+      return terminatedRunResult(
+        "Retry ladder cancelled (agent runs terminating) — not launching " +
+          "the agent (no retry, no wait).",
+      );
+    }
     if (totalInvocations >= maxTotalInvocations) {
       currentOptions.logger?.error(
         `Invocation budget exhausted: ${totalInvocations} billed ` +
@@ -2432,20 +2513,10 @@ export async function runClaudeWithRetry(
     // The worker is terminating agent runs (run end, handler abandonment,
     // shutdown — Issue #4369): never spawn another agent from a retry loop.
     if (agentRunsTerminating) {
-      currentOptions.logger?.warn(
-        "Agent runs are terminating — not launching the agent (no retry, no wait).",
+      return terminatedRunResult(
+        "Agent runs are terminating — not launching the agent " +
+          "(no retry, no wait).",
       );
-      return {
-        ok: true,
-        value: withPreflight({
-          exitCode: 143,
-          rawExitCode: 143,
-          output: "",
-          timedOut: false,
-          terminated: true,
-          fallbackModel,
-        }),
-      };
     }
     totalInvocations++;
     const result = await runClaudeWithTimeout(currentOptions);
@@ -2843,8 +2914,19 @@ export async function runClaudeWithRetry(
           `retry_count=${retryCount} max_retries=${maxRetries} total_wait=${totalWaitTime}s max_wait=${maxWaitSeconds}s`,
         );
 
+        // The next wait, jittered (±30%, Issue #1073), decided *before* the
+        // exhaustion check so the ladder can give up rather than schedule a
+        // wait that reaches its ceiling (Issue #1667). The old code clamped
+        // the wait down to whatever budget remained, so a 375 s wait followed
+        // by a 225 s one put the next attempt at exactly the 600 s
+        // `maxWaitSeconds` — the handler watchdog's own budget — and the
+        // watchdog abandoned the ladder instead of the ladder giving up.
+        const jitteredWait = applyJitter(waitInterval);
+        const waitBudgetExhausted =
+          totalWaitTime + jitteredWait >= maxWaitSeconds;
+
         // When retries or wait time exhausted, attempt model fallback (Issue #1113)
-        if (retryCount > maxRetries || totalWaitTime >= maxWaitSeconds) {
+        if (retryCount > maxRetries || waitBudgetExhausted) {
           const currentModel = resolveCurrentModel(
             currentOptions.model,
             currentOptions.phase,
@@ -2886,7 +2968,9 @@ export async function runClaudeWithRetry(
           );
           const reason = retryCount > maxRetries
             ? `Rate limit retry count exceeded (${retryCount} > ${maxRetries}).`
-            : `Rate limit wait time exceeded (${totalWaitTime}s >= ${maxWaitSeconds}s).`;
+            : `Rate limit wait budget exhausted (${totalWaitTime}s waited; ` +
+              `the next ${jitteredWait}s wait would reach the ` +
+              `${maxWaitSeconds}s ceiling).`;
           currentOptions.logger?.error(
             `${reason} No cheaper model available (${fallbackResult.reason}). Giving up.`,
           );
@@ -2903,11 +2987,6 @@ export async function runClaudeWithRetry(
           };
         }
 
-        // Calculate wait with jitter (±30%) and cap (Issue #1073)
-        const jitteredWait = applyJitter(waitInterval);
-        const remainingWait = maxWaitSeconds - totalWaitTime;
-        const actualWait = Math.min(jitteredWait, remainingWait);
-
         // Signal other workers on this machine about the rate limit. The
         // signal lives in WORK_DIR (Issue #4315): it used to be written to
         // cwd — the per-issue clone — which run_core never reads, and the
@@ -2919,7 +2998,7 @@ export async function runClaudeWithRetry(
         if (rateSignalDir) {
           const signalResult = await writeRateLimitSignal(
             rateSignalDir,
-            actualWait,
+            jitteredWait,
             undefined,
             "usage",
           );
@@ -2931,15 +3010,19 @@ export async function runClaudeWithRetry(
         }
 
         currentOptions.logger?.info(
-          `Retry ${retryCount} of ${maxRetries}. Waiting ${actualWait}s (jittered from ${waitInterval}s, total waited: ${totalWaitTime}s, max: ${maxWaitSeconds}s)...`,
+          `Retry ${retryCount} of ${maxRetries}. Waiting ${jitteredWait}s (jittered from ${waitInterval}s, total waited: ${totalWaitTime}s, max: ${maxWaitSeconds}s)...`,
         );
 
-        await clock.sleep(actualWait * 1000);
+        await clock.sleep(jitteredWait * 1000, ladderSignal);
+        // Cancelled mid-sleep (Issue #1667): back to the top, where the
+        // signal check returns the run-end shape. The wait is neither
+        // recorded nor counted — it was not served.
+        if (ladderSignal.aborted) continue;
         // Issue #855: this ladder sleeps in-process, inside a claimed run.
         // Without recording it, an hour spent waiting on the model's own
         // rate limit reads as an hour of work and `usage_blocked` stays 0.
-        recordInRunBlockedSeconds("usage_blocked", actualWait);
-        totalWaitTime += actualWait;
+        recordInRunBlockedSeconds("usage_blocked", jitteredWait);
+        totalWaitTime += jitteredWait;
         waitInterval *= 2; // Exponential backoff
         continue;
       }
