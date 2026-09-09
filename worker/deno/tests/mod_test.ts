@@ -226,11 +226,14 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // with the rest of the GitHub Pages publishing pipeline — the repository is
   // public, so nothing publishes the READMEs to a Jekyll site any more
   // (count 150 -> 148).
-  assertEquals(commands.length, 148);
+  // Issue #1697 added `codex-budget`, the opt-in read-only diagnostic that
+  // prints redacted Codex budget metadata (count 148 -> 149).
+  assertEquals(commands.length, 149);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
   assertEquals(commands.includes("container-egress-probe"), true);
   assertEquals(commands.includes("log-dir"), true);
+  assertEquals(commands.includes("codex-budget"), true);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.
