@@ -496,6 +496,36 @@ scheme was capped at 64 characters. The answer is a bounded *pattern*, never a
 bounded *input* — capping the text would silently leave its tail unmasked, in
 direct conflict with "redact before you truncate" above.
 
+### An assignment's value is judged, not only its label
+
+The `*_TOKEN=`/`*_SECRET=` rule matches a key, a separator and a value, and its
+separator (`["']?\s*[=:]\s*`) spans line breaks. A prose line ending in a
+credential-ish label therefore adopted the **next** non-blank line as the
+assignment's value: a PR body reading `… now picks a credential:` had the
+Mermaid fence beneath it published as `***REDACTED***`, and the diagram
+`CODING-STANDARDS.md` requires stopped rendering (Issue #1727). The prose
+variant masked the following sentence's first word.
+
+The label side stays deliberately blunt — it catches real secrets. The value is
+judged before the mask is applied, on two axes:
+
+- A **code fence** (three or more backticks or tildes) and an **image**
+  (`![`) are never a credential, wherever they appear. No credential opens with
+  those bytes, so the exclusion costs no coverage. It stops there on purpose: a
+  single backtick, `#`, `>` and `|` are all legitimate password characters, so
+  an inline assignment whose value carries one stays masked.
+- A value the separator reached **across a line break** must look like a
+  credential: at least eight characters, and not a single word without a digit,
+  symbol or internal capital. An inline assignment — `secret_scanning: enabled`,
+  `PASSWORD=12345` — is unaffected and masked exactly as before.
+
+The accepted cost is a credential shorter than eight characters, or one that is
+a single lower-case word, sitting alone on the line **after** its label. That
+is narrower than the false positive it removes, which silently degraded every
+PR body whose lead-in sentence ended in a credential label. A credential in
+that position still carrying a provider prefix is masked by its own signature
+rule regardless.
+
 ### Transformed secrets are decoded, then re-scanned
 
 A signature rule only recognises the credential's **original** bytes, so a
