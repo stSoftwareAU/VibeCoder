@@ -59,9 +59,18 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
     version: "v3.0.0",
   },
   // Latest upstream release at time of pinning.
+  // Issue #1822: the one-off review against audit check 16 (a pinned action
+  // a major behind the latest) found v5.6.0 behind upstream's v6 line. The
+  // native check resolves "latest" from `github_actions_catalogue.ts`,
+  // which still records `latestMajor: 4` here, so it would not have fired —
+  // the finding is against real upstream state, and refreshing that
+  // catalogue is its own change. v6.0.0 is the newest release outside the
+  // 24h supply-chain quarantine (v6.0.1 published the same day); upstream
+  // records the v6 ESM migration as not user-facing breaking, and the Java
+  // template passes only `distribution:`/`java-version:`.
   "actions/setup-java": {
-    sha: "03ad4de0992f5dab5e18fcb136590ce7c4a0ac95",
-    version: "v5.6.0",
+    sha: "dd06d9cba3e5552c54d9f8ea23572deb30010f7c",
+    version: "v6.0.0",
   },
   "actions/dependency-review-action": {
     sha: "a1d282b36b6f3519aa1f3fc636f609c47dddb294",

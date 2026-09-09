@@ -315,28 +315,58 @@ before Issue #1639. Every emitted template now carries:
   dependency-update jobs that open a PR;
 - an exact version pin on every `run:` install the audit's install-pin
   pre-filer covers — npm, npx and gem (a `run:` install is not a manifest,
-  so no dependency manager applies the 24h quarantine to it).
+  so no dependency manager applies the 24h quarantine to it);
+- `set -euo pipefail` at the top of every multi-line `run:` block, so a
+  failing command mid-block cannot vanish into a green step;
+- a trailing `# <version>` comment on every SHA-pinned `uses:`, rendered by
+  `pinnedAction()` — a bare 40-character SHA tells neither a reviewer nor
+  the audit's stale-pin check which release it names.
 
 ```mermaid
 flowchart LR
     T["workflow_definitions.ts<br/>templates"] --> R["Provisioned repo<br/>.github/workflows/"]
     R --> A["GitHub Actions audit<br/>native pre-filers"]
     T --> C["workflow_template_audit<br/>_conformance_test.ts"]
-    C -- "same pre-filers" --> A
+    C --> K["WORKFLOW_FILE_CHECKS<br/>(11 file-scoped checks)"]
+    K -. "adapts the same<br/>pure scanners" .-> A
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
 `worker/deno/tests/workflow_template_audit_conformance_test.ts` renders
-every template and runs the audit's own native pre-filers
-(`checkout_persist_credentials_scanner`, `milestone_branch_filter_scanner`,
-`action_pin_scanner`, `ci_install_pin_scanner`,
-`workflow_permissions_scanner`, `workflow_trigger_scanner`) over the
-result. Any finding fails the test — and `quality.sh` — so a scanner change
-and the templates cannot drift apart unnoticed. Two of those pre-filers only
-act on workflows the classifier rates `test`/`high`, which the
-dependency-review, java-dependency-check and shellcheck templates are not, so
-the branch-filter and push-trigger rules are additionally asserted over the
-whole catalogue. The branch-filter, credential-persistence and
+every template and runs `WORKFLOW_FILE_CHECKS`
+(`worker/deno/lib/workflow_file_checks.ts`) over the result, on both
+`Develop` and `main`. That table is the single ordered list of the audit
+checks a **template** can be held to — every check decidable from the
+workflow file alone, without a repository around it: nine native pre-filers
+(`action_pin_scanner`, `workflow_permissions_scanner`,
+`workflow_trigger_scanner`, `checkout_persist_credentials_scanner`,
+`milestone_branch_filter_scanner`, `ci_install_pin_scanner`,
+`run_injection_scanner`, `artifact_upload_scanner`,
+`gitleaks_drift_scanner`) plus the two workflow-hygiene rules `quality.sh`
+applies to this repository's own workflows — multi-line `run:` opens with
+`set -euo pipefail`, and one pinned SHA carries one version comment
+(`workflow_hygiene_check.ts`). Each entry is a thin adapter over the pure
+scanner the audit template already calls, so no scanner logic is
+duplicated, and a table test asserts the exact eleven ids so a check cannot
+be dropped by accident. Any finding fails the test — and `quality.sh` — so
+a scanner change and the templates cannot drift apart unnoticed.
+
+The audit's remaining checks are absent by construction: runner deprecation
+reads recent run logs, gitleaks PR coverage reads recent pull requests,
+action advisories query the GHSA database, and the repository-settings and
+worker-token-privilege scans read repository state. `checkLinterInCI` is the
+near miss — it reads workflow text, but it takes a repo path and answers a
+repository-level question ("does *this repo* run a linter in CI"), which no
+single template can decide.
+
+Two of the pre-filers only act on workflows the classifier rates
+`test`/`high`, which the dependency-review, java-dependency-check and
+shellcheck templates are not, so the branch-filter and push-trigger rules are
+additionally asserted over the whole catalogue, as is the trailing
+`# <version>` comment on every SHA-pinned `uses:` — the text the audit's
+stale-pin check reads.
+
+The branch-filter, credential-persistence and
 concurrency/timeout rules are also stated in
 `prompts/workflow_setup/prompt.md` ("CI Hardening Defaults") so
 agent-generated workflows match the deterministic templates.
