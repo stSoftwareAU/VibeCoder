@@ -183,7 +183,9 @@ export async function findOldestIssue(
   const allBlockedDetails: BlockedCandidateInfo[] = [];
   let configuredLabelConsidered = 0;
 
-  const fetcher = createIssueFetcher(ghFn);
+  // Issue #1818: cache-backed, so idle re-scans do not re-view referenced
+  // issues the iteration has already read.
+  const fetcher = createIssueFetcher(ghFn, cache);
 
   // Issue #3100/#3138: feed the open-PR duplicate guard the union of every
   // fleet account's open PRs so another host's open PR for the same issue
