@@ -99,8 +99,6 @@ function failingSyncDeps(
         error: new Error("refusing to merge unrelated histories"),
       }),
     log: () => undefined,
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
     streakPath,
   };
 }

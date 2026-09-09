@@ -4493,15 +4493,6 @@ export async function createProductionRunCoreDeps(
   return { deps, config: coreConfig, cleanup };
 }
 
-/**
- * Persistent sync state for milestone branch sync (Issue #1238).
- *
- * This Map survives across loop cycles within a single worker run,
- * providing the cooldown guard. It is reset when the worker process
- * restarts (planned shutdown / PID refresh).
- */
-const milestoneSyncLastTimes = new Map<string, number>();
-
 /** Helper: sync milestone branches using lib function (Issue #1238). */
 async function syncMilestoneBranchesFn(
   repos: string[],
@@ -4513,9 +4504,7 @@ async function syncMilestoneBranchesFn(
   const { milestoneSyncStreakPath } = await import(
     "./milestone_sync_streak.ts"
   );
-  const { milestoneActivityPath } = await import(
-    "./milestone_activity_gate.ts"
-  );
+  const { readLocalDefaultTip } = await import("./milestone_default_tip.ts");
   const { selfHealMilestoneBranches } = await import(
     "./milestone_branch_self_heal.ts"
   );
@@ -4570,17 +4559,15 @@ async function syncMilestoneBranchesFn(
     },
     localCloneExistsFn,
     log: (msg: string) => logger.info(msg),
-    cooldownSeconds: config.milestoneSyncCooldownSeconds ?? 3600,
-    lastSyncTimes: milestoneSyncLastTimes,
+    // Issue #1776: the cadence signal — one `git rev-parse` per repo, so a
+    // cycle in which the default tip did not move syncs nothing.
+    defaultTipShaFn: (repo, defaultBranch) =>
+      readLocalDefaultTip(defaultBranch, `${workDir}/${repo.split("/")[1]}`),
     // Issue #4260: every failed sync leaves a forensic self-heal record,
     // and a branch stuck for consecutive cycles escalates once to its
     // tracking issue (proposal 2).
     emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
     streakPath: milestoneSyncStreakPath(workDir),
-    // Issue #1488: gate the closed-issue query on the REST milestone
-    // counts, so a repo whose milestones have not changed spends nothing
-    // on the expensive half.
-    activityPath: milestoneActivityPath(workDir),
   });
 }
 
