@@ -36,7 +36,7 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildMergeConflictPrompt } from "./prompt_builder.ts";
-import { readRepoContext } from "./repo_context_reader.ts";
+import { loadRepoContextContent } from "./repo_context_reader.ts";
 import {
   preparePrBranch,
   readPrResponseMessage,
@@ -1185,11 +1185,10 @@ async function runResolutionAgent(
     maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES,
   } = processorDeps;
 
-  const repoName = input.repo.split("/").pop() ?? input.repo;
-  const repoContext = await readRepoContext(`${workDir}/${repoName}`);
-  const repoContextContent = repoContext.ok && repoContext.value.content
-    ? repoContext.value.content
-    : undefined;
+  // `workDir` already is the checkout, so the repo context is read directly —
+  // appending the repo name looked one level too deep and injected nothing
+  // (Issue #1673).
+  const repoContextContent = await loadRepoContextContent(workDir, logger);
 
   const promptResult = await buildMergeConflictPrompt({
     repo: input.repo,
