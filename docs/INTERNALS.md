@@ -2064,7 +2064,10 @@ that it does not complete this run.
 
 The third hazard #344 names, "do not open a competing PR", is deliberately
 **not** a rule here: `decideCompletionPr` already recovers an open PR that
-references the issue rather than creating a second one. Repeating it as a
+references the issue rather than creating a second one — provided that PR's
+head is this run's branch, or its head could not be read, or the branch has no
+commits of its own to represent (Issue #1799: an open side PR on another head
+no longer swallows a branch with work on it). Repeating it as a
 stale-claim abort would be both the duplicated notion this module avoids and the
 harsher of the two, because `superseding_pr.ts` fails safe to "open" when a PR's
 state cannot be read — an unreadable `gh pr view` would abandon a finished run.
