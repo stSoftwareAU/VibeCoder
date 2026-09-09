@@ -142,12 +142,9 @@ function redactUniformPemBodyRuns(text: string): string {
   while (i < parsed.length) {
     const start = parsed[i];
     if (
-      !start ||
-      !start.isBase64 ||
-      start.hasPadding ||
+      !start || !start.isBase64 || start.hasPadding ||
       start.payloadLen < PEM_BODY_LINE_MIN ||
-      start.payloadLen > PEM_BODY_LINE_MAX ||
-      start.newline === ""
+      start.payloadLen > PEM_BODY_LINE_MAX || start.newline === ""
     ) {
       out.push(start?.raw ?? "");
       i++;
@@ -159,11 +156,8 @@ function redactUniformPemBodyRuns(text: string): string {
     while (j < parsed.length) {
       const next = parsed[j];
       if (
-        !next ||
-        !next.isBase64 ||
-        next.hasPadding ||
-        next.payloadLen !== width ||
-        next.newline === ""
+        !next || !next.isBase64 || next.hasPadding ||
+        next.payloadLen !== width || next.newline === ""
       ) {
         break;
       }
@@ -172,8 +166,7 @@ function redactUniformPemBodyRuns(text: string): string {
     const fullCount = j - i;
     const last = parsed[j];
     const lastIsPartial = !!last && last.isBase64 &&
-      last.payloadLen >= 1 &&
-      last.payloadLen <= width &&
+      last.payloadLen >= 1 && last.payloadLen <= width &&
       last.payloadLen <= PEM_BODY_LINE_MAX;
 
     if (fullCount >= 2 && lastIsPartial && last) {
@@ -294,10 +287,10 @@ const RULES: readonly RedactionRule[] = [
   // Google / Gemini API key (Issue #36). `GEMINI_API_KEY` / `GOOGLE_API_KEY`
   // reach the Gemini child (see `gemini_env.ts`) and leak in the same bare
   // shape as the OpenAI key above. Google's format is a fixed 39 characters —
-  // the `AIzaSy` prefix plus 33 charset characters — so the quantifier is an
-  // exact count and is bounded by construction. The fixed length is also what
-  // keeps the rule off ordinary text: a shorter `AIzaSy…` fragment is left
-  // alone.
+  // the `AIzaSy` prefix plus 33 more charset characters — so the quantifier is
+  // an exact count and is bounded by construction. The fixed length is also
+  // what keeps the rule off ordinary text: a shorter `AIzaSy…` fragment is
+  // left alone.
   {
     name: "google-api-key",
     pattern: /\bAIzaSy[A-Za-z0-9_-]{33}/g,
@@ -315,12 +308,16 @@ const RULES: readonly RedactionRule[] = [
   //     User name,Access key ID,Secret access key
   //     svc,AKIAIOSFODNN7EXAMPLE,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
   //
+  // The `AWS_SECRET_ACCESS_KEY=…` and `"aws_secret_access_key": "…"` forms
+  // are already covered by `secret-assignment` below; this rule is for the
+  // secret standing on its own beside its id.
+  //
   // MUST precede `aws-access-key-id`: that rule replaces the anchor with the
   // placeholder, and an anchor that is gone matches nothing.
   //
-  // The window is bounded (Issue #3942) and the value is excluded from being
-  // pure lowercase hex — a git commit SHA is exactly 40 hex characters and
-  // appears beside redacted material constantly.
+  // The window is bounded (the Issue #3942 linearity rule) and the value is
+  // excluded from being pure lowercase hex — a git commit SHA is exactly 40
+  // hex characters and appears beside redacted material constantly.
   {
     name: "aws-secret-access-key",
     pattern:
@@ -385,10 +382,21 @@ const RULES: readonly RedactionRule[] = [
     name: "secret-assignment",
     pattern:
       /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!\*\*\*REDACTED)(?![{[])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|\S+)/gi,
-    replace: (match: string, key: string, sep: string, value: string) =>
-      isPlausibleSecretAssignmentValue(value)
+    replace: (
+      match: string,
+      key: string,
+      sep: string,
+      value: string,
+      offset: number,
+      source: string,
+    ) => {
+      // The context check is bounded so many assignments on one long line
+      // cannot make the scanner quadratic (Issue #3942).
+      const following = source.slice(offset + match.length, offset + match.length + 128);
+      return isPlausibleSecretAssignmentValue(value, key, sep, following)
         ? `${key}${sep}${REDACTION_PLACEHOLDER}`
-        : match,
+        : match;
+    },
   },
   // Space-separated CLI flag carrying a secret (Issue #3648). The
   // `secret-assignment` rule above requires an `=` or `:` separator, so a
@@ -410,7 +418,7 @@ const RULES: readonly RedactionRule[] = [
       `${flag}${sep}${REDACTION_PLACEHOLDER}`,
   },
   // Bare 32-hex credential — the ImgBB API key shape (Issue #1387). The two
-  // rules above catch that key only while it keeps its wrapper: an
+  // rules above catch that key only while it keeps its wrapper: a
   // `--imgbb-api-key <key>` flag or `VIBE_IMGBB_API_KEY=<key>` assignment.
   // Stripped of both — an upload client echoing the rejected key into an
   // error string, or the key sitting in an `?key=` query parameter — it is a
@@ -461,13 +469,14 @@ function matchesSignatureRule(text: string): boolean {
  * transform — base64, hex, `rev`, or a credential split across lines.
  *
  * @param text - Arbitrary text destined for a log sink.
- * @returns The text with any detected secrets replaced with
+ * @returns The text with any detected secrets replaced by
  *          {@link REDACTION_PLACEHOLDER}. Non-secret content is unchanged.
  */
 export function redactSecrets(text: string): string {
   if (!text) return text;
   let out = text;
   for (const rule of RULES) {
+    // Each rule's pattern is global; replace handles every match in the line.
     out = out.replace(
       rule.pattern,
       rule.replace as (substring: string, ...args: unknown[]) => string,
