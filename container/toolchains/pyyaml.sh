@@ -69,9 +69,11 @@ checksum="$(jq -er --arg id "${TOOLCHAIN_ID}" --arg key "${digest_key}" \
 # fragment holds no second copy of either.
 # Read in command-substitution position, not a process substitution: a jq
 # that cannot resolve the list must abort the fragment rather than leaving an
-# empty array behind for the loops below to skip over silently.
-modules_raw="$(jq -er --arg id "${TOOLCHAIN_ID}" \
-    '.toolchains[] | select(.id == $id) | .modules[]' "${MANIFEST}")"
+# empty array behind for the loops below to skip over silently. `[]?` rather
+# than `[]` so a manifest that declares no module reaches the named error
+# below instead of jq's "Cannot iterate over null".
+modules_raw="$(jq -r --arg id "${TOOLCHAIN_ID}" \
+    '.toolchains[] | select(.id == $id) | (.modules // [])[]' "${MANIFEST}")"
 if [[ -z "${modules_raw}" ]]; then
     echo "[${TOOLCHAIN_ID}] Manifest ${MANIFEST} names no module for this toolchain" >&2
     exit 1
@@ -135,6 +137,9 @@ python3 "${pip_wheel}/pip" install --no-deps \
     --only-binary=:all: --no-cache-dir -q ${PIP_RETRY} --target "${site}" "${wheel}"
 # Both unprivileged accounts run the monitored repositories' gates, so the
 # whole tree has to be readable and traversable by them, not just by root.
+# The recursion is bounded to what this fragment put there: the base image
+# ships an empty purelib, and the wheel's own top-level names (yaml, _yaml,
+# the dist-info) are what it now holds.
 chmod -R a+rX "${site}"
 
 # Prove the modules import on this image's own interpreter rather than

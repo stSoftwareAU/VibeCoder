@@ -1607,6 +1607,26 @@ Deno.test("findToolchainInstallViolations - reports a pinned toolchain no run in
   );
 });
 
+Deno.test("findToolchainInstallViolations - names the module a library toolchain the build never installs would be missing", () => {
+  // A library toolchain has no versionCommand to name, so the violation has
+  // to reach for the module instead (Issue #1628). Without that the message
+  // for the toolchain most easily forgotten reads "ship without undefined".
+  const manifest = parseContainerManifest(libraryToolchainManifestText());
+
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("shellcheck"),
+    manifest,
+    new Map([["toolchains/pyyaml.sh", GOOD_TOOLCHAIN_FRAGMENT]]),
+  );
+
+  assert(
+    violations.some((v) =>
+      v.includes("pyyaml") && v.includes("ship without yaml")
+    ),
+    `a library toolchain the build never installs must name its module: ${violations}`,
+  );
+});
+
 Deno.test("findToolchainInstallViolations - reports an id no fragment toolchain pins", () => {
   const manifest = parseContainerManifest(fragmentToolchainManifestText());
 

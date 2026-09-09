@@ -550,6 +550,24 @@ Deno.test("container/toolchains/pyyaml.sh - a module name python could not impor
   );
 });
 
+Deno.test("container/toolchains/pyyaml.sh - a manifest naming no module aborts before downloading", async () => {
+  // The module list drives both the install verification and the version
+  // check, so an empty one would leave the fragment verifying nothing and
+  // reporting success. It must stop, naming the manifest.
+  const run = await runFragmentWithBrokenManifest("pyyaml.sh", (manifest) => {
+    const pyyaml = manifest.toolchains.find((t) => t.id === "pyyaml");
+    assert(pyyaml !== undefined, "container/tools.json must pin pyyaml");
+    pyyaml.modules = [];
+  });
+
+  assert(run.code !== 0, "a toolchain that installs nothing must fail loud");
+  assertStringIncludes(run.stderr, "names no module for this toolchain");
+  assert(
+    !run.downloaded,
+    "the fragment downloaded before resolving what it installs",
+  );
+});
+
 Deno.test("container/toolchains/pyyaml.sh - a tampered download aborts before installing", async () => {
   // The digest is what makes fetching by pinned URL safe: bytes that do not
   // match must never reach pip. The stub curl writes files no manifest digest
