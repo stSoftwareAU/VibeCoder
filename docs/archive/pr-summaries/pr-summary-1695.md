@@ -179,8 +179,8 @@ flowchart LR
   stays byte-identical to extractStreamJsonText` —
   reviewer: met
 - **met** — no live credentials in fixtures — evidence: the recordings were made
-  with no credential present (`apiKeySource: "none"`), session ids and host
-  paths rewritten, documented in the fixtures README — reviewer: met
+  with no credential present (the CLI recorded no key source), session ids and
+  host paths rewritten, documented in the fixtures README — reviewer: met
 - **met** — update the provider descriptor rather than adding vendor checks
   throughout the runner — evidence:
   `worker/deno/lib/agent_provider.ts::AgentProviderDescriptor.output`,
