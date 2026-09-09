@@ -4,7 +4,17 @@
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  _resetUnseededWrites,
+  _resetWriteRepoAllowlistSinks,
+  _setWriteRepoAllowlistSinks,
+  enforceGhWriteAllowlist,
+  isWriteRepoAllowlistActive,
+  listAllowedWriteRepos,
+  unseededWriteCounts,
+  WriteRepoBlockedError,
+} from "../lib/write_repo_allowlist.ts";
 import {
   detectRepoUi,
   fetchRemoteLabelNames,
@@ -372,4 +382,142 @@ Deno.test("syncLabelsForAllRepos - returns empty array for empty input", async (
   const { runner } = mockGhRunner([]);
   const results = await syncLabelsForAllRepos([], { runCommand: runner });
   assertEquals(results.length, 0);
+});
+
+// ── Write-repo allowlist scope (Issue #1716) ────────────────────────────
+//
+// The production runner (`createSetupRunCommand` → `spawnGh`) enforces the
+// write-repo allowlist before every `gh` spawn. The mock runner here mirrors
+// that one step, so these tests see exactly what the chokepoint would.
+
+/** Wrap a mock runner with the allowlist check `spawnGh` performs. */
+function enforcingRunner(
+  inner: NonNullable<LabelSyncOptions["runCommand"]>,
+  onCall?: (cmd: string[]) => Promise<void>,
+): NonNullable<LabelSyncOptions["runCommand"]> {
+  return async (cmd: string[]) => {
+    if (cmd[0] === "gh") await enforceGhWriteAllowlist(cmd.slice(1));
+    if (onCall) await onCall(cmd);
+    return inner(cmd);
+  };
+}
+
+function withQuietSinks(): { logs: string[]; restore: () => void } {
+  const logs: string[] = [];
+  _setWriteRepoAllowlistSinks({
+    record: () => Promise.resolve({ ok: true, value: undefined as never }),
+    log: (m) => logs.push(m),
+  });
+  _resetUnseededWrites();
+  return { logs, restore: () => _resetWriteRepoAllowlistSinks() };
+}
+
+Deno.test("syncLabelsForAllRepos - every label write runs inside a scope seeded with its own repo, so nothing is unseeded (Issue #1716)", async () => {
+  const { logs, restore } = withQuietSinks();
+  try {
+    const { runner: inner, state } = mockGhRunner(["best-model"]);
+    const scopes: Array<{ repo: string; allowed: string[]; active: boolean }> =
+      [];
+    const runner = enforcingRunner(inner!, (cmd) => {
+      // Only the label mutations name `--repo`; `gh api repos/…/languages`
+      // is a read and is not what the allowlist scopes.
+      const repoIdx = cmd.indexOf("--repo");
+      if (repoIdx >= 0) {
+        scopes.push({
+          repo: cmd[repoIdx + 1]!,
+          allowed: listAllowedWriteRepos(),
+          active: isWriteRepoAllowlistActive(),
+        });
+      }
+      return Promise.resolve();
+    });
+
+    const results = await syncLabelsForAllRepos(["org/repo1", "org/repo2"], {
+      runCommand: runner,
+    });
+
+    // The sync itself still does its job.
+    assertEquals(results.length, 2);
+    assert(results.every((r) => r.ok), "both repos sync cleanly");
+    assert(state.created.length > 0, "labels were created");
+    assert(state.deleted.includes("best-model"), "deprecated label removed");
+
+    // Nothing ran unscoped: no unseeded record, no security line.
+    assertEquals(unseededWriteCounts(), {});
+    assertEquals(logs.filter((l) => l.includes("WRITE_REPO_UNSEEDED")), []);
+
+    // Every gh call ran with enforcement active and exactly its own repo
+    // on the allowlist — never the sibling, never the union.
+    assert(scopes.length > 0);
+    assert(scopes.some((s) => s.repo === "org/repo2"), "second repo synced");
+    for (const s of scopes) {
+      assertEquals(s.active, true, `enforcement active for ${s.repo}`);
+      assertEquals(s.allowed, [s.repo]);
+    }
+    // The scope is per call, not left behind on the caller's context.
+    assertEquals(isWriteRepoAllowlistActive(), false);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("syncLabelsForRepo - the seeded scope refuses a write to any other repo (Issue #1716)", async () => {
+  const { logs, restore } = withQuietSinks();
+  try {
+    const { runner: inner } = mockGhRunner([]);
+    let outcome: "unchecked" | "allowed" | "refused" = "unchecked";
+    const runner = enforcingRunner(inner!, async (cmd) => {
+      if (cmd[2] !== "create" || outcome !== "unchecked") return;
+      try {
+        await enforceGhWriteAllowlist([
+          "label",
+          "create",
+          "leak",
+          "--repo",
+          "org/other",
+          "--color",
+          "ffffff",
+          "--description",
+          "must not reach GitHub",
+        ]);
+        outcome = "allowed";
+      } catch (err) {
+        outcome = err instanceof WriteRepoBlockedError ? "refused" : "allowed";
+      }
+    });
+
+    const result = await syncLabelsForRepo("org/repo1", true, {
+      runCommand: runner,
+    });
+    assertEquals(result.ok, true);
+    assertEquals(outcome, "refused");
+    assert(
+      logs.some((l) => l.includes("[WRITE_REPO_BLOCKED]")),
+      "the off-scope write was reported",
+    );
+    assertEquals(unseededWriteCounts(), {});
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("syncLabelsForRepo - dry run is unchanged by the scope: reads only, nothing unseeded (Issue #1716)", async () => {
+  const { logs, restore } = withQuietSinks();
+  try {
+    const { runner: inner, state } = mockGhRunner(["best-model"]);
+    const runner = enforcingRunner(inner!);
+    const result = await syncLabelsForRepo("org/repo1", true, {
+      runCommand: runner,
+      dryRun: true,
+    });
+    assertEquals(result.ok, true);
+    assertEquals(result.dryRun, true);
+    assertEquals(state.created, []);
+    assertEquals(state.edited, []);
+    assertEquals(state.deleted, []);
+    assertEquals(unseededWriteCounts(), {});
+    assertEquals(logs, []);
+  } finally {
+    restore();
+  }
 });
