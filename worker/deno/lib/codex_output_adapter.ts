@@ -1,0 +1,446 @@
+/**
+ * The Codex CLI output adapter (Issue #1695, parent #1694).
+ *
+ * `codex exec --json` writes JSONL, and until now the worker read it with
+ * Claude's extractor: no `result` line and no `assistant` blocks, so the whole
+ * envelope stream was handed on **as if it were the agent's answer**, and any
+ * refusal was classified by whichever Claude prose pattern happened to match.
+ * This module decodes the events instead.
+ *
+ * Two envelope generations are accepted, because a pinned CLI is a moving
+ * target and guessing one would break the other:
+ *
+ * - the experimental top-level schema — `thread.started`, `item.started` /
+ *   `item.completed`, `turn.completed`, `turn.failed`, `error`;
+ * - the protocol envelope — `{"id":"0","msg":{"type":"agent_message",…}}`,
+ *   with `session_configured`, `token_count` and `task_complete`.
+ *
+ * An event this worker has never seen is not an error: its fields are kept
+ * verbatim on {@link AgentStructuredError.raw} so a consumer can read them
+ * without the adapter being taught about them first, and a line that is not
+ * JSON at all — a CLI log line, a truncated final write — is counted rather
+ * than thrown on.
+ *
+ * The classification rules that matter most here are the two the issue names:
+ * a **401/403 is authentication**, never an unavailable model, and a **429 is
+ * a transient rate limit**, never an exhausted subscription. Only a refusal
+ * that says the window is spent is `quota-exhausted`, and only then is a
+ * scope or a reset reported — an unstated window stays `"unknown"`.
+ *
+ * Australian English spelling throughout (behaviour, organisation).
+ */
+
+import {
+  type AgentDecodedOutput,
+  type AgentFailure,
+  agentFailure,
+  type AgentOutputAdapter,
+  type AgentQuota,
+  type AgentRunStreams,
+  type AgentStructuredError,
+  type AgentTerminalStatus,
+  type AgentTextSource,
+  classifyProcessOutcome,
+  detectQuotaScope,
+  extractHttpStatus,
+  extractRetryAfterSeconds,
+  parseJsonlEvents,
+  redactedEvidence,
+} from "./agent_output.ts";
+import { isCodexAuthError } from "./codex_auth.ts";
+import { detectOutOfMemory } from "./claude_executor.ts";
+import type { TokenUsage } from "./token_usage.ts";
+
+/** The provider id this adapter decodes for. */
+const PROVIDER_ID = "codex";
+
+/** Statuses that mean the transport failed, not the credential or the model. */
+const NETWORK_STATUSES: ReadonlySet<number> = new Set([
+  500,
+  502,
+  503,
+  504,
+  529,
+]);
+
+/** Transport failures the CLI reports in prose. */
+const NETWORK_RE =
+  /overloaded|high demand|econnreset|econnrefused|etimedout|enotfound|socket hang up|stream disconnected|connection (?:reset|refused|closed)/i;
+
+/** A refusal about the model rather than the credential or the window. */
+const MODEL_UNAVAILABLE_RE =
+  /model_not_found|unknown model|unsupported model|model[^\n]{0,40}(?:does not exist|not found|unavailable|not available|is not supported)|do(?:es)? not have access to it/i;
+
+/** A refusal that says the subscription window itself is spent. */
+const QUOTA_RE =
+  /usage_limit|usage limit|quota[^\n]{0,20}(?:exhausted|exceeded)|out of credits|plan limit|hit your (?:weekly|monthly|daily)? ?limit/i;
+
+/** A transient limit on the rate of requests. */
+const RATE_LIMIT_RE = /rate[_ ]limit|too many requests|\b429\b/i;
+
+/** Read a string field, or undefined when it is absent or another type. */
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+/** Read a finite number field, or undefined. */
+function num(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+/** Read a nested object field, or undefined. */
+function obj(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+/**
+ * The event body and its kind, whichever envelope generation carried it.
+ *
+ * A protocol line nests everything under `msg`; the experimental schema puts
+ * it at the top level. Both reduce to "a kind and a body" here, so nothing
+ * downstream knows which generation it is reading.
+ */
+function eventBody(
+  value: Record<string, unknown>,
+): { kind: string; body: Record<string, unknown> } | undefined {
+  const msg = obj(value.msg);
+  if (msg && str(msg.type)) return { kind: str(msg.type)!, body: msg };
+  const kind = str(value.type);
+  return kind ? { kind, body: value } : undefined;
+}
+
+/** An item event's own type, under either of the two field names in use. */
+function itemType(item: Record<string, unknown>): string | undefined {
+  return str(item.item_type) ?? str(item.type);
+}
+
+/** Codex's token counts, mapped onto the shared {@link TokenUsage} shape. */
+function usageFrom(source: Record<string, unknown>): TokenUsage | undefined {
+  const input = num(source.input_tokens);
+  const output = num(source.output_tokens);
+  if (input === undefined && output === undefined) return undefined;
+  return {
+    inputTokens: input ?? 0,
+    outputTokens: output ?? 0,
+    // Codex reports cached *input* tokens and has no cache-write counter, so
+    // the write count stays 0 rather than being invented from the read.
+    cacheCreationTokens: 0,
+    cacheReadTokens: num(source.cached_input_tokens) ?? 0,
+  };
+}
+
+/** A `rate_limits` window from a `token_count` event, when one is present. */
+function quotaFrom(
+  rateLimits: Record<string, unknown>,
+): AgentQuota | undefined {
+  const primary = obj(rateLimits.primary) ?? obj(rateLimits.secondary);
+  if (!primary) return undefined;
+  const usedPercent = num(primary.used_percent);
+  const windowMinutes = num(primary.window_minutes);
+  const resetsIn = num(primary.resets_in_seconds);
+  return {
+    // A window length is a fact; a name for it is not, unless it matches one
+    // of the named windows exactly.
+    scope: windowMinutes === 300
+      ? "five-hour"
+      : windowMinutes === 10_080
+      ? "weekly"
+      : "unknown",
+    ...(usedPercent !== undefined ? { usedFraction: usedPercent / 100 } : {}),
+    ...(resetsIn !== undefined ? { resetsInSeconds: resetsIn } : {}),
+  };
+}
+
+/** The error object of a `turn.failed` / `error` event, in either generation. */
+function errorObject(
+  body: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  return obj(body.error) ?? (str(body.message) ? body : undefined);
+}
+
+/**
+ * Decode one `codex exec --json` stdout into the shared contract.
+ *
+ * @param stdout - Raw stdout from the CLI.
+ * @returns The decoded run; `text` is empty unless the agent actually said
+ *   something, so a stream of envelopes is never mistaken for prose.
+ */
+function decodeCodexOutput(stdout: string): AgentDecodedOutput {
+  const { events, malformedLines } = parseJsonlEvents(stdout);
+
+  let text = "";
+  let textSource: AgentTextSource = "none";
+  let status: AgentTerminalStatus = events.length === 0
+    ? "unknown"
+    : "incomplete";
+  let sessionId: string | undefined;
+  let usage: TokenUsage | undefined;
+  let quota: AgentQuota | undefined;
+  let progressEvents = 0;
+  let last: string | undefined;
+  const errors: AgentStructuredError[] = [];
+
+  for (const { value } of events) {
+    const event = eventBody(value);
+    if (!event) continue;
+    const { kind, body } = event;
+
+    // Session identity, under either generation's name for it.
+    sessionId = str(body.thread_id) ?? str(body.session_id) ?? sessionId;
+
+    if (kind === "item.started" || kind === "item.updated") {
+      progressEvents++;
+      continue;
+    }
+
+    if (kind === "item.completed") {
+      progressEvents++;
+      const item = obj(body.item);
+      if (!item) continue;
+      const type = itemType(item);
+      if (type === "agent_message") {
+        const message = str(item.text) ?? str(item.message);
+        if (message) {
+          text = message;
+          textSource = "final";
+        }
+        continue;
+      }
+      last = str(item.command) ?? str(item.title) ?? last;
+      continue;
+    }
+
+    // The protocol envelope's own message and completion events.
+    if (kind === "agent_message") {
+      progressEvents++;
+      const message = str(body.message) ?? str(body.text);
+      if (message) {
+        text = message;
+        textSource = "final";
+      }
+      continue;
+    }
+    if (kind === "task_complete") {
+      status = "completed";
+      const message = str(body.last_agent_message);
+      if (message) {
+        text = message;
+        textSource = "final";
+      }
+      continue;
+    }
+
+    if (kind === "turn.completed") {
+      status = "completed";
+      const reported = obj(body.usage);
+      if (reported) usage = usageFrom(reported) ?? usage;
+      continue;
+    }
+
+    if (kind === "token_count") {
+      progressEvents++;
+      const info = obj(body.info);
+      const totals = info ? obj(info.total_token_usage) : undefined;
+      if (totals) usage = usageFrom(totals) ?? usage;
+      const rateLimits = obj(body.rate_limits) ??
+        (info ? obj(info.rate_limits) : undefined);
+      if (rateLimits) quota = quotaFrom(rateLimits) ?? quota;
+      continue;
+    }
+
+    if (kind === "turn.failed" || kind === "error" || kind === "stream_error") {
+      status = "failed";
+      const detail = errorObject(body);
+      if (detail) {
+        const message = str(detail.message) ?? kind;
+        const httpStatus = num(detail.http_status) ??
+          num(detail.status) ?? extractHttpStatus(message);
+        errors.push({
+          source: kind,
+          message,
+          ...(str(detail.type) ? { code: str(detail.type) } : {}),
+          ...(httpStatus !== undefined ? { httpStatus } : {}),
+          raw: detail,
+        });
+      }
+      continue;
+    }
+
+    if (kind === "task_started" || kind === "turn.started") continue;
+    progressEvents++;
+  }
+
+  return {
+    text,
+    textSource,
+    status,
+    ...(sessionId ? { sessionId } : {}),
+    ...(usage ? { usage } : {}),
+    progress: { events: progressEvents, ...(last ? { last } : {}) },
+    errors,
+    ...(quota ? { quota } : {}),
+    malformedLines,
+  };
+}
+
+/** The window a Codex refusal describes, from its own fields where present. */
+function codexQuota(
+  error: AgentStructuredError | undefined,
+  surface: string,
+  nowMs: number,
+): AgentQuota {
+  const resetsIn = error ? num(error.raw.resets_in_seconds) : undefined;
+  const resetsAt = error ? num(error.raw.resets_at) : undefined;
+  const stated = error?.message ?? surface;
+  const isoReset = /\b(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\b/.exec(stated)?.[1];
+  const resetEpochMs = resetsIn !== undefined
+    ? nowMs + resetsIn * 1000
+    : resetsAt !== undefined
+    ? resetsAt * 1000
+    : isoReset
+    ? Date.parse(isoReset)
+    : undefined;
+  return {
+    scope: detectQuotaScope(stated),
+    ...(resetEpochMs !== undefined && Number.isFinite(resetEpochMs)
+      ? { resetEpochMs }
+      : {}),
+  };
+}
+
+/**
+ * Classify one failed Codex run.
+ *
+ * Same order as every adapter: the worker's own facts, then a clean exit is
+ * no failure at all, then the CLI's structured events, then its prose.
+ *
+ * @param streams - The run's streams and process facts.
+ * @param decoded - The decoded output from {@link decodeCodexOutput}.
+ * @returns The normalised failure, or undefined when the run did not fail.
+ */
+function classifyCodexFailure(
+  streams: AgentRunStreams,
+  decoded: AgentDecodedOutput,
+): AgentFailure | undefined {
+  const process = classifyProcessOutcome(streams);
+  if (process) return process;
+
+  if (streams.exitCode === 0) return undefined;
+
+  const stderr = streams.stderr ?? "";
+  const nowMs = streams.nowMs ?? Date.now();
+  const structuredText = decoded.errors
+    .map((e) => `${e.code ?? ""} ${e.message}`)
+    .join("\n");
+  const surface = `${structuredText}\n${stderr}`;
+  const evidenceText = redactedEvidence(surface);
+  const say = (headline: string) =>
+    evidenceText ? `${headline} — evidence: ${evidenceText}` : headline;
+
+  /** Pick the structured error that explains the run, when one does. */
+  const match = (test: RegExp) =>
+    decoded.errors.find((e) => test.test(`${e.code ?? ""} ${e.message}`));
+
+  const httpStatus = decoded.errors.find((e) => e.httpStatus !== undefined)
+    ?.httpStatus ?? extractHttpStatus(surface);
+
+  if (detectOutOfMemory(`${decoded.text}\n${stderr}`)) {
+    return agentFailure({
+      category: "out-of-memory",
+      message: say("The Codex CLI ran out of memory"),
+      evidence: "prose",
+      errors: decoded.errors,
+    });
+  }
+
+  // Authentication before anything a status code could be read as: a rejected
+  // credential answers 401/403 and must never walk the model ladder.
+  const authError = match(/auth|unauthori[sz]ed|login|api[_ ]key/i);
+  if (authError || httpStatus === 401 || httpStatus === 403) {
+    return agentFailure({
+      category: "authentication",
+      message: say("Codex refused the credential"),
+      evidence: authError ? "structured" : "prose",
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      errors: decoded.errors,
+    });
+  }
+  if (isCodexAuthError(stderr)) {
+    return agentFailure({
+      category: "authentication",
+      message: say("Codex refused the credential"),
+      evidence: "prose",
+      errors: decoded.errors,
+    });
+  }
+
+  // An exhausted window: only when the refusal says the window is spent.
+  const quotaError = match(QUOTA_RE);
+  if (quotaError || QUOTA_RE.test(stderr)) {
+    return agentFailure({
+      category: "quota-exhausted",
+      message: say("Codex's subscription window is exhausted"),
+      evidence: quotaError ? "structured" : "prose",
+      quota: codexQuota(quotaError, surface, nowMs),
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      errors: decoded.errors,
+    });
+  }
+
+  const modelError = match(MODEL_UNAVAILABLE_RE);
+  if (modelError || MODEL_UNAVAILABLE_RE.test(stderr)) {
+    return agentFailure({
+      category: "model-unavailable",
+      message: say("Codex refused the requested model"),
+      evidence: modelError ? "structured" : "prose",
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      errors: decoded.errors,
+    });
+  }
+
+  if (
+    (httpStatus !== undefined && NETWORK_STATUSES.has(httpStatus)) ||
+    (NETWORK_RE.test(surface) && !RATE_LIMIT_RE.test(surface))
+  ) {
+    return agentFailure({
+      category: "network",
+      message: say("The Codex CLI could not reach the API"),
+      evidence: "prose",
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      errors: decoded.errors,
+    });
+  }
+
+  const rateError = match(RATE_LIMIT_RE);
+  if (rateError || httpStatus === 429 || RATE_LIMIT_RE.test(stderr)) {
+    const retryAfterSeconds =
+      (rateError ? num(rateError.raw.retry_after_seconds) : undefined) ??
+        extractRetryAfterSeconds(surface);
+    return agentFailure({
+      category: "rate-limit",
+      message: say("Codex rate-limited this request"),
+      evidence: rateError ? "structured" : "prose",
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
+      errors: decoded.errors,
+    });
+  }
+
+  return agentFailure({
+    category: "task-failure",
+    message: say(`The Codex CLI exited ${streams.exitCode}`),
+    evidence: decoded.errors.length > 0 ? "structured" : "process",
+    errors: decoded.errors,
+  });
+}
+
+/** The Codex CLI's output adapter, named by the Codex descriptor. */
+export const CODEX_OUTPUT_ADAPTER: AgentOutputAdapter = {
+  providerId: PROVIDER_ID,
+  decode: decodeCodexOutput,
+  classify: classifyCodexFailure,
+};
