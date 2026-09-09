@@ -3307,6 +3307,65 @@ stateDiagram-v2
     Exhausted --> Idle: resetConflictLedgerOnSuccess
 ```
 
+#### 🔙 Rolling a stuck milestone branch back
+
+A branch that has spent that budget is **rolled back**, not escalated and not
+restarted from the default-branch tip — restarting is dramatic, and a human who
+wrote none of the code cannot untangle the merge either.
+[milestone_rollback.ts](../worker/deno/lib/milestone_rollback.ts) reverts the
+merged child PRs that touch the conflicting files, newest first, until
+`git merge origin/<default>` succeeds (Issue #1771). Only those children then
+have to be redone; every other child stays on the branch.
+
+`planRollback` is pure and decides *what* is undone. It keeps the candidates
+touching a conflicting path, orders them newest first — the newest sits closest
+to the tip, so undoing it is the revert least likely to conflict — and never
+plans four kinds of candidate: a `sync/milestone-*` PR (that PR *is* the default
+branch arriving), one already reverted (by a
+`Revert child PR #N` commit on the branch, or the ledger's list), one with no
+merge commit to hand `git revert`, and one touching none of the conflicting
+paths.
+
+`executeRollback` does it, against these two boundaries:
+
+- **History is kept and no push is forced.** Every undo is a `git revert`
+  commit — `-m 1` for a two-parent merge, though a child PR into a milestone
+  squash-merges, so most reverts are single-parent — named
+  `Revert child PR #N "<title>" — milestone roll-back (Issue #1730)` so a later
+  roll-back can see it. The push is an ordinary fast-forward of the milestone
+  branch, and a push a `milestone/**` ruleset refuses lands through the sync PR
+  of Issue #589 instead.
+- **Nothing half-done is published.** The pre-roll-back SHA is recorded first.
+  A revert that conflicts, or a plan that runs out with the merge still
+  conflicting, ends at `git reset --hard <pre-roll-back SHA>` with nothing
+  pushed, and the result says which: `revert conflicted on #N` or
+  `nothing left to revert`. The default branch is never written to.
+- **A merged tree is still only a merged tree.** A conflict-free merge says
+  both sides were internally consistent, not that reverting a child other
+  children call left something that works (Issue #974), so the caller's own
+  `verify` seam decides before the push, and a refused tree is reset away like
+  any other failure. A roll-back run without one logs `UNGATED:` rather than
+  let an unchecked push read like a checked one.
+- **Nothing unreadable is read as nothing.** An unparseable `gh` listing, a
+  `gh` call that failed, an unreadable `diff-tree`, `rev-list` or `log`, and a
+  merge that failed with *no* conflicted files all fail the roll-back with the
+  cause named. Each would otherwise plan an empty roll-back and report
+  `nothing left to revert` with every child still in place.
+
+A `merged: false` result is logged `WARNING` with its reason. The mechanics land
+here as a module; the exhaustion path that calls them is wired separately.
+
+```mermaid
+flowchart TD
+    C[conflicting files] --> L[merged child PRs touching them, newest first]
+    L --> R{revert next}
+    R --> M{merge default clean?}
+    M -->|yes| P[commit + push / sync PR]
+    M -->|no| R
+    R -->|none left| X[reset to pre-roll-back SHA, report]
+```
+
+
 ### 🩹 Milestone branch self-heal
 
 A milestone can gain open children **after** its summary PR merged and
