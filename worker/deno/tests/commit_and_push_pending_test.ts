@@ -772,21 +772,32 @@ Deno.test("commitAndPushPending - commits a merge-conflict resolution despite wo
     "commit_push_pending_merge_conflict_",
     branch,
   );
+  // Setup git must fail loud: a silently dropped commit or fetch would leave
+  // nothing to conflict over, and the test would then prove nothing.
+  const gitOk = async (args: string[], cwd: string): Promise<GitRunResult> => {
+    const result = await runGit(args, cwd);
+    assertEquals(
+      result.code,
+      0,
+      `git ${args.join(" ")} failed in ${cwd}: ${result.stderr}`,
+    );
+    return result;
+  };
+
   try {
     // The base branch moves on: both seeded files change on `main`.
     const base = `${tmp}/base`;
-    await runGit(["clone", upstream, base], tmp);
-    await runGit(["config", "user.email", "t@t"], base);
-    await runGit(["config", "user.name", "t"], base);
+    await gitOk(["clone", upstream, base], tmp);
+    await gitOk(["config", "user.email", "t@t"], base);
+    await gitOk(["config", "user.name", "t"], base);
     await Deno.writeTextFile(`${base}/README.md`, "seed\nbase side\n");
     await Deno.writeTextFile(
       `${base}/strategy.ts`,
       'export const mode = "base";\n',
     );
-    await runGit(["add", "-A"], base);
-    await runGit(["commit", "-m", "base change"], base);
-    const basePush = await runGit(["push", "origin", "main"], base);
-    assertEquals(basePush.code, 0, `base push failed: ${basePush.stderr}`);
+    await gitOk(["add", "-A"], base);
+    await gitOk(["commit", "-m", "base change"], base);
+    await gitOk(["push", "origin", "main"], base);
 
     // The feature branch changes the same two files differently — one
     // modify/modify conflict and one add/add conflict.
@@ -795,18 +806,13 @@ Deno.test("commitAndPushPending - commits a merge-conflict resolution despite wo
       `${downstream}/strategy.ts`,
       'export const mode = "feature";\n',
     );
-    await runGit(["add", "-A"], downstream);
-    await runGit(["commit", "-m", "feature change"], downstream);
-    const featurePush = await runGit(["push", "origin", branch], downstream);
-    assertEquals(
-      featurePush.code,
-      0,
-      `feature push failed: ${featurePush.stderr}`,
-    );
+    await gitOk(["add", "-A"], downstream);
+    await gitOk(["commit", "-m", "feature change"], downstream);
+    await gitOk(["push", "origin", branch], downstream);
 
     // The merge-conflict pass: fetch, then `git merge origin/<base>
     // --no-edit`, which stops with both files unmerged.
-    await runGit(["fetch", "origin"], downstream);
+    await gitOk(["fetch", "origin"], downstream);
     const merge = await runGit(
       ["merge", "origin/main", "--no-edit"],
       downstream,
@@ -831,8 +837,7 @@ Deno.test("commitAndPushPending - commits a merge-conflict resolution despite wo
     await Deno.writeTextFile(`${downstream}/README.md`, resolvedReadme);
     await Deno.writeTextFile(`${downstream}/strategy.ts`, resolvedStrategy);
     for (const file of ["README.md", "strategy.ts"]) {
-      const staged = await runGit(["add", "--", file], downstream);
-      assertEquals(staged.code, 0, `staging ${file} failed: ${staged.stderr}`);
+      await gitOk(["add", "--", file], downstream);
     }
 
     // The worker's own state files are sitting in the clone — the PR 58
@@ -888,7 +893,12 @@ Deno.test("commitAndPushPending - commits a merge-conflict resolution despite wo
     );
 
     // The commit carries the resolution and none of the worker state — both
-    // in the combined diff and in the committed tree.
+    // in the combined diff and in the committed tree. Both checks are
+    // load-bearing: `git show --name-only` on a merge commit prints a
+    // *combined* diff, which prunes any path identical to either parent, so
+    // the negative assertion alone could pass on empty output. The positive
+    // check below proves the output is non-empty, and `ls-tree` reads the
+    // committed tree unconditionally.
     const shown = await runGit(
       ["show", "--name-only", "--format=", "HEAD"],
       downstream,
