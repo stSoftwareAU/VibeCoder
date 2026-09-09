@@ -29,7 +29,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import type { Command, CommandResult, Result, WorkerConfig } from "../types.ts";
 import {
   createBranchName,
   createFeatureBranchFromBase,
@@ -502,6 +502,93 @@ export const gitOperationsCommand: Command = {
 };
 
 /**
+ * Where a clone's default-branch cache lives (Issue #1652):
+ * `<git common dir>/vibe/default_branch` — `.git/vibe/default_branch` in the
+ * shared clone, and the same file for every lane worktree linked to it.
+ *
+ * It used to be `.vibe_default_branch` at the root of the working tree. A
+ * file in the tree is a file the repository can commit (three monitored
+ * repositories had) and a file `git add -A` stages, which is how the
+ * merge-conflict pass's final-mile commit came to be refused by the
+ * pre-commit safety gate on GRQ-AutoTrader#58 (Issue #1644). Inside the git
+ * directory it can be neither committed nor staged, and — because the read
+ * happens before `reset --hard` — a repository can no longer plant the value
+ * the worker checks out (Issue #1269 stays closed by construction, and the
+ * `assertSafeRefComponent` check stays as defence in depth).
+ *
+ * Resolved through git rather than assumed to be `${repoPath}/.git`, so a
+ * lane worktree (whose `.git` is a file pointing at the clone) shares the
+ * clone's cache instead of getting one of its own.
+ *
+ * @param repoPath - The clone or worktree
+ * @returns The cache file's absolute path, or `null` when the git directory
+ *   could not be resolved (not a repository, or git refused)
+ */
+export async function defaultBranchCachePath(
+  repoPath: string,
+): Promise<string | null> {
+  const result = await runGitCommand(
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { cwd: repoPath },
+  );
+  if (!result.ok || result.value.code !== 0) return null;
+  const gitDir = result.value.stdout.trim();
+  if (gitDir.length === 0) return null;
+  return `${gitDir}/vibe/default_branch`;
+}
+
+/**
+ * Read the cached default branch from the clone's git directory (Issue #1652).
+ *
+ * @returns The trimmed cached value, or `""` when there is no cache
+ */
+async function readDefaultBranchCache(repoPath: string): Promise<string> {
+  const path = await defaultBranchCachePath(repoPath);
+  if (path === null) return "";
+  try {
+    return (await Deno.readTextFile(path)).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Write the default branch into the clone's git directory (Issue #1652),
+ * creating `vibe/` when absent. A write that fails is reported with the path
+ * rather than swallowed: the next run would otherwise silently lose the
+ * cache and nobody would know why.
+ */
+async function writeDefaultBranchCache(
+  repoPath: string,
+  defaultBranch: string,
+): Promise<Result<void>> {
+  const path = await defaultBranchCachePath(repoPath);
+  if (path === null) {
+    return {
+      ok: false,
+      error: new Error(
+        `Could not resolve the git directory of ${repoPath} to store the ` +
+          `default-branch cache (Issue #1652)`,
+      ),
+    };
+  }
+  try {
+    await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+    await Deno.writeTextFile(path, defaultBranch);
+    return { ok: true, value: undefined };
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `Could not write the default-branch cache ${path}: ${
+          error instanceof Error ? error.message : String(error)
+        } (Issue #1652)`,
+      ),
+    };
+  }
+}
+
+/**
  * Setup a repository for work (clone or update).
  *
  * This operation orchestrates multiple git commands and side effects.
@@ -549,31 +636,24 @@ export async function setupRepo(
         defaultBranch = ref.replace("refs/remotes/origin/", "");
       }
 
-      // Read cached default branch if available. The file lives *inside* the
-      // clone, so a repository that commits `.vibe_default_branch` controls
-      // the value (Issue #1269) — and it survives the `reset --hard` /
-      // `clean -fd` below, which run after this read. Validate it as a ref
-      // component before it can reach `git checkout` as a positional.
-      let cached = "";
-      try {
-        cached = (await Deno.readTextFile(`${repoPath}/.vibe_default_branch`))
-          .trim();
-      } catch {
-        // No cached default branch
-      }
+      // Read the cached default branch if available. It lives in the clone's
+      // git directory (`.git/vibe/default_branch`, Issue #1652), never in the
+      // working tree — so a repository cannot commit the value the worker
+      // reads (Issue #1269) and `git add -A` cannot stage it (Issue #1644).
+      // The value is still validated as a ref component before it can reach
+      // `git checkout` as a positional: defence in depth costs one call.
+      const cached = await readDefaultBranchCache(repoPath);
       if (cached) {
         try {
           assertSafeRefComponent(cached, "cached default branch");
           defaultBranch = cached;
         } catch (error) {
-          // Ignore the poisoned cache rather than latch on it: the file is
-          // committed, so refusing the repo outright would turn one file
-          // write into a permanent denial of service. `defaultBranch` still
-          // holds the value `git symbolic-ref` derived above, and the refusal
-          // is logged on every run because `reset --hard` restores the file.
+          // Ignore the bad cache rather than latch on it; `defaultBranch`
+          // still holds the value `git symbolic-ref` derived above, and the
+          // rewrite at the end of this setup replaces the file.
           console.error(
             `[setup-repo] SECURITY (Issue #1269): ignoring ` +
-              `${repoPath}/.vibe_default_branch — ` +
+              `${await defaultBranchCachePath(repoPath)} — ` +
               `${error instanceof Error ? error.message : String(error)}. ` +
               `Falling back to '${defaultBranch}'.`,
           );
@@ -675,11 +755,11 @@ export async function setupRepo(
         cwd: repoPath,
       });
 
-      // Store the default branch
-      await Deno.writeTextFile(
-        `${repoPath}/.vibe_default_branch`,
-        defaultBranch,
-      );
+      // Store the default branch in the git directory (Issue #1652).
+      const stored = await writeDefaultBranchCache(repoPath, defaultBranch);
+      if (!stored.ok) {
+        return { success: false, message: stored.error.message };
+      }
 
       return {
         success: true,
@@ -747,8 +827,11 @@ export async function setupRepo(
     defaultBranch = ref.replace("refs/remotes/origin/", "");
   }
 
-  // Store the default branch
-  await Deno.writeTextFile(`${repoPath}/.vibe_default_branch`, defaultBranch);
+  // Store the default branch in the git directory (Issue #1652).
+  const stored = await writeDefaultBranchCache(repoPath, defaultBranch);
+  if (!stored.ok) {
+    return { success: false, message: stored.error.message };
+  }
 
   return {
     success: true,

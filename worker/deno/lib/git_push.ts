@@ -445,9 +445,10 @@ interface UnstageWorkerStateResult {
  * Stage with intent — drop the worker's own state files from the index
  * (Issue #1661, part of #1644; Issue #1711).
  *
- * The worker writes `.heartbeat_<owner>_<repo>_<n>`,
- * `.heartbeat-marker_<owner>_<repo>_<n>` and `.vibe_default_branch` into the
- * directory it runs from, and its prompts ask the agent to write its PR reply
+ * The worker writes `.heartbeat_<owner>_<repo>_<n>` and
+ * `.heartbeat-marker_<owner>_<repo>_<n>` into the directory it runs from
+ * (and, before Issue #1652, `.vibe_default_branch` — older clones may still
+ * carry one), and its prompts ask the agent to write its PR reply
  * into `.pr_response_message` there (Issue #1711). When that is a repository
  * clone, `git add -A` stages them and the pre-commit safety gate (Issue #1758)
  * refuses the entire commit — a merge-conflict resolution or a CI fix is lost
@@ -741,9 +742,10 @@ export async function ensureDefaultBranchCurrent(
   defaultBranch: string,
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
-  // A repo-derived default branch (setupRepo reads it from
-  // `.vibe_default_branch` inside the clone, Issue #1269) reaches git as a
-  // positional here and in the `git branch -f` below, and is interpolated
+  // The default branch (once read from `.vibe_default_branch` inside the
+  // clone, Issue #1269; now from `.git/vibe/default_branch`, Issue #1652)
+  // reaches git as a positional here and in the `git branch -f` below, and is
+  // interpolated
   // into `origin/<branch>` — so it is validated as a ref *component*, not
   // merely checked for a leading dash.
   try {

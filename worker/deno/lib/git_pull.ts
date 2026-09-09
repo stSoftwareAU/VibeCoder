@@ -459,8 +459,9 @@ export async function syncMilestoneBranchWithDefault(
     : mergeGate,
 ): Promise<Result<MilestoneSyncOutcome>> {
   // Refuse an option-injecting ref before any git runs (Issue #12). The
-  // default branch is repo-derived (setupRepo reads it from
-  // `.vibe_default_branch` inside the clone, Issue #1269) and reaches
+  // default branch used to be repo-derived (setupRepo read it from
+  // `.vibe_default_branch` inside the clone, Issue #1269; it now lives in
+  // `.git/vibe/default_branch`, Issue #1652) and reaches
   // `git merge <defaultBranch>` below as a bare positional, which the ref-argv
   // gate does not cover — so it is checked here, as the feature-branch sync
   // already does.

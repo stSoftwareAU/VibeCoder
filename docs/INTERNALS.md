@@ -3479,10 +3479,12 @@ links to its issue for the full rationale.
   invoking Claude.
 - **Worker quality-gate baseline-aware push (generalised in ):** Pre-existing
   failures captured by the baseline are not blamed on the current change. The
-  bypass reasons over every diffable check at once — mermaid and markdownlint
-  (`baseline_gate.ts`) — so a pre-existing failure in an untouched
-  mermaid/markdownlint artefact no longer forces a
-  remediation loop, while a genuinely-new failure is never waved through.
+  bypass reasons over every diffable check at once — mermaid, markdownlint
+  and workflow hygiene (`baseline_gate.ts`; hygiene joined in Issue #1641) —
+  so a pre-existing failure in an untouched artefact, or a `set -euo
+  pipefail` / version-comment finding already on the repository's default
+  branch, no longer forces a remediation loop, while a genuinely-new failure
+  is never waved through.
 - **Pre-flight rate-limit check at startup:** the worker driver aborts cleanly
   when GitHub rate-limit headroom is too low to complete a scan cycle.
 

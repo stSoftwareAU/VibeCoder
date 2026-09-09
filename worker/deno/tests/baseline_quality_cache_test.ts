@@ -12,6 +12,7 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   BASELINE_QUALITY_CACHE_TTL_MS,
+  BASELINE_QUALITY_CACHE_VERSION,
   baselineQualityCachePath,
   computeBaselineQualityCacheKey,
   isBaselineQualityCacheEnabled,
@@ -486,7 +487,7 @@ Deno.test("baseline_quality_cache - with no work directory even a warm legacy $H
       `${home}/.vibe-coder/baseline-quality-cache.json`,
       JSON.stringify({
         "owner/repo@sha": {
-          version: 1,
+          version: BASELINE_QUALITY_CACHE_VERSION,
           passed: true,
           output: "",
           storedAt: Date.now(),
