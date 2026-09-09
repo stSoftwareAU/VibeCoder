@@ -19,6 +19,14 @@ import {
 } from "../lib/failure_diagnosis.ts";
 
 /** Real strings: from failure_diagnosis_test.ts fixtures and worker logs. */
+/**
+ * The release message GRQ#4694 ended on (Issue #1658): the Issue #534
+ * squash-lineage refusal, quoting a milestone branch whose name carries
+ * `enospc` and git's own conflict hints. Not a full disk, not a crash.
+ */
+const STALE_LINEAGE_MESSAGE =
+  "Refusing to push `issue-4694-sampler-disk-pre-flight-3-the-measured-corpus-60-g`: merged PR #4700 squashed this branch's work into the base as a027482, and the branch tip does not contain it — its commits would replay content the base already has; rebasing it onto 'origin/milestone/4690-bug-sampler-enospc-on-228-gb-hosts-60-gb-disk' was refused: replaying 464a274 onto 'origin/milestone/4690-bug-sampler-enospc-on-228-gb-hosts-60-gb-disk' conflicted, so the branch was restored unchanged: hint: after resolving the conflicts, mark the corrected paths | hint: with 'git add <paths>' or 'git rm <paths>' | hint: Disable this message with \"git config advice.mergeConflict false\" (Issue #534)";
+
 const ROWS: {
   name: string;
   category: FailureCategory;
@@ -78,6 +86,13 @@ const ROWS: {
     message: "Claude was killed (SIGKILL, no watchdog)",
     fixability: "unknown",
     failureClass: "killed-unknown",
+  },
+  {
+    name: "squash-lineage push refusal → stale-lineage (Issue #1658)",
+    category: "unknown",
+    message: STALE_LINEAGE_MESSAGE,
+    fixability: "not_code_fixable",
+    failureClass: "stale-lineage",
   },
   {
     name: "ENOSPC → disk-full",
@@ -496,4 +511,86 @@ Deno.test("classify #249 - disk exhaustion in the agent block is still real evid
     classifyRunFailure("timeout", message).failureClass,
     "disk-full",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1658 — a slug is not evidence
+// ---------------------------------------------------------------------------
+
+Deno.test("classify #1658 - the squash-lineage refusal is stale-lineage, never disk-full, and never auto-filed", () => {
+  const got = classifyRunFailure("unknown", STALE_LINEAGE_MESSAGE);
+  assertEquals(got.failureClass, "stale-lineage");
+  assertEquals(got.fixability, "not_code_fixable");
+  assert(RUN_FAILURE_CLASSES.includes("stale-lineage"));
+});
+
+Deno.test("classify #1658 - 'enospc' inside a branch name alone is not disk exhaustion", () => {
+  // The same message with the refusal prefix gone: only the branch name
+  // carries the token.
+  const message = STALE_LINEAGE_MESSAGE.replace(/^Refusing to push[^:]*: /, "")
+    .replace("squashed this branch's work", "landed this branch's work");
+  assert(message.includes("enospc"), "the slug still carries the token");
+  assert(!/Refusing to push/.test(message));
+  const got = classifyRunFailure("unknown", message);
+  assert(got.failureClass !== "disk-full", `got ${got.failureClass}`);
+  // Path- and URL-shaped neighbours are excluded the same way.
+  assert(
+    classifyRunFailure("unknown", "see /var/log/ENOSPC/notes.txt")
+      .failureClass !==
+      "disk-full",
+  );
+  assert(
+    classifyRunFailure("unknown", "https://example.test/ENOSPC-handling")
+      .failureClass !== "disk-full",
+  );
+});
+
+Deno.test("classify #1658 - genuine ENOSPC still classifies as disk-full", () => {
+  for (
+    const m of [
+      "Error: ENOSPC: no space left on device, write",
+      "No Space Left On Device",
+      "Disk Full while writing checkpoint",
+      "the disk is full",
+      "Claude was killed (exit 137, SIGKILL): ENOSPC: no space left on device",
+      "write failed (ENOSPC)",
+    ]
+  ) {
+    assertEquals(classifyRunFailure("unknown", m).failureClass, "disk-full", m);
+  }
+  // Lowercase `enospc` in prose is no longer taken as the errno; the phrase
+  // beside it is what decides.
+  assertEquals(
+    classifyRunFailure("unknown", "got enospc: no space left on device")
+      .failureClass,
+    "disk-full",
+  );
+});
+
+Deno.test("classify #1658 - a trigger token inside a branch-name slug is not out-of-credit, oom or worker-crash", () => {
+  const credit = classifyRunFailure(
+    "unknown",
+    "Refusing to update issue-12-quota-exceeded-and-out-of-credit-messaging: branch is behind",
+  );
+  assert(credit.failureClass !== "out-of-credit", credit.failureClass);
+
+  const oom = classifyRunFailure(
+    "killed",
+    "Claude was killed (SIGKILL, no watchdog) on branch issue-77-out-of-memory-oom-kill-detection",
+  );
+  assertEquals(oom.failureClass, "killed-unknown");
+  // Prose keeps matching: the hyphenated phrase with spaces either side.
+  assertEquals(
+    classifyRunFailure(
+      "killed",
+      "Claude was killed (exit 137, SIGKILL — possible out-of-memory in the VM)",
+    ).failureClass,
+    "oom",
+  );
+
+  const crash = classifyRunFailure(
+    "unknown",
+    "branch issue-9-unhandled-rejection-typeerror-referenceerror-in-parser was not brought up to date",
+  );
+  assert(crash.failureClass !== "worker-crash", crash.failureClass);
 });

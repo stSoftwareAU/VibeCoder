@@ -449,3 +449,48 @@ Deno.test("reportWorkVolumeUsage - scans and formats with the monitored list", a
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("scanWorkVolumeUsage - build artefacts under lane worktrees are named too (Issue #1725)", async () => {
+  const tmp = await makeWorkRoot();
+  try {
+    await Deno.mkdir(`${tmp}/worktrees/s1/NEAT-AI-Discovery`, {
+      recursive: true,
+    });
+    const usage = await scanWorkVolumeUsage({
+      workDir: tmp,
+      monitoredRepos: ["VibeCoder", "GRQ-23"],
+      sizeOf: (path) =>
+        path.endsWith("/target")
+          ? Promise.resolve(gb(path.includes("worktrees") ? 23 : 0.9))
+          : path.endsWith("/worktrees")
+          ? Promise.resolve(gb(23))
+          : sizeByBasename(path),
+      findArtefacts: (repoDir) =>
+        Promise.resolve(
+          repoDir.endsWith("/VibeCoder") ||
+            repoDir.endsWith("/worktrees/s1/NEAT-AI-Discovery")
+            ? [`${repoDir}/target`]
+            : [],
+        ),
+      listWorktrees: () =>
+        Promise.resolve([{
+          repo: "NEAT-AI-Discovery",
+          label: "worktrees/s1/NEAT-AI-Discovery",
+          path: `${tmp}/worktrees/s1/NEAT-AI-Discovery`,
+        }]),
+    });
+    assertEquals(usage.artefacts.entries.map((e) => e.name).sort(), [
+      "VibeCoder/target",
+      "worktrees/s1/NEAT-AI-Discovery/target",
+    ]);
+    assertEquals(usage.artefacts.bytes, gb(0.9) + gb(23));
+    // The worktree bytes are the `other` bucket's; the cross-cut adds none.
+    assertEquals(
+      usage.totalBytes,
+      usage.monitored.bytes + usage.side.bytes + usage.caches.bytes +
+        usage.other.bytes,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
