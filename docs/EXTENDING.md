@@ -313,8 +313,9 @@ before Issue #1639. Every emitted template now carries:
   with `cancel-in-progress: true`;
 - `timeout-minutes:` on every job — 10 for scan and quality jobs, 20 for
   dependency-update jobs that open a PR;
-- an exact version pin on every `run:` install (a `run:` install is not a
-  manifest, so no dependency manager applies the 24h quarantine to it).
+- an exact version pin on every `run:` install the audit's install-pin
+  pre-filer covers — npm, npx and gem (a `run:` install is not a manifest,
+  so no dependency manager applies the 24h quarantine to it).
 
 ```mermaid
 flowchart LR
@@ -331,8 +332,13 @@ every template and runs the audit's own native pre-filers
 `action_pin_scanner`, `ci_install_pin_scanner`,
 `workflow_permissions_scanner`, `workflow_trigger_scanner`) over the
 result. Any finding fails the test — and `quality.sh` — so a scanner change
-and the templates cannot drift apart unnoticed. The same three rules are
-stated in `prompts/workflow_setup/prompt.md` ("CI Hardening Defaults") so
+and the templates cannot drift apart unnoticed. Two of those pre-filers only
+act on workflows the classifier rates `test`/`high`, which the
+dependency-review, java-dependency-check and shellcheck templates are not, so
+the branch-filter and push-trigger rules are additionally asserted over the
+whole catalogue. The branch-filter, credential-persistence and
+concurrency/timeout rules are also stated in
+`prompts/workflow_setup/prompt.md` ("CI Hardening Defaults") so
 agent-generated workflows match the deterministic templates.
 
 ## 🧹 Maintenance Commands

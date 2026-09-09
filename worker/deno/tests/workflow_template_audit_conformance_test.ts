@@ -22,9 +22,18 @@
  * A scanner change that starts flagging a template fails here — the
  * templates and the audit cannot drift apart unnoticed.
  *
+ * Two of those pre-filers only act on workflows `classifyWorkflow` rates
+ * `test`/`high`, so the three templates that classify `ambiguous`
+ * (dependency-review, java-dependency-check, shellcheck) would slip past
+ * them. The branch-filter and push-trigger rules are therefore *also*
+ * asserted structurally over every template, using the scanner's own
+ * coverage decision — otherwise a regression in those three would go
+ * unnoticed.
+ *
  * The two remaining audit checks the pre-filers do not cover natively —
  * concurrency groups and job `timeout-minutes` (audit checks #4 and #5) —
- * are asserted structurally across every template, not per template.
+ * are asserted structurally too. Every structural assertion is a loop over
+ * the whole catalogue, never a hand-written per-template expectation.
  *
  * Australian English throughout (behaviour, organisation, authorised).
  */
@@ -39,7 +48,11 @@ import { scanMilestoneBranchFilters } from "../lib/milestone_branch_filter_scann
 import { scanActionPins } from "../lib/action_pin_scanner.ts";
 import { scanCiInstallPins } from "../lib/ci_install_pin_scanner.ts";
 import { scanWorkflowPermissions } from "../lib/workflow_permissions_scanner.ts";
-import { scanWorkflowTriggers } from "../lib/workflow_trigger_scanner.ts";
+import {
+  readOnBlock,
+  scanWorkflowTriggers,
+} from "../lib/workflow_trigger_scanner.ts";
+import { workflowMilestoneCoverage } from "../lib/milestone_branch_filter_scanner.ts";
 
 /**
  * Specs whose template is a Dependabot **configuration** file rather than
@@ -200,6 +213,90 @@ Deno.test(
         `provisioned templates re-run post-merge on ${defaultBranch}: ${
           describe(findings)
         }`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "workflow templates - the markdownlint-cli2 pin matches the fleet's pin",
+  async () => {
+    // The install-pin scanner only asks for *an* exact version; nothing
+    // else ties the emitted pin to the one the container and this repo's
+    // own workflow use, so the three would drift apart silently.
+    const spec = WORKFLOW_SPECS.find((s) => s.id === "markdown-lint");
+    assert(spec !== undefined, "markdown-lint spec missing");
+    const tools = JSON.parse(
+      await Deno.readTextFile(
+        new URL("../../../container/tools.json", import.meta.url),
+      ),
+    ) as { toolchains?: Array<{ id?: string; version?: string }> };
+    const pinned = tools.toolchains?.find((t) => t.id === "markdownlint-cli2");
+    assert(
+      pinned?.version !== undefined,
+      "container/tools.json has no markdownlint-cli2 entry",
+    );
+    assert(
+      spec.template.includes(`markdownlint-cli2@${pinned.version}`),
+      `markdown-lint template must install markdownlint-cli2@${pinned.version} ` +
+        "— the version container/tools.json pins — so the container, this " +
+        "repo's own workflow and every provisioned repo report identical " +
+        "findings (Issue #1639)",
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Structural cover for what the pre-filers cannot reach
+// ---------------------------------------------------------------------------
+//
+// `scanMilestoneBranchFilters` and `scanWorkflowTriggers` only act on
+// workflows `classifyWorkflow` rates `test`/`high`. The dependency-review,
+// java-dependency-check and shellcheck templates classify `ambiguous`, so
+// the two scans above are silent about them. These loops apply the same
+// two rules to every template, using the scanner's own coverage decision.
+
+Deno.test(
+  "workflow templates - every pull_request filter covers milestone branches",
+  () => {
+    for (const spec of workflowSpecs()) {
+      // `"gap"` is the only failing verdict: `"covered"` gates milestone
+      // PRs and `"none"` means no `pull_request` trigger at all.
+      const coverage = workflowMilestoneCoverage(parseYaml(spec.template));
+      assert(
+        coverage !== "gap",
+        `${spec.id}: the \`pull_request\` branch filter never matches ` +
+          "`milestone/<slug>`, so milestone sub-issue PRs merge ungated " +
+          "(Issue #1639)",
+      );
+    }
+  },
+);
+
+Deno.test(
+  "workflow templates - no template triggers on push",
+  () => {
+    for (const spec of workflowSpecs()) {
+      const parsed = parseYaml(spec.template);
+      assert(isRecord(parsed), `${spec.id}: template is not a YAML mapping`);
+      const onBlock = readOnBlock(parsed);
+      const triggersOnPush = typeof onBlock === "string"
+        ? onBlock === "push"
+        : Array.isArray(onBlock)
+        ? onBlock.includes("push")
+        : isRecord(onBlock) && "push" in onBlock;
+      assertEquals(
+        triggersOnPush,
+        false,
+        `${spec.id}: re-running a required check on the post-merge push ` +
+          "duplicates the PR run with no enforcement value (Issue #1639)",
+      );
+      // The spec's declared triggers must not advertise one the template
+      // does not actually carry.
+      assertEquals(
+        spec.triggers.includes("push"),
+        false,
+        `${spec.id}: spec.triggers still advertises \`push\``,
       );
     }
   },
