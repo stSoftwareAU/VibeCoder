@@ -355,14 +355,15 @@ Deno.test("claude pool spawn - a mid-run usage limit moves the next spawn to ano
     ]);
 
     const next = await pool.selectEligible(NOW);
-    assertEquals(next?.label, "provider-2");
+    assert(next !== null, "the pool named no credential to switch to");
+    assertEquals(next.label, "provider-2");
     // The API has just said the window is gone; asking it again learns
     // nothing, so the switch costs no request.
     assertEquals(probes(), startProbes);
 
     // The switch replaces the credential rather than adding to it, so the
     // next child still sees exactly one subscription — the new one.
-    const applied = pool.applySelection(next!, (name, value) => {
+    const applied = pool.applySelection(next, (name, value) => {
       env[name] = value;
     });
     assertEquals(applied, OAUTH_VAR);

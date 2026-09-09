@@ -695,10 +695,14 @@ Deno.test("claude pool policy - an unknown budget ranks last without being dropp
 });
 
 Deno.test("claude pool policy - a credential reporting no five-hour window has no guard to fall under (Issue #1686)", async () => {
+  // Seven-day only. The documented fallback is that an absent window is not
+  // a failed guard, so this ranks in the top band on its 1.25%/h week.
+  const noFiveHour: Candidate = {
+    label: "provider",
+    sevenDay: { remaining: 0.3, resetInHours: 24 },
+  };
   const candidates: readonly Candidate[] = [
-    // Seven-day only. The documented fallback is that an absent window is not
-    // a failed guard, so this ranks in the top band on its 1.25%/h week.
-    { label: "provider", sevenDay: { remaining: 0.3, resetInHours: 24 } },
+    noFiveHour,
     {
       label: "provider-2",
       fiveHour: { remaining: 0.19, resetInHours: 4 },
@@ -715,7 +719,7 @@ Deno.test("claude pool policy - a credential reporting no five-hour window has n
   // credential that clears the guard on real figures and holds the better
   // week still wins.
   const better = rankClaudeTokenBudgets([
-    snapshotOf(candidates[0]!),
+    snapshotOf(noFiveHour),
     snapshotOf({
       label: "provider-2",
       fiveHour: { remaining: 0.9, resetInHours: 4 },
