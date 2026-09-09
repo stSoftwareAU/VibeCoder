@@ -38,6 +38,7 @@ if your worker login is read-only on any monitored repository.**
 | The security-fix verification gate recognises a test name that `deno fmt` wrapped onto the line after `Deno.test(` (and the `it(` / `test(` and object-form `name:` equivalents), so a correctly cited regression test no longer blocks a security PR | #1581 |
 | The primary-quota latch is now set at the `gh` spawn chokepoint, so a rate-limit refusal seen by any of the thirty-odd modules that spawn `gh` directly latches the process and writes the shared signal, instead of only a refusal seen through `runGhCommandRaw` | #1540 |
 | The launcher writes a fresh host-disk reading to the worker log directory on every tick (`host-disk.json`), and the worker adopts it mid-run, so the host-disk estimate can rise when the host frees space and fall when another account consumes it, instead of standing on a launch-time baseline that could only fall | #1550 |
+| An issue lane detaches its worktree from the feature branch when its run ends, and the PR passes release a branch held by one of this host's own lane worktrees before checking it out (any other holder is reported and left alone), so a finished lane no longer blocks the CI-fix pass for the PR it raised; a checkout refused for a held branch is skipped as `branch_held` and no longer spends a CI-fix retry — the retry is recorded only once the PR branch is checked out | #1677 |
 
 ### In detail
 

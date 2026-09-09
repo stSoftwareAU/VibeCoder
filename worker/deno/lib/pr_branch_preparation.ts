@@ -23,6 +23,11 @@ import {
   buildFetchArgs,
   buildPullArgs,
 } from "./git_ref_args.ts";
+import { classifyCloneContention } from "./clone_contention.ts";
+import {
+  detachLaneWorktreeHead,
+  laneWorktreeHoldingBranch,
+} from "./lane_worktree.ts";
 
 /** Subset of GitDeps needed for branch preparation. */
 export type BranchPreparationGitDeps = Pick<GitDeps, "runGitCommand">;
@@ -34,10 +39,13 @@ export type PreparePrBranchOutcome =
     ok: false;
     /**
      * `branch_missing`: origin has no such ref — the PR merged/closed after
-     * it was listed; `checkout_failed`: the branch could not be checked out,
-     * so the working tree is not the PR's.
+     * it was listed; `branch_held`: another worktree on this host has the
+     * branch checked out and it could not be released (Issue #1677) — clone
+     * contention, not the PR's fault; `checkout_failed`: the branch could not
+     * be checked out for any other reason, so the working tree is not the
+     * PR's.
      */
-    reason: "branch_missing" | "checkout_failed";
+    reason: "branch_missing" | "branch_held" | "checkout_failed";
     detail: string;
   };
 
@@ -100,7 +108,7 @@ export async function preparePrBranch(
     }
   }
 
-  const checkoutResult = await git.runGitCommand(
+  let checkoutResult = await git.runGitCommand(
     buildCheckoutArgs(branchName),
     { cwd },
   );
@@ -108,9 +116,46 @@ export async function preparePrBranch(
     const err = checkoutResult.ok
       ? checkoutResult.value.stderr.trim()
       : checkoutResult.error.message;
+    // Issue #1677: branches are shared between the worktrees of one clone,
+    // so git refuses to check out a branch another worktree has out. Live,
+    // the holder was the issue lane that raised the PR and then sat parked
+    // on its branch (the host was under the disk floor, so the lane was
+    // never reused); the CI-fix pass hit this refusal on every cycle for
+    // four hours while the PR stayed red. When the holder is one of this
+    // host's own lane worktrees, detach it and try once more — the same
+    // repair `createFeatureBranchFromBase` makes for the issue path
+    // (Issue #1564). Anything else holding the branch is reported, never
+    // wrenched away.
+    const heldBy = laneWorktreeHoldingBranch(err);
+    if (heldBy !== undefined) {
+      const released = await detachLaneWorktreeHead(heldBy, git.runGitCommand);
+      logger.warn("PR branch is held by a lane worktree on this host", {
+        branchName,
+        heldBy,
+        released,
+      });
+      if (released) {
+        checkoutResult = await git.runGitCommand(
+          buildCheckoutArgs(branchName),
+          { cwd },
+        );
+      }
+    }
+  }
+  if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
+    const err = checkoutResult.ok
+      ? checkoutResult.value.stderr.trim()
+      : checkoutResult.error.message;
     logger.warn("Failed to check out PR branch", { branchName, error: err });
-    // Not on the PR branch: the agent must not run here (Issue #4376).
-    return { ok: false, reason: "checkout_failed", detail: err };
+    // Not on the PR branch: the agent must not run here (Issue #4376). A
+    // branch another worktree still holds is contention, not a PR fault
+    // (Issue #1677): callers must not spend a retry on it.
+    const held = classifyCloneContention(err)?.kind === "branch-held";
+    return {
+      ok: false,
+      reason: held ? "branch_held" : "checkout_failed",
+      detail: err,
+    };
   }
 
   // Best-effort pull to sync with the remote — harmless if already up to date.

@@ -336,6 +336,25 @@ once per issue. Only a repair that does not clear the corruption escalates, with
 the repository named, because at that point the work volume is the fault rather
 than the objects.
 
+**A lane holds no branch once its run ends (Issue #1677).** Refs are shared,
+so a lane worktree parked on a branch blocks every other pass that wants that
+branch in the shared clone. An issue lane used to stay on the feature branch it
+had just pushed until the lane was next reused; on a host under the disk floor
+(no new claims) that was hours, and the CI-fix pass for the very PR the lane
+raised was refused on every cycle — `is already used by worktree at
+…/worktrees/s1/<repo>` — while the PR stayed red, the stall watchdog escalated
+it, and each refused checkout was charged as a CI-fix retry. Now the issue lane
+detaches its worktree when its run ends, PR or not, exactly as the branch-update
+lane always has. The PR passes (`preparePrBranch`,
+`checkoutPrBranchAtRemoteHead`) also recognise the refusal themselves: when the
+holder is one of **this host's own** lane worktrees (`<work
+root>/worktrees/<lane>/<repo>`) they detach it and retry once, the same repair
+the issue path makes for a lane that lost the acquire race (Issue #1564). Any
+other worktree holding the branch is reported in git's words and left alone,
+the skip is `branch_held` — clone contention, not a PR fault — and no CI-fix
+retry is spent on it: a retry is recorded only once the PR branch is actually
+checked out.
+
 `${WORK_DIR}/worktrees` is a reserved work-root name, so the stale-work-dir
 sweep never mistakes it for a disposable clone. The startup orphan-worktree
 sweep may still reclaim a lane worktree that has sat untouched for

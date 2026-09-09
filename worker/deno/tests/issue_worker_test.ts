@@ -2743,6 +2743,118 @@ Deno.test({
   },
 });
 
+/**
+ * Deps whose git runner records every call, with `setupRepo` handing the
+ * lane the worktree path production would (Issue #1677).
+ */
+function depsRecordingDetach(
+  calls: { args: string[]; cwd?: string }[],
+  laneId: string | undefined,
+) {
+  return createMockDeps({
+    git: {
+      setupRepo: ((_repo: string, workDir: string) =>
+        Promise.resolve({
+          ok: true as const,
+          value: laneId === undefined
+            ? `${workDir}/repo`
+            : `${workDir}/worktrees/${laneId}/repo`,
+        })) as unknown as ReturnType<typeof createMockDeps>["git"]["setupRepo"],
+      runGitCommand: ((args: string[], options?: { cwd?: string }) => {
+        calls.push({ args, cwd: options?.cwd });
+        // One commit on the branch, so the completion phase raises a PR.
+        const stdout = args[0] === "log" && typeof args[1] === "string" &&
+            args[1].includes("..HEAD")
+          ? "abc123 Fix login"
+          : "";
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout, stderr: "" },
+        });
+      }) as unknown as ReturnType<
+        typeof createMockDeps
+      >["git"]["runGitCommand"],
+    },
+    github: {
+      runGhCommand: () => Promise.resolve("https://github.com/org/repo/pull/1"),
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "workOnIssue - a lane detaches its worktree from the feature branch once the run ends (Issue #1677)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const ctx = makeContext({ laneId: "s1" });
+    const result = await workOnIssue(ctx, depsRecordingDetach(calls, "s1"));
+    assertEquals(result.success, true);
+
+    // The detach is the run's last word on its worktree, in that worktree.
+    const detaches = calls.filter(
+      (c) => c.args[0] === "checkout" && c.args[1] === "--detach",
+    );
+    assertEquals(detaches.length, 1, JSON.stringify(calls.map((c) => c.args)));
+    const detach = detaches[0]!;
+    assertEquals(detach.cwd, `${ctx.config.workDir}/worktrees/s1/repo`);
+    assertEquals(
+      calls.indexOf(detach),
+      calls.length - 1,
+      "nothing touches the worktree after it is released",
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "workOnIssue - a lane releases its branch even when the run fails after setup (Issue #1677)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const deps = depsRecordingDetach(calls, "s2");
+    deps.claude.runClaudeWithRetry = (() =>
+      Promise.resolve({
+        ok: false,
+        error: new Error("agent crashed"),
+      })) as unknown as typeof deps.claude.runClaudeWithRetry;
+    const ctx = makeContext({ laneId: "s2" });
+    const result = await workOnIssue(ctx, deps);
+    assertEquals(result.success, false);
+
+    const detaches = calls.filter(
+      (c) => c.args[0] === "checkout" && c.args[1] === "--detach",
+    );
+    assertEquals(detaches.length, 1);
+    assertEquals(detaches[0]?.cwd, `${ctx.config.workDir}/worktrees/s2/repo`);
+  },
+});
+
+Deno.test({
+  name:
+    "workOnIssue - the shared clone (no lane id) is never detached (Issue #1677)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const calls: { args: string[]; cwd?: string }[] = [];
+    const result = await workOnIssue(
+      makeContext(),
+      depsRecordingDetach(calls, undefined),
+    );
+    assertEquals(result.success, true);
+    assertEquals(
+      calls.some((c) => c.args[0] === "checkout" && c.args[1] === "--detach"),
+      false,
+    );
+  },
+});
+
 Deno.test(
   "workOnIssue - bare idle-task label (non-wrapper title/body) passes the guard and is worked normally",
   async () => {

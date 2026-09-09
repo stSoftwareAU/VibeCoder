@@ -282,7 +282,13 @@ export function worktreeAddFailureDetail(added: WorktreeAddOutcome): string {
  *
  * Branches are shared between worktrees: a lane that leaves one checked out
  * blocks every other lane from moving it, which is the contention this
- * module exists to avoid. Called after each PR the lane touches.
+ * module exists to avoid. Called after each PR the lane touches, and after
+ * each issue run ends (Issue #1677) — a finished issue lane used to stay on
+ * its PR branch until the lane was next reused, which blocked the CI-fix pass
+ * for that very PR.
+ *
+ * `run` is the git runner to detach with; production passes nothing and gets
+ * the timeout chokepoint, tests pass their recording mock.
  *
  * Best-effort by design — a worktree that cannot be detached is not a
  * failure of the update that just ran; the next `ensureLaneWorktree` reuses
@@ -291,7 +297,47 @@ export function worktreeAddFailureDetail(added: WorktreeAddOutcome): string {
  * @param path - The lane worktree's path
  * @returns True when `HEAD` is detached afterwards
  */
-export async function detachLaneWorktreeHead(path: string): Promise<boolean> {
-  const detached = await runGitCommand(["checkout", "--detach"], { cwd: path });
+export async function detachLaneWorktreeHead(
+  path: string,
+  run: typeof runGitCommand = runGitCommand,
+): Promise<boolean> {
+  const detached = await run(["checkout", "--detach"], { cwd: path });
   return detached.ok && detached.value.code === 0;
+}
+
+/**
+ * The lane worktree holding a branch, when git refused a checkout for that
+ * reason (Issue #1564, Issue #1677).
+ *
+ * Branches are shared between the worktrees of one clone, so `git checkout`
+ * of a branch another worktree has out fails with
+ * `fatal: '<branch>' is already used by worktree at '<path>'`. Returns that
+ * path only when it is one of **this host's own lane worktrees** —
+ * `<work root>/worktrees/<lane>/<repo>`, the shape {@link laneWorktreePath}
+ * builds. A branch held by anything else (a developer's own worktree, a path
+ * git names that this module does not recognise) is reported rather than
+ * wrenched away: the repair is for the fleet's own contention, not for
+ * whatever else happens to share the clone.
+ *
+ * Shared by the issue path (`createFeatureBranchFromBase`) and the PR
+ * passes (`preparePrBranch`, `checkoutPrBranchAtRemoteHead`): before #1677
+ * only the issue path recognised the refusal, so a finished issue lane parked
+ * on its PR branch blocked the CI-fix pass for that PR on every cycle.
+ *
+ * @param stderr - git's stderr from the refused checkout
+ * @returns The lane worktree's path, or `undefined` when the refusal is not
+ *   a held branch or the holder is not one of this host's lane worktrees
+ */
+export function laneWorktreeHoldingBranch(stderr: string): string | undefined {
+  const match = stderr.match(/is already used by worktree at '([^']+)'/);
+  const path = match?.[1];
+  if (path === undefined) return undefined;
+
+  // `<...>/<LANE_WORKTREE_ROOT>/<lane>/<repo>`: the lane root must be the
+  // third segment from the end, so a merely similar path does not qualify.
+  const segments = path.split("/").filter((segment) => segment !== "");
+  if (segments.length < 3) return undefined;
+  return segments[segments.length - 3] === LANE_WORKTREE_ROOT
+    ? path
+    : undefined;
 }
