@@ -652,6 +652,65 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/21019403 \
   --input infra/rulesets/main.json
 ```
 
+## Never push to a ruleset-gated PR head
+
+The rule above protects a *branch* from being locked. This one protects the
+*agent passes* from a branch that is already locked (Issue #1679).
+
+`stSoftwareAU/GRQ#4702` is the case. Its head is the milestone branch
+`milestone/4690-…`, and GRQ's ruleset applies `required_status_checks` to
+`milestone/**`, so a commit can only reach that branch through a pull request.
+The spelling, CI-fix and merge-conflict passes did not know that: each checked
+the head out, let the agent commit on it, and pushed —
+
+```text
+remote: error: GH013: Repository rule violations found for
+  refs/heads/milestone/4690-….
+remote: - 2 of 2 required status checks are expected.
+```
+
+— once per worker run, for as long as the PR stayed open. Each refusal spent a
+merge-conflict attempt or a CI-fix retry on a push that could never land, and
+the spelling pass then claimed the refused push had landed.
+
+So every pass asks
+[`worker/deno/lib/gated_head_guard.ts`](../worker/deno/lib/gated_head_guard.ts)
+**before** the branch is checked out:
+
+```mermaid
+flowchart TD
+    A[PR pass picks up a PR] --> B{"Head is a milestone branch?"}
+    B -- no --> W[Work the PR as before]
+    B -- yes --> C[GET /rules/branches/head]
+    C -- unreadable --> W
+    C --> D{"required_status_checks<br/>or pull_request rule?"}
+    D -- no --> W
+    D -- yes --> E[Stand down: no agent run,<br/>no attempt, no retry]
+    E --> F[One comment per branch,<br/>naming the rule]
+```
+
+- **The agent never runs on a gated head**, so nothing is committed that cannot
+  be pushed, and no attempt or retry is spent — the guard runs before
+  `recordCiCheckRetry` and before the merge-conflict attempt marker is posted.
+- **One comment per branch, not one per run.** The comment carries a hidden
+  `<!-- vibe-gated-head branch="…" -->` marker; a later run that finds the
+  marker stays silent. A comment thread that cannot be read posts nothing and
+  says so in the log — a duplicate every run is the noise this removes.
+- **Only `milestone/**` heads are assessed.** `GET /rules/branches/{branch}`
+  does not account for the caller's bypass permission, so assessing every head
+  would stand the passes down on repos where the fleet account can push
+  perfectly well. A milestone head is the case #589 already settled: changes
+  land there through a PR into the milestone branch.
+- **Unreadable rules fail open.** The push is attempted exactly as before, and
+  a genuine refusal is still loud on stderr. Failing closed would stop every
+  milestone PR being worked on a transient API blip.
+
+A claim that the fix was pushed is now made against the remote in all three
+passes: the spelling pass adopted `verifyPushLanded()`
+([`push_claim_verification.ts`](../worker/deno/lib/push_claim_verification.ts),
+Issue #579) and treats a failed commit-and-push as "not pushed" whatever the
+local HEAD did.
+
 ## Failure and recovery modes
 
 | Situation                                           | Worker behaviour                                           | Recovery                                                                       |
@@ -666,6 +725,7 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/21019403 \
 | Default branch **cannot be resolved**               | Push allowed (fail-open)                                   | Feature-branch pushes are never blocked by a transient lookup failure          |
 | Ruleset write **fails for one repo**                | Logged as a non-fatal warning                              | Setup continues; the next setup run retries idempotently                       |
 | Required check is **unsatisfiable** on the repo     | Check is dropped from the required set                     | The merge is never blocked by a check that can never pass                      |
+| PR head is a **ruleset-gated** `milestone/**` branch | Pass stands down before the agent runs; one comment names the rule | Changes land through a PR into the milestone branch, or an operator adds a bypass actor |
 
 ## Related implementation
 
@@ -678,6 +738,9 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/21019403 \
 - [`worker/deno/lib/reported_check_names.ts`](../worker/deno/lib/reported_check_names.ts)
   — `getReportedCheckNames()`, the genuinely-reported check names the candidates
   are intersected with.
+- [`worker/deno/lib/gated_head_guard.ts`](../worker/deno/lib/gated_head_guard.ts)
+  — `assessGatedHead()` / `guardGatedHead()`, the stand-down the spelling,
+  CI-fix and merge-conflict passes make on a head no direct push can reach.
 - [`worker/deno/lib/branch_push_policy.ts`](../worker/deno/lib/branch_push_policy.ts)
   — `assessBranchPushPolicy()`, the direct-push / opt-out detection that keeps a
   data repo's branch unlocked.
