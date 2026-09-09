@@ -26,6 +26,10 @@ import {
   runCoreLoop,
 } from "../lib/run_core.ts";
 import { InFlightRepoRegistry } from "../lib/in_flight_repos.ts";
+import { runClaudeWithRetry } from "../lib/claude_runner.ts";
+import { isRateLimitActive } from "../lib/rate_limit_signal.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 import { LANE_ROTATION_FILE } from "../lib/lane_rotation.ts";
 
 // ---------------------------------------------------------------------------
@@ -668,3 +672,74 @@ Deno.test(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// 5c. A Claude usage limit does not end the run in a quota pause (Issue
+//     #1669). The exit-75 pause is reached from the durable rate-limit
+//     signal — `isRateLimitActive()` → `pauseUntilRateLimitReset()` → a wait
+//     past the run-duration cap — and the usage branch no longer writes that
+//     signal, so the loop keeps dispatching instead of idling the host.
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "run_core resume - a Claude usage limit writes no signal, so the run never quota-pauses (Issue #1669)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const workDir = await Deno.makeTempDir({ prefix: "ul_no_pause_" });
+    try {
+      // A real usage-limit refusal, through the real runner, against the
+      // work volume run_core reads its signal from.
+      const body =
+        "printf '%s\\n' \"You've hit your session limit\" >&2\nexit 1\n";
+      const claude = await withAgentStub(
+        body,
+        (stub) =>
+          runClaudeWithRetry({
+            clock: fakeClock(),
+            prompt: "test",
+            model: "opus",
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            agentBinaryPath: stub.path,
+            workDir,
+          }, { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 }),
+        { prefix: "ul_no_pause_stub_" },
+      );
+      assert(claude.ok);
+      assertEquals(claude.value.exitCode, 2);
+      assert(claude.value.usageLimit, "the refusal must be a usage limit");
+
+      // The loop reads the same volume the runner was given.
+      let nowValue = 0;
+      const deps = createMockDeps({
+        isRateLimitActive: async () => {
+          const status = await isRateLimitActive(workDir);
+          return status.ok && status.value.active;
+        },
+        getRateLimitRemainingSeconds: async () => {
+          const status = await isRateLimitActive(workDir);
+          return status.ok ? status.value.remainingSeconds : 0;
+        },
+        now: () => nowValue,
+        sleep: (ms?: number) => {
+          nowValue += ms ?? 30000;
+          return Promise.resolve();
+        },
+      });
+
+      const config = createDefaultRunCoreConfig();
+      // Shorter than the hour a usage-limit signal would have asked for, so
+      // a signal that was written would end this run as a quota pause.
+      config.runDurationSeconds = 1;
+
+      const result = await runCoreLoop(config, deps);
+
+      assertEquals(result.quotaPaused, false);
+      assertEquals(result.quotaResetEpochMs, undefined);
+    } finally {
+      await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+    }
+  },
+});

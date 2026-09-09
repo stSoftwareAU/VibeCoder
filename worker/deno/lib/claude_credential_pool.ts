@@ -107,6 +107,24 @@ export interface ClaudeExhaustedWindow {
   readonly resetAt: number;
 }
 
+/** What the pool holds right now, from its snapshots (Issue #1669). */
+export interface ClaudePoolStatus {
+  /** How many pool candidates this host has; fewer than two is "no pool". */
+  readonly candidates: number;
+  /**
+   * How many of them are **known** to be spent. Equal to
+   * {@link candidates} means the pool as a whole has nothing to spend; less
+   * than it means at least one candidate is either usable or unmeasured, and
+   * an unmeasured one is not a reason to stop working.
+   */
+  readonly spent: number;
+  /**
+   * The soonest five-hour reset among the measured candidates, in epoch
+   * milliseconds, or null when none reported one.
+   */
+  readonly soonestFiveHourReset: number | null;
+}
+
 /** One token's last known budget, and when it was observed. */
 export interface ClaudeBudgetSnapshot {
   /** The figures themselves. */
@@ -180,6 +198,41 @@ export interface ClaudeCredentialPool {
    */
   selectEligible(now?: number): Promise<ProviderTokenFile | null>;
 
+  /**
+   * What the pool looks like right now, from the snapshots it already holds
+   * (Issue #1669).
+   *
+   * {@link selectEligible} answers null for three different hosts — one with
+   * no pool, one whose every candidate is spent, and one whose figures could
+   * not be measured — and they need opposite treatment: only the spent pool
+   * must stop a spawn. This is the reading that tells them apart. It never
+   * probes, so a caller asks it straight after a selection, when the
+   * snapshots are as fresh as that selection made them.
+   */
+  poolStatus(now?: number): Promise<ClaudePoolStatus>;
+
+  /**
+   * The label of the credential the run environment currently carries, or
+   * null when it carries none this pool knows (Issue #1669).
+   *
+   * Set by {@link selectToken} (the start-up choice `checkWorkerCredentials`
+   * then exports) and by {@link applySelection} (every later switch), so a
+   * usage limit is recorded against the token that actually hit it. Before
+   * either has run it is derived from the environment — the candidate whose
+   * value the Claude token variable holds — rather than assumed, so a limit
+   * hit before the first switch is still recorded against the right token.
+   * The comparison is in memory and no token value is logged by it.
+   */
+  activeLabel(): Promise<string | null>;
+
+  /**
+   * The id of the provider this pool holds tokens for (Issue #1669).
+   *
+   * A worker process can drive more than one vendor, and another vendor's
+   * spawn must be neither gated on these tokens nor switched by them.
+   */
+  providerId(): string;
+
   /** The start-up selector: the ranking winner, with no filter at all. */
   readonly selectToken: ProviderTokenSelector;
 
@@ -252,6 +305,8 @@ export function createClaudeCredentialPool(
   let discovered: Promise<ProviderTokenFile[]> | null = null;
   /** The provider descriptor, resolved on first use rather than at build. */
   let provider: AgentProviderDescriptor | null = null;
+  /** The label the run environment currently carries (Issue #1669). */
+  let active: string | null = null;
 
   return {
     recordBudget(label, budget, observedAtMs) {
@@ -311,6 +366,54 @@ export function createClaudeCredentialPool(
       return pool[winner.index] ?? null;
     },
 
+    providerId() {
+      return poolProvider().id;
+    },
+
+    async poolStatus(now = clock()) {
+      const pool = await candidates();
+      // The same exhaustion rule the selection applies, read off the
+      // snapshots rather than re-derived here, so "spent" cannot come to
+      // mean one thing to the gate and another to the ranking.
+      const ranking = rankClaudeTokenBudgets(
+        pool.map((token) =>
+          snapshots.get(token.label)?.budget ??
+            ({
+              known: false,
+              label: token.label,
+              reason: "network-error",
+              detail: "never measured",
+            } as ClaudeTokenBudget)
+        ),
+        now,
+      );
+      let soonest: number | null = null;
+      for (const candidate of ranking.ranked) {
+        if (!candidate.budget.known) continue;
+        for (const window of candidate.budget.windows) {
+          if (window.window !== "five_hour") continue;
+          if (soonest === null || window.resetAt < soonest) {
+            soonest = window.resetAt;
+          }
+        }
+      }
+      return {
+        candidates: pool.length,
+        spent: ranking.ranked.filter((candidate) => candidate.exhausted).length,
+        soonestFiveHourReset: soonest,
+      };
+    },
+
+    async activeLabel() {
+      if (active !== null) return active;
+      const lookup = options.env ?? ((name: string) => Deno.env.get(name));
+      for (const token of await candidates()) {
+        if (token.name === null || token.value === null) continue;
+        if (lookup(token.name) === token.value) return token.label;
+      }
+      return null;
+    },
+
     selectToken: async (tokens, provider) => {
       // Every enabled provider is offered this selector, and this pool holds
       // one vendor's snapshots, keyed by a file stem every vendor reproduces.
@@ -320,7 +423,7 @@ export function createClaudeCredentialPool(
         return await fallback(tokens, provider);
       }
       const pool = providerPoolCandidates(tokens);
-      if (pool.length < 2) return await fallback(tokens, provider);
+      if (pool.length < 2) return remember(await fallback(tokens, provider));
       // Discovery has already happened upstream; reuse it rather than reading
       // the credential directory a second time.
       discovered ??= Promise.resolve(pool);
@@ -329,9 +432,9 @@ export function createClaudeCredentialPool(
       // A start never refuses: the guard and exhaustion are logged as the
       // reason, not applied as a filter. Ranking drops nothing, so a pool of
       // two always has a winner.
-      return ranking.winner === null
-        ? null
-        : pool[ranking.winner.index] ?? null;
+      return remember(
+        ranking.winner === null ? null : pool[ranking.winner.index] ?? null,
+      );
     },
 
     applySelection(token, setEnv) {
@@ -359,12 +462,22 @@ export function createClaudeCredentialPool(
       // Replacing, not adding: exactly one Claude token variable is left in
       // the environment, carrying the newly selected file's value.
       setEnv(name, value);
+      remember(token);
       log(
         `${LOG_PREFIX}: run environment switched to ${token.label} (${name})`,
       );
       return name;
     },
   };
+
+  /**
+   * Record which token the run environment now carries (Issue #1669), and
+   * pass it straight back so a caller can wrap a return value in it.
+   */
+  function remember(token: ProviderTokenFile | null): ProviderTokenFile | null {
+    if (token !== null) active = token.label;
+    return token;
+  }
 
   /** The pool candidates for this host, discovered at most once. */
   function candidates(): Promise<ProviderTokenFile[]> {

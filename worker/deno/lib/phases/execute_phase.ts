@@ -1007,11 +1007,17 @@ async function executeClaudeBody(
   // branch. This used to fall through to "no changes" (a silent
   // early_exit with no infrastructure retry and no cooldown class). Name
   // it so `detectFailureCategory` classifies it as rate_limit →
-  // infrastructure: the issue is not blamed, and the durable signal the
-  // runner wrote pauses the loop.
+  // infrastructure: the issue is not blamed. Since Issue #1669 a usage
+  // limit pauses nothing — the credential pool records the window as spent
+  // and the next spawn either switches credential or is refused.
   if (claudeResult.value.exitCode === 2) {
     const limit = claudeResult.value.usageLimit;
-    const heading = limit
+    // Issue #1669: the gate refuses a spawn when every credential in the
+    // pool is spent, so this exit 2 can also mean "no agent ran at all".
+    const refused = claudeResult.value.noEligibleCredential === true;
+    const heading = refused
+      ? "No Claude credential with quota — the agent was not run"
+      : limit
       ? "Claude usage limit reached (subscription window)"
       : "Claude rate limit — retries exhausted";
     const elapsedSeconds = Math.round(
@@ -1026,11 +1032,17 @@ async function executeClaudeBody(
       clarityStatus: state.clarityStatus,
       lastOutputSnippet: snippet || undefined,
     }) + (limit
-      ? ` Agent work is paused for ${limit.waitSeconds}s${
+      ? ` The subscription window reopens in about ${limit.waitSeconds}s${
         limit.resetEpochMs
-          ? ` (until ${new Date(limit.resetEpochMs).toISOString()})`
+          ? ` (${new Date(limit.resetEpochMs).toISOString()})`
           : ""
-      }.`
+      }.${
+        refused
+          ? " No invocation was billed — every credential in the pool is " +
+            "spent (Issue #1669)."
+          : " The credential pool has recorded that credential's window as " +
+            "spent (Issue #1669)."
+      }`
       : "");
     logger.warn(heading, { exitCode: 2, waitSeconds: limit?.waitSeconds });
     return { status: "failure", reason };

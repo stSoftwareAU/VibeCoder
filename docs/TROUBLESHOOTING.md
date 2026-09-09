@@ -770,12 +770,12 @@ Two different things, handled two different ways:
   exhausted budget. It prefers the CLI's structured stream-json
   `rate_limit_event` (`resetsAt` and `unifiedWindows`) when one is on
   stdout, and otherwise parses the reset time from the message when there
-  is one (`resets 3am`, `|<epoch>`), writes the durable `.rate_limit_signal`
-  in `WORK_DIR` for that long (an hour when no time is given), and the
-  main loop pauses agent work until the window resets. Every other worker
-  on the same volume sees the signal and waits too. The issue is **not**
-  blamed: the failure classifies as infrastructure, so it keeps its
-  `failed-once` retry rather than being labelled failed.
+  is one (`resets 3am`, `|<epoch>`). Since **Issue #1669** it writes **no**
+  `.rate_limit_signal` at all: the window belongs to the *credential*, not
+  to the host, so the exhaustion is recorded against that credential in the
+  pool and the host keeps working. The issue is **not** blamed: the failure
+  classifies as infrastructure, so it keeps its `failed-once` retry rather
+  than being labelled failed.
 
 Both stderr and stdout are scanned — the CLI writes refusals to stderr, and a
 refused run has no stream-json `result` on stdout at all. The structured
@@ -783,12 +783,44 @@ refused run has no stream-json `result` on stdout at all. The structured
 own: a rejected five-hour or seven-day event is a usage limit even when
 there is no assistant prose.
 
-The agent **health check** returns the same classification: a limited probe
-writes the signal instead of the loop re-running a billed probe every 30 s for
-the whole window.
+### The credential switch (Issue #1669)
 
-Look for `USAGE_LIMIT` / `RATE_LIMIT` security-log lines and `Rate limit signal
-active — pausing until reset …` in the worker log.
+Every agent spawn is preceded by a selection from the Claude credential pool
+(Issue #1668), so a usage limit switches subscription rather than idling the
+host:
+
+```mermaid
+flowchart TD
+    S["Spawn requested"] --> P{"Two or more<br/>pool tokens?"}
+    P -- no --> D["Spawn as before<br/>(nothing consulted)"]
+    P -- yes --> E{"Any credential<br/>with quota?"}
+    E -- yes --> A["Switch the run environment<br/>to that token, then spawn"]
+    E -- no --> R["Refuse the spawn:<br/>exit 2, noEligibleCredential<br/>— no invocation billed"]
+    A --> U{"Usage limit<br/>hit?"}
+    U -- yes --> X["Record the window spent<br/>on that credential"] --> S
+    style R fill:#9d0208,stroke:#6a040f,color:#fff
+    style A fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+No `.rate_limit_signal` is written on either path, so the fleet-wide pause
+that used to drain every slot pool on the volume does not happen: the runner
+returns without spawning and the dispatch loop moves to the next priority.
+
+The agent **health check** does the same: a usage-limit probe records the
+window as spent, switches to an eligible credential and reports **healthy**
+(one probe, not two). With none eligible it reports unhealthy with **no**
+pause and no signal — the loop still skips that cycle, as it does for any
+unhealthy agent, but no other worker on the volume is stopped by it. A rate
+limit — not a subscription window — keeps its old exit-3 pause, and so does a
+host with a single token. A pool whose budgets could not be **measured** is
+not a spent pool: the spawn goes ahead on the credential the run already
+carries, because refusing on figures we do not have would idle a host that
+may have plenty of quota.
+
+Look for `USAGE_LIMIT` / `NO_ELIGIBLE_CREDENTIAL` security-log lines and
+`[SECURITY] claude token pool` selection lines in the worker log. A
+`Rate limit signal active — no further claims` line **following** a
+`USAGE_LIMIT` line is the regression this change removed.
 
 ## 🔌 Circuit breaker activated (worker backing off)
 
