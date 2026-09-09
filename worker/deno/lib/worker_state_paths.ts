@@ -32,6 +32,9 @@ export const HEARTBEAT_MARKER_FILE_PREFIX = ".heartbeat-marker_";
 
 /** Exact filename of the cached default-branch name (Issue #1269). */
 export const DEFAULT_BRANCH_CACHE_FILE = ".vibe_default_branch";
+// ^ No longer written by the worker: `setupRepo` keeps the cache in
+// `.git/vibe/default_branch` since Issue #1652. Kept in the matcher so a copy
+// an older worker left in a clone is still unstaged rather than committed.
 
 /**
  * Exact filename of the agent's PR reply (Issue #1711). Written by the agent
