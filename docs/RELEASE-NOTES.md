@@ -26,6 +26,7 @@ if your worker login is read-only on any monitored repository.**
 
 | Change | Issue |
 | ------ | ----- |
+| The run-ending path waits (bounded by the slot drain grace) for a terminated agent's slot to finish its claim release and callbacks before the exit cleanup's descendant sweep, and the pool drain settles every slot before surfacing a sibling's error, so a run cut short by the mid-cycle quota pause still lands its health record and archive | #1815 |
 | The auto-merge sweep skips draft PRs (announced once per PR, not once per cycle) and a `gh pr merge --auto` refused with "still a draft" is a typed `draft` outcome logged at info, not a failure retried every cycle | #1800 |
 | The post-creation reserved-label strip reads who applied each label and keeps one a login outside the fleet granted, so a maintainer labelling fresh planning sub-issues `work-on` while the run is still closing no longer has the grant removed; the summary records kept labels and the log names the adder | #1791 |
 | The CI-nudge pass asks the gated-head guard before its empty-commit push, so a milestone summary PR whose head refuses direct pushes is recorded as a no-op nudge and left for the milestone completion path instead of a GH013 refusal every cycle | #1762 |

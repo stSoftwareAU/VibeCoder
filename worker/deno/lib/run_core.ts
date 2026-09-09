@@ -2978,7 +2978,9 @@ async function runIssueScanPool(
 
   const slots: Promise<void>[] = [];
   for (let i = 0; i < slotCount; i++) {
-    slots.push(runSlot(i, config, deps, tracker, endTime, pool));
+    slots.push(
+      trackSlotRun(runSlot(i, config, deps, tracker, endTime, pool)),
+    );
   }
   await drainSlots(slots, deps, pool);
   // Every slot is drained; now surface the primary rate limit one of them
@@ -3010,7 +3012,17 @@ async function drainSlots(
   deps: RunCoreDeps,
   pool: SlotPoolState,
 ): Promise<void> {
-  const all = Promise.all(slots).then(() => "drained" as const);
+  // Issue #1815: settle EVERY slot before surfacing a rejection. With
+  // `Promise.all` a slot that threw rejected the drain at once and the
+  // siblings ran on unawaited — their agents were then terminated at run
+  // end and their scheduled-release tails (claim release, failure and
+  // always callbacks) raced the exit cleanup's descendant sweep, which
+  // killed the callbacks mid-flight and lost the run's record.
+  const all = Promise.allSettled(slots).then((results) => {
+    const rejected = results.find((r) => r.status === "rejected");
+    if (rejected && rejected.status === "rejected") throw rejected.reason;
+    return "drained" as const;
+  });
   const graceMs = Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000;
   // Watch for the shutdown flag on a short REAL timer (not the injected
   // sleep, which tests use as a fake clock) and measure the grace on the
@@ -3091,6 +3103,64 @@ async function drainSlots(
         },
       );
     }
+  }
+}
+
+/**
+ * Slot runs still executing, whatever the pool did with them (Issue #1815).
+ *
+ * A slot the drain abandoned at the shutdown grace (Issue #4182), or that
+ * the pool stopped waiting for, keeps running: its agent is terminated at
+ * run end (Issue #4369) and its handler then runs the scheduled-release
+ * tail — the claim release and the failure/always callbacks. The run-ending
+ * path awaits this set, bounded, before the exit cleanup's descendant sweep
+ * can kill those callbacks; on VibeCoder#1773 the sweep ran one second
+ * after the failure callback started and no archive or health record ever
+ * landed.
+ */
+const liveSlotRuns = new Set<Promise<void>>();
+
+/** Track a slot run until it settles. */
+function trackSlotRun(run: Promise<void>): Promise<void> {
+  liveSlotRuns.add(run);
+  run.finally(() => liveSlotRuns.delete(run)).catch(() => {});
+  return run;
+}
+
+/** Slot runs still executing. Exported for tests. */
+export function liveSlotRunCount(): number {
+  return liveSlotRuns.size;
+}
+
+/**
+ * Wait, bounded, for every still-running slot to finish its tail
+ * (Issue #1815). Called on the run-ending path after the active agents have
+ * been terminated and before the exit cleanup. A tail that outlives the
+ * grace is named, so a missing callback record is never silent.
+ */
+async function settleLiveSlotTails(
+  deps: RunCoreDeps,
+  graceMs: number,
+): Promise<void> {
+  const pending = [...liveSlotRuns];
+  if (pending.length === 0) return;
+  deps.log(
+    `Run ending with ${pending.length} slot run(s) still finishing — ` +
+      `waiting up to ${
+        Math.round(graceMs / 1000)
+      }s for their release and callbacks before the exit cleanup (Issue #1815)`,
+  );
+  // The injected sleep, so a test's fake clock bounds the wait as it bounds
+  // the drain's grace, and production waits real seconds.
+  const grace = deps.sleep(graceMs).then(() => "grace" as const);
+  const settled = Promise.allSettled(pending).then(() => "settled" as const);
+  const outcome = await Promise.race([settled, grace]);
+  if (outcome === "grace" && liveSlotRuns.size > 0) {
+    deps.logError(
+      `${liveSlotRuns.size} slot run(s) still finishing after the ` +
+        `${Math.round(graceMs / 1000)}s grace — the exit cleanup may cut ` +
+        `their callbacks short (Issue #1815)`,
+    );
   }
 }
 
@@ -5462,6 +5532,14 @@ export async function runCoreLoop(
         await deps.terminateActiveAgentRuns("run ending");
       } catch { /* best-effort */ }
     }
+    // Issue #1815: a terminated agent's slot is still running its tail —
+    // the scheduled-release classification, the claim release, the
+    // failure and always callbacks. Wait for it, bounded, so the exit
+    // cleanup's descendant sweep cannot kill the callbacks mid-flight.
+    await settleLiveSlotTails(
+      deps,
+      Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000,
+    );
 
     // --- Planned shutdown ---
     if (!exitedOnFailures) {
