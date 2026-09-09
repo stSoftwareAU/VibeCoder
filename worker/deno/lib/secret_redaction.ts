@@ -43,7 +43,6 @@
  */
 
 import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
-import { isCredentialShapedValue } from "./secret_assignment_value.ts";
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -58,6 +57,76 @@ interface RedactionRule {
   readonly name: string;
   readonly pattern: RegExp;
   readonly replace: (match: string, ...groups: string[]) => string;
+}
+
+/**
+ * Markdown structure that can open a `secret-assignment` value (Issue #1727).
+ *
+ * Every alternative is anchored and carries no nested quantifier, so the test
+ * is linear in the value length (the Issue #3942 linearity rule). Some markers
+ * (`#`, `>`, `|`, a spaced list bullet) cannot reach the predicate today,
+ * because the rule already requires an alphanumeric inside the value's first
+ * run of non-space characters — they are listed so the intent survives a
+ * future loosening of that lookahead.
+ */
+const MARKDOWN_VALUE_START =
+  /^(?:`|~{3,}|#|>|\||!?\[|[-*+](?:\s|$)|\d+[.)](?:\s|$))/;
+
+/** A value in matching quotes: explicit assignment syntax, not prose. */
+const QUOTED_VALUE = /^(?:"[^"]*"|'[^']*')$/;
+
+/**
+ * A single word with no digit, symbol or internal capital — the shape of an
+ * English sentence's first word, and of no credential worth masking.
+ */
+const PLAIN_WORD = /^[A-Za-z][a-z]*$/;
+
+/**
+ * Shortest cross-line value still treated as a credential. Eight characters
+ * is shorter than anything a credential generator emits and long enough to
+ * exclude the short words prose opens with.
+ */
+const MIN_CROSS_LINE_LENGTH = 8;
+
+/**
+ * Report whether a matched `secret-assignment` value is credential-shaped
+ * (Issue #1727).
+ *
+ * The rule's separator — `["']?\s*[=:]\s*` — spans line breaks, so a prose
+ * line ending in a credential-ish label adopted the *next* non-blank line as
+ * the assignment's value. A PR body whose lead-in read
+ * `… now picks a credential:` had the Mermaid fence on the following line
+ * published as the placeholder, and the diagram `CODING-STANDARDS.md` requires
+ * stopped rendering; the prose variant masked a sentence's first word.
+ *
+ * The label side of the rule is deliberately blunt and stays that way — it
+ * catches real secrets. Only the value is judged, on two axes:
+ *
+ *  - **Markdown structure is never a credential**, wherever it appears. A
+ *    fence, an inline-code span, a heading, a list marker, a table pipe or an
+ *    image is excluded outright; no credential opens with those bytes, so the
+ *    exclusion costs no coverage.
+ *  - **A value on a later line than its label must earn the mask.** An inline
+ *    `secret_scanning: enabled` or `PASSWORD=12345` is genuine assignment
+ *    syntax and is masked exactly as before; a value the separator reached
+ *    across a line break is prose until it looks like a credential.
+ *
+ * Exported for direct boundary tests; the rule below is its only caller.
+ *
+ * @param value - The value the `secret-assignment` rule captured.
+ * @param sameLine - True when the separator did not cross a line break.
+ * @returns True when the value should be replaced with the placeholder.
+ */
+export function isCredentialShapedValue(
+  value: string,
+  sameLine: boolean,
+): boolean {
+  if (MARKDOWN_VALUE_START.test(value)) return false;
+  if (sameLine) return true;
+  if (QUOTED_VALUE.test(value)) return true;
+  // Emphasis markers belong to the rendering, not to the value inside them.
+  const scalar = value.replace(/^[*_]+/, "").replace(/[*_]+$/, "");
+  return scalar.length >= MIN_CROSS_LINE_LENGTH && !PLAIN_WORD.test(scalar);
 }
 
 /** Shortest wrap width the PEM-body fallback treats as a "long" line. */

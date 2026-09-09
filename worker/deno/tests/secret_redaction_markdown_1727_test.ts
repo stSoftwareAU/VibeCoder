@@ -17,10 +17,14 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { isCredentialShapedValue } from "../lib/secret_assignment_value.ts";
-import { redactGhBodyArgs, redactGhBodyText } from "../lib/gh_body_redaction.ts";
+
+import {
+  redactGhBodyArgs,
+  redactGhBodyText,
+} from "../lib/gh_body_redaction.ts";
 import {
   containsSecret,
+  isCredentialShapedValue,
   REDACTION_PLACEHOLDER,
   redactSecrets,
 } from "../lib/secret_redaction.ts";
@@ -61,7 +65,8 @@ Deno.test("Issue #1727 - every credential label spelling keeps the fence", () =>
     ]
   ) {
     for (const gap of ["\n\n", "\n"]) {
-      const body = `${label}${gap}\`\`\`mermaid\nflowchart TD\n    A --> B\n\`\`\`\n`;
+      const body =
+        `${label}${gap}\`\`\`mermaid\nflowchart TD\n    A --> B\n\`\`\`\n`;
       assertEquals(redactSecrets(body), body, `${label}${gap}`);
       assertEquals(containsSecret(body), false, `${label}${gap}`);
     }
