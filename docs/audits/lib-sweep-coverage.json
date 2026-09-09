@@ -961,6 +961,21 @@
         "worker/deno/lib/claude_output_adapter.ts",
         "worker/deno/lib/codex_output_adapter.ts"
       ]
+    },
+    {
+      "issue": 1696,
+      "chunk": "12o",
+      "title": "the shared provider quota scheduler",
+      "ledger": "docs/audits/security-sweep-1696-provider-quota.md",
+      "definition": "modules added to lib/ after 12a-12n recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/codex_quota.ts",
+        "worker/deno/lib/provider_fallback_policy.ts",
+        "worker/deno/lib/provider_quota.ts",
+        "worker/deno/lib/provider_quota_scheduler.ts",
+        "worker/deno/lib/provider_quota_scope.ts"
+      ]
     }
   ]
 }

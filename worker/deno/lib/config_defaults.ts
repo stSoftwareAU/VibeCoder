@@ -1374,6 +1374,7 @@ export function buildDefaultWorkerConfig(
     // Issue #4108: only the active provider is enabled unless a deployment
     // enables more, so an existing deployment mounts exactly what it did.
     enabledAgentProviders: [DEFAULT_AGENT_PROVIDER_ID],
+    agentProviderFallback: [],
     claudeModel: "",
     // Issue #2654: configured best planning model for degraded-model detection.
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,

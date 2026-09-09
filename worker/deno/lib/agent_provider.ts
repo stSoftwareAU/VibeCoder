@@ -75,7 +75,7 @@ import {
   resolveCodexModel,
 } from "./codex_executor.ts";
 import {
-  buildCodexChildEnv,
+  buildIsolatedCodexChildEnv,
   CODEX_ENV_DENYLIST,
   CODEX_ENV_SECRET_ALLOWLIST,
 } from "./codex_env.ts";
@@ -658,7 +658,14 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {
-    return parentEnv ? buildCodexChildEnv(parentEnv) : buildCodexChildEnv();
+    const source = parentEnv ?? Deno.env.toObject();
+    // Issue #1698: only the selected account's Codex secrets are copied
+    // back after the denylist strip. The parent object is not mutated.
+    return buildIsolatedCodexChildEnv(source, {
+      openaiApiKey: source.OPENAI_API_KEY,
+      codexApiKey: source.CODEX_API_KEY,
+      codexHome: source.CODEX_HOME,
+    });
   },
 
   isAuthError(output: string): boolean {
