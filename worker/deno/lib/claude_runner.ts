@@ -240,6 +240,14 @@ export interface ClaudeRunResult {
    * agent work; `resetEpochMs` is present when the message named a time.
    */
   usageLimit?: { waitSeconds: number; resetEpochMs?: number };
+  /**
+   * No credential in the pool passed the pre-spawn quota gate, so **no child
+   * was spawned** (Issue #1669). Carried beside {@link usageLimit} so a phase
+   * can tell "this token is spent, another may serve" from "every token is
+   * spent": the execute phase switches credential on the first and parks the
+   * work on the issue branch on the second (Issue #1670).
+   */
+  noEligibleCredential?: boolean;
   /** Path to the output file (if written). */
   outputFile?: string;
   /** The output text from Claude. */
