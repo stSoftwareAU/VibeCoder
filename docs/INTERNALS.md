@@ -2049,6 +2049,12 @@ claim at two points, with one decision function:
   the #174/#218 paths that know how to handle it.
 - **`pre-pr`** — immediately before `gh pr create`. The issue state, plus the PR
   that references the issue.
+- **On a diverged HEAD** (Issue #1793) — when the #4286 reconcile guard finds
+  the agent committed on a branch of its own, completion asks the `pre-write`
+  question before calling that a failure. A closed issue means the work landed
+  elsewhere — GRQ-AutoTrader#127 was resolved through the agent's own PR into
+  the milestone branch — and the run takes the stale-claim exit, naming the
+  agent's branch; an open issue keeps the #4286 failure.
 
 Two rules, most decisive first: **the issue closed** during the cycle; and **a
 merged PR already carries this run's branch**, decided by `pr_run_provenance.ts`
