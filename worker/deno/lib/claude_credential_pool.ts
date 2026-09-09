@@ -255,6 +255,8 @@ export function createClaudeCredentialPool(
   const inFlight = new Map<string, Promise<ClaudeTokenBudget>>();
   /** Discovery, resolved at most once and shared by concurrent callers. */
   let discovered: Promise<ProviderTokenFile[]> | null = null;
+  /** The provider descriptor, resolved on first use rather than at build. */
+  let provider: AgentProviderDescriptor | null = null;
 
   return {
     recordBudget(label, budget, observedAtMs) {
@@ -313,8 +315,12 @@ export function createClaudeCredentialPool(
       const pool = poolCandidatesOf(tokens);
       if (pool.length < 2) return await fallback(tokens, provider);
       // Discovery has already happened upstream; reuse it rather than reading
-      // the credential directory a second time.
-      discovered ??= Promise.resolve(pool);
+      // the credential directory a second time. Only for THIS pool's provider
+      // — every provider is offered this selector, and a second vendor's pool
+      // must not become the one a later selection ranks.
+      if (provider.id === poolProvider().id) {
+        discovered ??= Promise.resolve(pool);
+      }
       const now = clock();
       const ranking = await rankPool(pool, now);
       // A start never refuses: the gate is logged as the reason, not applied
@@ -350,14 +356,19 @@ export function createClaudeCredentialPool(
     return discovered;
   }
 
+  /** The provider this pool belongs to, resolved once. */
+  function poolProvider(): AgentProviderDescriptor {
+    provider ??= options.provider ?? activeAgentProvider();
+    return provider;
+  }
+
   /** Read the credential directory and keep the subscription tokens. */
   async function discoverPool(): Promise<ProviderTokenFile[]> {
-    const provider = options.provider ?? activeAgentProvider();
     const tokens = options.discover
       ? await options.discover()
       : await discoverProviderTokenFiles(
         options.dir ?? resolveCredentialDir(options.env),
-        provider,
+        poolProvider(),
       );
     return poolCandidatesOf(tokens);
   }
