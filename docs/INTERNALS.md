@@ -1307,9 +1307,25 @@ network hiccups, and even its own mistakes:
   the round they just answered; and the #1878 override excludes removals by any
   fleet login (`resolveSuppressionExcludedLogins`), because
   `verifyOperationalLabels` strips `needs-human` under whichever identity is
-  scanning — a peer's strip is a fleet action, not consent. `hasReadyMarkerBeenPosted`
-  is fleet-wide too, so a peer's Ready marker takes the Ready path rather than
-  asking the developer to answer questions the last round never posed.
+  scanning — a peer's strip is a fleet action, not consent.
+  `findLatestReadyMarkerTimestamp()` / `countReadyMarkers()` are fleet-wide
+  too, so a peer's Ready marker takes the Ready path rather than asking the
+  developer to answer questions the last round never posed.
+- **Reopening after Ready (Issue #1634)** — a Ready comment no longer ends
+  grilling for good. The processor reads the issue timeline
+  (`getLabelLastAddInfoComplete`, exhaustive because it mutates on the answer)
+  for the newest `labeled grill-me` event; when a non-fleet actor applied it
+  after the latest Ready comment, grilling reopens and the next round is
+  posted. Without such an event — or when the timeline cannot be read — the
+  clean-up path runs unchanged (remove `grill-me`, ensure `needs-human`). The
+  safety cap then counts only rounds posted since that Ready comment
+  (`countGrillMeRoundsSince`), so a reopened grilling gets the full
+  `maxGrillMeRounds` again while `ROUND_NUMBER` keeps the issue-wide
+  numbering. "A Ready marker was posted" becomes a *count* comparison at the
+  race guard and the post-Claude convergence check, so the inherited Ready
+  comment is not mistaken for a fresh one; and the awaiting-reply gate resumes
+  as soon as the reopened grilling has posted its own round, so a re-add buys
+  one round rather than an unanswered run to the cap.
 - **Crash cleanup** — trap handler (Deno `crash-cleanup` command) cleans up
   heartbeat files and unassigns the worker from claimed issues on unexpected
   exit, closing the crash window between claim and heartbeat recording.

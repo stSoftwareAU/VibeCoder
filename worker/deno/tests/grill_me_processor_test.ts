@@ -29,7 +29,10 @@ import {
   buildGrillMePrompt,
   countConsecutiveFailures,
   countGrillMeRounds,
+  countGrillMeRoundsSince,
+  countReadyMarkers,
   detectGrillMeOutcome,
+  findLatestReadyMarkerTimestamp,
   findLatestWorkerRoundTimestamp,
   formatCommentHistory,
   GRILL_ME_FAILED_MARKER,
@@ -38,6 +41,7 @@ import {
   GRILL_ME_ROUND_MARKER,
   hasGrillMeRoundAwaitingReply,
   hasReadyMarkerBeenPosted,
+  isNonWorkerLabelAddAfter,
   isNonWorkerRemovalAfterRound,
   processGrillMe,
   synthesiseRoundComment,
@@ -3766,5 +3770,600 @@ Deno.test(
       "the token must never reach the public comment",
     );
     assertStringIncludes(postedFailureComment, REDACTION_PLACEHOLDER);
+  },
+);
+
+// ============================================================================
+// Reopening grilling after Ready (Issue #1634)
+// ============================================================================
+
+Deno.test("countReadyMarkers - counts each Ready comment once", () => {
+  const comments: GitHubComment[] = [
+    makeComment({ id: 1, author: "testbot", body: GRILL_ME_READY_MARKER }),
+    makeComment({ id: 2, author: "user1", body: "please keep grilling" }),
+    makeComment({
+      id: 3,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}2`,
+    }),
+    makeComment({
+      id: 4,
+      author: "stservice",
+      body: `${GRILL_ME_READY_MARKER}\n\nConverged again.`,
+    }),
+  ];
+  assertEquals(countReadyMarkers(comments), 2);
+  assertEquals(countReadyMarkers([]), 0);
+});
+
+Deno.test("findLatestReadyMarkerTimestamp - returns the newest Ready", () => {
+  const comments: GitHubComment[] = [
+    makeComment({
+      id: 1,
+      author: "testbot",
+      body: GRILL_ME_READY_MARKER,
+      createdAt: "2026-09-08T02:00:00Z",
+    }),
+    makeComment({
+      id: 2,
+      author: "stservice",
+      body: GRILL_ME_READY_MARKER,
+      createdAt: "2026-09-08T06:00:00Z",
+    }),
+    makeComment({
+      id: 3,
+      author: "testbot",
+      body: "heartbeat",
+      createdAt: "2026-09-08T06:30:00Z",
+    }),
+  ];
+  assertEquals(
+    findLatestReadyMarkerTimestamp(comments),
+    "2026-09-08T06:00:00Z",
+  );
+  assertEquals(findLatestReadyMarkerTimestamp([]), null);
+});
+
+Deno.test("countGrillMeRoundsSince - counts only rounds after the Ready comment", () => {
+  const comments: GitHubComment[] = [
+    makeComment({
+      id: 1,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}1`,
+      createdAt: "2026-09-08T01:00:00Z",
+    }),
+    makeComment({
+      id: 2,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}2`,
+      createdAt: "2026-09-08T02:00:00Z",
+    }),
+    makeComment({
+      id: 3,
+      author: "testbot",
+      body: GRILL_ME_READY_MARKER,
+      createdAt: "2026-09-08T03:00:00Z",
+    }),
+    makeComment({
+      id: 4,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}3`,
+      createdAt: "2026-09-08T04:00:00Z",
+    }),
+  ];
+  assertEquals(countGrillMeRounds(comments), 3);
+  assertEquals(countGrillMeRoundsSince(comments, "2026-09-08T03:00:00Z"), 1);
+  // No Ready comment — the cap is the issue-wide total, unchanged.
+  assertEquals(countGrillMeRoundsSince(comments, null), 3);
+  // An unparseable cutoff falls back to the issue-wide total rather than
+  // silently handing a fresh budget to an issue that has not earned one.
+  assertEquals(countGrillMeRoundsSince(comments, "not-a-timestamp"), 3);
+});
+
+Deno.test("countGrillMeRoundsSince - an unparseable round timestamp still counts", () => {
+  const comments: GitHubComment[] = [
+    makeComment({
+      id: 1,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}1`,
+      createdAt: "not-a-timestamp",
+    }),
+    makeComment({
+      id: 2,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}2`,
+      createdAt: "2026-09-08T01:00:00Z",
+    }),
+  ];
+  // The malformed one counts (stricter cap); the parseable pre-cutoff one
+  // does not.
+  assertEquals(countGrillMeRoundsSince(comments, "2026-09-08T03:00:00Z"), 1);
+});
+
+Deno.test("isNonWorkerLabelAddAfter - true for a developer re-add after Ready", () => {
+  const addInfo = {
+    addedAt: Math.floor(Date.parse("2026-09-08T04:10:00Z") / 1000),
+    addedBy: "maintainer",
+  };
+  assertEquals(
+    isNonWorkerLabelAddAfter(addInfo, "2026-09-08T03:00:00Z", "testbot"),
+    true,
+  );
+});
+
+Deno.test("isNonWorkerLabelAddAfter - false for a fleet identity's re-add", () => {
+  const addInfo = {
+    addedAt: Math.floor(Date.parse("2026-09-08T04:10:00Z") / 1000),
+    addedBy: "stservice",
+  };
+  assertEquals(
+    isNonWorkerLabelAddAfter(addInfo, "2026-09-08T03:00:00Z", "testbot", [
+      "stservice",
+    ]),
+    false,
+  );
+  assertEquals(
+    isNonWorkerLabelAddAfter(addInfo, "2026-09-08T03:00:00Z", "stservice"),
+    false,
+  );
+});
+
+Deno.test("isNonWorkerLabelAddAfter - false when the add pre-dates Ready", () => {
+  const addInfo = {
+    addedAt: Math.floor(Date.parse("2026-09-08T01:00:00Z") / 1000),
+    addedBy: "maintainer",
+  };
+  assertEquals(
+    isNonWorkerLabelAddAfter(addInfo, "2026-09-08T03:00:00Z", "testbot"),
+    false,
+  );
+});
+
+Deno.test("isNonWorkerLabelAddAfter - false when the timestamp is unparseable", () => {
+  const addInfo = {
+    addedAt: Math.floor(Date.parse("2026-09-08T04:10:00Z") / 1000),
+    addedBy: "maintainer",
+  };
+  assertEquals(
+    isNonWorkerLabelAddAfter(addInfo, "not-a-timestamp", "testbot"),
+    false,
+  );
+});
+
+Deno.test("isNonWorkerLabelAddAfter - false with no add event or no Ready", () => {
+  const addInfo = {
+    addedAt: Math.floor(Date.parse("2026-09-08T04:10:00Z") / 1000),
+    addedBy: "maintainer",
+  };
+  assertEquals(
+    isNonWorkerLabelAddAfter(null, "2026-09-08T03:00:00Z", "testbot"),
+    false,
+  );
+  assertEquals(isNonWorkerLabelAddAfter(addInfo, null, "testbot"), false);
+});
+
+Deno.test(
+  "processGrillMe - a developer's grill-me re-add after Ready starts a fresh round (Issue #1634)",
+  async () => {
+    // GRQ-AutoTrader#13: the developer re-applied `grill-me` at 04:10 and the
+    // worker stripped it back off at 04:40 as "Ready already posted", so
+    // grilling could never be reopened. A non-fleet `labeled grill-me` event
+    // after the newest Ready comment must invoke Claude instead.
+    const ctx = makeContext();
+    const removedLabels: string[] = [];
+    const postedBodies: string[] = [];
+
+    let fetchCallCount = 0;
+    const round1 = makeComment({
+      id: 1,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}1\n\nQuestions...`,
+      createdAt: "2026-09-08T02:00:00Z",
+    });
+    const ready = makeComment({
+      id: 2,
+      author: "testbot",
+      body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
+      createdAt: "2026-09-08T03:00:00Z",
+    });
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () => {
+        fetchCallCount++;
+        // Calls 1 (initial) and 2 (race guard) see the converged thread.
+        if (fetchCallCount <= 2) return Promise.resolve([round1, ready]);
+        return Promise.resolve([
+          round1,
+          ready,
+          makeComment({
+            id: 3,
+            author: "testbot",
+            body: `${GRILL_ME_ROUND_MARKER}2\n\nMore questions...`,
+            createdAt: "2026-09-08T04:20:00Z",
+          }),
+        ]);
+      },
+      removeLabel: (_r, _n, label) => {
+        removedLabels.push(label);
+        return Promise.resolve();
+      },
+      postComment: (_r, _n, body) => {
+        postedBodies.push(body);
+        return Promise.resolve(undefined);
+      },
+    });
+
+    // The developer re-applied `grill-me` after the Ready comment.
+    const timelineJson = JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "testbot" },
+        created_at: "2026-09-08T01:00:00Z",
+      },
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "maintainer" },
+        created_at: "2026-09-08T04:10:00Z",
+      },
+    ]);
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}2`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+      github: { runGhCommand: () => Promise.resolve(timelineJson) },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(claudeInvoked, true, "the re-add must reopen grilling");
+    assertEquals(result.value.processed, true);
+    assertEquals(result.value.roundNumber, 2);
+    assertEquals(result.value.workerCommentPosted, true);
+    assertStringIncludes(result.value.summary, "Round 2");
+    // The inherited Ready comment must not be read as a fresh convergence:
+    // `grill-me` stays on the issue and the Ready clean-up escalation never
+    // runs. (`needs-human` is still added afterwards by the ordinary Round N
+    // turn signal — a reopened round is a round like any other.)
+    assertEquals(
+      removedLabels.includes("grill-me"),
+      false,
+      "grill-me must survive a reopened round",
+    );
+    assertEquals(result.value.labelsSwapped, false);
+    for (const body of postedBodies) {
+      assertEquals(
+        body.includes("awaiting a next-phase label"),
+        false,
+        `Unexpected Ready clean-up escalation: ${body}`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "processGrillMe - a lingering grill-me with no re-add still takes the clean-up path (Issue #1634)",
+  async () => {
+    // Nothing reopened this issue: the newest `labeled grill-me` event
+    // pre-dates the Ready comment, so the label is left over from the
+    // grilling that already converged. Clean it up exactly as before.
+    const ctx = makeContext();
+    const removedLabels: string[] = [];
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () =>
+        Promise.resolve([
+          makeComment({
+            id: 1,
+            author: "testbot",
+            body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
+            createdAt: "2026-09-08T03:00:00Z",
+          }),
+        ]),
+      removeLabel: (_r, _n, label) => {
+        removedLabels.push(label);
+        return Promise.resolve();
+      },
+    });
+
+    const timelineJson = JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "maintainer" },
+        created_at: "2026-09-08T01:00:00Z",
+      },
+    ]);
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "ok", exitCode: 0, timedOut: false },
+          });
+        },
+      },
+      github: { runGhCommand: () => Promise.resolve(timelineJson) },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(claudeInvoked, false);
+    assertStringIncludes(result.value.summary, "Ready already posted");
+    assertEquals(removedLabels.includes("grill-me"), true);
+  },
+);
+
+Deno.test(
+  "processGrillMe - the safety cap counts only post-Ready rounds (Issue #1634)",
+  async () => {
+    // Three rounds and a Ready comment already sit on the issue, and the cap
+    // is three. Counted issue-wide the reopened grilling would escalate to
+    // `needs-human` before asking a single question.
+    const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 3 }) });
+    const priorComments: GitHubComment[] = [1, 2, 3].map((n) =>
+      makeComment({
+        id: n,
+        author: "testbot",
+        body: `${GRILL_ME_ROUND_MARKER}${n}`,
+        createdAt: `2026-09-08T0${n}:00:00Z`,
+      })
+    );
+    priorComments.push(
+      makeComment({
+        id: 4,
+        author: "testbot",
+        body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
+        createdAt: "2026-09-08T04:00:00Z",
+      }),
+    );
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () => Promise.resolve([...priorComments]),
+    });
+
+    const timelineJson = JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "maintainer" },
+        created_at: "2026-09-08T05:00:00Z",
+      },
+    ]);
+
+    let claudeInvoked = false;
+    let capturedPrompt = "";
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (opts: { prompt: string }) => {
+          claudeInvoked = true;
+          capturedPrompt = opts.prompt;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}4`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+      github: { runGhCommand: () => Promise.resolve(timelineJson) },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(claudeInvoked, true, "a reopened grilling gets a fresh cap");
+    assertEquals(result.value.escalatedToHuman, false);
+    // The heading continues the issue-wide numbering.
+    assertEquals(result.value.roundNumber, 4);
+    // The prompt compares ROUND_NUMBER against MAX_ROUNDS to decide when to
+    // prefer converging, so the cap it is shown has to be in the same scale:
+    // 3 rounds spent before the Ready comment + a cap of 3 = 6.
+    assertStringIncludes(capturedPrompt, "Round number: `4`");
+    assertStringIncludes(capturedPrompt, "Round cap (safety net only): `6`");
+    // The run summary reads in that same scale — never "Round 4/3".
+    assertStringIncludes(result.value.summary, "Round 4/6");
+  },
+);
+
+Deno.test(
+  "processGrillMe - a reopened grilling still waits for the developer's reply (Issue #1634)",
+  async () => {
+    // The re-add buys one round, not an unanswered run to the cap: once the
+    // reopened grilling has posted its own round, the awaiting-reply gate
+    // (Issue #1876) applies again.
+    const ctx = makeContext();
+    const addedLabels: string[] = [];
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () =>
+        Promise.resolve([
+          makeComment({
+            id: 1,
+            author: "testbot",
+            body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
+            createdAt: "2026-09-08T03:00:00Z",
+          }),
+          // The reopened grilling already posted Round 2, after the re-add.
+          makeComment({
+            id: 2,
+            author: "testbot",
+            body: `${GRILL_ME_ROUND_MARKER}2\n\nMore questions...`,
+            createdAt: "2026-09-08T04:20:00Z",
+          }),
+        ]),
+      addLabel: (_r, _n, label) => {
+        addedLabels.push(label);
+        return Promise.resolve();
+      },
+    });
+
+    const timelineJson = JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "maintainer" },
+        created_at: "2026-09-08T04:10:00Z",
+      },
+    ]);
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "ok", exitCode: 0, timedOut: false },
+          });
+        },
+      },
+      github: { runGhCommand: () => Promise.resolve(timelineJson) },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(
+      claudeInvoked,
+      false,
+      "the reopened round must not be followed by another unanswered round",
+    );
+    assertStringIncludes(result.value.summary, "awaiting developer reply");
+    assertNoForbiddenLabel(addedLabels);
+  },
+);
+
+Deno.test(
+  "processGrillMe - the reopen survives a timeline longer than one page (Issue #1634)",
+  async () => {
+    // A page-1 read returns the *oldest* 100 events, so on a long-running
+    // grilling the developer's fresh `labeled grill-me` falls outside it and
+    // the reopen would be missed — the reported bug, unfixed.
+    const ctx = makeContext();
+    const removedLabels: string[] = [];
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () =>
+        Promise.resolve([
+          makeComment({
+            id: 1,
+            author: "testbot",
+            body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
+            createdAt: "2026-09-08T03:00:00Z",
+          }),
+        ]),
+      removeLabel: (_r, _n, label) => {
+        removedLabels.push(label);
+        return Promise.resolve();
+      },
+    });
+
+    // Page 1: a full page of noise ending in the original pre-Ready add.
+    const pageOne = Array.from({ length: 100 }, (_, i) => ({
+      event: i === 99 ? "labeled" : "commented",
+      label: i === 99 ? { name: "grill-me" } : undefined,
+      actor: { login: "maintainer" },
+      created_at: "2026-09-08T01:00:00Z",
+    }));
+    // Page 2: the developer's re-add, after the Ready comment.
+    const pageTwo = [
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "maintainer" },
+        created_at: "2026-09-08T04:10:00Z",
+      },
+    ];
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}1`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) =>
+          Promise.resolve(
+            args.some((a) => a.includes("page=2"))
+              ? JSON.stringify(pageTwo)
+              : JSON.stringify(pageOne),
+          ),
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(
+      claudeInvoked,
+      true,
+      "the re-add must be found beyond the first timeline page",
+    );
+    assertEquals(removedLabels.includes("grill-me"), false);
   },
 );
