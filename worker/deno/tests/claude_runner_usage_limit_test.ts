@@ -170,10 +170,11 @@ Deno.test({
   async fn() {
     const workDir = await Deno.makeTempDir({ prefix: "ul_workdir_" });
     try {
-      const { result, models, securityTags } = await withUsageLimitStub(
+      const { result, models, securityTags, errors } = await withUsageLimitStub(
         "You've hit your session limit \u00b7 resets 1:50pm (UTC)",
         async (stub) => {
           const securityTags: string[] = [];
+          const errors: string[] = [];
           const result = await runClaudeWithRetry(
             {
               clock: fakeClock(),
@@ -187,7 +188,9 @@ Deno.test({
               logger: {
                 info: () => {},
                 warn: () => {},
-                error: () => {},
+                error: (message: string) => {
+                  errors.push(message);
+                },
                 debug: () => {},
                 security: (event: string) => {
                   securityTags.push(event);
@@ -206,7 +209,7 @@ Deno.test({
               "\n",
             );
           } catch { /* none */ }
-          return { result, models, securityTags };
+          return { result, models, securityTags, errors };
         },
       );
 
@@ -220,6 +223,10 @@ Deno.test({
       // The short-backoff ladder was not the branch taken.
       assertEquals(securityTags.includes("RATE_LIMIT"), false);
       assert(securityTags.includes("USAGE_LIMIT"), securityTags.join(","));
+      assertStringIncludes(
+        errors.join("\n"),
+        "Claude usage limit reached (subscription window)",
+      );
     } finally {
       await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
     }
