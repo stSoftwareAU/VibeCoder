@@ -461,7 +461,7 @@ the existing `## Current Understanding` block, posts the next
 `## Grill-Me Round N` (numbering continues where the issue left off),
 and adds `needs-human` back so the turn signal still reads correctly.
 
-Two details worth knowing:
+Three details worth knowing:
 
 - **The safety cap resets.** `maxGrillMeRounds` counts only the rounds
   posted *after* the latest Ready comment, so a reopened grilling gets

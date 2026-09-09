@@ -70,7 +70,7 @@ import {
 import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { invalidateComments } from "./comment_cache.ts";
 import {
-  getLabelLastAddInfo,
+  getLabelLastAddInfoComplete,
   getLabelLastRemoveInfo,
   type LabelLastAddInfo,
 } from "./issue_query.ts";
@@ -306,14 +306,22 @@ export function countGrillMeRounds(
 ): number {
   let count = 0;
   for (const c of comments) {
-    if (
-      carriesMarkerHeading(c.body, GRILL_ME_ROUND_MARKER) ||
-      carriesMarkerHeading(c.body, GRILL_ME_FINAL_MARKER)
-    ) {
-      count++;
-    }
+    if (carriesRoundMarker(c.body)) count++;
   }
   return count;
+}
+
+/**
+ * Is this comment a grilling round? The `## Grill-Me Round N` marker, or the
+ * final-confirmation marker — finalisation is itself the last round.
+ *
+ * One predicate shared by every round scanner ({@link countGrillMeRounds},
+ * {@link countGrillMeRoundsSince}, {@link findLatestWorkerRoundTimestamp}) so
+ * the three cannot drift apart.
+ */
+function carriesRoundMarker(body: string): boolean {
+  return carriesMarkerHeading(body, GRILL_ME_ROUND_MARKER) ||
+    carriesMarkerHeading(body, GRILL_ME_FINAL_MARKER);
 }
 
 /**
@@ -519,10 +527,7 @@ export function synthesiseRoundComment(
 export function hasReadyMarkerBeenPosted(
   comments: readonly GitHubComment[],
 ): boolean {
-  for (const c of comments) {
-    if (carriesMarkerHeading(c.body, GRILL_ME_READY_MARKER)) return true;
-  }
-  return false;
+  return countReadyMarkers(comments) > 0;
 }
 
 /**
@@ -595,12 +600,7 @@ export function countGrillMeRoundsSince(
   if (Number.isNaN(sinceMs)) return countGrillMeRounds(comments);
   let count = 0;
   for (const c of comments) {
-    if (
-      !carriesMarkerHeading(c.body, GRILL_ME_ROUND_MARKER) &&
-      !carriesMarkerHeading(c.body, GRILL_ME_FINAL_MARKER)
-    ) {
-      continue;
-    }
+    if (!carriesRoundMarker(c.body)) continue;
     const createdMs = Date.parse(c.createdAt);
     if (Number.isNaN(createdMs) || createdMs > sinceMs) count++;
   }
@@ -686,14 +686,23 @@ export function findLatestWorkerRoundTimestamp(
 ): string | null {
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!;
-    if (
-      carriesMarkerHeading(c.body, GRILL_ME_ROUND_MARKER) ||
-      carriesMarkerHeading(c.body, GRILL_ME_FINAL_MARKER)
-    ) {
-      return c.createdAt;
-    }
+    if (carriesRoundMarker(c.body)) return c.createdAt;
   }
   return null;
+}
+
+/**
+ * The later of two ISO timestamps; `null` only when both are null, and the
+ * parseable one when the other is malformed.
+ */
+function laterTimestamp(a: string | null, b: string | null): string | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  const aMs = Date.parse(a);
+  const bMs = Date.parse(b);
+  if (Number.isNaN(aMs)) return b;
+  if (Number.isNaN(bMs)) return a;
+  return aMs >= bMs ? a : b;
 }
 
 /**
@@ -1120,7 +1129,13 @@ async function _processGrillMeWithHeartbeat(
     // such event, a peer worker's re-add, or a timeline lookup that could not
     // answer — takes the clean-up path below unchanged.
     try {
-      const addInfo = await getLabelLastAddInfo(
+      // Exhaustive, not the page-1 `getLabelLastAddInfo`: this answer decides
+      // whether to invoke Claude and post a round. A grilling with several
+      // rounds, replies and claim comments easily exceeds 100 timeline events,
+      // and a page-1 read returns the *oldest* slice — the developer's fresh
+      // re-add would fall outside it and the label be stripped again, leaving
+      // the reported bug unfixed on exactly the issues this targets.
+      const addInfo = await getLabelLastAddInfoComplete(
         repo,
         issueNumber,
         grillMeLabel,
@@ -1276,7 +1291,13 @@ async function _processGrillMeWithHeartbeat(
   //     buys one round, not an unanswered run to the cap.
   const reopenSupersedesLatestRound = isNonWorkerLabelAddAfter(
     reopenAddInfo,
-    findLatestWorkerRoundTimestamp(comments),
+    // The newest worker marker, not merely the newest round: a grilling that
+    // converged without ever posting a round has no round timestamp, and the
+    // Ready comment is then the marker the re-add has to out-date.
+    laterTimestamp(
+      findLatestWorkerRoundTimestamp(comments),
+      latestReadyTimestamp,
+    ),
     githubUser,
     fleetLogins,
   );
@@ -1555,14 +1576,14 @@ async function _processGrillMeWithHeartbeat(
   // reopened round already reads as "out of budget" and converges immediately
   // (Issue #1634). With no reopen the two are identical.
   const spentBeforeReopen = priorRounds - cappedRounds;
-  const promptMaxRounds = maxRounds + spentBeforeReopen;
+  const effectiveMaxRounds = maxRounds + spentBeforeReopen;
 
   logger.info("Starting grill-me round", {
     repo,
     issueNumber,
     roundNumber,
     maxRounds,
-    promptMaxRounds,
+    effectiveMaxRounds,
   });
 
   // 5) Build the prompt.
@@ -1588,7 +1609,7 @@ async function _processGrillMeWithHeartbeat(
 
   const promptResult = await buildGrillMePrompt({
     roundNumber,
-    maxRounds: promptMaxRounds,
+    maxRounds: effectiveMaxRounds,
     issueBody,
     commentHistory: history.formattedComments,
     commentBoundaryId: history.boundaryId,
@@ -1964,11 +1985,14 @@ async function _processGrillMeWithHeartbeat(
       needsHumanRemoved,
       workerUnassigned,
       degraded,
+      // `effectiveMaxRounds` keeps the ratio in the same scale as
+      // `roundNumber`, so a reopened grilling reads "Round 4/6" rather than
+      // the impossible "Round 4/3" (Issue #1634).
       summary: readyPostedNow
-        ? `Round ${roundNumber}/${maxRounds} posted Ready marker — awaiting developer label change${
+        ? `Round ${roundNumber}/${effectiveMaxRounds} posted Ready marker — awaiting developer label change${
           defenceInDepthApplied ? " (grill-me removed defence-in-depth)" : ""
         }`
-        : `Round ${roundNumber}/${maxRounds} posted`,
+        : `Round ${roundNumber}/${effectiveMaxRounds} posted`,
     },
   };
 }

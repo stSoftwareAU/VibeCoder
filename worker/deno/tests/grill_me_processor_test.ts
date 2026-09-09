@@ -3855,6 +3855,29 @@ Deno.test("countGrillMeRoundsSince - counts only rounds after the Ready comment"
   assertEquals(countGrillMeRoundsSince(comments, "2026-09-08T03:00:00Z"), 1);
   // No Ready comment — the cap is the issue-wide total, unchanged.
   assertEquals(countGrillMeRoundsSince(comments, null), 3);
+  // An unparseable cutoff falls back to the issue-wide total rather than
+  // silently handing a fresh budget to an issue that has not earned one.
+  assertEquals(countGrillMeRoundsSince(comments, "not-a-timestamp"), 3);
+});
+
+Deno.test("countGrillMeRoundsSince - an unparseable round timestamp still counts", () => {
+  const comments: GitHubComment[] = [
+    makeComment({
+      id: 1,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}1`,
+      createdAt: "not-a-timestamp",
+    }),
+    makeComment({
+      id: 2,
+      author: "testbot",
+      body: `${GRILL_ME_ROUND_MARKER}2`,
+      createdAt: "2026-09-08T01:00:00Z",
+    }),
+  ];
+  // The malformed one counts (stricter cap); the parseable pre-cutoff one
+  // does not.
+  assertEquals(countGrillMeRoundsSince(comments, "2026-09-08T03:00:00Z"), 1);
 });
 
 Deno.test("isNonWorkerLabelAddAfter - true for a developer re-add after Ready", () => {
@@ -3892,6 +3915,17 @@ Deno.test("isNonWorkerLabelAddAfter - false when the add pre-dates Ready", () =>
   };
   assertEquals(
     isNonWorkerLabelAddAfter(addInfo, "2026-09-08T03:00:00Z", "testbot"),
+    false,
+  );
+});
+
+Deno.test("isNonWorkerLabelAddAfter - false when the timestamp is unparseable", () => {
+  const addInfo = {
+    addedAt: Math.floor(Date.parse("2026-09-08T04:10:00Z") / 1000),
+    addedBy: "maintainer",
+  };
+  assertEquals(
+    isNonWorkerLabelAddAfter(addInfo, "not-a-timestamp", "testbot"),
     false,
   );
 });
@@ -4009,7 +4043,9 @@ Deno.test(
     assertEquals(result.value.workerCommentPosted, true);
     assertStringIncludes(result.value.summary, "Round 2");
     // The inherited Ready comment must not be read as a fresh convergence:
-    // `grill-me` stays on the issue and the completion escalation is silent.
+    // `grill-me` stays on the issue and the Ready clean-up escalation never
+    // runs. (`needs-human` is still added afterwards by the ordinary Round N
+    // turn signal — a reopened round is a round like any other.)
     assertEquals(
       removedLabels.includes("grill-me"),
       false,
@@ -4129,10 +4165,12 @@ Deno.test(
     ]);
 
     let claudeInvoked = false;
+    let capturedPrompt = "";
     const deps = createMockDeps({
       claude: {
-        runClaudeWithRetry: () => {
+        runClaudeWithRetry: (opts: { prompt: string }) => {
           claudeInvoked = true;
+          capturedPrompt = opts.prompt;
           return Promise.resolve({
             ok: true,
             value: {
@@ -4159,6 +4197,13 @@ Deno.test(
     assertEquals(result.value.escalatedToHuman, false);
     // The heading continues the issue-wide numbering.
     assertEquals(result.value.roundNumber, 4);
+    // The prompt compares ROUND_NUMBER against MAX_ROUNDS to decide when to
+    // prefer converging, so the cap it is shown has to be in the same scale:
+    // 3 rounds spent before the Ready comment + a cap of 3 = 6.
+    assertStringIncludes(capturedPrompt, "Round number: `4`");
+    assertStringIncludes(capturedPrompt, "Round cap (safety net only): `6`");
+    // The run summary reads in that same scale — never "Round 4/3".
+    assertStringIncludes(result.value.summary, "Round 4/6");
   },
 );
 
@@ -4234,5 +4279,91 @@ Deno.test(
     );
     assertStringIncludes(result.value.summary, "awaiting developer reply");
     assertNoForbiddenLabel(addedLabels);
+  },
+);
+
+Deno.test(
+  "processGrillMe - the reopen survives a timeline longer than one page (Issue #1634)",
+  async () => {
+    // A page-1 read returns the *oldest* 100 events, so on a long-running
+    // grilling the developer's fresh `labeled grill-me` falls outside it and
+    // the reopen would be missed — the reported bug, unfixed.
+    const ctx = makeContext();
+    const removedLabels: string[] = [];
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () =>
+        Promise.resolve([
+          makeComment({
+            id: 1,
+            author: "testbot",
+            body: `${GRILL_ME_READY_MARKER}\n\nUnderstanding confirmed.`,
+            createdAt: "2026-09-08T03:00:00Z",
+          }),
+        ]),
+      removeLabel: (_r, _n, label) => {
+        removedLabels.push(label);
+        return Promise.resolve();
+      },
+    });
+
+    // Page 1: a full page of noise ending in the original pre-Ready add.
+    const pageOne = Array.from({ length: 100 }, (_, i) => ({
+      event: i === 99 ? "labeled" : "commented",
+      label: i === 99 ? { name: "grill-me" } : undefined,
+      actor: { login: "maintainer" },
+      created_at: "2026-09-08T01:00:00Z",
+    }));
+    // Page 2: the developer's re-add, after the Ready comment.
+    const pageTwo = [
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "maintainer" },
+        created_at: "2026-09-08T04:10:00Z",
+      },
+    ];
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}1`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) =>
+          Promise.resolve(
+            args.some((a) => a.includes("page=2"))
+              ? JSON.stringify(pageTwo)
+              : JSON.stringify(pageOne),
+          ),
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(
+      claudeInvoked,
+      true,
+      "the re-add must be found beyond the first timeline page",
+    );
+    assertEquals(removedLabels.includes("grill-me"), false);
   },
 );
