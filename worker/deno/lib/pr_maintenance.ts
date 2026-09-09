@@ -21,6 +21,10 @@ import type { Logger, Result } from "../types.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
 import {
+  findRollbackAfterMerge,
+  rollbackSkipReason,
+} from "./milestone_rollback_marker.ts";
+import {
   type CommentType,
   fetchCommentReactors,
   type PrCommentToFix,
@@ -77,6 +81,12 @@ export interface PrEntry {
    * (Issue #1109).
    */
   author?: { login?: string } | null;
+  /**
+   * Merge time, when the listing asked for it — {@link listMergedPrs} does,
+   * so the roll-back check can tell a marker posted after the merge from one
+   * posted before it (Issue #1770).
+   */
+  mergedAt?: string | null;
 }
 
 /** Comment entry from the GitHub API. */
@@ -248,6 +258,13 @@ export interface CloseIssuesOptions extends PrScanOptions {
    * subsequent reads in the same iteration see fresh state.
    */
   cache?: IssueCache;
+  /**
+   * Fleet logins whose milestone roll-back marker counts (Issue #1770). A
+   * child reopened because a roll-back reverted its merged PR must not be
+   * closed again — its PR stays `merged` for ever. Empty or omitted means
+   * no marker can be attributed, so none is trusted and the close proceeds.
+   */
+  fleetAuthors?: string[];
 }
 
 /** Result of an auto-merge scan. */
@@ -457,7 +474,7 @@ export async function listMergedPrs(
       "--author",
       githubUser,
       "--json",
-      "number,title",
+      "number,title,mergedAt",
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -1704,6 +1721,27 @@ export async function closeIssuesForMergedPrs(
             );
             continue;
           }
+          // Issue #1770: a milestone roll-back reverted this PR, so the
+          // child was reopened and re-queued while its PR stayed `merged`.
+          // An unreadable thread throws into the catch below, which leaves
+          // the issue open rather than closing on an unproven assumption.
+          const rollback = await findRollbackAfterMerge(
+            repo,
+            Number(issueNumber),
+            pr.mergedAt,
+            options.fleetAuthors ?? [],
+            ghCommandFn,
+          );
+          if (rollback) {
+            logger.info(
+              `Not closing issue #${issueNumber}: ${
+                rollbackSkipReason(rollback)
+              } (Issue #1770)`,
+              { repo, issueNumber, prNumber },
+            );
+            continue;
+          }
+
           logger.info("Closing issue for merged PR", {
             repo,
             issueNumber,

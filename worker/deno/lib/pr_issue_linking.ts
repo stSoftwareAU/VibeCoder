@@ -24,6 +24,10 @@ import { filterOutWorkflowLabels } from "./workflow_labels.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import {
+  findRollbackAfterMerge,
+  rollbackSkipReason,
+} from "./milestone_rollback_marker.ts";
+import {
   loadSweepWatermarks,
   saveSweepWatermarks,
 } from "./merged_sweep_watermark.ts";
@@ -874,6 +878,16 @@ export async function closeIssuesForMergedPrs(
      * {@link verifyMergeLanded}; tests inject.
      */
     verifyMergeLandedFn?: typeof verifyMergeLanded;
+    /**
+     * Fleet logins whose milestone roll-back marker counts (Issue #1770).
+     * A child reopened because a roll-back reverted its merged PR must not
+     * be closed again — its PR stays `merged` for ever. Empty or omitted
+     * means no marker can be attributed, so none is trusted and the close
+     * proceeds exactly as before.
+     */
+    fleetAuthors?: string[];
+    /** Sink for the roll-back skip line; production passes `logger.info`. */
+    logFn?: (message: string) => void;
   },
 ): Promise<number> {
   let closedCount = 0;
@@ -981,6 +995,27 @@ export async function closeIssuesForMergedPrs(
           const landing = await (options?.verifyMergeLandedFn ??
             verifyMergeLanded)(repo, pr.number, ghCommandFn);
           if (!landing.landed) {
+            holdBack = Math.min(holdBack, pr.number);
+            continue;
+          }
+
+          // Issue #1770: a milestone roll-back reverted this PR, so the child
+          // was reopened and re-queued while its PR stayed `merged`. Closing
+          // it now would undo the roll-back on the very next cycle. An
+          // unreadable thread throws into the catch below, which holds the
+          // PR back rather than closing on an unproven assumption.
+          const rollback = await findRollbackAfterMerge(
+            repo,
+            issueNumber,
+            pr.mergedAt,
+            options?.fleetAuthors ?? [],
+            ghCommandFn,
+          );
+          if (rollback) {
+            options?.logFn?.(
+              `[close-merged-pr] ${repo}#${issueNumber}: ` +
+                rollbackSkipReason(rollback),
+            );
             holdBack = Math.min(holdBack, pr.number);
             continue;
           }

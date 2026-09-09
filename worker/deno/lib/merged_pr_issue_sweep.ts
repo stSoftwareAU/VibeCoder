@@ -22,6 +22,9 @@
  *    the issue open, loudly;
  *  - the VibeCoder#42 escape hatch, so a trusted re-label dated after the
  *    merge hands the issue back to the fleet instead of closing it;
+ *  - the Issue #1770 roll-back marker, so a child whose merged PR a milestone
+ *    roll-back reverted stays reopened rather than being closed again on the
+ *    cycle after the roll-back re-queued it;
  *  - `needs-human`, which a merge somewhere never resolves.
  *
  * Failures are loud: a repo that cannot be scanned, or a close that fails, is
@@ -55,6 +58,10 @@ import type { FilterableIssue } from "./issue_filter.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import type { MergeLanding } from "./merge_landing.ts";
+import {
+  findRollbackAfterMerge,
+  rollbackSkipReason,
+} from "./milestone_rollback_marker.ts";
 import { classifyMergeCloseOrdering } from "./pr_issue_linking.ts";
 import type { PreflightOutcome } from "./github_rate_limit_preflight.ts";
 import {
@@ -142,6 +149,12 @@ export interface MergedPrIssueSweepDeps {
   ensureIssueClosedFn?: typeof ensureIssueClosedIfPrMerged;
   /** Trusted-re-label check (defaults to the claim scan's). */
   wasLabelReappliedFn?: typeof wasLabelReappliedAfterClosedPR;
+  /**
+   * Roll-back marker lookup (Issue #1770). Defaults to
+   * {@link findRollbackAfterMerge}, which reads the issue's comment thread
+   * through `gh`; tests inject.
+   */
+  findRollbackFn?: typeof findRollbackAfterMerge;
 }
 
 /** What the sweep decided for one candidate issue. */
@@ -480,6 +493,33 @@ export async function sweepMergedPrIssues(
           "skipped",
           `a trusted re-label after the merge reopened it for the fleet`,
         );
+        continue;
+      }
+
+      // Issue #1770: a milestone roll-back reverted this PR, so the child was
+      // reopened and re-queued while its PR stayed `merged` for ever. Closing
+      // it again would undo the roll-back's own decision on the next cycle.
+      try {
+        const rollback = await (deps.findRollbackFn ?? findRollbackAfterMerge)(
+          repo,
+          issue.number,
+          blocking.closedAt,
+          options.fleetAuthors,
+          deps.ghCommandFn,
+        );
+        if (rollback) {
+          note("skipped", rollbackSkipReason(rollback));
+          continue;
+        }
+      } catch (err) {
+        const message = errorMessage(err);
+        if (isPrimaryRateLimitMessage(message)) {
+          stopForQuota(result, logger, reposTotal, reposDone, message);
+          break repos;
+        }
+        // An unreadable thread cannot prove the issue was NOT rolled back, so
+        // fail closed: leave it open and say why.
+        note("skipped", `could not read the comment thread: ${message}`);
         continue;
       }
 

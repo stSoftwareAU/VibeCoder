@@ -2540,7 +2540,14 @@ export async function createProductionRunCoreDeps(
           undefined,
           config.planningLabel,
           issueCache,
-          { watermarkPath: mergedReconcileWatermarkPath(workDir) },
+          {
+            watermarkPath: mergedReconcileWatermarkPath(workDir),
+            // Issue #1770: a child reopened by a milestone roll-back stays
+            // reopened. Only the fleet's own roll-back marker suppresses the
+            // close, so the maintenance author set is what is trusted here.
+            fleetAuthors: maintenanceAuthors,
+            logFn: (message: string) => logger.info(message),
+          },
         );
         const seconds = Math.round((Date.now() - startedAt) / 1000);
         logger.info(
