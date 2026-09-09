@@ -16,6 +16,80 @@ import {
 import { pinnedAction, SEMGREP_IMAGE } from "./pinned_actions.ts";
 
 // ---------------------------------------------------------------------------
+// Shared hardening fragments (Issue #1639)
+// ---------------------------------------------------------------------------
+//
+// The fleet's own GitHub Actions audit scans every repository it monitors,
+// including the ones it has just provisioned. Before Issue #1639 only the
+// gitleaks template (Issue #594) was shaped to pass that audit, so a freshly
+// set-up repository immediately accrued a pile of audit issues against
+// workflows the fleet itself had written. These fragments carry the audit's
+// requirements into every template, and
+// `worker/deno/tests/workflow_template_audit_conformance_test.ts` runs the
+// audit's own native pre-filers over the rendered templates so the two
+// cannot drift apart.
+
+/**
+ * Explicit `pull_request` target branches.
+ *
+ * A GitHub branch filter `*` never matches a `/`, so the former `["*"]` read
+ * as "every branch" while silently skipping every `milestone/<slug>` PR
+ * (Issue #1300) — the dominant merge path in this fleet. The targets are
+ * listed explicitly instead, which is what the milestone-branch-filter
+ * pre-filer requires.
+ */
+const PULL_REQUEST_BRANCHES = "[Develop, main, milestone/*]";
+
+/**
+ * Cancelling concurrency group (audit check #4). Only the latest run for a
+ * given ref matters, so cancellation stops rapid pushes — or overlapping
+ * scheduled runs — spawning parallel, redundant work.
+ */
+const CONCURRENCY_BLOCK =
+  `# Only the latest run for a given ref matters, so a per-ref group with
+# cancellation stops rapid pushes (or overlapping scheduled runs)
+# spawning parallel, redundant work.
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true`;
+
+/**
+ * Job timeout for scan and quality jobs (audit check #5). Without an
+ * explicit timeout a wedged job holds a runner for GitHub's six-hour
+ * default.
+ */
+const SCAN_TIMEOUT_MINUTES = 10;
+
+/**
+ * Job timeout for dependency-update jobs, which resolve the whole
+ * dependency graph and then open a pull request.
+ */
+const DEPENDENCY_UPDATE_TIMEOUT_MINUTES = 20;
+
+/**
+ * Checkout `with:` block for a job that only reads the repository.
+ *
+ * By default `actions/checkout` writes the workflow's `GITHUB_TOKEN` into
+ * `.git/config`, where any later step — including a compromised dependency —
+ * can read it. A scan/build/lint job never needs that, so the credential is
+ * not left on disk.
+ */
+const CHECKOUT_NO_CREDENTIALS = `        with:
+          # Nothing here pushes, so the job token must not be left behind
+          # in .git/config where a later step could read it.
+          persist-credentials: false`;
+
+/**
+ * Exact `markdownlint-cli2` version installed by the Markdown lint template.
+ *
+ * A `run:` install is not a manifest, so no dependency manager governs it —
+ * an unpinned install resolves to whatever the registry serves at run time,
+ * outside the 24h supply-chain quarantine. Bump this in lock-step with
+ * `container/tools.json` and `.github/workflows/markdown-lint.yml`.
+ */
+const MARKDOWNLINT_CLI2_VERSION = "0.23.2";
+
+// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -216,18 +290,22 @@ const semgrep: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   semgrep:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     container:
       image: ${SEMGREP_IMAGE}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - run: semgrep ci --config p/default
         env:
           SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
@@ -261,16 +339,20 @@ const dependencyReview: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   dependency-review:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("actions/dependency-review-action")}
 `,
 };
@@ -296,18 +378,22 @@ const cargoAudit: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
   schedule:
     - cron: "0 6 * * 1"
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       # SHA-pinned, so the toolchain can no longer be read from the ref
       # name — it is named explicitly instead (Issue #3645).
       - uses: ${pinnedAction("dtolnay/rust-toolchain")}
@@ -338,10 +424,15 @@ permissions:
   contents: write
   pull-requests: write
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   upgrade:
     runs-on: ubuntu-latest
+    timeout-minutes: ${DEPENDENCY_UPDATE_TIMEOUT_MINUTES}
     steps:
+      # Credential persistence stays on: create-pull-request below pushes
+      # the update branch with the checkout credential.
       - uses: ${pinnedAction("actions/checkout")}
       # SHA-pinned, so the toolchain can no longer be read from the ref
       # name — it is named explicitly instead (Issue #3645).
@@ -383,16 +474,20 @@ const cargoQuality: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       # SHA-pinned, so the toolchain can no longer be read from the ref
       # name — it is named explicitly instead (Issue #3645).
       - uses: ${pinnedAction("dtolnay/rust-toolchain")}
@@ -440,10 +535,15 @@ permissions:
   contents: write
   pull-requests: write
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   outdated:
     runs-on: ubuntu-latest
+    timeout-minutes: ${DEPENDENCY_UPDATE_TIMEOUT_MINUTES}
     steps:
+      # Credential persistence stays on: create-pull-request below pushes
+      # the update branch with the checkout credential.
       - uses: ${pinnedAction("actions/checkout")}
       - uses: ${pinnedAction("denoland/setup-deno")}
         with:
@@ -480,16 +580,20 @@ const denoQuality: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("denoland/setup-deno")}
         with:
           deno-version: v2.x
@@ -525,18 +629,22 @@ const npmAudit: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
   schedule:
     - cron: "0 6 * * 1"
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("actions/setup-node")}
         with:
           node-version: "lts/*"
@@ -585,16 +693,20 @@ const eslintQuality: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("actions/setup-node")}
         with:
           node-version: "lts/*"
@@ -625,18 +737,22 @@ const javaDependencyCheck: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
   schedule:
     - cron: "0 6 * * 1"
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   dependency-check:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("actions/setup-java")}
         with:
           distribution: temurin
@@ -690,41 +806,52 @@ const markdownLint: WorkflowSpec = {
   id: "markdown-lint",
   name: "Markdown Lint",
   appliesTo: "universal",
-  triggers: ["pull_request", "push"],
+  // Issue #1639 — pull-request only. Re-running the gate on the post-merge
+  // push duplicates the PR run with no enforcement value, and the audit's
+  // trigger pre-filer files it as a finding against the fleet's own template.
+  triggers: ["pull_request"],
   detectionPatternGroups: [["markdownlint-cli2", "markdownlint"]],
   capabilities: ["Markdown structural linting"],
   suggestedFilename: "markdown-lint.yml",
   category: "quality",
-  // Triggers on PRs and pushes to the default branch. Pins third-party
-  // actions to commit SHAs (Issue #1686) so a hijacked tag cannot inject
-  // code into CI. Reuses the same `.markdownlint-cli2.jsonc` configuration
-  // that local `quality.sh` consumes — single source of truth, no drift.
-  // The optional Mermaid step mirrors the local `check-mermaid` quality
-  // gate (Issue #1683); it runs only when `worker/deno/mod.ts` is present.
+  // Pins third-party actions to commit SHAs (Issue #1686) so a hijacked tag
+  // cannot inject code into CI, and `markdownlint-cli2` to an exact version
+  // (Issue #1639) so the install sits inside the supply-chain quarantine.
+  // Reuses the same `.markdownlint-cli2.jsonc` configuration that local
+  // `quality.sh` consumes — single source of truth, no drift. The optional
+  // Mermaid step mirrors the local `check-mermaid` quality gate (Issue
+  // #1683); it runs only when `worker/deno/mod.ts` is present.
   template: `name: Markdown Lint
 
 on:
   pull_request:
-    branches: ["*"]
-  push:
-    branches: [main, master]
+    branches: ${PULL_REQUEST_BRANCHES}
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   markdownlint:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       # checkout and setup-node run on the Node 24 runtime (Issues #2316,
       # #2317); the v4 line ran on Node 20, deprecated for forced upgrade
       # 2026-06-02 and full removal 2026-09-16.
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("actions/setup-node")}
         with:
           node-version: "lts/*"
+      # Pinned to an exact version so the install sits inside the 24h
+      # dependency quarantine — a \`run:\` install is not a manifest, so no
+      # dependency manager governs it. \`--ignore-scripts\` keeps
+      # install-time lifecycle scripts from the dependency tree off the
+      # runner.
       - name: Install markdownlint-cli2
-        run: npm install -g markdownlint-cli2
+        run: npm install -g --ignore-scripts markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}
       - name: Run markdownlint-cli2
         run: markdownlint-cli2
       # Optional: mirror the local check-mermaid quality gate when Deno
@@ -768,16 +895,20 @@ const shellcheck: WorkflowSpec = {
 
 on:
   pull_request:
-    branches: ["*"]
+    branches: ${PULL_REQUEST_BRANCHES}
 
 permissions:
   contents: read
 
+${CONCURRENCY_BLOCK}
+
 jobs:
   shellcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: ${SCAN_TIMEOUT_MINUTES}
     steps:
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - name: Run ShellCheck
         uses: ${pinnedAction("ludeeus/action-shellcheck")}
         with:
