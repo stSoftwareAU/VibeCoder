@@ -17,11 +17,13 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildBumpCommitMessage,
   buildBumpRejectionComment,
+  buildBumpSkipNote,
   BUMP_OUTPUT_TAIL_LINES,
   type BumpDepsDeps,
   type BumpInfo,
   DEFAULT_BUMP_QUARANTINE_HOURS,
   formatBumpOutputTail,
+  MILESTONE_CHILD_BUMP_NOTE,
   runBumpDeps,
 } from "../lib/bump_deps.ts";
 import type {
@@ -589,5 +591,52 @@ Deno.test("buildBumpCommitMessage - omits issue when undefined", () => {
   assertEquals(
     buildBumpCommitMessage(),
     "chore: bump dependencies via bump-deps.sh",
+  );
+});
+
+// =============================================================================
+// Milestone-child skip note (Issue #1775)
+// =============================================================================
+
+Deno.test("buildBumpSkipNote - states why a milestone child skipped the bump", () => {
+  const info: BumpInfo = {
+    status: "skipped_milestone_child",
+    files: [],
+    output: "",
+  };
+  assertStringIncludes(buildBumpSkipNote(info), MILESTONE_CHILD_BUMP_NOTE);
+  assertStringIncludes(
+    buildBumpSkipNote(info),
+    "the default branch's own PRs bump and the sync carries them down",
+  );
+});
+
+Deno.test("buildBumpSkipNote - empty for every other outcome", () => {
+  const statuses: BumpInfo["status"][] = [
+    "absent",
+    "noop",
+    "applied",
+    "rejected_by_script",
+    "rejected_by_quarantine",
+    "rejected_by_audit",
+  ];
+  for (const status of statuses) {
+    assertEquals(
+      buildBumpSkipNote({ status, files: [], output: "" }),
+      "",
+      `${status} must not carry the milestone-skip note`,
+    );
+  }
+  assertEquals(buildBumpSkipNote(undefined), "");
+});
+
+Deno.test("buildBumpRejectionComment - a milestone skip is not a rejection", () => {
+  assertEquals(
+    buildBumpRejectionComment({
+      status: "skipped_milestone_child",
+      files: [],
+      output: "",
+    }),
+    "",
   );
 });

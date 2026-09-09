@@ -3659,7 +3659,12 @@ links to its issue for the full rationale.
   quarantine via Renovate's `minimumReleaseAge` and `VIBE_BUMP_QUARANTINE_HOURS`
   (numbers unchanged), and GitHub Actions are pinned to commit SHAs. The
   coding-guidelines prompt (`prompts/coding_guidelines/`) documents the bump
-  pattern.
+  pattern. The phase does **not** run on a milestone child run (Issue #1775):
+  when `state.milestoneBranch` is set the script is never invoked,
+  `state.bumpInfo.status` is `skipped_milestone_child`, and the PR body carries
+  the reason — the default branch's own PRs bump and the every-cycle sync
+  carries those bumps down, so bumping again in a child would rewrite the same
+  lockfile lines and conflict with the sync.
 - **Quality gate additions:** `markdownlint-cli2`,
   `mermaid_validator` integration , and the `tail -f | head` foot-gun detector.
 - **Standard workflow templates:** `workflow_setup` v2/v3 provisions Gitleaks,

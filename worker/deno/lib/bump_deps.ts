@@ -57,6 +57,10 @@ export interface BumpInfo {
    * - `rejected_by_audit`  — script applied a bump but the post-bump
    *                           quality gate only passed without it. Set
    *                           by the audit gate, not by this library.
+   * - `skipped_milestone_child` — the run's PR targets a milestone branch,
+   *                           so the bump was deliberately not attempted
+   *                           (Issue #1775). Set by the bump phase, not by
+   *                           this library.
    */
   status:
     | "absent"
@@ -64,7 +68,8 @@ export interface BumpInfo {
     | "applied"
     | "rejected_by_script"
     | "rejected_by_quarantine"
-    | "rejected_by_audit";
+    | "rejected_by_audit"
+    | "skipped_milestone_child";
   /** Files modified by the script (porcelain paths, deduplicated). */
   files: string[];
   /** Combined stdout+stderr captured from the script invocation. */
@@ -264,6 +269,30 @@ export function buildBumpRejectionComment(info: BumpInfo): string {
     }\n\`\`\`\n\n</details>`
     : "";
   return `### ${heading}${reason}${filesBlock}${tail}`;
+}
+
+/**
+ * The PR-summary line for a bump skipped because the run's PR targets a
+ * milestone branch (Issue #1775).
+ */
+export const MILESTONE_CHILD_BUMP_NOTE =
+  "Dependency bump: skipped — milestone child; the default branch's own PRs " +
+  "bump and the sync carries them down";
+
+/**
+ * Build the PR-body note for a skipped bump (Issue #1775).
+ *
+ * Returns a markdown section for `skipped_milestone_child` and an empty
+ * string for every other status (including no bump phase at all), so the
+ * caller can append it unconditionally.
+ *
+ * @param info - The bump outcome, or `undefined` when the phase never ran.
+ */
+export function buildBumpSkipNote(info: BumpInfo | undefined): string {
+  if (info?.status !== "skipped_milestone_child") {
+    return "";
+  }
+  return `\n${MILESTONE_CHILD_BUMP_NOTE}\n`;
 }
 
 // =============================================================================
