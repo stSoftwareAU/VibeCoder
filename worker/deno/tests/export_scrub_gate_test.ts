@@ -136,6 +136,9 @@ Deno.test("scrub-gate - an imgbb-shaped key or a known token prefix is found", (
     classes("commit " + "a".repeat(40) + " sha256:" + "b".repeat(64)),
     [],
   );
+  // Issue #1605: the same key rendered in uppercase is the same key.
+  assertEquals(classes(`key=${IMGBB_KEY.toUpperCase()}`), ["api-key"]);
+  assertEquals(classes("commit " + "A".repeat(40)), []);
 });
 
 Deno.test("scrub-gate - a private stSoftwareAU repository reference is found; the public one is not", () => {
