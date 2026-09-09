@@ -26,6 +26,7 @@ if your worker login is read-only on any monitored repository.**
 
 | Change | Issue |
 | ------ | ----- |
+| The auto-merge sweep skips draft PRs (announced once per PR, not once per cycle) and a `gh pr merge --auto` refused with "still a draft" is a typed `draft` outcome logged at info, not a failure retried every cycle | #1800 |
 | The post-creation reserved-label strip reads who applied each label and keeps one a login outside the fleet granted, so a maintainer labelling fresh planning sub-issues `work-on` while the run is still closing no longer has the grant removed; the summary records kept labels and the log names the adder | #1791 |
 | The CI-nudge pass asks the gated-head guard before its empty-commit push, so a milestone summary PR whose head refuses direct pushes is recorded as a no-op nudge and left for the milestone completion path instead of a GH013 refusal every cycle | #1762 |
 | An idle-task wrapper is not claimed when the cycle deadline would bound its scan below a ten-minute floor: the route declines before the claim with one log line, records the cycle as a skip rather than a failure, and leaves the wrapper for the next cycle — no more 60 s budgets for hour-long scans ending in a host health failure | #1757 |

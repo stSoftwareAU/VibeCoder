@@ -13,6 +13,7 @@ import {
   isBasePolicyRefusal,
   isBaseProtected,
   isTransientError,
+  logAutoMergeOutcome,
 } from "../lib/pr_auto_merge.ts";
 import { OPEN_CHILDREN_BLOCK_MARKER } from "../lib/milestone_children_gate.ts";
 
@@ -559,6 +560,67 @@ Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (
     calls.some((c) => c[0] === "pr" && c[1] === "edit"),
     "still retargeted",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Draft PRs (Issue #1800)
+// ---------------------------------------------------------------------------
+
+/** GitHub's refusal, as `gh pr merge --auto` surfaces it on #1794. */
+const DRAFT_REFUSAL =
+  "gh command failed (exit 1): GraphQL: Pull Request is still a draft (mergePullRequest)";
+
+Deno.test("pr_auto_merge - classifyAutoMergeFailure recognises a draft refusal (Issue #1800)", () => {
+  assertEquals(classifyAutoMergeFailure(DRAFT_REFUSAL), AutoMergeResult.Draft);
+  assertEquals(
+    classifyAutoMergeFailure("HTTP 502 Bad Gateway"),
+    AutoMergeResult.Failed,
+  );
+});
+
+Deno.test("pr_auto_merge - arming a draft is a typed non-failure: no retries, no comment, logged at info (Issue #1800)", async () => {
+  let mergeCalls = 0;
+  let commented = false;
+  const result = await enableAutoMerge({
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: 1794,
+    baseRefName: "milestone/1653-x",
+    isBaseProtectedFn: async () => true,
+    decideMilestoneBaseFn: async () => ({
+      decision: "allow" as const,
+      reason: "not-milestone-base" as const,
+    }),
+    ghCommandFn: async (args) => {
+      if (args[0] === "pr" && args[1] === "merge") {
+        mergeCalls++;
+        throw new Error(DRAFT_REFUSAL);
+      }
+      return "";
+    },
+    commentFn: async () => {
+      commented = true;
+    },
+    maxRetries: 3,
+    retryDelay: 0,
+  });
+  assertEquals(result.result, AutoMergeResult.Draft);
+  assertStringIncludes(result.message, "it is a draft");
+  assertEquals(mergeCalls, 1, "a draft refusal is permanent — never retried");
+  assertEquals(commented, false);
+
+  const sink: { level: string; message: string }[] = [];
+  logAutoMergeOutcome(
+    {
+      info: (m: string) => void sink.push({ level: "info", message: m }),
+      warn: (m: string) => void sink.push({ level: "warn", message: m }),
+    },
+    "stSoftwareAU/VibeCoder",
+    1794,
+    result,
+  );
+  assertEquals(sink.length, 1);
+  assertEquals(sink[0]!.level, "info");
+  assertStringIncludes(sink[0]!.message, "Auto-merge draft");
 });
 
 // ---------------------------------------------------------------------------
