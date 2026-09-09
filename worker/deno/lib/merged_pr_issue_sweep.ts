@@ -149,12 +149,6 @@ export interface MergedPrIssueSweepDeps {
   ensureIssueClosedFn?: typeof ensureIssueClosedIfPrMerged;
   /** Trusted-re-label check (defaults to the claim scan's). */
   wasLabelReappliedFn?: typeof wasLabelReappliedAfterClosedPR;
-  /**
-   * Roll-back marker lookup (Issue #1770). Defaults to
-   * {@link findRollbackAfterMerge}, which reads the issue's comment thread
-   * through `gh`; tests inject.
-   */
-  findRollbackFn?: typeof findRollbackAfterMerge;
 }
 
 /** What the sweep decided for one candidate issue. */
@@ -500,7 +494,7 @@ export async function sweepMergedPrIssues(
       // reopened and re-queued while its PR stayed `merged` for ever. Closing
       // it again would undo the roll-back's own decision on the next cycle.
       try {
-        const rollback = await (deps.findRollbackFn ?? findRollbackAfterMerge)(
+        const rollback = await findRollbackAfterMerge(
           repo,
           issue.number,
           blocking.closedAt,
