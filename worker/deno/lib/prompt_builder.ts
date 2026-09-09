@@ -2070,9 +2070,6 @@ ${ciFixTemplate}${customSection}
 }
 
 /**
- * Options for building a merge-conflict resolution prompt (Issue #84).
- */
-/**
  * What the conflicted merge is being resolved for (Issue #1767).
  *
  * A pull request names its number; the milestone ladder names the branch the
@@ -2083,11 +2080,14 @@ export type MergeConflictTarget =
   | { kind: "pr"; prNumber: number }
   | { kind: "branch"; intoBranch: string };
 
+/**
+ * Options for building a merge-conflict resolution prompt (Issue #84).
+ */
 export interface MergeConflictPromptOptions {
   repo: string;
   /** The PR or the branch the base is being merged into (Issue #1767). */
   target: MergeConflictTarget;
-  /** Base branch being merged into the PR branch. */
+  /** Base branch being merged into the target's branch. */
   baseBranch: string;
   /** Paths left conflicted by the in-progress merge. */
   conflictedFiles: readonly string[];
