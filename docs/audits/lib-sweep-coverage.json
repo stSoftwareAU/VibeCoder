@@ -946,6 +946,17 @@
       "paths": [
         "worker/deno/lib/pending_work.ts"
       ]
+    },
+    {
+      "issue": 1666,
+      "chunk": "12n",
+      "title": "top-up: the stream-json rate_limit_event parser added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1666-claude-rate-limit-event.md",
+      "definition": "modules added to lib/ after 12a-12m recorded their coverage: claude_rate_limit_event.ts (#1666)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/claude_rate_limit_event.ts"
+      ]
     }
   ]
 }

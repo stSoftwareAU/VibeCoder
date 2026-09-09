@@ -26,6 +26,7 @@ import type { RepoConfig } from "../types.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { ScheduledReleaseReason } from "./failure_diagnosis.ts";
+import type { ClaudeRateLimitEvent } from "./claude_rate_limit_event.ts";
 
 /** Exit code returned when a process times out. */
 export const TIMEOUT_EXIT_CODE = 124;
@@ -162,6 +163,12 @@ export interface ClaudeExecutionResult {
    * every other caller's result shape is unchanged.
    */
   extensions?: ExtensionTelemetry;
+  /**
+   * Last well-formed `rate_limit_event` on the child's stdout (Issue #1666).
+   * Carried so `runClaudeWithRetry` can prefer the event's `resetsAt` and
+   * windows over prose; `extractStreamJsonText` drops these lines.
+   */
+  rateLimitEvent?: ClaudeRateLimitEvent;
 }
 
 // ---------------------------------------------------------------------------
