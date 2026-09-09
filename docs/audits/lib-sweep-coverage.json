@@ -936,6 +936,17 @@
       "paths": [
         "worker/deno/lib/gated_head_guard.ts"
       ]
+    },
+    {
+      "issue": 1649,
+      "chunk": "12m",
+      "title": "top-up: prompt security ignorables normalisation",
+      "ledger": "docs/audits/security-sweep-1649-prompt-security-normalisation.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12l recorded their coverage: prompt_security_normalisation.ts (#1649)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/prompt_security_normalisation.ts"
+      ]
     }
   ]
 }
