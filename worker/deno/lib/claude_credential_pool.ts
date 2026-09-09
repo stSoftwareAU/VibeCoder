@@ -19,15 +19,16 @@
  *   probing to be told so again is a request spent to learn nothing.
  * - {@link ClaudeCredentialPool.selectEligible} refreshes any snapshot older
  *   than {@link CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS}, ranks the pool, and
- *   returns the winner **only when it passes the five-hour gate**. Nothing
- *   worth switching to means `null`, never a token that would stall on its
- *   first call.
+ *   returns the winner unless it is **exhausted** (Issue #1685). Exhaustion
+ *   is the hard condition; the five-hour guard is a preference the ranking
+ *   already applied, so a pool whose windows are merely low still names the
+ *   credential with the most weekly quota per hour rather than idling a host
+ *   that has quota to spend. `null` means every candidate is spent.
  * - {@link ClaudeCredentialPool.selectToken} is the same ranking wired as the
- *   start-up {@link ProviderTokenSelector} — with the gate applied as a
- *   *reason*, never as a filter. A start never refuses: refusing to spawn is
- *   a question for whatever gates a spawn, and a worker that would not start
- *   because every token is low is strictly worse than one that starts on the
- *   token which refills first.
+ *   start-up {@link ProviderTokenSelector} — with exhaustion applied as a
+ *   *reason*, never as a filter. A start never refuses: a worker that would
+ *   not start because every token is low is strictly worse than one that
+ *   starts on the token which recovers first.
  * - {@link ClaudeCredentialPool.applySelection} sets exactly the selected
  *   file's subscription OAuth variable, **replacing** the previous value.
  *   `applyProviderCredentialEnv` deliberately never clobbers — right for
@@ -172,12 +173,13 @@ export interface ClaudeCredentialPool {
    * The best token worth switching to right now, or null when none is.
    *
    * @param now - Current time in epoch milliseconds; defaults to the clock.
-   * @returns The winning token file, or null when nothing passes the gate or
-   *   the host has fewer than two pool candidates.
+   * @returns The winning token file, or null when every candidate is
+   *   exhausted or unmeasured, or the host has fewer than two pool
+   *   candidates.
    */
   selectEligible(now?: number): Promise<ProviderTokenFile | null>;
 
-  /** The start-up selector: the ranking winner, with no gate filter. */
+  /** The start-up selector: the ranking winner, with no filter at all. */
   readonly selectToken: ProviderTokenSelector;
 
   /**
@@ -297,9 +299,14 @@ export function createClaudeCredentialPool(
       if (pool.length < 2) return null;
       const ranking = await rankPool(pool, now);
       const winner = ranking.winner;
-      // The gate is the switch's own question — "is this worth running
-      // against?" — so a winner that fails it is no selection at all.
-      if (winner === null || !winner.passesFiveHourGate) return null;
+      // Exhaustion is the only hard condition (Issue #1685): a spent window
+      // cannot serve the next call, while a merely low one can, and refusing
+      // there would idle a host that still holds usable quota. An unmeasured
+      // token is not a switch target either — switching to figures we do not
+      // have is a guess, and staying put is the measured option.
+      if (winner === null || winner.exhausted || !winner.budget.known) {
+        return null;
+      }
       return pool[winner.index] ?? null;
     },
 
@@ -318,9 +325,9 @@ export function createClaudeCredentialPool(
       discovered ??= Promise.resolve(pool);
       const now = clock();
       const ranking = await rankPool(pool, now);
-      // A start never refuses: the gate is logged as the reason, not applied
-      // as a filter. Ranking drops nothing, so a pool of two always has a
-      // winner.
+      // A start never refuses: the guard and exhaustion are logged as the
+      // reason, not applied as a filter. Ranking drops nothing, so a pool of
+      // two always has a winner.
       return ranking.winner === null
         ? null
         : pool[ranking.winner.index] ?? null;

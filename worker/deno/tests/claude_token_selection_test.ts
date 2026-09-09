@@ -192,7 +192,7 @@ Deno.test("ranking returns the token with the most remaining budget per hour of 
   assertEquals(ranking.reason, "highest-remaining-per-hour");
   assertEquals(
     ranking.ranked.map((r) => r.label),
-    // provider is last: 10% of its five-hour window fails the gate.
+    // provider is last: 10% of its five-hour window is under the guard.
     ["provider-3", "provider-2", "provider"],
   );
 });
@@ -217,7 +217,7 @@ Deno.test("ranking prefers 20% that expires in six hours over 90% that lasts six
   assertEquals(ranking.winner?.ratePerHour, 0.20 / 6);
 });
 
-Deno.test("ranking gates on the five-hour window before it looks at the rate (Issue #1623)", () => {
+Deno.test("ranking guards on the five-hour window before it looks at the rate (Issue #1623)", () => {
   // provider has by far the best seven-day rate, but 19% of its five-hour
   // window is left — over 80% used — so it cannot spend that budget now.
   const ranking = rankClaudeTokenBudgets([
@@ -232,20 +232,23 @@ Deno.test("ranking gates on the five-hour window before it looks at the rate (Is
   ], NOW);
 
   assertEquals(ranking.winner?.label, "provider-2");
-  assertEquals(ranking.winner?.passesFiveHourGate, true);
+  assertEquals(ranking.winner?.meetsFiveHourGuard, true);
   assertEquals(ranking.ranked[1]?.label, "provider");
-  assertEquals(ranking.ranked[1]?.passesFiveHourGate, false);
+  assertEquals(ranking.ranked[1]?.meetsFiveHourGuard, false);
 });
 
-Deno.test("ranking puts a token at 80% of its five-hour window behind one at 79% (Issue #1623)", () => {
-  // The gate boundary, stated as the shares themselves rather than as
-  // `1 - 0.80`: at exactly 20% left the token has used exactly 80% and fails,
-  // at 21% left it has used 79% and passes. The two are otherwise identical,
-  // so nothing but the gate can decide the order — and no floating-point
-  // artefact can make the test pass for the wrong reason.
+Deno.test("ranking puts a token at 81% of its five-hour window behind one at 79% (Issue #1623, boundary moved by #1685)", () => {
+  // The guard boundary, stated as the shares themselves rather than as
+  // `1 - 0.81`: at 19% left the token has used 81% and falls under the guard,
+  // at 21% left it has used 79% and meets it. The two are otherwise
+  // identical, so nothing but the guard can decide the order — and no
+  // floating-point artefact can make the test pass for the wrong reason.
+  //
+  // Issue #1685 moved the boundary itself: 20% remaining used to fail here
+  // and is now usable, so this test states the case either side of 20%.
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
-      fiveHour(0.20, NOW + 2 * HOUR),
+      fiveHour(0.19, NOW + 2 * HOUR),
       sevenDay(0.50, NOW + 24 * HOUR),
     ]),
     dual("provider-2", [
@@ -255,28 +258,32 @@ Deno.test("ranking puts a token at 80% of its five-hour window behind one at 79%
   ], NOW);
 
   assertEquals(ranking.winner?.label, "provider-2");
-  assertEquals(ranking.ranked[0]?.passesFiveHourGate, true);
+  assertEquals(ranking.ranked[0]?.meetsFiveHourGuard, true);
   assertEquals(ranking.ranked[1]?.label, "provider");
-  assertEquals(ranking.ranked[1]?.passesFiveHourGate, false);
+  assertEquals(ranking.ranked[1]?.meetsFiveHourGuard, false);
 });
 
-Deno.test("the gate reads the utilisation the probe actually reports (Issue #1623)", () => {
+Deno.test("the guard reads the utilisation the probe actually reports (Issue #1623, boundary moved by #1685)", () => {
   // The probe reports remaining as `1 - utilisation`, which is not exact:
-  // 80% used arrives as 0.19999999999999996 and 79% as 0.20999999999999996.
-  // Both sides of the boundary must still land where they belong.
+  // 80% used arrives as 0.19999999999999996, which is exactly 20% remaining
+  // and therefore usable, while 81% used arrives as 0.18999999999999995 and
+  // is not. Both sides of the boundary must land where they belong on the
+  // figures the probe really produces.
   const ranking = rankClaudeTokenBudgets([
-    dual("provider", [fiveHour(1 - 0.80, NOW + 2 * HOUR)]),
-    dual("provider-2", [fiveHour(1 - 0.79, NOW + 2 * HOUR)]),
+    dual("provider", [fiveHour(1 - 0.81, NOW + 2 * HOUR)]),
+    dual("provider-2", [fiveHour(1 - 0.80, NOW + 2 * HOUR)]),
   ], NOW);
 
   assertEquals(ranking.ranked[0]?.label, "provider-2");
-  assertEquals(ranking.ranked[0]?.passesFiveHourGate, true);
-  assertEquals(ranking.ranked[1]?.passesFiveHourGate, false);
+  assertEquals(ranking.ranked[0]?.meetsFiveHourGuard, true);
+  assertEquals(ranking.ranked[1]?.meetsFiveHourGuard, false);
 });
 
-Deno.test("ranking puts a passing token under 10% of its seven-day window behind every passing token above it (Issue #1623)", () => {
-  // provider's rate is the highest of the three, but 8% of a week is a floor
-  // too thin to start a run on while a healthier subscription is available.
+Deno.test("a token under 10% of its seven-day window is ranked on its rate like any other (Issue #1685)", () => {
+  // Issue #1623 demoted every token under a 10% weekly floor; Issue #1685
+  // removed that floor as the opposite of use-it-or-lose-it. provider's 8%
+  // lapses within the hour, so it is worth 8.00%/h against 0.11%/h and
+  // 0.59%/h and is spent first.
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
       fiveHour(0.90, NOW + 2 * HOUR),
@@ -294,12 +301,13 @@ Deno.test("ranking puts a passing token under 10% of its seven-day window behind
 
   assertEquals(
     ranking.ranked.map((r) => r.label),
-    ["provider-3", "provider-2", "provider"],
+    ["provider", "provider-3", "provider-2"],
   );
-  assertEquals(ranking.winner?.label, "provider-3");
+  assertEquals(ranking.winner?.label, "provider");
+  assertEquals(ranking.reason, "highest-remaining-per-hour");
 });
 
-Deno.test("ranking orders two sub-10% tokens by rate and still ahead of a gate failure (Issue #1623)", () => {
+Deno.test("ranking orders two sub-10% tokens by rate and still ahead of a token under the guard (Issue #1623, floor removed by #1685)", () => {
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
       fiveHour(0.05, NOW + 2 * HOUR),
@@ -319,11 +327,16 @@ Deno.test("ranking orders two sub-10% tokens by rate and still ahead of a gate f
     ranking.ranked.map((r) => r.label),
     ["provider-3", "provider-2", "provider"],
   );
-  assertEquals(ranking.reason, "low-seven-day-remaining-highest-rate");
+  // Under Issue #1685 the winner is simply the highest rate of the tokens
+  // that meet the guard; there is no weekly floor left to name.
+  assertEquals(ranking.reason, "highest-remaining-per-hour");
 });
 
-Deno.test("ranking orders gate-failing tokens by the soonest five-hour reset (Issue #1623)", () => {
-  // Nothing passes the gate, so the winner is whichever refills first.
+Deno.test("ranking keeps choosing on the weekly rate when nothing meets the guard (Issue #1623, corrected by #1685)", () => {
+  // Both hold a sliver of their five-hour window and neither is exhausted.
+  // Until Issue #1685 the pool ranked these on the five-hour reset alone and
+  // provider-2 won; now the guard steps aside and the weekly rate decides,
+  // so provider's 0.56%/h beats provider-2's 0.13%/h.
   const ranking = rankClaudeTokenBudgets([
     dual("provider", [
       fiveHour(0.02, NOW + 4 * HOUR),
@@ -335,11 +348,14 @@ Deno.test("ranking orders gate-failing tokens by the soonest five-hour reset (Is
     ]),
   ], NOW);
 
-  assertEquals(ranking.winner?.label, "provider-2");
-  assertEquals(ranking.reason, "five-hour-gate-failed-soonest-reset");
+  assertEquals(ranking.winner?.label, "provider");
+  assertEquals(
+    ranking.reason,
+    "below-five-hour-guard-highest-remaining-per-hour",
+  );
   assertEquals(
     ranking.ranked.map((r) => r.label),
-    ["provider-2", "provider"],
+    ["provider", "provider-2"],
   );
 });
 
@@ -441,7 +457,7 @@ Deno.test("ranking falls back to the headline figure for a budget carrying no wi
 
   assertEquals(ranking.winner?.label, "provider", "0.60/12h beats 0.60/120h");
   assertEquals(ranking.winner?.ratePerHour, 0.60 / 12);
-  assertEquals(ranking.winner?.passesFiveHourGate, true, "no gate to fail");
+  assertEquals(ranking.winner?.meetsFiveHourGuard, true, "no guard to fail");
 });
 
 Deno.test("ranking scores an elapsed seven-day window over its nominal 168 hours (Issue #1623)", () => {
@@ -495,12 +511,13 @@ Deno.test("the decision log names every candidate then the winner and its reason
     lines[0],
     "[SECURITY] claude token candidate provider-2 (#2): five_hour=75.0% " +
       "resets=2026-09-04T02:00:00.000Z seven_day=absent rate=37.50%/h " +
-      "gate=pass",
+      "guard=pass",
   );
   assertEquals(
     lines[1],
     "[SECURITY] claude token candidate provider (#1): five_hour=absent " +
-      "seven_day=25.0% resets=2026-09-04T05:00:00.000Z rate=5.00%/h gate=pass",
+      "seven_day=25.0% resets=2026-09-04T05:00:00.000Z rate=5.00%/h " +
+      "guard=pass",
   );
   assertEquals(
     lines[2],
@@ -529,15 +546,15 @@ Deno.test("the decision log prints both windows and the rate for a token reporti
     lines[0],
     "[SECURITY] claude token candidate provider (#1): five_hour=10.0% " +
       "resets=2026-09-04T02:00:00.000Z seven_day=60.0% " +
-      "resets=2026-09-06T00:00:00.000Z rate=1.25%/h gate=fail",
+      "resets=2026-09-06T00:00:00.000Z rate=1.25%/h guard=below",
   );
   assertEquals(
     lines[1],
     "[SECURITY] claude token selected provider (#1) of 1: " +
-      "five-hour-gate-failed-soonest-reset five_hour=10.0% " +
+      "below-five-hour-guard-highest-remaining-per-hour five_hour=10.0% " +
       "resets=2026-09-04T02:00:00.000Z rate=1.25%/h remaining=60.0% " +
       "resets=2026-09-06T00:00:00.000Z",
-    "the line records the five-hour reset the decision was made on",
+    "the line records the five-hour window the decision was made despite",
   );
 });
 
@@ -748,4 +765,201 @@ Deno.test("no token value reaches the decision log (Issue #919)", async () => {
     }
   }
   assertStringIncludes(captured, "provider-2");
+});
+
+// ---------------------------------------------------------------------------
+// The weekly quota-per-hour rule, with the five-hour window as a soft guard
+// (Issue #1685)
+// ---------------------------------------------------------------------------
+
+Deno.test("the weekly rate decides while both credentials clear the five-hour guard (Issue #1685)", () => {
+  // A holds the better weekly rate, B the roomier five hours. The guard is a
+  // boundary, never a score, so a passing candidate's five-hour share adds
+  // nothing to its ranking.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.70, NOW + 4 * HOUR),
+      sevenDay(0.30, NOW + 10 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.90, NOW + 4 * HOUR),
+      sevenDay(0.80, NOW + 150 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider", "3.00%/h beats 0.53%/h");
+  assertEquals(ranking.reason, "highest-remaining-per-hour");
+});
+
+Deno.test("a credential under the five-hour guard loses to one above it, whatever its weekly rate (Issue #1685)", () => {
+  // 19% of five hours is too little to run an approximately hour-long Vibe
+  // Coder run against while a healthier subscription is there.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.19, NOW + 2 * HOUR),
+      sevenDay(0.60, NOW + 6 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.60, NOW + 2 * HOUR),
+      sevenDay(0.30, NOW + 100 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.winner?.meetsFiveHourGuard, true);
+  assertEquals(ranking.ranked[1]?.label, "provider");
+  assertEquals(ranking.ranked[1]?.meetsFiveHourGuard, false);
+  assertEquals(ranking.ranked[1]?.exhausted, false, "low is not exhausted");
+});
+
+Deno.test("with every credential under the guard the weekly rate still decides and nothing is refused (Issue #1685)", () => {
+  // The correction this issue exists for: 19% and 18% are both under the
+  // guard, so the guard steps aside and the weekly quota-per-hour ranking
+  // picks the winner rather than the pool going idle.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.19, NOW + 2 * HOUR),
+      sevenDay(0.40, NOW + 8 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.18, NOW + 2 * HOUR),
+      sevenDay(0.90, NOW + 160 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider", "5.00%/h beats 0.56%/h");
+  assertEquals(
+    ranking.reason,
+    "below-five-hour-guard-highest-remaining-per-hour",
+  );
+  assertEquals(ranking.ranked.map((r) => r.exhausted), [false, false]);
+});
+
+Deno.test("an exhausted credential loses to a usable one under the guard (Issue #1685)", () => {
+  // Exhaustion is the hard condition: 0% cannot serve a call at all, while
+  // 15% can, so the weekly rate never gets to rescue the spent one.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0, NOW + 2 * HOUR),
+      sevenDay(0.90, NOW + 3 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.15, NOW + 2 * HOUR),
+      sevenDay(0.20, NOW + 160 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.ranked[1]?.label, "provider");
+  assertEquals(ranking.ranked[1]?.exhausted, true);
+});
+
+Deno.test("21% of the five-hour window beats 19% even on a worse weekly rate (Issue #1685)", () => {
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.19, NOW + 2 * HOUR),
+      sevenDay(0.50, NOW + 5 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.21, NOW + 2 * HOUR),
+      sevenDay(0.50, NOW + 150 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.winner?.meetsFiveHourGuard, true);
+});
+
+Deno.test("exactly 20% of the five-hour window is usable, not excluded (Issue #1685)", () => {
+  // The boundary belongs to the usable side: at 20% left the credential joins
+  // the weekly ranking and wins it on rate.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.20, NOW + 2 * HOUR),
+      sevenDay(0.50, NOW + 5 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.21, NOW + 2 * HOUR),
+      sevenDay(0.50, NOW + 150 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider", "10.00%/h beats 0.33%/h");
+  assertEquals(ranking.winner?.meetsFiveHourGuard, true);
+  assertEquals(ranking.reason, "highest-remaining-per-hour");
+});
+
+Deno.test("an imminent weekly reset beats a far larger weekly balance days away (Issue #1685)", () => {
+  // No 10% weekly floor: 8% that lapses in two hours is worth more per hour
+  // than 80% that lasts six days, which is the use-it-or-lose-it objective.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0.90, NOW + 4 * HOUR),
+      sevenDay(0.08, NOW + 2 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.90, NOW + 4 * HOUR),
+      sevenDay(0.80, NOW + 144 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider", "4.00%/h beats 0.56%/h");
+  assertEquals(ranking.reason, "highest-remaining-per-hour");
+});
+
+Deno.test("with every credential exhausted the soonest reset wins and a winner is still named (Issue #1685)", () => {
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0, NOW + 4 * HOUR),
+      sevenDay(0.90, NOW + 160 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0, NOW + HOUR),
+      sevenDay(0.20, NOW + 160 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.reason, "exhausted-soonest-reset");
+  assertEquals(
+    ranking.ranked.map((r) => r.label),
+    ["provider-2", "provider"],
+  );
+});
+
+Deno.test("an exhausted window whose reset has passed is usable again (Issue #1685)", () => {
+  // The figures describe the window that was current when they were taken;
+  // once its reset is behind us the window has rolled over and is full.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(0, NOW - HOUR),
+      sevenDay(0.50, NOW + 10 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.90, NOW + 4 * HOUR),
+      sevenDay(0.50, NOW + 100 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider");
+  assertEquals(ranking.winner?.exhausted, false);
+  assertEquals(ranking.winner?.meetsFiveHourGuard, true);
+});
+
+Deno.test("a seven-day exhaustion is exhaustion too, whatever the five hours hold (Issue #1685)", () => {
+  // A spent week cannot be spent from, so a fresh five-hour window does not
+  // make the credential usable.
+  const ranking = rankClaudeTokenBudgets([
+    dual("provider", [
+      fiveHour(1, NOW + 4 * HOUR),
+      sevenDay(0, NOW + 48 * HOUR),
+    ]),
+    dual("provider-2", [
+      fiveHour(0.10, NOW + 4 * HOUR),
+      sevenDay(0.10, NOW + 100 * HOUR),
+    ]),
+  ], NOW);
+
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.ranked[1]?.exhausted, true);
 });

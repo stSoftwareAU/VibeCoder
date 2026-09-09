@@ -786,7 +786,7 @@ figures it was made on are kept for the rest of the run by a **process-wide
 credential pool** (`claude_credential_pool.ts`). The pool holds one budget
 snapshot per token, re-measures only a snapshot older than **ten minutes**
 (`CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS`), and answers a later question with the
-same gate, the same ranking and the same shape of log line as the start. So a
+same guard, the same ranking and the same shape of log line as the start. So a
 re-pick mid-run is one call rather than a second startup, and when it happens
 the run's single Claude token variable is *replaced* — nothing else is
 exported, so the environment still carries exactly one subscription's
@@ -795,10 +795,11 @@ credential.
 Two consequences worth knowing. A switch changes the environment the host
 shares, so it affects agents spawned **after** it; an agent already running
 keeps the environment it was given. And the pool answers `null` rather than
-naming a token when nothing passes the gate below — a switch to a token that
-would stall on its first call is worse than staying put. A *start* never
-refuses: with every token low the run still begins, on the one whose five-hour
-window refills first.
+naming a token only when every candidate is **exhausted** or unmeasured — a
+switch to a spent token would stall on its first call, while a merely *low*
+one is still worth having, so a pool that holds usable quota never idles
+(Issue #1685). A *start* never refuses either: with every token spent the run
+still begins, on the one whose window resets first.
 
 With **fewer than two** subscription tokens there is nothing to choose between,
 so nothing is done — no request, no delay, no log line, and the same token file
@@ -815,31 +816,38 @@ one-character prompt and generates nothing.
 
 Anthropic reports two windows, a five-hour and a seven-day one, and names one
 of them representative. The worker uses **both**, and not as one combined
-score: the five-hour window is a *gate*, and the seven-day window sets the
-*rate*. The point is that budget which resets before it is spent is budget
-thrown away — a token holding 20% of its week that resets in six hours is
-worth far more right now than one holding 90% that resets in six and a half
-days, so the first is used first. Use it or lose it.
+score: the seven-day window sets the *rate*, and the five-hour window is a
+*soft guard* on which credentials that rate is compared between. The point is
+that budget which resets before it is spent is budget thrown away — a token
+holding 20% of its week that resets in six hours is worth far more right now
+than one holding 90% that resets in six and a half days, so the first is used
+first. Use it or lose it.
 
 The candidates are ordered:
 
 1. **A measured budget beats an unmeasured one.** A token whose probe failed
    ranks behind every token whose probe answered.
-2. **The five-hour gate.** A token that has used **less than 80%** of its
-   five-hour window passes, and every passing token ranks ahead of every
-   failing one; at exactly 80% used — 20% left — it fails. A token that has
-   burned its five hours cannot spend whatever its week still holds, so no rate
-   it scores is worth acting on. The threshold is a fixed constant in the
-   worker, not a setting: it describes how Anthropic's windows behave, not how
-   one host is configured. It is stated **once**, as
-   `CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING = 0.2` in `claude_token_selection.ts`;
-   `CLAUDE_FIVE_HOUR_GATE_MAX_USED` is its exact complement and
-   `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "is another subscription
-   worth restarting for?" — is the same constant read against the same
-   five-hour window, because *worth restarting for* and *worth switching to*
-   are one question. A response that reported
-   **no** five-hour window has no gate to fail, so it passes.
-3. **The highest remaining budget per hour wins**, measured on the seven-day
+2. **Exhaustion is the only hard condition.** A token whose reported window
+   has nothing left — 0% remaining, or a usage-limit result recorded as spent
+   — cannot serve a call at all, so it ranks behind every token that can until
+   that window resets. `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "is
+   another subscription worth restarting for?" — is this same condition read
+   against the five-hour window, because *worth restarting for* and *worth
+   switching to* are one question.
+3. **The five-hour guard, which is a preference and not a filter.** A token
+   holding **at least 20%** of its five-hour window can carry an approximately
+   hour-long Vibe Coder run, so while any usable token holds that much the
+   choice is restricted to those tokens. When **none** of them does, the guard
+   steps aside and the ranking below picks between what is left rather than
+   idling a host that still has quota (Issue #1685). Exactly 20% remaining is
+   usable; the guard bites *below* it. The threshold is a fixed constant in
+   the worker, not a setting: it describes how Anthropic's windows behave, not
+   how one host is configured. It is stated **once**, as
+   `CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING = 0.2` in
+   `claude_token_selection.ts`, with `CLAUDE_FIVE_HOUR_GUARD_MAX_USED` its
+   exact complement. A response that reported **no** five-hour window has no
+   guard to fall under, so it meets it.
+4. **The highest remaining budget per hour wins**, measured on the seven-day
    window: its remaining share divided by the hours until it resets. A response
    that reported no seven-day window is ranked on the rate of the window it did
    report, rather than dropped. Comparing
@@ -850,15 +858,16 @@ The candidates are ordered:
    that instant is behind us the window has rolled over. Such a window is
    scored over its nominal length — five hours, or seven days — rather than
    over a reset that is already behind it.
-4. **A floor under the rate.** A token with less than **10%** of its seven-day
-   window left ranks behind every passing token above that floor, whatever its
-   rate: a nearly spent week divided by an imminent reset scores highly and
-   would stall a run almost immediately. Those tokens are ordered among
-   themselves by rate, and still rank ahead of every gate failure.
-5. **Tokens that failed the gate are ordered by the soonest five-hour reset**,
-   so when nothing can be spent now the token that refills first is the one
-   chosen.
-6. **A remaining tie goes to the soonest reset, then to discovery order** —
+5. **Nothing overrides that rate for a usable token.** There is deliberately
+   no weekly floor: a nearly spent week that resets within the hour is exactly
+   the budget that would otherwise lapse, so a credential holding 8% of a week
+   that resets in two hours is preferred to one holding 80% that resets in six
+   days. Issue #1623 demoted every token under a 10% weekly floor; Issue #1685
+   removed that floor as the opposite of use-it-or-lose-it.
+6. **Exhausted tokens are ordered by when they become usable again** — the
+   last of their spent windows to reset — so when nothing can be spent now the
+   token that recovers first is the one chosen.
+7. **A remaining tie goes to the soonest reset, then to discovery order** —
    `provider.env` first, then the numbered files in ascending numeric order.
 
 A probe can fail in ordinary ways: the host cannot reach the endpoint, the
@@ -874,8 +883,8 @@ exactly what a host with no network path to the endpoint does today.
 candidate, best first, then the winner:
 
 ```text
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): five_hour=88.0% resets=2026-09-05T02:00:00.000Z seven_day=22.0% resets=2026-09-05T09:00:00.000Z rate=2.03%/h gate=pass host=vibe-host:5312
-[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=91.0% resets=2026-09-05T01:00:00.000Z seven_day=75.0% resets=2026-09-11T05:00:00.000Z rate=0.50%/h gate=pass host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): five_hour=88.0% resets=2026-09-05T02:00:00.000Z seven_day=22.0% resets=2026-09-05T09:00:00.000Z rate=2.03%/h guard=pass host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=91.0% resets=2026-09-05T01:00:00.000Z seven_day=75.0% resets=2026-09-11T05:00:00.000Z rate=0.50%/h guard=pass host=vibe-host:5312
 [2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-3 (#3): remaining=unknown reason=http-401 host=vibe-host:5312
 [2026-09-04 22:10:07Z] INFO: [SECURITY] claude token selected provider-2 (#2) of 3: highest-remaining-per-hour rate=2.03%/h remaining=22.0% resets=2026-09-05T09:00:00.000Z host=vibe-host:5312
 ```
@@ -885,8 +894,10 @@ found; `of 3` is how many candidates were ranked. Each candidate line carries
 both windows — a window the response did not report reads `absent` — plus
 `rate=`, the remaining share per hour of the seven-day window (or of the only
 window the response reported, when it carried no seven-day one), and
-`gate=pass|fail` for the five-hour gate. A `selected` line for a token that
-failed the gate also carries the five-hour reset the choice was made on. Above, `provider` holds three times the share but
+`guard=pass|below|exhausted` — one field, three values, so a reader never has
+to combine two: `exhausted` is the hard condition, `below` the soft guard,
+`pass` neither. A `selected` line for a token that did not meet the guard also
+carries the five-hour window the choice was made despite. Above, `provider` holds three times the share but
 `provider-2`'s 22% expires in eleven hours, so it is worth four times as much
 per hour and wins. The `[SECURITY]` prefix and the trailing `host=` field
 belong to the logger, not to this decision — every worker line carries them. A
@@ -900,11 +911,11 @@ carrying the credential. The last line names why the winner won:
 
 | Reason | What it means |
 |--------|---------------|
-| `highest-remaining-per-hour` | Strictly the most remaining budget per hour of every candidate that passed the five-hour gate **and** holds at least 10% of its seven-day window. A token demoted by that floor can still show a higher rate — the floor is applied before the rate, not after it. |
+| `highest-remaining-per-hour` | Strictly the most remaining budget per hour of every usable candidate that meets the five-hour guard. |
 | `equal-remaining-per-hour-soonest-reset` | Level on budget per hour; won on the sooner reset. |
 | `tied-discovery-order` | Level on both rate and reset; won on discovery order. |
-| `low-seven-day-remaining-highest-rate` | Every candidate that passed the gate is under the 10% seven-day floor; the fastest-burning of them won. |
-| `five-hour-gate-failed-soonest-reset` | No candidate passed the five-hour gate; the one whose five-hour window refills first won. |
+| `below-five-hour-guard-highest-remaining-per-hour` | No usable candidate meets the five-hour guard, so the guard stepped aside; the highest weekly remaining-per-hour of them won. |
+| `exhausted-soonest-reset` | Every candidate is exhausted; the one whose spent windows reset first won. |
 | `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
 
 Absence of these lines is itself informative: a host with one token, or with

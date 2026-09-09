@@ -10,7 +10,7 @@ import {
   POOL_BUDGET_FLOOR,
   poolHasAnotherTokenWithBudget,
 } from "../lib/claude_pool_budget.ts";
-import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "../lib/claude_token_selection.ts";
+import { CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING } from "../lib/claude_token_selection.ts";
 import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 
 function tokenFile(
@@ -102,13 +102,14 @@ Deno.test("poolHasAnotherTokenWithBudget - a pool that is also spent is not wort
   );
 });
 
-Deno.test("poolHasAnotherTokenWithBudget - a sliver of budget is not worth a restart loop", async () => {
-  // Just under the floor: selecting it would exhaust almost immediately and
-  // pause again, turning an hour's wait into a restart loop.
-  const justUnder = 1 - (POOL_BUDGET_FLOOR / 2);
+Deno.test("poolHasAnotherTokenWithBudget - a low but usable window is worth restarting for (Issue #1685)", async () => {
+  // Under the 20% five-hour guard and nowhere near spent. Until Issue #1685
+  // the host waited the window out; a pool holding usable quota must never
+  // idle, so the restart happens and the guard only shapes which credential
+  // the selection then prefers.
   const probe = fetchWith({
     "token-provider": 1.0,
-    "token-provider-2": justUnder,
+    "token-provider-2": 0.9,
   });
   assertEquals(
     await poolHasAnotherTokenWithBudget(
@@ -116,7 +117,7 @@ Deno.test("poolHasAnotherTokenWithBudget - a sliver of budget is not worth a res
       "provider",
       { fetchFn: probe.fn },
     ),
-    false,
+    true,
   );
 });
 
@@ -190,14 +191,16 @@ function fetchWindows(
   };
 }
 
-Deno.test("poolHasAnotherTokenWithBudget - the restart floor is the five-hour selection gate (Issue #1668)", async () => {
-  // One floor, one question: "worth running against?". Two floors that
-  // diverged would let a host restart for a token the selection gate then
-  // refuses to switch to — a restart loop dressed as a recovery.
-  assertEquals(POOL_BUDGET_FLOOR, CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING);
+Deno.test("poolHasAnotherTokenWithBudget - the restart floor is exhaustion, not the five-hour guard (Issue #1685)", async () => {
+  // One question, "can it serve a call?", and exhaustion is the only answer
+  // that says no. The 20% five-hour figure is a selection *preference*
+  // (`CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING`), so reading it here would idle a
+  // host whose other subscription still has quota to spend.
+  assertEquals(POOL_BUDGET_FLOOR, 0);
+  assertEquals(POOL_BUDGET_FLOOR < CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING, true);
 
-  // 15% left cleared the old 5% floor and does not clear the gate.
-  const belowGate = fetchWith({
+  // 15% left is under the guard and still worth going back for.
+  const belowGuard = fetchWith({
     "token-provider": 1.0,
     "token-provider-2": 0.85,
   });
@@ -205,13 +208,13 @@ Deno.test("poolHasAnotherTokenWithBudget - the restart floor is the five-hour se
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: belowGate.fn },
+      { fetchFn: belowGuard.fn },
     ),
-    false,
+    true,
   );
 
-  // 25% left clears it, and is worth going back for.
-  const aboveGate = fetchWith({
+  // 25% left clears the guard, and is worth going back for too.
+  const aboveGuard = fetchWith({
     "token-provider": 1.0,
     "token-provider-2": 0.75,
   });
@@ -219,16 +222,16 @@ Deno.test("poolHasAnotherTokenWithBudget - the restart floor is the five-hour se
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: aboveGate.fn },
+      { fetchFn: aboveGuard.fn },
     ),
     true,
   );
 });
 
 Deno.test("poolHasAnotherTokenWithBudget - the floor is read on the five-hour window, not the most constrained one (Issue #1668)", async () => {
-  // A fresh five hours and a nearly spent week: the selection gate passes this
-  // token and a run would spend its five hours against it, so refusing the
-  // restart on the seven-day figure would idle the host for nothing.
+  // A fresh five hours and a nearly spent week: selection would run against
+  // this token, so refusing the restart on the seven-day figure would idle
+  // the host for nothing.
   const freshHoursSpentWeek = fetchWindows({
     "token-provider": { fiveHour: 1, sevenDay: 1 },
     "token-provider-2": { fiveHour: 0.1, sevenDay: 0.85 },
@@ -242,11 +245,27 @@ Deno.test("poolHasAnotherTokenWithBudget - the floor is read on the five-hour wi
     true,
   );
 
-  // The mirror image: the week is untouched but the five hours are gone, so
-  // nothing can be spent now and the wait stands.
-  const spentHoursFreshWeek = fetchWindows({
+  // The mirror image: the five hours are nearly gone but not spent, so under
+  // Issue #1685 the restart still happens — 15% of a five-hour window is
+  // quota, and waiting it out is the idling this pool exists to avoid.
+  const nearlySpentHours = fetchWindows({
     "token-provider": { fiveHour: 1, sevenDay: 1 },
     "token-provider-2": { fiveHour: 0.85, sevenDay: 0.1 },
+  });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: nearlySpentHours },
+    ),
+    true,
+  );
+
+  // Spent, though, is spent: a five-hour window with nothing left cannot
+  // serve the next call whatever the week holds, so the wait stands.
+  const spentHoursFreshWeek = fetchWindows({
+    "token-provider": { fiveHour: 1, sevenDay: 1 },
+    "token-provider-2": { fiveHour: 1, sevenDay: 0 },
   });
   assertEquals(
     await poolHasAnotherTokenWithBudget(
@@ -259,8 +278,9 @@ Deno.test("poolHasAnotherTokenWithBudget - the floor is read on the five-hour wi
 });
 
 Deno.test("poolHasAnotherTokenWithBudget - exactly at the floor is not worth restarting for (Issue #1668)", async () => {
-  // The gate's own boundary: at exactly 80% used the token fails it, so the
-  // restart check must refuse the same token rather than going back for it.
+  // The floor's own boundary: a five-hour window with exactly nothing left
+  // cannot serve a call, so the restart check refuses it rather than going
+  // back for a token that would stall on its first request.
   const atTheBoundary = fetchWindows({
     "token-provider": { fiveHour: 1, sevenDay: 1 },
     "token-provider-2": { fiveHour: 1 - POOL_BUDGET_FLOOR, sevenDay: 0 },
