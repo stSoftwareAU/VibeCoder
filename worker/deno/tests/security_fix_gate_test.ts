@@ -18,6 +18,7 @@ import {
   extractTestIdentifiers,
   hasSecurityLabel,
   isTestFilePath,
+  matchedTestDeclarations,
   referencesFindingId,
   type SecurityFixDiffEvidence,
 } from "../lib/security_fix_gate.ts";
@@ -189,6 +190,91 @@ Deno.test("citedTestIdentifierInDiff - matches pytest, BATS and JUnit declaratio
   const junit = "+  @Test\n+  public void rejectsInjection() {\n+  }";
   const junitSummary = "Added `FooTest.java::rejectsInjection` as the test.";
   assertEquals(citedTestIdentifierInDiff(junitSummary, junit), true);
+});
+
+Deno.test("citedTestIdentifierInDiff - matches a Rust test declared under a test attribute (Issue #1680)", () => {
+  const rust = `+#[test]
++fn rejects_oob_index() {
++    assert!(lookup(99).is_err());
++}`;
+  const summary =
+    "Added `tests/index_test.rs::rejects_oob_index` as the regression test.";
+  assertEquals(citedTestIdentifierInDiff(summary, rust), true);
+});
+
+Deno.test("citedTestIdentifierInDiff - matches the async and stacked Rust attribute forms (Issue #1680)", () => {
+  const summary =
+    "Added `tests/index_test.rs::rejects_oob_index` as the regression test.";
+
+  const tokio = `+    #[tokio::test(flavor = "multi_thread")]
++    async fn rejects_oob_index() {
++        assert!(lookup(99).await.is_err());
++    }`;
+  assertEquals(citedTestIdentifierInDiff(summary, tokio), true);
+
+  const rstest = `+#[rstest]
++fn rejects_oob_index(#[case] index: usize) {}`;
+  assertEquals(citedTestIdentifierInDiff(summary, rstest), true);
+
+  const proptest = `+#[proptest]
++fn rejects_oob_index(index: usize) {}`;
+  assertEquals(citedTestIdentifierInDiff(summary, proptest), true);
+
+  // Further attributes may sit between the test attribute and the function.
+  const stacked = `+#[test]
++#[should_panic(expected = "out of bounds")]
++pub fn rejects_oob_index() {}`;
+  assertEquals(citedTestIdentifierInDiff(summary, stacked), true);
+});
+
+Deno.test("citedTestIdentifierInDiff - a Rust fn only counts under a test attribute (Issue #1680)", () => {
+  const summary =
+    "Added `tests/index_test.rs::rejects_oob_index` as the regression test.";
+
+  // A plain helper function declares no test.
+  const helper = "+fn rejects_oob_index(index: usize) -> bool { true }";
+  assertEquals(citedTestIdentifierInDiff(summary, helper), false);
+
+  // `#[cfg(test)] mod tests` gates a module, not a test function.
+  const moduleOnly = `+#[cfg(test)]
++mod rejects_oob_index {}`;
+  assertEquals(citedTestIdentifierInDiff(summary, moduleOnly), false);
+
+  // The name appears only inside another test's body (the Issue #1279 rule).
+  const bodyOnly = `+#[test]
++fn unrelated_case() {
++    assert!(rejects_oob_index(99));
++}`;
+  assertEquals(citedTestIdentifierInDiff(summary, bodyOnly), false);
+});
+
+Deno.test("citedTestIdentifierInDiff - matches a Go test function (Issue #1680)", () => {
+  const go = `+func TestRejectsOob(t *testing.T) {
++\tif err := Lookup(99); err == nil {
++\t\tt.Fatal("expected an error")
++\t}
++}`;
+  const summary =
+    "Added `index_test.go::TestRejectsOob` as the regression test.";
+  assertEquals(citedTestIdentifierInDiff(summary, go), true);
+
+  // A non-test Go function with the name in its body does not count.
+  const helper = `+func lookupHelper(t *testing.T) {
++\t_ = "TestRejectsOob"
++}`;
+  assertEquals(citedTestIdentifierInDiff(summary, helper), false);
+});
+
+Deno.test("matchedTestDeclarations - reports the Rust and Go declaration lines (Issue #1680)", () => {
+  const diff = `+#[test]
++fn rejects_oob_index() {
++}
++func TestRejectsOob(t *testing.T) {
++}`;
+  assertEquals(matchedTestDeclarations(diff), [
+    "fn rejects_oob_index() {",
+    "func TestRejectsOob(t *testing.T) {",
+  ]);
 });
 
 Deno.test("citedTestIdentifierInDiff - matches the Deno object-form test name", () => {

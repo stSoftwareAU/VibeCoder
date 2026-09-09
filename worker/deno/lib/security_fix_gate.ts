@@ -219,6 +219,7 @@ const TEST_DECLARATION_PATTERNS: RegExp[] = [
   /(^|[^.\w])(it|test|specify)\s*(\.\s*[a-z]+\s*)?\(\s*["'`]/, // Jest/Mocha/Cypress
   /^\s*@test\b/i, // BATS: @test "name" {
   /\bdef\s+test_\w+\s*\(/, // pytest
+  /^\s*func\s+Test\w*\s*\(/, // Go: func TestName(t *testing.T)
 ];
 
 /**
@@ -227,6 +228,24 @@ const TEST_DECLARATION_PATTERNS: RegExp[] = [
  */
 const TEST_ANNOTATION_LINE =
   /^\s*@(Test|ParameterizedTest|RepeatedTest|TestTemplate)\s*(\(.*\))?\s*$/;
+
+/**
+ * Rust test attribute alone on a line — `#[test]`, `#[tokio::test(…)]`,
+ * `#[rstest]`, `#[proptest]` … As with the Java annotation the name lives on
+ * a following line, but Rust allows further attributes in between
+ * (`#[should_panic]`), so the pending state carries across them until the
+ * `fn` line (Issue #1680). `#[cfg(test)]` is deliberately absent: it gates a
+ * module, not a test function.
+ */
+const RUST_TEST_ATTRIBUTE_LINE =
+  /^\s*#\[\s*(?:tokio::|async_std::|actix_rt::|smol_potat::)?(?:test|rstest|proptest)\b[^\]]*\]\s*$/;
+
+/** Any attribute alone on a line — may sit between the attribute and the `fn`. */
+const RUST_ATTRIBUTE_LINE = /^\s*#!?\[[^\]]*\]\s*$/;
+
+/** A Rust function signature — the declaration a test attribute points at. */
+const RUST_FN_LINE =
+  /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+"[^"]*"\s+)?fn\s+\w+\s*[(<]/;
 
 /**
  * A test call opened on one line with nothing after the parenthesis, or the
@@ -257,9 +276,12 @@ function testDeclarationLines(diffText: string): string[] {
   const declarations: string[] = [];
   let previousWasAnnotation = false;
   let previousWasOpener = false;
+  let pendingRustAttribute = false;
   for (const line of addedLines(diffText)) {
+    const isRustDeclaration = pendingRustAttribute && RUST_FN_LINE.test(line);
     if (
       previousWasAnnotation ||
+      isRustDeclaration ||
       (previousWasOpener && STRING_LITERAL_LINE.test(line)) ||
       TEST_DECLARATION_PATTERNS.some((pattern) => pattern.test(line))
     ) {
@@ -267,6 +289,10 @@ function testDeclarationLines(diffText: string): string[] {
     }
     previousWasAnnotation = TEST_ANNOTATION_LINE.test(line);
     previousWasOpener = TEST_CALL_OPENER_LINE.test(line);
+    // A test attribute opens the pending state; further attribute lines carry
+    // it; anything else closes it, so a stray `fn` never counts (Issue #1680).
+    pendingRustAttribute = RUST_TEST_ATTRIBUTE_LINE.test(line) ||
+      (pendingRustAttribute && RUST_ATTRIBUTE_LINE.test(line));
   }
   return declarations;
 }
