@@ -30,6 +30,7 @@ import {
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_RESOLVED_MARKER,
+  DEFAULT_MAX_CONFLICT_ATTEMPTS,
 } from "../lib/pr_merge_conflict_scan.ts";
 import type {
   ConflictIssueContext,
@@ -383,7 +384,10 @@ Deno.test("processMergeConflict - the attempt records the issues consulted", asy
   assertEquals(captured.edits.length, 1);
   const amended = captured.edits[0] ?? "";
   assertStringIncludes(amended, CONFLICT_ATTEMPT_MARKER);
-  assertStringIncludes(amended, "attempt 1 of 2");
+  assertStringIncludes(
+    amended,
+    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+  );
   assertStringIncludes(amended, "Issues consulted");
   assertStringIncludes(amended, "#900");
   assertStringIncludes(amended, "`SECURITY.md` — #812");

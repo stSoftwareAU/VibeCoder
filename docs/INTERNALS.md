@@ -3199,6 +3199,69 @@ Three defences, each independent of the others:
   `milestone-resurrection` job runs it on PRs into `milestone/*` and on the
   rollup PR.
 
+#### 🎟️ The conflict attempt ledger a milestone branch spends
+
+A milestone branch that conflicts with the default branch gets the same
+**budget of three concluded attempts** a conflicting PR gets:
+[milestone_sync_streak.ts](../worker/deno/lib/milestone_sync_streak.ts) exports
+`MILESTONE_CONFLICT_ATTEMPT_BUDGET` as
+[`DEFAULT_MAX_CONFLICT_ATTEMPTS`](../worker/deno/lib/pr_merge_conflict_scan.ts)
+itself — one constant, two consumers, so the two ladders cannot drift apart
+(Issue #1766).
+
+A PR carries its attempt history in marker comments on the PR; a milestone
+branch has nowhere to write one, so the ledger is persisted per branch in
+`milestone_sync_failures.json` beside the failure streak and survives worker
+restarts. The ledger and the rules below are the **state and the pure helpers**;
+the milestone sync pass is wired to charge them by Issue #1778. Each entry carries `conflictAttempts` (concluded failures),
+`attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
+(`at`, `outcome`, `reason`, `defaultSha`), `deferUntil`, `lastSyncedDefaultSha`
+and `rollbacks`. Every field is optional and every malformed field is dropped,
+so a file written before the ledger existed loads as a branch with an unspent
+budget rather than failing the whole load.
+
+Four rules decide what the ledger does, and each is a pure helper:
+
+- **Only a concluded failure is charged.** `openConflictAttempt` records that
+  an attempt started and charges nothing; `concludeConflictAttempt` charges
+  one attempt for a `failed` outcome and nothing for `disrupted` or
+  `not-charged`. An attempt left open reads as disrupted on the next cycle —
+  the run died before the conflict was judged, so the conflict was never
+  actually tried (the PR ladder's marker rule from #395 and #1693).
+- **A failure paces the next attempt.** A `failed` conclusion sets `deferUntil`
+  to now + `DEFAULT_CONFLICT_COOLDOWN_HOURS`. Without it a conflict that fails
+  identically against an unmoved default tip is re-attempted on every
+  30-second cycle and the whole budget is gone in 90 seconds.
+- **A moved tip clears the deferral, never the count.** A live `deferUntil`
+  always paces the branch against one tip — the one the failure ran against —
+  so *any* observation of a different tip clears it: `recordDefaultSha` when
+  the sync records the new tip, and `concludeConflictAttempt` when an
+  uncharged attempt concludes against it. `conflictAttempts` is left alone
+  either way: resetting on a tip move would refill the budget faster than a
+  busy default branch could let the ladder spend it, and an unresolvable
+  conflict would retry for ever. `isConflictAttemptDue` reads the pair — due
+  when the tip has moved since the last concluded attempt, or when the
+  deferral has passed. A `deferUntil` that does not parse is refused rather
+  than ignored, at load time as well as in memory: reading corruption as "no
+  cooldown applies" is the permissive direction on a safety bound, and the
+  next tip move clears it anyway.
+- **Only success zeroes it.** `resetConflictLedgerOnSuccess` is the one thing
+  that returns `conflictAttempts` to zero and clears the deferral; the
+  lifetime `rollbacks` count survives, because it describes the branch rather
+  than the conflict that just ended.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Open: openConflictAttempt
+    Open --> Idle: conclude disrupted / not-charged<br/>(budget untouched)
+    Open --> Deferred: conclude failed<br/>(+1 attempt, deferUntil set)
+    Deferred --> Idle: tip moves (recordDefaultSha)<br/>or cooldown passes
+    Idle --> Exhausted: conflictAttempts == budget (3)
+    Open --> Idle: resetConflictLedgerOnSuccess
+    Exhausted --> Idle: resetConflictLedgerOnSuccess
+```
+
 ### 🩹 Milestone branch self-heal
 
 A milestone can gain open children **after** its summary PR merged and

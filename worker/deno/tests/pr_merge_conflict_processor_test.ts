@@ -30,6 +30,7 @@ import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
+  DEFAULT_MAX_CONFLICT_ATTEMPTS,
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
 import type { AbandonRestartRequest } from "../lib/conflict_abandon_restart.ts";
@@ -470,7 +471,10 @@ Deno.test("processMergeConflict - records the attempt before touching the branch
 
   const firstComment = captured.comments[0] ?? "";
   assertStringIncludes(firstComment, CONFLICT_ATTEMPT_MARKER);
-  assertStringIncludes(firstComment, "attempt 1 of 2");
+  assertStringIncludes(
+    firstComment,
+    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+  );
 
   const commentIndex = captured.events.indexOf("gh:comment");
   const mergeIndex = captured.events.indexOf("git:merge origin/main");
@@ -710,7 +714,9 @@ Deno.test("processMergeConflict - 'refusing to merge unrelated histories' is a c
   assertEquals(result.value.merged, false);
   assertEquals(result.value.escalated, true, result.value.summary);
   assertEquals(
-    captured.comments.some((c) => c.includes("attempt 1 of 2 failed")),
+    captured.comments.some((c) =>
+      c.includes(`attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed`)
+    ),
     false,
     "the refusal must not be posted as a failed attempt",
   );
@@ -719,7 +725,7 @@ Deno.test("processMergeConflict - 'refusing to merge unrelated histories' is a c
 
 Deno.test("processMergeConflict - the final failed attempt escalates to a human", async () => {
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: 1 }),
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
   );
 
@@ -740,11 +746,11 @@ Deno.test("processMergeConflict - the final failed attempt escalates to a human"
 
 Deno.test("processMergeConflict - the final failure abandons and restarts rather than escalating", async () => {
   // The rung sits *here*, not only in the scan: the processor is what
-  // concludes attempt 2, and escalating from it would put `needs-human` on
-  // the PR before anything could try the restart.
+  // concludes the last attempt, and escalating from it would put
+  // `needs-human` on the PR before anything could try the restart.
   const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: 1 }),
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: (request) => {
@@ -769,9 +775,57 @@ Deno.test("processMergeConflict - the final failure abandons and restarts rather
   assert(captured.comments.some((c) => c.includes(CONFLICT_FAILED_MARKER)));
 });
 
+Deno.test("processMergeConflict - the third attempt is the one that abandons (Issue #1766)", async () => {
+  // The budget of three, read end to end: the attempt after two concluded
+  // failures announces itself as the last one and, on failing, runs the
+  // abandon rung rather than a fourth attempt.
+  const seen: AbandonRestartRequest[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeGitScript({ markersAfterAgent: true }),
+    {
+      abandonRestartFn: (request) => {
+        seen.push(request);
+        return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+      },
+    },
+  );
+
+  assert(result.ok);
+  assertStringIncludes(
+    captured.comments[0] ?? "",
+    `attempt ${DEFAULT_MAX_CONFLICT_ATTEMPTS} of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+  );
+  assertEquals(seen.length, 1, "the abandon rung ran on the third failure");
+  assertEquals(result.value.escalated, false);
+});
+
+Deno.test("processMergeConflict - the second failure neither escalates nor abandons (Issue #1766)", async () => {
+  const seen: AbandonRestartRequest[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 2 }),
+    makeGitScript({ markersAfterAgent: true }),
+    {
+      abandonRestartFn: (request) => {
+        seen.push(request);
+        return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+      },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.escalated, false);
+  assertEquals(seen.length, 0, "budget is left, so nothing is abandoned");
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assert(
+    captured.comments.some((c) => c.includes(CONFLICT_FAILED_MARKER)),
+    "the failure still concludes, spending one attempt",
+  );
+});
+
 Deno.test("processMergeConflict - an abandon that fails escalates naming the step", async () => {
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: 1 }),
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: () =>
@@ -792,7 +846,7 @@ Deno.test("processMergeConflict - an abandon that fails escalates naming the ste
 
 Deno.test("processMergeConflict - a declined abandon escalates saying why", async () => {
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: 1 }),
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: () =>
@@ -827,14 +881,17 @@ Deno.test("processMergeConflict - a failed attempt posts an explicit conclusion"
 
   const conclusion = captured.comments.at(-1) ?? "";
   assertStringIncludes(conclusion, CONFLICT_FAILED_MARKER);
-  assertStringIncludes(conclusion, "attempt 1 of 2 failed");
+  assertStringIncludes(
+    conclusion,
+    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed`,
+  );
   assertStringIncludes(conclusion, "conflict markers");
   assertStringIncludes(conclusion, "SECURITY.md");
 });
 
 Deno.test("processMergeConflict - the escalating attempt also posts its conclusion", async () => {
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: 1 }),
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
   );
 
@@ -854,7 +911,10 @@ Deno.test("processMergeConflict - a disrupted earlier attempt is surfaced on the
 
   const attempt = captured.comments[0] ?? "";
   assertStringIncludes(attempt, CONFLICT_ATTEMPT_MARKER);
-  assertStringIncludes(attempt, "attempt 1 of 2");
+  assertStringIncludes(
+    attempt,
+    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+  );
   assertStringIncludes(attempt, "2 earlier attempt(s) were disrupted");
   assertStringIncludes(attempt, "does not spend");
 });

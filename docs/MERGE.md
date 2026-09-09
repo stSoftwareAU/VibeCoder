@@ -711,6 +711,44 @@ passes: the spelling pass adopted `verifyPushLanded()`
 Issue #579) and treats a failed commit-and-push as "not pushed" whatever the
 local HEAD did.
 
+## The merge-conflict attempt budget
+
+A PR that conflicts with its base cannot run CI, so the merge-conflict pass
+merges the base branch in for real rather than side-picking. That pass is
+bounded by **three concluded attempts** —
+`DEFAULT_MAX_CONFLICT_ATTEMPTS`
+([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
+the first attempt and two retries against a base that has moved on since
+(Issue #1766). The third judged failure runs the abandon-and-restart rung, and
+only then does a human hear about it.
+
+**Milestone branches spend the same budget.** `milestone_sync_streak.ts`
+exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
+constant, two consumers — so the PR ladder and the milestone ladder cannot
+drift apart. The per-branch ledger that records what a milestone branch has
+spent lands with it; the sync pass is wired to charge that ledger by
+Issue #1778.
+
+What does and does not spend an attempt:
+
+| Attempt outcome                              | Charged? | Why                                                                                       |
+| -------------------------------------------- | -------- | ----------------------------------------------------------------------------------------- |
+| **Failed** — the merge was judged unmergeable | Yes      | The conflict itself was looked at and beat the worker                                     |
+| **Disrupted** — opened, never concluded       | No       | A restart, a swept heartbeat or an exhausted run budget killed it; the conflict was never judged (Issues #395, #1693) |
+| **Not-charged** — a conclusion the branch is not answerable for | No | A merge gate refused the push, or the pass stood down before touching the branch |
+
+A disrupted attempt is re-attempted rather than charged, and is bounded
+separately: `DEFAULT_MAX_DISRUPTED_ATTEMPTS` disruptions on one PR means the
+disruption — not the conflict — is the problem, and a human is told so.
+
+For a **PR**, the ledger is the attempt/conclusion marker comments on the PR
+itself, so the bound holds across hosts and worker restarts. For a **milestone
+branch** it is the persisted per-branch ledger in
+`milestone_sync_failures.json` described in
+[INTERNALS.md → the milestone conflict ledger](INTERNALS.md#-the-conflict-attempt-ledger-a-milestone-branch-spends).
+Either way a **success** is the only thing that refills the budget: a moved
+default tip clears the pacing deferral, never the attempt count.
+
 ## Failure and recovery modes
 
 | Situation                                           | Worker behaviour                                           | Recovery                                                                       |
