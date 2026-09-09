@@ -13,6 +13,17 @@
  * wrapper open, so the ordinary failure cooldown applies and a later claim
  * retries it.
  *
+ * Issue #1753: both writes go through the REST `issues` endpoints rather than
+ * the `gh issue close` / `gh issue comment` subcommands. Those subcommands
+ * are GraphQL-backed, so while the primary-quota latch (Issues #1485/#1540)
+ * is set the spawn chokepoint refuses them — and on the fleet's shared quota
+ * that latch is set for a large part of every hour. A wrapper whose work had
+ * landed then stayed open, the next scan re-claimed it and ran the whole
+ * scan again (GRQ-health#204), and this function still reported
+ * `closed: true`. REST `gh api` calls ride the core quota, a separate budget
+ * the latch exempts (`isQuotaExemptGhCall`), so the close lands regardless —
+ * and the result now reports what actually happened.
+ *
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
@@ -39,10 +50,26 @@ export interface FinaliseIdleTaskWrapperDeps {
 
 /** What {@link finaliseIdleTaskWrapper} did with the wrapper. */
 export interface FinaliseIdleTaskWrapperResult {
-  /** `true` when the wrapper was closed (successful run only). */
+  /**
+   * `true` when the wrapper was actually closed (successful run only).
+   *
+   * Issue #1753: reflects the close call's outcome, not the run's verdict. A
+   * successful run whose close was refused reports `closed: false` with the
+   * reason in {@link error}, so a caller can tell a wrapper that is still
+   * open — and will be re-claimed by the next scan — from one that closed.
+   */
   closed: boolean;
-  /** `true` when a failure comment was posted and the wrapper left open. */
+  /**
+   * `true` when a failure comment was posted and the wrapper left open.
+   *
+   * Reflects the comment call's outcome (Issue #1753).
+   */
   commented: boolean;
+  /**
+   * Why a write did not land, when one did not. Absent when every call the
+   * verdict required succeeded.
+   */
+  error?: string;
 }
 
 /**
@@ -59,10 +86,63 @@ export function buildIdleTaskFailureComment(summary: string): string {
 }
 
 /**
+ * REST argv that posts `body` as a comment on the wrapper (core quota).
+ *
+ * The same endpoint `github.ts`'s `addComment` uses; exported so the tests
+ * assert the exact shape the latch exempts.
+ */
+export function idleTaskWrapperCommentArgs(
+  repo: string,
+  issueNumber: number,
+  body: string,
+): string[] {
+  return [
+    "api",
+    "-X",
+    "POST",
+    `repos/${repo}/issues/${issueNumber}/comments`,
+    "-f",
+    `body=${body}`,
+  ];
+}
+
+/**
+ * REST argv that closes the wrapper (core quota).
+ *
+ * `classifyIssueLifecycle` reads this PATCH as the same `close` verb as
+ * `gh issue close`, so the audit journal and the agent-side guard see no
+ * difference between the two forms.
+ */
+export function idleTaskWrapperCloseArgs(
+  repo: string,
+  issueNumber: number,
+): string[] {
+  return [
+    "api",
+    "-X",
+    "PATCH",
+    `repos/${repo}/issues/${issueNumber}`,
+    "-f",
+    "state=closed",
+  ];
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
  * Close the wrapper on success; comment and leave it open on failure.
  *
  * `gh` failures are logged and swallowed — a stuck issue must never crash the
- * worker — but the caller's own success/failure verdict is unaffected.
+ * worker — and the caller's own success/failure verdict is unaffected. What
+ * the result reports is whether the writes landed, not the verdict
+ * (Issue #1753).
+ *
+ * On success the summary comment is posted first and the close follows,
+ * matching what `gh issue close --comment` did. A refused comment does not
+ * skip the close: an open wrapper costs a second full scan on the next
+ * claim, a missing summary costs a line of context.
  */
 export async function finaliseIdleTaskWrapper(
   input: FinaliseIdleTaskWrapperInput,
@@ -71,40 +151,58 @@ export async function finaliseIdleTaskWrapper(
   const ghCommand = deps.ghCommandFn ?? defaultRunGhCommand;
   const { repo, issueNumber, ok, summary } = input;
 
-  const args = ok
-    ? [
-      "issue",
-      "close",
-      String(issueNumber),
-      "--repo",
-      repo,
-      "--comment",
-      summary,
-    ]
-    : [
-      "issue",
-      "comment",
-      String(issueNumber),
-      "--repo",
-      repo,
-      "--body",
-      buildIdleTaskFailureComment(summary),
-    ];
-
-  try {
-    await ghCommand(args);
-  } catch (err) {
-    deps.logger.warn(
-      ok
-        ? "Failed to close idle-task issue"
-        : "Failed to comment on failed idle-task issue",
-      {
+  if (!ok) {
+    try {
+      await ghCommand(
+        idleTaskWrapperCommentArgs(
+          repo,
+          issueNumber,
+          buildIdleTaskFailureComment(summary),
+        ),
+      );
+      return { closed: false, commented: true };
+    } catch (err) {
+      const error = errorMessage(err);
+      deps.logger.warn("Failed to comment on failed idle-task issue", {
         repo,
         issueNumber,
-        error: err instanceof Error ? err.message : String(err),
-      },
-    );
+        error,
+      });
+      return { closed: false, commented: false, error };
+    }
   }
 
-  return { closed: ok, commented: !ok };
+  const errors: string[] = [];
+  try {
+    await ghCommand(idleTaskWrapperCommentArgs(repo, issueNumber, summary));
+  } catch (err) {
+    const error = errorMessage(err);
+    errors.push(`summary comment: ${error}`);
+    deps.logger.warn("Failed to post idle-task summary comment", {
+      repo,
+      issueNumber,
+      error,
+    });
+  }
+
+  let closed = false;
+  try {
+    await ghCommand(idleTaskWrapperCloseArgs(repo, issueNumber));
+    closed = true;
+  } catch (err) {
+    const error = errorMessage(err);
+    errors.push(`close: ${error}`);
+    deps.logger.warn("Failed to close idle-task issue", {
+      repo,
+      issueNumber,
+      error,
+      // Issue #1753: an open wrapper whose work landed is re-claimed by the
+      // next scan, so the reader needs to know the close did not happen.
+      wrapperStillOpen: true,
+    });
+  }
+
+  return errors.length === 0
+    ? { closed, commented: false }
+    : { closed, commented: false, error: errors.join("; ") };
 }
