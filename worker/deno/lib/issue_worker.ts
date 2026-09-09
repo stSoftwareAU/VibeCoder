@@ -54,6 +54,7 @@ import {
   describeUnresolvedFollowUp,
   stripReservedLabelsFromModelFollowUp,
 } from "./escape_hatch_label_strip.ts";
+import { fleetReservedLabelApplierCheck } from "./reserved_label_strip.ts";
 import {
   resetWriteRepoAllowlist,
   seedWriteRepoAllowlist,
@@ -604,6 +605,13 @@ async function workOnIssueCore(
         excludeIssueNumber: ctx.issueNumber,
         ghClient: deps.github.createClient(logger),
         logger,
+        // Issue #1791: a label a human applied to the follow-up is kept.
+        applier: fleetReservedLabelApplierCheck({
+          githubUser: ctx.githubUser,
+          fleetPrAuthors: ctx.config.fleetPrAuthors,
+          serviceAccounts: ctx.config.serviceAccounts,
+          ghFn: deps.github.runGhCommand,
+        }),
       });
       if (!stripResult.ok) {
         logger.error(
