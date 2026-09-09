@@ -832,8 +832,12 @@ The candidates are ordered:
    — cannot serve a call at all, so it ranks behind every token that can until
    that window resets. `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "is
    another subscription worth restarting for?" — is this same condition read
-   against every window the probe reported, because *worth restarting for* and
-   *worth switching to* are one question and the two answers have to agree.
+   against every window the probe reported, and against the same clock, because
+   *worth restarting for* and *worth switching to* are one question and the two
+   answers have to agree. A window whose reset is already behind us counts as
+   full on both surfaces alike: the probe reported the window that was current
+   when the figure was produced, so once that instant has passed the figure
+   describes a window that no longer exists.
 3. **The five-hour guard, which is a preference and not a filter.** A token
    holding **at least 20%** of its five-hour window can carry an approximately
    hour-long Vibe Coder run, so while any usable token holds that much the

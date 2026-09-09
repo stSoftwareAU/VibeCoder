@@ -61,16 +61,33 @@ export const POOL_BUDGET_FLOOR = 0;
  * blocked a restart the ranking would have allowed; at a floor of zero it is
  * the right one, since only an actually spent window answers no.
  *
+ * A window whose `resetAt` is already behind us counts as **full**, exactly as
+ * `rankWindow` in `claude_token_selection.ts` counts it. The probe reports the
+ * window that was current when the figure was produced; once that instant has
+ * passed the window has rolled over and the old figure describes a window that
+ * no longer exists. Without this the two surfaces disagree on the one case the
+ * comment above says they cannot: a probe reporting 0% against a reset already
+ * in the past would answer "not worth restarting for" while the ranking calls
+ * the same token fresh and selects it.
+ *
  * @param budget - A known probe result.
+ * @param now - Current time in epoch milliseconds, used to spot a window that
+ *   has already rolled over.
  * @returns The smallest remaining share it reported, or the headline figure
  *   for a response that reported no windows of its own.
  */
 function usableRemaining(
   budget: Extract<ClaudeTokenBudget, { known: true }>,
+  now: number,
 ): number {
-  const shares = budget.windows.length > 0
-    ? budget.windows.map((window) => window.remainingFraction)
-    : [budget.remainingFraction];
+  const windows = budget.windows.length > 0 ? budget.windows : [{
+    window: budget.window,
+    remainingFraction: budget.remainingFraction,
+    resetAt: budget.resetAt,
+  }];
+  const shares = windows.map((window) =>
+    window.resetAt <= now ? 1 : window.remainingFraction
+  );
   return Math.max(0, Math.min(...shares));
 }
 
@@ -84,6 +101,8 @@ export interface PoolBudgetOptions {
   url?: string;
   /** Share every reported window must exceed to be worth restarting for. */
   floor?: number;
+  /** Current time source; defaults to the wall clock. */
+  now?: () => number;
   /** Sink for the decision line; defaults to discarding it. */
   log?: (message: string) => void;
 }
@@ -110,6 +129,7 @@ export async function poolHasAnotherTokenWithBudget(
 ): Promise<boolean> {
   const log = options.log ?? (() => {});
   const floor = options.floor ?? POOL_BUDGET_FLOOR;
+  const now = (options.now ?? (() => Date.now()))();
 
   const pool = providerPoolCandidates(tokens);
   // Fewer than two subscriptions is nothing to go back for. Checked on the
@@ -140,7 +160,7 @@ export async function poolHasAnotherTokenWithBudget(
 
   for (const { label, budget } of probes) {
     if (!budget.known) continue;
-    const remaining = usableRemaining(budget);
+    const remaining = usableRemaining(budget, now);
     // Strictly above: at precisely the floor a window is spent and the token
     // cannot serve the next call at all.
     if (remaining > floor) {

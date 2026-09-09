@@ -10,8 +10,24 @@ import {
   POOL_BUDGET_FLOOR,
   poolHasAnotherTokenWithBudget,
 } from "../lib/claude_pool_budget.ts";
-import { CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING } from "../lib/claude_token_selection.ts";
+import {
+  CLAUDE_FIVE_HOUR_GUARD_MIN_REMAINING,
+  rankClaudeTokenBudgets,
+} from "../lib/claude_token_selection.ts";
 import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
+
+/**
+ * The reset instants every fixture below reports, and a clock pinned an hour
+ * before the earlier of them.
+ *
+ * The clock is injected rather than left to the wall clock because the answer
+ * genuinely depends on it: a window whose reset is already behind us has
+ * rolled over and counts as full, so a suite reading `Date.now()` would flip
+ * these assertions the day it passed those instants (Issue #1685).
+ */
+const FIVE_HOUR_RESET_S = 1788660000;
+const SEVEN_DAY_RESET_S = 1789260000;
+const NOW = (FIVE_HOUR_RESET_S - 3600) * 1000;
 
 function tokenFile(
   label: string,
@@ -47,9 +63,9 @@ function fetchWith(byToken: Record<string, number>) {
         status: 200,
         headers: {
           "anthropic-ratelimit-unified-5h-utilization": String(util),
-          "anthropic-ratelimit-unified-5h-reset": "1788660000",
+          "anthropic-ratelimit-unified-5h-reset": String(FIVE_HOUR_RESET_S),
           "anthropic-ratelimit-unified-7d-utilization": String(util),
-          "anthropic-ratelimit-unified-7d-reset": "1788660000",
+          "anthropic-ratelimit-unified-7d-reset": String(FIVE_HOUR_RESET_S),
           "anthropic-ratelimit-unified-representative-claim": "five_hour",
         },
       }),
@@ -77,7 +93,7 @@ Deno.test("poolHasAnotherTokenWithBudget - a second subscription with budget is 
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: probe.fn, log: (m) => lines.push(m) },
+      { fetchFn: probe.fn, now: () => NOW, log: (m) => lines.push(m) },
     ),
     true,
   );
@@ -96,7 +112,7 @@ Deno.test("poolHasAnotherTokenWithBudget - a pool that is also spent is not wort
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: probe.fn },
+      { fetchFn: probe.fn, now: () => NOW },
     ),
     false,
   );
@@ -115,7 +131,7 @@ Deno.test("poolHasAnotherTokenWithBudget - a low but usable window is worth rest
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: probe.fn },
+      { fetchFn: probe.fn, now: () => NOW },
     ),
     true,
   );
@@ -130,7 +146,7 @@ Deno.test("poolHasAnotherTokenWithBudget - a failed probe is never an assumed bu
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: revoked.fn },
+      { fetchFn: revoked.fn, now: () => NOW },
     ),
     false,
   );
@@ -158,7 +174,7 @@ Deno.test("poolHasAnotherTokenWithBudget - a metered key is not a pool member an
         tokenFile("provider-2", { poolMember: false }),
       ],
       "provider",
-      { fetchFn: probe.fn },
+      { fetchFn: probe.fn, now: () => NOW },
     ),
     false,
   );
@@ -182,9 +198,9 @@ function fetchWindows(
         status: 200,
         headers: {
           "anthropic-ratelimit-unified-5h-utilization": String(util.fiveHour),
-          "anthropic-ratelimit-unified-5h-reset": "1788660000",
+          "anthropic-ratelimit-unified-5h-reset": String(FIVE_HOUR_RESET_S),
           "anthropic-ratelimit-unified-7d-utilization": String(util.sevenDay),
-          "anthropic-ratelimit-unified-7d-reset": "1789260000",
+          "anthropic-ratelimit-unified-7d-reset": String(SEVEN_DAY_RESET_S),
         },
       }),
     );
@@ -208,7 +224,7 @@ Deno.test("poolHasAnotherTokenWithBudget - the restart floor is exhaustion, not 
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: belowGuard.fn },
+      { fetchFn: belowGuard.fn, now: () => NOW },
     ),
     true,
   );
@@ -222,7 +238,7 @@ Deno.test("poolHasAnotherTokenWithBudget - the restart floor is exhaustion, not 
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: aboveGuard.fn },
+      { fetchFn: aboveGuard.fn, now: () => NOW },
     ),
     true,
   );
@@ -240,7 +256,7 @@ Deno.test("poolHasAnotherTokenWithBudget - the floor is read on every window the
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: freshHoursSpentWeek },
+      { fetchFn: freshHoursSpentWeek, now: () => NOW },
     ),
     true,
   );
@@ -256,7 +272,7 @@ Deno.test("poolHasAnotherTokenWithBudget - the floor is read on every window the
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: nearlySpentHours },
+      { fetchFn: nearlySpentHours, now: () => NOW },
     ),
     true,
   );
@@ -274,7 +290,7 @@ Deno.test("poolHasAnotherTokenWithBudget - the floor is read on every window the
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: spentWeekFreshHours },
+      { fetchFn: spentWeekFreshHours, now: () => NOW },
     ),
     false,
   );
@@ -293,8 +309,72 @@ Deno.test("poolHasAnotherTokenWithBudget - exactly at the floor is not worth res
     await poolHasAnotherTokenWithBudget(
       [tokenFile("provider"), tokenFile("provider-2")],
       "provider",
-      { fetchFn: atTheBoundary },
+      { fetchFn: atTheBoundary, now: () => NOW },
     ),
     false,
+  );
+});
+
+Deno.test("poolHasAnotherTokenWithBudget - a window whose reset has passed is full, exactly as the ranking reads it (Issue #1685)", async () => {
+  // The restart check and the ranking answer one question — can this
+  // subscription serve the next call? — so they must not disagree about a
+  // window that has rolled over. `rankWindow` counts a reset already behind
+  // us as a fresh, FULL window, because the probe reported the window that
+  // was current when the figure was produced. Reading the stale 0% raw here
+  // would keep the host on the hour-long quota cadence while holding a
+  // credential `selectEligible` would happily switch to.
+  const spentButRolledOver = fetchWindows({
+    "token-provider": { fiveHour: 1, sevenDay: 1 },
+    "token-provider-2": { fiveHour: 1, sevenDay: 0 },
+  });
+  const afterTheReset = (FIVE_HOUR_RESET_S + 3600) * 1000;
+
+  // Both surfaces, one probe result, one clock — and the same verdict.
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: spentButRolledOver, now: () => afterTheReset },
+    ),
+    true,
+    "a five-hour window whose reset has passed is quota, not exhaustion",
+  );
+  assertEquals(
+    rankClaudeTokenBudgets(
+      [{
+        known: true,
+        label: "provider-2",
+        window: "five_hour",
+        remainingFraction: 0,
+        resetAt: FIVE_HOUR_RESET_S * 1000,
+        windows: [
+          {
+            window: "five_hour",
+            remainingFraction: 0,
+            resetAt: FIVE_HOUR_RESET_S * 1000,
+          },
+          {
+            window: "seven_day",
+            remainingFraction: 1,
+            resetAt: SEVEN_DAY_RESET_S * 1000,
+          },
+        ],
+      }],
+      afterTheReset,
+    ).ranked[0]?.exhausted,
+    false,
+    "the ranking calls the same token usable, so the restart check must too",
+  );
+
+  // The mirror image, so the test cannot pass by ignoring the clock: before
+  // that reset the very same figures are a real exhaustion.
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: spentButRolledOver, now: () => NOW },
+    ),
+    false,
+    "with the reset still ahead of us the window really is spent",
   );
 });

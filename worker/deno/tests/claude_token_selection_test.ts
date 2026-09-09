@@ -10,20 +10,28 @@
  *
  * Issue #1623 then reshaped the rule the join applies: the five-hour window
  * became a gate and the seven-day window sets the rate, so budget that would
- * otherwise lapse is spent first ("use it or lose it"). Three cases below
+ * otherwise lapse is spent first ("use it or lose it"). Issue #1685 corrected
+ * the first half of that — the five-hour window is a soft *guard*, never a
+ * hard eligibility gate, and the 10% seven-day floor is gone. Cases below
  * assert the new outcome where they used to assert the old one; each says so
  * at the point it does.
  *
  * These tests pin the join, and each rule is one that would silently degrade
  * rather than fail visibly if it regressed:
  *
- * - a token that has burned over 80% of its five-hour window ranks behind
- *   every token that has not — it cannot spend what its week still holds;
+ * - **exhaustion is the only hard condition**: a token with a window that has
+ *   nothing left and has not yet reset ranks behind every token that can
+ *   still serve a call;
+ * - a token holding less than 20% of its five-hour window ranks behind every
+ *   token holding at least that much — but only while such a token exists;
+ *   with none, the guard steps aside rather than idling a pool that still has
+ *   quota, and exactly 20% remaining is usable;
  * - the winner really is the token with the most remaining budget **per hour**
  *   until its own window resets, not the largest share and not a wall-clock
  *   total;
- * - a token under 10% of its seven-day window ranks behind every passing token
- *   above that floor, whatever its rate;
+ * - nothing overrides that rate for a usable token — there is deliberately no
+ *   weekly floor, so a nearly spent week resetting within the hour is spent
+ *   before a fuller one resetting days away;
  * - a token whose window has already reset counts as full — scored over the
  *   window's nominal length — not as the stale near-exhausted figure the probe
  *   reported for a window that has gone;
