@@ -17,12 +17,14 @@ import {
   CONTAINER_TOOLS_ARG,
   findBrowserInstallViolations,
   findContainerfileViolations,
+  findMissingRuntimePythonModules,
   findMissingRuntimeTools,
   findProviderInstallViolations,
   findToolchainInstallViolations,
   isRegistryQualifiedImage,
   parseContainerManifest,
   REQUIRED_REPO_TOOLCHAIN_COMMANDS,
+  REQUIRED_REPO_TOOLCHAIN_MODULES,
   REQUIRED_RUNTIME_TOOLS,
 } from "../lib/container_manifest.ts";
 import {
@@ -1292,6 +1294,129 @@ Deno.test("parseContainerManifest - rejects a versionCommand the toolchain does 
   );
 });
 
+// ---------------------------------------------------------------------------
+// Issue #1628 — a toolchain can supply an importable Python module instead of
+// a command: PyYAML ships no console script, and NEAT-AI-core's BATS suites
+// parse workflow YAML with `python3 -c "import yaml"`.
+// ---------------------------------------------------------------------------
+
+/**
+ * A manifest whose single toolchain is a *library*: it makes a Python module
+ * importable rather than putting a command on the PATH.
+ */
+function libraryToolchainManifestText(
+  mutate: (t: Record<string, unknown>) => void = () => {},
+): string {
+  const raw = JSON.parse(toolchainManifestText()) as { toolchains: unknown[] };
+  const toolchain: Record<string, unknown> = {
+    id: "pyyaml",
+    version: "6.0.3",
+    fragment: "toolchains/pyyaml.sh",
+    modules: ["yaml"],
+    versionModule: "yaml",
+    sha256: { amd64: SHA_AMD64, arm64: SHA_ARM64 },
+    repos: ["stSoftwareAU/NEAT-AI-core"],
+  };
+  mutate(toolchain);
+  raw.toolchains = [toolchain];
+  return JSON.stringify(raw);
+}
+
+Deno.test("parseContainerManifest - parses a toolchain that installs a module, not a command", () => {
+  const manifest = parseContainerManifest(libraryToolchainManifestText());
+
+  assertEquals(manifest.toolchains.length, 1);
+  assertEquals(manifest.toolchains[0]?.id, "pyyaml");
+  assertEquals(manifest.toolchains[0]?.modules, ["yaml"]);
+  assertEquals(manifest.toolchains[0]?.versionModule, "yaml");
+  // A library puts nothing on the PATH, so the command surface is empty
+  // rather than absent — every consumer iterates it.
+  assertEquals(manifest.toolchains[0]?.commands, []);
+  assertEquals(manifest.toolchains[0]?.versionCommand, undefined);
+});
+
+Deno.test("parseContainerManifest - rejects a toolchain that installs neither a command nor a module", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        libraryToolchainManifestText((t) => {
+          t.modules = [];
+          delete t.versionModule;
+        }),
+      ),
+    Error,
+    "toolchains[0].commands",
+  );
+});
+
+Deno.test("parseContainerManifest - rejects a module toolchain that reports no version", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        libraryToolchainManifestText((t) => {
+          delete t.versionModule;
+        }),
+      ),
+    Error,
+    "toolchains[0].versionModule",
+  );
+});
+
+Deno.test("parseContainerManifest - rejects a versionModule the toolchain does not install", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        libraryToolchainManifestText((t) => {
+          t.versionModule = "ruamel";
+        }),
+      ),
+    Error,
+    "toolchains[0].versionModule",
+  );
+});
+
+Deno.test("parseContainerManifest - rejects a module name python could not import", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        libraryToolchainManifestText((t) => {
+          t.modules = ["py-yaml"];
+          t.versionModule = "py-yaml";
+        }),
+      ),
+    Error,
+    "toolchains[0].modules[0]",
+  );
+});
+
+Deno.test("parseContainerManifest - rejects a versionCommand on a toolchain that installs no command", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        libraryToolchainManifestText((t) => {
+          t.versionCommand = "yaml";
+        }),
+      ),
+    Error,
+    "toolchains[0].versionCommand",
+  );
+});
+
+Deno.test("findMissingRuntimePythonModules - a toolchain module counts as supplied", () => {
+  const manifest = parseContainerManifest(libraryToolchainManifestText());
+
+  assertEquals(findMissingRuntimePythonModules(manifest, ["yaml"]), []);
+  assertEquals(findMissingRuntimePythonModules(manifest, ["yaml", "tomli"]), [
+    "tomli",
+  ]);
+});
+
+Deno.test("findMissingRuntimePythonModules - a command-only toolchain supplies no module", () => {
+  const manifest = parseContainerManifest(toolchainManifestText());
+
+  assertEquals(findMissingRuntimePythonModules(manifest, ["yaml"]), ["yaml"]);
+});
+
 Deno.test("findMissingRuntimeTools - a toolchain command counts as supplied", () => {
   const manifest = parseContainerManifest(toolchainManifestText());
 
@@ -1482,6 +1607,26 @@ Deno.test("findToolchainInstallViolations - reports a pinned toolchain no run in
   );
 });
 
+Deno.test("findToolchainInstallViolations - names the module a library toolchain the build never installs would be missing", () => {
+  // A library toolchain has no versionCommand to name, so the violation has
+  // to reach for the module instead (Issue #1628). Without that the message
+  // for the toolchain most easily forgotten reads "ship without undefined".
+  const manifest = parseContainerManifest(libraryToolchainManifestText());
+
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("shellcheck"),
+    manifest,
+    new Map([["toolchains/pyyaml.sh", GOOD_TOOLCHAIN_FRAGMENT]]),
+  );
+
+  assert(
+    violations.some((v) =>
+      v.includes("pyyaml") && v.includes("ship without yaml")
+    ),
+    `a library toolchain the build never installs must name its module: ${violations}`,
+  );
+});
+
 Deno.test("findToolchainInstallViolations - reports an id no fragment toolchain pins", () => {
   const manifest = parseContainerManifest(fragmentToolchainManifestText());
 
@@ -1659,11 +1804,31 @@ Deno.test("container/ - every committed toolchain names the repositories it exis
       toolchain.repos.length > 0,
       `${toolchain.id} must name the monitored repositories it exists for`,
     );
+    const reportsVersion = toolchain.versionCommand !== undefined
+      ? toolchain.commands.includes(toolchain.versionCommand)
+      : toolchain.modules.includes(toolchain.versionModule ?? "");
     assert(
-      toolchain.commands.includes(toolchain.versionCommand),
-      `${toolchain.id} must report its version from a command it installs`,
+      reportsVersion,
+      `${toolchain.id} must report its version from a command it installs, ` +
+        `or from a module it makes importable`,
     );
   }
+});
+
+Deno.test("container/ - the image supplies every monitored-repo Python module", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+
+  // Issue #1628: NEAT-AI-core's workflow-assertion BATS suites parse workflow
+  // YAML with an inline `python3` script that imports PyYAML, and 31 of them
+  // failed in the image with ModuleNotFoundError. A module the image does not
+  // install is as absent as a missing binary, so it is checked the same way.
+  assertEquals(
+    findMissingRuntimePythonModules(manifest, REQUIRED_REPO_TOOLCHAIN_MODULES),
+    [],
+  );
+  assert(REQUIRED_REPO_TOOLCHAIN_MODULES.includes("yaml"));
 });
 
 // ---------------------------------------------------------------------------
