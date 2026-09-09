@@ -12,6 +12,10 @@ import {
   processCiNudgeCandidate,
 } from "../lib/pr_ci_nudge_scan.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
+import {
+  gatedHeadMarker,
+  resetGatedHeadReportsForTest,
+} from "../lib/gated_head_guard.ts";
 import { INVITATION_PR_FIELDS } from "../lib/pr_invitation_lookup.ts";
 
 const USER = "vibe-coder";
@@ -752,5 +756,174 @@ Deno.test("findPrsNeedingCiNudge - skips a CONFLICTING PR (CI cannot start) (Iss
   assert(
     logs.some((l) => l.includes("#48") && l.includes("conflicting")),
     `expected a skip log for #48: ${logs.join(" | ")}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Gated milestone heads (Issue #1762)
+// ---------------------------------------------------------------------------
+
+/** VibeCoder#1741's shape: a milestone summary PR whose head is gated. */
+const GATED_MILESTONE_HEAD =
+  "milestone/1653-the-cli-now-says-hit-your-session-limit-which";
+
+Deno.test("processCiNudgeCandidate - a milestone head under required checks is never pushed to (Issue #1762)", async () => {
+  resetGatedHeadReportsForTest();
+  const ghCalls: string[][] = [];
+  const gitCalls: string[][] = [];
+  const gh = (args: string[]) => {
+    ghCalls.push(args);
+    if (args[0] === "api" && args[1]?.includes("/rules/branches/")) {
+      return Promise.resolve(JSON.stringify([
+        { type: "required_status_checks" },
+        { type: "deletion" },
+      ]));
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return Promise.resolve(JSON.stringify({ comments: [] }));
+    }
+    if (args[0] === "api" && args[1]?.includes("/comments")) {
+      return Promise.resolve("[]");
+    }
+    return Promise.resolve("");
+  };
+  const git = (args: string[]) => {
+    gitCalls.push(args);
+    return Promise.resolve("");
+  };
+
+  const result = await processCiNudgeCandidate(
+    {
+      repo: REPO,
+      prNumber: 1741,
+      headBranch: GATED_MILESTONE_HEAD,
+      headSha: "abc1234",
+      status: "none",
+    },
+    { ghCommandFn: gh, gitCommandFn: git },
+  );
+
+  assert(result.ok);
+  // Recorded as a no-op that names the rule, not as a failure.
+  assertEquals(result.value.nudge.action, "noop");
+  assert(result.value.nudge.description.includes("required_status_checks"));
+  assertEquals(result.value.commentPosted, false);
+
+  // No checkout, no commit, no push.
+  assertEquals(gitCalls, []);
+
+  // The guard's stand-down comment is the only comment, and it carries the
+  // gated-head marker rather than the nudge marker.
+  const commentCalls = ghCalls.filter((a) =>
+    a[0] === "pr" && a[1] === "comment"
+  );
+  assertEquals(commentCalls.length, 1);
+  const body = commentCalls[0]![commentCalls[0]!.indexOf("--body") + 1]!;
+  assert(body.includes(gatedHeadMarker(GATED_MILESTONE_HEAD)));
+  assert(!body.includes(NUDGE_COMMENT_MARKER));
+});
+
+Deno.test("processCiNudgeCandidate - a milestone head with no gating rule is nudged as today", async () => {
+  resetGatedHeadReportsForTest();
+  const gitCalls: string[][] = [];
+  const gh = (args: string[]) => {
+    if (args[0] === "api" && args[1]?.includes("/rules/branches/")) {
+      return Promise.resolve(JSON.stringify([{ type: "deletion" }]));
+    }
+    if (args[0] === "api" && args[1]?.includes("/comments")) {
+      return Promise.resolve("[]");
+    }
+    return Promise.resolve("");
+  };
+  const git = (args: string[]) => {
+    gitCalls.push(args);
+    return Promise.resolve("");
+  };
+
+  const result = await processCiNudgeCandidate(
+    {
+      repo: REPO,
+      prNumber: 1741,
+      headBranch: GATED_MILESTONE_HEAD,
+      headSha: "abc1234",
+      status: "none",
+    },
+    { ghCommandFn: gh, gitCommandFn: git },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.nudge.action, "empty-commit");
+  assert(gitCalls.some((a) => a[0] === "push"));
+});
+
+Deno.test("processCiNudgeCandidate - an ordinary issue branch never consults the rules endpoint", async () => {
+  resetGatedHeadReportsForTest();
+  const ghCalls: string[][] = [];
+  const gh = (args: string[]) => {
+    ghCalls.push(args);
+    if (args[0] === "api" && args[1]?.includes("/comments")) {
+      return Promise.resolve("[]");
+    }
+    return Promise.resolve("");
+  };
+  const git = (_args: string[]) => Promise.resolve("");
+
+  const result = await processCiNudgeCandidate(
+    {
+      repo: REPO,
+      prNumber: 99,
+      headBranch: "vibe/foo",
+      headSha: "abc1234",
+      status: "none",
+    },
+    { ghCommandFn: gh, gitCommandFn: git },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.nudge.action, "empty-commit");
+  assert(
+    !ghCalls.some((a) => a[0] === "api" && a[1]?.includes("/rules/branches/")),
+  );
+});
+
+Deno.test("processCiNudgeCandidate - the queued path on a gated head still re-runs (nothing is pushed)", async () => {
+  resetGatedHeadReportsForTest();
+  const ghCalls: string[][] = [];
+  const gitCalls: string[][] = [];
+  const gh = (args: string[]) => {
+    ghCalls.push(args);
+    if (args[0] === "api" && args[1]?.includes("actions/runs")) {
+      return Promise.resolve(JSON.stringify({
+        workflow_runs: [
+          { id: 8888, status: "queued", created_at: "2026-05-18T00:00:00Z" },
+        ],
+      }));
+    }
+    if (args[0] === "api" && args[1]?.includes("/comments")) {
+      return Promise.resolve("[]");
+    }
+    return Promise.resolve("");
+  };
+  const git = (args: string[]) => {
+    gitCalls.push(args);
+    return Promise.resolve("");
+  };
+
+  const result = await processCiNudgeCandidate(
+    {
+      repo: REPO,
+      prNumber: 1741,
+      headBranch: GATED_MILESTONE_HEAD,
+      headSha: "shaQ",
+      status: "queued",
+    },
+    { ghCommandFn: gh, gitCommandFn: git },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.nudge.action, "rerun");
+  assertEquals(gitCalls, []);
+  assert(
+    !ghCalls.some((a) => a[0] === "api" && a[1]?.includes("/rules/branches/")),
   );
 });

@@ -27,6 +27,7 @@ if your worker login is read-only on any monitored repository.**
 | Change | Issue |
 | ------ | ----- |
 | The auto-merge sweep skips draft PRs (announced once per PR, not once per cycle) and a `gh pr merge --auto` refused with "still a draft" is a typed `draft` outcome logged at info, not a failure retried every cycle | #1800 |
+| The CI-nudge pass asks the gated-head guard before its empty-commit push, so a milestone summary PR whose head refuses direct pushes is recorded as a no-op nudge and left for the milestone completion path instead of a GH013 refusal every cycle | #1762 |
 | An idle-task wrapper is not claimed when the cycle deadline would bound its scan below a ten-minute floor: the route declines before the claim with one log line, records the cycle as a skip rather than a failure, and leaves the wrapper for the next cycle — no more 60 s budgets for hour-long scans ending in a host health failure | #1757 |
 | Completion no longer recovers an open PR on a different head as the run's own when the run's branch has commits ahead of base: the linked PR's head is read and compared with the branch, and the branch gets its own PR, so an agent's side PR (or a sibling's) cannot swallow the run's work | #1799 |
 | A direct merge GitHub refuses as policy-prohibited (a rule the effective-rules endpoint does not show the fleet token, such as an organisation ruleset) marks the base protected for the cycle, is logged once naming the repo and branch, and arms GitHub auto-merge instead of being retried every cycle | #1763 |
