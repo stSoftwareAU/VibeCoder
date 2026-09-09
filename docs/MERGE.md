@@ -338,6 +338,18 @@ asks for the review explicitly:
 A **protected** base is untouched: it still goes through native auto-merge,
 which GitHub holds until the required checks are green.
 
+**GitHub's own refusal outranks the rules endpoint** (Issue #1763). "Required
+checks on the base?" is answered by `repos/{repo}/rules/branches/{base}`, which
+lists only the rules the fleet token can see — an organisation-level ruleset
+needs `admin:org` to list. `stSoftwareAU/GRQ-FX` `Develop` answered `[]`, the
+base was judged unprotected, and the gated direct merge was refused with "the
+base branch policy prohibits the merge" on every cycle the PR stayed open. So
+a direct merge refused with that wording (or a `GH013` rule violation) now
+marks the base **protected** for the rest of the cycle, logs one line naming
+the repo and branch as policy-protected with no visible rule, and arms native
+auto-merge — which honours whatever rule exists — instead of retrying. Any
+other direct-merge failure is still reported as the failure it is.
+
 ```mermaid
 flowchart TD
     A[PR targets the default branch] --> B{Required checks on the base?}

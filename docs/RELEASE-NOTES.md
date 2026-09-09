@@ -27,6 +27,7 @@ if your worker login is read-only on any monitored repository.**
 | Change | Issue |
 | ------ | ----- |
 | The CI-nudge pass asks the gated-head guard before its empty-commit push, so a milestone summary PR whose head refuses direct pushes is recorded as a no-op nudge and left for the milestone completion path instead of a GH013 refusal every cycle | #1762 |
+| A direct merge GitHub refuses as policy-prohibited (a rule the effective-rules endpoint does not show the fleet token, such as an organisation ruleset) marks the base protected for the cycle, is logged once naming the repo and branch, and arms GitHub auto-merge instead of being retried every cycle | #1763 |
 | The idle-task wrapper finaliser closes a finished wrapper and posts its summary (or the failure comment) through the REST `issues` endpoints on the core quota, so the primary GraphQL quota latch no longer leaves a wrapper open for the next scan to re-run; the result reports whether each write landed instead of assuming the close happened | #1753 |
 | A run whose HEAD diverged from its branch because the agent's work landed through its own PR and the issue closed takes the stale-claim exit instead of a completion failure, so no health failure is recorded for a run that succeeded; a diverged HEAD on an open issue is still refused | #1793 |
 | A monitored repo the worker's login cannot list (404, or 403 "Must have push access") is skipped and named once instead of failing every cycle | #1453 |
