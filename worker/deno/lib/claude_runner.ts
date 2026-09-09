@@ -16,6 +16,11 @@
  */
 
 import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
+import {
+  isUsageLimitRejection,
+  parseRateLimitEvents,
+} from "./claude_rate_limit_event.ts";
+import type { ClaudeTokenBudgetWindow } from "./claude_token_budget.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
@@ -232,8 +237,15 @@ export interface ClaudeRunResult {
    * exit code 2 so the phases classify it as infrastructure (the issue is
    * never blamed). `waitSeconds` is how long the durable signal pauses
    * agent work; `resetEpochMs` is present when the message named a time.
+   * `windows` is present when a stream-json `rate_limit_event` carried
+   * `unifiedWindows` (Issue #1666), so the credential pool can record the
+   * snapshot without a probe.
    */
-  usageLimit?: { waitSeconds: number; resetEpochMs?: number };
+  usageLimit?: {
+    waitSeconds: number;
+    resetEpochMs?: number;
+    windows?: readonly ClaudeTokenBudgetWindow[];
+  };
   /** Path to the output file (if written). */
   outputFile?: string;
   /** The output text from Claude. */
@@ -1938,6 +1950,8 @@ export async function runClaudeWithTimeout(
 
     const stdoutBytes = concatChunks(stdoutChunks);
     const rawOutput = new TextDecoder().decode(stdoutBytes);
+    const rateLimitEvents = parseRateLimitEvents(rawOutput);
+    const rateLimitEvent = rateLimitEvents.at(-1);
     const output = extractStreamJsonText(rawOutput);
     const stderrBytes = concatChunks(stderrChunks);
     const stderr = stripEscapeCodes(
@@ -2127,6 +2141,7 @@ export async function runClaudeWithTimeout(
         ...(extensions ? { extensions } : {}),
         runStats,
         provider: provider.id,
+        ...(rateLimitEvent ? { rateLimitEvent } : {}),
       },
     };
   } catch (error: unknown) {
@@ -2746,8 +2761,21 @@ export async function runClaudeWithRetry(
       // signal (WORK_DIR, not cwd) tells run_core and every other worker on
       // the volume to pause until the parsed reset — or an hour when the
       // message carries no time.
-      if (detectUsageLimit(bothStreams, errorScanTailLines)) {
-        const resetMs = parseUsageLimitReset(bothStreams);
+      //
+      // Issue #1666: a stream-json `rate_limit_event` with status rejected
+      // on the five-hour or seven-day window is the same refusal even when
+      // there is no assistant prose. Prefer its `resetsAt` over the regex.
+      const lastRateLimitEvent = result.value.rateLimitEvent;
+      const eventRejection = lastRateLimitEvent !== undefined &&
+        isUsageLimitRejection(lastRateLimitEvent);
+      if (
+        eventRejection ||
+        detectUsageLimit(bothStreams, errorScanTailLines)
+      ) {
+        const resetMs = lastRateLimitEvent !== undefined &&
+            isUsageLimitRejection(lastRateLimitEvent)
+          ? lastRateLimitEvent.resetsAtEpochMs
+          : parseUsageLimitReset(bothStreams);
         // Issue #333: cap the pause so an extended quota is picked up within
         // the hour, whatever the stated reset. The reset is reported, not
         // slept on.
@@ -2814,6 +2842,9 @@ export async function runClaudeWithRetry(
             usageLimit: {
               waitSeconds,
               ...(resetMs !== null ? { resetEpochMs: resetMs } : {}),
+              ...(lastRateLimitEvent && lastRateLimitEvent.windows.length > 0
+                ? { windows: lastRateLimitEvent.windows }
+                : {}),
             },
           }),
         };
