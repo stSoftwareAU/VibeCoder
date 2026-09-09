@@ -781,6 +781,8 @@ export async function syncMilestoneBranchWithDefault(
         analyses,
         resolved,
         defaultSha,
+        undefined,
+        preMergeSha,
       ),
     };
   }
@@ -865,6 +867,7 @@ export async function syncMilestoneBranchWithDefault(
         resolved,
         defaultSha,
         gatedResolved.error.message,
+        preMergeSha,
       ),
     };
   }
