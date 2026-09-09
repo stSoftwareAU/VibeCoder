@@ -24,6 +24,7 @@ Deno.test("usage limit - recognises the Claude Code subscription messages", () =
       "Claude usage limit reached. Your limit will reset at 3pm (Australia/Sydney).",
       "Claude AI usage limit reached|1787040000",
       "You've hit your limit · resets 3am",
+      "You've hit your session limit · resets 1:50pm (UTC)",
       "You have hit your usage limit for this 5-hour window",
       "5-hour limit reached · resets 3am",
       "Weekly limit reached — resets Tuesday",
@@ -78,6 +79,27 @@ Deno.test("usage limit - parses an epoch suffix, an am/pm clock, and a 24h clock
   assertEquals(t, Date.UTC(2026, 7, 18, 14, 30, 0));
   // Unparseable → null (caller falls back to a default wait).
   assertEquals(parseUsageLimitReset("You've hit your limit", now), null);
+});
+
+Deno.test("usage limit - the CLI's 'session limit' line is a usage limit, not the rate-limit ladder (Issue #1665)", () => {
+  const line = "You've hit your session limit · resets 1:50pm (UTC)";
+  assertEquals(detectUsageLimit(line), true);
+  // The short-backoff ladder must not be the branch taken: `/limit/` still
+  // matches as a SECONDARY hint, but never as a primary rate limit.
+  assertEquals(detectRateLimit(line).isPrimary, false);
+});
+
+Deno.test("usage limit - a bare clock with an explicit zone resolves in that zone (Issue #1665)", () => {
+  const now = Date.UTC(2026, 7, 18, 1, 0, 0); // 01:00Z
+  // Host zone deliberately not UTC: the message's own `(UTC)` must win.
+  assertEquals(
+    parseUsageLimitReset(
+      "You've hit your session limit · resets 1:50pm (UTC)",
+      now,
+      "Australia/Sydney",
+    ),
+    Date.UTC(2026, 7, 18, 13, 50, 0),
+  );
 });
 
 Deno.test("rate limit - overloaded/529 are now primary rate-limit (short-backoff) matches", () => {
