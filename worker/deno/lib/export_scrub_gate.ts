@@ -378,8 +378,9 @@ function isPlaceholderHome(name: string): boolean {
 }
 
 const API_KEY_RES: readonly RegExp[] = [
-  // imgbb-shaped: exactly 32 lowercase hex, not part of a longer hex run.
-  /(?<![0-9a-fA-F])[0-9a-f]{32}(?![0-9a-fA-F])/g,
+  // imgbb-shaped: exactly 32 hex in either case (Issue #1605), not part of
+  // a longer hex run — the same rule `secret_redaction.ts` applies last.
+  /(?<![0-9a-fA-F])[0-9a-f]{32}(?![0-9a-fA-F])/gi,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b/g,
   /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g,
   /\bsk-ant-[A-Za-z0-9_-]{20,}/g,

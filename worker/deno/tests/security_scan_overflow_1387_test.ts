@@ -105,3 +105,32 @@ Deno.test("SEC-08c4f1a7e2b9 - leaves a dashed UUID and ordinary prose alone", ()
   const line = "run 3f2504e0-4f89-11d3-9a0c-0305e82c3301 finished in 32s";
   assertEquals(redactSecrets(line), line);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1605 — the bare 32-hex rule is case-insensitive
+// ---------------------------------------------------------------------------
+
+Deno.test("SEC-4d8e21af6c93 - redacts the same bare key rendered in uppercase hex (Issue #1605)", () => {
+  const upper = IMGBB_SHAPED_KEY.toUpperCase();
+  const out = redactSecrets(`upload failed for key ${upper} (401)`);
+  assertEquals(out.includes(upper), false, out);
+  assert(out.includes(REDACTION_PLACEHOLDER), out);
+});
+
+Deno.test("SEC-4d8e21af6c93 - redacts a mixed-case rendering too (Issue #1605)", () => {
+  const mixed = IMGBB_SHAPED_KEY.split("").map((c, i) =>
+    i % 2 === 0 ? c.toUpperCase() : c
+  ).join("");
+  const out = redactSecrets(`https://api.imgbb.com/1/upload?key=${mixed}`);
+  assertEquals(out.includes(mixed), false, out);
+});
+
+Deno.test("SEC-4d8e21af6c93 - an uppercase 40-hex SHA and 64-hex digest still survive (Issue #1605)", () => {
+  const sha = "A".repeat(40);
+  const digest = "B".repeat(64);
+  assertEquals(redactSecrets(`commit ${sha}`), `commit ${sha}`);
+  assertEquals(redactSecrets(`sha256:${digest}`), `sha256:${digest}`);
+  // A dashed UUID in uppercase is four short runs, never a 32-run.
+  const uuid = "123E4567-E89B-12D3-A456-426614174000";
+  assertEquals(redactSecrets(`request ${uuid}`), `request ${uuid}`);
+});
