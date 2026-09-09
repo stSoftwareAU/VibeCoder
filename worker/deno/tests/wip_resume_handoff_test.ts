@@ -108,8 +108,11 @@ Deno.test("setup #148 - a matching resume pointer resumes the checkpointed branc
     });
 
     const branchName = checkpointBranch;
+    // A real CLI session id: `loadResumeState` drops anything that is not a
+    // UUID (Issue #204), so only this shape can prime `--resume`.
+    const sessionId = crypto.randomUUID();
     await saveResumeState(workDir, ctx.repo, 148, {
-      sessionId: "sess-148",
+      sessionId,
       phaseCount: 3,
       branch: branchName,
     });
@@ -120,6 +123,11 @@ Deno.test("setup #148 - a matching resume pointer resumes the checkpointed branc
     assertEquals(state.resumedFromCheckpoint, true);
     // The pointer that got us here is still on disk for the next claim.
     assert(await loadResumeState(workDir, ctx.repo, 148));
+    // …and it primed CLI session continuity, so the execute phase's
+    // invocation carries `--resume` with the saved session id (Issue #1670:
+    // an exhausted run's pointer is what the next claim resumes from).
+    assertEquals(state.sessionResumeState?.sessionId, sessionId);
+    assertEquals(state.branchName, checkpointBranch);
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {
