@@ -277,3 +277,68 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "milestone sync - a second host does not reopen a closed issue only to post nothing (Issues #1786, #1826)",
+  async () => {
+    // The escalation destination is resolved before the comment goes out, and
+    // resolving a CLOSED parent planning issue reopens it. Asking the marker
+    // question first is what stops a human's close being undone with no
+    // comment to explain why.
+    const first = await Deno.makeTempDir({ prefix: "issue-1826-host-a-" });
+    const second = await Deno.makeTempDir({ prefix: "issue-1826-host-b-" });
+    try {
+      const calls: string[][] = [];
+      const options = {
+        milestoneTitle: "#1559 Rival designs",
+        error: escalation(),
+        streakPath: milestoneSyncStreakPath(first),
+      };
+
+      await syncMilestoneBranches(deps(calls, options));
+      const posted = commentCalls(calls);
+      assertEquals(posted.length, 1, "the first host escalates");
+      const body = posted[0]?.[posted[0]!.length - 1] ?? "";
+
+      // A human read it and closed the issue. The second host has its own
+      // (empty) streak file, so only the marker can stop it repeating.
+      const hostB = deps(calls, {
+        ...options,
+        streakPath: milestoneSyncStreakPath(second),
+      });
+      const inner = hostB.ghCommandFn;
+      hostB.ghCommandFn = (args: string[]): Promise<string> => {
+        if (args[0] === "issue" && args[1] === "view") {
+          calls.push(args);
+          return Promise.resolve(
+            args.includes("state")
+              ? "CLOSED"
+              : JSON.stringify({ comments: [{ body }] }),
+          );
+        }
+        return inner(args);
+      };
+
+      await syncMilestoneBranches(hostB);
+
+      assertEquals(
+        commentCalls(calls).length,
+        1,
+        "the second host posts nothing",
+      );
+      assertEquals(
+        calls.filter((c) => c[0] === "issue" && c[1] === "reopen"),
+        [],
+        "and it does not reopen the issue the human closed",
+      );
+      assertEquals(
+        calls.filter((c) => c.includes("--add-label")),
+        [],
+        "nor label it needs-human again",
+      );
+    } finally {
+      await Deno.remove(first, { recursive: true });
+      await Deno.remove(second, { recursive: true });
+    }
+  },
+);
