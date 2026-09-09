@@ -221,7 +221,7 @@ flowchart LR
 
 - **violation** — the three new `lib/` modules were claimed by no security-sweep
   slice, so `deno task check:manifests` was red — evidence:
-  `docs/audits/lib-sweep-coverage.json:1` — reason: fixed here — slice `12m`
+  `docs/audits/lib-sweep-coverage.json:1` — reason: fixed here — slice `12n`
   added with its written record,
   `docs/audits/security-sweep-1695-agent-output-adapters.md`.
 - **violation** — no `docs/archive/pr-summaries/pr-summary-1695.md` — evidence:

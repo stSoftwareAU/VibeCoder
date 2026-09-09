@@ -1,10 +1,10 @@
 # 🔎 Security sweep — the agent output adapters (Issue #1695)
 
 **Issue:** [#1695](https://github.com/stSoftwareAU/VibeCoder/issues/1695) (chunk
-12m) · **Parent:** #1209
+12n) · **Parent:** #1209
 
 The written record for the three modules that entered `worker/deno/lib/` _after_
-the chunk-12 slices (12a–12l) recorded their coverage:
+the chunk-12 slices (12a–12m) recorded their coverage:
 
 - `worker/deno/lib/agent_output.ts` — the provider-neutral output contract.
 - `worker/deno/lib/claude_output_adapter.ts` — the Claude Code decoder and
@@ -16,7 +16,7 @@ the chunk-12 slices (12a–12l) recorded their coverage:
 
 Appending a module to a slice whose sweep ran before it existed makes
 `diffCoverage` green on a false record — the failure 12f's own record documents.
-These three are claimed by **12m**, and this file is the reading of them.
+These three are claimed by **12n**, and this file is the reading of them.
 
 ## What they are exposed to
 
