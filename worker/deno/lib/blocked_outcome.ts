@@ -31,7 +31,11 @@ export interface BlockedDependency {
 
 /** A blocked-shaped agent outcome. */
 export interface BlockedOutcome {
-  /** The dependency to defer on — the first one named. */
+  /**
+   * The dependency to defer on — the one the run *declared* on a
+   * `Depends on` / `Blocked by` line, falling back to the first one named
+   * anywhere in the section (Issue #1634).
+   */
   dependency: BlockedDependency;
   /** Every dependency named, in the order they appear. */
   dependencies: BlockedDependency[];
@@ -49,6 +53,19 @@ export interface BlockedOutcome {
  */
 const BLOCKED_SECTION_RE =
   /^[ \t]*(?:[-*+]\s+)?(?:#{1,6}\s*)?(?:\*\*|__)?(?:blocked|depends\s+on)\b/i;
+
+/**
+ * A line that *declares* the dependency — `Depends on …` / `Blocked by …`
+ * (Issue #1634).
+ *
+ * Narrower than {@link BLOCKED_SECTION_RE} on purpose: a `## Blocked: …`
+ * heading opens the section but does not name the dependency, and its one-line
+ * summary routinely mentions the issue that *caused* the block. The heading
+ * must therefore not match here — only the declaration the hand-off shape asks
+ * the agent to end with.
+ */
+const DEPENDENCY_DECLARATION_RE =
+  /^[ \t]*(?:[-*+]\s+)?(?:#{1,6}\s*)?(?:\*\*|__)?(?:depends\s+on|blocked\s+by)\b/i;
 
 /** A markdown heading — where a blocked section ends. */
 const HEADING_RE = /^[ \t]*#{1,6}\s/;
@@ -133,6 +150,33 @@ function fencedLines(lines: readonly string[]): boolean[] {
   return fenced;
 }
 
+/**
+ * The dependency the run actually declared: the first non-self reference on a
+ * `Depends on` / `Blocked by` line inside the section (Issue #1634).
+ *
+ * A run whose section explains the fault in prose ("the stub landed with
+ * #588") and ends `Depends on #591` was deferred on #588, because the caller
+ * took the first reference in the whole section. The declaration line is the
+ * agent's own answer to "what blocks this", so it wins.
+ *
+ * @param strippedSection - The section with code spans and fences removed.
+ * @param isSelf - Predicate marking the issue being worked, which is never its
+ *   own dependency.
+ * @returns The declared dependency, or `undefined` when no declaration line
+ *   names one.
+ */
+function declaredDependency(
+  strippedSection: string,
+  isSelf: (dep: BlockedDependency) => boolean,
+): BlockedDependency | undefined {
+  for (const line of strippedSection.split("\n")) {
+    if (!DEPENDENCY_DECLARATION_RE.test(line)) continue;
+    const declared = referencesIn(line).find((dep) => !isSelf(dep));
+    if (declared) return declared;
+  }
+  return undefined;
+}
+
 /** Trim a reason to {@link MAX_REASON_LENGTH}, marking the cut. */
 function boundReason(reason: string): string {
   return reason.length <= MAX_REASON_LENGTH
@@ -173,14 +217,17 @@ export function detectBlockedOutcome(
     // The section is quoted back verbatim, but references are read from the
     // code-stripped text: a `Depends on #5` inside a fenced example is
     // documentation, not a dependency (matching `extractDependencyReferences`).
-    const dependencies = referencesIn(stripCodeSpans(section)).filter((dep) =>
-      !(dep.number === self.issueNumber &&
-        (dep.repo === undefined || sameRepo(dep.repo, self.repo)))
-    );
+    const stripped = stripCodeSpans(section);
+    const isSelf = (dep: BlockedDependency): boolean =>
+      dep.number === self.issueNumber &&
+      (dep.repo === undefined || sameRepo(dep.repo, self.repo));
+    const dependencies = referencesIn(stripped).filter((dep) => !isSelf(dep));
     const first = dependencies[0];
     if (!first) continue;
     return {
-      dependency: first,
+      // The declared dependency wins; the first reference is the fallback for
+      // a section that never states one (Issue #1634).
+      dependency: declaredDependency(stripped, isSelf) ?? first,
       dependencies,
       reason: boundReason(section),
     };
