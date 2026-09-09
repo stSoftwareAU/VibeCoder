@@ -446,6 +446,8 @@ Deno.test("abandonAndRestart - an issue the worker cannot re-label is still aban
   const issueBody = bodyOfCall(fake, "issue", "comment");
   assertStringIncludes(issueBody, CONFLICT_RESTART_MARKER);
   assertStringIncludes(issueBody, "re-apply `work-on` to re-queue this issue");
+  // The heading must not claim a re-queue only a human can make.
+  assertStringIncludes(issueBody, "**Reopened:");
   // …and the PR comment does not promise a re-queue that is not happening.
   const prBody = bodyOfCall(fake, "pr", "comment");
   assertStringIncludes(prBody, "`needs-human`");

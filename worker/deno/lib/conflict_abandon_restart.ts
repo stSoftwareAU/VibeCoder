@@ -838,7 +838,11 @@ export function buildRestartIssueComment(args: {
 
   return [
     conflictRestartMarker(request.repo, request.prNumber),
-    "♻️ **Re-queued: the PR for this issue conflicted irreconcilably**",
+    // The heading is the whole comment at a glance in a notification list, so
+    // it must not say "re-queued" where only a human can re-queue this.
+    args.requeueNeedsHuman
+      ? "♻️ **Reopened: the PR for this issue conflicted irreconcilably**"
+      : "♻️ **Re-queued: the PR for this issue conflicted irreconcilably**",
     "",
     `${request.repo}#${request.prNumber} put this issue's work on ` +
     `\`${sanitiseIssueText(request.branchName)}\`, and that branch ` +
