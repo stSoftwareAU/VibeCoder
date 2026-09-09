@@ -753,7 +753,8 @@ export function usageLimitExhaustedWindows(
       .filter((window) => window.remainingFraction <= 0)
       .map((window) => ({ window: window.window, resetAt: window.resetAt }));
     if (spent.length > 0) return spent;
-    if (event.rateLimitType === "five_hour" ||
+    if (
+      event.rateLimitType === "five_hour" ||
       event.rateLimitType === "seven_day"
     ) {
       return [{
@@ -2567,8 +2568,16 @@ export async function runClaudeWithRetry(
     // every credential is spent there is no child at all: an invocation
     // against a closed window is a request spent to be refused.
     const gate = currentOptions.credentialGate ?? defaultClaudeSpawnGate();
+    // Which vendor this invocation runs (Issue #4109): a Codex spawn is
+    // neither gated on Claude subscriptions nor switched by them.
+    const spawnProviderId = gate
+      ? selectAgentProvider(
+        currentOptions.agentProvider,
+        currentOptions.env ? { env: currentOptions.env } : {},
+      ).id
+      : undefined;
     if (gate) {
-      const verdict = await gate.beforeSpawn();
+      const verdict = await gate.beforeSpawn(spawnProviderId);
       if (verdict.outcome === "none-eligible") {
         const waitSeconds = usageLimitWaitSeconds(
           verdict.resetEpochMs,
@@ -2970,6 +2979,7 @@ export async function runClaudeWithRetry(
               resetMs,
               clock.now(),
             ),
+            spawnProviderId,
           );
         }
         return {
@@ -3262,8 +3272,9 @@ export async function checkClaudeHealth(
     if (gate) {
       await gate.recordUsageLimit(
         usageLimitExhaustedWindows(undefined, resetMs, Date.now()),
+        provider.id,
       );
-      const verdict = await gate.beforeSpawn();
+      const verdict = await gate.beforeSpawn(provider.id);
       if (verdict.outcome === "selected") {
         logger?.warn(
           `${provider.displayName} hit its subscription usage limit — ` +

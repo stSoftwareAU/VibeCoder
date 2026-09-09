@@ -61,19 +61,27 @@ export interface ClaudeSpawnGate {
   /**
    * Choose and apply the credential for the next spawn.
    *
+   * @param providerId - The provider this spawn will run; another vendor's
+   *   spawn is answered `"no-pool"` and gated on nothing. Omitted, the
+   *   pool's own provider is assumed.
    * @returns The verdict; `"none-eligible"` means the caller must not spawn.
    */
-  beforeSpawn(): Promise<ClaudeSpawnGateVerdict>;
+  beforeSpawn(providerId?: string): Promise<ClaudeSpawnGateVerdict>;
 
   /**
    * Mark the credential the last spawn ran under as spent on these windows.
    *
-   * A no-op on a host with no pool, so a single-token host records nothing
-   * and logs nothing.
+   * A no-op on a host with no pool and on another vendor's spawn, so a
+   * single-token host records nothing and logs nothing.
    *
    * @param windows - The windows the refusal named, with their resets.
+   * @param providerId - The provider that hit the limit; another vendor's
+   *   refusal records nothing here.
    */
-  recordUsageLimit(windows: readonly ClaudeExhaustedWindow[]): Promise<void>;
+  recordUsageLimit(
+    windows: readonly ClaudeExhaustedWindow[],
+    providerId?: string,
+  ): Promise<void>;
 }
 
 /** Injection points; production passes the run's `setEnv` and a log sink. */
@@ -107,7 +115,8 @@ export function createClaudeSpawnGate(
   const log = options.log ?? (() => {});
 
   return {
-    async beforeSpawn() {
+    async beforeSpawn(providerId) {
+      if (!ours(providerId)) return { outcome: "no-pool" };
       if (await pool.poolSize() < 2) return { outcome: "no-pool" };
       const token = await pool.selectEligible();
       if (token === null) {
@@ -126,7 +135,8 @@ export function createClaudeSpawnGate(
       return { outcome: "selected", label: token.label };
     },
 
-    async recordUsageLimit(windows) {
+    async recordUsageLimit(windows, providerId) {
+      if (!ours(providerId)) return;
       if (await pool.poolSize() < 2) return;
       const label = await pool.activeLabel();
       if (label === null) {
@@ -143,6 +153,11 @@ export function createClaudeSpawnGate(
       pool.recordExhaustion(label, windows);
     },
   };
+
+  /** Whether a spawn naming this provider is one this pool speaks for. */
+  function ours(providerId?: string): boolean {
+    return providerId === undefined || providerId === pool.providerId();
+  }
 }
 
 /**

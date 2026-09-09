@@ -1365,6 +1365,12 @@ export async function createProductionRunCoreDeps(
         // the loop's existing rate-limit pause takes over — instead of
         // re-running this billed probe every sleepInterval for the whole
         // window — and every other worker on the volume waits too.
+        //
+        // Exit 3 is deliberately the ONLY status that pauses (Issue #1669).
+        // A subscription usage limit a pooled host could not switch away
+        // from answers `NO_ELIGIBLE_CREDENTIAL_EXIT_CODE` with no
+        // `pauseSeconds`, so no signal is written and the loop keeps
+        // dispatching everything that needs no agent.
         if (result.exitCode === 3 && result.pauseSeconds) {
           const signal = await writeRateLimitSignal(
             workDir,

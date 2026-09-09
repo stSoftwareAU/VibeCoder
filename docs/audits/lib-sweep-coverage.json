@@ -957,6 +957,17 @@
       "paths": [
         "worker/deno/lib/claude_rate_limit_event.ts"
       ]
+    },
+    {
+      "issue": 1669,
+      "chunk": "12o",
+      "title": "top-up: the agent spawn quota gate added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1669-claude-spawn-gate.md",
+      "definition": "modules added to lib/ after 12a-12n recorded their coverage: claude_spawn_gate.ts (#1669)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/claude_spawn_gate.ts"
+      ]
     }
   ]
 }

@@ -216,6 +216,14 @@ export interface ClaudeCredentialPool {
    */
   activeLabel(): Promise<string | null>;
 
+  /**
+   * The id of the provider this pool holds tokens for (Issue #1669).
+   *
+   * A worker process can drive more than one vendor, and another vendor's
+   * spawn must be neither gated on these tokens nor switched by them.
+   */
+  providerId(): string;
+
   /** The start-up selector: the ranking winner, with no filter at all. */
   readonly selectToken: ProviderTokenSelector;
 
@@ -347,6 +355,10 @@ export function createClaudeCredentialPool(
         return null;
       }
       return pool[winner.index] ?? null;
+    },
+
+    providerId() {
+      return poolProvider().id;
     },
 
     async poolSize() {
