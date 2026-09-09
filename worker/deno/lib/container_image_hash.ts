@@ -88,6 +88,9 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   // runner, and codespell as a wheel in its own venv.
   "container/toolchains/bats-core.sh",
   "container/toolchains/codespell.sh",
+  // PyYAML, the library those BATS suites import (Issue #1628): a wheel in
+  // the system interpreter's purelib rather than a command on the PATH.
+  "container/toolchains/pyyaml.sh",
   "container/toolchains/rust.sh",
   "worker/deno/deno.lock",
 ];
