@@ -366,3 +366,122 @@ Deno.test("drainConflictingPrs - an empty queue still says why it stopped", asyn
   assertEquals(summary.context?.stopReason, "queue-empty");
   assertEquals(summary.context?.labelled, 0);
 });
+
+// ---------------------------------------------------------------------------
+// The budget one resolution is actually given (Issue #1693)
+// ---------------------------------------------------------------------------
+
+Deno.test("drainConflictingPrs - refuses to start a resolution the cycle cannot cover", async () => {
+  // GRQ-25 on NEAT-AI-core#637: the handler had 736s left, the drain started a
+  // six-file AI-fallback resolution anyway, and the watchdog SIGTERMed the
+  // agent at 11m13s — charged to the PR as a failed attempt.
+  let asked = 0;
+  const result = await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: () => {
+      asked += 1;
+      return Promise.resolve(pr("org/alpha", 1));
+    },
+    acquireLease: alwaysLease,
+    resolve: () => {
+      throw new Error("must not start a resolution the cycle cannot finish");
+    },
+    now: () => 1_000_000,
+    deadlineEpochMs: 1_000_000 + 736 * 1000,
+    agentTimeoutMs: 60 * 60 * 1000,
+  });
+
+  assertEquals(asked, 0);
+  assertEquals(result.taken, 0);
+  assertEquals(result.stopReason, "deadline");
+});
+
+Deno.test("drainConflictingPrs - never grants an agent more time than the budget left", async () => {
+  const granted: (number | undefined)[] = [];
+  const remainingMs = 30 * 60 * 1000;
+  await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([pr("org/alpha", 1)]),
+    acquireLease: alwaysLease,
+    resolve: (_conflict, budget) => {
+      granted.push(budget?.agentTimeoutSeconds);
+      return Promise.resolve({ processed: true, merged: true });
+    },
+    now: () => 1_000_000,
+    deadlineEpochMs: 1_000_000 + remainingMs,
+    // The configured timeout is twice what the cycle has left.
+    agentTimeoutMs: 60 * 60 * 1000,
+  });
+
+  assertEquals(granted.length, 1);
+  const seconds = granted[0];
+  assert(seconds !== undefined, "the resolution was given no budget");
+  // Strictly inside the handler budget, with the attempt's non-agent work
+  // (clone, merge, conclusion) reserved out of it.
+  assert(
+    seconds * 1000 < remainingMs,
+    `granted ${seconds}s of a ${remainingMs / 1000}s budget`,
+  );
+  assertEquals(seconds, (30 - 4) * 60);
+});
+
+Deno.test("drainConflictingPrs - grants the configured agent timeout when it fits", async () => {
+  const granted: (number | undefined)[] = [];
+  await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([pr("org/alpha", 1)]),
+    acquireLease: alwaysLease,
+    resolve: (_conflict, budget) => {
+      granted.push(budget?.agentTimeoutSeconds);
+      return Promise.resolve({ processed: true, merged: true });
+    },
+    now: () => 1_000_000,
+    deadlineEpochMs: 1_000_000 + 90 * 60 * 1000,
+    agentTimeoutMs: 30 * 60 * 1000,
+  });
+
+  assertEquals(granted, [30 * 60]);
+});
+
+Deno.test("drainConflictingPrs - a pass that declares no agent timeout grants none", async () => {
+  const granted: (number | undefined)[] = [];
+  await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([pr("org/alpha", 1)]),
+    acquireLease: alwaysLease,
+    resolve: (_conflict, budget) => {
+      granted.push(budget?.agentTimeoutSeconds);
+      return Promise.resolve({ processed: true, merged: true });
+    },
+    now: () => 1_000_000,
+    deadlineEpochMs: 1_000_000 + 90 * 60 * 1000,
+  });
+
+  assertEquals(granted, [undefined]);
+});
+
+Deno.test("drainConflictingPrs - an attempt the run ended stops the pass", async () => {
+  // The withdrawal means the run itself is ending (Issue #1693). Taking the
+  // next PR would open an attempt marker and immediately withdraw it too.
+  const resolved: number[] = [];
+  const result = await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]),
+    acquireLease: alwaysLease,
+    resolve: (conflict) => {
+      resolved.push(conflict.prNumber);
+      return Promise.resolve({
+        processed: false,
+        merged: false,
+        attemptCharged: false,
+      });
+    },
+    now: () => 1_000_000,
+    deadlineEpochMs: 1_000_000 + 90 * 60 * 1000,
+    agentTimeoutMs: 30 * 60 * 1000,
+  });
+
+  assertEquals(resolved, [1]);
+  assertEquals(result.stopReason, "deadline");
+  assertEquals(result.merged, 0);
+});

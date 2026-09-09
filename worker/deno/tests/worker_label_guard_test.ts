@@ -12,11 +12,14 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assertWorkerCanApplyLabel,
   isWorkerAppliableLabel,
+  journalLabelRefusal,
   WORKER_APPLIABLE_CONTENT_LABELS,
   WORKER_APPLIABLE_LABEL_LITERALS,
   WORKER_APPLIABLE_LABEL_PREFIXES,
   WORKER_FORBIDDEN_LABEL_LITERALS,
+  WORKER_LABEL_REFUSAL_AUDIT_VERB,
 } from "../lib/worker_label_guard.ts";
+import type { AuditMutation } from "../lib/audit_entry.ts";
 
 Deno.test("worker_label_guard - every literal in the allowlist is appliable", () => {
   for (const label of WORKER_APPLIABLE_LABEL_LITERALS) {
@@ -192,4 +195,76 @@ Deno.test("worker_label_guard - every content label is appliable (Issue #1276)",
 Deno.test("worker_label_guard - content labels are matched case-insensitively", () => {
   assert(isWorkerAppliableLabel("Dead-Code"));
   assert(isWorkerAppliableLabel("CONFIDENCE:high"));
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1604 — a refused label is journaled, not only printed
+// ---------------------------------------------------------------------------
+
+/** Wait for the fire-and-forget journal call to settle. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+Deno.test("worker_label_guard - a refused label is appended to the audit journal (Issue #1604)", async () => {
+  const seen: AuditMutation[] = [];
+  const captured: string[] = [];
+  const result = assertWorkerCanApplyLabel("top-priority", {
+    caller: "worker/deno/lib/claim_issue.ts",
+    logFn: (line) => captured.push(line),
+    record: (mutation) => {
+      seen.push(mutation);
+      return Promise.resolve({ ok: true, value: undefined });
+    },
+  });
+  await settle();
+  assert(!result.ok);
+  assertEquals(seen.length, 1);
+  assertEquals(seen[0]!.verb, WORKER_LABEL_REFUSAL_AUDIT_VERB);
+  assertEquals(seen[0]!.outcome, "error");
+  assertStringIncludes(seen[0]!.target ?? "", "label=top-priority");
+  assertStringIncludes(
+    seen[0]!.target ?? "",
+    "caller=worker/deno/lib/claim_issue.ts",
+  );
+  assertEquals(seen[0]!.caller, "worker/deno/lib/worker_label_guard.ts");
+  assertEquals(
+    captured.some((l) => l.includes("AUDIT_JOURNAL_REFUSED")),
+    false,
+  );
+});
+
+Deno.test("worker_label_guard - an allowed label journals nothing (Issue #1604)", async () => {
+  let calls = 0;
+  const result = assertWorkerCanApplyLabel("failed-once", {
+    record: () => {
+      calls++;
+      return Promise.resolve({ ok: true, value: undefined });
+    },
+  });
+  await settle();
+  assert(result.ok);
+  assertEquals(calls, 0);
+});
+
+Deno.test("worker_label_guard - a journal that cannot be written is said out loud and the refusal stands (Issue #1604)", async () => {
+  const captured: string[] = [];
+  const result = assertWorkerCanApplyLabel("top-priority", {
+    logFn: (line) => captured.push(line),
+    record: () => Promise.resolve({ ok: false, error: new Error("disk full") }),
+  });
+  await settle();
+  assert(!result.ok);
+  const refused = captured.find((l) => l.includes("[AUDIT_JOURNAL_REFUSED]"));
+  assert(refused !== undefined, captured.join(" | "));
+  assertStringIncludes(refused, WORKER_LABEL_REFUSAL_AUDIT_VERB);
+  assertStringIncludes(refused, "disk full");
+});
+
+Deno.test("worker_label_guard - the default sink is inert while the journal is off (Issue #1604)", async () => {
+  const result = await journalLabelRefusal(
+    { runId: "r", verb: WORKER_LABEL_REFUSAL_AUDIT_VERB, outcome: "error" },
+    () => undefined,
+  );
+  assertEquals(result.ok, true);
 });

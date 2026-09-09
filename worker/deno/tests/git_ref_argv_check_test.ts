@@ -39,8 +39,10 @@ Deno.test("scanner - the builder-shaped array is not a violation", () => {
       'return ["fetch", "--end-of-options", remote, ref];',
       'return ["checkout", "--end-of-options", ref];',
       // safe internal refs are out of scope for this CWE-88 gate.
-      // `defaultBranch` left this set in Issue #1269 — setupRepo reads it
-      // from `.vibe_default_branch` inside the clone, so it is not internal.
+      // `defaultBranch` left this set in Issue #1269 — setupRepo read it
+      // from `.vibe_default_branch` inside the clone, so it was not internal
+      // (it now lives in `.git/vibe/default_branch`, Issue #1652; the gate
+      // keeps treating it as untrusted).
       'runGitCommand(["fetch", "origin", baseBranch], opts);',
       'runGitCommand(["rebase", baseBranch], opts);',
       'runGitCommand(["fetch", "origin", milestoneBranch], opts);',
@@ -136,9 +138,10 @@ Deno.test("scanner - safe internal refs stay out of scope for push and rebase (I
 });
 
 Deno.test("scanner - flags an unguarded checkout of defaultBranch (Issue #1269)", () => {
-  // `defaultBranch` was excluded as a "safe internal ref", but setupRepo reads
+  // `defaultBranch` was excluded as a "safe internal ref", but setupRepo read
   // it from `.vibe_default_branch` — a file inside the clone — so a repository
-  // that commits one controls the value. These shapes must now be violations.
+  // that committed one controlled the value. The cache moved to
+  // `.git/vibe/default_branch` (Issue #1652); these shapes stay violations.
   for (
     const line of [
       'runGitCommand(["checkout", defaultBranch], opts);',

@@ -95,10 +95,12 @@ export const GIT_REF_ARGV_BINARY_HEAD_PATTERN = new RegExp(
  * An attacker-controlled branch identifier, in any object path.
  *
  * `defaultBranch` joins the set in Issue #1269. It was excluded as a "safe
- * internal ref", but `setupRepo()` reads it from `.vibe_default_branch` — a
- * file *inside the clone*, so a repository that commits one controls the
+ * internal ref", but `setupRepo()` read it from `.vibe_default_branch` — a
+ * file *inside the clone*, so a repository that commits one controlled the
  * value — and handed it to `git checkout` as a bare positional. The
- * exclusion was an assumption about provenance the code did not hold.
+ * exclusion was an assumption about provenance the code did not hold. The
+ * cache now lives in `.git/vibe/default_branch` (Issue #1652), out of the
+ * repository's reach; the gate keeps treating the value as untrusted anyway.
  *
  * A `.branch` property access joins the set in Issue #1548:
  * `openCrossRepoFixPr` passed `req.branch` — a request field the module's own

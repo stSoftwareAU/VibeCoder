@@ -18,6 +18,7 @@ import type {
   PhaseState,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
+import type { BumpInfo } from "../bump_deps.ts";
 import { formatQualityFailureMessage } from "../quality_helpers.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
 import { redactedTail } from "../redacted_text.ts";
@@ -282,17 +283,30 @@ export async function workOnIssueQualityGate(
 /**
  * Attempt the bump-deps audit gate (Issue #1613).
  *
- * Reverts the bump commit by `git reset --hard` to the SHA captured in
- * `state.bumpInfo.beforeBumpSha`, re-runs `quality.sh` once, and:
+ * Undoes the bump commit with `git revert`, re-runs `quality.sh` once, and:
  *
  * - On pass — flips `state.bumpInfo.status` to `rejected_by_audit`,
  *   records a rejection reason, and returns `{ status: "continue" }`
- *   so the substantive (pre-bump) change still ships.
- * - On fail — restores the original HEAD via `git reset --hard` and
+ *   so the substantive (pre-bump) change still ships — with the revert
+ *   commit on top of the branch for the completion phase to push.
+ * - On fail — drops the audit's own revert commit (which is the only
+ *   commit made since `HEAD` was captured, and was never pushed) and
  *   returns `null` so the caller proceeds with normal failure handling.
  *
- * Returns `null` if the audit cannot run (no `beforeBumpSha`, reset
- * fails, etc.) so the calling failure path stays intact.
+ * Why a revert and not `git reset --hard <beforeBumpSha>` (Issue #1714):
+ * the reset also dropped every commit made AFTER the bump. Since the
+ * remediation loop commits and pushes its fix run (Issue #1684) those
+ * commits can already be on origin, so the reset left the local branch
+ * *behind* origin — `pushUnpushedCommits` then had nothing to push and the
+ * PR was raised from a remote head that still carried the bump the audit
+ * had just rejected. A revert only ever moves history forward: every
+ * published commit stays an ancestor of `HEAD`, the branch ends ahead of
+ * origin, and the push that follows is a fast-forward.
+ *
+ * Returns `null` if the audit cannot run (no `beforeBumpSha`, the bump
+ * commit cannot be identified, the revert does not apply cleanly, etc.)
+ * so the calling failure path stays intact. A revert that conflicts is
+ * aborted, leaving the tree exactly as it was — never a rewind.
  */
 async function attemptBumpAudit(
   state: PhaseState,
@@ -318,25 +332,35 @@ async function attemptBumpAudit(
   }
   const restoreSha = currentHead.value.stdout.trim();
 
+  const bumpSha = await resolveBumpCommitSha(state, deps, bumpInfo);
+  if (bumpSha === null) {
+    return null;
+  }
+
   logger.info("bump audit: reverting bump and re-running quality gate", {
     beforeBumpSha: bumpInfo.beforeBumpSha,
+    bumpSha,
     currentHead: restoreSha,
   });
 
-  // Drop the bump (and any later commits) for the audit run.
-  //
-  // Issue #1714: since #1684 those later commits may already be PUSHED — the
-  // remediation loop commits its fix through `commitAndPushPending`. This
-  // reset then leaves the local branch behind origin, and the rejected bump
-  // survives on the remote head the PR is raised from. Tracked separately
-  // because the fix belongs to #1613's audit mechanism, not to #1684.
-  const reset = await deps.git.runGitCommand(
-    ["reset", "--hard", bumpInfo.beforeBumpSha],
+  // Undo the bump with a forward-moving revert commit (Issue #1714). Later
+  // commits — including a pushed #1684 remediation commit — stay in place.
+  const revert = await deps.git.runGitCommand(
+    ["revert", "--no-edit", bumpSha],
     { cwd: state.repoPath },
   );
-  if (!reset.ok) {
-    logger.warn("bump audit: reset --hard failed, skipping audit", {
-      error: reset.error.message,
+  if (!revert.ok || revert.value.code !== 0) {
+    const error = revert.ok
+      ? revert.value.stderr.trim() || `exit code ${revert.value.code}`
+      : revert.error.message;
+    logger.warn(
+      "bump audit: git revert of the bump commit did not apply cleanly, skipping audit",
+      { bumpSha, error },
+    );
+    // A conflicted revert leaves the index and tree mid-operation; abort it
+    // so the caller's failure path sees the tree it had before the audit.
+    await deps.git.runGitCommand(["revert", "--abort"], {
+      cwd: state.repoPath,
     });
     return null;
   }
@@ -364,20 +388,68 @@ async function attemptBumpAudit(
     return { status: "continue" };
   }
 
-  // Audit did not exonerate the bump. Restore the original HEAD so the
-  // caller's failure-reporting machinery sees the same tree it would
-  // have seen without the audit.
+  // Audit did not exonerate the bump. Drop the audit's own revert commit
+  // so the caller's failure-reporting machinery sees the same tree it would
+  // have seen without the audit. This reset only discards the revert made
+  // above — `restoreSha` is the head the branch had before the audit, so
+  // nothing that was ever pushed is rewound (Issue #1714).
   logger.info("bump audit: quality still fails without bump, restoring HEAD");
   const restore = await deps.git.runGitCommand(
     ["reset", "--hard", restoreSha],
     { cwd: state.repoPath },
   );
-  if (!restore.ok) {
+  if (!restore.ok || restore.value.code !== 0) {
     logger.warn("bump audit: failed to restore HEAD after audit", {
-      error: restore.error.message,
+      error: restore.ok
+        ? restore.value.stderr.trim() || `exit code ${restore.value.code}`
+        : restore.error.message,
     });
   }
   return null;
+}
+
+/**
+ * The commit the audit reverts (Issue #1714).
+ *
+ * `runBumpDeps` records the bump commit as `bumpInfo.sha`. When that is
+ * missing, the bump is the first commit after `beforeBumpSha` on the
+ * current branch — `bump-deps.sh` commits immediately after the SHA is
+ * captured, so nothing else can sit between them. Returns `null`, with a
+ * warning, when no such commit exists: the audit then does not run rather
+ * than reverting the wrong commit.
+ */
+async function resolveBumpCommitSha(
+  state: PhaseState,
+  deps: WorkerDeps,
+  bumpInfo: BumpInfo,
+): Promise<string | null> {
+  if (bumpInfo.sha) return bumpInfo.sha;
+
+  const listed = await deps.git.runGitCommand(
+    [
+      "rev-list",
+      "--reverse",
+      "--ancestry-path",
+      `${bumpInfo.beforeBumpSha}..HEAD`,
+    ],
+    { cwd: state.repoPath },
+  );
+  const first = listed.ok && listed.value.code === 0
+    ? listed.value.stdout.trim().split("\n")[0]?.trim() ?? ""
+    : "";
+  if (!first) {
+    deps.logger.warn(
+      "bump audit: cannot identify the bump commit after beforeBumpSha, skipping audit",
+      {
+        beforeBumpSha: bumpInfo.beforeBumpSha,
+        error: listed.ok
+          ? listed.value.stderr.trim() || undefined
+          : listed.error.message,
+      },
+    );
+    return null;
+  }
+  return first;
 }
 
 /**
@@ -461,8 +533,8 @@ async function runQualityGateBody(
     }
 
     // Generic baseline-aware bypass (Issue #2604): when every current
-    // diffable finding (shellcheck, mermaid, markdownlint, docs) was
-    // already present at baseline, treat the gate as passed so a
+    // diffable finding (mermaid, markdownlint, workflow hygiene — Issue
+    // #1641) was already present at baseline, treat the gate as passed so a
     // pre-existing residue in an untouched artefact does not consume a
     // `failed-once` attempt. Reasoning over ALL failing checks at once
     // also closes the shellcheck-only hole (Issue #1549): a genuinely-new

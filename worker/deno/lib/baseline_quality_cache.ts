@@ -57,8 +57,13 @@ export const MAX_BASELINE_QUALITY_CACHE_ENTRIES = 20;
 /** Cap on the stored gate output; the tail carries the failure summary. */
 export const MAX_CACHED_OUTPUT_CHARS = 20_000;
 
-/** Bumped whenever the entry shape or the gate options change. */
-export const BASELINE_QUALITY_CACHE_VERSION = 1;
+/**
+ * Bumped whenever the entry shape or the gate options change. Version 2
+ * (Issue #1641): the diffable findings gained the `workflow hygiene` kind,
+ * so a baseline captured before then would credit no hygiene carry-over and
+ * the bypass would refuse every such repository until its checkout moved.
+ */
+export const BASELINE_QUALITY_CACHE_VERSION = 2;
 
 /** Environment variable that disables baseline reuse when falsy. */
 export const BASELINE_QUALITY_CACHE_ENV = "VIBE_CODER_BASELINE_QUALITY_CACHE";
@@ -68,6 +73,7 @@ const SHA_PATTERN = /^[0-9a-f]{7,64}$/;
 const DIFFABLE_CHECKS: ReadonlySet<string> = new Set([
   "mermaid",
   "markdownlint",
+  "workflow hygiene",
   "docs",
 ]);
 
