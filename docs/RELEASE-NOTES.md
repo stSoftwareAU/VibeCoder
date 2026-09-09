@@ -27,6 +27,7 @@ if your worker login is read-only on any monitored repository.**
 | Change | Issue |
 | ------ | ----- |
 | Completion no longer recovers an open PR on a different head as the run's own when the run's branch has commits ahead of base: the linked PR's head is read and compared with the branch, and the branch gets its own PR, so an agent's side PR (or a sibling's) cannot swallow the run's work | #1799 |
+| A run whose HEAD diverged from its branch because the agent's work landed through its own PR and the issue closed takes the stale-claim exit instead of a completion failure, so no health failure is recorded for a run that succeeded; a diverged HEAD on an open issue is still refused | #1793 |
 | A monitored repo the worker's login cannot list (404, or 403 "Must have push access") is skipped and named once instead of failing every cycle | #1453 |
 | A successful trusted-author resolve is reused for `trusted_authors_cache_hours` (new key, default `1`; `0` restores the per-cycle refresh), and a transient failure serves the snapshot, with its age logged, for up to six hours | #1453 |
 | The `graphql-calls:` line counts every GraphQL-backed `gh` call (`issue list`, `pr view`, `search`, … as well as `api graphql`), and both the counter and the primary-quota latch are enforced at the `gh` spawn chokepoint, so the thirty-odd modules that spawn `gh` directly are counted and short-circuited too | #1485 |
