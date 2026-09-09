@@ -332,6 +332,46 @@ export function _resetBaseProtectionMemo(): void {
 }
 
 /**
+ * Recognise GitHub refusing a merge because a rule governs the base
+ * (Issue #1763).
+ *
+ * `stSoftwareAU/GRQ-FX#58` is the shape: the effective-rules endpoint
+ * returned `[]` for `Develop` and legacy protection was 404, so the base was
+ * judged unprotected and the gated direct merge attempted — and GitHub
+ * refused it with "the base branch policy prohibits the merge", the wording
+ * of a rules refusal. An organisation-level ruleset needs `admin:org` to
+ * list, so the fleet token cannot see every policy that binds a branch; the
+ * refusal itself is the authority.
+ *
+ * @param message - Error message from the failed direct merge.
+ * @returns True when the base is policy-protected whatever the rules
+ *   endpoint showed.
+ */
+export function isBasePolicyRefusal(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("base branch policy prohibits the merge") ||
+    lower.includes("repository rule violations") ||
+    /\bgh013\b/.test(lower);
+}
+
+/**
+ * Message logged once per base per cycle when GitHub enforced a policy the
+ * rules endpoint did not show (Issue #1763). Exported so tests and log greps
+ * share the wording.
+ */
+export function invisiblePolicyWarning(
+  repo: string,
+  baseRefName: string,
+  refusal: string,
+): string {
+  return `WARNING: ${repo} '${baseRefName}' is policy-protected but the ` +
+    `effective-rules endpoint shows no rule the fleet token can read — ` +
+    `an organisation ruleset (needs admin:org to list) or a repository ` +
+    `setting; arming GitHub auto-merge instead of retrying the direct ` +
+    `merge (Issue #1763): ${refusal}`;
+}
+
+/**
  * Enable auto squash merge on a PR (Issue #63, #430, #927).
  *
  * Retries on transient failures (HTTP 5xx, network errors).
@@ -482,33 +522,43 @@ export async function enableAutoMerge(
           : {},
       );
       if (!merge.ok) {
-        return {
-          result: AutoMergeResult.Failed,
-          message:
-            `Gated direct merge of PR #${prNumber} onto unprotected '${baseRefName}' failed: ${merge.error.message}`,
-        };
-      }
-      if (merge.value.merged) {
+        // Issue #1763: GitHub's own refusal outranks the rules endpoint. A
+        // base it calls policy-prohibited IS protected — by a rule the
+        // token cannot list — so record that for the cycle, say so once,
+        // and take the path a protected base takes: arm GitHub auto-merge,
+        // which honours whatever rules exist, instead of a refused direct
+        // merge per cycle for as long as the PR stays open.
+        if (isBasePolicyRefusal(merge.error.message)) {
+          baseProtectionMemo.set(memoKey, true);
+          log(invisiblePolicyWarning(repo, baseRefName, merge.error.message));
+        } else {
+          return {
+            result: AutoMergeResult.Failed,
+            message:
+              `Gated direct merge of PR #${prNumber} onto unprotected '${baseRefName}' failed: ${merge.error.message}`,
+          };
+        }
+      } else if (merge.value.merged) {
         return {
           result: AutoMergeResult.MergedDirectly,
           message:
             `PR #${prNumber} merged directly onto unprotected '${baseRefName}' after the pre-merge gate (Issue #4375)`,
         };
-      }
-      if (merge.value.blocked === "default_branch_unapproved") {
+      } else if (merge.value.blocked === "default_branch_unapproved") {
         return {
           result: AutoMergeResult.Deferred,
           message:
             `PR #${prNumber} held on default branch '${baseRefName}': no approving review from outside the fleet, and the base has no required checks to enforce one (Issue #1082)`,
         };
+      } else {
+        return {
+          result: AutoMergeResult.Deferred,
+          message:
+            `PR #${prNumber} not merged onto unprotected '${baseRefName}': ${
+              merge.value.blocked ?? "gate deferred"
+            } (Issue #4375)`,
+        };
       }
-      return {
-        result: AutoMergeResult.Deferred,
-        message:
-          `PR #${prNumber} not merged onto unprotected '${baseRefName}': ${
-            merge.value.blocked ?? "gate deferred"
-          } (Issue #4375)`,
-      };
     }
   }
 
