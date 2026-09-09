@@ -15,11 +15,13 @@
  * - the protocol envelope — `{"id":"0","msg":{"type":"agent_message",…}}`,
  *   with `session_configured`, `token_count` and `task_complete`.
  *
- * An event this worker has never seen is not an error: its fields are kept
- * verbatim on {@link AgentStructuredError.raw} so a consumer can read them
- * without the adapter being taught about them first, and a line that is not
- * JSON at all — a CLI log line, a truncated final write — is counted rather
- * than thrown on.
+ * A field this worker has never seen is not an error: an error event's own
+ * object is kept verbatim on {@link AgentStructuredError.raw}, so a consumer
+ * can read a new field without the adapter being taught about it first. An
+ * event whose *kind* is unrecognised is counted — as progress when it is a
+ * recognisable envelope, as a malformed line when it is not — and a line that
+ * is not JSON at all (a CLI log line, a truncated final write) is counted the
+ * same way. Nothing is dropped in silence.
  *
  * The classification rules that matter most here are the two the issue names:
  * a **401/403 is authentication**, never an unavailable model, and a **429 is
@@ -44,24 +46,24 @@ import {
   detectQuotaScope,
   extractHttpStatus,
   extractRetryAfterSeconds,
+  failureMessage,
+  isNetworkStatus,
   parseJsonlEvents,
+  readNumber,
+  readObject,
+  readString,
   redactedEvidence,
 } from "./agent_output.ts";
 import { isCodexAuthError } from "./codex_auth.ts";
+// Heap exhaustion is a runtime fact, not a vendor's vocabulary: the one
+// predicate is reused rather than a second copy of the same patterns
+// (Issue #1695). It lives beside Claude's other detectors for historical
+// reasons only.
 import { detectOutOfMemory } from "./claude_executor.ts";
 import type { TokenUsage } from "./token_usage.ts";
 
 /** The provider id this adapter decodes for. */
 const PROVIDER_ID = "codex";
-
-/** Statuses that mean the transport failed, not the credential or the model. */
-const NETWORK_STATUSES: ReadonlySet<number> = new Set([
-  500,
-  502,
-  503,
-  504,
-  529,
-]);
 
 /** Transport failures the CLI reports in prose. */
 const NETWORK_RE =
@@ -78,24 +80,16 @@ const QUOTA_RE =
 /** A transient limit on the rate of requests. */
 const RATE_LIMIT_RE = /rate[_ ]limit|too many requests|\b429\b/i;
 
-/** Read a string field, or undefined when it is absent or another type. */
-function str(value: unknown): string | undefined {
-  return typeof value === "string" && value ? value : undefined;
-}
-
-/** Read a finite number field, or undefined. */
-function num(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
-}
-
-/** Read a nested object field, or undefined. */
-function obj(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
+/**
+ * The CLI refusing the session it was asked to resume.
+ *
+ * `codex exec resume` names a session Codex must still hold; a rolled or
+ * pruned one is refused before any model call, exactly as Claude's session
+ * flags are. Anchored to session vocabulary so an unrelated "not found"
+ * cannot match.
+ */
+const INVALID_SESSION_RE =
+  /session[_ ](?:not[_ ]found|expired|invalid)|(?:no|unknown|invalid|expired)[^\n]{0,20}session|thread[_ ]not[_ ]found|no (?:previous|recorded) session/i;
 
 /**
  * The event body and its kind, whichever envelope generation carried it.
@@ -107,21 +101,23 @@ function obj(value: unknown): Record<string, unknown> | undefined {
 function eventBody(
   value: Record<string, unknown>,
 ): { kind: string; body: Record<string, unknown> } | undefined {
-  const msg = obj(value.msg);
-  if (msg && str(msg.type)) return { kind: str(msg.type)!, body: msg };
-  const kind = str(value.type);
+  const msg = readObject(value.msg);
+  if (msg && readString(msg.type)) {
+    return { kind: readString(msg.type)!, body: msg };
+  }
+  const kind = readString(value.type);
   return kind ? { kind, body: value } : undefined;
 }
 
 /** An item event's own type, under either of the two field names in use. */
 function itemType(item: Record<string, unknown>): string | undefined {
-  return str(item.item_type) ?? str(item.type);
+  return readString(item.item_type) ?? readString(item.type);
 }
 
 /** Codex's token counts, mapped onto the shared {@link TokenUsage} shape. */
 function usageFrom(source: Record<string, unknown>): TokenUsage | undefined {
-  const input = num(source.input_tokens);
-  const output = num(source.output_tokens);
+  const input = readNumber(source.input_tokens);
+  const output = readNumber(source.output_tokens);
   if (input === undefined && output === undefined) return undefined;
   return {
     inputTokens: input ?? 0,
@@ -129,7 +125,7 @@ function usageFrom(source: Record<string, unknown>): TokenUsage | undefined {
     // Codex reports cached *input* tokens and has no cache-write counter, so
     // the write count stays 0 rather than being invented from the read.
     cacheCreationTokens: 0,
-    cacheReadTokens: num(source.cached_input_tokens) ?? 0,
+    cacheReadTokens: readNumber(source.cached_input_tokens) ?? 0,
   };
 }
 
@@ -137,11 +133,12 @@ function usageFrom(source: Record<string, unknown>): TokenUsage | undefined {
 function quotaFrom(
   rateLimits: Record<string, unknown>,
 ): AgentQuota | undefined {
-  const primary = obj(rateLimits.primary) ?? obj(rateLimits.secondary);
+  const primary = readObject(rateLimits.primary) ??
+    readObject(rateLimits.secondary);
   if (!primary) return undefined;
-  const usedPercent = num(primary.used_percent);
-  const windowMinutes = num(primary.window_minutes);
-  const resetsIn = num(primary.resets_in_seconds);
+  const usedPercent = readNumber(primary.used_percent);
+  const windowMinutes = readNumber(primary.window_minutes);
+  const resetsIn = readNumber(primary.resets_in_seconds);
   return {
     // A window length is a fact; a name for it is not, unless it matches one
     // of the named windows exactly.
@@ -159,7 +156,8 @@ function quotaFrom(
 function errorObject(
   body: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  return obj(body.error) ?? (str(body.message) ? body : undefined);
+  return readObject(body.error) ??
+    (readString(body.message) ? body : undefined);
 }
 
 /**
@@ -171,6 +169,7 @@ function errorObject(
  */
 function decodeCodexOutput(stdout: string): AgentDecodedOutput {
   const { events, malformedLines } = parseJsonlEvents(stdout);
+  let malformedEvents = 0;
 
   let text = "";
   let textSource: AgentTextSource = "none";
@@ -186,11 +185,19 @@ function decodeCodexOutput(stdout: string): AgentDecodedOutput {
 
   for (const { value } of events) {
     const event = eventBody(value);
-    if (!event) continue;
+    if (!event) {
+      // A JSON object with no event kind under either envelope is not a
+      // decodable event: counted like a malformed line rather than dropped,
+      // so a schema change reads as "unreadable", never as "nothing
+      // happened".
+      malformedEvents++;
+      continue;
+    }
     const { kind, body } = event;
 
     // Session identity, under either generation's name for it.
-    sessionId = str(body.thread_id) ?? str(body.session_id) ?? sessionId;
+    sessionId = readString(body.thread_id) ?? readString(body.session_id) ??
+      sessionId;
 
     if (kind === "item.started" || kind === "item.updated") {
       progressEvents++;
@@ -199,25 +206,25 @@ function decodeCodexOutput(stdout: string): AgentDecodedOutput {
 
     if (kind === "item.completed") {
       progressEvents++;
-      const item = obj(body.item);
+      const item = readObject(body.item);
       if (!item) continue;
       const type = itemType(item);
       if (type === "agent_message") {
-        const message = str(item.text) ?? str(item.message);
+        const message = readString(item.text) ?? readString(item.message);
         if (message) {
           text = message;
           textSource = "final";
         }
         continue;
       }
-      last = str(item.command) ?? str(item.title) ?? last;
+      last = readString(item.command) ?? readString(item.title) ?? last;
       continue;
     }
 
     // The protocol envelope's own message and completion events.
     if (kind === "agent_message") {
       progressEvents++;
-      const message = str(body.message) ?? str(body.text);
+      const message = readString(body.message) ?? readString(body.text);
       if (message) {
         text = message;
         textSource = "final";
@@ -226,7 +233,7 @@ function decodeCodexOutput(stdout: string): AgentDecodedOutput {
     }
     if (kind === "task_complete") {
       status = "completed";
-      const message = str(body.last_agent_message);
+      const message = readString(body.last_agent_message);
       if (message) {
         text = message;
         textSource = "final";
@@ -236,18 +243,18 @@ function decodeCodexOutput(stdout: string): AgentDecodedOutput {
 
     if (kind === "turn.completed") {
       status = "completed";
-      const reported = obj(body.usage);
+      const reported = readObject(body.usage);
       if (reported) usage = usageFrom(reported) ?? usage;
       continue;
     }
 
     if (kind === "token_count") {
       progressEvents++;
-      const info = obj(body.info);
-      const totals = info ? obj(info.total_token_usage) : undefined;
+      const info = readObject(body.info);
+      const totals = info ? readObject(info.total_token_usage) : undefined;
       if (totals) usage = usageFrom(totals) ?? usage;
-      const rateLimits = obj(body.rate_limits) ??
-        (info ? obj(info.rate_limits) : undefined);
+      const rateLimits = readObject(body.rate_limits) ??
+        (info ? readObject(info.rate_limits) : undefined);
       if (rateLimits) quota = quotaFrom(rateLimits) ?? quota;
       continue;
     }
@@ -256,13 +263,13 @@ function decodeCodexOutput(stdout: string): AgentDecodedOutput {
       status = "failed";
       const detail = errorObject(body);
       if (detail) {
-        const message = str(detail.message) ?? kind;
-        const httpStatus = num(detail.http_status) ??
-          num(detail.status) ?? extractHttpStatus(message);
+        const message = readString(detail.message) ?? kind;
+        const httpStatus = readNumber(detail.http_status) ??
+          readNumber(detail.status) ?? extractHttpStatus(message);
         errors.push({
           source: kind,
           message,
-          ...(str(detail.type) ? { code: str(detail.type) } : {}),
+          ...(readString(detail.type) ? { code: readString(detail.type) } : {}),
           ...(httpStatus !== undefined ? { httpStatus } : {}),
           raw: detail,
         });
@@ -274,6 +281,14 @@ function decodeCodexOutput(stdout: string): AgentDecodedOutput {
     progressEvents++;
   }
 
+  // Output that is not the CLI's event format at all — a panic, a plain
+  // error — is legitimately the CLI's own text and must not be thrown away
+  // just because it is not an event (Issue #1695).
+  if (events.length === 0 && stdout.trim()) {
+    text = stdout;
+    textSource = "raw";
+  }
+
   return {
     text,
     textSource,
@@ -283,7 +298,7 @@ function decodeCodexOutput(stdout: string): AgentDecodedOutput {
     progress: { events: progressEvents, ...(last ? { last } : {}) },
     errors,
     ...(quota ? { quota } : {}),
-    malformedLines,
+    malformedLines: malformedLines + malformedEvents,
   };
 }
 
@@ -292,9 +307,10 @@ function codexQuota(
   error: AgentStructuredError | undefined,
   surface: string,
   nowMs: number,
+  reported?: AgentQuota,
 ): AgentQuota {
-  const resetsIn = error ? num(error.raw.resets_in_seconds) : undefined;
-  const resetsAt = error ? num(error.raw.resets_at) : undefined;
+  const resetsIn = error ? readNumber(error.raw.resets_in_seconds) : undefined;
+  const resetsAt = error ? readNumber(error.raw.resets_at) : undefined;
   const stated = error?.message ?? surface;
   const isoReset = /\b(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\b/.exec(stated)?.[1];
   const resetEpochMs = resetsIn !== undefined
@@ -304,10 +320,21 @@ function codexQuota(
     : isoReset
     ? Date.parse(isoReset)
     : undefined;
+  const statedScope = detectQuotaScope(stated);
+  // The window the stream already reported (`token_count.rate_limits`) is
+  // structured evidence: it fills what the refusal's prose left unstated,
+  // and never overrides what the refusal did state.
   return {
-    scope: detectQuotaScope(stated),
+    scope: statedScope === "unknown"
+      ? reported?.scope ?? "unknown"
+      : statedScope,
     ...(resetEpochMs !== undefined && Number.isFinite(resetEpochMs)
       ? { resetEpochMs }
+      : reported?.resetsInSeconds !== undefined
+      ? { resetEpochMs: nowMs + reported.resetsInSeconds * 1000 }
+      : {}),
+    ...(reported?.usedFraction !== undefined
+      ? { usedFraction: reported.usedFraction }
       : {}),
   };
 }
@@ -338,8 +365,7 @@ function classifyCodexFailure(
     .join("\n");
   const surface = `${structuredText}\n${stderr}`;
   const evidenceText = redactedEvidence(surface);
-  const say = (headline: string) =>
-    evidenceText ? `${headline} — evidence: ${evidenceText}` : headline;
+  const say = (headline: string) => failureMessage(headline, evidenceText);
 
   /** Pick the structured error that explains the run, when one does. */
   const match = (test: RegExp) =>
@@ -385,8 +411,20 @@ function classifyCodexFailure(
       category: "quota-exhausted",
       message: say("Codex's subscription window is exhausted"),
       evidence: quotaError ? "structured" : "prose",
-      quota: codexQuota(quotaError, surface, nowMs),
+      quota: codexQuota(quotaError, surface, nowMs, decoded.quota),
       ...(httpStatus !== undefined ? { httpStatus } : {}),
+      errors: decoded.errors,
+    });
+  }
+
+  // A refused session is a start-up failure: nothing after it can be read
+  // from this run, and the remedy is the session, not the model or a wait.
+  const sessionError = match(INVALID_SESSION_RE);
+  if (sessionError || INVALID_SESSION_RE.test(stderr)) {
+    return agentFailure({
+      category: "invalid-session",
+      message: say("Codex refused the session it was asked to resume"),
+      evidence: sessionError ? "structured" : "prose",
       errors: decoded.errors,
     });
   }
@@ -403,7 +441,7 @@ function classifyCodexFailure(
   }
 
   if (
-    (httpStatus !== undefined && NETWORK_STATUSES.has(httpStatus)) ||
+    isNetworkStatus(httpStatus) ||
     (NETWORK_RE.test(surface) && !RATE_LIMIT_RE.test(surface))
   ) {
     return agentFailure({
@@ -418,7 +456,7 @@ function classifyCodexFailure(
   const rateError = match(RATE_LIMIT_RE);
   if (rateError || httpStatus === 429 || RATE_LIMIT_RE.test(stderr)) {
     const retryAfterSeconds =
-      (rateError ? num(rateError.raw.retry_after_seconds) : undefined) ??
+      (rateError ? readNumber(rateError.raw.retry_after_seconds) : undefined) ??
         extractRetryAfterSeconds(surface);
     return agentFailure({
       category: "rate-limit",

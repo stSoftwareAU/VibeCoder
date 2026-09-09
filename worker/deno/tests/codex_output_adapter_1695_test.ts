@@ -185,3 +185,77 @@ Deno.test("codex adapter - unknown structured error fields are preserved verbati
   assert(error, "the structured error was not captured");
   assertEquals(error?.raw.plan_type, "pro");
 });
+
+Deno.test("codex adapter - plain-text stdout is passed through, not thrown away", () => {
+  const panic =
+    "thread 'main' panicked at codex-core/src/lib.rs:42\nnote: run with RUST_BACKTRACE=1\n";
+
+  const decoded = CODEX_OUTPUT_ADAPTER.decode(panic);
+
+  assertEquals(decoded.textSource, "raw");
+  assertEquals(decoded.text, panic);
+  assertEquals(decoded.status, "unknown");
+});
+
+Deno.test("codex adapter - a JSON object that is no event at all is counted, not dropped", () => {
+  const decoded = CODEX_OUTPUT_ADAPTER.decode(
+    '{"unrecognised":"envelope"}\n{"type":"turn.started"}\n',
+  );
+
+  assertEquals(decoded.malformedLines, 1);
+});
+
+Deno.test("codex adapter - a refused session is invalid-session, not an ordinary failure", () => {
+  const stdout = JSON.stringify({
+    type: "turn.failed",
+    error: {
+      type: "session_not_found",
+      message: "No recorded session to resume for this thread.",
+    },
+  });
+
+  const failure = CODEX_OUTPUT_ADAPTER.classify(
+    { stdout, stderr: "", exitCode: 1 },
+    CODEX_OUTPUT_ADAPTER.decode(stdout),
+  );
+
+  assertEquals(failure?.category, "invalid-session");
+  assertEquals(failure?.terminal, false);
+});
+
+Deno.test("codex adapter - a refusal that states no window takes the window the stream reported", () => {
+  const stdout = [
+    JSON.stringify({
+      id: "0",
+      msg: {
+        type: "token_count",
+        info: { total_token_usage: { input_tokens: 10, output_tokens: 2 } },
+        rate_limits: {
+          primary: {
+            used_percent: 100,
+            window_minutes: 300,
+            resets_in_seconds: 600,
+          },
+        },
+      },
+    }),
+    JSON.stringify({
+      type: "turn.failed",
+      error: {
+        type: "usage_limit_reached",
+        message: "You have hit your limit.",
+      },
+    }),
+  ].join("\n");
+
+  const failure = CODEX_OUTPUT_ADAPTER.classify(
+    { stdout, stderr: "", exitCode: 1, nowMs: NOW_MS },
+    CODEX_OUTPUT_ADAPTER.decode(stdout),
+  );
+
+  assertEquals(failure?.category, "quota-exhausted");
+  // The refusal named no window; the stream's own 300-minute one fills it.
+  assertEquals(failure?.quota?.scope, "five-hour");
+  assertEquals(failure?.quota?.resetEpochMs, NOW_MS + 600_000);
+  assertEquals(failure?.quota?.usedFraction, 1);
+});

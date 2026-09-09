@@ -39,7 +39,10 @@ import {
   detectQuotaScope,
   extractHttpStatus,
   extractRetryAfterSeconds,
+  failureMessage,
+  isNetworkStatus,
   parseJsonlEvents,
+  readString,
   redactedEvidence,
 } from "./agent_output.ts";
 import { isClaudeAuthError } from "./claude_auth.ts";
@@ -57,26 +60,12 @@ import { extractTokenUsage } from "./token_usage.ts";
 /** The provider id this adapter decodes for. */
 const PROVIDER_ID = "claude";
 
-/** Statuses that mean the transport failed, not the credential or the model. */
-const NETWORK_STATUSES: ReadonlySet<number> = new Set([
-  500,
-  502,
-  503,
-  504,
-  529,
-]);
-
 /** Transport failures the CLI reports in prose. */
 const NETWORK_RE =
   /overloaded|econnreset|econnrefused|etimedout|enotfound|socket hang up|fetch failed|network error|connection (?:reset|refused|closed)/i;
 
 /** A refusal that names the model, as opposed to the credential. */
 const MODEL_EVIDENCE_RE = /\bmodel\b|unrecogni[sz]ed_model|model_not_found/i;
-
-/** Read a string field, or undefined when it is absent or another type. */
-function str(value: unknown): string | undefined {
-  return typeof value === "string" && value ? value : undefined;
-}
 
 /** The assistant text blocks of one `assistant` event, concatenated. */
 function assistantText(event: Record<string, unknown>): string {
@@ -89,7 +78,7 @@ function assistantText(event: Record<string, unknown>): string {
       block && typeof block === "object" &&
       (block as Record<string, unknown>).type === "text"
     ) {
-      const text = str((block as Record<string, unknown>).text);
+      const text = readString((block as Record<string, unknown>).text);
       if (text) parts.push(text);
     }
   }
@@ -108,31 +97,37 @@ function collectErrors(
 ): AgentStructuredError[] {
   const errors: AgentStructuredError[] = [];
   for (const { value } of events) {
-    const type = str(value.type);
+    const type = readString(value.type);
     if (type === "result" && value.is_error === true) {
       errors.push({
         source: "result",
-        message: str(value.result) ?? str(value.subtype) ?? "result is_error",
-        ...(str(value.subtype) ? { code: str(value.subtype) } : {}),
+        message: readString(value.result) ?? readString(value.subtype) ??
+          "result is_error",
+        ...(readString(value.subtype)
+          ? { code: readString(value.subtype) }
+          : {}),
         raw: value,
       });
       continue;
     }
-    if (type === "assistant" && str(value.error)) {
+    if (type === "assistant" && readString(value.error)) {
       errors.push({
         source: "assistant",
-        message: assistantText(value) || (str(value.error) ?? ""),
-        code: str(value.error),
+        message: assistantText(value) || (readString(value.error) ?? ""),
+        code: readString(value.error),
         raw: value,
       });
       continue;
     }
     if (type === "error") {
-      const message = str(value.message) ?? str(value.error) ?? "error event";
+      const message = readString(value.message) ?? readString(value.error) ??
+        "error event";
       errors.push({
         source: "error",
         message,
-        ...(str(value.subtype) ? { code: str(value.subtype) } : {}),
+        ...(readString(value.subtype)
+          ? { code: readString(value.subtype) }
+          : {}),
         ...(extractHttpStatus(message) !== undefined
           ? { httpStatus: extractHttpStatus(message) }
           : {}),
@@ -167,11 +162,11 @@ function decodeClaudeOutput(stdout: string): AgentDecodedOutput {
   let last: string | undefined;
 
   for (const { value } of events) {
-    sessionId = str(value.session_id) ?? sessionId;
-    const type = str(value.type);
+    sessionId = readString(value.session_id) ?? sessionId;
+    const type = readString(value.type);
     if (type === "result") {
       status = value.is_error === true ? "failed" : "completed";
-      if (str(value.result)) textSource = "final";
+      if (readString(value.result)) textSource = "final";
       continue;
     }
     if (type === "assistant") {
@@ -239,22 +234,29 @@ function classifyClaudeFailure(
   if (streams.exitCode === 0) return undefined;
 
   const stderr = streams.stderr ?? "";
-  const surface = `${decoded.text}\n${stderr}`;
   const nowMs = streams.nowMs ?? Date.now();
-  const structuredText = decoded.errors.map((e) =>
-    `${e.code ?? ""} ${e.message}`
-  )
+  const structuredText = decoded.errors
+    .map((e) => `${e.code ?? ""} ${e.message}`)
     .join("\n");
-  const evidenceText = redactedEvidence(
-    [structuredText, stderr].filter(Boolean).join("\n"),
-  );
-  const httpStatus = extractHttpStatus(`${structuredText}\n${stderr}`);
-  const say = (headline: string) =>
-    evidenceText ? `${headline} — evidence: ${evidenceText}` : headline;
+  const cliSurface = `${structuredText}\n${stderr}`.trim();
+  // The CLI's *error* surface, never the agent's answer: a failed run whose
+  // prose merely quotes "429" or "usage limit reached" is quoting, not
+  // refusing (Issue #1695). The answer is consulted only when the CLI
+  // produced neither a structured error nor stderr — the compatibility path,
+  // where a refusal is all stdout ever carried — and never when the CLI's own
+  // `result` line called the run a success.
+  const surface = cliSurface
+    ? cliSurface
+    : decoded.status === "completed"
+    ? ""
+    : decoded.text;
+  const evidenceText = redactedEvidence(surface);
+  const httpStatus = extractHttpStatus(surface);
+  const say = (headline: string) => failureMessage(headline, evidenceText);
 
   // Memory first: a V8 heap abort's "heap limit" wording matches the
   // secondary rate-limit pattern, and waiting cannot reclaim memory.
-  if (detectOutOfMemory(`${decoded.text}\n${stderr}`)) {
+  if (detectOutOfMemory(surface)) {
     return agentFailure({
       category: "out-of-memory",
       message: say("The Claude CLI ran out of memory"),
@@ -334,7 +336,7 @@ function classifyClaudeFailure(
   // Transport before rate limit: an overloaded upstream matches the
   // rate-limit vocabulary but is not a limit on this account.
   if (
-    (httpStatus !== undefined && NETWORK_STATUSES.has(httpStatus)) ||
+    isNetworkStatus(httpStatus) ||
     NETWORK_RE.test(surface)
   ) {
     return agentFailure({

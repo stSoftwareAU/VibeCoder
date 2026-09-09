@@ -2591,9 +2591,19 @@ export async function runClaudeWithRetry(
     // Both streams are scanned (Issue #4237): a Node/V8 heap abort prints
     // its FATAL ERROR to STDERR, and scanning stdout alone misclassified
     // the agent's own heap ceiling as an external SIGKILL.
+    // The provider's own structured error messages join the scan surface
+    // (Issue #1695): a CLI whose refusal never reaches `output` — Codex says
+    // it in a `turn.failed` event, not in prose — would otherwise be read as
+    // an ordinary failure. Additive: for Claude the same words are already in
+    // `output`, so every existing classification is unchanged.
+    const structuredEvidence = (result.value.agentOutput?.errors ?? [])
+      .map((error) => error.message)
+      .join("\n");
+    const scanSurface = `${output}\n${stderr ?? ""}\n${structuredEvidence}`;
+
     if (
       exitCode !== 0 && !timedOut &&
-      detectOutOfMemory(`${output}\n${stderr ?? ""}`, errorScanTailLines)
+      detectOutOfMemory(scanSurface, errorScanTailLines)
     ) {
       currentOptions.logger?.warn(
         `Out of memory detected (exit code: ${exitCode}). Terminal — no retry, no wait.`,
@@ -2721,10 +2731,11 @@ export async function runClaudeWithRetry(
       // rate-limit pattern, which would otherwise route it into the
       // wait-and-retry loop. Fall back to the next-best model immediately,
       // with no wait.
-      // Both streams (Issue #4315): the CLI writes its refusals to stderr,
-      // and with no stream-json `result` line stdout is empty — scanning
-      // stdout alone made every stderr-only refusal an "unknown" failure.
-      const bothStreams = `${output}\n${stderr ?? ""}`;
+      // Both streams (Issue #4315) plus the provider's structured error
+      // messages (Issue #1695): the CLI writes its refusals to stderr, and
+      // with no stream-json `result` line stdout is empty — scanning stdout
+      // alone made every stderr-only refusal an "unknown" failure.
+      const bothStreams = scanSurface;
 
       // The CLI refused the session id (Issue #204) — checked first because it
       // is a start-up failure: the process died before any model call, so

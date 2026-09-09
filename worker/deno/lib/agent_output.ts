@@ -40,7 +40,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { redactSecrets } from "./secret_redaction.ts";
+import { redactedLineTail } from "./redacted_text.ts";
 import type { TokenUsage } from "./token_usage.ts";
 
 /** How the run ended, as the provider's own events reported it. */
@@ -62,7 +62,15 @@ export type AgentTextSource =
   | "partial"
   /** Output that is not the provider's event format at all, passed through. */
   | "raw"
-  /** No answer was found; the text is empty (never a JSON envelope). */
+  /**
+   * No answer was found in the provider's events.
+   *
+   * `text` is empty for an adapter that decodes its CLI's events; on the
+   * Claude compatibility path it may still hold the undecodable raw stream,
+   * because that is what the pre-existing extraction returned and no result
+   * may move. Either way this value is the caller's instruction: whatever is
+   * in `text`, it is **not** the agent's prose.
+   */
   | "none";
 
 /** The normalised failure categories every provider is classified into. */
@@ -138,6 +146,9 @@ export interface AgentStructuredError {
    * Fields this worker does not understand — a new `plan_type`, a vendor's
    * next schema addition — survive here rather than being dropped, so a
    * consumer can read them without the adapter being taught about them first.
+   *
+   * **Untrusted and unredacted**: it is the CLI's own bytes. Any sink that
+   * logs or posts it must redact it first ({@link redactedEvidence} does).
    */
   raw: Readonly<Record<string, unknown>>;
 }
@@ -254,6 +265,63 @@ export function isTerminalFailureCategory(
   return TERMINAL_CATEGORIES.has(category);
 }
 
+/** Read a string field, or undefined when it is absent or another type. */
+export function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+/** Read a finite number field, or undefined when it is neither. */
+export function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+/** Read a plain-object field, or undefined when it is absent or an array. */
+export function readObject(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+/**
+ * HTTP statuses that mean the transport failed, not the credential, the model
+ * or this account's allowance. Shared, so two adapters cannot disagree about
+ * what an overloaded upstream is.
+ */
+const NETWORK_STATUSES: ReadonlySet<number> = new Set([
+  500,
+  502,
+  503,
+  504,
+  529,
+]);
+
+/**
+ * Whether `status` is a transport failure rather than a decision about this
+ * request.
+ *
+ * @param status - The HTTP status, or undefined when none was reported.
+ * @returns True for a server/overload status.
+ */
+export function isNetworkStatus(status: number | undefined): boolean {
+  return status !== undefined && NETWORK_STATUSES.has(status);
+}
+
+/**
+ * A failure message: the headline, plus the redacted evidence when there is
+ * any. One helper, so every category of every provider words it the same way.
+ *
+ * @param headline - What happened, in the provider's voice.
+ * @param evidence - The already-redacted excerpt, or an empty string.
+ * @returns The operator-facing message.
+ */
+export function failureMessage(headline: string, evidence: string): string {
+  return evidence ? `${headline} — evidence: ${evidence}` : headline;
+}
+
 /** One decoded JSONL line. */
 export interface AgentJsonEvent {
   /** One-based line number in the raw stream, for evidence. */
@@ -321,9 +389,14 @@ export function redactedEvidence(
   text: string,
   maxLines: number = DEFAULT_EVIDENCE_LINES,
 ): string {
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (lines.length === 0) return "";
-  return redactSecrets(lines.slice(-maxLines).join("\n"));
+  if (!text.trim()) return "";
+  // Redact the whole text, then cut (Issue #1257): cutting first splits a
+  // credential, and the fragment left behind matches no signature rule.
+  const kept = redactedLineTail(text, maxLines)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return kept.join("\n");
 }
 
 /** HTTP statuses worth naming; anything else is not inferred from digits. */

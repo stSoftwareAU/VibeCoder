@@ -267,3 +267,40 @@ Deno.test("claude adapter - non-JSON output is reported as raw, never as a final
   assertEquals(decoded.textSource, "raw");
   assertEquals(decoded.status, "unknown");
 });
+
+Deno.test("claude adapter - a failed run's quoted limit is not a refusal when the CLI said otherwise", () => {
+  // The agent's answer quotes a usage limit; the CLI's own error says the
+  // quality gate failed. The quotation must not become the verdict.
+  const stdout = [
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: "00000000-0000-4000-8000-000000000009",
+      result:
+        "The gate output quoted `Claude AI usage limit reached|1788875400` and a 429 Too Many Requests.",
+    }),
+  ].join("\n");
+  const streams = {
+    stdout,
+    stderr: "the quality gate reported 2 failing tests",
+    exitCode: 1,
+  };
+
+  const failure = CLAUDE_OUTPUT_ADAPTER.classify(
+    streams,
+    CLAUDE_OUTPUT_ADAPTER.decode(stdout),
+  );
+
+  assertEquals(failure?.category, "task-failure");
+});
+
+Deno.test("claude adapter - an envelope-only stream is never reported as the agent's prose", () => {
+  const decoded = CLAUDE_OUTPUT_ADAPTER.decode(INVALID_SESSION);
+
+  // The raw stream is still passed through for compatibility, but the source
+  // says plainly that it is not an answer.
+  assertEquals(decoded.textSource, "none");
+  assertEquals(decoded.status, "failed");
+  assert(decoded.text.includes('"type":"result"'), "the raw stream is kept");
+});

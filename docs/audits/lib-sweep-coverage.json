@@ -935,6 +935,19 @@
       "paths": [
         "worker/deno/lib/gated_head_guard.ts"
       ]
+    },
+    {
+      "issue": 1695,
+      "chunk": "12m",
+      "title": "the agent output adapters",
+      "ledger": "docs/audits/security-sweep-1695-agent-output-adapters.md",
+      "definition": "modules added to lib/ after 12a-12l recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/agent_output.ts",
+        "worker/deno/lib/claude_output_adapter.ts",
+        "worker/deno/lib/codex_output_adapter.ts"
+      ]
     }
   ]
 }
