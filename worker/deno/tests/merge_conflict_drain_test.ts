@@ -474,6 +474,7 @@ Deno.test("drainConflictingPrs - an attempt the run ended stops the pass", async
         processed: false,
         merged: false,
         attemptCharged: false,
+        runEnded: true,
       });
     },
     now: () => 1_000_000,
@@ -484,4 +485,30 @@ Deno.test("drainConflictingPrs - an attempt the run ended stops the pass", async
   assertEquals(resolved, [1]);
   assertEquals(result.stopReason, "deadline");
   assertEquals(result.merged, 0);
+});
+
+Deno.test("drainConflictingPrs - an uncharged attempt that reached an answer does not stop the pass (Issue #1772)", async () => {
+  // A push a ruleset refused is uncharged too, but it says nothing about the
+  // run's remaining time. Stopping there would starve every other conflicting
+  // PR in the cycle under a log line naming the wrong cause.
+  const resolved: number[] = [];
+  const result = await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]),
+    acquireLease: alwaysLease,
+    resolve: (conflict) => {
+      resolved.push(conflict.prNumber);
+      return Promise.resolve({
+        processed: false,
+        merged: false,
+        attemptCharged: false,
+      });
+    },
+    now: () => 1_000_000,
+    deadlineEpochMs: 1_000_000 + 90 * 60 * 1000,
+    agentTimeoutMs: 30 * 60 * 1000,
+  });
+
+  assertEquals(resolved, [1, 2], "the queue is drained, not abandoned");
+  assertEquals(result.stopReason, "queue-empty");
 });

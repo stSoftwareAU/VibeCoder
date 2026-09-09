@@ -122,12 +122,21 @@ export interface ConflictResolutionOutcome {
   merged: boolean;
   /**
    * Explicitly `false` when the resolution opened an attempt and then
-   * withdrew it — the watchdog cut the agent short, so the kill was the
-   * worker's decision and must not spend the PR's budget (Issue #1693). Such
-   * a PR is still waiting, so its deferral streak stands, exactly as it does
-   * for an attempt that never got off the ground.
+   * withdrew it — the watchdog cut the agent short (Issue #1693), or a
+   * repository ruleset refused the push (Issue #1772). Either way the PR's
+   * budget is untouched. Recorded for the summary; what the drain steers on
+   * is {@link ConflictResolutionOutcome.runEnded}.
    */
   attemptCharged?: boolean;
+  /**
+   * Explicitly `true` when the withdrawal happened because the **run** was
+   * ending (Issue #1693). Only that withdrawal stops the pass: the PR is
+   * still waiting, so its deferral streak stands, exactly as it does for an
+   * attempt that never got off the ground. An uncharged attempt that ran to
+   * an answer — a ruleset-refused push — leaves the drain free to take the
+   * next PR (Issue #1772).
+   */
+  runEnded?: boolean;
 }
 
 /** A held repository lease, released when the attempt finishes. */
@@ -458,23 +467,28 @@ export async function drainConflictingPrs(
 
       try {
         const outcome = await resolve(next, grantFor());
-        if (outcome && outcome.attemptCharged !== false) {
+        if (outcome && outcome.runEnded !== true) {
           // The attempt ran, so the PR is not starved — whatever it then
           // concluded (Issue #1111). A `null` outcome is an attempt that never
           // got off the ground (a clone that would not set up, a branch that
           // is gone), and that PR is still waiting, so its streak stands. So
           // is an attempt the watchdog cut short (Issue #1693): it was
-          // withdrawn, spent nothing, and is still queued.
+          // withdrawn, spent nothing, and is still queued. A ruleset-refused
+          // push is not that (Issue #1772) — the PR got its full turn and
+          // reached an answer, so its streak clears like any other attempt.
           clearDeferral(state, conflictPrKey(next.repo, next.prNumber));
         }
         if (outcome) {
           processed = processed || outcome.processed;
           if (outcome.merged) merged++;
         }
-        if (outcome && outcome.attemptCharged === false) {
+        if (outcome && outcome.runEnded === true) {
           // The run itself ended under this attempt (Issue #1693). Taking the
           // next PR would open an attempt marker and withdraw it again, so
-          // the pass stops here and the queue keeps its place.
+          // the pass stops here and the queue keeps its place. Keyed on
+          // `runEnded`, never on "uncharged": a ruleset refusal is uncharged
+          // too and would otherwise starve every other conflicting PR in the
+          // cycle under a log line naming the wrong cause (Issue #1772).
           cutShort = true;
         }
       } finally {

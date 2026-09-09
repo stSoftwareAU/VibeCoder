@@ -35,6 +35,7 @@ import {
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
 import type { AbandonRestartRequest } from "../lib/conflict_abandon_restart.ts";
+import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type {
   ClaudeDeps,
@@ -111,6 +112,12 @@ interface GitScript {
   mergeBaseAfterDeepen: boolean;
   /** stderr of a failing merge (default: a content conflict). */
   mergeStderr?: string;
+  /** Error message `commitAndPushPending` fails with (default: it succeeds). */
+  commitPushError?: string;
+  /** Commits left unpushed after the push (default: 0 — a clean push). */
+  finalUnpushedCount?: number;
+  /** What `git push --dry-run` reports on stderr (Issue #1772). */
+  pushDryRunStderr?: string;
 }
 
 function makeGitScript(overrides?: Partial<GitScript>): GitScript {
@@ -187,6 +194,14 @@ function makeGit(
         });
       }
 
+      if (args[0] === "push" && args.includes("--dry-run")) {
+        const stderr = script.pushDryRunStderr ?? "";
+        return Promise.resolve({
+          ok: true,
+          value: { code: stderr === "" ? 0 : 1, stdout: "", stderr },
+        });
+      }
+
       if (args[0] === "grep") {
         return Promise.resolve({
           ok: true,
@@ -232,12 +247,18 @@ function makeGit(
     commitAndPushPending: ((..._args: unknown[]) => {
       captured.commitAndPushCalls++;
       captured.events.push("git:commitAndPushPending");
+      if (script.commitPushError !== undefined) {
+        return Promise.resolve({
+          ok: false,
+          error: new Error(script.commitPushError),
+        });
+      }
       return Promise.resolve({
         ok: true,
         value: {
           committedNewChanges: true,
           commitsPushed: 1,
-          finalUnpushedCount: 0,
+          finalUnpushedCount: script.finalUnpushedCount ?? 0,
         },
       });
     }) as unknown as GitDeps["commitAndPushPending"],
@@ -253,6 +274,8 @@ function makeGithub(
    * prints.
    */
   postedCommentId?: number,
+  /** Comment bodies already on the PR, as `gh pr view` would report them. */
+  existingPrComments: readonly string[] = [],
 ): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
@@ -304,6 +327,15 @@ function makeGithub(
           captured.labelsRemoved.push(endpoint.split("/labels/")[1] ?? "");
           captured.events.push("gh:label-remove");
         }
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        // The stand-down guard reads the thread before it comments, and an
+        // unreadable thread posts nothing (Issue #1772).
+        return Promise.resolve(
+          JSON.stringify({
+            comments: existingPrComments.map((body) => ({ body })),
+          }),
+        );
       }
       if (args[0] === "label" && args[1] === "list") {
         return Promise.resolve("[]");
@@ -370,6 +402,8 @@ async function runProcessor(
     claudeResult?: Partial<ClaudeRunResult>;
     /** Id `gh pr comment` reports for each posted comment (Issue #1693). */
     postedCommentId?: number;
+    /** Comment bodies already on the PR (Issue #1772). */
+    existingPrComments?: string[];
   },
 ): Promise<{
   captured: Captured;
@@ -396,7 +430,11 @@ async function runProcessor(
 
   const deps = createMockDeps({
     git: makeGit(script, captured),
-    github: makeGithub(captured, opts?.postedCommentId),
+    github: makeGithub(
+      captured,
+      opts?.postedCommentId,
+      opts?.existingPrComments ?? [],
+    ),
     claude: makeClaude(
       captured,
       opts?.claudeDelayMs ?? 0,
@@ -1285,6 +1323,11 @@ Deno.test("processMergeConflict - a watchdog SIGTERM withdraws the attempt inste
 
   assert(result.ok);
   assertEquals(result.value.attemptCharged, false);
+  assertEquals(
+    result.value.runEnded,
+    true,
+    "the drain stops on this withdrawal, and only on this one",
+  );
   assertEquals(result.value.merged, false);
   assertEquals(result.value.escalated, false);
   assertEquals(result.value.processed, false);
@@ -1398,4 +1441,202 @@ Deno.test("buildRuleResolutionSection - a manifest resolution still explains the
   ).join("\n");
 
   assertStringIncludes(section, "higher published version");
+});
+
+// ---------------------------------------------------------------------------
+// A ruleset-refused push spends no attempt (Issue #1772)
+// ---------------------------------------------------------------------------
+
+/** A logger that records every line, so a "not charged" claim is checkable. */
+function makeRecordingLogger(lines: string[]): Logger {
+  const record = (message: string, _context?: LogContext) => {
+    lines.push(message);
+  };
+  return {
+    ...makeSilentLogger(),
+    info: record,
+    warn: record,
+    error: record,
+  };
+}
+
+Deno.test("processMergeConflict - a push refused by a ruleset spends no attempt (Issue #1772)", async () => {
+  // GH013 recurs identically on every run for as long as the rule stands, so
+  // charging it burned the PR's budget on a push that could never land.
+  const lines: string[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      commitPushError:
+        "Failed to push unpushed commits: remote: error: GH013: Repository " +
+        "rule violations found for refs/heads/issue-16-fix.\n" +
+        "remote: - 2 of 2 required status checks are expected.",
+    }),
+    { logger: makeRecordingLogger(lines) },
+    { postedCommentId: 7001 },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(
+    result.value.runEnded,
+    undefined,
+    "a ruleset refusal says nothing about the run's time — the drain carries on",
+  );
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, false);
+
+  // The attempt marker is withdrawn, so the next scan counts zero attempts.
+  assertEquals(captured.commentsDeleted, [7001]);
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_FAILED_MARKER)),
+    [],
+    "a ruleset refusal must post no failed conclusion",
+  );
+  assert(
+    lines.some((line) =>
+      line.includes("not charged: push rejected by ruleset")
+    ),
+    `the refusal must be named in the log; got ${JSON.stringify(lines)}`,
+  );
+});
+
+Deno.test("processMergeConflict - a ruleset refusal reported by the dry run also spends no attempt (Issue #1772)", async () => {
+  // The other shape: the push helper returned ok but left commits unpushed,
+  // and only the dry run names the rule.
+  const lines: string[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      finalUnpushedCount: 1,
+      pushDryRunStderr:
+        "remote: error: GH013: Repository rule violations found for " +
+        "refs/heads/issue-16-fix.\nremote: - Changes must be made through a " +
+        "pull request.",
+    }),
+    { logger: makeRecordingLogger(lines) },
+    { postedCommentId: 7002 },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(captured.commentsDeleted, [7002]);
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_FAILED_MARKER)),
+    [],
+  );
+  assert(
+    lines.some((line) =>
+      line.includes("not charged: push rejected by ruleset")
+    ),
+  );
+});
+
+Deno.test("processMergeConflict - an ordinary push failure is still charged (Issue #1772)", async () => {
+  // The boundary: only a rule violation is uncharged. A network fault is the
+  // failure it always was, conclusion and all.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      commitPushError:
+        "Failed to push unpushed commits: fatal: unable to access origin: " +
+        "Could not resolve host: github.com",
+    }),
+    undefined,
+    { postedCommentId: 7003 },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, undefined);
+  assertEquals(captured.commentsDeleted, []);
+  const failed = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER)
+  );
+  assertEquals(failed.length, 1);
+  assertStringIncludes(failed[0] ?? "", "commit/push failed");
+});
+
+// ---------------------------------------------------------------------------
+// A milestone head is left to the milestone sync (Issue #1772)
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - a milestone head is left to the milestone sync (Issue #1772)", async () => {
+  // GRQ#4702's shape. The every-cycle sync owns `default -> milestone/*`, so
+  // running the ladder here would duplicate that merge and race its push.
+  resetGatedHeadReportsForTest();
+  const lines: string[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput({ branchName: "milestone/1730-resolve-merge-conflicts" }),
+    makeGitScript(),
+    { logger: makeRecordingLogger(lines) },
+    { postedCommentId: 7004 },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, false);
+
+  // No merge ran and no attempt was opened.
+  assertEquals(captured.agentRuns, 0);
+  assertEquals(captured.commitAndPushCalls, 0);
+  assertEquals(
+    captured.gitArgs.filter((args) => args[0] === "merge"),
+    [],
+    "no merge is attempted on a milestone head",
+  );
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_ATTEMPT_MARKER)),
+    [],
+    "no attempt marker is posted, so no attempt is spent",
+  );
+
+  // One stand-down comment naming the sync, and one skip log line.
+  assertEquals(captured.comments.length, 1);
+  assertStringIncludes(captured.comments[0] ?? "", "milestone branch sync");
+  assertStringIncludes(
+    captured.comments[0] ?? "",
+    '<!-- vibe-milestone-head branch="milestone/1730-resolve-merge-conflicts" -->',
+  );
+  assertEquals(
+    lines.filter((line) =>
+      line.includes(
+        "skipped: milestone head — resolved by the milestone branch sync",
+      )
+    ).length,
+    1,
+  );
+});
+
+Deno.test("processMergeConflict - the milestone stand-down comments once per branch (Issue #1772)", async () => {
+  // A PR already carrying the marker is left silent: one comment per branch,
+  // not one per run.
+  resetGatedHeadReportsForTest();
+  const input = makeInput({ branchName: "milestone/1730-already-told" });
+  const marker =
+    '<!-- vibe-milestone-head branch="milestone/1730-already-told" -->';
+  const { captured } = await runProcessor(
+    input,
+    makeGitScript(),
+    undefined,
+    { postedCommentId: 7005, existingPrComments: [marker] },
+  );
+
+  assertEquals(captured.comments, []);
+});
+
+Deno.test("processMergeConflict - a non-milestone head is worked as before (Issue #1772)", async () => {
+  // The boundary: an ordinary feature head still merges, pushes and concludes.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    undefined,
+    { postedCommentId: 7006 },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(captured.commitAndPushCalls, 1);
+  assertEquals(captured.commentsDeleted, []);
+  assert(captured.comments.some((c) => c.includes(CONFLICT_ATTEMPT_MARKER)));
 });
