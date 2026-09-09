@@ -576,6 +576,10 @@ Deno.test({
         }),
       );
 
+      // An explicit environment, as every other case in this suite spawns
+      // with (Issue #1656): inheriting the runner's own carried the worker
+      // image's `CONFIG_PATH` alongside this `CONFIG_FILE`, and setup.ps1
+      // rightly refuses two config variables that disagree.
       const proc = await new Deno.Command(PWSH!, {
         args: [
           "-NoProfile",
@@ -584,7 +588,8 @@ Deno.test({
           SETUP_PS1,
           "-ListRepos",
         ],
-        env: { ...Deno.env.toObject(), CONFIG_FILE: configPath },
+        env: { PATH: "/usr/bin:/bin", HOME: dir, CONFIG_FILE: configPath },
+        clearEnv: true,
         stdout: "piped",
         stderr: "piped",
       }).output();
@@ -618,9 +623,12 @@ Deno.test({
       );
 
       const run = async (...args: string[]) => {
+        // Explicit environment, never the runner's (Issue #1656) — see the
+        // -ListRepos case above.
         const proc = await new Deno.Command(PWSH!, {
           args: ["-NoProfile", "-NonInteractive", "-File", SETUP_PS1, ...args],
-          env: { ...Deno.env.toObject(), CONFIG_FILE: configPath },
+          env: { PATH: "/usr/bin:/bin", HOME: dir, CONFIG_FILE: configPath },
+          clearEnv: true,
           stdout: "piped",
           stderr: "piped",
         }).output();
