@@ -714,7 +714,9 @@ Deno.test("processMergeConflict - 'refusing to merge unrelated histories' is a c
   assertEquals(result.value.merged, false);
   assertEquals(result.value.escalated, true, result.value.summary);
   assertEquals(
-    captured.comments.some((c) => c.includes(`attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed`)),
+    captured.comments.some((c) =>
+      c.includes(`attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed`)
+    ),
     false,
     "the refusal must not be posted as a failed attempt",
   );
@@ -879,7 +881,10 @@ Deno.test("processMergeConflict - a failed attempt posts an explicit conclusion"
 
   const conclusion = captured.comments.at(-1) ?? "";
   assertStringIncludes(conclusion, CONFLICT_FAILED_MARKER);
-  assertStringIncludes(conclusion, `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed`);
+  assertStringIncludes(
+    conclusion,
+    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed`,
+  );
   assertStringIncludes(conclusion, "conflict markers");
   assertStringIncludes(conclusion, "SECURITY.md");
 });

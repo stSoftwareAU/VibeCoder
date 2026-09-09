@@ -227,12 +227,43 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
-    ...(deferUntil && !Number.isNaN(Date.parse(deferUntil))
-      ? { deferUntil }
-      : {}),
+    // An unparseable deferral is kept, not dropped: dropping it would read a
+    // corrupt value as "no cooldown applies", which is the permissive
+    // direction on a safety bound. `isConflictAttemptDue` refuses it instead,
+    // and the next tip move clears it.
+    ...(deferUntil ? { deferUntil } : {}),
     ...(syncedSha ? { lastSyncedDefaultSha: syncedSha } : {}),
     ...(rollbacks !== undefined ? { rollbacks } : {}),
   };
+}
+
+/**
+ * Drop `deferUntil` when `defaultSha` is a tip the deferral was not set
+ * against (Issue #1766).
+ *
+ * The invariant every writer keeps: a live `deferUntil` always paces the
+ * branch against the tip in `lastAttempt.defaultSha`. Any observation of a
+ * different tip — a sync recording it, or a later attempt concluding against
+ * it — is what clears the deferral, because the conflict being paced is no
+ * longer the conflict in front of the branch.
+ *
+ * Only a tip that has been seen before can be observed to have moved: with no
+ * recorded tip the deferral stands, since dropping it would hand the branch
+ * straight back and spend the whole budget inside one cooldown.
+ */
+function clearDeferralIfTipMoved(
+  entry: SyncStreakEntry,
+  defaultSha: string | undefined,
+): SyncStreakEntry {
+  const previous = entry.lastSyncedDefaultSha ?? entry.lastAttempt?.defaultSha;
+  if (
+    defaultSha === undefined || previous === undefined ||
+    previous === defaultSha
+  ) {
+    return entry;
+  }
+  const { deferUntil: _deferred, ...rest } = entry;
+  return rest;
 }
 
 /**
@@ -273,8 +304,15 @@ export function concludeConflictAttempt(
 ): SyncStreakEntry {
   const { attemptOpenedAt: _opened, ...rest } = entry;
   const charged = outcome === "failed";
+  const paced = charged
+    ? rest
+    // An uncharged conclusion against a tip the failure never saw is an
+    // observation that the tip has moved, so it clears the deferral the same
+    // way `recordDefaultSha` does. Without this the ledger would keep pacing
+    // the branch against a conflict that no longer exists.
+    : clearDeferralIfTipMoved(rest, defaultSha);
   return {
-    ...rest,
+    ...paced,
     conflictAttempts: (entry.conflictAttempts ?? 0) + (charged ? 1 : 0),
     lastAttempt: {
       at: new Date(nowMs).toISOString(),
@@ -346,10 +384,8 @@ export function recordDefaultSha(
   entry: SyncStreakEntry,
   defaultSha: string,
 ): SyncStreakEntry {
-  const moved = entry.lastSyncedDefaultSha !== defaultSha;
-  const { deferUntil: _deferred, ...rest } = entry;
   return {
-    ...(moved ? rest : entry),
+    ...clearDeferralIfTipMoved(entry, defaultSha),
     lastSyncedDefaultSha: defaultSha,
   };
 }
@@ -359,18 +395,14 @@ export function recordDefaultSha(
  *
  * Success is the only thing that refills the budget: the conflict this branch
  * was spending attempts on is over. The lifetime {@link
- * SyncStreakEntry.rollbacks} count and the last synced tip survive — they
- * describe the branch's history, not the conflict that just ended.
+ * SyncStreakEntry.rollbacks} count, the last synced tip and the
+ * {@link SyncStreakEntry.lastAttempt} audit record survive — they describe
+ * the branch's history, not the budget that has just been refilled.
  */
 export function resetConflictLedgerOnSuccess(
   entry: SyncStreakEntry,
 ): SyncStreakEntry {
-  const {
-    attemptOpenedAt: _opened,
-    lastAttempt: _last,
-    deferUntil: _deferred,
-    ...rest
-  } = entry;
+  const { attemptOpenedAt: _opened, deferUntil: _deferred, ...rest } = entry;
   return { ...rest, conflictAttempts: 0 };
 }
 

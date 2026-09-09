@@ -3212,7 +3212,8 @@ itself — one constant, two consumers, so the two ladders cannot drift apart
 A PR carries its attempt history in marker comments on the PR; a milestone
 branch has nowhere to write one, so the ledger is persisted per branch in
 `milestone_sync_failures.json` beside the failure streak and survives worker
-restarts. Each entry carries `conflictAttempts` (concluded failures),
+restarts. The ledger and the rules below are the **state and the pure helpers**;
+the milestone sync pass is wired to charge them by Issue #1778. Each entry carries `conflictAttempts` (concluded failures),
 `attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
 (`at`, `outcome`, `reason`, `defaultSha`), `deferUntil`, `lastSyncedDefaultSha`
 and `rollbacks`. Every field is optional and every malformed field is dropped,
@@ -3231,13 +3232,19 @@ Four rules decide what the ledger does, and each is a pure helper:
   to now + `DEFAULT_CONFLICT_COOLDOWN_HOURS`. Without it a conflict that fails
   identically against an unmoved default tip is re-attempted on every
   30-second cycle and the whole budget is gone in 90 seconds.
-- **A moved tip clears the deferral, never the count.** `recordDefaultSha`
-  drops `deferUntil` when the default tip moves — the conflict to be resolved
-  is a new one — but leaves `conflictAttempts` alone. Resetting on a tip move
-  would refill the budget faster than a busy default branch could let the
-  ladder spend it, and an unresolvable conflict would retry for ever.
-  `isConflictAttemptDue` reads the pair: due when the tip has moved since the
-  last concluded attempt, or when the deferral has passed.
+- **A moved tip clears the deferral, never the count.** A live `deferUntil`
+  always paces the branch against one tip — the one the failure ran against —
+  so *any* observation of a different tip clears it: `recordDefaultSha` when
+  the sync records the new tip, and `concludeConflictAttempt` when an
+  uncharged attempt concludes against it. `conflictAttempts` is left alone
+  either way: resetting on a tip move would refill the budget faster than a
+  busy default branch could let the ladder spend it, and an unresolvable
+  conflict would retry for ever. `isConflictAttemptDue` reads the pair — due
+  when the tip has moved since the last concluded attempt, or when the
+  deferral has passed. A `deferUntil` that does not parse is refused rather
+  than ignored, at load time as well as in memory: reading corruption as "no
+  cooldown applies" is the permissive direction on a safety bound, and the
+  next tip move clears it anyway.
 - **Only success zeroes it.** `resetConflictLedgerOnSuccess` is the one thing
   that returns `conflictAttempts` to zero and clears the deferral; the
   lifetime `rollbacks` count survives, because it describes the branch rather

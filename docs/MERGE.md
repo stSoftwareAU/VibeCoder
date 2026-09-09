@@ -725,7 +725,9 @@ only then does a human hear about it.
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
 constant, two consumers — so the PR ladder and the milestone ladder cannot
-drift apart.
+drift apart. The per-branch ledger that records what a milestone branch has
+spent lands with it; the sync pass is wired to charge that ledger by
+Issue #1778.
 
 What does and does not spend an attempt:
 

@@ -184,7 +184,10 @@ Deno.test("sync streaks - no streakPath means no tracking and no comment (Issue 
 // ---------------------------------------------------------------------------
 
 Deno.test("conflict ledger - the budget is the one the PR ladder spends (Issue #1766)", () => {
-  assertEquals(MILESTONE_CONFLICT_ATTEMPT_BUDGET, DEFAULT_MAX_CONFLICT_ATTEMPTS);
+  assertEquals(
+    MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    DEFAULT_MAX_CONFLICT_ATTEMPTS,
+  );
   assertEquals(MILESTONE_CONFLICT_ATTEMPT_BUDGET, 3);
 });
 
@@ -227,7 +230,11 @@ Deno.test("conflict ledger - only a concluded failure is charged (Issue #1766)",
     "sha-x",
     Date.parse("2026-09-11T00:05:00Z"),
   );
-  assertEquals(entry.conflictAttempts, 1, "a not-charged attempt is not charged");
+  assertEquals(
+    entry.conflictAttempts,
+    1,
+    "a not-charged attempt is not charged",
+  );
 });
 
 Deno.test("conflict ledger - exhaustion counts concluded failures only (Issue #1766)", () => {
@@ -305,8 +312,57 @@ Deno.test("conflict ledger - a moved tip clears the deferral but not the count (
   );
   assertEquals(moved.deferUntil, undefined, "a moved tip clears the deferral");
 
-  const same = recordDefaultSha(failed, failed.lastSyncedDefaultSha ?? "sha-x");
+  // The unmoved tip is the case the pacing depends on: recording the tip the
+  // attempt just failed against must leave the cooldown running, even on the
+  // first recording, when `lastSyncedDefaultSha` is still unset.
+  assertEquals(failed.lastSyncedDefaultSha, undefined);
+  const same = recordDefaultSha(failed, "sha-x");
   assertEquals(same.conflictAttempts, 2);
+  assertEquals(same.deferUntil, failed.deferUntil, "the cooldown still runs");
+  assert(
+    !isConflictAttemptDue(same, "sha-x", failedAt + 30_000),
+    "an unmoved tip is not re-attempted 30 seconds later",
+  );
+
+  // And once the tip has been recorded, a later move clears it as before.
+  const thenMoved = recordDefaultSha(same, "sha-y");
+  assertEquals(thenMoved.deferUntil, undefined);
+  assertEquals(thenMoved.conflictAttempts, 2);
+});
+
+Deno.test("conflict ledger - an uncharged conclusion on a moved tip clears the deferral (Issue #1766)", () => {
+  const failedAt = Date.parse("2026-09-09T00:00:00Z");
+  const failed = concludeConflictAttempt(
+    { count: 0, escalated: false },
+    "failed",
+    "conflict",
+    "sha-x",
+    failedAt,
+  );
+
+  // Same tip: the cooldown set for it still stands.
+  const stillX = concludeConflictAttempt(
+    openConflictAttempt(failed, failedAt + 60_000),
+    "disrupted",
+    "the cycle ended",
+    "sha-x",
+    failedAt + 120_000,
+  );
+  assertEquals(stillX.deferUntil, failed.deferUntil);
+  assert(!isConflictAttemptDue(stillX, "sha-x", failedAt + 180_000));
+
+  // A different tip: the conflict being paced is not the one in front of the
+  // branch any more, so the deferral goes even though nothing was charged.
+  const onY = concludeConflictAttempt(
+    openConflictAttempt(failed, failedAt + 60_000),
+    "disrupted",
+    "the cycle ended",
+    "sha-y",
+    failedAt + 120_000,
+  );
+  assertEquals(onY.deferUntil, undefined);
+  assertEquals(onY.conflictAttempts, 1, "and nothing was charged");
+  assert(isConflictAttemptDue(onY, "sha-y", failedAt + 180_000));
 });
 
 Deno.test("conflict ledger - only success zeroes the ledger (Issue #1766)", () => {
@@ -330,7 +386,11 @@ Deno.test("conflict ledger - only success zeroes the ledger (Issue #1766)", () =
   assertEquals(reset.conflictAttempts, 0);
   assertEquals(reset.deferUntil, undefined);
   assertEquals(reset.attemptOpenedAt, undefined);
-  assertEquals(reset.lastAttempt, undefined);
+  assertEquals(
+    reset.lastAttempt,
+    spent.lastAttempt,
+    "the audit record of the last attempt survives the reset",
+  );
   assert(!isConflictBudgetExhausted(reset));
   assertEquals(reset.rollbacks, 2, "the lifetime rollback count survives");
   assertEquals(reset.lastSyncedDefaultSha, "sha-x");
@@ -367,6 +427,49 @@ Deno.test("conflict ledger - a pre-change streak file loads as zero attempts (Is
   }
 });
 
+Deno.test("conflict ledger - a malformed ledger field is never trusted (Issue #1766)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = milestoneSyncStreakPath(dir);
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        "o/r|milestone/x": {
+          count: 1,
+          escalated: false,
+          conflictAttempts: "two",
+          attemptOpenedAt: 17,
+          deferUntil: "not a timestamp",
+          lastAttempt: { at: "2026-09-09T00:00:00.000Z", outcome: "invented" },
+          rollbacks: "many",
+        },
+      }),
+    );
+    const entry = (await loadSyncStreaks(path))["o/r|milestone/x"];
+    assert(entry, "the rest of the entry still loads");
+    assertEquals(entry.count, 1);
+    assertEquals(entry.conflictAttempts, undefined);
+    assertEquals(entry.attemptOpenedAt, undefined);
+    assertEquals(entry.rollbacks, undefined);
+    assertEquals(
+      entry.lastAttempt,
+      undefined,
+      "an outcome outside the three the ledger knows is not kept",
+    );
+    assertEquals(
+      entry.deferUntil,
+      "not a timestamp",
+      "an unparseable deferral is kept, never read as 'no cooldown applies'",
+    );
+    assert(
+      !isConflictAttemptDue(entry, "sha-x", Date.now()),
+      "a corrupt persisted deferral holds the branch back",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("conflict ledger - a full ledger survives a save/load round trip (Issue #1766)", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -376,6 +479,12 @@ Deno.test("conflict ledger - a full ledger survives a save/load round trip (Issu
     entry = openConflictAttempt(entry, at);
     entry = concludeConflictAttempt(entry, "failed", "conflict", "sha-x", at);
     entry = recordDefaultSha(entry, "sha-x");
+    // Re-open an attempt so the open marker and the live deferral — the two
+    // fields a conclusion would otherwise have cleared — are both persisted.
+    entry = openConflictAttempt(entry, at + 60_000);
+    assert(
+      entry.deferUntil !== undefined && entry.attemptOpenedAt !== undefined,
+    );
 
     await saveSyncStreaks(path, { "o/r|milestone/x": entry });
     const back = (await loadSyncStreaks(path))["o/r|milestone/x"];

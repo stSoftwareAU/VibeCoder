@@ -56,7 +56,7 @@ flowchart TD
     Disrupted -->|Yes| Human
     Disrupted -->|No| Lock{"PR lock acquired?"}
     Lock -->|No — another host holds it| Sleep
-    Lock -->|Yes| Record["Comment: attempt N of 2<br/>(names any disruption)"]
+    Lock -->|Yes| Record["Comment: attempt N of 3<br/>(names any disruption)"]
     Record --> Merge["git merge origin/base"]
     Merge --> Clean{"Clean merge?"}
     Clean -->|Yes| Push["Commit and push"]
@@ -303,12 +303,14 @@ settle still reaches no agent and now consults no issue either.
   escalated to a human as its own outcome — a re-initialised or rewritten
   branch, not a conflict the agent failed to resolve — and spends **no**
   attempt.
-- **One attempt per PR per 4 hours**, at most **2 concluded attempts**.
+- **One attempt per PR per 4 hours**, at most **3 concluded attempts**
+  (Issue #1766 — the first attempt and two retries against a base that has
+  moved on since; milestone branches spend the same budget).
 - The attempt is recorded as a marker comment on the PR **before** the merge
   starts. That marker *opens* the attempt; it does not spend it.
 - Every attempt posts a **conclusion**: a resolved marker when the merge lands,
   or a failure comment naming the conflicted files and what went wrong. Only a
-  conclusion spends one of the two attempts.
+  conclusion spends one of the three attempts.
 - History lives on the PR, not in host-local state, so the bounds hold across
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
@@ -629,7 +631,7 @@ Three bounds keep the drain from becoming a monopoly:
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
-The per-PR budgets are unchanged: the 4-hour cooldown, the two concluded
+The per-PR budgets are unchanged: the 4-hour cooldown, the three concluded
 attempts, and the abandon rung with `needs-human` behind it are the scan's, and
 the drain only decides how many of the PRs already due get taken now.
 
@@ -642,7 +644,8 @@ because that was all the cycle had left, a 3600-second agent timeout granted out
 of it, and at 11m13s and 83 tool calls the watchdog SIGTERMed an agent that was
 still editing. The pass then read the half-merged tree as *the agent's* verdict
 — `attempt 1 of 2`, "the agent left 6 path(s) unmerged" — and spent one of the
-PR's two attempts on a budget it never had.
+PR's attempts on a budget it never had. (The budget was two at the time; it is
+three now, Issue #1766.)
 
 Two halves now hold, both in `worker/deno/lib/merge_conflict_drain.ts`:
 
@@ -739,7 +742,7 @@ flowchart TD
   twice. Any attempt or conclusion ends the streak the marker belongs to.
 
 **A deferral is not an attempt.** Nothing was started, so it spends neither the
-two concluded attempts nor the three disrupted ones — reusing the disruption
+three concluded attempts nor the three disrupted ones — reusing the disruption
 counter would escalate a PR to a human for a bound it never hit, the opposite
 of what this is for. The `scope=drain` summary carries `maxDeferralStreak`,
 `leftBehind` and `deferralNotices`, so "deferred once, fine" and "deferred nine
