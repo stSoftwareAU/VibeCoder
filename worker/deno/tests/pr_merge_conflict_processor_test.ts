@@ -1323,6 +1323,11 @@ Deno.test("processMergeConflict - a watchdog SIGTERM withdraws the attempt inste
 
   assert(result.ok);
   assertEquals(result.value.attemptCharged, false);
+  assertEquals(
+    result.value.runEnded,
+    true,
+    "the drain stops on this withdrawal, and only on this one",
+  );
   assertEquals(result.value.merged, false);
   assertEquals(result.value.escalated, false);
   assertEquals(result.value.processed, false);
@@ -1473,6 +1478,11 @@ Deno.test("processMergeConflict - a push refused by a ruleset spends no attempt 
 
   assert(result.ok);
   assertEquals(result.value.attemptCharged, false);
+  assertEquals(
+    result.value.runEnded,
+    undefined,
+    "a ruleset refusal says nothing about the run's time — the drain carries on",
+  );
   assertEquals(result.value.merged, false);
   assertEquals(result.value.escalated, false);
 

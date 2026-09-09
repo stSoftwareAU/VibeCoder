@@ -44,6 +44,9 @@ export const SYNC_BRANCH_PREFIX = "sync/milestone";
 export function isRuleViolationPush(stderr: string): boolean {
   const text = stderr.toLowerCase();
   return text.includes("repository rule violations") ||
+    // GH013 is *the* ruleset-violation code, and git does not always print
+    // the prose alongside it (Issue #1772).
+    text.includes("gh013") ||
     text.includes("push declined") ||
     text.includes("protected branch") ||
     text.includes("required status checks are expected");

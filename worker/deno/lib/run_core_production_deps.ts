@@ -2212,9 +2212,14 @@ export async function createProductionRunCoreDeps(
             processed: result.value.processed,
             merged: result.value.merged,
             // Issue #1693: a watchdog kill is not the PR's failure, so the
-            // drain must not treat the attempt as one that ran.
+            // drain must not treat the attempt as one that ran. Issue #1772:
+            // `runEnded` is what stops the drain — an uncharged attempt that
+            // reached an answer does not.
             ...(result.value.attemptCharged !== undefined
               ? { attemptCharged: result.value.attemptCharged }
+              : {}),
+            ...(result.value.runEnded !== undefined
+              ? { runEnded: result.value.runEnded }
               : {}),
           };
         },

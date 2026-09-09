@@ -731,8 +731,10 @@ What each pass does with a `milestone/**` head:
   GH013. That refusal recurs identically every run, so the pass posts no
   `vibe-coder:merge-conflict-failed` conclusion: it withdraws the attempt
   marker, logs `not charged: push rejected by ruleset`, and the next scan
-  counts zero attempts. Every other push failure — a race, a network fault — is
-  charged exactly as before.
+  counts zero attempts. The drain carries on to the next conflicting PR — only
+  a withdrawal made because the **run** was ending (`runEnded`) stops the pass,
+  so one gated PR cannot starve the cycle. Every other push failure — a race, a
+  network fault — is charged exactly as before.
 
 A claim that the fix was pushed is now made against the remote in all three
 passes: the spelling pass adopted `verifyPushLanded()`

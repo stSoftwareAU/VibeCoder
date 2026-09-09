@@ -126,13 +126,23 @@ export interface MergeConflictResult {
   /** Human-readable summary. */
   summary: string;
   /**
-   * Explicitly `false` when this pass opened an attempt and then withdrew it
-   * (Issue #1693): the watchdog SIGTERMed the agent because the cycle ended,
-   * which is the worker's decision and not the PR's fault, so the attempt
-   * marker is deleted and the PR's budget is untouched. Absent everywhere
-   * else — those paths either concluded their attempt or never opened one.
+   * Explicitly `false` when this pass opened an attempt and then withdrew it:
+   * the watchdog SIGTERMed the agent because the cycle ended (Issue #1693),
+   * or a repository ruleset refused the push (Issue #1772). Neither is the
+   * PR's fault, so the attempt marker is deleted and the PR's budget is
+   * untouched. Absent everywhere else — those paths either concluded their
+   * attempt or never opened one.
    */
   attemptCharged?: boolean;
+  /**
+   * Explicitly `true` when the withdrawal happened because **the run itself**
+   * was ending (Issue #1693) — the one withdrawal the drain must stop on,
+   * because taking the next PR would open an attempt marker and withdraw it
+   * again. Kept apart from {@link MergeConflictResult.attemptCharged}
+   * (Issue #1772): a ruleset refusal is also uncharged, but it says nothing
+   * about the run's remaining time, so the drain carries on to the next PR.
+   */
+  runEnded?: boolean;
 }
 
 /** Dependencies for {@link processMergeConflict}. */
@@ -1480,6 +1490,7 @@ async function withdrawCutShortAttempt(
       merged: false,
       escalated: false,
       attemptCharged: false,
+      runEnded: true,
       summary:
         `Merge-conflict resolution on PR #${prNumber} was cut short by ` +
         `the run ending — the attempt was withdrawn, not spent`,
