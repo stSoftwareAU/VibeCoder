@@ -74,6 +74,7 @@ import {
   PR_ESCALATION_NEXT_STEP,
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
+import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
@@ -364,6 +365,33 @@ export async function processCiFailure(
   const { repo, prNumber, checkName } = input;
   const { logger, deps, workerId } = processorDeps;
   const ghFn = processorDeps.ghCommandFn ?? deps.github.runGhCommand;
+
+  // Issue #1774: the PR was selected from a listing up to 10 minutes old, and
+  // the very next step posts the lock comment. Re-read the live state first,
+  // so a PR closed since the listing costs one `pr view` rather than a lock, a
+  // comment, an agent run and a push. An unreadable state skips this cycle —
+  // no retry is recorded and no attempt is charged, so the next scan retries.
+  const liveState = await guardPrStillOpen({
+    repo,
+    prNumber,
+    pass: "CI fix",
+    gh: ghFn,
+    logger,
+  });
+  if (!liveState.open) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: 0,
+        retryCount: 0,
+        summary: `PR #${prNumber} (${checkName}) — ${
+          prLiveSkipReason(liveState)
+        }`,
+      },
+    };
+  }
 
   if (workerId === undefined || workerId.length === 0) {
     logger.warn(

@@ -40,6 +40,7 @@ import type {
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
+import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -120,6 +121,7 @@ function makeMockGh(
   options: { issueCommentsJson: string; reviewCommentsJson: string },
 ): GitHubDeps["runGhCommand"] {
   return (args: string[]): Promise<string> => {
+    if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
     if (args[0] === "pr" && args[1] === "comment") {
       const bodyIdx = args.indexOf("--body");
       if (bodyIdx >= 0) {

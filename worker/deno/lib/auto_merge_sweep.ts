@@ -24,6 +24,7 @@
  */
 
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
+import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 import type { EnableAutoMergeResult } from "./pr_auto_merge.ts";
 
@@ -53,6 +54,17 @@ export interface SweepAutoMergeOptions {
     repo: string,
     authors: readonly string[],
   ) => Promise<readonly SweepablePr[]>;
+  /**
+   * Re-read the PR's live state at the claim point (Issue #1774).
+   *
+   * The listing this sweep walks is cached for up to ten minutes, and
+   * `attemptMerge` writes to the PR. A PR closed since the listing is skipped;
+   * so is one whose state cannot be read, which is never assumed open.
+   */
+  prLiveState: (
+    repo: string,
+    pr: SweepablePr,
+  ) => Promise<PrLiveStateReading>;
   /** Attempt the merge for one PR. */
   attemptMerge: (
     repo: string,
@@ -82,6 +94,13 @@ export interface SweepAutoMergeSummary {
    * "the sweep refused everything" must never read the same in the log.
    */
   reposWithNoCandidates: string[];
+  /**
+   * PRs the live-state re-read stood the sweep down on (Issue #1774) —
+   * closed, merged, or unreadable. Counted apart from `prsAttempted` so a
+   * sweep that attempted nothing because everything had already landed does
+   * not read like a sweep that found nothing at all.
+   */
+  prsSkippedNotOpen: number;
 }
 
 /**
@@ -99,6 +118,7 @@ export async function sweepAutoMerge(
     isRepoAllowed,
     fleetAuthors,
     listOpenPrs,
+    prLiveState,
     attemptMerge,
     recordOutcome,
     invalidateOpenPrCache,
@@ -109,6 +129,7 @@ export async function sweepAutoMerge(
     reposVisited: [],
     prsAttempted: 0,
     reposWithNoCandidates: [],
+    prsSkippedNotOpen: 0,
   };
   const authors = fleetAuthors.join(", ");
   // Issue #1515: one quota exhaustion is one line, not one per repository.
@@ -156,6 +177,24 @@ export async function sweepAutoMerge(
 
       let mutated = false;
       for (const pr of prs) {
+        // Issue #1774: one live `pr view` before the merge attempt. A PR
+        // closed or merged since the cached listing gets no further write,
+        // and an unreadable state is skipped this cycle rather than assumed
+        // open — the next sweep asks again. Deliberately outside the try
+        // below: a state read that failed is not "the merge attempt threw",
+        // and reporting it as one would name the wrong cause.
+        let reading: PrLiveStateReading;
+        try {
+          reading = await prLiveState(repo, pr);
+        } catch (err) {
+          reading = { unknown: true, error: errorMessage(err) };
+        }
+        if (!reading.open) {
+          summary.prsSkippedNotOpen++;
+          logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
+          continue;
+        }
+
         try {
           const outcome = await attemptMerge(repo, pr);
           recordOutcome(repo, pr.number, outcome);

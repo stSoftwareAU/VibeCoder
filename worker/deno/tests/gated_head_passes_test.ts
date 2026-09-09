@@ -24,6 +24,7 @@ import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 import type { ClaudeDeps, GitHubDeps } from "../lib/issue_worker_wiring.ts";
+import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const GATED_HEAD = "milestone/4690-bug-sampler-enospc";
@@ -56,6 +57,7 @@ interface Observed {
 function makeDeps(observed: Observed) {
   const mockGithub: Partial<GitHubDeps> = {
     runGhCommand: (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
       observed.ghCalls.push(args);
       const joined = args.join(" ");
       if (joined.includes("rules/branches")) {

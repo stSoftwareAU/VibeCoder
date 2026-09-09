@@ -15,7 +15,10 @@ import {
   processCiFailure,
   resolveCiCheckStateDir,
 } from "../lib/pr_ci_processor.ts";
-import { recordCiCheckRetry } from "../lib/pr_ci_checks.ts";
+import {
+  getCiCheckRetryCount,
+  recordCiCheckRetry,
+} from "../lib/pr_ci_checks.ts";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -35,6 +38,12 @@ import {
   heartbeatStrays,
   trackHeartbeatDirs,
 } from "./support/heartbeat_placement.ts";
+import {
+  isPrLiveStateRead,
+  openPrGh,
+  prWriteCalls,
+  recordingStateGh,
+} from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -141,7 +150,7 @@ Deno.test("processCiFailure - succeeds with mock Claude output", async () => {
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -199,7 +208,7 @@ Deno.test("processCiFailure - the heartbeat and milestone state land in the work
     };
     const deps = createMockDeps({
       claude: mockClaude,
-      github: { runGhCommand: () => Promise.resolve("") },
+      github: { runGhCommand: openPrGh() },
       git: {
         commitAndPushPending: (() =>
           Promise.resolve({
@@ -271,6 +280,7 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
     const ghCalls: string[][] = [];
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         ghCalls.push(args);
         return Promise.resolve("");
       },
@@ -285,6 +295,7 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
       workRoot: tmpDir,
       maxCiRetries: 3,
       ghCommandFn: (args: string[]) => {
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         ghCalls.push(args);
         return Promise.resolve("");
       },
@@ -314,7 +325,7 @@ Deno.test("processCiFailure - increments retry count", async () => {
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -376,7 +387,7 @@ Deno.test("processCiFailure - a PR branch another worktree holds spends no retry
     };
     const deps = createMockDeps({
       claude: mockClaude,
-      github: { runGhCommand: () => Promise.resolve("") },
+      github: { runGhCommand: openPrGh() },
       git: {
         // The holder is not one of this host's lane worktrees, so nothing
         // is detached and the branch stays held for this cycle.
@@ -459,7 +470,7 @@ Deno.test("processCiFailure - starts and stops heartbeat during processing", asy
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -532,7 +543,7 @@ Deno.test("processCiFailure - stops heartbeat even when Claude fails", async () 
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -586,7 +597,7 @@ Deno.test("processCiFailure - handles Claude failure", async () => {
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({ claude: mockClaude, github: mockGithub });
 
@@ -625,7 +636,7 @@ Deno.test("processCiFailure - pushes commits even when Claude output is empty (I
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -685,7 +696,7 @@ Deno.test("processCiFailure - reports push failure when commits remain unpushed 
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -792,7 +803,7 @@ Deno.test("processCiFailure - pushes commits after Claude makes changes (Issue #
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -867,7 +878,7 @@ Deno.test("processCiFailure - checks out PR branch before running Claude (Issue 
       }) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -956,6 +967,7 @@ Deno.test("processCiFailure - uses .pr_response_message as comment body when pre
     };
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         if (args[0] === "pr" && args[1] === "comment") {
           const bodyIdx = args.indexOf("--body");
           if (bodyIdx >= 0) {
@@ -1024,6 +1036,7 @@ Deno.test("processCiFailure - falls back to default message when .pr_response_me
     };
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         if (args[0] === "pr" && args[1] === "comment") {
           const bodyIdx = args.indexOf("--body");
           if (bodyIdx >= 0) {
@@ -1096,7 +1109,7 @@ Deno.test("processCiFailure - recovers from push rejection and reports success (
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -1175,6 +1188,7 @@ Deno.test("processCiFailure - reports accurate failure when push cannot be recov
     };
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         if (args[0] === "pr" && args[1] === "comment") {
           const bodyIdx = args.indexOf("--body");
           if (bodyIdx >= 0) {
@@ -1258,7 +1272,7 @@ Deno.test("processCiFailure - reports no changes when Claude does nothing (Issue
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,
@@ -1351,7 +1365,7 @@ Deno.test("processCiFailure - skips quality check when no uncommitted changes (I
       }) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     // All status calls return empty (no uncommitted changes)
     const { runGitCommand, calls } = makeGitMock(["", "", ""]);
@@ -1427,7 +1441,7 @@ Deno.test("processCiFailure - runs quality check and commits uncommitted changes
       }) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     // Status returns uncommitted changes before quality, then still uncommitted
     // after quality (e.g., Claude wrote the fix but did not commit), so the
@@ -1521,7 +1535,7 @@ Deno.test("processCiFailure - retries Claude when quality check fails (Issue #14
       }) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     // Status returns uncommitted changes on both pre- and post-quality checks
     const { runGitCommand, calls } = makeGitMock([
@@ -1725,7 +1739,7 @@ Deno.test("processCiFailure - injects the clone's CLAUDE.md into the prompt (Iss
           });
         }) as unknown as ClaudeDeps["runClaudeWithRetry"],
       },
-      github: { runGhCommand: () => Promise.resolve("") },
+      github: { runGhCommand: openPrGh() },
       git: {
         commitAndPushPending: (() =>
           Promise.resolve({
@@ -1776,7 +1790,7 @@ Deno.test("processCiFailure - warns when the checkout directory is missing (Issu
             value: { output: "Fixed CI", exitCode: 0, timedOut: false },
           })) as unknown as ClaudeDeps["runClaudeWithRetry"],
       },
-      github: { runGhCommand: () => Promise.resolve("") },
+      github: { runGhCommand: openPrGh() },
       git: {
         commitAndPushPending: (() =>
           Promise.resolve({
@@ -1809,5 +1823,131 @@ Deno.test("processCiFailure - warns when the checkout directory is missing (Issu
     );
   } finally {
     await Deno.remove(workRoot, { recursive: true });
+  }
+});
+
+// ============================================================================
+// Issue #1774 — the cached listing is not proof the PR is still open
+// ============================================================================
+
+Deno.test("processCiFailure - a PR closed since the cached listing gets no push, comment or label (Issue #1774)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "ci_fix_closed_" });
+  try {
+    const ghCalls: string[][] = [];
+    let claudeRuns = 0;
+    let pushes = 0;
+    const deps = createMockDeps({
+      github: { runGhCommand: recordingStateGh(ghCalls, "CLOSED") },
+      claude: {
+        runClaudeWithRetry: (() => {
+          claudeRuns++;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "fixed", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      git: {
+        commitAndPushPending: (() => {
+          pushes++;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: true,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          });
+        }) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const messages: string[] = [];
+    const logger = makeSilentLogger();
+    logger.info = (message: string) => {
+      messages.push(message);
+    };
+
+    const result = await processCiFailure(makeInput({ prNumber: 1732 }), {
+      promptsDir: PROMPTS_DIR,
+      logger,
+      deps,
+      stateDir,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      workerId: "test-host-abcdef",
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, false);
+      assertEquals(result.value.changesPushed, false);
+      assertStringIncludes(result.value.summary, "skipped: PR closed");
+    }
+    assertEquals(claudeRuns, 0, "no agent runs against a closed PR");
+    assertEquals(pushes, 0, "no push lands on a closed PR");
+    assertEquals(
+      prWriteCalls(ghCalls),
+      [],
+      `a closed PR must receive no comment or label; got ${
+        JSON.stringify(prWriteCalls(ghCalls))
+      }`,
+    );
+    assertEquals(
+      messages.some((m) => m.includes("skipped: PR closed")),
+      true,
+      `expected the skip line; got: ${messages.join(" | ")}`,
+    );
+    // The lock is taken after the check, so no lock comment was posted either.
+    assertEquals(ghCalls.length, 1, "one live state read and nothing else");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - an unreadable PR state skips the cycle without spending a retry (Issue #1774)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "ci_fix_unknown_" });
+  try {
+    let claudeRuns = 0;
+    const deps = createMockDeps({
+      github: {
+        runGhCommand: ((args: string[]) =>
+          isPrLiveStateRead(args)
+            ? Promise.reject(new Error("gh: connection reset"))
+            : Promise.resolve("")) as GitHubDeps["runGhCommand"],
+      },
+      claude: {
+        runClaudeWithRetry: (() => {
+          claudeRuns++;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "fixed", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+    });
+    const stateDir = `${tmpDir}/.ci_check_state`;
+
+    const result = await processCiFailure(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      workerId: "test-host-abcdef",
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, false);
+      assertStringIncludes(result.value.summary, "skipped: PR state unknown");
+    }
+    assertEquals(claudeRuns, 0, "unknown is never treated as open");
+    // No retry was charged: the counter is untouched, so the next scan gets
+    // the full budget rather than one attempt fewer.
+    assertEquals(await getCiCheckRetryCount(stateDir, "org/repo", "67890"), 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
   }
 });
