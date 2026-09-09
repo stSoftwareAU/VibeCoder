@@ -35,7 +35,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { routeIdleTaskInProcessIssue } from "../lib/idle_task_process_issue_route.ts";
+import {
+  IDLE_TASK_RUNWAY_DECLINED_MESSAGE,
+  routeIdleTaskInProcessIssue,
+} from "../lib/idle_task_process_issue_route.ts";
 import type { HandleIdleTaskIssueResult } from "../lib/idle_task_claim_handler.ts";
 import { IDLE_TASK_FAILURE_COMMENT_PREFIX } from "../lib/idle_task_wrapper_closure.ts";
 import type { IdleTaskTemplate } from "../lib/idle_task_template.ts";
@@ -432,6 +435,9 @@ Deno.test(
       { ...WRAPPER_INPUT, cycleDeadlineEpochMs: deadline },
       {
         logger,
+        // Issue #1757: judged against a clock 20 min before the deadline, so
+        // the claim-runway floor lets the claim through.
+        nowFn: () => deadline - 20 * 60_000,
         handleIdleTaskFn: (opts) => {
           seenDeadline = opts.cycleDeadlineEpochMs;
           return Promise.resolve({ handled: true, ok: true, summary: "ran" });
@@ -543,5 +549,142 @@ Deno.test(
     assertEquals(cloned, false);
     assertEquals(scanned, false);
     assertEquals(ghCalls, []);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The claim-runway floor (Issue #1757)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - with 60 s of cycle left the claim is declined before any work (Issue #1757)",
+  async () => {
+    const { logger, records } = makeLogger();
+    const ghCalls: string[][] = [];
+    const now = 1_700_000_000_000;
+    let claimAttempted = false;
+    let cloned = false;
+    let scanned = false;
+
+    const outcome = await routeIdleTaskInProcessIssue(
+      { ...WRAPPER_INPUT, cycleDeadlineEpochMs: now + 60_000 },
+      {
+        logger,
+        nowFn: () => now,
+        claimRouteFn: () => {
+          claimAttempted = true;
+          return okClaim();
+        },
+        ensureCloneFn: () => {
+          cloned = true;
+          return okClone();
+        },
+        handleIdleTaskFn: () => {
+          scanned = true;
+          return Promise.resolve({ handled: true, ok: true, summary: "ran" });
+        },
+        ghCommandFn: (args) => {
+          ghCalls.push(args);
+          return Promise.resolve("");
+        },
+      },
+    );
+
+    // Declined as a lost claim of the route's own kind: a skip upstream,
+    // never a failure, and nothing touched on GitHub.
+    assert("claimLost" in outcome && outcome.claimLost === true);
+    assertEquals(outcome.routed, true);
+    assertEquals(outcome.success, false);
+    assertEquals(outcome.claimReason, "insufficient_runway");
+    assertStringIncludes(outcome.claimDetail, "below the 600s floor");
+    assertEquals(claimAttempted, false);
+    assertEquals(cloned, false);
+    assertEquals(scanned, false);
+    assertEquals(ghCalls, []);
+
+    // Exactly one line, naming the shortfall.
+    const declined = records.filter((r) =>
+      r.message === IDLE_TASK_RUNWAY_DECLINED_MESSAGE
+    );
+    assertEquals(declined.length, 1);
+    const ctx = declined[0]!.context as Record<string, unknown>;
+    assertEquals(ctx.repo, "owner/widget");
+    assertEquals(ctx.issueNumber, 2726);
+    assertEquals(ctx.floorSeconds, 600);
+    assert(typeof ctx.budgetSeconds === "number" && ctx.budgetSeconds < 600);
+  },
+);
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - with 20 min of cycle left the wrapper is claimed and the bound applies as today",
+  async () => {
+    const { logger, records } = makeLogger();
+    const now = 1_700_000_000_000;
+    let claimAttempted = false;
+    let deadlineSeen: number | undefined;
+
+    const outcome = await routeIdleTaskInProcessIssue(
+      { ...WRAPPER_INPUT, cycleDeadlineEpochMs: now + 20 * 60_000 },
+      {
+        logger,
+        nowFn: () => now,
+        claimRouteFn: () => {
+          claimAttempted = true;
+          return okClaim();
+        },
+        ensureCloneFn: okClone,
+        handleIdleTaskFn: (input) => {
+          deadlineSeen = input.cycleDeadlineEpochMs;
+          return Promise.resolve({ handled: true, ok: true, summary: "ran" });
+        },
+        ghCommandFn: () => Promise.resolve(""),
+      },
+    );
+
+    assertEquals(outcome, { routed: true, success: true });
+    assertEquals(claimAttempted, true);
+    // The deadline still reaches the claim handler, so Issue #186's bound
+    // is applied to the scan exactly as before.
+    assertEquals(deadlineSeen, now + 20 * 60_000);
+    assertEquals(
+      records.filter((r) => r.message === IDLE_TASK_RUNWAY_DECLINED_MESSAGE)
+        .length,
+      0,
+    );
+  },
+);
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - a non-wrapper is never judged against the floor",
+  async () => {
+    const { logger, records } = makeLogger();
+    const now = 1_700_000_000_000;
+
+    const outcome = await routeIdleTaskInProcessIssue(
+      {
+        ...WRAPPER_INPUT,
+        issueTitle: "Fix the date parser to handle ISO-8601 inputs",
+        issueLabels: ["bug"],
+        issueBody: "The parser drops the timezone offset.",
+        cycleDeadlineEpochMs: now + 60_000,
+      },
+      {
+        logger,
+        nowFn: () => now,
+        handleIdleTaskFn: () => Promise.resolve({ handled: false }),
+        ensureCloneFn: okClone,
+        claimRouteFn: okClaim,
+        ghCommandFn: () => Promise.resolve(""),
+      },
+    );
+
+    // Falls through to the standard pipeline, whose own runway floor
+    // (Issue #397) judges an issue claim against the supervisor hard cap.
+    assertEquals(outcome, { routed: false });
+    assertEquals(
+      records.filter((r) => r.message === IDLE_TASK_RUNWAY_DECLINED_MESSAGE)
+        .length,
+      0,
+    );
   },
 );
