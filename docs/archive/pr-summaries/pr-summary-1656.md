@@ -98,8 +98,7 @@ flowchart LR
   and a measured cost (11s / 3s) — reviewer: met
 - **unrequested** — prose updated in `CODING-STANDARDS.md`, `CONTRIBUTING.md`,
   `docs/CONTAINER.md`, `lib/container_manifest.ts`, `lib/unit_test_passes.ts`,
-  `lib/pr_check_contexts.ts` and two `validate-scripts.yml` comments —
-  reviewer: unrequested — reason: each asserted "the `setup.ps1` suites stay
+  `lib/pr_check_contexts.ts` — reviewer: unrequested — reason: each asserted "the `setup.ps1` suites stay
   excluded" or named "the three `run.ps1` suites", which the placement
   decision falsifies; a code change owes the docs change in the same diff
 - **unrequested** — the assertion in
@@ -128,10 +127,13 @@ corrected (after this change no PowerShell suite is left to CI alone).
   `docs/CONTAINER.md:136`, `CONTRIBUTING.md:105` — reason: rewrapped to the
   surrounding ~78-column wrapping in this diff
 - **violation** — stale CI comment a code change owes a docs change —
-  evidence: `.github/workflows/validate-scripts.yml:482` — reason: the shard
-  job's comment claimed no `pwsh` suite runs there; corrected, along with the
-  integration job's PowerShell step message, which named suites that no longer
-  run in it
+  evidence: `.github/workflows/validate-scripts.yml:482` — reason: stands.
+  The shard job's comment claims no `pwsh` suite runs there, which has been
+  wrong since #1598 and is wider now. The fix was written and then reverted:
+  this run's token has no `workflow` scope, so a push carrying that file is
+  rejected outright. Comment-only, and no behaviour depends on it — the
+  prerequisite is enforced by `pwsh_suites_in_the_gate_test.ts` inside the
+  shards, which fails loud on a runner without PowerShell
 - **minor** — a 90-column JSDoc line — evidence:
   `worker/deno/lib/integration_test_manifest.ts:109` — reason: rewrapped
 - **clean** — classification machinery matches the `run.ps1` precedent
