@@ -188,12 +188,9 @@ answer for nothing.
 (Issue #1776).** A milestone that has completed nothing still drifts against a
 default branch taking ~27 commits a day, so the sync sweeps every open milestone
 and spends no GraphQL call at all; its cadence signal is
-`git rev-parse origin/<default>`, which bills against no API budget whatever.
-The ranking the gate taught still holds, with a third rung above it:
-
-1. Answer the question from the cheaper budget (REST over GraphQL).
-2. Answer it from no budget at all — local git, or a persisted observation.
-3. Best of the three: establish that the question never needed asking.
+`git rev-parse`, which bills against no API budget whatever. The cheapest
+version of this optimisation is always the one where the question turns out not
+to need asking at all.
 
 Two properties made that gate safe where a TTL over the closed-issue list would
 not have been, and they are what the next such gate should copy:

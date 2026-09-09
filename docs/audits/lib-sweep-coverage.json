@@ -264,7 +264,6 @@
         "worker/deno/lib/merge_conflict_stall_watchdog.ts",
         "worker/deno/lib/merge_landing.ts",
         "worker/deno/lib/merged_sweep_watermark.ts",
-        "worker/deno/lib/milestone_activity_gate.ts",
         "worker/deno/lib/milestone_branch_self_heal.ts",
         "worker/deno/lib/milestone_branch_sync.ts",
         "worker/deno/lib/milestone_children_gate.ts",
@@ -981,6 +980,17 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/pr_live_state.ts"
+      ]
+    },
+    {
+      "issue": 1776,
+      "chunk": "12q",
+      "title": "the milestone-sync cadence tip",
+      "ledger": "docs/audits/security-sweep-1776-milestone-default-tip.md",
+      "definition": "modules added to lib/ after 12a-12p recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_default_tip.ts"
       ]
     }
   ]

@@ -45,6 +45,8 @@ interface CadenceOptions {
   streakPath: string;
   /** Default tip as git reports it; `undefined` means it could not be read. */
   defaultSha?: string;
+  /** Milestone branch keys whose ledger entries should survive the sweep. */
+  expectPruned?: string[];
   /** Milestones the REST listing returns. */
   milestones?: Array<{ title: string; number: number; closed_issues?: number }>;
   /** False makes every sync fail. */
@@ -74,7 +76,15 @@ function cadenceDeps(
       }
       return Promise.resolve("[]");
     },
-    defaultTipShaFn: () => Promise.resolve(options.defaultSha),
+    defaultTipShaFn: () =>
+      Promise.resolve(
+        options.defaultSha
+          ? { ok: true as const, value: options.defaultSha }
+          : {
+            ok: false as const,
+            error: new Error("local 'main' could not be read"),
+          },
+      ),
     syncBranchFn: (_repo, milestoneBranch) => {
       recorded.synced.push(milestoneBranch);
       return succeed
@@ -262,6 +272,53 @@ Deno.test(
         "sha-a",
         "with no tip to record, the last known one stands",
       );
+      assert(
+        recorded.logs.some((line) =>
+          line.includes("Could not read the tip") &&
+          line.includes("could not be read")
+        ),
+        `the reason git gave must reach the log, got ${
+          JSON.stringify(recorded.logs)
+        }`,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranches - a closed milestone's ledger entry does not outlive it (Issue #1776)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1776-prune-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      await saveSyncStreaks(streakPath, {
+        [KEY]: { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" },
+        // This milestone has since closed: the listing no longer returns it.
+        "owner/repo|milestone/999-done": {
+          count: 0,
+          escalated: false,
+          lastSyncedDefaultSha: "sha-a",
+        },
+        // Another repo's entry is not this repo's to judge.
+        "owner/other|milestone/5-elsewhere": { count: 2, escalated: false },
+      });
+
+      const recorded = recorder();
+      await syncMilestoneBranches(
+        cadenceDeps({ streakPath, defaultSha: "sha-b" }, recorded),
+      );
+
+      const streaks = await loadSyncStreaks(streakPath);
+      assertEquals(
+        Object.keys(streaks).sort(),
+        [
+          "owner/other|milestone/5-elsewhere",
+          KEY,
+        ].sort(),
+      );
+      assertEquals(streaks[KEY]?.lastSyncedDefaultSha, "sha-b");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

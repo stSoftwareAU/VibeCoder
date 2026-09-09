@@ -46,6 +46,7 @@ import {
   loadSyncStreaks,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   recordDefaultSha,
+  resetConflictLedgerOnSuccess,
   saveSyncStreaks,
   type SyncStreakEntry,
   type SyncStreaks,
@@ -92,15 +93,15 @@ export type LocalCloneExistsFn = (repo: string) => Promise<boolean>;
  * Function signature for reading the default branch's tip as local git sees
  * it (Issue #1776).
  *
- * The cadence gate spends this instead of an API call: one
- * `git rev-parse origin/<default>` after the fetch that makes the ref
- * current. `undefined` means the tip could not be read — the gate then syncs
- * rather than reading an unknown tip as "unchanged".
+ * The cadence gate spends this instead of an API call: `git rev-parse` after
+ * the fetch that makes the ref current. A failure carries the reason git gave
+ * — the gate then logs it and syncs, rather than reading an unknown tip as
+ * "unchanged".
  */
 export type DefaultTipShaFn = (
   repo: string,
   defaultBranch: string,
-) => Promise<string | undefined>;
+) => Promise<Result<string>>;
 
 /** An active milestone discovered from the GitHub API. */
 export interface ActiveMilestone {
@@ -359,10 +360,11 @@ async function readDefaultTip(
   log: (message: string) => void,
 ): Promise<string | undefined> {
   if (!defaultTipShaFn) return undefined;
-  let reason = "git reported no commit";
+  let reason: string;
   try {
-    const sha = (await defaultTipShaFn(repo, defaultBranch))?.trim();
-    if (sha) return sha;
+    const tip = await defaultTipShaFn(repo, defaultBranch);
+    if (tip.ok) return tip.value;
+    reason = tip.error.message;
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err);
   }
@@ -393,18 +395,36 @@ function recordSuccess(
   reportedSha: string | undefined,
 ): boolean {
   const existing = streaks[streakKey];
-  const carried = existing?.lastSyncedDefaultSha;
+
+  // What a success does to the conflict budget is the ledger's own rule
+  // (Issue #1766): `resetConflictLedgerOnSuccess` zeroes the attempts and
+  // drops the open marker and the deferral, while `rollbacks`, `lastAttempt`
+  // and the last synced tip survive as history. Restating it here would be a
+  // second definition of the same transition.
+  const {
+    gateEscalated: _gate,
+    analysisEscalatedSha: _analysis,
+    conflictEscalatedSha: _conflict,
+    ...ledger
+  } = resetConflictLedgerOnSuccess(existing ?? { count: 0, escalated: false });
+
+  // The failure streak ends here too (Issue #4260), and the escalation flags
+  // go with it — a branch that fails again later must be able to report it.
+  // Only the reported-conflict marker is carried forward, by the caller.
   let next: SyncStreakEntry = {
+    ...ledger,
     count: 0,
     escalated: false,
     ...(reportedSha ? { conflictEscalatedSha: reportedSha } : {}),
-    // With no tip to record, the last one known still stands.
-    ...(carried ? { lastSyncedDefaultSha: carried } : {}),
   };
   if (defaultSha) next = recordDefaultSha(next, defaultSha);
 
-  // An entry carrying neither a marker nor a tip holds nothing worth keeping.
-  if (!next.conflictEscalatedSha && !next.lastSyncedDefaultSha) {
+  // An entry holding nothing but a zeroed streak says nothing worth keeping.
+  const worthKeeping = Boolean(
+    next.conflictEscalatedSha || next.lastSyncedDefaultSha ||
+      next.lastAttempt || next.rollbacks,
+  );
+  if (!worthKeeping) {
     if (!existing) return false;
     delete streaks[streakKey];
     return true;
@@ -492,12 +512,29 @@ export async function syncMilestoneBranches(
         )
         : undefined;
 
+      // Entries now outlive a success because they carry the synced tip
+      // (Issue #1776), so a milestone that has since closed would leave its
+      // entry behind for ever. This repo's listing is authoritative about
+      // which of its branches are still open, so anything else it owns goes.
+      if (streakPath) {
+        const live = new Set(
+          milestonesResult.value.map((m) => `${repo}|${m.milestoneBranch}`),
+        );
+        for (const key of Object.keys(streaks)) {
+          if (key.startsWith(`${repo}|`) && !live.has(key)) {
+            delete streaks[key];
+            streaksDirty = true;
+          }
+        }
+      }
+
       for (const milestone of milestonesResult.value) {
         const streakKey = `${repo}|${milestone.milestoneBranch}`;
 
         // Cadence guard (Issue #1776): the branch already carries this tip,
-        // so there is nothing to merge down. Checked before the branch probe
-        // so an idle cycle costs no API call at all.
+        // so there is nothing to merge down. Checked before the branch probe,
+        // so an idle cycle spends no per-milestone API call — only the one
+        // REST milestone listing the repo needed anyway.
         if (!shouldSyncMilestone(streaks[streakKey], defaultSha)) {
           log(
             `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +

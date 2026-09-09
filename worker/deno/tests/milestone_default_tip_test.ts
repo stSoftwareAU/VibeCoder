@@ -9,7 +9,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { readLocalDefaultTip } from "../lib/milestone_default_tip.ts";
 
 /** Run git in `cwd`, returning its exit code and stdout. */
@@ -62,7 +62,8 @@ Deno.test("readLocalDefaultTip - reports origin's tip (Issue #1776)", async () =
     const expected = (await git(["rev-parse", "HEAD"], seed)).stdout;
 
     const tip = await readLocalDefaultTip("main", clone);
-    assertEquals(tip, expected);
+    assert(tip.ok, "the tip must be readable in a healthy clone");
+    assertEquals(tip.value, expected);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
@@ -75,6 +76,7 @@ Deno.test(
     try {
       const { seed, clone } = await clonePair(tmp);
       const before = await readLocalDefaultTip("main", clone);
+      assert(before.ok);
 
       // A new commit lands on the default branch the clone has not fetched.
       await Deno.writeTextFile(`${seed}/README.md`, "seed\nmore\n");
@@ -84,8 +86,12 @@ Deno.test(
 
       // The reader fetches before it reads, so the move is visible at once.
       const after = await readLocalDefaultTip("main", clone);
-      assertEquals(after, pushed);
-      assert(before !== after, "the tip must be seen to have moved");
+      assert(after.ok);
+      assertEquals(after.value, pushed);
+      assert(
+        before.value !== after.value,
+        "the tip must be seen to have moved",
+      );
     } finally {
       await Deno.remove(tmp, { recursive: true });
     }
@@ -93,14 +99,13 @@ Deno.test(
 );
 
 Deno.test(
-  "readLocalDefaultTip - an unreadable clone answers undefined, not a guess (Issue #1776)",
+  "readLocalDefaultTip - an unreadable clone fails with a reason, not a guess (Issue #1776)",
   async () => {
     const tmp = await Deno.makeTempDir({ prefix: "issue-1776-no-clone-" });
     try {
-      assertEquals(
-        await readLocalDefaultTip("main", `${tmp}/never-cloned`),
-        undefined,
-      );
+      const tip = await readLocalDefaultTip("main", `${tmp}/never-cloned`);
+      assert(!tip.ok, "a clone that is not there cannot report a tip");
+      assertStringIncludes(tip.error.message, "main");
     } finally {
       await Deno.remove(tmp, { recursive: true });
     }
@@ -113,10 +118,51 @@ Deno.test(
     const tmp = await Deno.makeTempDir({ prefix: "issue-1776-unsafe-ref-" });
     try {
       const { clone } = await clonePair(tmp);
-      assertEquals(
-        await readLocalDefaultTip("--upload-pack=touch /tmp/pwned", clone),
-        undefined,
+      const tip = await readLocalDefaultTip(
+        "--upload-pack=touch /tmp/pwned",
+        clone,
       );
+      assert(!tip.ok, "an unsafe ref component must be refused");
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "readLocalDefaultTip - a local ref that could not be moved is a loud failure, not the remote tip (Issue #1776)",
+  async () => {
+    const tmp = await Deno.makeTempDir({ prefix: "issue-1776-stuck-ref-" });
+    try {
+      const { seed, clone } = await clonePair(tmp);
+      const stale = (await git(["rev-parse", "main"], clone)).stdout;
+
+      // Another worktree holds `main`, so `ensureDefaultBranchCurrent`'s
+      // `git branch -f main origin/main` is refused — while it still reports
+      // success (Issue #394). The clone itself sits on a feature branch.
+      assertEquals(
+        (await git(["checkout", "-q", "-b", "feature"], clone)).code,
+        0,
+      );
+      assertEquals(
+        (await git(["worktree", "add", `${tmp}/held`, "main"], clone)).code,
+        0,
+      );
+
+      // The default branch moves on the remote.
+      await Deno.writeTextFile(`${seed}/README.md`, "seed\nmoved\n");
+      await git(["commit", "-am", "moved"], seed);
+      assertEquals((await git(["push", "origin", "main"], seed)).code, 0);
+      const pushed = (await git(["rev-parse", "HEAD"], seed)).stdout;
+
+      const tip = await readLocalDefaultTip("main", clone);
+      assert(
+        !tip.ok,
+        "a tip the merge cannot reach must never be reported as the tip",
+      );
+      assertStringIncludes(tip.error.message, "could not be moved");
+      assertStringIncludes(tip.error.message, stale.slice(0, 7));
+      assertStringIncludes(tip.error.message, pushed.slice(0, 7));
     } finally {
       await Deno.remove(tmp, { recursive: true });
     }

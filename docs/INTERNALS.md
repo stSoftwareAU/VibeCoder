@@ -3064,12 +3064,13 @@ commits a day, and it was exactly the branch nobody was watching; so every
 rather than merely gated. The one exclusion stays: an idle-task milestone never
 carries a branch (Issue #2125), so it is filtered before the branch probe.
 
-#### ⏱️ The merge-down happens on closure, and a conflict is reported that day
+#### ⏱️ The merge-down happens on the cycle the tip moves, and a conflict is reported that day
 
 Divergence cost grows superlinearly: one day of drift is a fast-forward, three
 days is a merge, a week is an archaeology exercise because by then the two
-sides have solved the same problem twice. Two behaviours keep the window
-narrow (Issue #1558).
+sides have solved the same problem twice. Two behaviours keep the window narrow
+— the cadence below (Issue #1776, which replaced the closure-driven trigger of
+Issue #1558) and the conflict triage after it.
 
 **Cadence.** The sync runs every 30-second cycle at priority 1.72, and syncs
 every open milestone branch on every cycle in which the **default tip moved**
@@ -3081,6 +3082,14 @@ than the clock. The signal is one
 the fetch `ensureDefaultBranchCurrent` performs anyway — compared against the
 `lastSyncedDefaultSha` in each branch's ledger entry. It costs nothing against
 either API budget.
+
+The tip reported is the one the **merge** will use — the local `<default>` ref —
+and only when it agrees with `origin/<default>`. `ensureDefaultBranchCurrent`
+moves that local ref with an unchecked `git branch -f`, which git refuses when
+another worktree has the branch checked out (Issue #394) while still reporting
+success; recording the remote tip there would claim a merge-down that never
+happened and park the branch until the next push. The disagreement is therefore
+a loud failure, and a loud failure syncs.
 
 Only a **successful** sync records the tip, so a failure is retried on the next
 cycle rather than waited out (subject to the ledger's own attempt pacing,
