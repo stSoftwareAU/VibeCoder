@@ -3043,7 +3043,7 @@ reads the sides and applies the decision), not resolved towards the default
 branch on sight (Issue #1559). Taking one side wholesale is a decision nobody
 made — the branch's version of every conflicting file is replaced — and
 escalating the whole merge asks a person to choose between two changes they did
-not write. Three rules decide what is mechanical:
+not write. Four rules decide what is mechanical:
 
 - **One side subsumes the other** — every line of the smaller side survives in
   the larger, so the larger is taken. Checked first: it needs no evidence about
@@ -3056,6 +3056,13 @@ not write. Three rules decide what is mechanical:
   churn and answers "incomparable" every time. Prose that merely mentions an
   issue number is not read as a claim to have fixed it, or two unrelated
   commits discussing #1216 would look like one fix landing twice.
+- **Both sides only appended** — every line of the merge base survives on both
+  sides, so nothing was deleted and the file is merged as a **union** with the
+  default branch's addition first (Issue #1768). This is the append-only ledger
+  shape — `CHANGELOG.md`, `docs/RELEASE-NOTES.md`, the audit ledgers under
+  `docs/audits/` — measured as the second-largest conflict class on the
+  milestone branches. A base that was not read decides nothing, and a `.json`
+  ledger whose union does not parse escalates rather than being written.
 - **Two designs for the same problem** — `IndirectSpawnRules` (#1378) against
   `scanContentForVariableBinarySpawn` (#1227) — neither contains the other, so
   the merge is **aborted** and a human chooses. The escalation carries the
@@ -3741,7 +3748,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)                                       | Gates the sync's closed-issue query on the cheap REST `closed_issues` count, so an unchanged milestone costs no GraphQL call                                                          |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
-|                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union — and prepares both sides for a human when no rule can settle it                                    |
+|                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |
 |                             | [milestone_conflict_git.ts](../worker/deno/lib/milestone_conflict_git.ts)                                         | Reads both sides out of the conflicted index, gathers the per-issue test evidence, union-merges a test file and stages what the triage decided                                        |
 |                             | [milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)                                   | Verifies a resolution the worker made itself against the repo's own check, manifest check and unit suite before it can be pushed                                                      |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |

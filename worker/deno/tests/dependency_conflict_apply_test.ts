@@ -22,6 +22,7 @@ import {
   applyDependencyConflictRules,
   type ConflictGitRunner,
 } from "../lib/dependency_conflict_apply.ts";
+import { createManifestRuleRegistry } from "../lib/dependency_conflict_rules.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,10 +117,14 @@ Deno.test("applyDependencyConflictRules - a file with no rule is deferred untouc
   const workingDir = await makeWorkingDir({ "SECURITY.md": "conflicted\n" });
   const log: GitLog = { args: [] };
 
+  // An empty registry, because the shared one now carries the append-only
+  // ledger rule of Issue #1768, which offers to look at every path. The branch
+  // under test here is the one taken when *no* rule matches at all.
   const report = await applyDependencyConflictRules({
     workingDir,
     conflictedFiles: ["SECURITY.md"],
     git: makeGit(log),
+    registry: createManifestRuleRegistry(),
   });
 
   assertEquals(report.resolved, []);
@@ -287,4 +292,124 @@ Deno.test("applyDependencyConflictRules - no conflicted files is an empty report
 
   assertEquals(report.resolved, []);
   assertEquals(report.deferred, []);
+});
+
+// ---------------------------------------------------------------------------
+// The append-only ledger rule reads its merge base from the index (Issue #1768)
+// ---------------------------------------------------------------------------
+
+const CHANGELOG_BASE = `# Changelog
+
+## Unreleased
+
+## 1.0.0
+`;
+
+const CHANGELOG_CONFLICT = `# Changelog
+
+## Unreleased
+
+<<<<<<< HEAD
+- the PR's entry
+
+=======
+- the base branch's entry
+
+>>>>>>> origin/main
+## 1.0.0
+`;
+
+/** A git runner that answers `show :1:<path>` with the merge base's text. */
+function makeGitWithBase(
+  log: GitLog,
+  base: string | null,
+): ConflictGitRunner {
+  return (args) => {
+    log.args.push([...args]);
+    if (args[0] === "show" && String(args[1]).startsWith(":1:")) {
+      return Promise.resolve(
+        base === null
+          ? { code: 128, stdout: "", stderr: "fatal: path does not exist" }
+          : { code: 0, stdout: base, stderr: "" },
+      );
+    }
+    return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+  };
+}
+
+Deno.test("applyDependencyConflictRules - keeps both appended entries and stages the ledger", async () => {
+  const workingDir = await makeWorkingDir({
+    "CHANGELOG.md": CHANGELOG_CONFLICT,
+  });
+  const log: GitLog = { args: [] };
+
+  const report = await applyDependencyConflictRules({
+    workingDir,
+    conflictedFiles: ["CHANGELOG.md"],
+    git: makeGitWithBase(log, CHANGELOG_BASE),
+  });
+
+  assertEquals(report.deferred, []);
+  assertEquals(report.resolved[0]?.path, "CHANGELOG.md");
+  assertEquals(report.resolved[0]?.resolvedBy, "both-inserted");
+  assertEquals(
+    await Deno.readTextFile(`${workingDir}/CHANGELOG.md`),
+    `# Changelog
+
+## Unreleased
+
+- the base branch's entry
+
+- the PR's entry
+
+## 1.0.0
+`,
+    "both entries survive, the base branch's first",
+  );
+  assert(
+    log.args.some((a) => a[0] === "add" && a.includes("CHANGELOG.md")),
+    `the resolved ledger must be staged; got ${JSON.stringify(log.args)}`,
+  );
+});
+
+Deno.test("applyDependencyConflictRules - a ledger whose merge base cannot be read is deferred untouched", async () => {
+  const workingDir = await makeWorkingDir({
+    "CHANGELOG.md": CHANGELOG_CONFLICT,
+  });
+  const log: GitLog = { args: [] };
+
+  const report = await applyDependencyConflictRules({
+    workingDir,
+    conflictedFiles: ["CHANGELOG.md"],
+    git: makeGitWithBase(log, null),
+  });
+
+  assertEquals(report.resolved, []);
+  assertStringIncludes(
+    report.deferred[0]?.reason ?? "",
+    "no merge-base version",
+  );
+  assertEquals(
+    await Deno.readTextFile(`${workingDir}/CHANGELOG.md`),
+    CHANGELOG_CONFLICT,
+    "the conflict markers survive for the AI fallback",
+  );
+  assertEquals(
+    log.args.some((a) => a[0] === "add"),
+    false,
+    "a deferral stages nothing",
+  );
+});
+
+Deno.test("applyDependencyConflictRules - a manifest still reaches its own rule, not the ledger rule", async () => {
+  const workingDir = await makeWorkingDir({ "deno.json": DENO_JSON_CONFLICT });
+  const log: GitLog = { args: [] };
+
+  const report = await applyDependencyConflictRules({
+    workingDir,
+    conflictedFiles: ["deno.json"],
+    git: makeGitWithBase(log, "{}\n"),
+  });
+
+  assertEquals(report.resolved[0]?.resolvedBy, "deno.json");
 });

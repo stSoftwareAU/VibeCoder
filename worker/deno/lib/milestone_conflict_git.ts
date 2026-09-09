@@ -101,11 +101,17 @@ export async function readConflictedSides(
     if (!ours.ok) return ours;
     const theirs = await readStage(3, path, stages.theirs, options);
     if (!theirs.ok) return theirs;
+    // Stage 1 is what proves nothing was deleted (Issue #1768). It is absent
+    // for an add/add conflict, which is a null the triage reads as "no base",
+    // never as "the base was empty".
+    const base = await readStage(1, path, stages.base, options);
+    if (!base.ok) return base;
 
     sides.push({
       path,
       ours: ours.value,
       theirs: theirs.value,
+      base: base.value,
       oursFixes: await readFixReferences(
         mergeBase,
         milestoneRef,
@@ -130,7 +136,7 @@ export async function readConflictedSides(
  * A stage that exists but will not read is a failure, never a null.
  */
 async function readStage(
-  stage: 2 | 3,
+  stage: 1 | 2 | 3,
   path: string,
   present: boolean,
   options: GitCommandOptions,
@@ -260,21 +266,31 @@ export async function readTestEvidence(
   return { oursAdded, theirsAdded, complete };
 }
 
+/** Which side's hunk a union merge emits first. */
+export type UnionOrder =
+  /** The milestone branch's hunk first — the test-file union of #1559. */
+  | "milestone-first"
+  /** The default branch's hunk first — the append-only ledger rule of #1768. */
+  | "default-first";
+
 /**
- * Merge one conflicted test file as a **union**: both sides' hunks kept.
+ * Merge one conflicted file as a **union**: both sides' hunks kept.
  *
  * This is the resolution a test-file conflict gets when neither side contains
- * the other, because taking a side would drop cases. The result is checked
- * before it is staged — every case name on either side must survive it — and
- * the merged tree still has to pass the repository's own check and unit suite
- * afterwards, so a union that produces nonsense is rolled back rather than
- * pushed.
+ * the other, because taking a side would drop cases, and the resolution an
+ * append-only ledger gets when both sides only appended (Issue #1768). The
+ * result is checked before it is staged — every case name on either side must
+ * survive it, and a `.json` result must parse — and the merged tree still has
+ * to pass the repository's own check and unit suite afterwards, so a union that
+ * produces nonsense is rolled back rather than pushed.
  *
+ * @param order - Which side's hunk comes first in the merged text
  * @returns null when the union was staged; the reason it could not be, otherwise
  */
 export async function unionMergeConflictedFile(
   file: ConflictedFile,
   options: GitCommandOptions,
+  order: UnionOrder = "milestone-first",
 ): Promise<string | null> {
   if (file.ours === null || file.theirs === null) {
     return "one side has no version of the file, so there is nothing to union";
@@ -292,20 +308,26 @@ export async function unionMergeConflictedFile(
       base.ok && base.value.code === 0 ? base.value.stdout : "",
     );
     await Deno.writeTextFile(`${scratch}/theirs`, file.theirs);
+    // `git merge-file --union` keeps both sides whichever way round they are
+    // given; which file is first is only what the merged text says first.
+    const first = order === "default-first" ? "theirs" : "ours";
+    const last = order === "default-first" ? "ours" : "theirs";
+    const label = (side: string) =>
+      side === "ours" ? "milestone branch" : "default branch";
     const result = await runGitCommand(
       [
         "merge-file",
         "-p",
         "--union",
         "-L",
-        "milestone branch",
+        label(first),
         "-L",
         "merge base",
         "-L",
-        "default branch",
-        `${scratch}/ours`,
+        label(last),
+        `${scratch}/${first}`,
         `${scratch}/base`,
-        `${scratch}/theirs`,
+        `${scratch}/${last}`,
       ],
       options,
     );
@@ -343,6 +365,16 @@ export async function unionMergeConflictedFile(
     }`;
   }
 
+  // A JSON ledger whose union does not parse is not a resolution (Issue
+  // #1768): two entries appended into the same array leave the document
+  // invalid, and an invalid document must never be written or staged.
+  if (
+    file.path.toLowerCase().endsWith(".json") && !parsesAsJson(merged.stdout)
+  ) {
+    return "the union of both sides does not parse as JSON, so it was not " +
+      "written";
+  }
+
   const cwd = options.cwd ?? ".";
   try {
     await Deno.writeTextFile(`${cwd}/${file.path}`, merged.stdout);
@@ -359,6 +391,16 @@ export async function unionMergeConflictedFile(
     }`;
   }
   return null;
+}
+
+/** Whether text is valid JSON — the guard on a union of a `.json` ledger. */
+function parsesAsJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Build the refusal for a conflicted path whose chosen side would not take. */

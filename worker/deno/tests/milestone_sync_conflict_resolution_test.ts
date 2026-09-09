@@ -285,6 +285,108 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
+// Append-only ledgers — both inserted, nothing deleted (Issue #1768)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a CHANGELOG both branches appended to keeps both entries, the default branch's first (Issue #1768)",
+  async () => {
+    const fx = await setup(
+      { "CHANGELOG.md": "# Changelog\n\n## Unreleased\n" },
+      {
+        files: {
+          "CHANGELOG.md":
+            "# Changelog\n\n## Unreleased\n\n- the branch's entry\n",
+        },
+        subject: "Issue #1768: the branch's entry",
+      },
+      {
+        files: {
+          "CHANGELOG.md": "# Changelog\n\n## Unreleased\n\n- main's entry\n",
+        },
+        subject: "Issue #1768: main's entry",
+      },
+    );
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+      );
+
+      assert(
+        result.ok,
+        `expected the ledger union to land: ${
+          !result.ok && result.error.message
+        }`,
+      );
+      assertEquals(
+        await Deno.readTextFile(`${fx.clone}/CHANGELOG.md`),
+        "# Changelog\n\n## Unreleased\n\n- main's entry\n- the branch's entry\n",
+      );
+      assertEquals(result.value.conflict?.decisions?.[0]?.action, "union");
+      assertEquals(
+        result.value.conflict?.decisions?.[0]?.case,
+        "both-inserted",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a JSON ledger whose union does not parse escalates rather than being written (Issue #1768)",
+  async () => {
+    // Both sides appended an entry to the same array, so the union leaves two
+    // objects with no comma between them.
+    const seed = '{\n  "entries": [\n  ]\n}\n';
+    const fx = await setup(
+      { "docs/audits/ledger.json": seed },
+      {
+        files: {
+          "docs/audits/ledger.json":
+            '{\n  "entries": [\n    { "id": "branch" }\n  ]\n}\n',
+        },
+        subject: "Issue #1768: the branch's audit entry",
+      },
+      {
+        files: {
+          "docs/audits/ledger.json":
+            '{\n  "entries": [\n    { "id": "main" }\n  ]\n}\n',
+        },
+        subject: "Issue #1768: main's audit entry",
+      },
+    );
+    try {
+      const published = (await gitOk(["rev-parse", "milestone/1559"], fx.clone))
+        .trim();
+
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+      );
+
+      assert(!result.ok, "an unparseable JSON union must not be written");
+      assert(isConflictEscalation(result.error));
+      assertStringIncludes(result.error.message, "does not parse as JSON");
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        published,
+        "the branch is exactly as it was",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // A resolution that cannot be verified is not a resolution
 // ---------------------------------------------------------------------------
 

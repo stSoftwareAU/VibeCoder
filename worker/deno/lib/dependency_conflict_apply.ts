@@ -49,6 +49,9 @@ import {
 // takes for every ecosystem's rules to be available to the pass.
 import "./dependency_conflict_json.ts";
 import "./dependency_conflict_native.ts";
+// Registered last on purpose: it matches almost every path, so the manifest
+// rules above must see their own files first (Issue #1768).
+import "./both_inserted_conflict_rule.ts";
 import { redactedHead } from "./redacted_text.ts";
 import {
   isSafeRepoRelativePath,
@@ -265,7 +268,17 @@ export async function applyDependencyConflictRules(
       continue;
     }
 
-    const outcome = rule.resolve(parsed.value);
+    // A rule that has to know what the merge base said reads it from the
+    // conflicted index, because the PR merge runs without `diff3` markers
+    // (Issue #1768). A stage git will not give up is null, never "empty" — the
+    // rule then defers rather than resolving on an assumption.
+    let base: string | null = null;
+    if (rule.needsBase) {
+      const shown = await git(["show", `:1:${path}`]);
+      base = shown.code === 0 ? shown.stdout : null;
+    }
+
+    const outcome = rule.resolve(parsed.value, { path, base });
     if (outcome.kind === "unresolved") {
       manifestOutcomes.set(path, "unresolved");
       defer(path, outcome.reason);

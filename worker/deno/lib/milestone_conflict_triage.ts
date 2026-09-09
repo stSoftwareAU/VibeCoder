@@ -7,20 +7,24 @@
  * whole thing to a human asks a person to choose between two changes they did
  * not write, days after both were written.
  *
- * Most of what that person does is mechanical, so this module does it. Three
- * patterns have been seen, and they get three answers:
+ * Most of what that person does is mechanical, so this module does it. Four
+ * patterns have been seen, and they get four answers:
  *
  *   1. **The same fix landed twice** (#1270, #1264) — both sides cite the same
  *      issue. Keep the side whose tests are a superset and say what was
  *      dropped.
  *   2. **One side subsumes the other** — every line of the smaller side
  *      survives in the larger. Take the larger; nothing is lost.
- *   3. **Two designs for the same problem** (`IndirectSpawnRules` versus
+ *   3. **Both sides only appended** (`CHANGELOG.md`, release notes, the audit
+ *      ledgers) — every line of the merge base survives on both sides, so
+ *      nothing was deleted and both additions are kept, the default branch's
+ *      first (Issue #1768).
+ *   4. **Two designs for the same problem** (`IndirectSpawnRules` versus
  *      `scanContentForVariableBinarySpawn`) — neither contains the other, so a
  *      human chooses. The expensive preparation is still done here: each
  *      side's exports, each side's test names, and the difference between them.
  *
- * One rule outranks all three: **no resolution may reduce test coverage**. A
+ * One rule outranks all four: **no resolution may reduce test coverage**. A
  * conflicted test file resolves only when one side is a genuine union of both
  * — every case *and* every line of the other side survives in it — otherwise
  * it escalates. Equal case names are not enough: an assertion changed inside a
@@ -44,6 +48,8 @@ export type ConflictCase =
   | "superset"
   /** A test file where one side carries every case of the other. */
   | "test-union"
+  /** Both sides only appended, and nothing in the merge base was removed. */
+  | "both-inserted"
   /** The default branch deleted it; the deletion stands (Issue #1048). */
   | "incoming-delete"
   /** Both sides changed the same code and neither contains the other — case 3. */
@@ -59,6 +65,14 @@ export interface ConflictedFile {
   ours: string | null;
   /** The default branch's content; null when that side deleted it. */
   theirs: string | null;
+  /**
+   * The merge base's content (index stage 1); null when there is none — an
+   * add/add conflict — and undefined when the caller did not read it.
+   *
+   * Read, never inferred: "the base could not be read" must not become "the
+   * base was empty", which would turn a deletion into a union (Issue #1768).
+   */
+  base?: string | null;
   /** Issues the milestone side's commits touching this path close. */
   oursFixes: number[];
   /** Issues the default side's commits touching this path close. */
@@ -412,12 +426,46 @@ function classifySourceFile(
     };
   }
 
+  // Append-only ledgers — `CHANGELOG.md`, release notes, the audit ledgers —
+  // conflict on every merge and are never a judgement: both sides appended and
+  // neither removed anything, so both entries are kept (Issue #1768). Decided
+  // last of the resolvable rules, so a duplicate fix is still a duplicate fix
+  // rather than an implementation kept twice.
+  if (isBothInserted(file.base, ours, theirs)) {
+    return {
+      path: file.path,
+      case: "both-inserted",
+      action: "union",
+      reason:
+        `both sides only added to this file — every line of the merge base ` +
+        `survives on both sides — so both additions are kept by a union ` +
+        `merge, the default branch's first`,
+    };
+  }
+
   return escalate(
     file.path,
     `both sides changed the same code and neither contains the other — two ` +
       `designs for the same problem, which only a human can choose between`,
     "rival-designs",
   );
+}
+
+/**
+ * Whether both sides only inserted: every line of the merge base survives on
+ * each side.
+ *
+ * A base that was not read (`undefined`) or does not exist (`null`, an add/add
+ * conflict) decides nothing — the rule needs the base to prove a deletion did
+ * not happen, and an unread base must never read as an empty one.
+ */
+export function isBothInserted(
+  base: string | null | undefined,
+  ours: string,
+  theirs: string,
+): boolean {
+  if (typeof base !== "string") return false;
+  return isLineSuperset(ours, base) && isLineSuperset(theirs, base);
 }
 
 /**
