@@ -33,7 +33,10 @@ lose the work — so it falls straight through to a human.
 
 Every attempt ends visibly: merged, failed, or escalated. An attempt that
 opened and then went silent was disrupted, not judged — it does not spend the
-budget, it is re-attempted, and three disruptions on one PR escalate. Every
+budget, it is re-attempted, and three disruptions on one PR escalate. The pass
+also refuses to *start* a resolution the cycle cannot cover, and an agent the
+worker itself SIGTERMs at the cycle end has its attempt **withdrawn** rather
+than judged: the kill is the worker's decision, so the PR pays nothing for it. Every
 pass records one reason per labelled PR, so "the label went on and then
 silence" is now a thing you can grep for rather than infer. A PR that still
 conflicts and has carried the label for **8 hours with nothing concluding** is
@@ -622,13 +625,73 @@ Three bounds keep the drain from becoming a monopoly:
 
 | Bound | Value | Why |
 | --- | --- | --- |
-| Cycle deadline | 10 minutes must remain | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. |
+| Cycle deadline | 20 minutes of agent budget must remain, and the agent is granted no more time than is left | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. See [A resolution is never started on time the cycle does not have](#-a-resolution-is-never-started-on-time-the-cycle-does-not-have). |
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
 The per-PR budgets are unchanged: the 4-hour cooldown, the two concluded
 attempts, and the abandon rung with `needs-human` behind it are the scan's, and
 the drain only decides how many of the PRs already due get taken now.
+
+### ⏱️ A resolution is never started on time the cycle does not have
+
+The deadline bound used to be one number — ten minutes left, start another
+resolution — and it was checked only *between* resolutions. NEAT-AI-core#637 is
+what that cost (Issue #1693): six conflicted files, a 736-second handler budget
+because that was all the cycle had left, a 3600-second agent timeout granted out
+of it, and at 11m13s and 83 tool calls the watchdog SIGTERMed an agent that was
+still editing. The pass then read the half-merged tree as *the agent's* verdict
+— `attempt 1 of 2`, "the agent left 6 path(s) unmerged" — and spent one of the
+PR's two attempts on a budget it never had.
+
+Two halves now hold, both in `worker/deno/lib/merge_conflict_drain.ts`:
+
+- **The floor is sized for an AI-fallback resolution**, not for a token
+  gesture: **20 minutes** of agent budget must remain, measured after reserving
+  a two-minute tail for the guards, the commit, the push and the conclusion
+  comment. Below that the drain takes nothing — before the *first* resolution
+  as well as between them — and the PR is deferred, so the cursor below offers
+  it first next pass.
+- **The agent is granted the time that is actually left**, never the configured
+  timeout when the cycle cannot cover it: the grant is
+  `min(configured, budget left − tail)`. An agent that runs to its full grant
+  therefore stops itself *inside* the handler's budget and concludes its
+  attempt, rather than being killed on the way to one.
+
+```mermaid
+flowchart TD
+    A[Next due PR] --> B{"Agent budget left<br/>≥ 20 min?"}
+    B -->|no| C[Stop the drain:<br/>deferred, nothing spent]
+    B -->|yes| D["Grant min(configured,<br/>budget − 2 min tail)"]
+    D --> E[Resolve]
+    style C fill:#e9c46a,stroke:#b07d2b,color:#000
+    style E fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+### 🔪 A run the worker ended is not the PR's failure
+
+The floor stops the pass starting what it cannot finish; this is what happens
+when a run ends mid-attempt anyway — a shutdown, or a handler abandoned for
+some other reason. The agent comes back terminated (SIGTERM, exit 143), and the
+kill is the **worker's** decision, so it spends nothing (Issue #1693):
+
+- The attempt marker is **deleted**, so the next scan counts neither a
+  concluded attempt against the two-attempt budget nor an open one against the
+  three-disruption budget.
+- **No conclusion is posted.** A failure comment is the thing that turns an
+  opened attempt into a spent one, and there is no verdict here to publish.
+- The merge is aborted, so the branch is left exactly as its author pushed it.
+- The pass says so — *"cut short by the run ending — no attempt spent, the PR
+  will be retried at the same attempt number"* — and returns
+  `attemptCharged: false`, which also leaves the PR's deferral streak standing
+  so it leads the next pass.
+- A marker that cannot be deleted is left and warned about. The PR then reads
+  as *disrupted* on the next scan, which is retried rather than judged, and
+  that bound still holds.
+
+This is the same principle the pass already applies to markers the fleet did
+not author: a budget is spent by a verdict on the conflict, never by something
+the worker did to itself.
 
 ## ⏳ A deferred PR leads the next pass, and says so if it keeps losing
 

@@ -17,6 +17,12 @@
  *   attempt counts as a *disrupted* attempt on the PR's record — three of
  *   those escalate it to a human (Issue #395). Leaving the PR for the next
  *   cycle costs an hour; starting it costs a third of its escalation budget.
+ *   The bound has two halves (Issue #1693): the drain refuses to start at all
+ *   below {@link DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT}, and what it does start
+ *   is granted an agent timeout that fits inside the budget that is left —
+ *   never the configured one when the cycle cannot cover it. A six-file
+ *   conflict handed a 736 s handler budget and a 3600 s agent timeout was
+ *   SIGTERMed mid-edit and charged the kill to the PR as a failed attempt.
  * - **A per-cycle cap**, so one repository's backlog cannot take the whole run.
  * - **The exclusion set**, so a PR already taken — or one deferred because an
  *   issue slot holds its repository — is not re-selected by the next scan.
@@ -71,8 +77,40 @@ import {
  */
 export const DEFAULT_MAX_CONFLICTS_PER_CYCLE = 5;
 
-/** Cycle time that must remain before the drain starts another resolution. */
-export const DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT = 10 * 60 * 1000;
+/**
+ * Cycle time that must remain before the drain starts another resolution.
+ *
+ * Sized for an AI-fallback resolution rather than for a token gesture
+ * (Issue #1693): the agent that was killed mid-edit on NEAT-AI-core#637 had
+ * already spent 11m13s and 83 tool calls on six conflicted files. Ten minutes
+ * was enough to *start* that resolution and never enough to finish it, so the
+ * pass spent one of the PR's two attempts on a budget it never had.
+ */
+export const DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT = 20 * 60 * 1000;
+
+/**
+ * Budget reserved after the agent returns, for the work the resolution still
+ * has to do: the unmerged/marker guards, the commit, the push, the conclusion
+ * comment and the label clear (Issue #1693).
+ *
+ * The agent's own timeout is granted out of the budget left *after* this, so
+ * an agent that runs to its full timeout still concludes its attempt inside
+ * the handler's budget instead of being killed on the way to the conclusion.
+ */
+export const DEFAULT_CONFLICT_POST_AGENT_TAIL_MS = 2 * 60 * 1000;
+
+/**
+ * What one attempt may grant its coding agent, decided by the drain from the
+ * handler budget that is actually left (Issue #1693).
+ */
+export interface ConflictAttemptBudget {
+  /**
+   * Seconds the resolution may give its agent. Never more than the handler
+   * budget left minus {@link DEFAULT_CONFLICT_POST_AGENT_TAIL_MS}, so the
+   * watchdog cannot end an agent run this pass chose to start.
+   */
+  agentTimeoutSeconds: number;
+}
 
 /** What one resolution attempt did. */
 export interface ConflictResolutionOutcome {
@@ -80,6 +118,14 @@ export interface ConflictResolutionOutcome {
   processed: boolean;
   /** A merge was pushed. */
   merged: boolean;
+  /**
+   * Explicitly `false` when the resolution opened an attempt and then
+   * withdrew it — the watchdog cut the agent short, so the kill was the
+   * worker's decision and must not spend the PR's budget (Issue #1693). Such
+   * a PR is still waiting, so its deferral streak stands, exactly as it does
+   * for an attempt that never got off the ground.
+   */
+  attemptCharged?: boolean;
 }
 
 /** A held repository lease, released when the attempt finishes. */
@@ -120,8 +166,18 @@ export interface ConflictDrainOptions {
   ) => Promise<ConflictingPr | null>;
   /** Lease the shared clone, or null when an issue slot holds it. */
   acquireLease: (pr: ConflictingPr) => RepoLease | null;
-  /** Resolve one conflict. Returns null when the attempt failed loudly. */
-  resolve: (pr: ConflictingPr) => Promise<ConflictResolutionOutcome | null>;
+  /**
+   * Resolve one conflict. Returns null when the attempt failed loudly.
+   *
+   * `budget` is the agent timeout this attempt may grant, sized to the
+   * handler budget still left (Issue #1693). Absent when the pass runs
+   * unbounded — no deadline, or no configured agent timeout — in which case
+   * the resolution keeps its own default.
+   */
+  resolve: (
+    pr: ConflictingPr,
+    budget?: ConflictAttemptBudget,
+  ) => Promise<ConflictResolutionOutcome | null>;
   logger: Logger;
   /** Watchdog deadline for the pass, when the dispatcher supplied one. */
   deadlineEpochMs?: number;
@@ -129,6 +185,16 @@ export interface ConflictDrainOptions {
   now?: () => number;
   maxPerCycle?: number;
   minMsPerAttempt?: number;
+  /**
+   * The agent timeout one resolution would otherwise be granted, in
+   * milliseconds (Issue #1693). The drain never grants more than the handler
+   * budget left, so a cycle that cannot cover the configured timeout hands
+   * the agent the time that genuinely remains instead of a promise the
+   * watchdog then breaks.
+   */
+  agentTimeoutMs?: number;
+  /** Budget reserved for the post-agent tail. Defaults to two minutes. */
+  postAgentTailMs?: number;
   /**
    * Fairness cursor and starvation notice (Issue #1111). Omit it and the
    * drain keeps no cursor at all.
@@ -197,6 +263,8 @@ export async function drainConflictingPrs(
     now = () => Date.now(),
     maxPerCycle = DEFAULT_MAX_CONFLICTS_PER_CYCLE,
     minMsPerAttempt = DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
+    agentTimeoutMs,
+    postAgentTailMs = DEFAULT_CONFLICT_POST_AGENT_TAIL_MS,
     deferrals,
   } = options;
 
@@ -294,19 +362,44 @@ export async function drainConflictingPrs(
    */
   const runDrain = async (): Promise<ConflictDrainStop> => {
     for (let taken = 0; taken < maxPerCycle; taken++) {
+      /**
+       * The agent timeout this attempt may grant (Issue #1693), or undefined
+       * when the pass declared none and the resolution keeps its own.
+       */
+      let budget: ConflictAttemptBudget | undefined;
       if (deadlineEpochMs !== undefined) {
         const remaining = deadlineEpochMs - now();
-        if (remaining < minMsPerAttempt) {
+        // The tail after the agent returns — guards, commit, push, the
+        // conclusion comment — is not the agent's to spend, so the floor is
+        // measured against what the agent would actually get.
+        const attemptBudgetMs = remaining - postAgentTailMs;
+        if (attemptBudgetMs < minMsPerAttempt) {
           // Said out loud only once the drain has done something: a pass that
           // starts late and takes nothing is the ordinary quiet case.
           if (taken > 0) {
             logger.info(
               "Merge-conflict drain stopping: too little of the cycle left " +
                 "for another resolution",
-              { taken, merged, remainingMs: remaining },
+              {
+                taken,
+                merged,
+                remainingMs: remaining,
+                attemptBudgetMs,
+                minMsPerAttempt,
+              },
             );
           }
           return { kind: "deadline", remainingMs: remaining };
+        }
+        if (agentTimeoutMs !== undefined) {
+          // Never more than the budget that is left: an agent promised more
+          // time than the handler has is an agent the watchdog kills
+          // mid-edit, and that kill was charged to the PR (Issue #1693).
+          budget = {
+            agentTimeoutSeconds: Math.floor(
+              Math.min(agentTimeoutMs, attemptBudgetMs) / 1000,
+            ),
+          };
         }
       }
 
@@ -347,13 +440,17 @@ export async function drainConflictingPrs(
       });
 
       try {
-        const outcome = await resolve(next);
-        if (outcome) {
+        const outcome = await resolve(next, budget);
+        if (outcome && outcome.attemptCharged !== false) {
           // The attempt ran, so the PR is not starved — whatever it then
           // concluded (Issue #1111). A `null` outcome is an attempt that never
           // got off the ground (a clone that would not set up, a branch that
-          // is gone), and that PR is still waiting, so its streak stands.
+          // is gone), and that PR is still waiting, so its streak stands. So
+          // is an attempt the watchdog cut short (Issue #1693): it was
+          // withdrawn, spent nothing, and is still queued.
           clearDeferral(state, conflictPrKey(next.repo, next.prNumber));
+        }
+        if (outcome) {
           processed = processed || outcome.processed;
           if (outcome.merged) merged++;
         }

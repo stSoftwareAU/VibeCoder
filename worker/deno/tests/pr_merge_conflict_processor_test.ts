@@ -78,6 +78,8 @@ interface Captured {
   agentPrompts: string[];
   /** Lock-comment refreshes (Issue #395). */
   lockRenewals: number[];
+  /** Comment ids withdrawn with `DELETE` (Issues #1458, #1693). */
+  commentsDeleted: number[];
 }
 
 interface GitScript {
@@ -239,7 +241,16 @@ function makeGit(
   };
 }
 
-function makeGithub(captured: Captured): Partial<GitHubDeps> {
+function makeGithub(
+  captured: Captured,
+  /**
+   * Id `gh pr comment` reports for every comment it posts (Issue #1693).
+   * Without one the processor holds no comment id and cannot withdraw the
+   * attempt marker, so a test about withdrawal needs the URL `gh` really
+   * prints.
+   */
+  postedCommentId?: number,
+): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
       if (args[0] === "pr" && args[1] === "comment") {
@@ -247,6 +258,11 @@ function makeGithub(captured: Captured): Partial<GitHubDeps> {
         if (idx >= 0) {
           captured.comments.push(String(args[idx + 1] ?? ""));
           captured.events.push("gh:comment");
+        }
+        if (postedCommentId !== undefined) {
+          return Promise.resolve(
+            `https://github.com/org/repo/pull/48#issuecomment-${postedCommentId}`,
+          );
         }
       }
       if (args[0] === "api" && args.includes("-X")) {
@@ -275,6 +291,12 @@ function makeGithub(captured: Captured): Partial<GitHubDeps> {
           );
           captured.events.push("gh:lock-renew");
         }
+        if (verb === "DELETE" && endpoint.includes("/issues/comments/")) {
+          captured.commentsDeleted.push(
+            Number(endpoint.split("/issues/comments/")[1] ?? 0),
+          );
+          captured.events.push("gh:comment-delete");
+        }
         if (verb === "DELETE" && endpoint.includes("/labels/")) {
           captured.labelsRemoved.push(endpoint.split("/labels/")[1] ?? "");
           captured.events.push("gh:label-remove");
@@ -288,7 +310,15 @@ function makeGithub(captured: Captured): Partial<GitHubDeps> {
   };
 }
 
-function makeClaude(captured: Captured, delayMs = 0): Partial<ClaudeDeps> {
+function makeClaude(
+  captured: Captured,
+  delayMs = 0,
+  /**
+   * Fields merged over the successful run's result — `terminated: true` is
+   * the watchdog SIGTERM the run-end delivers (Issue #1693).
+   */
+  resultOverrides?: Record<string, unknown>,
+): Partial<ClaudeDeps> {
   return {
     runClaudeWithRetry: (async (options: { prompt?: string }) => {
       captured.agentRuns++;
@@ -301,7 +331,12 @@ function makeClaude(captured: Captured, delayMs = 0): Partial<ClaudeDeps> {
       }
       return {
         ok: true,
-        value: { output: "resolved", exitCode: 0, timedOut: false },
+        value: {
+          output: "resolved",
+          exitCode: 0,
+          timedOut: false,
+          ...resultOverrides,
+        },
       };
     }) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
@@ -328,6 +363,10 @@ async function runProcessor(
     claudeDelayMs?: number;
     workDirFiles?: Record<string, string>;
     crashHandling?: Partial<CrashHandlingDeps>;
+    /** Fields merged over the agent result (Issue #1693). */
+    claudeResult?: Record<string, unknown>;
+    /** Id `gh pr comment` reports for each posted comment (Issue #1693). */
+    postedCommentId?: number;
   },
 ): Promise<{
   captured: Captured;
@@ -349,12 +388,17 @@ async function runProcessor(
     agentRuns: 0,
     agentPrompts: [],
     lockRenewals: [],
+    commentsDeleted: [],
   };
 
   const deps = createMockDeps({
     git: makeGit(script, captured),
-    github: makeGithub(captured),
-    claude: makeClaude(captured, opts?.claudeDelayMs ?? 0),
+    github: makeGithub(captured, opts?.postedCommentId),
+    claude: makeClaude(
+      captured,
+      opts?.claudeDelayMs ?? 0,
+      opts?.claudeResult,
+    ),
     crashHandling: opts?.crashHandling,
   });
 
@@ -1159,4 +1203,66 @@ Deno.test("processMergeConflict - warns when the checkout directory is missing (
     true,
     `expected a missing-directory warning, got: ${warnings.join(" | ")}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// A run the worker itself ended (Issue #1693)
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - a watchdog SIGTERM withdraws the attempt instead of failing it", async () => {
+  // GRQ-25, NEAT-AI-core#637: the maintenance-lane watchdog abandoned the
+  // handler at the cycle end and SIGTERMed the agent mid-edit. The half-merged
+  // tree was then read as "the agent left 6 path(s) unmerged" and spent one of
+  // the PR's two attempts.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    undefined,
+    { claudeResult: { terminated: true }, postedCommentId: 9001 },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, false);
+  assertEquals(result.value.processed, false);
+
+  // The attempt marker is withdrawn, so the next scan counts neither a
+  // concluded attempt nor a disrupted one.
+  assertEquals(captured.commentsDeleted, [9001]);
+
+  // No conclusion of any kind was posted on the PR.
+  const conclusions = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER) || c.includes(CONFLICT_RESOLVED_MARKER)
+  );
+  assertEquals(conclusions, []);
+
+  // The branch is left exactly as its author pushed it.
+  assertEquals(captured.commitAndPushCalls, 0);
+  assert(
+    captured.gitArgs.some((args) =>
+      args[0] === "merge" && args.includes("--abort")
+    ),
+    "the half-resolved merge was not aborted",
+  );
+});
+
+Deno.test("processMergeConflict - an agent that finishes still spends its attempt", async () => {
+  // The other side of the same guard: only a terminated run is withdrawn. An
+  // agent that ran to a conclusion and left the tree unmerged is judged.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    undefined,
+    { postedCommentId: 9002 },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, undefined);
+  assertEquals(captured.commentsDeleted, []);
+  const failed = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER)
+  );
+  assertEquals(failed.length, 1);
+  assertStringIncludes(failed[0] ?? "", "left 1 path(s) unmerged");
 });
