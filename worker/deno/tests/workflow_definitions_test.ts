@@ -119,10 +119,17 @@ Deno.test("workflow_definitions - includes markdown-lint universal spec", () => 
     true,
     "markdown-lint should trigger on pull_request",
   );
+  // Issue #1639 — behaviour change, documented deliberately. The template
+  // used to trigger on push to the default branch as well; the fleet's own
+  // GitHub Actions audit files that as a finding (a required PR check
+  // re-running post-merge duplicates the run with no enforcement value), so
+  // the provisioned template is now pull-request only. This assertion was
+  // inverted rather than deleted so the decision stays visible.
   assertEquals(
     spec!.triggers.includes("push"),
-    true,
-    "markdown-lint should trigger on push to default branch",
+    false,
+    "markdown-lint must be pull-request only — a post-merge re-run of a " +
+      "required check is what the audit's trigger pre-filer flags",
   );
 });
 

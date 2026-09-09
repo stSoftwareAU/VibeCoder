@@ -241,11 +241,11 @@ Universal specs (applied to every repo regardless of language) include:
 
 - **`gitleaks`** — secret scanning on every PR.
 - **`semgrep`** — SAST scanning on every PR.
-- **`markdown-lint`** — runs `markdownlint-cli2` against
-  the same `.markdownlint-cli2.jsonc` configuration used locally by
-  `quality.sh`, on every PR and on pushes to the default branch.
-  Optionally mirrors the local `check-mermaid` quality gate when the
-  Deno worker module is present in the repo.
+- **`markdown-lint`** — runs `markdownlint-cli2` (pinned to an exact
+  version) against the same `.markdownlint-cli2.jsonc` configuration used
+  locally by `quality.sh`, on every PR. Optionally mirrors the local
+  `check-mermaid` quality gate when the Deno worker module is present in
+  the repo.
 
 Language-specific specs cover Rust, Deno, Node, Java, and Bash projects;
 see `WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.
@@ -293,6 +293,47 @@ When you add or bump a template:
 `WORKFLOW_SPECS` catalogue and fails on any unpinned ref, untagged
 container image, or drift between the emitted Semgrep template and this
 repository's own `.github/workflows/semgrep.yml`.
+
+### Templates must pass the fleet's own GitHub Actions audit
+
+The [GitHub Actions audit](GITHUB-ACTIONS-AUDIT-SCAN.md) scans every
+monitored repository — including the ones the fleet has just provisioned.
+A template that does not meet the audit's own bar therefore files findings
+against workflows the fleet itself wrote, which is exactly what happened
+before Issue #1639. Every emitted template now carries:
+
+- an explicit `pull_request` branch list, `[Develop, main, milestone/*]` —
+  a GitHub `*` never matches a `/`, so the old `["*"]` skipped every
+  `milestone/<slug>` PR;
+- `persist-credentials: false` on every read-only `actions/checkout`, so
+  the job token is not left in `.git/config` for a later step to read.
+  The two dependency-update templates keep the credential and say so in a
+  comment — `peter-evans/create-pull-request` pushes with it;
+- a `concurrency:` group of `${{ github.workflow }}-${{ github.ref }}`
+  with `cancel-in-progress: true`;
+- `timeout-minutes:` on every job — 10 for scan and quality jobs, 20 for
+  dependency-update jobs that open a PR;
+- an exact version pin on every `run:` install (a `run:` install is not a
+  manifest, so no dependency manager applies the 24h quarantine to it).
+
+```mermaid
+flowchart LR
+    T["workflow_definitions.ts<br/>templates"] --> R["Provisioned repo<br/>.github/workflows/"]
+    R --> A["GitHub Actions audit<br/>native pre-filers"]
+    T --> C["workflow_template_audit<br/>_conformance_test.ts"]
+    C -- "same pre-filers" --> A
+    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+`worker/deno/tests/workflow_template_audit_conformance_test.ts` renders
+every template and runs the audit's own native pre-filers
+(`checkout_persist_credentials_scanner`, `milestone_branch_filter_scanner`,
+`action_pin_scanner`, `ci_install_pin_scanner`,
+`workflow_permissions_scanner`, `workflow_trigger_scanner`) over the
+result. Any finding fails the test — and `quality.sh` — so a scanner change
+and the templates cannot drift apart unnoticed. The same three rules are
+stated in `prompts/workflow_setup/prompt.md` ("CI Hardening Defaults") so
+agent-generated workflows match the deterministic templates.
 
 ## 🧹 Maintenance Commands
 

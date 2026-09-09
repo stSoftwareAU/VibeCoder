@@ -190,6 +190,26 @@ generate unless a guideline below explicitly says otherwise.
      permissions, scoped only to the job that needs them.
    - Detect and skip when there is nothing to change (no formatting diff, or
      the version was already bumped on this PR) so the job is idempotent.
+9. **List the `pull_request` target branches explicitly:
+   `branches: [Develop, main, milestone/*]`.** Never write
+   `branches: ["*"]`. A GitHub branch filter `*` does not match a `/`, so
+   `["*"]` reads as "every branch" while silently skipping every
+   `milestone/<slug>` sub-issue PR — the dominant merge path in this fleet,
+   which would leave those PRs entirely ungated.
+10. **Disable credential persistence on every read-only checkout:
+    `persist-credentials: false`.** By default `actions/checkout` writes the
+    workflow's `GITHUB_TOKEN` into `.git/config`, where any later step in the
+    job — including a compromised dependency or an injected script — can read
+    it and act as the token. Only a job that genuinely pushes back to the
+    repository (or fetches a private submodule) keeps the credential, and its
+    workflow says so in a comment.
+11. **Declare a cancelling `concurrency:` group on every workflow, and
+    `timeout-minutes:` on every job.** Use
+    `group: ${{ github.workflow }}-${{ github.ref }}` with
+    `cancel-in-progress: true` so rapid pushes do not spawn parallel,
+    redundant runs. Budget 10 minutes for a scan or quality job and 20 for a
+    dependency-update job that opens a pull request; without an explicit
+    timeout a wedged job holds a runner for GitHub's six-hour default.
 
 ### Resolving action SHAs
 
