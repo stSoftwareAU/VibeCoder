@@ -781,10 +781,24 @@ Three rules the file has to satisfy:
 
 #### Which Claude token a run uses
 
-The choice is made **once per worker start**, before any work begins, and holds
-for the whole run. Nothing re-selects mid-run: a subscription that runs out
-part-way through fails exactly as it always has, and the next process start
-decides again.
+The first choice is made at worker start, before any work begins, and the
+figures it was made on are kept for the rest of the run by a **process-wide
+credential pool** (`claude_credential_pool.ts`). The pool holds one budget
+snapshot per token, re-measures only a snapshot older than **ten minutes**
+(`CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS`), and answers a later question with the
+same gate, the same ranking and the same shape of log line as the start. So a
+re-pick mid-run is one call rather than a second startup, and when it happens
+the run's single Claude token variable is *replaced* — nothing else is
+exported, so the environment still carries exactly one subscription's
+credential.
+
+Two consequences worth knowing. A switch changes the environment the host
+shares, so it affects agents spawned **after** it; an agent already running
+keeps the environment it was given. And the pool answers `null` rather than
+naming a token when nothing passes the gate below — a switch to a token that
+would stall on its first call is worse than staying put. A *start* never
+refuses: with every token low the run still begins, on the one whose five-hour
+window refills first.
 
 With **fewer than two** subscription tokens there is nothing to choose between,
 so nothing is done — no request, no delay, no log line, and the same token file
@@ -815,11 +829,15 @@ The candidates are ordered:
    five-hour window passes, and every passing token ranks ahead of every
    failing one; at exactly 80% used — 20% left — it fails. A token that has
    burned its five hours cannot spend whatever its week still holds, so no rate
-   it scores is worth acting on. The 80% threshold is a fixed constant in the
-   worker (`CLAUDE_FIVE_HOUR_GATE_MAX_USED` in `claude_token_selection.ts`),
-   not a setting: it describes how Anthropic's windows behave, not how one host
-   is configured. A response that reported **no** five-hour window has no gate
-   to fail, so it passes.
+   it scores is worth acting on. The threshold is a fixed constant in the
+   worker, not a setting: it describes how Anthropic's windows behave, not how
+   one host is configured. It is stated **once**, as
+   `CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING = 0.2` in `claude_token_selection.ts`;
+   `CLAUDE_FIVE_HOUR_GATE_MAX_USED` is its exact complement and
+   `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "is another subscription
+   worth restarting for?" — is the same constant, because *worth restarting
+   for* and *worth switching to* are one question. A response that reported
+   **no** five-hour window has no gate to fail, so it passes.
 3. **The highest remaining budget per hour wins**, measured on the seven-day
    window: its remaining share divided by the hours until it resets. A response
    that reported no seven-day window is ranked on the rate of the window it did
@@ -891,6 +909,20 @@ carrying the credential. The last line names why the winner won:
 Absence of these lines is itself informative: a host with one token, or with
 one token plus a metered key, logs none of them, because it makes no probe.
 
+A selection taken **after** the start logs the same candidate and `selected`
+lines, so the two read alike, and the pool adds one line of its own for each
+thing it does without a probe or does to the environment:
+
+```text
+[2026-09-09 13:27:23Z] INFO: [SECURITY] claude token pool: provider recorded as spent on five_hour without a probe
+[2026-09-09 13:27:23Z] INFO: [SECURITY] claude token pool: run environment switched to provider-2 (CLAUDE_CODE_OAUTH_TOKEN)
+```
+
+The first is a usage-limit result being taken at its word — the response
+already said the window is gone, so the pool records it rather than spending a
+request to be told again. The second is the switch itself, naming the one
+variable that was replaced. Neither carries a token value.
+
 **What the choice isolates.** Selection decides what the run's *environment*
 carries — one token file's variables, and no other subscription's. It decides
 nothing about the credential *mount*, which still exposes every token file in
@@ -948,15 +980,17 @@ in parallel at one instant. For the goal above that is exactly what is wanted:
 consumption stays level, and every start lands on the subscription with the
 most left.
 
-**The one gap: exhaustion part-way through a run is not recovered until the
-next start.** Selection happens once per worker start and holds for the whole
-run — the runner has no route back to the selector. A subscription that runs
-out mid-run takes the retry ladder (two retries, roughly five then ten minutes)
-and then fails the run, even when another token in the pool is untouched. The
-next worker start reselects, ranks the spent token last and picks a fresh one,
-so the fleet recovers on its own; what is lost is the remainder of that one
-run, not the machine. Shorter, more frequent worker starts narrow that window;
-nothing else does.
+**The remaining gap: a spawn is not yet quota-gated.** The runner now has a
+route back to the decision — the credential pool above re-ranks on demand,
+records an exhausted window from a usage-limit result without a probe, and
+switches the run's token in one call — but nothing consults it *before* an
+agent spawn yet. So a subscription that runs out mid-run still takes the retry
+ladder (two retries, roughly five then ten minutes) and then fails the run,
+even when another token in the pool is untouched. The next worker start
+reselects, ranks the spent token last and picks a fresh one, so the fleet
+recovers on its own; what is lost is the remainder of that one run, not the
+machine. Until the pre-spawn gate lands, shorter and more frequent worker
+starts narrow that window; nothing else does.
 
 **The windows are not synchronised.** Two subscriptions bought at different
 times have seven-day windows that reset hours or days apart, and each token is

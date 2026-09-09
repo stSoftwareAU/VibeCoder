@@ -913,6 +913,17 @@
       "paths": [
         "worker/deno/lib/worker_state_paths.ts"
       ]
+    },
+    {
+      "issue": 1668,
+      "chunk": "12k",
+      "title": "top-up: the Claude credential pool added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1668-claude-credential-pool.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12j recorded their coverage: claude_credential_pool.ts (#1668)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/claude_credential_pool.ts"
+      ]
     }
   ]
 }

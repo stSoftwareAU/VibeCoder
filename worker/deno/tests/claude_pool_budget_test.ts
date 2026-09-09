@@ -10,6 +10,7 @@ import {
   POOL_BUDGET_FLOOR,
   poolHasAnotherTokenWithBudget,
 } from "../lib/claude_pool_budget.ts";
+import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "../lib/claude_token_selection.ts";
 import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 
 function tokenFile(
@@ -161,4 +162,39 @@ Deno.test("poolHasAnotherTokenWithBudget - a metered key is not a pool member an
     false,
   );
   assertEquals(probe.calls(), 0, "a non-pool file is never probed");
+});
+
+Deno.test("poolHasAnotherTokenWithBudget - the restart floor is the five-hour selection gate (Issue #1668)", async () => {
+  // One floor, one question: "worth running against?". Two floors that
+  // diverged would let a host restart for a token the selection gate then
+  // refuses to switch to — a restart loop dressed as a recovery.
+  assertEquals(POOL_BUDGET_FLOOR, CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING);
+
+  // 15% left cleared the old 5% floor and does not clear the gate.
+  const belowGate = fetchWith({
+    "token-provider": 1.0,
+    "token-provider-2": 0.85,
+  });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: belowGate.fn },
+    ),
+    false,
+  );
+
+  // 25% left clears it, and is worth going back for.
+  const aboveGate = fetchWith({
+    "token-provider": 1.0,
+    "token-provider-2": 0.75,
+  });
+  assertEquals(
+    await poolHasAnotherTokenWithBudget(
+      [tokenFile("provider"), tokenFile("provider-2")],
+      "provider",
+      { fetchFn: aboveGate.fn },
+    ),
+    true,
+  );
 });
