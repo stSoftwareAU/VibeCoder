@@ -13,7 +13,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { processSpellingFailure } from "../lib/pr_spelling_processor.ts";
 import { processCiFailure } from "../lib/pr_ci_processor.ts";
-import { processMergeConflict } from "../lib/pr_merge_conflict_processor.ts";
+import {
+  type MergeConflictProcessorDeps,
+  processMergeConflict,
+} from "../lib/pr_merge_conflict_processor.ts";
 import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
@@ -166,6 +169,7 @@ Deno.test("merge-conflict pass - a gated head opens no attempt (Issue #1679)", a
   const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-merge-" });
   try {
     const observed: Observed = { ghCalls: [], agentRuns: 0 };
+    let lockAttempts = 0;
 
     const result = await processMergeConflict({
       repo: "org/repo",
@@ -179,6 +183,14 @@ Deno.test("merge-conflict pass - a gated head opens no attempt (Issue #1679)", a
       deps: makeDeps(observed),
       workDir: tmpDir,
       workRoot: tmpDir,
+      workerId: "worker-1",
+      acquireLockFn: (() => {
+        lockAttempts++;
+        return Promise.resolve({
+          ok: true,
+          value: { acquired: true, lockCommentId: 1 },
+        });
+      }) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
     });
 
     assertEquals(result.ok, true);
@@ -189,6 +201,12 @@ Deno.test("merge-conflict pass - a gated head opens no attempt (Issue #1679)", a
     }
     assertEquals(observed.agentRuns, 0);
     assertEquals(wroteAnythingElse(observed), false);
+    assertEquals(
+      lockAttempts,
+      0,
+      "the stand-down precedes the cross-host lock, so a gated PR churns no " +
+        "lock comment or heartbeat on every run",
+    );
     // The stand-down comment is the only comment: no attempt marker was
     // posted, so the attempt budget is intact for a real conflict.
     const comments = standDownComments(observed);

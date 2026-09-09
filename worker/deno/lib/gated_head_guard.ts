@@ -149,7 +149,7 @@ export function buildGatedHeadComment(
     gatedHeadMarker(branchName),
     `**Standing down — \`${branchName}\` cannot be pushed to directly.**`,
     "",
-    `${assessment.detail[0]?.toUpperCase()}${assessment.detail.slice(1)}.`,
+    `${capitalise(assessment.detail)}.`,
     "",
     "The automated spelling, CI-fix and merge-conflict passes therefore leave " +
     "this PR alone rather than retrying a push that can never land. Changes " +
@@ -158,6 +158,11 @@ export function buildGatedHeadComment(
     "",
     "This comment is posted once per branch, not once per run.",
   ].join("\n");
+}
+
+/** First letter upper-cased; an empty string stays empty, never "undefined". */
+function capitalise(text: string): string {
+  return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
 }
 
 // ---------------------------------------------------------------------------
