@@ -24,7 +24,7 @@
  */
 
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
-import { prLiveSkipReason, type PrLiveStateReading } from "./pr_live_state.ts";
+import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 import type { EnableAutoMergeResult } from "./pr_auto_merge.ts";
 
@@ -185,13 +185,7 @@ export async function sweepAutoMerge(
           const reading = await prLiveState(repo, pr);
           if (!reading.open) {
             summary.prsSkippedNotOpen++;
-            const message = `Auto-merge sweep: ${prLiveSkipReason(reading)}`;
-            const context = { repo, prNumber: pr.number };
-            if (reading.unknown) {
-              logger.warn(message, { ...context, error: reading.error });
-            } else {
-              logger.info(message, { ...context, state: reading.state });
-            }
+            logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
             continue;
           }
 

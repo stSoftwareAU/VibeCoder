@@ -28,11 +28,22 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { classifyPrLiveState } from "./pr_branch_update.ts";
+import {
+  classifyPrLiveState,
+  makeGhPrStateFetcher,
+} from "./pr_branch_update.ts";
 import type { LogContext, Logger } from "../types.ts";
 
 /** The two live states that mean "do not write to this PR". */
 export type ClosedPrState = "CLOSED" | "MERGED";
+
+/**
+ * A reading that means "do not write to this PR": it is closed or merged, or
+ * its state could not be read at all.
+ */
+export type PrNotOpenReading =
+  | { open: false; state: ClosedPrState; unknown?: undefined }
+  | { open?: undefined; unknown: true; error: string };
 
 /**
  * What one `gh pr view --json state` said about a PR.
@@ -44,11 +55,21 @@ export type ClosedPrState = "CLOSED" | "MERGED";
  */
 export type PrLiveStateReading =
   | { open: true; unknown?: undefined }
-  | { open: false; state: ClosedPrState; unknown?: undefined }
-  | { open?: undefined; unknown: true; error: string };
+  | PrNotOpenReading;
 
 /** Run a `gh` command and return its stdout. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
+
+/**
+ * True when these `gh` args are this module's own live-state read.
+ *
+ * Lives beside the call it recognises so a mock fleet and the real argv
+ * cannot drift: `createMockDeps` answers exactly this shape with `OPEN`, and
+ * the test fixtures use it through `tests/support/pr_live_state_stub.ts`.
+ */
+export function isPrLiveStateRead(args: readonly string[]): boolean {
+  return args[0] === "pr" && args[1] === "view" && args.includes("state");
+}
 
 /**
  * Read a PR's live state, bypassing every cache.
@@ -65,17 +86,9 @@ export async function readPrLiveState(
 ): Promise<PrLiveStateReading> {
   let raw: string;
   try {
-    raw = await gh([
-      "pr",
-      "view",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--json",
-      "state",
-      "--jq",
-      ".state",
-    ]);
+    // The same argv the branch-update pass asks with (Issue #386), so the two
+    // readers of a PR's state cannot drift apart.
+    raw = await makeGhPrStateFetcher(gh)(repo, prNumber);
   } catch (error) {
     return {
       unknown: true,
@@ -101,12 +114,40 @@ export async function readPrLiveState(
  * investigation greps for; the unknown line is deliberately worded differently
  * so "we know it is dead" and "we could not tell" never read the same.
  */
-export function prLiveSkipReason(reading: PrLiveStateReading): string {
+export function prLiveSkipReason(reading: PrNotOpenReading): string {
   if (reading.unknown) return "skipped: PR state unknown";
-  if (reading.open) return "skipped: PR open";
   return reading.state === "MERGED"
     ? "skipped: PR merged"
     : "skipped: PR closed";
+}
+
+/**
+ * Log one pass's stand-down, the same way for all four of them.
+ *
+ * A closed or merged PR is ordinary and goes out at INFO; a state that could
+ * not be read is loud, because a pass that silently stops claiming every cycle
+ * is exactly the failure this module was written to prevent.
+ *
+ * @param logger - The pass's logger.
+ * @param pass - Which pass stood down (e.g. `"CI fix"`).
+ * @param repo - Repository in `owner/repo` format.
+ * @param prNumber - PR number.
+ * @param reading - The not-open reading that caused the skip.
+ */
+export function logPrLiveSkip(
+  logger: Pick<Logger, "info" | "warn">,
+  pass: string,
+  repo: string,
+  prNumber: number,
+  reading: PrNotOpenReading,
+): void {
+  const message = `${pass}: ${prLiveSkipReason(reading)}`;
+  const context: LogContext = { repo, prNumber, pass };
+  if (reading.unknown) {
+    logger.warn(message, { ...context, error: reading.error });
+  } else {
+    logger.info(message, { ...context, state: reading.state });
+  }
 }
 
 /** Inputs for {@link guardPrStillOpen}. */
@@ -136,16 +177,6 @@ export async function guardPrStillOpen(
 ): Promise<PrLiveStateReading> {
   const { repo, prNumber, pass, gh, logger } = options;
   const reading = await readPrLiveState(repo, prNumber, gh);
-  if (reading.open) return reading;
-
-  const message = `${pass}: ${prLiveSkipReason(reading)}`;
-  const context: LogContext = { repo, prNumber, pass };
-  if (reading.unknown) {
-    // Loud: a pass that cannot read PR state every cycle is a pass that has
-    // silently stopped working, and the error is the only clue why.
-    logger.warn(message, { ...context, error: reading.error });
-  } else {
-    logger.info(message, { ...context, state: reading.state });
-  }
+  if (!reading.open) logPrLiveSkip(logger, pass, repo, prNumber, reading);
   return reading;
 }

@@ -38,7 +38,12 @@ import {
   heartbeatStrays,
   trackHeartbeatDirs,
 } from "./support/heartbeat_placement.ts";
-import { isPrStateRead, openPrGh } from "./support/pr_live_state_stub.ts";
+import {
+  isPrLiveStateRead,
+  openPrGh,
+  prWriteCalls,
+  recordingStateGh,
+} from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -275,8 +280,7 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
     const ghCalls: string[][] = [];
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
-        // Issue #1774: the claim-point live-state read — this PR is open.
-        if (isPrStateRead(args)) return Promise.resolve("OPEN");
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         ghCalls.push(args);
         return Promise.resolve("");
       },
@@ -291,8 +295,7 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
       workRoot: tmpDir,
       maxCiRetries: 3,
       ghCommandFn: (args: string[]) => {
-        // Issue #1774: the claim-point live-state read — this PR is open.
-        if (isPrStateRead(args)) return Promise.resolve("OPEN");
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         ghCalls.push(args);
         return Promise.resolve("");
       },
@@ -964,8 +967,7 @@ Deno.test("processCiFailure - uses .pr_response_message as comment body when pre
     };
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
-        // Issue #1774: the claim-point live-state read — this PR is open.
-        if (isPrStateRead(args)) return Promise.resolve("OPEN");
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         if (args[0] === "pr" && args[1] === "comment") {
           const bodyIdx = args.indexOf("--body");
           if (bodyIdx >= 0) {
@@ -1034,8 +1036,7 @@ Deno.test("processCiFailure - falls back to default message when .pr_response_me
     };
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
-        // Issue #1774: the claim-point live-state read — this PR is open.
-        if (isPrStateRead(args)) return Promise.resolve("OPEN");
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         if (args[0] === "pr" && args[1] === "comment") {
           const bodyIdx = args.indexOf("--body");
           if (bodyIdx >= 0) {
@@ -1187,8 +1188,7 @@ Deno.test("processCiFailure - reports accurate failure when push cannot be recov
     };
     const mockGithub: Partial<GitHubDeps> = {
       runGhCommand: (args: string[]) => {
-        // Issue #1774: the claim-point live-state read — this PR is open.
-        if (isPrStateRead(args)) return Promise.resolve("OPEN");
+        if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
         if (args[0] === "pr" && args[1] === "comment") {
           const bodyIdx = args.indexOf("--body");
           if (bodyIdx >= 0) {
@@ -1830,30 +1830,6 @@ Deno.test("processCiFailure - warns when the checkout directory is missing (Issu
 // Issue #1774 — the cached listing is not proof the PR is still open
 // ============================================================================
 
-/**
- * A `gh` stub that answers the claim-point state read with `state` and
- * records every call, so a write to a dead PR is visible.
- */
-function makeStateGh(
-  calls: string[][],
-  state: string,
-): GitHubDeps["runGhCommand"] {
-  return (args: string[]): Promise<string> => {
-    calls.push(args);
-    if (isPrStateRead(args)) return Promise.resolve(state);
-    return Promise.resolve("");
-  };
-}
-
-/** Every gh call that writes to a PR — a comment, a label, a reaction. */
-function writeCalls(calls: readonly string[][]): string[][] {
-  return calls.filter((args) =>
-    args.includes("--body") || args.includes("--add-label") ||
-    args.includes("--remove-label") ||
-    (args[0] === "api" && args.includes("-X"))
-  );
-}
-
 Deno.test("processCiFailure - a PR closed since the cached listing gets no push, comment or label (Issue #1774)", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "ci_fix_closed_" });
   try {
@@ -1861,7 +1837,7 @@ Deno.test("processCiFailure - a PR closed since the cached listing gets no push,
     let claudeRuns = 0;
     let pushes = 0;
     const deps = createMockDeps({
-      github: { runGhCommand: makeStateGh(ghCalls, "CLOSED") },
+      github: { runGhCommand: recordingStateGh(ghCalls, "CLOSED") },
       claude: {
         runClaudeWithRetry: (() => {
           claudeRuns++;
@@ -1911,10 +1887,10 @@ Deno.test("processCiFailure - a PR closed since the cached listing gets no push,
     assertEquals(claudeRuns, 0, "no agent runs against a closed PR");
     assertEquals(pushes, 0, "no push lands on a closed PR");
     assertEquals(
-      writeCalls(ghCalls),
+      prWriteCalls(ghCalls),
       [],
       `a closed PR must receive no comment or label; got ${
-        JSON.stringify(writeCalls(ghCalls))
+        JSON.stringify(prWriteCalls(ghCalls))
       }`,
     );
     assertEquals(
@@ -1936,7 +1912,7 @@ Deno.test("processCiFailure - an unreadable PR state skips the cycle without spe
     const deps = createMockDeps({
       github: {
         runGhCommand: ((args: string[]) =>
-          isPrStateRead(args)
+          isPrLiveStateRead(args)
             ? Promise.reject(new Error("gh: connection reset"))
             : Promise.resolve("")) as GitHubDeps["runGhCommand"],
       },

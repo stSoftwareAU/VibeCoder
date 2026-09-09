@@ -1674,8 +1674,11 @@ check any of them made was "does the head branch still exist on origin".
 VibeCoder#1732 was closed as superseded and, eight minutes later, the CI-fix
 pass claimed it from the cached listing and started writing to it. All four PR
 passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge**
-— therefore call `readPrLiveState(repo, prNumber, gh)` at their claim point,
-before the first write: one `gh pr view --json state`, no cache. A `CLOSED` or
+— therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
+before the first write: one `gh pr view --json state`, no cache. The two
+processors call it directly through `guardPrStillOpen`; the drain and the sweep
+take it as a **required** injected seam, wired to the same function in
+`run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or
 `MERGED` PR is skipped with `skipped: PR closed` / `skipped: PR merged` naming
 the repo and the number, and no push, comment or label follows. An unreadable
 state is **never** treated as open: it logs `skipped: PR state unknown` at WARN

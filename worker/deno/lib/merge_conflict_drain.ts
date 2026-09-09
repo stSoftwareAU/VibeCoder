@@ -67,7 +67,7 @@ import {
   recordDeferral,
   shouldAnnounceDeferral,
 } from "./merge_conflict_deferrals.ts";
-import { prLiveSkipReason, type PrLiveStateReading } from "./pr_live_state.ts";
+import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 
 /**
  * Conflicting PRs one cycle's pass will take.
@@ -182,11 +182,11 @@ export interface ConflictDrainOptions {
    * Re-read the PR's live state at the claim point (Issue #1774).
    *
    * The queue is built from a listing up to ten minutes old, so a PR closed
-   * since it was taken still looks conflicting. Production always supplies
-   * this; a drain given none behaves exactly as it did before, and the
-   * resolution's own writes are the first thing the PR hears about.
+   * since it was taken still looks conflicting. Required, not optional: a
+   * guard that can be switched off by omission is a guard that is off in
+   * production the day someone adds a wiring site and forgets it.
    */
-  prLiveState?: (pr: ConflictingPr) => Promise<PrLiveStateReading>;
+  prLiveState: (pr: ConflictingPr) => Promise<PrLiveStateReading>;
   /**
    * Resolve one conflict. Returns null when the attempt failed loudly.
    *
@@ -451,30 +451,27 @@ export async function drainConflictingPrs(
       // comment or a label, and a state that cannot be read is skipped this
       // cycle too — no attempt is opened, so the PR's budget is untouched and
       // the next pass retries it.
-      if (prLiveState) {
-        const reading = await prLiveState(next);
-        if (!reading.open) {
-          const decision: ConflictPrDecision = {
-            repo: next.repo,
-            prNumber: next.prNumber,
-            outcome: "skipped",
-            reason: {
-              kind: "pr-not-open",
-              state: reading.unknown ? "UNKNOWN" : reading.state,
-            },
-          };
-          decisions.push(decision);
-          recordConflictDecision(logger, decision);
-          logger.info(
-            `Merge-conflict drain: ${prLiveSkipReason(reading)}`,
-            {
-              repo: next.repo,
-              prNumber: next.prNumber,
-              ...(reading.unknown ? { error: reading.error } : {}),
-            },
-          );
-          continue;
-        }
+      const reading = await prLiveState(next);
+      if (!reading.open) {
+        const decision: ConflictPrDecision = {
+          repo: next.repo,
+          prNumber: next.prNumber,
+          outcome: "skipped",
+          reason: {
+            kind: "pr-not-open",
+            state: reading.unknown ? "UNKNOWN" : reading.state,
+          },
+        };
+        decisions.push(decision);
+        recordConflictDecision(logger, decision);
+        logPrLiveSkip(
+          logger,
+          "Merge-conflict drain",
+          next.repo,
+          next.prNumber,
+          reading,
+        );
+        continue;
       }
 
       const lease = acquireLease(next);

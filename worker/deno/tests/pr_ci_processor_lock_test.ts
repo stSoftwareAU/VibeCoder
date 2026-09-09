@@ -32,7 +32,7 @@ import type {
   PrDeps,
 } from "../lib/issue_worker_wiring.ts";
 import type { Logger, Result } from "../types.ts";
-import { isPrStateRead, openPrGh } from "./support/pr_live_state_stub.ts";
+import { isPrLiveStateRead, openPrGh } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -112,8 +112,7 @@ class FakePrComments {
     return (args: string[]): Promise<string> => {
       const joined = args.join(" ");
 
-      // Issue #1774: the claim-point live-state read — this PR is open.
-      if (isPrStateRead(args)) return Promise.resolve("OPEN");
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
 
       if (args[0] === "issue" && args[1] === "comment") {
         const bodyIndex = args.indexOf("--body");

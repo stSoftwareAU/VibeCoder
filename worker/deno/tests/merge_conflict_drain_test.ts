@@ -104,6 +104,8 @@ const alwaysLease = () => ({ release: () => {} });
 Deno.test("drainConflictingPrs - takes every due PR, not one per cycle", async () => {
   const resolved: number[] = [];
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([
       pr("org/alpha", 1),
@@ -126,6 +128,8 @@ Deno.test("drainConflictingPrs - takes every due PR, not one per cycle", async (
 
 Deno.test("drainConflictingPrs - an empty queue does nothing and says so", async () => {
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: () => Promise.resolve(null),
     acquireLease: alwaysLease,
@@ -144,6 +148,8 @@ Deno.test("drainConflictingPrs - a leased-out repo is skipped, never re-selected
   // issue slot holds, and the drain would spin on it for the whole cycle.
   const resolved: number[] = [];
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/held", 1), pr("org/free", 2)]),
     acquireLease: (conflict) =>
@@ -165,6 +171,8 @@ Deno.test("drainConflictingPrs - a failed resolution does not stall the queue", 
   // its own attempt budget; the drain moves on to the next one.
   const attempted: number[] = [];
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]),
     acquireLease: alwaysLease,
@@ -186,6 +194,8 @@ Deno.test("drainConflictingPrs - the lease is released even when the attempt thr
   let thrown: unknown = null;
   try {
     await drainConflictingPrs({
+      // Issue #1774: this PR is still open at the claim point.
+      prLiveState: () => Promise.resolve({ open: true }),
       logger: makeSilentLogger(),
       findNext: queueFinder([pr("org/alpha", 1)]),
       acquireLease: (conflict) => ({
@@ -207,6 +217,8 @@ Deno.test("drainConflictingPrs - stops when too little of the cycle remains", as
   const resolved: number[] = [];
   let nowMs = 1_000_000;
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]),
     acquireLease: alwaysLease,
@@ -228,6 +240,8 @@ Deno.test("drainConflictingPrs - stops when too little of the cycle remains", as
 Deno.test("drainConflictingPrs - a pass with no room starts nothing", async () => {
   let asked = 0;
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: () => {
       asked += 1;
@@ -253,6 +267,8 @@ Deno.test("drainConflictingPrs - one repo's backlog cannot take the whole run", 
   );
   const resolved: number[] = [];
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder(queue),
     acquireLease: alwaysLease,
@@ -276,6 +292,8 @@ Deno.test("drainConflictingPrs - one repo's backlog cannot take the whole run", 
 Deno.test("drainConflictingPrs - a deferred PR records repo-leased", async () => {
   const log = makeRecordingLogger();
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: log,
     findNext: queueFinder([pr("org/held", 1), pr("org/free", 2)]),
     acquireLease: (conflict) =>
@@ -313,6 +331,8 @@ Deno.test("drainConflictingPrs - the summary names the cap and its bound", async
   );
 
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: log,
     findNext: queueFinder(queue),
     acquireLease: alwaysLease,
@@ -331,6 +351,8 @@ Deno.test("drainConflictingPrs - the summary names the deadline and what was lef
   let nowMs = 1_000_000;
 
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: log,
     findNext: queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]),
     acquireLease: alwaysLease,
@@ -353,6 +375,8 @@ Deno.test("drainConflictingPrs - an empty queue still says why it stopped", asyn
   const log = makeRecordingLogger();
 
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: log,
     findNext: () => Promise.resolve(null),
     acquireLease: alwaysLease,
@@ -377,6 +401,8 @@ Deno.test("drainConflictingPrs - refuses to start a resolution the cycle cannot 
   // agent at 11m13s — charged to the PR as a failed attempt.
   let asked = 0;
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: () => {
       asked += 1;
@@ -400,6 +426,8 @@ Deno.test("drainConflictingPrs - never grants an agent more time than the budget
   const granted: (number | undefined)[] = [];
   const remainingMs = 30 * 60 * 1000;
   await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/alpha", 1)]),
     acquireLease: alwaysLease,
@@ -428,6 +456,8 @@ Deno.test("drainConflictingPrs - never grants an agent more time than the budget
 Deno.test("drainConflictingPrs - grants the configured agent timeout when it fits", async () => {
   const granted: (number | undefined)[] = [];
   await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/alpha", 1)]),
     acquireLease: alwaysLease,
@@ -446,6 +476,8 @@ Deno.test("drainConflictingPrs - grants the configured agent timeout when it fit
 Deno.test("drainConflictingPrs - a pass that declares no agent timeout grants none", async () => {
   const granted: (number | undefined)[] = [];
   await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/alpha", 1)]),
     acquireLease: alwaysLease,
@@ -465,6 +497,8 @@ Deno.test("drainConflictingPrs - an attempt the run ended stops the pass", async
   // next PR would open an attempt marker and immediately withdraw it too.
   const resolved: number[] = [];
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]),
     acquireLease: alwaysLease,
@@ -493,6 +527,8 @@ Deno.test("drainConflictingPrs - an uncharged attempt that reached an answer doe
   // PR in the cycle under a log line naming the wrong cause.
   const resolved: number[] = [];
   const result = await drainConflictingPrs({
+    // Issue #1774: this PR is still open at the claim point.
+    prLiveState: () => Promise.resolve({ open: true }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]),
     acquireLease: alwaysLease,

@@ -19,6 +19,7 @@ import type { GitHubClient, Logger, Result, WorkerConfig } from "../types.ts";
 
 // GitHub operations
 import { createGitHubClient, runGhCommand } from "./github.ts";
+import { isPrLiveStateRead } from "./pr_live_state.ts";
 import { safeGhCommand } from "./gh_wrapper.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { handleIssueFailure } from "./label_failure.ts";
@@ -742,9 +743,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     // write. A mock fleet's PRs are open, so the default answers that one
     // read; a test that wants a closed PR overrides `runGhCommand` itself.
     runGhCommand: (args: string[]) =>
-      args[0] === "pr" && args[1] === "view" && args.includes("state")
-        ? Promise.resolve("OPEN")
-        : Promise.resolve(""),
+      isPrLiveStateRead(args) ? Promise.resolve("OPEN") : Promise.resolve(""),
     ensureLabelExists: mockFn<GitHubDeps["ensureLabelExists"]>(() =>
       Promise.resolve({ ok: true, value: undefined })
     ),
