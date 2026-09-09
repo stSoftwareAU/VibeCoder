@@ -443,21 +443,23 @@ interface UnstageWorkerStateResult {
 
 /**
  * Stage with intent — drop the worker's own state files from the index
- * (Issue #1661, part of #1644).
+ * (Issue #1661, part of #1644; Issue #1711).
  *
  * The worker writes `.heartbeat_<owner>_<repo>_<n>`,
  * `.heartbeat-marker_<owner>_<repo>_<n>` and `.vibe_default_branch` into the
- * directory it runs from. When that is a repository clone, `git add -A` stages
- * them and the pre-commit safety gate (Issue #1758) refuses the entire commit
- * — a merge-conflict resolution is lost over a file the worker itself dropped
- * there.
+ * directory it runs from, and its prompts ask the agent to write its PR reply
+ * into `.pr_response_message` there (Issue #1711). When that is a repository
+ * clone, `git add -A` stages them and the pre-commit safety gate (Issue #1758)
+ * refuses the entire commit — a merge-conflict resolution or a CI fix is lost
+ * over a file the worker itself put there.
  *
  * So this runs BETWEEN `git add -A` and the gate: the gate never sees them and
  * is left completely unchanged, and a genuinely hidden or secret-bearing file
  * is still refused exactly as before. Each unstaged path is warned about
- * rather than swallowed — the file being in the tree is a bug worth seeing —
- * but it is not a reason to fail the commit. The file itself is untouched on
- * disk; only the index entry goes.
+ * rather than swallowed — a heartbeat or cache file in the tree is a bug worth
+ * seeing — but it is not a reason to fail the commit. The file itself is
+ * untouched on disk; only the index entry goes. That matters for the reply:
+ * `readPrResponseMessage` consumes it *after* the push.
  *
  * A failing `git reset` is returned as an error, never ignored: carrying
  * worker state into the gate is precisely what this exists to prevent.
@@ -599,10 +601,11 @@ export async function commitAndPushPending(
       };
     }
 
-    // Stage with intent (Issue #1661) — remove the worker's own state files
-    // from the index before the safety gate sees them, so a stray
-    // `.heartbeat_*` or `.vibe_default_branch` in the clone can no longer
-    // cost the whole commit.
+    // Stage with intent (Issues #1661, #1711) — remove the worker's own
+    // state files from the index before the safety gate sees them, so a
+    // stray `.heartbeat_*`, `.vibe_default_branch` or the agent's
+    // `.pr_response_message` in the clone can no longer cost the whole
+    // commit.
     const unstageResult = await unstageWorkerStateFiles(options);
     if (!unstageResult.ok) {
       await runGitCommand(["reset", "--"], options);

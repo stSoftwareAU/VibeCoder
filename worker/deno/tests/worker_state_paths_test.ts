@@ -14,7 +14,9 @@ import {
   HEARTBEAT_FILE_PREFIX,
   HEARTBEAT_MARKER_FILE_PREFIX,
   isWorkerStatePath,
+  PR_RESPONSE_MESSAGE_FILE,
 } from "../lib/worker_state_paths.ts";
+import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
 import {
   heartbeatFilePath,
   markerStateFilePath,
@@ -26,6 +28,7 @@ Deno.test("isWorkerStatePath - matches the worker's own state files", () => {
       ".heartbeat_stSoftwareAU_VibeCoder_1661",
       ".heartbeat-marker_stSoftwareAU_VibeCoder_1661",
       ".vibe_default_branch",
+      ".pr_response_message",
       ".heartbeat_owner_repo-with-dash_7",
       ".heartbeat-marker_owner_repo.name_12345",
     ]
@@ -52,6 +55,13 @@ Deno.test("isWorkerStatePath - matches the paths the writers actually produce", 
   // Basenames — what git reports for a file at the root of the clone.
   assertEquals(isWorkerStatePath(heartbeat.slice("/work/".length)), true);
   assertEquals(isWorkerStatePath(marker.slice("/work/".length)), true);
+
+  // The agent's PR reply file (Issue #1711): the reader in
+  // `pr_branch_preparation.ts` and the matcher share one constant.
+  const response = prResponseMessagePath("/work");
+  assertEquals(response, `/work/${PR_RESPONSE_MESSAGE_FILE}`);
+  assertEquals(PR_RESPONSE_MESSAGE_FILE, ".pr_response_message");
+  assertEquals(isWorkerStatePath(response.slice("/work/".length)), true);
 });
 
 Deno.test("isWorkerStatePath - rejects nested, truncated and unrelated paths", () => {
@@ -62,6 +72,7 @@ Deno.test("isWorkerStatePath - rejects nested, truncated and unrelated paths", (
       ".heartbeat-marker_x_1/notes.txt",
       "foo/.vibe_default_branch",
       "docs/.heartbeat_x_1",
+      "foo/.pr_response_message",
       // Missing the trailing `_<issue>`.
       ".heartbeat_x",
       ".heartbeat-marker_x",
@@ -72,6 +83,9 @@ Deno.test("isWorkerStatePath - rejects nested, truncated and unrelated paths", (
       ".heartbeats_x_1",
       ".vibe_default_branch.bak",
       ".vibe_default_branchx",
+      ".pr_response_message.bak",
+      ".pr_response_messagex",
+      "pr_response_message",
       // Genuinely secret-bearing paths must stay the safety gate's business.
       ".env",
       "credentials.json",
