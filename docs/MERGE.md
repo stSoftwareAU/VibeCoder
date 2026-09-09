@@ -713,8 +713,9 @@ What each pass does with a `milestone/**` head:
   be pushed, and no attempt or retry is spent — the guard runs before
   `recordCiCheckRetry` and before the merge-conflict attempt marker is posted.
 - **One comment per branch, not one per run.** The comment carries a hidden
-  `<!-- vibe-gated-head branch="…" -->` marker; a later run that finds the
-  marker stays silent. A comment thread that cannot be read posts nothing and
+  marker — `<!-- vibe-gated-head branch="…" -->`, or
+  `<!-- vibe-milestone-head branch="…" -->` for the merge-conflict stand-down;
+  a later run that finds the marker stays silent. A comment thread that cannot be read posts nothing and
   says so in the log — a duplicate every run is the noise this removes.
 - **Only `milestone/**` heads are assessed.** `GET /rules/branches/{branch}`
   does not account for the caller's bypass permission, so assessing every head
@@ -805,8 +806,10 @@ default tip clears the pacing deferral, never the attempt count.
   — `getReportedCheckNames()`, the genuinely-reported check names the candidates
   are intersected with.
 - [`worker/deno/lib/gated_head_guard.ts`](../worker/deno/lib/gated_head_guard.ts)
-  — `assessGatedHead()` / `guardGatedHead()`, the stand-down the spelling,
-  CI-fix and merge-conflict passes make on a head no direct push can reach.
+  — `assessGatedHead()` / `guardGatedHead()`, the stand-down the spelling and
+  CI-fix passes make on a head no direct push can reach, and
+  `standDownMilestoneHead()`, the merge-conflict pass's own stand-down on any
+  `milestone/**` head (Issue #1772).
 - [`worker/deno/lib/branch_push_policy.ts`](../worker/deno/lib/branch_push_policy.ts)
   — `assessBranchPushPolicy()`, the direct-push / opt-out detection that keeps a
   data repo's branch unlocked.

@@ -348,3 +348,33 @@ Deno.test("buildMilestoneHeadComment - names the branch and the sync that owns i
   assertStringIncludes(body, "milestone branch sync");
   assertStringIncludes(body, "no resolution attempt is spent");
 });
+
+Deno.test("standDownMilestoneHead - an unreadable comment thread posts nothing and says so", async () => {
+  // Same fail-loud stance as the gated-head guard: an unreadable thread is
+  // not an empty one, and reading it as empty is how "once per branch"
+  // becomes once per run.
+  resetGatedHeadReportsForTest();
+  const warnings: string[] = [];
+  const logger = makeSilentLogger();
+  logger.warn = (message: string) => warnings.push(message);
+  const gh = makeGh({ throwOn: "pr view" });
+
+  const stoodDown = await standDownMilestoneHead({
+    repo: "org/repo",
+    prNumber: 4702,
+    branchName: MILESTONE_HEAD,
+    logger,
+    runGhCommand: gh.run,
+  });
+
+  assertEquals(stoodDown, true, "the stand-down holds whatever gh answers");
+  assertEquals(
+    gh.calls.some((args) => args[0] === "pr" && args[1] === "comment"),
+    false,
+  );
+  assertEquals(
+    warnings.some((w) => w.includes("Could not record the stand-down")),
+    true,
+    "the failure to record is loud in the log",
+  );
+});
