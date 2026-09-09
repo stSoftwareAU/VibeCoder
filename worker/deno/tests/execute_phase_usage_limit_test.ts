@@ -24,6 +24,10 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { handoverFilePath } from "../lib/preserved_wip_branch.ts";
 import { loadResumeState } from "../lib/resume_state_store.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
+import {
+  buildSessionResumeFlags,
+  type SessionResumeState,
+} from "../lib/session_resume.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { WorkerConfig } from "../types.ts";
 
@@ -61,6 +65,8 @@ interface UsageLimitRun {
   calls: string[];
   /** The `--resume` session id each invocation was given, in order. */
   sessionIds: string[];
+  /** Whether each invocation would carry `--resume` rather than a new id. */
+  resumeFlags: boolean[];
   /** The execute budget each invocation was given, in seconds. */
   timeouts: number[];
   /** Commit subjects `commitAndPushPending` was asked to preserve. */
@@ -134,6 +140,7 @@ async function runExhausted(
   let noteAtCommit: string | undefined;
   let invocations = 0;
   const sessionIds: string[] = [];
+  const resumeFlags: boolean[] = [];
   const timeouts: number[] = [];
   // The uncommitted work the agent left: preserved by the first `wip:`
   // commit, so git reports a clean tree afterwards, exactly as it would.
@@ -146,12 +153,16 @@ async function runExhausted(
       claude: {
         runClaudeWithRetry: (async (options: Record<string, unknown>) => {
           const resume = options.sessionResumeState as
-            | { sessionId: string }
+            | SessionResumeState
             | undefined;
           const persisted = await loadResumeState(workDir, REPO, ISSUE);
           // The id itself, never a "same"/"none" verdict the fake computes:
           // a verdict cannot disagree with the code that wrote it.
           sessionIds.push(resume?.sessionId ?? "");
+          // What the CLI would actually be given: `--resume <id>` or a
+          // fresh `--session-id <id>`. Decided by the production function,
+          // not by the fake's opinion of it.
+          resumeFlags.push(buildSessionResumeFlags(resume).resume);
           timeouts.push(Number(options.timeoutSeconds));
           calls.push(
             `invoke#${++invocations} resumeState=${
@@ -227,6 +238,7 @@ async function runExhausted(
     return {
       calls,
       sessionIds,
+      resumeFlags,
       timeouts,
       commits,
       noteAtCommit,
@@ -266,6 +278,9 @@ Deno.test("execute #1670 - a usage limit checkpoints the work and the resume poi
   // — and finds the pointer to the checkpointed branch already on disk.
   assert(run.sessionIds[0], "the first invocation must carry a session id");
   assertEquals(run.sessionIds[1], run.sessionIds[0]);
+  // …and it RESUMES that session rather than re-declaring the same id, which
+  // the CLI refuses: `--session-id` first, `--resume` on the switch.
+  assertEquals(run.resumeFlags, [false, true]);
   assertStringIncludes(at(run, 2), `resumeState=${BRANCH}`);
   // …inside the phase deadline: the switch gets what is left of the execute
   // budget, never a fresh one on top of it.

@@ -44,7 +44,10 @@ import {
   type PreservedRunWip,
   preserveRunWip,
 } from "./run_wip_preservation.ts";
-import type { ClaudeRunResult } from "../claude_runner.ts";
+import {
+  type ClaudeRunResult,
+  DEFAULT_MAX_TOTAL_INVOCATIONS,
+} from "../claude_runner.ts";
 import {
   classifyExistingPrForIssue,
   type ExistingPrDisposition,
@@ -142,6 +145,23 @@ const MIN_CREDENTIAL_SWITCH_RUNWAY_SECONDS = 60;
  */
 function isUsageLimitResult(result: ClaudeRunResult): boolean {
   return result.exitCode === 2 && result.usageLimit !== undefined;
+}
+
+/**
+ * What is left of the #3648 call ceiling after `result`'s call, so the
+ * credential switch spends the same budget rather than opening a fresh one.
+ * At least 1 — a switch worth making is worth one invocation — and undefined
+ * when the runner did not report what it billed (a test double, an older
+ * result), which leaves the default ceiling exactly as it was.
+ */
+function remainingInvocationBudget(
+  result: ClaudeRunResult,
+): number | undefined {
+  if (result.invocationsBilled === undefined) return undefined;
+  return Math.max(
+    1,
+    DEFAULT_MAX_TOTAL_INVOCATIONS - result.invocationsBilled,
+  );
 }
 
 /**
@@ -631,7 +651,10 @@ async function executeClaudeBody(
   // duration and the phase-end checkpoint taken before it returns. Called
   // again — once — when the first invocation's subscription window ran out
   // and another credential is worth trying (Issue #1670).
-  const invokeAgent = async (timeoutSeconds: number) => {
+  const invokeAgent = async (
+    timeoutSeconds: number,
+    maxTotalInvocations?: number,
+  ) => {
     const checkpoints = startCheckpoints();
     try {
       return await deps.claude.runClaudeWithRetry(
@@ -661,6 +684,10 @@ async function executeClaudeBody(
         },
         {
           maxRetries: config.maxRateLimitRetries,
+          // Issue #3648's ceiling is call-scoped, so a second call would
+          // otherwise start a fresh budget. The switch spends what the
+          // exhausted call left (Issue #1670).
+          ...(maxTotalInvocations !== undefined ? { maxTotalInvocations } : {}),
         },
       );
     } finally {
@@ -727,6 +754,17 @@ async function executeClaudeBody(
     }
 
     credentialSwitches++;
+    // The exhausted invocation established the CLI session, so the next one
+    // must RESUME it: `buildSessionResumeFlags` emits `--resume` only once a
+    // phase is recorded, and re-sending `--session-id` with an id already in
+    // use is refused by the CLI (Issue #1580). Recorded before the pointer is
+    // saved below, so a later claim reads the same advanced count.
+    if (state.sessionResumeState) {
+      state.sessionResumeState = recordPhaseCompletion(
+        state.sessionResumeState,
+      );
+      await saveCheckpointState();
+    }
     logger.warn(
       "Claude's subscription window ran out — the work is checkpointed on " +
         `'${state.branchName}'; re-invoking so the pre-spawn quota gate can ` +
@@ -739,7 +777,10 @@ async function executeClaudeBody(
     supersededOutput = state.claudeOutput;
     // Inside the phase deadline: the switched-to invocation gets the budget
     // this phase has left, never a fresh hour on top of the one just spent.
-    claudeResult = await invokeAgent(executeTimeoutSeconds - elapsedSeconds);
+    claudeResult = await invokeAgent(
+      executeTimeoutSeconds - elapsedSeconds,
+      remainingInvocationBudget(claudeResult.value),
+    );
   }
 
   if (!claudeResult.ok) {
