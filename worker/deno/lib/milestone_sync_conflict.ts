@@ -147,9 +147,20 @@ export function conflictDiagnosticTitle(
   milestoneBranch: string,
   defaultSha: string,
 ): string {
-  return `Milestone sync merged with conflicts: ${milestoneBranch} @ ${
+  return `${conflictDiagnosticTitlePrefix(milestoneBranch)}${
     defaultSha ? short(defaultSha) : UNRESOLVED_SHA
   }`;
+}
+
+/**
+ * The branch half of {@link conflictDiagnosticTitle}, without the commit.
+ *
+ * The close-out that retires these diagnostics once the branch syncs
+ * (Issue #1769) knows the branch but not which commit conflicted, so both
+ * halves read the title from here rather than spelling it twice.
+ */
+export function conflictDiagnosticTitlePrefix(milestoneBranch: string): string {
+  return `Milestone sync merged with conflicts: ${milestoneBranch} @ `;
 }
 
 /** Everything the conflict escalation names. */

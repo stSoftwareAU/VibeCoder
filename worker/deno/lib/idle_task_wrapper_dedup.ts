@@ -94,6 +94,15 @@ export interface TitleMarkerDedupQuery extends AlertDedupAuthorOptions {
   extraJsonFields?: readonly string[];
   /** `--limit`. Defaults to 10, the wrapper templates' existing value. */
   limit?: number;
+  /**
+   * How a candidate's title is matched. Defaults to exact equality with
+   * {@link TitleMarkerDedupQuery.title}, which is what every wrapper template
+   * needs. A caller whose title carries a variable tail — the milestone-sync
+   * conflict diagnostic is titled per conflicting commit (Issue #1769) —
+   * states the comparison instead. The author check is unaffected: a looser
+   * title never widens *who* a match may be attributed to.
+   */
+  titleMatches?: (title: string) => boolean;
   /** Sink for the author-verification log lines. Defaults to `console.error`. */
   log?: (message: string) => void;
 }
@@ -142,7 +151,9 @@ export async function findFleetAuthoredIssuesTitled(
     const row = item as Record<string, unknown>;
     if (typeof row.number !== "number") continue;
     if (typeof row.title !== "string") continue;
-    if (row.title.trim() !== query.title) continue;
+    const title = row.title.trim();
+    const matches = query.titleMatches ?? ((t: string) => t === query.title);
+    if (!matches(title)) continue;
     candidates.push(row as unknown as TitleMarkerDedupRow);
   }
 

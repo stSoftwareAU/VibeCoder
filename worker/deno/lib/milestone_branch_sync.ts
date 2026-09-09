@@ -15,7 +15,6 @@ import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
-import { findFleetAuthoredIssuesTitled } from "./idle_task_wrapper_dedup.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { fetchClosedIssuesByMilestone } from "./issue_query.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
@@ -33,7 +32,6 @@ import {
 } from "./milestone_activity_gate.ts";
 import {
   buildConflictEscalationComment,
-  conflictDiagnosticTitle,
   describeBranchTips,
   type MilestoneSyncConflict,
   type MilestoneSyncOutcome,
@@ -46,6 +44,11 @@ import {
   type FileDecision,
   isConflictEscalation,
 } from "./milestone_conflict_triage.ts";
+import {
+  type MilestoneEscalationTarget,
+  resolveMilestoneEscalationTarget,
+} from "./milestone_escalation_target.ts";
+import { closeResolvedSyncDiagnostics } from "./milestone_sync_diagnostic_closeout.ts";
 import {
   loadSyncStreaks,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
@@ -94,6 +97,12 @@ export type LocalCloneExistsFn = (repo: string) => Promise<boolean>;
 export interface ActiveMilestone {
   /** The milestone title (e.g., "v1.0"). */
   milestoneTitle: string;
+  /**
+   * The GitHub milestone number (the API id, not the title). An escalation
+   * with no parent planning issue reads the milestone's open children through
+   * it (Issue #1769).
+   */
+  milestoneNumber: number;
   /** The derived milestone branch name (e.g., "milestone/v1-0"). */
   milestoneBranch: string;
   /** The repository's default branch (e.g., "main", "Develop"). */
@@ -161,6 +170,12 @@ export interface MilestoneBranchSyncDeps {
    * the streak. Unset (tests, ad hoc callers): no streak tracking.
    */
   streakPath?: string;
+  /**
+   * Fleet-identity inputs for the diagnostic close-out (Issue #1769). Omitted
+   * (production) means "read the configured fleet identity"; a test states
+   * the fleet instead of writing a config file.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /**
    * Path of the milestone activity file (Issue #1488). When set, the
    * REST `closed_issues` count observed for each milestone is persisted
@@ -340,6 +355,7 @@ export async function findActiveMilestoneBranches(
 
       activeMilestones.push({
         milestoneTitle: milestone.title,
+        milestoneNumber: milestone.number,
         milestoneBranch: createMilestoneBranchName(milestone.title),
         defaultBranch,
         closedCountChanged,
@@ -537,6 +553,16 @@ export async function syncMilestoneBranches(
           lastSyncTimes.set(key, Date.now());
           synced++;
 
+          // The branch has synced, so any diagnostic the old escalation path
+          // filed for it is describing a condition that is over (Issue #1769).
+          await closeResolvedSyncDiagnostics({
+            repo,
+            milestoneBranch: milestone.milestoneBranch,
+            ghCommandFn,
+            log,
+            ...(deps.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
+          });
+
           // A merge that conflicted still landed, but the resolution favoured
           // the default branch and nobody chose it (Issue #1558). Report it
           // now, while the divergence is one day wide — once per conflicting
@@ -634,7 +660,6 @@ export async function syncMilestoneBranches(
                 syncResult.error.analyses,
                 syncResult.error.resolved,
                 syncResult.error.gateFailure,
-                conflictKey,
                 ghCommandFn,
                 log,
               );
@@ -756,39 +781,29 @@ async function escalateSyncConflict(
   const what = `a conflicting milestone sync merge for ` +
     `'${milestone.milestoneBranch}' (Issue #1558)`;
 
-  const issueNumber = trackingIssueFromMilestoneTitle(milestone.milestoneTitle);
-  if (issueNumber === null) {
-    // A conflict the worker resolved itself is a report, not an escalation
-    // (Issue #1559): filing a `needs-human` issue for it is the very move
-    // this issue removed. The decisions are on the merge commit and in the
-    // log; only a resolution nobody could make reaches a human.
-    if (conflict.resolution === "auto") {
-      log(
-        `Resolved ${what} in ${repo} automatically; the milestone has no ` +
-          `tracking issue, so the reasoning is on the merge commit rather ` +
-          `than in a comment.`,
-      );
-      return true;
-    }
-    return await fileStuckSyncDiagnostic(
-      repo,
-      milestone.milestoneBranch,
-      body,
-      ghCommandFn,
-      log,
-      what,
-      {},
-      conflictDiagnosticTitle(milestone.milestoneBranch, conflict.defaultSha),
+  // A conflict the worker resolved itself is a report, not an escalation
+  // (Issue #1559): with no tracking issue to report it on, the decisions are
+  // on the merge commit and in the log. Only a resolution nobody could make
+  // goes looking for a human's issue to land on.
+  if (
+    conflict.resolution === "auto" &&
+    trackingIssueFromMilestoneTitle(milestone.milestoneTitle) === null
+  ) {
+    log(
+      `Resolved ${what} in ${repo} automatically; the milestone has no ` +
+        `tracking issue, so the reasoning is on the merge commit rather ` +
+        `than in a comment.`,
     );
+    return true;
   }
 
-  return await postEscalationComment(
+  return await escalateToExistingIssue(
     repo,
-    issueNumber,
+    milestone,
     body,
+    what,
     ghCommandFn,
     log,
-    what,
   );
 }
 
@@ -810,8 +825,6 @@ async function escalateConflictAnalysis(
   resolved: FileDecision[],
   /** What the verification said, when it is what refused the resolution. */
   gateFailure: string | undefined,
-  /** The default-branch commit that conflicted, for the diagnostic's title. */
-  defaultSha: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
 ): Promise<boolean> {
@@ -839,27 +852,13 @@ async function escalateConflictAnalysis(
   const what = `a milestone sync conflict only a human can resolve for ` +
     `'${milestone.milestoneBranch}' (Issue #1559)`;
 
-  const issueNumber = trackingIssueFromMilestoneTitle(milestone.milestoneTitle);
-  if (issueNumber === null) {
-    return await fileStuckSyncDiagnostic(
-      repo,
-      milestone.milestoneBranch,
-      body,
-      ghCommandFn,
-      log,
-      what,
-      {},
-      conflictDiagnosticTitle(milestone.milestoneBranch, defaultSha),
-    );
-  }
-
-  return await postEscalationComment(
+  return await escalateToExistingIssue(
     repo,
-    issueNumber,
+    milestone,
     body,
+    what,
     ghCommandFn,
     log,
-    what,
   );
 }
 
@@ -900,156 +899,88 @@ async function escalateMergeGateFailure(
     })
   }\n\n${describeBranchTips(tips)}`;
 
-  const issueNumber = trackingIssueFromMilestoneTitle(milestone.milestoneTitle);
-  if (issueNumber === null) {
-    // Issue #1465: no `#NNN` in the title used to mean no destination and a
-    // silent `false`. File where a human will see it instead.
-    return await fileStuckSyncDiagnostic(
-      repo,
-      milestone.milestoneBranch,
-      gateBody,
-      ghCommandFn,
-      log,
-      `a refused milestone sync merge for '${milestone.milestoneBranch}' ` +
-        `(Issues #974, #1465)`,
-    );
-  }
-
-  return await postEscalationComment(
+  return await escalateToExistingIssue(
     repo,
-    issueNumber,
+    milestone,
     gateBody,
-    ghCommandFn,
-    log,
     `a refused milestone sync merge for '${milestone.milestoneBranch}' ` +
       `(Issue #974)`,
+    ghCommandFn,
+    log,
   );
 }
 
 /**
- * Post one escalation comment on a tracking issue, best-effort.
+ * Post one escalation comment where a human will see it (Issue #1769).
  *
- * Shared by both milestone-sync escalations so there is one place that knows
+ * The destination is an issue that already exists — the milestone's parent
+ * planning issue, reopened when planning has closed it, else its oldest open
+ * child. Filing a fresh `needs-human` issue is no longer one of the outcomes:
+ * that path produced one issue per branch and per conflicting commit, and
+ * nothing ever closed them.
+ *
+ * A milestone with neither destination gets one log line and counts as
+ * escalated, so the line is written once rather than every cycle. A comment
+ * that could not be posted counts as NOT escalated, so it is retried.
+ *
+ * @param what - Names the escalation in the log lines.
+ * @returns True when the escalation reached a human, or had nowhere to go.
+ */
+async function escalateToExistingIssue(
+  repo: string,
+  milestone: ActiveMilestone,
+  body: string,
+  what: string,
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const target: MilestoneEscalationTarget =
+    await resolveMilestoneEscalationTarget({
+      repo,
+      milestone: {
+        title: milestone.milestoneTitle,
+        number: milestone.milestoneNumber,
+        branch: milestone.milestoneBranch,
+      },
+      ghCommandFn,
+      log,
+    });
+
+  if (target.kind === "none") {
+    log(
+      `No open issue to carry ${what} in ${repo}: the milestone has no ` +
+        `parent planning issue and no open children, so the failure stands ` +
+        `in this log and no issue is filed for it (Issue #1769).`,
+    );
+    return true;
+  }
+
+  const preamble = target.kind === "parent" && target.reopened
+    ? `_Reopened by the milestone branch sync: \`${milestone.milestoneBranch}\` ` +
+      `needs a human, and this is the milestone's own planning issue ` +
+      `(Issue #1769)._\n\n`
+    : "";
+
+  return await postEscalationComment(
+    repo,
+    target.issue,
+    `${preamble}${body}`,
+    ghCommandFn,
+    log,
+    what,
+  );
+}
+
+/**
+ * Post one escalation comment on an existing issue, best-effort.
+ *
+ * Shared by every milestone-sync escalation so there is one place that knows
  * how the comment is posted and how a failure to post it is reported. Returns
  * true only when the comment went out, so a caller marks its streak escalated
  * and does not repeat it every cycle.
  *
  * @param what - Names the escalation in both log lines
  */
-/**
- * Title of the diagnostic filed when a stalled sync has no tracking issue
- * (Issue #1465). Keyed on the milestone BRANCH, so a stall is one issue
- * rather than one per cycle, and both escalation kinds share the destination.
- */
-export function stuckSyncDiagnosticTitle(milestoneBranch: string): string {
-  return `Milestone branch sync is stuck: ${milestoneBranch}`;
-}
-
-/**
- * Escalate a stalled sync that has nowhere to comment (Issue #1465).
- *
- * Both escalations used to resolve their destination by parsing `#NNN` out of
- * the milestone TITLE, and returned `false` when there was none. Every
- * milestone open when this was found had an unprefixed title, so the
- * escalation was off for effectively all of the fleet's work — and off
- * silently, because `false` is indistinguishable from "nothing to report".
- * `milestone/fix-scan-issues-20260906` sat 32 commits behind `main` for over
- * a day with 14 conflicting files, and nothing was raised.
- *
- * A tracking issue only exists once a milestone completes, so the title-parse
- * path covers the minority case by construction. This is the destination that
- * always exists: an issue on the repository whose branch is stuck, deduped by
- * title so a branch stuck for days produces one issue, not one per cycle.
- *
- * Best-effort by design, but never silent. A lookup that fails falls through
- * and files anyway — a duplicate issue is a far smaller problem than a stall
- * nobody hears about. Only a failed *create* returns false, and it says so.
- *
- * @param what - Names the escalation in the log lines.
- * @returns True when the stall is now visible to a human.
- */
-async function fileStuckSyncDiagnostic(
-  repo: string,
-  milestoneBranch: string,
-  body: string,
-  ghCommandFn: GhCommandFn,
-  log: (message: string) => void,
-  what: string,
-  dedupAuthors: AlertDedupAuthorOptions = {},
-  /** Overrides the stuck-sync title — a conflict report is not a stall. */
-  title: string = stuckSyncDiagnosticTitle(milestoneBranch),
-): Promise<boolean> {
-  try {
-    // Author-verified, never title-only (the `marker_dedup_author_cap`
-    // invariant). A lookup that trusts a title alone lets anyone suppress
-    // this escalation for ever by opening an issue with the same title — a
-    // silent "already handled" is exactly the failure this escalation exists
-    // to prevent, so the dedup must not reintroduce it. `fleetAuthors` is
-    // resolved once, from the same fleet definition every other alert uses.
-    const matches = await findFleetAuthoredIssuesTitled({
-      repo,
-      title,
-      context: `stuck milestone sync ${milestoneBranch}`,
-      ghCommand: ghCommandFn,
-      searchExpression: `${title} in:title`,
-      limit: 50,
-      log,
-      ...dedupAuthors,
-    });
-    const match = matches[0];
-    if (match) {
-      log(
-        `Stalled milestone sync for '${milestoneBranch}' in ${repo} is ` +
-          `already tracked by issue #${match.number} — not filing again.`,
-      );
-      return true;
-    }
-  } catch (err) {
-    // Fall through and file: a duplicate is cheaper than a silent stall.
-    log(
-      `Could not check for an existing diagnostic for '${milestoneBranch}' ` +
-        `in ${repo}, filing anyway: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-    );
-  }
-
-  const create = (withLabel: boolean): string[] => [
-    "issue",
-    "create",
-    "--repo",
-    repo,
-    "--title",
-    title,
-    "--body",
-    body,
-    ...(withLabel ? ["--label", "needs-human"] : []),
-  ];
-
-  try {
-    await ghCommandFn(create(true));
-    log(`Filed a diagnostic for ${what} in ${repo}: ${title}`);
-    return true;
-  } catch {
-    // A repository without the `needs-human` label must still get the issue.
-    try {
-      await ghCommandFn(create(false));
-      log(
-        `Filed a diagnostic for ${what} in ${repo} without a label: ${title}`,
-      );
-      return true;
-    } catch (err) {
-      log(
-        `ESCALATION FAILED: a stalled milestone sync for '${milestoneBranch}' ` +
-          `in ${repo} could not be reported to anyone — ${
-            err instanceof Error ? err.message : String(err)
-          } (Issue #1465). ${what}`,
-      );
-      return false;
-    }
-  }
-}
-
 async function postEscalationComment(
   repo: string,
   issueNumber: number,
@@ -1095,8 +1026,6 @@ async function escalateSyncFailure(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
 ): Promise<boolean> {
-  const issueNumber = trackingIssueFromMilestoneTitle(milestone.milestoneTitle);
-
   // Ahead/behind counts, best-effort via one REST compare (only on the rare
   // escalation, not per cycle). base...head reports how far head has diverged.
   let aheadBehind = "";
@@ -1137,26 +1066,12 @@ async function escalateSyncFailure(
     `stuck milestone sync for '${milestone.milestoneBranch}' after ` +
     `${failureCount} cycles (Issue #4260)`;
 
-  // Issue #1465: a milestone whose title carries no `#NNN` used to have no
-  // destination at all — the streak counted to the threshold and the
-  // escalation returned a silent `false`. File where a human will see it.
-  if (issueNumber === null) {
-    return await fileStuckSyncDiagnostic(
-      repo,
-      milestone.milestoneBranch,
-      body,
-      ghCommandFn,
-      log,
-      what,
-    );
-  }
-
-  return await postEscalationComment(
+  return await escalateToExistingIssue(
     repo,
-    issueNumber,
+    milestone,
     body,
+    what,
     ghCommandFn,
     log,
-    what,
   );
 }
