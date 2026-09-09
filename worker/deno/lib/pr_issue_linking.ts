@@ -1002,9 +1002,7 @@ export async function closeIssuesForMergedPrs(
 
           // Issue #1770: a milestone roll-back reverted this PR, so the child
           // was reopened and re-queued while its PR stayed `merged`. Closing
-          // it now would undo the roll-back on the very next cycle. An
-          // unreadable thread throws into the catch below, which holds the
-          // PR back rather than closing on an unproven assumption.
+          // it now would undo the roll-back on the very next cycle.
           let rollback: RollbackRecord | undefined;
           try {
             rollback = await findRollbackAfterMerge(

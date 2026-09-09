@@ -1724,8 +1724,6 @@ export async function closeIssuesForMergedPrs(
           }
           // Issue #1770: a milestone roll-back reverted this PR, so the
           // child was reopened and re-queued while its PR stayed `merged`.
-          // An unreadable thread throws into the catch below, which leaves
-          // the issue open rather than closing on an unproven assumption.
           let rollback: RollbackRecord | undefined;
           try {
             rollback = await findRollbackAfterMerge(
