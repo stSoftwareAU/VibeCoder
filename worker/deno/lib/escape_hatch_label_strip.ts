@@ -63,6 +63,7 @@ import type { GitHubClient, Logger, Result } from "../types.ts";
 import {
   emptyStripSummary,
   type IssueRef,
+  type ReservedLabelApplierCheck,
   type ReservedLabelStripError,
   type ReservedLabelStripSummary,
   stripReservedLabelsFromIssues,
@@ -187,6 +188,8 @@ export async function stripReservedLabelsFromFollowUp(args: {
   excludeIssueNumber?: number;
   ghClient: Pick<GitHubClient, "getIssue" | "removeLabel">;
   logger: Logger;
+  /** Who-applied-it check (Issue #1791): a human's label is kept. */
+  applier?: ReservedLabelApplierCheck;
 }): Promise<FollowUpStripResult> {
   const {
     issueRef,
@@ -195,6 +198,7 @@ export async function stripReservedLabelsFromFollowUp(args: {
     excludeIssueNumber,
     ghClient,
     logger,
+    applier,
   } = args;
 
   if (!issueRef) return { ok: true, value: emptyStripSummary() };
@@ -263,7 +267,7 @@ export async function stripReservedLabelsFromFollowUp(args: {
   // the labels and removes only what is still present, so this is idempotent.
   let result: FollowUpStripResult = { ok: true, value: emptyStripSummary() };
   for (let attempt = 1; attempt <= STRIP_ATTEMPTS; attempt++) {
-    result = await stripAttempt(parsed, ghClient, logger);
+    result = await stripAttempt(parsed, ghClient, logger, applier);
     if (result.ok) return result;
     if (attempt < STRIP_ATTEMPTS) {
       logger.warn("Retrying reserved-label strip on escape-hatch follow-up", {
@@ -288,6 +292,7 @@ async function stripAttempt(
   parsed: ParsedFollowUpRef,
   ghClient: Pick<GitHubClient, "getIssue" | "removeLabel">,
   logger: Logger,
+  applier?: ReservedLabelApplierCheck,
 ): Promise<FollowUpStripResult> {
   try {
     return await stripReservedLabelsFromIssues({
@@ -295,6 +300,7 @@ async function stripAttempt(
       issueNumbers: [parsed.issueNumber],
       ghClient,
       logger,
+      ...(applier ? { applier } : {}),
     });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -339,6 +345,8 @@ export async function stripReservedLabelsFromModelFollowUp(args: {
   excludeIssueNumber?: number;
   ghClient: Pick<GitHubClient, "getIssue" | "removeLabel">;
   logger: Logger;
+  /** Who-applied-it check (Issue #1791): a human's label is kept. */
+  applier?: ReservedLabelApplierCheck;
 }): Promise<FollowUpStripResult> {
   const detection = detectEscapeHatch(args.message, args.currentRepo);
   if (!detection.invoked || !detection.issueRef) {
@@ -354,5 +362,6 @@ export async function stripReservedLabelsFromModelFollowUp(args: {
       : {}),
     ghClient: args.ghClient,
     logger: args.logger,
+    ...(args.applier ? { applier: args.applier } : {}),
   });
 }
