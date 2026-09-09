@@ -24,8 +24,6 @@
  * out-of-credit).
  *
  * Pure: no `Deno.*`, no network, no clock. Deterministic on its inputs.
- * Message matching is case-insensitive throughout (the #4315 lesson: a
- * case-sensitive check let "Rate limit …" fall through to unknown).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -58,6 +56,7 @@ export const RUN_FAILURE_CLASSES = [
   "interrupted",
   "scheduled-release",
   "out-of-credit",
+  "stale-lineage",
   "oom",
   "killed-unknown",
   "disk-full",
@@ -76,11 +75,11 @@ const OUT_OF_CREDIT_RE =
 /**
  * Memory-pressure evidence beside a kill (Issue #4202).
  *
- * Whole-message, for the same reason as {@link DISK_FULL_RE} — and gated on
- * the `killed` category besides, so agent prose alone cannot reach it.
+ * Message-shaped signals are protected from accidental matches inside
+ * branch/path/URL slugs. The category is still required to be `killed`.
  */
 const OOM_EVIDENCE_RE =
-  /out[- ]of[- ]memory|\boom[- ]?kill|killed process|\bexit(?: code)? 137\b|\(exit 137|heap out of memory|allocation failed|cannot allocate memory/i;
+  /(?<![-_/])(?:out[- ]of[- ]memory|\boom[- ]?kill|killed process|\bexit(?: code)? 137\b|\(exit 137|heap out of memory|allocation failed|cannot allocate memory)(?![-_/])/i;
 
 /** The probe reading the killed branch writes into the diagnostics (Issue #4374). */
 const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
@@ -88,14 +87,16 @@ const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
 /**
  * Disk exhaustion — the worker can prune, warn or size the volume.
  *
- * Deliberately still scanned over the *whole* message, agent output
- * included, unlike the crash patterns (Issue #249). The asymmetry is not an
- * oversight: ENOSPC reaching us through the agent's stdout means the run
- * genuinely hit a full disk, which is real environmental evidence the
- * worker can act on. A mention of an exception is different in kind — the
- * agent is describing the user's code, not reporting its own environment.
+ * ENOSPC is an error token and is conventionally uppercase. Requiring that
+ * exact case plus non-slug boundaries prevents lowercase `enospc` embedded
+ * in a branch/path/URL from looking like an operating-system error. Human
+ * phrases remain case-insensitive.
  */
-const DISK_FULL_RE = /enospc|no space left on device|disk full|disk is full/i;
+const ENOSPC_RE = /(?<![-_/])\bENOSPC\b(?![-_/])/;
+const DISK_FULL_RE = /\b(?:no space left on device|disk full|disk is full)\b/i;
+
+/** A squash-lineage refusal is deliberate completion safety, not a defect. */
+const STALE_LINEAGE_RE = /Refusing to push[\s\S]*squashed this branch's work/i;
 
 /** An unhandled exception / stack trace from the worker itself. */
 const STACK_TRACE_RE =
@@ -153,26 +154,15 @@ export function splitAgentNarration(
 /**
  * Classify a no-PR run failure.
  *
- * ORDER MATTERS and is fixed here, most specific first — exactly as
- * `detectFailureCategory` documents its own ordering:
+ * ORDER MATTERS and is fixed here, most specific first:
  *
- * 1. Account limits (`rate_limit` category, out-of-credit message) — the
- *    highest-cost false positive is auto-filing on a fleet-wide usage cap,
- *    so these win over everything, including a stack trace in the same
- *    message.
- * 2. Disk exhaustion by message — a full disk kills or crashes whatever ran
- *    on top of it, so it outranks `killed` / `internal_error`.
- * 3. `killed` — with OOM evidence → `oom` (code-fixable); without → the
- *    cause is unproven, so `killed-unknown` (unknown). An OOM message that
- *    also mentions a timeout classifies as `oom` because the category was
- *    already `killed`, not `timeout`.
- * 4. Worker crashes: `internal_error`, or an unhandled exception / stack
- *    trace in the message with any other non-agent category.
- * 5. `missing_tools` — the image/PATH is the worker's to fix.
- * 6. `timeout` / `zero_output` — cause unproven → unknown.
- * 7. `quality_check` / `no_changes` / `evidence_missing` — the AGENT not
- *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
- * 8. Anything else → unknown.
+ * 1. Account limits and expected releases.
+ * 2. Squash-lineage safety refusals.
+ * 3. Disk exhaustion by error-shaped message evidence.
+ * 4. `killed` with/without OOM evidence.
+ * 5. Worker crashes and missing tools.
+ * 6. Timeout / zero output / agent outcomes.
+ * 7. Anything else → unknown.
  */
 export function classifyRunFailure(
   category: FailureCategory,
@@ -181,8 +171,8 @@ export function classifyRunFailure(
   const message = failureMessage ?? "";
 
   // 1. Account limits: usage / rate limit and out-of-credit are never a
-  //    worker fault. Checked before anything else so a stack trace or a
-  //    "timed out" clause in the same message cannot outrank them.
+  // worker fault. Checked before anything else so unrelated error text cannot
+  // outrank them.
   if (category === "rate_limit") {
     return {
       fixability: "not_code_fixable",
@@ -191,8 +181,6 @@ export function classifyRunFailure(
         "The run hit a usage or rate limit (account/quota state, not a worker defect).",
     };
   }
-  // A run cut off before finishing is transient infrastructure, never a worker
-  // defect and never auto-filed — the loop simply retries it (Issue #108).
   if (category === "interrupted") {
     return {
       fixability: "not_code_fixable",
@@ -201,12 +189,6 @@ export function classifyRunFailure(
         "The run was cut off before finishing (still working, not concluding) — transient, retried rather than filed.",
     };
   }
-  // A scheduled release is the fleet working as designed (Issue #424): the
-  // cycle ended or the supervisor's hard cap was reached, the WIP is on the
-  // branch and the next claim resumes it. Never a worker defect, so never
-  // auto-filed — and checked before the message-pattern rules, whose
-  // "timed out" and stack-trace signals appear in the agent output such a
-  // release quotes.
   if (category === "scheduled_release") {
     return {
       fixability: "not_code_fixable",
@@ -223,9 +205,21 @@ export function classifyRunFailure(
     };
   }
 
-  // 2. Disk exhaustion by message — outranks killed/crash because a full
-  //    disk is what killed or crashed the run.
-  if (DISK_FULL_RE.test(message)) {
+  // 2. A completion-phase squash-lineage refusal means the work is already
+  // represented in the base and replay was deliberately refused. It must win
+  // over incidental tokens in branch names, including `enospc`.
+  if (STALE_LINEAGE_RE.test(message)) {
+    return {
+      fixability: "not_code_fixable",
+      failureClass: "stale-lineage",
+      rationale:
+        "The push was deliberately refused because a squash merge already represented the branch work in the base.",
+    };
+  }
+
+  // 3. Disk exhaustion by message — outranks killed/crash because a full
+  // disk is what killed or crashed the run.
+  if (ENOSPC_RE.test(message) || DISK_FULL_RE.test(message)) {
     return {
       fixability: "code_fixable",
       failureClass: "disk-full",
@@ -236,10 +230,6 @@ export function classifyRunFailure(
 
   switch (category) {
     case "killed":
-      // 3. SIGKILL: memory evidence makes it an OOM the worker can size or
-      //    throttle for; without evidence the cause is unproven. The probe
-      //    reading taken at the kill (Issue #4374) is the strongest evidence
-      //    and is named as such — exit 137 alone is an inference.
       if (HIGH_PRESSURE_AT_KILL_RE.test(message)) {
         return {
           fixability: "code_fixable",
@@ -263,7 +253,6 @@ export function classifyRunFailure(
           "The run was killed (SIGKILL) with no memory evidence — cause unproven.",
       };
     case "internal_error":
-      // 4. A worker-side error or crash.
       return {
         fixability: "code_fixable",
         failureClass: "worker-crash",
@@ -271,15 +260,12 @@ export function classifyRunFailure(
           "The failure is an internal tooling / CLI error or unhandled exception in the worker.",
       };
     case "missing_tools":
-      // 5. The image or PATH is the worker's to fix.
       return {
         fixability: "code_fixable",
         failureClass: "missing-tools",
         rationale: "A required tool is missing from the worker environment.",
       };
     case "timeout":
-      // 6. Cause unproven: an agent that ran long is not, by itself, a
-      //    worker defect.
       return crashOr({
         fixability: "unknown",
         failureClass: "timeout",
@@ -296,9 +282,6 @@ export function classifyRunFailure(
     case "quality_check":
     case "no_changes":
     case "evidence_missing":
-      // 7. The agent did not deliver — a property of the attempt, not a
-      //    worker defect. Stated plainly, never auto-filed: filing an issue
-      //    every time the model fails a quality gate would be pure noise.
       return {
         fixability: "not_code_fixable",
         failureClass: "agent-outcome",
@@ -306,9 +289,6 @@ export function classifyRunFailure(
           "The agent did not deliver (quality gate, no changes, missing evidence) — not a worker defect.",
       };
     case "token_scope":
-      // Issue #1475: the host's credential lacks the `workflow` scope. An
-      // operator grants it; no code changes. Never auto-filed as a worker
-      // defect — the run itself already says exactly what to do.
       return {
         fixability: "not_code_fixable",
         failureClass: "token-scope",
@@ -316,24 +296,18 @@ export function classifyRunFailure(
           "The worker's token lacks the workflow scope the change needs — a host credential gap, not a worker defect.",
       };
     case "push_failure":
-      // A rejected push is usually permissions/protection or a race — not
-      // proven either way.
       return crashOr({
         fixability: "unknown",
         failureClass: "unknown",
         rationale: "Git push failed; the cause is not proven to be the worker.",
       }, message);
     case "unknown":
-      // 8. The safe default — with one refinement: an unhandled exception /
-      //    stack trace in the message is a worker crash whatever the
-      //    category detector made of it.
       return crashOr({
         fixability: "unknown",
         failureClass: "unknown",
         rationale: "No signal in the category or message decides fixability.",
       }, message);
     default:
-      // Exhaustiveness guard: a new FailureCategory must choose a bucket.
       return assertNever(category);
   }
 }
