@@ -1486,6 +1486,29 @@ Deno.test("findConflictingPr - planted failure markers cannot close a PR", async
   assertEquals(result.value.selected?.attemptCount, 0);
 });
 
+Deno.test("findConflictingPr - an abandon a human must re-queue names the label it awaits (Issue #1773)", async () => {
+  // The PR is closed either way; the operator-facing difference is that this
+  // issue is reopened at `needs-human` and needs one label re-applied, so the
+  // decision record has to carry that label rather than read as re-queued.
+  const fake = makeFakeGh(exhaustedState());
+
+  const { result, log } = await scanWith(fake, {
+    abandonRestart: () =>
+      Promise.resolve({
+        outcome: "abandoned-unlabelled",
+        issueNumber: 16,
+        workLabel: "work-on",
+      }),
+  });
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 48), "abandoned-restarted");
+  assertEquals(recordFor(log, 48).context?.issueNumber, 16);
+  assertEquals(recordFor(log, 48).context?.awaitingLabel, "work-on");
+  // The rung owns the escalation on the issue; the PR is not labelled here.
+  assertEquals(escalatedToHuman(fake, 48), false);
+});
+
 Deno.test("findConflictingPr - the fleet's own failure markers still spend the budget", async () => {
   // The other direction: filtering must not stop a genuine exhausted PR
   // reaching the abandon rung.
