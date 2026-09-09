@@ -6,9 +6,11 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  _resetBaseProtectionMemo,
   AutoMergeResult,
   classifyAutoMergeFailure,
   enableAutoMerge,
+  isBasePolicyRefusal,
   isBaseProtected,
   isTransientError,
 } from "../lib/pr_auto_merge.ts";
@@ -557,4 +559,105 @@ Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (
     calls.some((c) => c[0] === "pr" && c[1] === "edit"),
     "still retargeted",
   );
+});
+
+// ---------------------------------------------------------------------------
+// A policy GitHub enforces that the rules endpoint does not show (Issue #1763)
+// ---------------------------------------------------------------------------
+
+/** GRQ-FX#58's refusal, as `directMergePr` surfaces it. */
+const POLICY_REFUSAL =
+  "Failed to merge PR #58 in stSoftwareAU/GRQ-FX: gh command failed (exit 1): " +
+  "X Pull request stSoftwareAU/GRQ-FX#58 is not mergeable: the base branch " +
+  "policy prohibits the merge.";
+
+Deno.test("pr_auto_merge - isBasePolicyRefusal recognises the rules refusals and nothing else (Issue #1763)", () => {
+  assertEquals(isBasePolicyRefusal(POLICY_REFUSAL), true);
+  assertEquals(
+    isBasePolicyRefusal(
+      "remote: error: GH013: Repository rule violations found for refs/heads/Develop.",
+    ),
+    true,
+  );
+  assertEquals(isBasePolicyRefusal("HTTP 502 Bad Gateway"), false);
+  assertEquals(isBasePolicyRefusal("Pull request is not mergeable"), false);
+  assertEquals(isBasePolicyRefusal("merge conflict"), false);
+});
+
+Deno.test("pr_auto_merge - a direct merge GitHub refuses as policy-prohibited arms auto-merge instead and marks the base protected for the cycle (Issue #1763)", async () => {
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  const logged: string[] = [];
+  let ruleLookups = 0;
+  let directCalls = 0;
+  const opts = {
+    repo: "stSoftwareAU/GRQ-FX",
+    baseRefName: "Develop",
+    headRefName: "issue-57-fix",
+    isBaseProtectedFn: async () => {
+      ruleLookups++;
+      return false;
+    },
+    directMergeFn: async () => {
+      directCalls++;
+      return { ok: false as const, error: new Error(POLICY_REFUSAL) };
+    },
+    ghCommandFn: async (args: string[]) => {
+      calls.push(args);
+      return "";
+    },
+    log: (m: string) => logged.push(m),
+  };
+
+  const first = await enableAutoMerge({ ...opts, prNumber: 58 });
+  // The refusal is the authority: auto-merge is armed, which honours the
+  // rule the token could not list.
+  assertEquals(first.result, AutoMergeResult.Enabled, first.message);
+  assertEquals(calls.some((a) => a.includes("--auto")), true);
+  assertEquals(directCalls, 1);
+  const warnings = logged.filter((m) => m.includes("policy-protected"));
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "stSoftwareAU/GRQ-FX 'Develop'");
+  assertStringIncludes(warnings[0]!, "Issue #1763");
+
+  // The same base in the same cycle takes the protected path outright: no
+  // second direct merge, no second rules lookup, no second warning.
+  const second = await enableAutoMerge({ ...opts, prNumber: 59 });
+  assertEquals(second.result, AutoMergeResult.Enabled, second.message);
+  assertEquals(directCalls, 1);
+  assertEquals(ruleLookups, 1);
+  assertEquals(logged.filter((m) => m.includes("policy-protected")).length, 1);
+  _resetBaseProtectionMemo();
+});
+
+Deno.test("pr_auto_merge - any other direct-merge failure on an unprotected base is still Failed, and the base stays unprotected (Issue #1763)", async () => {
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  let directCalls = 0;
+  const opts = {
+    repo: "owner/repo",
+    baseRefName: "Develop",
+    isBaseProtectedFn: async () => false,
+    directMergeFn: async () => {
+      directCalls++;
+      return {
+        ok: false as const,
+        error: new Error("Failed to merge PR #9 in owner/repo: HTTP 502"),
+      };
+    },
+    ghCommandFn: async (args: string[]) => {
+      calls.push(args);
+      return "";
+    },
+    log: () => {},
+  };
+
+  const first = await enableAutoMerge({ ...opts, prNumber: 9 });
+  assertEquals(first.result, AutoMergeResult.Failed);
+  assertEquals(calls.some((a) => a.includes("--auto")), false);
+
+  const second = await enableAutoMerge({ ...opts, prNumber: 10 });
+  assertEquals(second.result, AutoMergeResult.Failed);
+  assertEquals(directCalls, 2);
+  _resetBaseProtectionMemo();
 });
