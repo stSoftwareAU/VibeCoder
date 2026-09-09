@@ -196,13 +196,21 @@ Deno.test("ranking returns the token with the most remaining budget per hour of 
     known("provider-3", 0.44, NOW + 4 * HOUR, "five_hour"),
   ], NOW);
 
-  assertEquals(ranking.winner?.label, "provider-3");
-  assertEquals(ranking.reason, "highest-remaining-per-hour");
+  // Restated for Issue #1731, deliberately: provider-3's 11%/h is a
+  // FIVE-HOUR rate and provider-2's 0.68%/h is a weekly one, so comparing
+  // them was the scale error that issue removes. The measured week now leads,
+  // and provider-3 keeps its place ahead of provider on the guard.
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.reason, "seven-day-telemetry-preferred");
   assertEquals(
     ranking.ranked.map((r) => r.label),
-    // provider is last: 10% of its five-hour window is under the guard.
-    ["provider-3", "provider-2", "provider"],
+    // provider is last: 10% of its five-hour window is under the guard, which
+    // is still decided before telemetry quality.
+    ["provider-2", "provider-3", "provider"],
   );
+  // The #1623 rule this test exists for is unchanged where the figures are
+  // comparable: rate, never the largest share.
+  assertEquals(ranking.ranked[1]?.ratePerHour, 0.44 / 4);
 });
 
 Deno.test("ranking prefers 20% that expires in six hours over 90% that lasts six and a half days (Issue #1623)", () => {
@@ -377,7 +385,10 @@ Deno.test("ranking spends equal headroom that expires soonest first (Issue #919)
   ], NOW);
 
   assertEquals(ranking.winner?.label, "provider-2");
-  assertEquals(ranking.reason, "highest-remaining-per-hour");
+  // Both report a five-hour window and neither a week, so the winner is the
+  // best of a degraded set compared like for like — the reason code says so
+  // rather than claiming a weekly rate it never had (Issue #1731).
+  assertEquals(ranking.reason, "no-seven-day-telemetry-degraded-fallback");
 });
 
 Deno.test("ranking breaks an equal rate towards the soonest reset (Issue #1623)", () => {
@@ -515,16 +526,18 @@ Deno.test("the decision log names every candidate then the winner and its reason
   const lines = formatClaudeTokenSelectionLog(ranking);
 
   assertEquals(lines.length, 4, "one line per candidate, plus the winner");
+  // Restated for Issue #1731: provider's measured week now leads provider-2's
+  // five-hour-only figure, whose 37.50%/h is on the other scale entirely.
   assertEquals(
     lines[0],
-    "[SECURITY] claude token candidate provider-2 (#2): five_hour=75.0% " +
-      "resets=2026-09-04T02:00:00.000Z seven_day=absent rate=37.50%/h " +
+    "[SECURITY] claude token candidate provider (#1): five_hour=absent " +
+      "seven_day=25.0% resets=2026-09-04T05:00:00.000Z rate=5.00%/h " +
       "guard=pass",
   );
   assertEquals(
     lines[1],
-    "[SECURITY] claude token candidate provider (#1): five_hour=absent " +
-      "seven_day=25.0% resets=2026-09-04T05:00:00.000Z rate=5.00%/h " +
+    "[SECURITY] claude token candidate provider-2 (#2): five_hour=75.0% " +
+      "resets=2026-09-04T02:00:00.000Z seven_day=absent rate=37.50%/h " +
       "guard=pass",
   );
   assertEquals(
@@ -534,9 +547,9 @@ Deno.test("the decision log names every candidate then the winner and its reason
   );
   assertEquals(
     lines[3],
-    "[SECURITY] claude token selected provider-2 (#2) of 3: " +
-      "highest-remaining-per-hour rate=37.50%/h remaining=75.0% " +
-      "resets=2026-09-04T02:00:00.000Z",
+    "[SECURITY] claude token selected provider (#1) of 3: " +
+      "seven-day-telemetry-preferred rate=5.00%/h remaining=25.0% " +
+      "resets=2026-09-04T05:00:00.000Z",
   );
 });
 
@@ -656,7 +669,10 @@ Deno.test("the selector probes each candidate once and exports the one with the 
   );
   assertStringIncludes(
     logs.at(-1) ?? "",
-    "selected provider-2 (#2) of 3: highest-remaining-per-hour",
+    // Every response here carries the five-hour headers alone, so the reason
+    // code names the degraded fallback rather than a weekly rate it never
+    // measured (Issue #1731). The winner is unchanged.
+    "selected provider-2 (#2) of 3: no-seven-day-telemetry-degraded-fallback",
   );
 });
 

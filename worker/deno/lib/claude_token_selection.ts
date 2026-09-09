@@ -32,11 +32,22 @@
  *   weekly ranking picks between what is left. Exactly 20% remaining is
  *   usable — the guard bites below it.
  * - **Candidates are ordered by remaining budget per hour** on the seven-day
- *   window: its remaining share divided by the hours until it resets. A
- *   response that reported no seven-day window is ranked on the rate of the
- *   window it did report. Nothing overrides that rate for a usable token — in
- *   particular there is no weekly floor, because a nearly spent week that
- *   resets within the hour is exactly the budget that would otherwise lapse.
+ *   window: its remaining share divided by the hours until it resets. Nothing
+ *   overrides that rate for a usable token — in particular there is no weekly
+ *   floor, because a nearly spent week that resets within the hour is exactly
+ *   the budget that would otherwise lapse.
+ * - **A response that reported no seven-day window ranks behind every
+ *   candidate in its band that did report one** (Issue #1731). Its five-hour
+ *   remaining-per-hour is a figure on a different scale, so comparing the two
+ *   made a missing weekly header look artificially urgent — 60% of five hours
+ *   resetting in four is 15%/h against a genuine week's 0.35%/h — and
+ *   repeatedly picked the least-measured subscription. Missing weekly
+ *   telemetry is probe data quality, not evidence of a spent week: such a
+ *   token is degraded-but-usable, never excluded, and nothing about the gap
+ *   is remembered, so the next snapshot that carries a week ranks normally
+ *   again. When a whole band lacks the window, those candidates are ranked
+ *   against each other on the same-scale window they did report, so the pool
+ *   keeps working rather than idling on absent telemetry.
  * - A token whose `resetAt` has already passed is treated as a fresh, FULL
  *   window, in both the guard and the rate. The probe reports the window that
  *   was current when the figure was produced; once that instant is behind us
@@ -161,6 +172,18 @@ export type ClaudeTokenSelectionReason =
    * that meets the five-hour guard.
    */
   | "highest-remaining-per-hour"
+  /**
+   * Won because it carries seven-day telemetry and the runner-up in its band
+   * does not; a five-hour rate is never compared with a weekly one
+   * (Issue #1731).
+   */
+  | "seven-day-telemetry-preferred"
+  /**
+   * No candidate in the winner's band reported a seven-day window, so they
+   * were ranked against each other on the window they did report
+   * (Issue #1731). Degraded, deliberately still a selection.
+   */
+  | "no-seven-day-telemetry-degraded-fallback"
   /** Level on budget per hour; won on the sooner reset. */
   | "equal-remaining-per-hour-soonest-reset"
   /** Level on rate and reset; won on #917's discovery order. */
@@ -209,6 +232,16 @@ export interface RankedClaudeToken {
   readonly ratePerHour: number | null;
   /** True when the five-hour window still holds the guard's minimum share. */
   readonly meetsFiveHourGuard: boolean;
+  /**
+   * True when the probe reported a seven-day window, so {@link ratePerHour}
+   * is a weekly rate and comparable with the other weekly rates.
+   *
+   * False is **degraded-but-usable**, never exhausted and never unknown: the
+   * rate is then the reported five-hour window's, on a different scale, so
+   * such a candidate ranks behind every candidate in its band that carries a
+   * week and is compared only with the others that do not (Issue #1731).
+   */
+  readonly hasSevenDayTelemetry: boolean;
   /**
    * True when a reported window has nothing left and has not yet reset, so
    * the token cannot serve a call at all until it does.
@@ -305,6 +338,7 @@ function rankingView(
       rateWindow: null,
       ratePerHour: null,
       meetsFiveHourGuard: false,
+      hasSevenDayTelemetry: false,
       exhausted: false,
       availableAt: null,
       remainingFraction: null,
@@ -316,10 +350,11 @@ function rankingView(
     rankWindow(window, now)
   );
   const fiveHour = windows.find((w) => w.window === "five_hour") ?? null;
+  const sevenDay = windows.find((w) => w.window === "seven_day") ?? null;
   // The rate is the seven-day window's; a response that did not report one is
-  // ranked on the window it did report rather than dropped.
-  const rateWindow = windows.find((w) => w.window === "seven_day") ??
-    windows[0] ?? null;
+  // ranked on the window it did report rather than dropped — but on that
+  // scale only, against the others that also lack a week (Issue #1731).
+  const rateWindow = sevenDay ?? windows[0] ?? null;
   // A window with nothing left and a reset still ahead of us is spent: the
   // token cannot serve a call against it, whatever its other window holds.
   // `rankWindow` has already counted a rolled-over window as full, so an
@@ -337,6 +372,7 @@ function rankingView(
     // A response carrying no five-hour window has no guard to fall under.
     meetsFiveHourGuard: fiveHour === null ||
       1 - fiveHour.remainingFraction <= CLAUDE_FIVE_HOUR_GUARD_MAX_USED,
+    hasSevenDayTelemetry: sevenDay !== null,
     exhausted: spent.length > 0,
     // Usable again only once every spent window has reset, so the latest of
     // them is the instant that matters.
@@ -385,7 +421,16 @@ function compareCandidates(
     if (leftReset !== rightReset) return leftReset - rightReset;
     return a.index - b.index;
   }
-  // Use it or lose it: the budget worth most per hour is spent first.
+  // Known weekly data first: a five-hour rate and a weekly rate are numbers
+  // on different scales, so the candidate that actually reported a week is
+  // preferred rather than compared with one that did not (Issue #1731). This
+  // sits INSIDE the band, so the exhaustion exclusion and the five-hour soft
+  // guard are both still decided ahead of it.
+  if (a.hasSevenDayTelemetry !== b.hasSevenDayTelemetry) {
+    return a.hasSevenDayTelemetry ? -1 : 1;
+  }
+  // Use it or lose it: the budget worth most per hour is spent first. Both
+  // candidates now describe the same window, so the rates are comparable.
   const rateA = a.ratePerHour ?? 0;
   const rateB = b.ratePerHour ?? 0;
   if (rateA !== rateB) return rateB - rateA;
@@ -395,7 +440,32 @@ function compareCandidates(
   return a.index - b.index;
 }
 
-/** Name why the head of a ranked list beat the rest. */
+/**
+ * Why a usable winner won on its rate, when nothing in its band contested it
+ * on telemetry quality: the degradation first, then the guard, then the rate.
+ *
+ * The degradation is named ahead of the guard because it is the more unusual
+ * signal — a pool running on five-hour figures alone is a probe data-quality
+ * problem an operator wants to see, while the guard stepping aside is already
+ * visible in every candidate line (Issue #1731).
+ */
+function rateReason(
+  winner: RankedClaudeToken,
+  winnerBand: 0 | 1,
+): ClaudeTokenSelectionReason {
+  if (!winner.hasSevenDayTelemetry) {
+    return "no-seven-day-telemetry-degraded-fallback";
+  }
+  return winnerBand === 1
+    ? "below-five-hour-guard-highest-remaining-per-hour"
+    : "highest-remaining-per-hour";
+}
+
+/**
+ * Name why the head of a ranked list beat the rest — the last discriminator
+ * {@link compareCandidates} actually applied, in its order: band, then
+ * telemetry quality, then the rate, then the reset, then discovery order.
+ */
 function winningReason(
   ranked: readonly RankedClaudeToken[],
 ): ClaudeTokenSelectionReason | null {
@@ -404,15 +474,19 @@ function winningReason(
   const winnerBand = band(winner);
   if (winnerBand === 3) return "budget-unknown-discovery-order";
   if (winnerBand === 2) return "exhausted-soonest-reset";
-  if (winnerBand === 1) {
-    return "below-five-hour-guard-highest-remaining-per-hour";
-  }
   const runnerUp = ranked[1];
-  if (runnerUp === undefined || band(runnerUp) !== 0) {
-    return "highest-remaining-per-hour";
+  // Nothing in the winner's band to be compared with, so the band it reached
+  // is the whole reason.
+  if (runnerUp === undefined || band(runnerUp) !== winnerBand) {
+    return rateReason(winner, winnerBand);
+  }
+  // Telemetry quality is compared before the rate, so when the two differ on
+  // it the rates were never compared at all (Issue #1731).
+  if (winner.hasSevenDayTelemetry !== runnerUp.hasSevenDayTelemetry) {
+    return "seven-day-telemetry-preferred";
   }
   if (runnerUp.ratePerHour !== winner.ratePerHour) {
-    return "highest-remaining-per-hour";
+    return rateReason(winner, winnerBand);
   }
   return runnerUp.resetAt === winner.resetAt
     ? "tied-discovery-order"

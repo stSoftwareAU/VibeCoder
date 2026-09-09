@@ -32,12 +32,12 @@
  * - the old `< 10% weekly => always rank behind >= 10%` override, which spent
  *   the fuller week first and let the urgent one lapse (row 8 would invert).
  *
- * One case here records behaviour rather than endorsing it: a credential whose
- * response carried no seven-day window is ranked on its five-hour rate, which
- * is a figure on a different scale and lets it outrank every healthy
- * credential. That is Issue #1731, and correcting it is a change to the
- * ranking algorithm which Issue #1686 excludes; the assertion exists so the
- * fix flips a test deliberately rather than moving the policy in silence.
+ * One case here was written to record behaviour rather than endorse it: a
+ * credential whose response carried no seven-day window was ranked on its
+ * five-hour rate, a figure on a different scale that let it outrank every
+ * healthy credential. Issue #1731 corrected exactly that, and the assertion
+ * did its job — it is restated here, deliberately, with the measured week now
+ * leading and the credential missing one ranked behind it.
  *
  * Every row uses deterministic timestamps and synthetic budget snapshots
  * recorded straight into the pool, so nothing here touches the network, the
@@ -659,7 +659,7 @@ Deno.test("claude pool policy - equal weekly rates break towards the soonest res
   assertEquals(reversed.reason, "tied-discovery-order");
 });
 
-Deno.test("claude pool policy - a credential reporting no seven-day window is ranked on the window it did report, and that lets it outrank a healthy one (Issue #1686)", () => {
+Deno.test("claude pool policy - a credential reporting no seven-day window is ranked on the window it did report, and no longer outranks a healthy one (Issue #1686, corrected by #1731)", () => {
   const ranking = rankClaudeTokenBudgets([
     // Five-hour only: the documented fallback ranks it on that window's rate,
     // 60% over four hours = 15%/h, rather than dropping it.
@@ -678,22 +678,25 @@ Deno.test("claude pool policy - a credential reporting no seven-day window is ra
   assertEquals(fallback?.rateWindow?.window, "five_hour");
   assertEquals(fallback?.ratePerHour, 0.6 / 4);
 
-  // Recorded, NOT endorsed. Issue #1686 asked that this fallback "cannot
-  // outrank a known healthy candidate accidentally", and today it can: the
-  // five-hour share is divided by five-hour units and then compared straight
-  // against weekly rates, so 15%/h beats provider-2's healthy 0.35%/h by
-  // roughly forty times on a figure that says nothing about its week. The
-  // scale mismatch is Issue #1731; fixing it is a change to the ranking
-  // algorithm, which Issue #1686 explicitly excludes. This assertion is here
-  // so that fix flips a test deliberately instead of moving the policy in
-  // silence.
-  assertEquals(ranking.winner?.label, "provider");
+  // Deliberately flipped by Issue #1731, which is the fix this assertion was
+  // written to make visible. The five-hour share is divided by five-hour
+  // units, so 15%/h and provider-2's weekly 0.35%/h describe different
+  // windows and are never compared: the measured week leads, and the
+  // credential missing one is degraded-but-usable behind it.
+  assertEquals(ranking.winner?.label, "provider-2");
+  assertEquals(ranking.reason, "seven-day-telemetry-preferred");
+  assertEquals(ranking.ranked.map((c) => c.label), ["provider-2", "provider"]);
   const healthy = ranking.ranked.find((c) => c.label === "provider-2");
   assert(healthy?.ratePerHour !== null && healthy?.ratePerHour !== undefined);
   assert(
     (fallback?.ratePerHour ?? 0) > healthy.ratePerHour * 10,
-    "the scale mismatch of Issue #1731 has changed — restate this test with it",
+    "the scale mismatch is what makes the numbers incomparable — restate " +
+      "this test if the figures change",
   );
+  // Still a candidate, not an exclusion: nothing about it is exhausted or
+  // unknown, and the pool would run on it if it were the only one left.
+  assertEquals(fallback?.exhausted, false);
+  assertEquals(fallback?.hasSevenDayTelemetry, false);
 });
 
 Deno.test("claude pool policy - an unknown budget ranks last without being dropped, and cannot outrank a healthy credential (Issue #1686)", () => {
