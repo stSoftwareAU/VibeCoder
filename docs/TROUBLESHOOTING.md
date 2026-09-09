@@ -778,6 +778,23 @@ Two different things, handled two different ways:
 Both stderr and stdout are scanned — the CLI writes refusals to stderr, and a
 refused run has no stream-json result on stdout at all.
 
+**Where the work goes when a window runs out mid-issue** (Issue #1670): nothing
+is discarded. Before anything else happens the run commits and pushes its
+progress to the claim-locked issue branch as a
+`wip: execute hit the Claude subscription usage limit …` commit, carrying the
+handover note at `docs/archive/handover/issue-<N>.md`, and writes the resume
+pointer (session id + branch) under `WORK_DIR/.claude-sessions/resume/`. Only
+then does it act: it re-invokes the agent **once** with `--resume` on the same
+session, so the pre-spawn quota gate can place it on an eligible credential and
+the run carries on. When that gate reports none eligible — or the switch has
+already been made, or too little of the execute budget is left for another
+invocation to finish — the run parks instead. A parked run fails as
+*infrastructure*, so the issue is never blamed, and the claim-release comment
+names the branch and links the handover file. The next claim on that issue
+finds the pointer, checks the branch out, and resumes the session from where
+the window cut it off, so a later attempt continues the work rather than
+starting again.
+
 The agent **health check** returns the same classification: a limited probe
 writes the signal instead of the loop re-running a billed probe every 30 s for
 the whole window.
