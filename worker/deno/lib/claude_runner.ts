@@ -53,6 +53,12 @@ import {
   prepareGhGuardShim,
   UNGUARDED_AGENT_GH_ENV,
 } from "./gh_guard_shim.ts";
+import {
+  buildBoundaryIntegrityInstruction,
+  fenceUntrustedIssueText,
+  generateBoundaryId,
+  isBoundaryId,
+} from "./prompt_delimiter.ts";
 import { modelFamily } from "./planning_run_stats.ts";
 import { summariseHealthFailure } from "./claude_health_message.ts";
 import {
@@ -3279,16 +3285,73 @@ IMPORTANT:
 Output ONLY the summarised content, nothing else.`;
 
 /**
- * Build the user-prompt payload for `summariseLargeContent` (Issue #2395).
+ * Tools the summarise phase must NEVER call (Issue #1607).
+ *
+ * Summarisation is a text-in/text-out task: it needs no file write, no shell
+ * and no sub-agent. The content it is handed is an issue or comment body of
+ * unbounded origin, so the phase runs with the narrowest grant that still
+ * does the job — mirroring `SECURITY_SCAN_DISALLOWED_TOOLS` in `security_scanner.ts` and adding
+ * `Bash`, which the security scan needs for `gh issue create` and this phase
+ * does not.
+ *
+ * Exported so tests can assert the runner was invoked with this exact set.
+ */
+export const SUMMARISE_DISALLOWED_TOOLS: readonly string[] = [
+  "Bash",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+  "Task",
+  "WebFetch",
+  "WebSearch",
+  "EnterPlanMode",
+  "ExitPlanMode",
+];
+
+/** Names the block this phase fences, for the integrity instruction. */
+const SUMMARISE_UNTRUSTED_BLOCK = "the content to summarise";
+
+/**
+ * Build the user-prompt payload for `summariseLargeContent` (Issues #2395,
+ * #1607).
  *
  * Carries only the dynamic content to be summarised, so the static
  * instructions in {@link SUMMARISE_SYSTEM_PROMPT} stay a stable, cacheable
  * prefix across invocations.
  *
+ * The content is an issue or comment body of unbounded origin, so it is
+ * fenced exactly as every other prompt builder fences untrusted text
+ * (Issue #1607): {@link fenceUntrustedIssueText} scrubs delimiter-shaped and
+ * HTML-comment-shaped forgeries and wraps what is left in this render's
+ * CSPRNG boundary nonce, and {@link buildBoundaryIntegrityInstruction} names
+ * that nonce so the model treats the span as data. It previously landed in
+ * the prompt raw.
+ *
+ * `boundaryId` is injectable so tests can pin the nonce; production omits it
+ * and a fresh nonce is minted per render. A malformed id is discarded rather
+ * than adopted, so no caller can weaken the fence with a guessable marker.
+ *
  * Exported for direct unit testing of the prompt structure.
+ *
+ * @param content - The untrusted content to summarise
+ * @param boundaryId - Optional pinned boundary id (tests only)
+ * @returns The fenced user prompt, integrity instruction included
  */
-export function buildSummariseUserPrompt(content: string): string {
-  return `---\nContent to summarise:\n${content}\n---`;
+export function buildSummariseUserPrompt(
+  content: string,
+  boundaryId?: string,
+): string {
+  const id = isBoundaryId(boundaryId) ? boundaryId : generateBoundaryId();
+  const fenced = fenceUntrustedIssueText(
+    content,
+    "### [UNTRUSTED] Content to summarise:",
+    id,
+  ).join("\n");
+  const instruction = buildBoundaryIntegrityInstruction(id, [
+    SUMMARISE_UNTRUSTED_BLOCK,
+  ]);
+  return `${fenced}\n\n${instruction}`;
 }
 
 /** Options for content summarisation. */
@@ -3359,7 +3422,8 @@ export async function summariseLargeContent(
     phase: "summarise",
     model: escalation.escalated ? escalation.model : undefined,
     logger,
-    disallowedTools: [],
+    // Text-in/text-out — no write or execute capability (Issue #1607).
+    disallowedTools: [...SUMMARISE_DISALLOWED_TOOLS],
   });
 
   if (!result.ok) {
