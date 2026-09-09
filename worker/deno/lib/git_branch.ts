@@ -272,6 +272,34 @@ export async function resumeFeatureBranchFromRemote(
   };
 }
 
+/**
+ * HEAD and the worker branch have diverged (Issue #4286): the agent committed
+ * on a branch of its own and neither history contains the other.
+ *
+ * A typed error, so completion can tell this refusal from a HEAD it could
+ * not resolve: on a closed issue the divergence usually means the work
+ * already landed through the agent's own PR elsewhere (Issue #1793), which
+ * is not a failure.
+ */
+export class HeadDivergedError extends Error {
+  /** Where HEAD was: the branch the agent committed on. */
+  readonly head: string;
+  /** The worker branch that was expected. */
+  readonly branchName: string;
+
+  constructor(head: string, branchName: string) {
+    super(
+      `HEAD is on '${head}' and the worker branch '${branchName}' has ` +
+        `diverged from it — the agent committed on a branch of its own and ` +
+        `the two histories do not fast-forward. Refusing to move either ` +
+        `ref; a human must reconcile them (Issue #4286).`,
+    );
+    this.name = "HeadDivergedError";
+    this.head = head;
+    this.branchName = branchName;
+  }
+}
+
 /** What {@link reconcileHeadToBranch} did. */
 export interface HeadReconciliation {
   /**
@@ -334,15 +362,7 @@ export async function reconcileHeadToBranch(
     return { ok: false, error: ancestor.error };
   }
   if (ancestor.value.code !== 0) {
-    return {
-      ok: false,
-      error: new Error(
-        `HEAD is on '${head}' and the worker branch '${branchName}' has ` +
-          `diverged from it — the agent committed on a branch of its own and ` +
-          `the two histories do not fast-forward. Refusing to move either ` +
-          `ref; a human must reconcile them (Issue #4286).`,
-      ),
-    };
+    return { ok: false, error: new HeadDivergedError(head, branchName) };
   }
 
   // Fast-forward the worker branch to HEAD and check it out, keeping the
