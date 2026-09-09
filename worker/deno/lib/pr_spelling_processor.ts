@@ -26,6 +26,11 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
+import {
+  formatVerifiedPushSuffix,
+  type PushVerification,
+  verifyPushLanded,
+} from "./push_claim_verification.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -116,6 +121,15 @@ export interface SpellingProcessorDeps {
    * other parallel worker shares.
    */
   promptsDir?: string;
+  /**
+   * Override the remote push verification (Issue #579, adopted here by Issue
+   * #1679). Injected by tests so "a refused push produces no success claim"
+   * can be exercised without a repository; production leaves it undefined.
+   */
+  verifyPushFn?: (
+    branchName: string,
+    options?: { cwd?: string },
+  ) => Promise<PushVerification>;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +418,12 @@ async function _processSpellingWithHeartbeat(
   let pushSucceeded = false;
   let hasChanges = false;
   let finalUnpushedAfterPush = 0;
+  /**
+   * True when the commit-and-push itself failed — the GH013 refusal shape
+   * (Issue #1679). `finalUnpushedAfterPush` keeps its initial `0` in that
+   * case, and a zero that was never measured is not a count of zero.
+   */
+  let pushAttemptFailed = false;
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -457,6 +477,7 @@ async function _processSpellingWithHeartbeat(
       }
     }
   } else {
+    pushAttemptFailed = true;
     logger.error("commitAndPushPending failed", {
       error: finaliseResult.error.message,
     });
@@ -479,7 +500,45 @@ async function _processSpellingWithHeartbeat(
         beforeSha,
       });
       hasChanges = true;
-      pushSucceeded = finalUnpushedAfterPush === 0;
+      // A moved HEAD proves a commit exists locally. It proves nothing about
+      // the remote — which is the whole of Issue #579 — so this only re-opens
+      // the question, and the verification below answers it. A push that was
+      // refused outright (Issue #1679) is not re-opened at all: the refusal
+      // is the answer.
+      pushSucceeded = !pushAttemptFailed && finalUnpushedAfterPush === 0;
+    }
+  }
+
+  // Issue #579, adopted here by Issue #1679: confirm against the REMOTE
+  // before any of this is claimed. The spelling pass was the last of the
+  // three agent passes still claiming "I've pushed fixes" on local evidence
+  // alone, and on GRQ#4702 it said so after a GH013 refusal.
+  let pushVerification: PushVerification | undefined;
+  if (hasChanges && pushSucceeded) {
+    const verifyFn = processorDeps.verifyPushFn ?? verifyPushLanded;
+    pushVerification = await verifyFn(input.branchName, {
+      ...(processorDeps.workDir !== undefined
+        ? { cwd: processorDeps.workDir }
+        : {}),
+    });
+    pushSucceeded = pushVerification.landed;
+    if (!pushSucceeded) {
+      logger.error(
+        "Local state looked pushed but the remote does not agree — not claiming success",
+        {
+          repo,
+          prNumber,
+          branchName: input.branchName,
+          reason: pushVerification.reason,
+        },
+      );
+    } else {
+      logger.info("Push verified against the remote", {
+        repo,
+        prNumber,
+        branchName: input.branchName,
+        remoteSha: pushVerification.remoteSha,
+      });
     }
   }
 
@@ -488,7 +547,8 @@ async function _processSpellingWithHeartbeat(
     await replyToComment(
       repo,
       prNumber,
-      "I've pushed fixes for the spelling issues. Please review the changes.",
+      "I've pushed fixes for the spelling issues. Please review the changes." +
+        (pushVerification ? formatVerifiedPushSuffix(pushVerification) : ""),
       deps,
     );
   } else if (hasChanges && !pushSucceeded) {
