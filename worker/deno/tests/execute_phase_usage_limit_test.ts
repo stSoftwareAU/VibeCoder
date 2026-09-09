@@ -23,6 +23,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { handoverFilePath } from "../lib/preserved_wip_branch.ts";
 import { loadResumeState } from "../lib/resume_state_store.ts";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { WorkerConfig } from "../types.ts";
 
@@ -281,6 +282,9 @@ Deno.test("execute #1670 - with no eligible credential the run parks on the bran
   assertStringIncludes(run.reason, BRANCH);
   assertStringIncludes(run.reason, NOTE);
   assertEquals(run.preservedBranch, BRANCH);
+  // Infrastructure, not the issue's fault: the class drives the retry and
+  // cooldown handling, and a `timeout`/`unknown` reading here would blame it.
+  assertEquals(detectFailureCategory(run.reason), "rate_limit");
   // The pause sentence is gone: the loop moves on to other work (Issue #1669).
   assertFalse(
     run.reason.includes("Agent work is paused"),
