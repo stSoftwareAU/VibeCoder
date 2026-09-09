@@ -21,10 +21,22 @@
  * cache keys are invalidated, so a deliberately reopened issue is claimable
  * again in the same run.
  *
+ * The REST form is a close too (Issue #1753): the idle-task wrapper closure
+ * moved to `gh api -X PATCH repos/o/r/issues/N -f state=closed` so it lands
+ * under the primary-quota latch, and a close the notifier did not recognise
+ * would have re-created the Issue #181 re-claim it exists to prevent. The
+ * shape is read by `classifyIssueLifecycle`, the same classifier the
+ * agent-side guard uses, so the two can never disagree about what closes an
+ * issue.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { classifyGhMutation } from "./audit_mutation_classifier.ts";
+import {
+  classifyGhMutation,
+  type MutationInfo,
+} from "./audit_mutation_classifier.ts";
+import { classifyIssueLifecycle } from "./gh_issue_lifecycle.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import {
   type ProcessedIssueRegistry,
@@ -90,6 +102,48 @@ export function issueNumberFromCloseArgs(
   return undefined;
 }
 
+/** A close or reopen the chokepoint has just seen, whichever argv form. */
+interface IssueStateChange {
+  verb: "close" | "reopen";
+  repo?: string;
+  issueNumber?: number;
+}
+
+/**
+ * Read a close/reopen out of a classified mutation, in either form.
+ *
+ * `gh issue close|reopen` keeps the positional scan
+ * {@link issueNumberFromCloseArgs} performs (either argument order); a REST
+ * PATCH on `repos/o/r/issues/N` carrying `state=` is read by
+ * `classifyIssueLifecycle` (Issue #1753). Anything else — a comment, a label,
+ * a title edit, a PR operation — is `undefined`.
+ */
+function issueStateChangeFrom(
+  args: readonly string[],
+  info: MutationInfo,
+): IssueStateChange | undefined {
+  if (info.verb === "issue-close" || info.verb === "issue-reopen") {
+    const verb = info.verb === "issue-close" ? "close" : "reopen";
+    const issueNumber = issueNumberFromCloseArgs(args, verb);
+    return {
+      verb,
+      ...(info.repo ? { repo: info.repo } : {}),
+      ...(issueNumber !== undefined ? { issueNumber } : {}),
+    };
+  }
+  if (!info.verb.startsWith("api-")) return undefined;
+  const attempt = classifyIssueLifecycle(args, info);
+  if (attempt === undefined) return undefined;
+  if (attempt.verb !== "close" && attempt.verb !== "reopen") return undefined;
+  return {
+    verb: attempt.verb,
+    ...(attempt.repo ? { repo: attempt.repo } : {}),
+    ...(attempt.issueNumber !== undefined
+      ? { issueNumber: attempt.issueNumber }
+      : {}),
+  };
+}
+
 /** Injectable seams for {@link noteGhIssueClose}. */
 export interface NoteGhIssueCloseOptions {
   /** Registry to record into. Defaults to the run's shared registry. */
@@ -121,18 +175,16 @@ export async function noteGhIssueClose(
   try {
     const info = classifyGhMutation(args);
     if (!info) return;
-    if (info.verb !== "issue-close" && info.verb !== "issue-reopen") return;
+    const change = issueStateChangeFrom(args, info);
+    if (change === undefined) return;
     // A refused or failed close changed nothing on GitHub.
     if (exitCode !== 0) return;
 
-    const issueNumber = issueNumberFromCloseArgs(
-      args,
-      info.verb === "issue-close" ? "close" : "reopen",
-    );
-    if (!info.repo || issueNumber === undefined || issueNumber <= 0) {
+    const { verb, repo, issueNumber } = change;
+    if (!repo || issueNumber === undefined || issueNumber <= 0) {
       warn(
-        `[issue_close_notifier] cannot_note_${info.verb} ` +
-          `repo=${info.repo ?? "(undeterminable)"} ` +
+        `[issue_close_notifier] cannot_note_issue-${verb} ` +
+          `repo=${repo ?? "(undeterminable)"} ` +
           `issue=${issueNumber ?? "(undeterminable)"} — the scan cache and ` +
           `the per-run registry were NOT updated for this close (Issue #181)`,
       );
@@ -140,16 +192,16 @@ export async function noteGhIssueClose(
     }
 
     const registry = options.registry ?? sharedProcessedIssues();
-    if (info.verb === "issue-close") {
-      registry.record(info.repo, issueNumber, "closed");
+    if (verb === "close") {
+      registry.record(repo, issueNumber, "closed");
     } else {
-      registry.forget(info.repo, issueNumber);
+      registry.forget(repo, issueNumber);
     }
 
     const cache = options.cache ?? scanCache;
     if (!cache) return;
     for (const key of closeInvalidatedCacheKeys(issueNumber)) {
-      await cache.invalidate(info.repo, key);
+      await cache.invalidate(repo, key);
     }
   } catch (err) {
     warn(
