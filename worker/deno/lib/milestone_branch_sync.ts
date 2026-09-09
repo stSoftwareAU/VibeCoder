@@ -954,7 +954,9 @@ async function escalateMergeGateFailure(
  * @param what - Names the escalation in the log lines.
  * @param dedupMarker - Hidden marker identifying this escalation, when the
  *   caller has one; a destination that already carries it is not commented on
- *   again (Issue #1786).
+ *   again, and is not reopened either (Issue #1786). Another host's streak
+ *   file is invisible here, so the marker on the issue is the shared record.
+ *   Fails open — an unreadable thread is reported again.
  * @returns True when the escalation reached a human, or had nowhere to go.
  */
 async function escalateToExistingIssue(
@@ -975,33 +977,33 @@ async function escalateToExistingIssue(
       },
       ghCommandFn,
       log,
+      ...(dedupMarker !== undefined
+        ? {
+          alreadyEscalated: (issueNumber: number) =>
+            hasConflictEscalationComment({
+              repo,
+              issueNumber,
+              marker: dedupMarker,
+              ghCommandFn,
+              log,
+            }),
+        }
+        : {}),
     });
+
+  if (target.kind === "already-escalated") {
+    log(
+      `Skipped escalating ${what} in ${repo}: issue #${target.issue} already ` +
+        `carries this conflict's analysis.`,
+    );
+    return true;
+  }
 
   if (target.kind === "none") {
     log(
       `No open issue to carry ${what} in ${repo}: the milestone has no ` +
         `parent planning issue and no open children, so the failure stands ` +
         `in this log and no issue is filed for it (Issue #1769).`,
-    );
-    return true;
-  }
-
-  // Issue #1786: another host's streak file is invisible here, so the marker
-  // already on the destination issue is the only shared record that this
-  // escalation has gone out. Fails open — an unreadable thread reports again.
-  if (
-    dedupMarker !== undefined &&
-    await hasConflictEscalationComment({
-      repo,
-      issueNumber: target.issue,
-      marker: dedupMarker,
-      ghCommandFn,
-      log,
-    })
-  ) {
-    log(
-      `Skipped escalating ${what} in ${repo}: issue #${target.issue} already ` +
-        `carries this conflict's analysis.`,
     );
     return true;
   }

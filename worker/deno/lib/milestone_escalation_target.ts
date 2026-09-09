@@ -52,6 +52,14 @@ export type MilestoneEscalationTarget =
     /** The milestone's oldest open non-tracking child. */
     issue: number;
   }
+  | {
+    /**
+     * The destination already carries this escalation (Issue #1786), so
+     * nothing is posted and nothing was reopened to post it.
+     */
+    kind: "already-escalated";
+    issue: number;
+  }
   | { kind: "none" };
 
 /** The state the pure decision reads. */
@@ -115,6 +123,13 @@ export interface ResolveMilestoneEscalationTargetOptions {
   log: (message: string) => void;
   /** Fleet-identity inputs for the tracking-child exclusion (Issue #1246). */
   verification?: MilestoneTrackerVerification;
+  /**
+   * Whether the destination already carries this escalation (Issue #1786).
+   *
+   * Asked before the parent is reopened, so an escalation that has already
+   * gone out never reopens an issue a human has since closed.
+   */
+  alreadyEscalated?: (issueNumber: number) => Promise<boolean>;
 }
 
 /**
@@ -124,6 +139,11 @@ export interface ResolveMilestoneEscalationTargetOptions {
  * Best-effort by design: a lookup that fails degrades the answer rather than
  * failing the sync, and says so in the log instead of going quiet. The one
  * thing it never does is create an issue.
+ *
+ * When `alreadyEscalated` answers true for the destination, the answer is
+ * `already-escalated` and nothing is reopened (Issue #1786) — reopening an
+ * issue a human closed, only to then post nothing, undoes their close with no
+ * explanation.
  *
  * @param options - Repo, milestone, `gh` runner and log sink.
  * @returns The destination — parent, oldest open child, or none.
@@ -136,6 +156,17 @@ export async function resolveMilestoneEscalationTarget(
   const children = parentIssue === null ? await readOpenChildren(options) : [];
 
   const decision = decideMilestoneEscalationTarget({ parentIssue, children });
+  if (decision.kind === "none") return decision;
+
+  // Issue #1786: asked before anything is reopened. A destination that
+  // already carries this escalation must not be reopened to say nothing.
+  if (
+    options.alreadyEscalated !== undefined &&
+    await options.alreadyEscalated(decision.issue)
+  ) {
+    return { kind: "already-escalated", issue: decision.issue };
+  }
+
   if (decision.kind !== "parent") return decision;
 
   if (await isIssueClosed(repo, decision.issue, ghCommandFn, log)) {
