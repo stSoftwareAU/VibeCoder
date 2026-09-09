@@ -137,19 +137,31 @@ export async function resolveBranchTips(
 }
 
 /**
- * Title of the diagnostic filed for a conflicting sync with no tracking issue.
+ * Title of a conflicting-sync diagnostic the fleet filed before Issue #1769.
  *
  * Keyed on the branch **and** the default-branch commit that conflicted with
- * it, so a branch that conflicts twice against different commits raises two
- * reports while the same conflict seen twice raises one.
+ * it, so a branch that conflicted twice against different commits raised two
+ * reports. Nothing files one any more — the title survives as the definition
+ * the close-out searches by, so the two halves cannot drift.
  */
 export function conflictDiagnosticTitle(
   milestoneBranch: string,
   defaultSha: string,
 ): string {
-  return `Milestone sync merged with conflicts: ${milestoneBranch} @ ${
+  return `${conflictDiagnosticTitlePrefix(milestoneBranch)}${
     defaultSha ? short(defaultSha) : UNRESOLVED_SHA
   }`;
+}
+
+/**
+ * The branch half of {@link conflictDiagnosticTitle}, without the commit.
+ *
+ * The close-out that retires these diagnostics once the branch syncs
+ * (Issue #1769) knows the branch but not which commit conflicted, so both
+ * halves read the title from here rather than spelling it twice.
+ */
+export function conflictDiagnosticTitlePrefix(milestoneBranch: string): string {
+  return `Milestone sync merged with conflicts: ${milestoneBranch} @ `;
 }
 
 /** Everything the conflict escalation names. */
