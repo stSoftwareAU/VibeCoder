@@ -1,5 +1,5 @@
 {
-  "description": "Pinned tool manifest for the Vibe Coder container image (Issue #4061). Every version the image installs is recorded here; container/Containerfile only restates these values as build ARGs, and worker/deno/tests/container_manifest_test.ts fails the quality gate when the two disagree. `providers` is the catalogue of pinned coding-agent providers and `installedProviders` is the set a default image build actually installs, which the Containerfile restates as the AGENT_PROVIDERS default (Issue #4105). A `toolchains` entry carries exactly one of `versionArg` (the Containerfile installs it and restates the pin as ARGs) or `fragment` (container/install-toolchains.sh runs container/toolchains/<id>.sh, which reads the pin from here with jq — Issue #1594).",
+  "description": "Pinned tool manifest for the Vibe Coder container image (Issue #4061). Every version the image installs is recorded here; container/Containerfile only restates these values as build ARGs, and worker/deno/tests/container_manifest_test.ts fails the quality gate when the two disagree. `providers` is the catalogue of pinned coding-agent providers and `installedProviders` is the set a default image build actually installs, which the Containerfile restates as the AGENT_PROVIDERS default (Issue #4105). A `toolchains` entry carries exactly one of `versionArg` (the Containerfile installs it and restates the pin as ARGs) or `fragment` (container/install-toolchains.sh runs container/toolchains/<id>.sh, which reads the pin from here with jq — Issue #1594). A toolchain declares the `commands` it puts on the PATH, or — for a library such as PyYAML, which ships no console script — the Python `modules` it makes importable (Issue #1628).",
   "workdir": "/workspace",
   "user": {
     "name": "vibe",
@@ -280,6 +280,20 @@
       },
       "repos": ["stSoftwareAU/VibeCoder"],
       "notes": "Backs the semgrep quality-gate stage (worker/deno/lib/semgrep_check.ts, Issue #559): without the binary that stage reported SKIPPED on every fleet run and agents met SAST findings only in CI (Issue #650). The version is not a free choice — it must equal SEMGREP_IMAGE_TAG in worker/deno/lib/pinned_actions.ts, the semgrep/semgrep image .github/workflows/semgrep.yml runs, so a local pass predicts a CI pass; container_manifest_test.ts fails the gate on drift. Semgrep's CLI is a Python application with no standalone binary release, so the pins are the manylinux wheels, one per architecture — each bundles its own ~260 MB semgrep-core. Both are fetched by pinned files.pythonhosted.org URL with curl and the shared CURL_RETRY policy, like every other artefact in the build (Issue #1016); the URL embeds the wheel's compatibility-tag string, so bump that string in the Containerfile with this version or the fetch 404s. The `pip` entry under `tools` is the installer that puts them there; Debian's python3 ships no ensurepip, so the installer is an artefact in its own right and is pinned like everything else. The wheel is installed into a /opt/semgrep virtualenv rather than the system interpreter, which PEP 668 marks externally managed. Only semgrep's own dependency wheels come from the index unverified, the same residual risk `playwright-core install --with-deps` carries for its apt set."
+    },
+    {
+      "id": "pyyaml",
+      "version": "6.0.3",
+      "fragment": "toolchains/pyyaml.sh",
+      "modules": ["yaml"],
+      "versionModule": "yaml",
+      "source": "https://pypi.org/project/PyYAML",
+      "sha256": {
+        "amd64": "0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6",
+        "arm64": "ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c"
+      },
+      "repos": ["stSoftwareAU/NEAT-AI-core"],
+      "notes": "The first library toolchain: it puts no command on the PATH, so it declares the modules it makes importable instead of `commands` (Issue #1628). With bats-core in the image (Issue #1595) NEAT-AI-core's `bats tests/scripts` suite executes rather than skips, and 31 of its tests then failed with ModuleNotFoundError: No module named 'yaml' — its workflow-assertion suites parse workflow YAML with an inline python3 script that imports PyYAML, which their CI runners carry and the image did not. Installed by the pinned pip with --target into the interpreter's own purelib directory, so `python3 -c \"import yaml\"` resolves it: a /opt/<tool> virtualenv, as codespell uses, would never satisfy that consumer, and --target leaves the PEP 668 externally-managed system environment untouched. PyYAML ships a C extension, so the wheel is per-architecture and its name carries the cp<major><minor> interpreter tag; the fragment derives that tag from the running python3 rather than restating it, so a base-image interpreter bump 404s the fetch instead of installing bytes this manifest never pinned. PyYAML declares no runtime dependencies, so --no-deps is a fully pinned install. Deliberately the LAST toolchains[] entry until the container-build workflow learns to verify a library toolchain: its current inline jq reads .commands on every entry, so it stops at the first entry without one — placed last, every command toolchain ahead of it is still verified. The image build itself is what verifies this one: container/toolchains/pyyaml.sh imports the module and compares the reported version with this pin, so a broken install fails the build rather than the check after it."
     }
   ],
   "tools": [
