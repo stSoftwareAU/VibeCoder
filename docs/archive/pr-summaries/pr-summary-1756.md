@@ -47,6 +47,22 @@ commit `ff156c7` has a **single parent**, and
 after it merged. The remedy is a repository setting the fleet must not change
 for itself, so it is filed as **#1783** for a human — not fixed here.
 
+**Confirmed during this run.** PR #1782 was pushed as a genuine merge commit
+with both parents and merged while this summary was being written — and GitHub
+squashed it, discarding the second parent:
+
+```console
+$ git log --format="%H %P %s" -1 origin/milestone/codex
+52a6531… ff156c7… Sync main into milestone/codex (#1782)     # one parent
+
+$ git merge-tree --write-tree --name-only origin/milestone/codex origin/main
+CONFLICT (content): Merge conflict in worker/deno/lib/claude_runner.ts
+CONFLICT (content): Merge conflict in worker/deno/tests/claude_runner_test.ts
+```
+
+The next sync re-conflicts on the same two files. The resolution below is
+correct and complete; the recurrence is #1783's to stop.
+
 ## Evidence
 
 Backend-only change; there is no web interface to screenshot.
