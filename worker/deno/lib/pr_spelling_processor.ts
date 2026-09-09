@@ -19,7 +19,7 @@ import {
   buildSpellingFixPrompt,
   type SpellingFixPromptOptions,
 } from "./prompt_builder.ts";
-import { readRepoContext } from "./repo_context_reader.ts";
+import { loadRepoContextContent } from "./repo_context_reader.ts";
 import {
   type HeartbeatHandle,
   startHeartbeat,
@@ -347,16 +347,13 @@ async function _processSpellingWithHeartbeat(
     });
   }
 
-  // Read repo context (CLAUDE.md/AGENTS.md) for system prompt injection (Issue #1325)
-  const spellingWorkDir = processorDeps.workDir ?? Deno.env.get("WORK_DIR") ??
-    "/tmp";
-  const repoName = repo.split("/").pop() ?? repo;
-  const repoDir = `${spellingWorkDir}/${repoName}`;
-  const repoContextResult = await readRepoContext(repoDir);
-  const repoContextContent =
-    repoContextResult.ok && repoContextResult.value.content
-      ? repoContextResult.value.content
-      : undefined;
+  // Read repo context (CLAUDE.md/AGENTS.md) for prompt injection (Issue #1325).
+  // `workDir` already is the checkout, so it is read directly — appending the
+  // repo name looked one level too deep and injected nothing (Issue #1673).
+  const repoContextContent = await loadRepoContextContent(
+    processorDeps.workDir,
+    logger,
+  );
 
   // Build prompt
   const promptOptions: SpellingFixPromptOptions = {

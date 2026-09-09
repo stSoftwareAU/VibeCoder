@@ -15,7 +15,7 @@
 import type { CiProviderConfig, Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
-import { readRepoContext } from "./repo_context_reader.ts";
+import { loadRepoContextContent } from "./repo_context_reader.ts";
 import {
   getCiCheckRetryCount,
   postCiFixMaxRetriesComment,
@@ -720,15 +720,13 @@ async function _processCiWithHeartbeat(
     });
   }
 
-  // Read repo context (CLAUDE.md/AGENTS.md) for system prompt injection (Issue #1325)
-  const ciWorkDir = processorDeps.workDir ?? Deno.env.get("WORK_DIR") ?? "/tmp";
-  const repoName = repo.split("/").pop() ?? repo;
-  const repoDir = `${ciWorkDir}/${repoName}`;
-  const repoContextResult = await readRepoContext(repoDir);
-  const repoContextContent =
-    repoContextResult.ok && repoContextResult.value.content
-      ? repoContextResult.value.content
-      : undefined;
+  // Read repo context (CLAUDE.md/AGENTS.md) for prompt injection (Issue #1325).
+  // `workDir` already is the checkout, so it is read directly — appending the
+  // repo name looked one level too deep and injected nothing (Issue #1673).
+  const repoContextContent = await loadRepoContextContent(
+    processorDeps.workDir,
+    logger,
+  );
 
   // Resolve a CI log excerpt: configured per-repo actions first
   // (Issue #1893), falling back to the built-in GitHub Actions provider

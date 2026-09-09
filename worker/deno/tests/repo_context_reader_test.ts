@@ -8,6 +8,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   DEFAULT_MAX_REPO_CONTEXT_CHARS,
+  loadRepoContextContent,
   readRepoContext,
 } from "../lib/repo_context_reader.ts";
 
@@ -227,4 +228,59 @@ Deno.test("repo context reader - separates multiple files with dividers", async 
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// --- loadRepoContextContent: the checkout is read directly (Issue #1673) ---
+
+/** Collect warnings so a silent miss is distinguishable from a real one. */
+function warnRecorder(): { warnings: string[]; warn: (m: string) => void } {
+  const warnings: string[] = [];
+  return { warnings, warn: (m: string) => warnings.push(m) };
+}
+
+Deno.test("loadRepoContextContent - reads the checkout directory itself", async () => {
+  const dir = await createTestDir({
+    "CLAUDE.md": "Use Australian English.",
+  });
+  try {
+    const recorder = warnRecorder();
+    const content = await loadRepoContextContent(dir, recorder);
+    assertStringIncludes(content ?? "", "Use Australian English.");
+    assertEquals(recorder.warnings, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("loadRepoContextContent - a checkout with no context files is quiet", async () => {
+  const dir = await createTestDir({});
+  try {
+    const recorder = warnRecorder();
+    assertEquals(await loadRepoContextContent(dir, recorder), undefined);
+    assertEquals(recorder.warnings, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("loadRepoContextContent - warns when the directory does not exist", async () => {
+  const recorder = warnRecorder();
+  const content = await loadRepoContextContent(
+    "/nonexistent/vibe-1673-checkout",
+    recorder,
+  );
+  assertEquals(content, undefined);
+  assertEquals(recorder.warnings.length, 1);
+  assertStringIncludes(
+    recorder.warnings[0]!,
+    "Repo context directory does not exist",
+  );
+});
+
+Deno.test("loadRepoContextContent - warns when no directory is supplied", async () => {
+  const recorder = warnRecorder();
+  const content = await loadRepoContextContent(undefined, recorder);
+  assertEquals(content, undefined);
+  assertEquals(recorder.warnings.length, 1);
+  assertStringIncludes(recorder.warnings[0]!, "No checkout directory supplied");
 });
