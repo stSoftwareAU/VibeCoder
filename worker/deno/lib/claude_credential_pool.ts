@@ -24,10 +24,10 @@
  *   first call.
  * - {@link ClaudeCredentialPool.selectToken} is the same ranking wired as the
  *   start-up {@link ProviderTokenSelector} — with the gate applied as a
- *   *reason*, never as a filter. A start never refuses: the pre-spawn gate
- *   protects the spawn, while a worker that would not start because every
- *   token is low is strictly worse than one that starts on the token which
- *   refills first.
+ *   *reason*, never as a filter. A start never refuses: refusing to spawn is
+ *   a question for whatever gates a spawn, and a worker that would not start
+ *   because every token is low is strictly worse than one that starts on the
+ *   token which refills first.
  * - {@link ClaudeCredentialPool.applySelection} sets exactly the selected
  *   file's subscription OAuth variable, **replacing** the previous value.
  *   `applyProviderCredentialEnv` deliberately never clobbers — right for
@@ -76,6 +76,7 @@ import {
 import {
   discoverProviderTokenFiles,
   type EnvLookup,
+  providerPoolCandidates,
   type ProviderTokenFile,
   type ProviderTokenSelector,
   resolveCredentialDir,
@@ -193,15 +194,6 @@ export interface ClaudeCredentialPool {
   ): string;
 }
 
-/** Pool candidates are subscription tokens with a value — nothing else. */
-function poolCandidatesOf(
-  tokens: readonly ProviderTokenFile[],
-): ProviderTokenFile[] {
-  return tokens.filter(
-    (token) => token.poolMember && (token.value ?? "").trim().length > 0,
-  );
-}
-
 /**
  * Build a budget snapshot for a token whose windows are known to be spent.
  *
@@ -312,15 +304,18 @@ export function createClaudeCredentialPool(
     },
 
     selectToken: async (tokens, provider) => {
-      const pool = poolCandidatesOf(tokens);
+      // Every enabled provider is offered this selector, and this pool holds
+      // one vendor's snapshots, keyed by a file stem every vendor reproduces.
+      // Another vendor's tokens are not ours to rank — or to send to
+      // Anthropic's budget endpoint.
+      if (provider.id !== poolProvider().id) {
+        return await fallback(tokens, provider);
+      }
+      const pool = providerPoolCandidates(tokens);
       if (pool.length < 2) return await fallback(tokens, provider);
       // Discovery has already happened upstream; reuse it rather than reading
-      // the credential directory a second time. Only for THIS pool's provider
-      // — every provider is offered this selector, and a second vendor's pool
-      // must not become the one a later selection ranks.
-      if (provider.id === poolProvider().id) {
-        discovered ??= Promise.resolve(pool);
-      }
+      // the credential directory a second time.
+      discovered ??= Promise.resolve(pool);
       const now = clock();
       const ranking = await rankPool(pool, now);
       // A start never refuses: the gate is logged as the reason, not applied
@@ -370,7 +365,7 @@ export function createClaudeCredentialPool(
         options.dir ?? resolveCredentialDir(options.env),
         poolProvider(),
       );
-    return poolCandidatesOf(tokens);
+    return providerPoolCandidates(tokens);
   }
 
   /** Refresh what has gone stale, rank the pool, and log every candidate. */

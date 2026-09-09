@@ -835,8 +835,9 @@ The candidates are ordered:
    `CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING = 0.2` in `claude_token_selection.ts`;
    `CLAUDE_FIVE_HOUR_GATE_MAX_USED` is its exact complement and
    `POOL_BUDGET_FLOOR` in `claude_pool_budget.ts` — "is another subscription
-   worth restarting for?" — is the same constant, because *worth restarting
-   for* and *worth switching to* are one question. A response that reported
+   worth restarting for?" — is the same constant read against the same
+   five-hour window, because *worth restarting for* and *worth switching to*
+   are one question. A response that reported
    **no** five-hour window has no gate to fail, so it passes.
 3. **The highest remaining budget per hour wins**, measured on the seven-day
    window: its remaining share divided by the hours until it resets. A response

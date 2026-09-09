@@ -99,6 +99,7 @@ import {
   probeClaudeTokenBudget,
 } from "./claude_token_budget.ts";
 import {
+  providerPoolCandidates,
   type ProviderTokenFile,
   type ProviderTokenSelector,
   selectFirstProviderToken,
@@ -571,9 +572,7 @@ export function createClaudeBudgetTokenSelector(
     const remembered = decided.get(provider.id);
     if (remembered !== undefined) return remembered;
 
-    const pool = tokens.filter(
-      (token) => token.poolMember && (token.value ?? "").length > 0,
-    );
+    const pool = providerPoolCandidates(tokens);
     // Nothing to choose between: no probe, no log, no change from today.
     const selected = pool.length < 2
       ? await fallback(tokens, provider)

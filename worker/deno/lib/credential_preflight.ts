@@ -412,6 +412,26 @@ export const selectFirstProviderToken: ProviderTokenSelector = (tokens) =>
   tokens.find((token) => token.name !== null) ?? null;
 
 /**
+ * The discovered files that are budget-selection candidates.
+ *
+ * A subscription OAuth token with a value: a metered `ANTHROPIC_API_KEY` has
+ * no per-token budget to weigh, and an empty file is a configuration fault
+ * rather than a candidate. One spelling of the filter, shared by the budget
+ * probe's three callers (Issue #1668) so they cannot drift apart on what
+ * counts as a pool member.
+ *
+ * @param tokens - The discovered files, in discovery order.
+ * @returns The pool candidates, in the same order.
+ */
+export function providerPoolCandidates(
+  tokens: readonly ProviderTokenFile[],
+): ProviderTokenFile[] {
+  return tokens.filter(
+    (token) => token.poolMember && (token.value ?? "").trim().length > 0,
+  );
+}
+
+/**
  * Export each enabled provider's directory credential into the process
  * environment — the runtime half of Issue #4064.
  *

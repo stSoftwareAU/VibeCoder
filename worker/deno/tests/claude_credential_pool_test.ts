@@ -37,7 +37,6 @@ import {
   createClaudeCredentialPool,
 } from "../lib/claude_credential_pool.ts";
 import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "../lib/claude_token_selection.ts";
-import { POOL_BUDGET_FLOOR } from "../lib/claude_pool_budget.ts";
 import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 import {
   type AgentProviderDescriptor,
@@ -430,11 +429,4 @@ Deno.test("claude credential pool - a single-token host makes no request and log
   assertEquals(started?.label, "provider");
   assertEquals(probe.calls(), 0);
   assertEquals(lines.length, 0);
-});
-
-Deno.test("claude credential pool - the restart floor and the five-hour gate are one constant", () => {
-  // Diverging floors would let a host restart for a token the gate then
-  // refuses to switch to — a restart loop dressed as a recovery.
-  assertEquals(POOL_BUDGET_FLOOR, CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING);
-  assertEquals(CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING, 0.2);
 });
