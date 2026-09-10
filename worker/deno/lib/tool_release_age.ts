@@ -593,16 +593,26 @@ async function resolveGitHubLatestRelease(
  * (Issue #726).
  *
  * Same validation as the single-release lookup — a malformed repository never
- * reaches the API — and the same fail-closed contract: any failure yields an
- * empty history, which is indeterminate rather than eligible. Drafts and
- * pre-releases are filtered out by the projection, so the history holds only
- * the releases the series actually publishes.
+ * reaches the API. Drafts and pre-releases are filtered out by the projection,
+ * so the history holds only the releases the series actually publishes.
+ *
+ * A lookup failure is returned as an error rather than an empty history
+ * (Issue #1823): the quarantine gate treats both as indeterminate, but the
+ * action-pin resolver has to say *why* it fell back to the catalogue, and
+ * "upstream publishes no stable release" is a different fault from "the
+ * lookup did not run". An empty `ok` history means upstream genuinely
+ * published nothing this parser recognises.
  */
-async function resolveGitHubReleaseHistory(
+export async function resolveGitHubReleaseHistory(
   repo: string,
   runFn: ReleaseAgeGateDeps["runFn"],
-): Promise<ReleaseCandidate[]> {
-  if (!REPO_PATTERN.test(repo)) return [];
+): Promise<Result<ReleaseCandidate[]>> {
+  if (!REPO_PATTERN.test(repo)) {
+    return {
+      ok: false,
+      error: new Error(`"${repo}" is not an owner/repo coordinate`),
+    };
+  }
   const result = await runFn([
     "gh",
     "api",
@@ -611,8 +621,16 @@ async function resolveGitHubReleaseHistory(
     ".[] | select(.draft | not) | select(.prerelease | not) | " +
     '.tag_name + " " + .published_at',
   ], RELEASE_LOOKUP_TIMEOUT_SECONDS);
-  if (!result.ok || result.value.exitCode !== 0) return [];
-  return parseGhReleaseListing(result.value.output);
+  if (!result.ok) return result;
+  if (result.value.exitCode !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `gh api repos/${repo}/releases exited ${result.value.exitCode}`,
+      ),
+    };
+  }
+  return { ok: true, value: parseGhReleaseListing(result.value.output) };
 }
 
 /**
@@ -739,11 +757,18 @@ export function createReleaseAgeGate(
 
     let history: ReleaseCandidate[] = [];
     try {
-      history = channel.kind === "npm"
-        ? (NPM_PACKAGE_PATTERN.test(channel.pkg)
+      if (channel.kind === "npm") {
+        history = NPM_PACKAGE_PATTERN.test(channel.pkg)
           ? parseNpmVersionHistory(await fetchMetadata(channel.pkg))
-          : [])
-        : await resolveGitHubReleaseHistory(channel.repo, deps.runFn);
+          : [];
+      } else {
+        const listing = await resolveGitHubReleaseHistory(
+          channel.repo,
+          deps.runFn,
+        );
+        // Fail-closed: an unreadable history is indeterminate, never eligible.
+        history = listing.ok ? listing.value : [];
+      }
     } catch {
       // Same fail-closed contract as `check`: unreadable is not eligible.
       history = [];
