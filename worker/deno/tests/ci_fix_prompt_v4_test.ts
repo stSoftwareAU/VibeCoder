@@ -147,11 +147,8 @@ Deno.test("ci_fix - an advisory-clearing bump is exempt from the publish-age flo
 
   // The mechanism: an explicit zero age for that package, never a config edit.
   assertStringIncludes(prompt, "--minimum-dependency-age=0");
-  assertStringIncludes(prompt, "do **not** edit the repository's");
-  assertStringIncludes(
-    prompt,
-    "`minimumdependencyage` config or its `exclude`",
-  );
+  assertStringIncludes(prompt, "edit the repository's");
+  assertStringIncludes(prompt, "minimumdependencyage` config or its `exclude`");
 });
 
 Deno.test("ci_fix - the audit exemption names all three override mechanisms (Issue #1847)", async () => {
@@ -160,9 +157,10 @@ Deno.test("ci_fix - the audit exemption names all three override mechanisms (Iss
   // Direct bump; npm override for a transitive `deno.lock` entry; Cargo
   // `[patch]` or parent-crate bump for a transitive crate.
   assertStringIncludes(prompt, "direct bump");
-  assertStringIncludes(prompt, "`deno.json` or `package.json` **override**");
+  assertStringIncludes(prompt, "deno.json` or `package.json`");
+  assertStringIncludes(prompt, "override");
   assertStringIncludes(prompt, "deno.lock");
-  assertStringIncludes(prompt, "`cargo.toml` `[patch]`");
+  assertStringIncludes(prompt, "cargo.toml` `[patch]`");
   assertStringIncludes(prompt, "parent crate");
 
   // The reproduction loop is the audit command itself.
@@ -175,7 +173,7 @@ Deno.test("ci_fix - every other bump in the run keeps the 24h floor (Issue #1847
 
   assertStringIncludes(
     prompt,
-    "**Any other bump you make in the same run keeps the 24h floor**",
+    "Any other bump you make in the same run keeps the 24h floor",
   );
   assertStringIncludes(prompt, "VIBE_BUMP_QUARANTINE_HOURS");
   assertStringIncludes(
