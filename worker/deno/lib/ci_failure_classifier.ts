@@ -22,7 +22,15 @@
  *   3. code-fix-required  (lint/check tool name match or actionable code-fix
  *                          patterns — semgrep, eslint, ReDoS, type errors, etc.).
  *   4. timing             (often a downstream symptom of #1 or a slow test).
- *   5. unknown            (fallback — caller should attempt a code fix).
+ *                          An explicit timing statement only — a bare
+ *                          "timeout" mention does not qualify, see
+ *                          TIMING_TEXT_PATTERNS.
+ *   5. code-fix-required, second rung
+ *                         (the failing step's own non-zero exit, see
+ *                          EXIT_CODE_REGEX — ranked here, below
+ *                          rung 4, because a step that timed out also exits
+ *                          non-zero).
+ *   6. unknown            (fallback — caller should attempt a code fix).
  */
 
 /** Top-level routing categories. */
@@ -141,16 +149,54 @@ const CODE_FIX_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
   /(^|\s)warning:/i,
 ];
 
+/**
+ * Phrases that state a timing failure outright.
+ *
+ * The bare substring "timeout" is deliberately absent (Issue #1882): a job log
+ * echoes `timeout-minutes: 20` for every step that sets one, and a script may
+ * wrap a command in `timeout 900 …`, neither of which says the step ran out of
+ * time. Those incidental mentions used to outrank the failing step's own
+ * verdict.
+ */
 const TIMING_TEXT_PATTERNS: ReadonlyArray<string> = [
   "timed out",
-  "timeout",
   "exceeded the maximum execution time",
   "the job was cancelled",
   "operation was canceled",
-  "test timed out",
-  "step timed out",
   "deadline exceeded",
 ];
+
+/**
+ * "timeout" counts as a timing signal only when a nearby word on the same line
+ * makes it the failure being reported: a budget that was overrun ("timeout of
+ * 30000ms exceeded", Jest's "Exceeded timeout of 5000 ms") or a failure that
+ * names it as the cause ("npm ERR! network Socket timeout"). A `--timeout 60`
+ * flag with unrelated prose around it matches none of them.
+ *
+ * Every window is bounded and every alternation is literal, so none of these
+ * can backtrack catastrophically.
+ */
+const TIMING_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
+  /\btimeouts?\b[^\n]{0,30}?\b(exceeded|expired|elapsed|reached)\b/i,
+  /\b(exceeded|exceeds|exceeding|reached|hit|within)\b[^\n]{0,30}?\btimeouts?\b/i,
+  /\b(err|error|errors|failed|failure|aborted|killed|cancelled|canceled)\b[^\n]{0,30}?\btimeouts?\b/i,
+];
+
+/**
+ * The failing step's own verdict — "Process completed with exit code 1",
+ * "exited with code 2", "exit status 1". An ordinary script failure carrying
+ * no other recognised pattern is a code fix, not a shrug (Issue #1882).
+ */
+const EXIT_CODE_REGEX =
+  /\bexit(?:ed)?\s*(?:with\s*)?(?:code|status)\s*[:=]?\s*(\d+)/gi;
+
+/**
+ * Exit codes that report how the step DIED, not what the code got wrong: 124
+ * is GNU `timeout`'s verdict, 137 a SIGKILL (OOM or a cancelled runner) and
+ * 143 a SIGTERM. None of them is evidence a working-tree fix exists, so they
+ * fall through to the unknown fallback rather than claiming a code fix.
+ */
+const NON_CODE_FIX_EXIT_CODES: ReadonlySet<number> = new Set([124, 137, 143]);
 
 const INFRA_TEXT_PATTERNS: ReadonlyArray<string> = [
   "connect etimedout",
@@ -269,11 +315,31 @@ export function classifyCiFailure(
   const matchedTiming = TIMING_TEXT_PATTERNS.filter((p) =>
     haystack.includes(p)
   );
-  if (matchedTiming.length > 0) {
+  const matchedTimingRegex = TIMING_REGEX_PATTERNS.filter((re) =>
+    re.test(haystack)
+  );
+  if (matchedTiming.length > 0 || matchedTimingRegex.length > 0) {
     return {
       category: "timing",
-      reason: `timing failure: ${matchedTiming[0]}`,
-      signals: [`check:${lowerName}`, ...matchedTiming.map((m) => `text:${m}`)],
+      reason: `timing failure: ${
+        matchedTiming[0] ?? "a timeout is named as the failure"
+      }`,
+      signals: [
+        `check:${lowerName}`,
+        ...matchedTiming.map((m) => `text:${m}`),
+        ...matchedTimingRegex.map((re) => `regex:${re.source}`),
+      ],
+    };
+  }
+
+  // ---- Explicit non-zero exit ----
+  const exitCode = findCodeFixExitCode(haystack);
+  if (exitCode !== undefined) {
+    return {
+      category: "code-fix-required",
+      reason:
+        `the failing step exited non-zero (${exitCode}) with no timing signal`,
+      signals: [`check:${lowerName}`, `exit:${exitCode}`],
     };
   }
 
@@ -301,6 +367,19 @@ function buildHaystack(
   }
   if (logExcerpt) parts.push(logExcerpt);
   return parts.join("\n").toLowerCase();
+}
+
+/**
+ * First exit code in the haystack that evidences a fixable failure — non-zero,
+ * and not one of the "how it died" codes. Returns undefined when there is no
+ * such code, which leaves the caller on the unknown fallback.
+ */
+function findCodeFixExitCode(haystack: string): number | undefined {
+  for (const match of haystack.matchAll(EXIT_CODE_REGEX)) {
+    const code = Number(match[1]);
+    if (code !== 0 && !NON_CODE_FIX_EXIT_CODES.has(code)) return code;
+  }
+  return undefined;
 }
 
 /** Construct a short human-readable reason for a code-fix-required match. */
