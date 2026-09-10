@@ -1,7 +1,7 @@
 /**
  * Discovery of *bot-authored* PRs for the maintenance scans (Issue #1846).
  *
- * The five PR-maintenance scans list only fleet-operated PRs (Issue #4076)
+ * The PR-maintenance scans listed only fleet-operated PRs (Issue #4076)
  * plus the human PRs that invited the worker in (Issue #4077). A dependency
  * bot's PR is neither, so a failing quality check on a `dependabot[bot]` or
  * `renovate[bot]` PR sat unattended. This module is the third door: it reads

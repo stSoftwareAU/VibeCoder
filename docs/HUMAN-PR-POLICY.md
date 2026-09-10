@@ -31,24 +31,29 @@ A sibling named only there is a fleet login everywhere, never a human.
 
 For a PR authored by a trusted human, with no invitation:
 
-| Action                                    | Uninvited human PR | Fleet PR |
-| ----------------------------------------- | ------------------ | -------- |
-| Claim it (`eyes` reaction, claim comment)  | Never              | Yes      |
-| Push a CI-fix or spelling-fix commit       | Never              | Yes      |
-| Reply to review feedback on it             | Never              | Yes      |
-| Enable auto-merge / merge it               | Never              | Yes      |
-| Post a CI nudge comment                    | Never              | Yes      |
-| Add or remove a label, add a reaction      | Never              | Yes      |
-| Wait behind it before raising its own PR   | Never              | Yes      |
+| Action                                    | Uninvited human PR | Fleet PR | Bot PR (same repository) |
+| ----------------------------------------- | ------------------ | -------- | ------------------------ |
+| Claim it (`eyes` reaction, claim comment)  | Never              | Yes      | Yes                      |
+| Push a CI-fix or spelling-fix commit       | Never              | Yes      | Yes                      |
+| Reply to review feedback on it             | Never              | Yes      | Yes                      |
+| Enable auto-merge / merge it               | Never              | Yes      | Yes                      |
+| Post a CI nudge comment                    | Never              | Yes      | No — the nudge scan lists by author only |
+| Add or remove a label, add a reaction      | Never              | Yes      | Yes                      |
+| Wait behind it before raising its own PR   | Never              | Yes      | Never                    |
 
 The five PR-maintenance scans — PR feedback, CI fix, spelling, auto-merge and
 the CI nudge — list PRs by author through the **push-capable** set
 (`resolveFleetMaintenanceAuthorSet`: the host's own login plus
 `fleet_pr_authors`). A trusted human's login never reaches
 `gh pr list --author`, so an uninvited human PR is not merely skipped late — it
-is never fetched.
+is never fetched by that listing at all. Bot-authored PRs arrive by a different
+door — see [Bot-authored PRs](#-bot-authored-prs) — and that door does read the
+repository's un-filtered open-PR listing, so a human PR's *metadata* is now
+visible to it. It admits bot logins and nothing else, so an uninvited human PR
+is still never **admitted**: no scan claims it, reads its comments, or writes to
+it.
 
-The last row changed in. The worker used to defer to your open PR
+The last row is the one that changed. The worker used to defer to your open PR
 through the wider fleet-owned set (`resolveFleetPrAuthorSet`), which meant one
 unrelated human PR parked every `work-on` issue in the repo. It no longer does:
 `getBlockingPRForIssue` only considers PRs authored by the **push-capable** set,
@@ -63,12 +68,88 @@ flowchart TD
     B -- yes --> M["Maintain it:<br/>claim · fix · answer · merge"]
     B -- no --> C{"Explicit invitation<br/>from a trusted human?"}
     C -- yes --> M
-    C -- no --> D["Leave it completely alone"]
+    C -- no --> F{"Author is a bot<br/>and the head branch is<br/>in this repository?"}
+    F -- yes --> M
+    F -- no --> D["Leave it completely alone"]
     D --> E["Issue selection ignores it:<br/>the queue keeps moving"]
     style M fill:#2d6a4f,stroke:#1b4332,color:#fff
     style D fill:#9d0208,stroke:#6a040f,color:#fff
     style E fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
+
+## 🤖 Bot-authored PRs
+
+A dependency bump raised by `dependabot[bot]` or `renovate[bot]` is nobody's PR
+under the two lists above: the bot is not a fleet login and it cannot invite the
+worker. Its red quality check therefore sat unattended for as long as the bot
+kept the PR open. The worker now **maintains bot-authored PRs** as a third
+source, admitted by `listBotPrs` (`worker/deno/lib/pr_bot_lookup.ts`) inside
+`listActionablePrs` — the admission point the four acting scans list through.
+The CI-nudge scan is the exception: it builds its own listing by author
+(`pr_ci_nudge_scan.ts`), so it does not see bot PRs, which is why the table
+above says `No` for that row.
+
+```mermaid
+flowchart LR
+    F["listOpenPrs<br/>fleet set (--author)"] --> U["listActionablePrs<br/>de-dup by number"]
+    H["listInvitedHumanPrs<br/>invited humans"] --> U
+    B["listBotPrs<br/>bot author · same repository"] --> U
+    U --> S1["PR feedback"]
+    U --> S2["Spelling fix"]
+    U --> S3["CI fix"]
+    U --> S4["Auto-merge"]
+    style U fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+What counts as a bot is the worker's single `[bot]`-detection predicate,
+`isBotLogin` (`worker/deno/lib/trust_exclusions.ts`). It matches three shapes:
+
+- a login **ending** in `[bot]` — `dependabot[bot]`, `renovate[bot]`;
+- one of the three known **suffix-less** bots, matched whole:
+  `dependabot`, `renovate`, `github-actions`;
+- a login **starting** with `github-copilot`, `copilot`, `cursor`,
+  `dependabot`, `renovate`, `snyk` or `codecov`.
+
+The last group is a prefix match, not an exact one, so a human login that
+happens to start with one of those words is read as a bot. That predicate is
+shared with the rest of the worker and is not specific to this door; narrowing
+it for admission is tracked in
+[#1872](https://github.com/stSoftwareAU/VibeCoder/issues/1872).
+
+The boundaries, all of which fail **closed**:
+
+- **Same repository only.** A bot PR whose head branch lives in a **fork** is
+  excluded, because the worker cannot push a fix to a fork it does not own —
+  admitting one would only produce a failed push every cycle. Unknown ownership
+  (a listing that never carried the field) is excluded by the same rule.
+- **Never the fleet's own PRs twice.** A fleet host is often a GitHub App whose
+  login also ends in `[bot]`. Its PRs already arrive through the maintenance
+  listing, so this door drops them; a PR present in more than one source appears
+  once.
+- **An unreadable listing admits nothing.** The failure is logged and no bot PR
+  enters the scan set.
+- **Human PRs are untouched by this.** The un-filtered listing this door reads
+  contains every open PR, so it *sees* a human PR — but it admits bot logins and
+  nothing else, so an uninvited human PR is never added to the scan set and no
+  scan ever acts on it.
+
+**There is no per-repo opt-out key.** Bot-PR maintenance is on wherever the
+worker runs. The one switch that still applies is `skip_auto_merge`, which
+governs the merge step alone: with it set, a green bot PR is fixed and answered
+but never armed for auto-merge. Branch protection and the repo's own merge gate
+apply to a bot PR exactly as they do to a fleet PR.
+
+A failing check on a bot PR is handled by the ordinary CI-fix path
+(`processCiFailure`): the worker checks out the **bot's own branch**, runs the
+repo's quality gate, and pushes the fix commit there. No new issue is filed and
+no second PR is raised for the failure. After three attempts on the same failure
+signature the PR carries `needs-human` and a cap comment. A successor PR the bot
+opens later is a fresh failure — new PR number, new check ids, a fresh attempt
+budget.
+
+Each admission is logged, exactly as an invitation is:
+`[pr-bot] admitted repo=… prNumber=… author=…`, and each exclusion carries its
+reason (`reason=cross-repository-head`, `reason=cross-repository-unknown`).
 
 ## ✉️ Inviting the worker onto your PR
 
@@ -143,6 +224,7 @@ If you *want* the worker on your PR, invite it (label or @mention, above).
 | `worker/deno/tests/pr_maintenance_test.ts`, `pr_ci_nudge_scan_test.ts`                         | The `--author` arguments each scan passes to `gh`                                 |
 | `worker/deno/tests/human_pr_never_blocks_test.ts`                                              | That a human PR never blocks issue pickup, and a fleet PR still does              |
 | `worker/deno/tests/human_pr_policy_docs_test.ts`                                               | This page's labels and author sets against the real predicates                    |
+| `worker/deno/tests/pr_bot_lookup_test.ts`, `pr_maintenance_bot_prs_test.ts`                    | That bot PRs reach all four scans and fork-headed ones do not                     |
 
 In the logs, `[pr-invitation] admitted …` is the only sanctioned route to a
 worker action on a human-authored PR.
