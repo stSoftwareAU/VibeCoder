@@ -5,20 +5,22 @@
  * who narrowed or redirected scope in a comment was invisible to the coding
  * agent — every flow that asks for a reply and re-runs the agent asked for
  * something it could not read. These tests render real prompts against the
- * committed `prompts/` tree and exercise the comment selection that feeds
- * them.
+ * committed `prompts/` tree; which comments are selected in the first place is
+ * pinned by `tests/implementation_comments_test.ts`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { buildIssuePrompt, type PromptParts } from "../lib/prompt_builder.ts";
+import { checkContextBudget } from "../lib/context_budget.ts";
+import { buildContextComponents } from "../lib/context_budget_guard.ts";
 import {
   buildImplementationCommentContext,
   IMPLEMENTATION_COMMENT_LIMITS,
-  selectImplementationComments,
 } from "../lib/implementation_comments.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
+import { promptBuilderCommand } from "../commands/prompt_builder.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -222,115 +224,21 @@ Deno.test("issue prompt - a long comment thread stays within the context budget 
     added <= IMPLEMENTATION_COMMENT_LIMITS.maxTotalChars * 2,
     `a 480k-character thread added ${added} characters to the prompt`,
   );
-});
 
-// ---------------------------------------------------------------------------
-// Which comments
-// ---------------------------------------------------------------------------
-
-Deno.test("comment selection - worker run-stats and release comments are dropped (#1910)", () => {
-  const selection = selectImplementationComments([
-    comment(
-      "vibe-coder",
-      '<!-- vibe-issue-run-stats run="abc" -->\n## Execute run model stats\n- cost',
-    ),
-    comment(
-      "vibe-coder",
-      "Released on schedule: usage limit — the branch is preserved.",
-    ),
-    comment("maintainer", "Narrow this to the parser only."),
-  ], { workerLogin: "vibe-coder" });
-
-  assertEquals(selection.selected.length, 1);
-  assertEquals(selection.selected[0]!.author, "maintainer");
-  assertEquals(selection.droppedNoise, 2);
-});
-
-Deno.test("comment selection - worker comments do not crowd out a maintainer's reply (#1910)", () => {
-  const chatter = Array.from(
-    { length: 40 },
-    (_, i) => comment("vibe-coder", `Attempted: ${"y".repeat(1000)} (${i})`),
-  );
-  const selection = selectImplementationComments([
-    comment("maintainer", "Scope: only the leap-year branch."),
-    ...chatter,
-  ], { workerLogin: "vibe-coder" });
-
-  assert(
-    selection.selected.some((c) =>
-      c.body === "Scope: only the leap-year branch."
-    ),
-    "the maintainer's comment was crowded out by worker chatter",
-  );
-});
-
-Deno.test("comment selection - an untrusted flood cannot evict a maintainer's direction (#1910)", () => {
-  const flood = Array.from(
-    { length: 40 },
-    (_, i) => comment(`drive-by-${i}`, `noise ${"n".repeat(1000)}`),
-  );
-  const selection = selectImplementationComments([
-    comment("maintainer", "Scope: only the leap-year branch."),
-    ...flood,
-  ], { workerLogin: "vibe-coder", ...TRUST });
-
-  assert(
-    selection.selected.some((c) =>
-      c.body === "Scope: only the leap-year branch."
-    ),
-    "a trusted author's comment was evicted by newer untrusted comments",
-  );
-});
-
-Deno.test("comment selection - the newest comments win the budget (#1910)", () => {
-  const thread = Array.from(
-    { length: 60 },
-    (_, i) => comment("maintainer", `comment-${i} ${"z".repeat(1000)}`),
-  );
-  const selection = selectImplementationComments(thread, {
-    workerLogin: "vibe-coder",
-  });
-
-  const total = selection.selected.reduce((n, c) => n + c.body.length, 0);
-  assert(
-    total <= IMPLEMENTATION_COMMENT_LIMITS.maxTotalChars,
-    `selected ${total} characters, over the budget`,
+  // The ceiling that actually stops a run (`execute_phase.ts`) measures the
+  // assembled prompt, so measure it the same way rather than trusting the
+  // module's own constant.
+  const budget = checkContextBudget(
+    buildContextComponents({
+      systemPrompt: "",
+      userPrompt: withComments,
+      issueBody: "The date parser drops the year.",
+    }),
+    "opus",
   );
   assert(
-    selection.selected.length <= IMPLEMENTATION_COMMENT_LIMITS.maxComments,
-    "more comments than the cap were selected",
-  );
-  assert(
-    selection.selected.at(-1)!.body.startsWith("comment-59"),
-    "the newest comment must be selected",
-  );
-  assert(selection.droppedForBudget > 0, "the surplus must be reported");
-  // Chronological order is preserved for what survives.
-  assertEquals(
-    [...selection.selected].map((c) => c.body),
-    selection.selected.map((c) => c.body),
-  );
-});
-
-Deno.test("comment selection - an empty thread selects nothing (#1910)", () => {
-  const selection = selectImplementationComments([], {});
-  assertEquals(selection.selected.length, 0);
-  assertEquals(selection.droppedNoise, 0);
-  assertEquals(selection.droppedForBudget, 0);
-  assertEquals(buildImplementationCommentContext([], TRUST).issueComments, "");
-});
-
-Deno.test("comment selection - no trust configuration still bounds the blob (#1910)", () => {
-  const context = buildImplementationCommentContext(
-    Array.from({ length: 50 }, () => comment("drive-by", "q".repeat(2000))),
-    { allowedAuthors: [], authorisedCommenters: [] },
-  );
-
-  assertEquals(context.commentBoundaryId, undefined);
-  assert(
-    context.issueComments.length <=
-      IMPLEMENTATION_COMMENT_LIMITS.maxTotalChars * 2,
-    "the untrusted blob is unbounded without trust configuration",
+    budget.ok,
+    `the prompt reached the context-budget ceiling: ${budget.usagePercent}%`,
   );
 });
 
@@ -386,4 +294,23 @@ Deno.test("execute phase - the issue's comments reach the prompt builder (#1910)
   assertEquals(seen.length >= 1, true, "the prompt builder must be invoked");
   assertEquals(seen[0]!.issueComments, ctx.issueComments);
   assertEquals(seen[0]!.commentBoundaryId, "aaaaaaaaaaaa");
+});
+
+Deno.test("build-issue-prompt CLI - --issue-comments reaches the prompt (#1910)", async () => {
+  const result = await promptBuilderCommand.execute({
+    operation: "build-issue-prompt",
+    repo: "owner/repo",
+    "issue-number": "1910",
+    "issue-title": "Fix the parser",
+    "issue-body": "The date parser drops the year.",
+    "issue-labels": "bug",
+    "issue-comments": "maintainer: only the leap-year branch, please",
+    "quality-instructions": "Run ./quality.sh",
+    "prompts-dir": PROMPTS_DIR,
+  }, buildDefaultWorkerConfig());
+
+  assertEquals(result.success, true, result.message);
+  const parts = JSON.parse(result.message) as PromptParts;
+  assertStringIncludes(parts.prompt, "only the leap-year branch, please");
+  assertStringIncludes(parts.prompt, "the issue comments");
 });

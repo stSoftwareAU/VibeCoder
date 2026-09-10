@@ -34,9 +34,10 @@ them.
 | no environment or secret sinks | no `Deno.env`; secret masking still happens where it always did — `sanitiseDelimiterPatterns` runs on every body inside `formatDelimitedComment` |
 | no clock, no ordering by attacker data | selection walks the caller's chronological array by index; no timestamp, ordering field or id from GitHub is trusted |
 | trust is never inferred from a body | `isWorkerNoiseComment` only ever **drops** a comment. A comment body that fakes the run-stats marker removes *itself* from the prompt and nothing else — an attacker can silence their own comment, never another author's, and can gain no trust by it |
+| the operational filter is reused, not restated | claim locks and automated-failure notices are matched by `comment_trust_filter.ts`'s own `isOperationalComment`, now exported, so the two lists cannot drift and such a comment never spends a slot of the budget |
 | a flood cannot evict direction | admission is newest-first in three passes — trusted authors (`classifyCommentAuthor`), then other non-worker authors, then the worker itself — so neither the worker's own bookkeeping nor 40 untrusted comments can push a maintainer's reply out of the budget |
 | the budget is bounded and the bound is stated | 20 comments / 12,000 characters of body, below the 20,000-character rate-limiter cap that still runs afterwards; the caps are named constants, not magic numbers spread over the callers |
-| a single oversized comment cannot starve the set | one comment larger than the whole budget is admitted only when nothing else has been, and `applyCommentRateLimits` truncates it downstream rather than the prompt losing every comment |
+| a single oversized comment cannot starve the set | the budget test is strict inside every pass, so one comment larger than the budget is skipped and the smaller comments behind it still fit. Only when *nothing* fits does the newest single comment ride, truncated downstream by `applyCommentRateLimits` — so an attacker's 40,000-character comment cannot evict a maintainer's even on a repository with no trust lists, where nobody classifies as `TRUSTED` |
 | the trust header cannot be forged | headers are minted by `formatDelimitedComment` with a per-run nonce, and `sanitiseDelimitedComments` in the prompt builder keeps only whole-line headers bearing *this* run's id — an untrusted commenter's pasted `[TRUSTED]` header is scrubbed to inert data (covered by `tests/issue_prompt_comments_1910_test.ts`) |
 | no trust configuration is still bounded | the plain path (`formatPlainComments`) runs the same selection first and then `capFormattedComments`, so a repository with no trust lists gets the same volume ceiling |
 | audit events are not swallowed | `securityAuditMessages` from the trust filter are returned to both call sites, which log them at `warn` — a suspicious untrusted comment is still reported even though the blob is now bounded |
@@ -47,6 +48,17 @@ None.
 
 ### Accepted residuals
 
+- **The noise filter matches content, not author.** A second worker in the
+  fleet posts the same bookkeeping under its own login, so the match has to be
+  on the marker; the cost is that a human quoting `Released on schedule:` or a
+  run-stats heading back at the bot is dropped with it. The rule only ever
+  removes the comment carrying the marker, so nothing is gained by forging one.
+- **A CI-failure context outranks the comment nonce.** `buildIssuePrompt`
+  adopts `ciFailureBoundaryId` when both are present, because that log was
+  fenced upstream with an id this builder cannot re-mint. The comment headers
+  then fail `sanitiseDelimitedComments`'s whole-line match and are scrubbed to
+  inert text — trust annotation is lost, nothing escapes the fence. No route
+  supplies both today (the CI-fix path passes no comments).
 - **Selection runs before the per-author caps, not after.** A comment dropped
   here never reaches `applyCommentRateLimits`, so the untrusted-count cap
   applies to what survived selection. This is the intended order: selection is

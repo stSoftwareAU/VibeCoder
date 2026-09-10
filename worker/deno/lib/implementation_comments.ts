@@ -31,6 +31,7 @@ import type { IssueComment } from "./issue_data.ts";
 import {
   classifyCommentAuthor,
   type CommentTrustOptions,
+  isOperationalComment,
   prepareTrustAnnotatedCommentList,
 } from "./comment_trust_filter.ts";
 import { capFormattedComments } from "./comment_rate_limiter.ts";
@@ -60,32 +61,44 @@ const RUN_STATS_HEADING_PATTERN = /^##[ \t]+\S.*run model stats[ \t]*$/im;
  * Report whether a comment is worker bookkeeping rather than direction.
  *
  * Matched on the markers the producing modules export, so a rename there is a
- * type error here rather than silent drift. `comment_trust_filter.ts` drops
- * the claim locks and automated-failure notices on its own; this covers the
- * two families it does not.
+ * type error here rather than silent drift. `isOperationalComment` — the claim
+ * locks and automated-failure notices — is reused rather than restated, and is
+ * applied *here* so those comments never spend a slot of the budget the
+ * selection below is dividing up.
+ *
+ * The match is on content, not author, because a second worker in the fleet
+ * posts the same bookkeeping under its own login. The cost is that a human
+ * quoting one of these markers back at the bot is dropped with it; the benefit
+ * is that no attacker gains anything by it — the rule only ever *removes* a
+ * comment, and only the one whose body carries the marker.
  */
 export function isWorkerNoiseComment(body: string): boolean {
-  if (typeof body !== "string") return false;
-  return body.includes(ISSUE_RUN_STATS_MARKER) ||
+  return isOperationalComment(body) ||
+    body.includes(ISSUE_RUN_STATS_MARKER) ||
     body.includes(SCHEDULED_RELEASE_MARKER) ||
     RUN_STATS_HEADING_PATTERN.test(body);
 }
 
-/** Options for {@link selectImplementationComments}. */
-export interface ImplementationCommentSelectionOptions {
+/** What bounds a selection, shared by both option shapes below. */
+export interface ImplementationCommentBudget {
   /**
    * The worker's own GitHub login. Comments from it are admitted only after
    * every other author has taken what it needs of the budget.
    */
   workerLogin?: string;
-  /** Logins that may direct work — admitted before anyone else. */
-  allowedAuthors?: readonly string[];
-  /** Logins whose input is acted on — admitted alongside `allowedAuthors`. */
-  authorisedCommenters?: readonly string[];
   /** Override the comment count cap (tests, and callers with a tighter budget). */
   maxComments?: number;
   /** Override the total character budget. */
   maxTotalChars?: number;
+}
+
+/** Options for {@link selectImplementationComments}. */
+export interface ImplementationCommentSelectionOptions
+  extends ImplementationCommentBudget {
+  /** Logins that may direct work — admitted before anyone else. */
+  allowedAuthors?: readonly string[];
+  /** Logins whose input is acted on — admitted alongside `allowedAuthors`. */
+  authorisedCommenters?: readonly string[];
 }
 
 /** What {@link selectImplementationComments} kept, and what it did not. */
@@ -141,9 +154,7 @@ export function selectImplementationComments(
       const candidate = candidates[i]!;
       if (!wanted(candidate)) continue;
       const cost = candidate.body.length;
-      // A single comment larger than the whole budget is still admitted when
-      // nothing else has been — it is truncated downstream rather than lost.
-      if (admitted.size > 0 && chars + cost > maxTotalChars) continue;
+      if (chars + cost > maxTotalChars) continue;
       admitted.add(i);
       chars += cost;
     }
@@ -154,6 +165,15 @@ export function selectImplementationComments(
   admit((c) => !isWorkerAuthored(c) && isTrusted(c));
   admit((c) => !isWorkerAuthored(c));
   admit(isWorkerAuthored);
+
+  // Every candidate is larger than the whole budget: carry the newest one and
+  // let the rate limiter truncate it, rather than silently carrying none. This
+  // runs *after* the passes above, so one oversized comment can never pre-empt
+  // the smaller ones that do fit — including a maintainer's, on a repository
+  // with no trust lists configured where nobody classifies as TRUSTED.
+  if (admitted.size === 0 && candidates.length > 0) {
+    admitted.add(candidates.length - 1);
+  }
 
   const selected = candidates.filter((_, i) => admitted.has(i));
   return {
@@ -189,14 +209,7 @@ export function formatPlainComments(
  * both the selection and the trust annotation.
  */
 export interface ImplementationCommentContextOptions
-  extends CommentTrustOptions {
-  /** The worker's own GitHub login (see the selection options). */
-  workerLogin?: string;
-  /** Override the comment count cap. */
-  maxComments?: number;
-  /** Override the total character budget. */
-  maxTotalChars?: number;
-}
+  extends ImplementationCommentBudget, CommentTrustOptions {}
 
 /** The comment fields an {@link IssueContext} carries for the prompt. */
 export interface ImplementationCommentContext {

@@ -124,8 +124,13 @@ export function classifyCommentAuthor(
 
 /**
  * Check if a comment is a worker operational comment that should be filtered out.
+ *
+ * Exported so a caller that *selects* comments before this filter runs — the
+ * implementation prompt's budget selection (Issue #1910) — drops the same
+ * bookkeeping rather than spending selection slots on comments this filter
+ * would discard a moment later.
  */
-function isOperationalComment(body: string): boolean {
+export function isOperationalComment(body: string): boolean {
   return OPERATIONAL_PATTERNS.some((pattern) => pattern.test(body));
 }
 

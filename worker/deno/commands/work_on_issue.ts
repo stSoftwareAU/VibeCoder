@@ -38,10 +38,7 @@ import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueData } from "../lib/issue_data.ts";
 import { fetchIssueData } from "../lib/issue_data.ts";
 import { enforceIssueBodyLimit, validateIssueInput } from "../lib/security.ts";
-import {
-  buildImplementationCommentContext,
-  formatPlainComments,
-} from "../lib/implementation_comments.ts";
+import { buildImplementationCommentContext } from "../lib/implementation_comments.ts";
 import { annotateIssueContentWithTrust } from "../lib/issue_content_trust_filter.ts";
 import {
   handleIdleTaskIssue,
@@ -134,24 +131,6 @@ export function parseWorkOnIssueArgs(
     githubUser,
     milestoneTitle: milestoneTitle || undefined,
   };
-}
-
-/**
- * Format structured issue comments into a single string for the context.
- *
- * Each comment is formatted as "author: body" separated by "---" dividers.
- *
- * Issue #3648: this is the no-trust-configuration path, so the per-author caps
- * in `comment_rate_limiter.ts` never run. Without a cap here an attacker on a
- * public repository could add arbitrarily many large comments and have every
- * byte concatenated into the prompt. `formatPlainComments` bounds the blob
- * unconditionally and announces anything it drops.
- */
-export function formatIssueComments(
-  comments: IssueData["comments"],
-  maxTotalChars?: number,
-): string {
-  return formatPlainComments(comments, maxTotalChars);
 }
 
 /**
