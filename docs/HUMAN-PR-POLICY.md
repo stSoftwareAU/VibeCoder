@@ -46,10 +46,14 @@ the CI nudge — list PRs by author through the **push-capable** set
 (`resolveFleetMaintenanceAuthorSet`: the host's own login plus
 `fleet_pr_authors`). A trusted human's login never reaches
 `gh pr list --author`, so an uninvited human PR is not merely skipped late — it
-is never fetched. Bot-authored PRs arrive by a different door — see
-[Bot-authored PRs](#-bot-authored-prs) — which admits bots and nothing else.
+is never fetched by that listing at all. Bot-authored PRs arrive by a different
+door — see [Bot-authored PRs](#-bot-authored-prs) — and that door does read the
+repository's un-filtered open-PR listing, so a human PR's *metadata* is now
+visible to it. It admits bot logins and nothing else, so an uninvited human PR
+is still never **admitted**: no scan claims it, reads its comments, or writes to
+it.
 
-The last row changed in. The worker used to defer to your open PR
+The last row is the one that changed. The worker used to defer to your open PR
 through the wider fleet-owned set (`resolveFleetPrAuthorSet`), which meant one
 unrelated human PR parked every `work-on` issue in the repo. It no longer does:
 `getBlockingPRForIssue` only considers PRs authored by the **push-capable** set,
@@ -112,8 +116,10 @@ The boundaries, all of which fail **closed**:
   once.
 - **An unreadable listing admits nothing.** The failure is logged and no bot PR
   enters the scan set.
-- **Human PRs are untouched by this.** The door admits bot logins and nothing
-  else, so an uninvited human PR is still never fetched.
+- **Human PRs are untouched by this.** The un-filtered listing this door reads
+  contains every open PR, so it *sees* a human PR — but it admits bot logins and
+  nothing else, so an uninvited human PR is never added to the scan set and no
+  scan ever acts on it.
 
 **There is no per-repo opt-out key.** Bot-PR maintenance is on wherever the
 worker runs. The one switch that still applies is `skip_auto_merge`, which
