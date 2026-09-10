@@ -4403,6 +4403,35 @@ function runIdleWorkHooks(
 }
 
 /**
+ * The per-cycle `gh` call telemetry (Issues #1671, #4299, #1845, #1924,
+ * #1456): what this process spent, where the wall time went, which priority
+ * spent it, the GraphQL share, and the account's quota as GitHub counts it.
+ *
+ * Emitted at the end of a completed cycle and, since Issue #1843, from the
+ * primary-rate-limit catch too — the cycle that exhausted the quota is the
+ * one whose breakdown an operator most needs, and it was the one skipped.
+ * Best-effort: a failed quota probe costs the last line only.
+ */
+async function logCycleGhTelemetry(deps: RunCoreDeps): Promise<void> {
+  deps.log(formatGhCallSummary());
+  deps.log(formatCycleTimingsSummary(deps.now()));
+  deps.log(formatGhCallsByPrioritySummary());
+  deps.log(formatGraphQLSummary());
+  if (deps.describeGraphqlQuota) {
+    try {
+      const quotaLine = await deps.describeGraphqlQuota();
+      if (quotaLine) deps.log(quotaLine);
+    } catch (err) {
+      deps.log(
+        `graphql-quota: probe failed (${
+          err instanceof Error ? err.message : String(err)
+        })`,
+      );
+    }
+  }
+}
+
+/**
  * Run the main worker event loop.
  *
  * This is the top-level orchestration: PID locking, initialisation, the
@@ -5407,27 +5436,10 @@ export async function runCoreLoop(
           // --- Per-iteration `gh` call telemetry summary (Issue #1671) ---
           // One structured line per loop iteration so we can baseline the
           // reduce-gh-calls work (#1662) and verify subsequent caching
-          // changes actually reduce calls.
-          deps.log(formatGhCallSummary());
-          // Issue #4299: where the cycle's wall time went, longest first.
-          deps.log(formatCycleTimingsSummary(deps.now()));
-          // Issue #1845: per-priority breakdown lets a future regression
-          // surface the responsible priority directly in the worker log.
-          deps.log(formatGhCallsByPrioritySummary());
-          // Issue #1924: GraphQL-specific breakdown — the 5000-point/hour
-          // GraphQL quota is metered separately from REST, and the
-          // worker has been observed exhausting it every cycle. This
-          // line names the hottest GraphQL call site so operators can
-          // see at a glance which path is burning the budget.
-          deps.log(formatGraphQLSummary());
-          // The account's GraphQL quota as GitHub counts it. The lines above
-          // count this process's calls; this one shows the points actually
-          // gone from the shared bucket — sibling hosts included — and when
-          // the window reopens (Issue #1456).
-          if (deps.describeGraphqlQuota) {
-            const quotaLine = await deps.describeGraphqlQuota();
-            if (quotaLine) deps.log(quotaLine);
-          }
+          // changes actually reduce calls. Also emitted from the
+          // rate-limit catch below (Issue #1843), so the cycle that
+          // exhausted the quota is never the one without a breakdown.
+          await logCycleGhTelemetry(deps);
 
           // --- Liveness guard (Issue #2479) ---
           // Best-effort end-of-cycle observation. The combined #2478 guard
@@ -5491,6 +5503,11 @@ export async function runCoreLoop(
         if (!isPrimaryRateLimitMessage(innerMessage)) {
           throw innerErr;
         }
+        // Issue #1843: the cycle ended in the quota, so say what it spent
+        // BEFORE the pause. A cycle that completes logs these at its end;
+        // one that throws here used to skip them — and it is exactly the
+        // cycle whose per-priority breakdown names what burnt the budget.
+        await logCycleGhTelemetry(deps);
         let resetEpoch: number;
         try {
           resetEpoch = await deps.getRateLimitReset();
