@@ -46,6 +46,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          # Issue #1891: the empty-array-expansion check below diffs the PR
+          # against its base commit, which a shallow clone does not contain
+          # — `git diff` died with `fatal: bad object` and the check
+          # inspected nothing. Full history so the base object is present.
+          fetch-depth: 0
 
       - name: Check bash syntax
         run: |
@@ -80,6 +85,8 @@ jobs:
           echo "Non-ASCII check complete"
 
       - name: Check for unsafe empty array expansions (bash 3.2 compat)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           echo "=== Checking for unsafe empty array expansions ==="
@@ -87,39 +94,13 @@ jobs:
           echo "empty array as an unbound variable. Use \${arr[@]+\"\${arr[@]}\"} instead,"
           echo "or guard with a length check before access."
           echo ""
-          # Only check files changed in this PR (or all files on push)
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            mapfile -t changed_scripts < <(git diff --name-only --diff-filter=ACM "${{ github.event.pull_request.base.sha }}" -- '*.sh' || true)
-          else
-            mapfile -t changed_scripts < <(find . -name "*.sh" -type f)
-          fi
-          errors=0
-          for script in "${changed_scripts[@]+"${changed_scripts[@]}"}"; do
-            while IFS=: read -r _ decl_line; do
-              arr_name=$(echo "$decl_line" | grep -oE '[a-zA-Z_][a-zA-Z0-9_]*=\(\)' | sed 's/=()//' | head -1 || true)
-              [[ -z "$arr_name" ]] && continue
-              while IFS=: read -r lineno line; do
-                echo "$line" | grep -qE '^\s*#' && continue
-                echo "$line" | grep -qF "\${${arr_name}[@]+" && continue
-                echo "$line" | grep -qE "${arr_name}=\(" && continue
-                echo "$line" | grep -qE "${arr_name}\+=" && continue
-                if echo "$line" | grep -qE "\\\$\{#${arr_name}\[@\]\}"; then
-                  bare=$(echo "$line" | grep -oE "\\\$\{${arr_name}\[@\]\}" | head -1 || true)
-                  [[ -z "$bare" ]] && continue
-                fi
-                echo "WARNING: $script:$lineno: $line"
-                echo "  Array '${arr_name}' is declared empty — use \${${arr_name}[@]+\"\${${arr_name}[@]}\"} or guard with length check"
-                errors=$((errors + 1))
-              done < <(grep -nE "\\\$\{${arr_name}\[@\]\}" "$script" 2>/dev/null || true)
-            done < <(grep -nE '[a-zA-Z_][a-zA-Z0-9_]*=\(\)' "$script" 2>/dev/null || true)
-          done
-          if [[ $errors -gt 0 ]]; then
-            echo ""
-            echo "Found $errors potentially unsafe empty array expansion(s)."
-            echo "Review each warning — if the array is guaranteed non-empty by control flow,"
-            echo "this is a false positive. Otherwise, use the safe pattern."
-          fi
-          echo "Empty array expansion check complete"
+          # Issue #1891: the scan lives in a committed script with its own
+          # tests (worker/deno/tests/empty_array_expansion_check_test.ts).
+          # It exits non-zero when the base commit is unavailable, so this
+          # gate can never again report "complete" having inspected nothing.
+          # This workflow is pull_request-only (Issue #3333), so the base
+          # SHA is always the one to diff against.
+          .github/scripts/check-empty-array-expansions.sh "$BASE_SHA"
 
       - name: Check for zero-length files
         run: |
