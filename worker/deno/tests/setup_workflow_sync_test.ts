@@ -7,16 +7,37 @@
 import { assertEquals } from "@std/assert";
 import {
   type CommandOutput,
+  COPY_PINS_AS_GIVEN_RULE,
+  COPY_VERBATIM_CLAUSE,
   deduplicationTag,
+  issueBody,
   issueBodyPartial,
   partialDeduplicationTag,
+  type PinResolver,
+  pinResolverRunFn,
+  type ResolvedPins,
   syncWorkflowsForAllRepos,
   syncWorkflowsForRepo,
   type WorkflowSyncOptions,
 } from "../setup/workflow_sync.ts";
+import { resolveActionPins } from "../lib/action_pin_resolver.ts";
+import { PINNED_ACTIONS, SEMGREP_IMAGE } from "../lib/pinned_actions.ts";
+import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 
 /** The fleet login every fixture issue is authored by. */
 const FLEET_AUTHOR = "vibe-coder-bot";
+
+/** The catalogue pins, as a plain (mutable) map a body can be rendered with. */
+function cataloguePinMap(): ResolvedPins {
+  return { ...PINNED_ACTIONS };
+}
+
+/**
+ * A resolver that returns the catalogue pins and issues no lookup, so the
+ * orchestration tests exercise filing rather than pin resolution.
+ */
+const cataloguePins: PinResolver = () =>
+  Promise.resolve({ pins: cataloguePinMap(), failures: [] });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -263,6 +284,7 @@ Deno.test("syncWorkflowsForRepo - detects missing workflows and raises issues", 
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   assertEquals(result.ok, true);
@@ -297,6 +319,7 @@ Deno.test("syncWorkflowsForRepo - all workflows present raises no issues", async
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   assertEquals(result.ok, true);
@@ -323,6 +346,7 @@ Deno.test("syncWorkflowsForRepo - idempotent: skips issues that already exist", 
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   assertEquals(result.ok, true);
@@ -344,6 +368,7 @@ Deno.test("syncWorkflowsForRepo - second run creates no duplicate issues", async
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   assertEquals(result.ok, true);
@@ -366,6 +391,7 @@ Deno.test("syncWorkflowsForRepo - issues contain deduplication tags", async () =
   await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   for (const issue of state.issuesCreated) {
@@ -388,6 +414,7 @@ Deno.test("syncWorkflowsForRepo - issues contain workflow YAML template", async 
   await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   for (const issue of state.issuesCreated) {
@@ -412,6 +439,7 @@ Deno.test("syncWorkflowsForRepo - language detection failure returns error resul
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   assertEquals(result.ok, false);
@@ -431,6 +459,7 @@ Deno.test("syncWorkflowsForRepo - issue creation failure does not block other is
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   // Should still succeed (graceful degradation) but with zero issues raised
@@ -452,6 +481,7 @@ Deno.test("syncWorkflowsForRepo - dry run does not create issues", async () => {
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
     dryRun: true,
   });
 
@@ -509,7 +539,7 @@ Deno.test("syncWorkflowsForAllRepos - processes multiple repos", async () => {
 
   const results = await syncWorkflowsForAllRepos(
     ["org/repo1", "org/repo2"],
-    { runCommand: runner },
+    { runCommand: runner, resolvePins: cataloguePins },
   );
 
   assertEquals(results.length, 2);
@@ -530,7 +560,7 @@ Deno.test("syncWorkflowsForAllRepos - skips empty repo strings", async () => {
 
   const results = await syncWorkflowsForAllRepos(
     ["owner/repo", "", "owner/repo"],
-    { runCommand: runner },
+    { runCommand: runner, resolvePins: cataloguePins },
   );
 
   assertEquals(results.length, 2);
@@ -539,7 +569,10 @@ Deno.test("syncWorkflowsForAllRepos - skips empty repo strings", async () => {
 Deno.test("syncWorkflowsForAllRepos - returns empty array for empty input", async () => {
   const { runner } = buildMockRunner({});
 
-  const results = await syncWorkflowsForAllRepos([], { runCommand: runner });
+  const results = await syncWorkflowsForAllRepos([], {
+    runCommand: runner,
+    resolvePins: cataloguePins,
+  });
 
   assertEquals(results.length, 0);
 });
@@ -591,6 +624,7 @@ Deno.test("syncWorkflowsForRepo - raises issues for partial matches", async () =
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   assertEquals(result.ok, true);
@@ -624,6 +658,7 @@ Deno.test("syncWorkflowsForRepo - partial issue body uses capability-oriented la
   await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   const partialIssue = state.issuesCreated.find((i) =>
@@ -680,6 +715,7 @@ Deno.test("syncWorkflowsForRepo - partial issues are idempotent", async () => {
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   assertEquals(result.ok, true);
@@ -706,6 +742,7 @@ Deno.test("syncWorkflowsForRepo - missing and partial tags are searched separate
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
   });
 
   assertEquals(result.ok, true);
@@ -737,6 +774,7 @@ Deno.test("syncWorkflowsForRepo - dry run reports partial count without creating
   const result = await syncWorkflowsForRepo("owner/repo", {
     fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
+    resolvePins: cataloguePins,
     dryRun: true,
   });
 
@@ -767,7 +805,7 @@ Deno.test("issueBodyPartial - standalone body uses capability labels and review 
 
   const body = issueBodyPartial(spec, "existing.yml", [
     ["named/action", "cli-tool"],
-  ]);
+  ], cataloguePinMap());
 
   assertEquals(body.includes("Partial Match"), true);
   assertEquals(body.includes("existing.yml"), true);
@@ -801,7 +839,12 @@ Deno.test("issueBodyPartial - falls back to first pattern when capability labels
     template: "name: Legacy\non: [pull_request]\n",
   };
 
-  const body = issueBodyPartial(spec, "legacy.yml", [["pat-a", "pat-b"]]);
+  const body = issueBodyPartial(
+    spec,
+    "legacy.yml",
+    [["pat-a", "pat-b"]],
+    cataloguePinMap(),
+  );
 
   // Fallback label is the first pattern in the group.
   assertEquals(body.includes("- pat-a (any of: `pat-a`, `pat-b`)"), true);
@@ -845,7 +888,7 @@ Deno.test("syncWorkflowsForAllRepos - one failing repo does not block others", a
 
   const results = await syncWorkflowsForAllRepos(
     ["org/repo1", "org/repo2"],
-    { runCommand: runner },
+    { runCommand: runner, resolvePins: cataloguePins },
   );
 
   assertEquals(results.length, 2);
@@ -881,6 +924,7 @@ Deno.test(
     await syncWorkflowsForRepo("owner/repo", {
       fleetAuthors: [FLEET_AUTHOR],
       runCommand: runner,
+      resolvePins: cataloguePins,
     });
 
     // Every dedup search must request all issue states. There are 3
@@ -904,6 +948,7 @@ Deno.test(
     await syncWorkflowsForRepo("owner/repo", {
       fleetAuthors: [FLEET_AUTHOR],
       runCommand: wrapped,
+      resolvePins: cataloguePins,
     });
     assertEquals(rawListCalls.length > 0, true);
     for (const cmd of rawListCalls) {
@@ -916,3 +961,481 @@ Deno.test(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #1824 — pins are resolved when the issue is filed
+// ---------------------------------------------------------------------------
+//
+// The catalogue in `lib/pinned_actions.ts` is a fallback floor, not the value
+// an issue should carry: a body filed months after the catalogue was last
+// touched hands the implementer a pin the fleet's own Actions audit then
+// reports. `workflow-sync` resolves the catalogue once per run and renders
+// every body against the result.
+
+/** A spec with a pinned `uses:` line and the Semgrep image, for body tests. */
+const PIN_FIXTURE_SPEC = {
+  id: "pin-fixture",
+  name: "Pin Fixture",
+  appliesTo: "universal" as const,
+  triggers: ["pull_request"],
+  detectionPatternGroups: [["actions/checkout"]],
+  capabilities: ["Checkout"],
+  suggestedFilename: "pin-fixture.yml",
+  category: "security" as const,
+  template: `name: Pin Fixture
+on: [pull_request]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    container:
+      image: ${SEMGREP_IMAGE}
+    steps:
+      - uses: actions/checkout@${PINNED_ACTIONS["actions/checkout"]!.sha} # ${
+    PINNED_ACTIONS["actions/checkout"]!.version
+  }
+`,
+};
+
+Deno.test("syncWorkflowsForRepo - filed body carries the resolver's pin, not the catalogue's", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const resolvedSha = "a".repeat(40);
+  let calls = 0;
+
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+    resolvePins: () => {
+      calls++;
+      return Promise.resolve({
+        pins: {
+          ...cataloguePinMap(),
+          "actions/checkout": { sha: resolvedSha, version: "v9.9.9" },
+        },
+        failures: [],
+      });
+    },
+  });
+
+  const semgrep = state.issuesCreated.find((i) => i.title.includes("Semgrep"));
+  assertEquals(semgrep !== undefined, true, "Semgrep issue should be filed");
+  assertEquals(
+    semgrep!.body.includes(`actions/checkout@${resolvedSha} # v9.9.9`),
+    true,
+    "body should carry the resolved checkout pin",
+  );
+  assertEquals(
+    semgrep!.body.includes(PINNED_ACTIONS["actions/checkout"]!.sha),
+    false,
+    "the superseded catalogue SHA should not appear",
+  );
+  // The Semgrep container image is pinned separately and must not be
+  // rewritten as though it were an action pin.
+  assertEquals(semgrep!.body.includes(`image: ${SEMGREP_IMAGE}`), true);
+  // Resolved once for the whole repo, however many bodies were rendered.
+  assertEquals(calls, 1);
+});
+
+Deno.test("syncWorkflowsForRepo - an action the resolver failed on keeps its catalogue SHA", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const logged: string[] = [];
+
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+    // The real resolver over a runner that cannot reach upstream: every
+    // release lookup fails, so every pin falls back to the catalogue.
+    resolvePins: () =>
+      resolveActionPins({
+        runFn: () =>
+          Promise.resolve({ ok: false, error: new Error("network down") }),
+        // Both seams named, so the case cannot inherit the host's
+        // VIBE_BUMP_QUARANTINE_HOURS or its wall clock.
+        quarantineHours: 24,
+        now: () => new Date("2026-01-01T00:00:00Z"),
+        log: (message) => logged.push(message),
+      }),
+  });
+
+  const semgrep = state.issuesCreated.find((i) => i.title.includes("Semgrep"));
+  assertEquals(semgrep !== undefined, true);
+  assertEquals(
+    semgrep!.body.includes(
+      `actions/checkout@${PINNED_ACTIONS["actions/checkout"]!.sha}`,
+    ),
+    true,
+    "a failed resolution falls back to the catalogue SHA",
+  );
+  assertEquals(
+    logged.some((line) =>
+      line.includes("[workflow-sync] pin resolution failed:")
+    ),
+    true,
+    "the fallback is logged, not silent",
+  );
+});
+
+Deno.test("issueBody - names every file-scoped check and both copy rules", () => {
+  const body = issueBody(PIN_FIXTURE_SPEC, cataloguePinMap());
+
+  for (const check of WORKFLOW_FILE_CHECKS) {
+    assertEquals(
+      body.includes(check.label),
+      true,
+      `missing-workflow body should name the "${check.id}" check`,
+    );
+  }
+  assertEquals(body.includes(COPY_VERBATIM_CLAUSE), true);
+  assertEquals(body.includes(COPY_PINS_AS_GIVEN_RULE), true);
+});
+
+Deno.test("issueBodyPartial - names every file-scoped check and both copy rules", () => {
+  const body = issueBodyPartial(
+    PIN_FIXTURE_SPEC,
+    "existing.yml",
+    [["actions/checkout"]],
+    cataloguePinMap(),
+  );
+
+  for (const check of WORKFLOW_FILE_CHECKS) {
+    assertEquals(
+      body.includes(check.label),
+      true,
+      `partial-match body should name the "${check.id}" check`,
+    );
+  }
+  assertEquals(body.includes(COPY_VERBATIM_CLAUSE), true);
+  assertEquals(body.includes(COPY_PINS_AS_GIVEN_RULE), true);
+});
+
+Deno.test("issueBodyPartial - renders the resolved pin, leaving the image reference alone", () => {
+  const resolvedSha = "b".repeat(40);
+  const body = issueBodyPartial(
+    PIN_FIXTURE_SPEC,
+    "existing.yml",
+    [["actions/checkout"]],
+    {
+      ...cataloguePinMap(),
+      "actions/checkout": { sha: resolvedSha, version: "v9.9.9" },
+    },
+  );
+
+  assertEquals(
+    body.includes(`actions/checkout@${resolvedSha} # v9.9.9`),
+    true,
+  );
+  assertEquals(body.includes(`image: ${SEMGREP_IMAGE}`), true);
+});
+
+Deno.test("syncWorkflowsForRepo - a dry run never calls the resolver", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  let calls = 0;
+
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+    dryRun: true,
+    resolvePins: () => {
+      calls++;
+      return cataloguePins();
+    },
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(state.issuesCreated.length, 0);
+  assertEquals(calls, 0, "a dry run renders no body, so it resolves no pin");
+});
+
+Deno.test("syncWorkflowsForAllRepos - resolves the pins once across every repo", async () => {
+  let calls = 0;
+  const runner = (cmd: string[]): Promise<CommandOutput> => {
+    const joined = cmd.join(" ");
+    if (joined.includes("/contents/") && !joined.includes(".github")) {
+      return Promise.resolve(
+        ok(JSON.stringify([{ name: "README.md", type: "file" }])),
+      );
+    }
+    if (joined.includes("/languages")) return Promise.resolve(ok("{}"));
+    if (
+      joined.includes("contents/.github/workflows") &&
+      !joined.includes("Accept:")
+    ) {
+      return Promise.resolve(ok("[]"));
+    }
+    if (joined.includes("gh issue list")) return Promise.resolve(ok("[]"));
+    if (joined.includes("gh issue create")) {
+      return Promise.resolve(ok("https://github.com/x/y/issues/1"));
+    }
+    return Promise.resolve(ok(""));
+  };
+
+  const results = await syncWorkflowsForAllRepos(["org/one", "org/two"], {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+    resolvePins: () => {
+      calls++;
+      return cataloguePins();
+    },
+  });
+
+  assertEquals(results.length, 2);
+  // 3 universal specs missing in each repo — six bodies, one resolution.
+  assertEquals(results[0]!.issuesRaised, 3);
+  assertEquals(results[1]!.issuesRaised, 3);
+  assertEquals(
+    calls,
+    1,
+    "the pins do not vary by repo, so one call serves all",
+  );
+});
+
+Deno.test("syncWorkflowsForRepo - a malformed pin fails loud rather than filing nothing", async () => {
+  // `applyResolvedPins` throws on a pin whose SHA is not 40 hex characters
+  // (Issue #1823) — a caller-built map is the only way to reach it. That
+  // throw must reach the caller: swallowing it would report a clean sync
+  // that quietly filed no issue at all.
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+    resolvePins: () =>
+      Promise.resolve({
+        pins: {
+          ...cataloguePinMap(),
+          "actions/checkout": { sha: "not-a-sha", version: "v9" },
+        },
+        failures: [],
+      }),
+  });
+
+  assertEquals(result.ok, false, "a pin fault must not report a clean sync");
+  assertEquals(
+    (result.error ?? "").includes("not a 40-character"),
+    true,
+    `error should name the malformed pin, got: ${result.error}`,
+  );
+  assertEquals(state.issuesCreated.length, 0);
+});
+
+Deno.test("syncWorkflowsForRepo - a spec skipped by a failure says so", async () => {
+  // The per-spec catch keeps one bad spec from blocking the others, but the
+  // skip is logged rather than silent.
+  const { runner } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const logged: string[] = [];
+  const exploding: WorkflowSyncOptions["runCommand"] = (cmd) => {
+    if (cmd.join(" ").includes("gh issue create")) {
+      return Promise.reject(new Error("gh exploded"));
+    }
+    return runner!(cmd);
+  };
+
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: exploding,
+    resolvePins: cataloguePins,
+    log: (message) => logged.push(message),
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(result.issuesRaised, 0);
+  assertEquals(
+    logged.some((line) =>
+      line.includes("skipped") && line.includes("gh exploded")
+    ),
+    true,
+    "a swallowed per-spec failure must still be reported",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The default resolver — the setup runner adapted to the resolver's runFn
+// ---------------------------------------------------------------------------
+
+/**
+ * Extend a mock runner with the release and commit lookups the default
+ * resolver makes, so a sync with no injected `resolvePins` resolves through
+ * `pinResolverRunFn` exactly as production does.
+ */
+function withUpstreamLookups(
+  base: WorkflowSyncOptions["runCommand"],
+  upstream: { tag: string; publishedAt: string; sha: string } | "unreachable",
+): WorkflowSyncOptions["runCommand"] {
+  return (cmd: string[]): Promise<CommandOutput> => {
+    const joined = cmd.join(" ");
+    const isRelease = joined.includes("/releases");
+    const isCommit = /repos\/[^ ]+\/commits\//.test(joined);
+    if (!isRelease && !isCommit) return base!(cmd);
+    if (upstream === "unreachable") return Promise.resolve(fail("no network"));
+    if (isRelease) {
+      return Promise.resolve(ok(`${upstream.tag} ${upstream.publishedAt}`));
+    }
+    return Promise.resolve(ok(`${upstream.sha} ${upstream.publishedAt}`));
+  };
+}
+
+Deno.test("syncWorkflowsForRepo - the default resolver pins from upstream through the setup runner", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const sha = "c".repeat(40);
+
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    // No `resolvePins`: the default resolver runs over this runner.
+    runCommand: withUpstreamLookups(runner, {
+      tag: "v9.9.9",
+      publishedAt: "2020-01-01T00:00:00Z",
+      sha,
+    }),
+    log: () => {},
+  });
+
+  const semgrep = state.issuesCreated.find((i) => i.title.includes("Semgrep"));
+  assertEquals(semgrep !== undefined, true);
+  assertEquals(
+    semgrep!.body.includes(`actions/checkout@${sha} # v9.9.9`),
+    true,
+    "the default resolver's pin should reach the filed body",
+  );
+});
+
+Deno.test("syncWorkflowsForRepo - the default resolver falls back loudly when the runner fails", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const logged: string[] = [];
+
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: withUpstreamLookups(runner, "unreachable"),
+    log: (message) => logged.push(message),
+  });
+
+  const semgrep = state.issuesCreated.find((i) => i.title.includes("Semgrep"));
+  assertEquals(semgrep !== undefined, true);
+  assertEquals(
+    semgrep!.body.includes(
+      `actions/checkout@${PINNED_ACTIONS["actions/checkout"]!.sha}`,
+    ),
+    true,
+    "an unreachable upstream falls back to the catalogue SHA",
+  );
+  assertEquals(
+    logged.some((line) =>
+      line.includes("[workflow-sync] pin resolution failed:")
+    ),
+    true,
+  );
+});
+
+Deno.test("syncWorkflowsForRepo - a failed lookup's reason reaches the fallback line", async () => {
+  // `resolveGitHubReleaseHistory` rebuilds its message from the exit code
+  // alone, so a runner failure has to be reported as a runner *error*
+  // carrying stderr — otherwise "gh: not found" is thrown away and the
+  // operator's only diagnostic reads "exited 1".
+  const { runner } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const logged: string[] = [];
+
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: (cmd: string[]) => {
+      if (cmd.join(" ").includes("/releases")) {
+        return Promise.resolve(fail("HTTP 403: rate limit exceeded"));
+      }
+      return runner!(cmd);
+    },
+    log: (message) => logged.push(message),
+  });
+
+  assertEquals(
+    logged.some((line) => line.includes("HTTP 403: rate limit exceeded")),
+    true,
+    `the upstream reason should survive into the log, got: ${logged.join("|")}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// pinResolverRunFn — the adapter between the setup runner and the resolver
+// ---------------------------------------------------------------------------
+
+Deno.test("pinResolverRunFn - a successful command yields its stdout at exit zero", async () => {
+  const runFn = pinResolverRunFn(() =>
+    Promise.resolve(ok("v1.2.3 2020-01-01T00:00:00Z"))
+  );
+
+  const result = await runFn(["gh", "api", "repos/o/r/releases"], 30);
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.exitCode, 0);
+    assertEquals(result.value.output, "v1.2.3 2020-01-01T00:00:00Z");
+  }
+});
+
+Deno.test("pinResolverRunFn - a failed command is an error carrying its stderr", async () => {
+  const runFn = pinResolverRunFn(() =>
+    Promise.resolve(fail("HTTP 403: rate limit exceeded"))
+  );
+
+  const result = await runFn(["gh", "api", "repos/o/r/releases"], 30);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message, "HTTP 403: rate limit exceeded");
+  }
+});
+
+Deno.test("pinResolverRunFn - a failure with no stderr still says why it failed", async () => {
+  const runFn = pinResolverRunFn(() =>
+    Promise.resolve({ success: false, stdout: "", stderr: "" })
+  );
+
+  const result = await runFn(["gh", "api", "repos/o/r/releases"], 30);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message.length > 0, true);
+  }
+});
+
+Deno.test("pinResolverRunFn - a command that never settles is bounded by the budget", async () => {
+  // Nothing else on the setup `gh` path applies a deadline (`spawnGh` times a
+  // call out only when given a signal), so the adapter is what stops a wedged
+  // `gh api` hanging the whole sync.
+  const runFn = pinResolverRunFn(() => new Promise<CommandOutput>(() => {}));
+
+  const result = await runFn(["gh", "api", "repos/o/r/releases"], 0.01);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message.includes("timed out after"), true);
+  }
+});

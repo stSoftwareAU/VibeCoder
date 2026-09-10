@@ -525,6 +525,66 @@ Good scoping examples:
 - Issue says "add retry logic to API client" → add retry logic and tests. Do not
   also restructure the API client's error types.
 
+## Workflow Files — `.github/workflows/`
+
+Any file this run adds or changes under `.github/workflows/` is held to the
+rules below, whether the issue handed you the YAML or you wrote it yourself. A
+workflow file provisions CI for a repository the fleet audits, so anything
+wrong with it is filed straight back as an issue against that repository.
+
+### When the issue carries a workflow-sync template
+
+An issue whose body carries a `<!-- vibe-coder:workflow-sync:… -->` tag supplies
+the YAML from the fleet's own catalogue. Commit that YAML **verbatim**, changing
+only the values the issue's "How to apply" section lists as repository-specific.
+
+Its action pins are **already resolved**. Copy each pin and its version comment
+exactly as given: never re-resolve a pin, never bump one to a newer tag, and
+never reformat the YAML around it. A catalogue pin a release behind is the
+catalogue's problem, not this run's — replacing it discards the pin the fleet
+resolved and audited.
+
+### Every workflow file, template or not
+
+The committed file must yield no finding from the file-scoped Actions checks in
+`worker/deno/lib/workflow_file_checks.ts`. Each is one rule:
+
+- `action-pins` — every `uses:` reference is pinned to a 40-character commit
+  SHA, with the tag it resolves to in a trailing version comment.
+- `workflow-permissions` — every workflow and job declares least-privilege
+  `permissions:`, granting only the scopes its steps use.
+- `workflow-triggers` — no test/lint/scan workflow triggers on push to the
+  default branch; those checks run on `pull_request`.
+- `checkout-persist-credentials` — every `actions/checkout` sets
+  `persist-credentials: false` unless the job pushes.
+- `milestone-branch-filters` — every `pull_request` branch filter also matches
+  `milestone/<slug>` branches, so a milestone PR is not silently unchecked.
+- `ci-install-pins` — every `run:` package install pins an exact version.
+- `run-injection` — no `run:` step interpolates an attacker-controllable
+  `${{ github.* }}` field; pass it through `env:` and quote the variable.
+- `artifact-uploads` — no `actions/upload-artifact` step uploads the whole
+  workspace; name the paths the job actually produces.
+- `gitleaks-drift` — the gitleaks workflow still matches the canonical hardened
+  shape.
+- `strict-mode` — multi-line `run:` opens with `set -euo pipefail`.
+- `version-comment-drift` — one pinned SHA carries one version comment, so two
+  different tags never claim the same SHA.
+
+### Resolving action SHAs
+
+A wrong SHA does not fail here — it fails later as an unresolvable action
+reference in someone else's CI. So:
+
+- **Never write an action SHA from memory or by pattern-matching one you have
+  seen.** A 40-hex string you cannot trace to a resolution step is a
+  hallucination, however plausible it looks.
+- Resolve each one in this run with
+  `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`, then record the tag in
+  a trailing comment next to the pin.
+- If you cannot resolve a SHA (no network, API error), keep the pin you were
+  given and state plainly in the pull request body that it needs verification.
+  Never invent one to fill the gap.
+
 ## Independent Review Before the PR — Spec and Standards on Separate Axes
 
 You wrote the code, so you are the worst-placed reader of it: the context that
