@@ -1126,42 +1126,6 @@
       ]
     },
     {
-      "issue": 1684,
-      "chunk": "12m",
-      "title": "top-up: the pending working-tree helpers added after the chunk-12 slices",
-      "ledger": "docs/audits/security-sweep-1684-pending-work.md",
-      "definition": "modules added to lib/ after 12a-12l recorded their coverage",
-      "status": "swept",
-      "sweptAt": "386e05817d837ac5ffc17ec7dacbd49854162511",
-      "paths": [
-        "worker/deno/lib/pending_work.ts"
-      ]
-    },
-    {
-      "issue": 1666,
-      "chunk": "12n",
-      "title": "top-up: the stream-json rate_limit_event parser added after the chunk-12 slices",
-      "ledger": "docs/audits/security-sweep-1666-claude-rate-limit-event.md",
-      "definition": "modules added to lib/ after 12a-12m recorded their coverage: claude_rate_limit_event.ts (#1666)",
-      "status": "swept",
-      "sweptAt": "1e7d1ba4f651f9cf49172ff4308c2faaa589002e",
-      "paths": [
-        "worker/deno/lib/claude_rate_limit_event.ts"
-      ]
-    },
-    {
-      "issue": 1669,
-      "chunk": "12o",
-      "title": "top-up: the agent spawn quota gate added after the chunk-12 slices",
-      "ledger": "docs/audits/security-sweep-1669-claude-spawn-gate.md",
-      "definition": "modules added to lib/ after 12a-12n recorded their coverage: claude_spawn_gate.ts (#1669)",
-      "status": "swept",
-      "sweptAt": "c2672c5a6e11479deeeff66403fb3f38bd328773",
-      "paths": [
-        "worker/deno/lib/claude_spawn_gate.ts"
-      ]
-    },
-    {
       "issue": 1220,
       "chunk": "14",
       "title": "setup CLI",
@@ -1291,6 +1255,42 @@
         "worker/deno/lib/milestone_default_tip.ts"
       ],
       "sweptAt": "23e899b98daa8613993a16ba10f5b7e2abc28d61"
+    },
+    {
+      "issue": 1684,
+      "chunk": "12v",
+      "title": "top-up: the pending working-tree helpers added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1684-pending-work.md",
+      "definition": "modules added to lib/ after 12a-12u recorded their coverage: pending_work.ts (#1684)",
+      "status": "swept",
+      "sweptAt": "386e05817d837ac5ffc17ec7dacbd49854162511",
+      "paths": [
+        "worker/deno/lib/pending_work.ts"
+      ]
+    },
+    {
+      "issue": 1666,
+      "chunk": "12w",
+      "title": "top-up: the stream-json rate_limit_event parser added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1666-claude-rate-limit-event.md",
+      "definition": "modules added to lib/ after 12a-12v recorded their coverage: claude_rate_limit_event.ts (#1666)",
+      "status": "swept",
+      "sweptAt": "1e7d1ba4f651f9cf49172ff4308c2faaa589002e",
+      "paths": [
+        "worker/deno/lib/claude_rate_limit_event.ts"
+      ]
+    },
+    {
+      "issue": 1669,
+      "chunk": "12x",
+      "title": "top-up: the agent spawn quota gate added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1669-claude-spawn-gate.md",
+      "definition": "modules added to lib/ after 12a-12w recorded their coverage: claude_spawn_gate.ts (#1669)",
+      "status": "swept",
+      "sweptAt": "c2672c5a6e11479deeeff66403fb3f38bd328773",
+      "paths": [
+        "worker/deno/lib/claude_spawn_gate.ts"
+      ]
     }
   ],
   "roots": [
