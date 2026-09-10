@@ -4585,7 +4585,11 @@ async function syncMilestoneBranchesFn(
             ),
             customInstructions: getCustomInstructions(config.repoConfig, repo),
             timeouts: {
-              claudeTimeout: config.claudeTimeout,
+              // The grant the sweep sized to the budget actually left
+              // (Issue #1693), not the configured timeout: an agent promised
+              // more time than the cycle holds is killed mid-edit.
+              claudeTimeout: syncOptions.agentTimeoutSeconds ??
+                config.claudeTimeout,
               claudeNoOutputTimeout: config.claudeNoOutputTimeout,
               maxRateLimitRetries: config.maxRateLimitRetries,
             },

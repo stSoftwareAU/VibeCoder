@@ -3435,19 +3435,33 @@ rung remains" this budget removes. On the third concluded failure the branch is
 handed to the roll-back (`rollbackFn`); until that wiring lands the default
 logs `budget exhausted: roll-back not yet available` and still posts nothing.
 
-**One agent run per cycle, across every repo and milestone.** The ladder's
-agent rung is offered to the first branch that actually collides while holding
-the grant, and only while `cycleCoversAgentRun` says the handler's remaining
-budget covers a whole agent run plus the work around it — the merge-conflict
-drain's "too little of the cycle left" shape, spending the drain's own
-`DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT` and
-`DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS`. Every other conflicting branch that
-cycle climbs the triage and the deterministic rules only, and its attempt is
-concluded `not-charged`. An agent started with too little cycle left is killed
-mid-edit by the watchdog, and Issue #1693 is the record of what charging that
-kill costs — so the milestone ladder never charges it either. Priority 1.72 is
-declared `agentBacked` for the same reason: the handler that spawns that agent
-needs the cycle-deadline watchdog rather than the flat 600-second one.
+**One agent run per cycle, across every repo and milestone.** `grantAgentRun`
+decides it, and it is the merge-conflict drain's rule with **both** halves:
+
+- **A floor.** A rung is not started at all unless the handler's remaining
+  budget, less the `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS` a resolution spends
+  outside the agent, still covers `DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT` (20
+  minutes) — the drain's own constants, imported rather than restated.
+- **A clamp.** The grant handed down in `SyncBranchOptions.agentTimeoutSeconds`
+  is never more than that budget, so an agent that runs to its full grant still
+  has room to conclude. Gating on the *configured* `claudeTimeout` instead
+  would refuse the rung on every cycle whose remaining budget is shorter than
+  an hour — almost all of them — and silently disable the ladder's last rung
+  while making every conflict `not-charged`, so the budget would never exhaust
+  and an unresolvable conflict would reach nobody at all.
+
+The grant is spent when it is handed out and refunded only for a merge that had
+no conflict: the bound is "at most one agent run a cycle", so over-spending is
+the safe direction — a merge that failed *after* the agent ran leaves the grant
+spent rather than handing a second branch a second run. Every other conflicting
+branch that cycle climbs the triage and the deterministic rules only, and its
+attempt is concluded `not-charged`. Priority 1.72 is declared `agentBacked`
+(like the drain's own handler) so the handler that spawns that agent gets the
+cycle-deadline watchdog rather than the flat 600-second one.
+
+**A branch past its budget is not merged again.** It is the roll-back's, so the
+pre-merge guard skips it with `the conflict budget is spent` rather than
+charging a fourth attempt and re-entering the hand-off every cooldown.
 
 #### 🔙 Rolling a stuck milestone branch back
 

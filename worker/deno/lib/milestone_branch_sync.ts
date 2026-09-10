@@ -99,12 +99,21 @@ export interface SyncBranchOptions {
    * Whether this attempt may climb the ladder's agent rung.
    *
    * False once the cycle's single agent run has been spent, and false when
-   * too little of the handler's budget remains to cover one — an agent
-   * started with no room to finish is killed mid-edit, and that kill is the
-   * #1693 shape this sync must not repeat. A sync given `false` climbs the
-   * triage and the deterministic rules and stops there.
+   * too little of the handler's budget remains to cover one. A sync given
+   * `false` climbs the triage and the deterministic rules and stops there.
    */
   agentAllowed: boolean;
+  /**
+   * Seconds the agent may run, sized to the budget that is actually left
+   * (Issue #1693).
+   *
+   * Absent means "keep the configured timeout" — the pass stated no deadline
+   * or no agent timeout, so there is nothing to shrink it to. Present, it is
+   * never more than the handler has: an agent promised more time than the
+   * cycle holds is an agent the watchdog kills mid-edit, and that kill is the
+   * shape this whole bound exists to stop repeating.
+   */
+  agentTimeoutSeconds?: number;
 }
 
 /** What a branch that has spent its conflict budget is handed to. */
@@ -251,6 +260,11 @@ export interface MilestoneBranchSyncDeps {
    * {@link DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS}.
    */
   attemptOverheadMs?: number;
+  /**
+   * Agent time that must remain before an agent rung is started at all.
+   * Defaults to the drain's own {@link DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT}.
+   */
+  minMsPerAgentAttempt?: number;
   /** Clock seam (epoch milliseconds); defaults to `Date.now`. */
   now?: () => number;
   /**
@@ -279,31 +293,56 @@ export interface ConflictConclusion {
 }
 
 /**
- * Whether the cycle still has room for one agent-backed resolution
+ * What the cycle may grant one conflict resolution's agent rung
  * (Issue #1778).
  *
- * The merge-conflict drain's "too little of the cycle left" shape, applied to
- * the milestone sync and spending its constants: an agent started with less
- * than its own timeout left is an agent the watchdog kills mid-edit, and
- * Issue #1693 is the record of what that costs. A pass with no deadline is
- * unbounded and always covers a run.
+ * The merge-conflict drain's shape, spending the drain's own constants and
+ * both halves of its rule (`merge_conflict_drain.ts`):
+ *
+ * - **A floor.** An agent run is not started at all unless the budget left,
+ *   less what the resolution spends outside the agent, still covers
+ *   {@link DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT}. Ten minutes was enough to
+ *   *start* the resolution killed mid-edit on NEAT-AI-core#637 and never
+ *   enough to finish it (Issue #1693).
+ * - **A clamp.** What is granted is never more than that budget, so an agent
+ *   that runs to its full grant still has room to conclude rather than being
+ *   killed on the way there. Gating on the *configured* timeout instead would
+ *   refuse the rung on every cycle a run's remaining budget is shorter than
+ *   `claudeTimeout` — which is almost all of them — and silently disable the
+ *   ladder's last rung.
+ *
+ * A pass with no deadline is unbounded: the rung is allowed and the agent
+ * keeps its configured timeout.
  *
  * @param opts.deadlineEpochMs - The handler's watchdog deadline, when it has one
  * @param opts.nowMs - Current time in epoch milliseconds
- * @param opts.agentTimeoutMs - The agent timeout a resolution would be granted
+ * @param opts.agentTimeoutMs - The agent timeout a resolution would otherwise get
  * @param opts.attemptOverheadMs - Budget the resolution spends outside the agent
+ * @param opts.minMsPerAttempt - Agent time that must remain to start one at all
  */
-export function cycleCoversAgentRun(opts: {
+export function grantAgentRun(opts: {
   deadlineEpochMs?: number;
   nowMs: number;
   agentTimeoutMs?: number;
   attemptOverheadMs?: number;
-}): boolean {
-  if (opts.deadlineEpochMs === undefined) return true;
+  minMsPerAttempt?: number;
+}): SyncBranchOptions {
+  if (opts.deadlineEpochMs === undefined) return { agentAllowed: true };
   const overhead = opts.attemptOverheadMs ??
     DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS;
-  const need = opts.agentTimeoutMs ?? DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT;
-  return opts.deadlineEpochMs - opts.nowMs - overhead >= need;
+  const floor = opts.minMsPerAttempt ?? DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT;
+  const attemptBudgetMs = opts.deadlineEpochMs - opts.nowMs - overhead;
+  if (attemptBudgetMs < floor) return { agentAllowed: false };
+  if (opts.agentTimeoutMs === undefined) return { agentAllowed: true };
+  return {
+    agentAllowed: true,
+    // Never below a second: a nonsense bound must not become a nonsense
+    // grant. The floor above already guarantees a sane value.
+    agentTimeoutSeconds: Math.max(
+      1,
+      Math.floor(Math.min(opts.agentTimeoutMs, attemptBudgetMs) / 1000),
+    ),
+  };
 }
 
 /**
@@ -885,6 +924,22 @@ export async function syncMilestoneBranches(
             );
           }
 
+          // A branch past its budget belongs to the roll-back, not to another
+          // merge: without this guard it keeps conflicting every cooldown,
+          // charging attempt 4, 5, 6… and re-entering the hand-off each time.
+          if (isConflictBudgetExhausted(entry)) {
+            log(
+              `WARNING: Skipping sync for '${milestone.milestoneTitle}' in ` +
+                `${repo} — the conflict budget is spent ` +
+                `(${entry.conflictAttempts ?? 0} of ` +
+                `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} concluded failures), ` +
+                `so '${milestone.milestoneBranch}' is the roll-back's now and ` +
+                `no further attempt is made (Issue #1778)`,
+            );
+            skipped++;
+            continue;
+          }
+
           if (!conflictAttemptDue(entry, defaultSha, now())) {
             log(
               `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
@@ -904,7 +959,7 @@ export async function syncMilestoneBranches(
 
         // The cycle's agent rung goes to the first branch that needs it, and
         // only while the handler's budget still covers a whole run.
-        const agentAllowed = !agentSpent && cycleCoversAgentRun({
+        const grant = agentSpent ? { agentAllowed: false } : grantAgentRun({
           nowMs: now(),
           ...(deps.deadlineEpochMs !== undefined
             ? { deadlineEpochMs: deps.deadlineEpochMs }
@@ -915,14 +970,25 @@ export async function syncMilestoneBranches(
           ...(deps.attemptOverheadMs !== undefined
             ? { attemptOverheadMs: deps.attemptOverheadMs }
             : {}),
+          ...(deps.minMsPerAgentAttempt !== undefined
+            ? { minMsPerAttempt: deps.minMsPerAgentAttempt }
+            : {}),
         });
+        const agentAllowed = grant.agentAllowed;
+        // Spent on hand-out, refunded below only for a merge that had no
+        // conflict at all. The bound is "at most one agent run a cycle", so
+        // the direction that must never be wrong is over-spending: a merge
+        // that failed after the agent ran — a half-applied plan, a leftover
+        // marker, a refused commit, a throw — leaves the grant spent rather
+        // than handing a second branch a second run.
+        if (agentAllowed) agentSpent = true;
 
         // Attempt sync
         const syncResult = await syncBranchFn(
           repo,
           milestone.milestoneBranch,
           milestone.defaultBranch,
-          { agentAllowed },
+          grant,
         );
 
         if (syncResult.ok) {
@@ -947,9 +1013,9 @@ export async function syncMilestoneBranches(
           // default-branch commit, so a branch that keeps conflicting against
           // the same commit is not reported every cycle.
           const conflict = syncResult.value.conflict;
-          // The grant is spent by a branch that actually collided while
-          // holding it (Issue #1778) — a clean merge asked nothing of it.
-          if (conflict && agentAllowed) agentSpent = true;
+          // Refund the grant: nothing collided, so no rung was climbed and
+          // the next conflicting branch this cycle may still have the agent.
+          if (!conflict && agentAllowed) agentSpent = false;
           if (conflict) {
             // A conflict whose default-branch commit could not be read still
             // needs a dedup key, or the same report goes out every cycle.
@@ -1009,7 +1075,6 @@ export async function syncMilestoneBranches(
           const conflictError = isConflictEscalation(syncResult.error)
             ? syncResult.error
             : undefined;
-          if (conflictError && agentAllowed) agentSpent = true;
 
           // Conclude the ledger attempt this failure ends (Issue #1778).
           if (streakPath && entry) {
@@ -1052,10 +1117,13 @@ export async function syncMilestoneBranches(
             // A gate refusal, not a conflict (Issue #1778): the resolution
             // was made and the verification refused it, so it keeps the
             // escalation Issue #1559 gave it — what the gate said AND both
-            // sides prepared — deduped by the same `gateEscalated` flag the
-            // Issue #974 refusal uses, because it is the same class of
-            // failure and a retry does not clear either.
-            if (entry && !entry.gateEscalated) {
+            // sides prepared — reported once per conflicting default-branch
+            // commit, because a retry does not clear a refused gate.
+            // Its own dedup key, not `gateEscalated`: sharing that flag
+            // would let an Issue #974 refusal suppress this report, and the
+            // reverse — two different refusals, each needing to be seen once.
+            const gateKey = conflictError.defaultSha || UNRESOLVED_SHA;
+            if (entry && entry.analysisEscalatedSha !== gateKey) {
               const escalated = await escalateConflictAnalysis(
                 repo,
                 milestone,
@@ -1065,7 +1133,7 @@ export async function syncMilestoneBranches(
                 ghCommandFn,
                 log,
               );
-              if (escalated) entry.gateEscalated = true;
+              if (escalated) entry.analysisEscalatedSha = gateKey;
             }
           } else if (conflictError) {
             // Nothing is posted for a conflict every rung left undecided

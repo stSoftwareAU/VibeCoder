@@ -81,14 +81,17 @@ export interface SyncStreakEntry {
    */
   conflictEscalatedSha?: string;
   /**
-   * The default-branch commit whose *unresolvable* conflict was escalated
-   * with the prepared analysis (Issue #1559).
+   * The default-branch commit whose resolution the **verification refused**,
+   * escalated with the prepared analysis (Issues #1559 and #1778).
    *
-   * Nothing writes it since Issue #1778: that escalation fired on the first
-   * conflicting commit, before any of the three automatic attempts had been
-   * spent, and the conflict budget replaced it. The field is still read and
-   * carried so a `milestone_sync_failures.json` written before #1778 loads
-   * unchanged rather than losing a key on the next save.
+   * Issue #1778 narrowed what it records. It used to key the escalation for a
+   * conflict *no rung could settle*, which fired before any of the three
+   * automatic attempts had been spent — the conflict budget replaced that
+   * outright. What is left is the gate refusal: the worker made the
+   * resolution and the verification said no, which no retry clears, so it is
+   * reported once per commit. Tracked apart from {@link gateEscalated} so an
+   * Issue #974 refusal of the *merged tree* cannot suppress it, or the
+   * reverse.
    */
   analysisEscalatedSha?: string;
   /**
