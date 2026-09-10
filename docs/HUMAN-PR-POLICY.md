@@ -151,6 +151,26 @@ Each admission is logged, exactly as an invitation is:
 `[pr-bot] admitted repo=… prNumber=… author=…`, and each exclusion carries its
 reason (`reason=cross-repository-head`, `reason=cross-repository-unknown`).
 
+### Keeping a fixed bot PR up to date
+
+A dependency bot stops rebasing its own PR the moment a foreign commit lands on
+it, so once the worker pushes a fix the PR drifts behind its base until the
+merge gate skips it as "branch not fresh". The branch-update scan (Priority
+1.6, `pr_branch_update.ts`) therefore selects those PRs too: alongside the
+worker's own PRs (body marker or `issue-<n>-` branch), it admits a PR whose
+author is a bot, whose head branch lives in **this** repository, and whose
+commits include at least one by this host's login — `isHostPushedBotPr`.
+
+The commit lookup (`gh pr view <n> --json commits`) is issued **only** for
+bot-authored same-repository PRs, so a human or worker PR costs no extra call.
+A lookup that fails **excludes** the PR and is logged
+(`[branch-update] excluded repo=… prNumber=… reason=commit-lookup-failed …`) —
+an unreadable answer is never read as "no host commits".
+
+The worker never posts `@dependabot rebase` or any equivalent bot command: that
+recreates the branch from scratch and **discards the worker's commits**, undoing
+the fix it just pushed. The worker rebases and pushes the branch itself.
+
 ## ✉️ Inviting the worker onto your PR
 
 The policy is "only when asked", not "never". Every scan additionally lists the
@@ -225,6 +245,7 @@ If you *want* the worker on your PR, invite it (label or @mention, above).
 | `worker/deno/tests/human_pr_never_blocks_test.ts`                                              | That a human PR never blocks issue pickup, and a fleet PR still does              |
 | `worker/deno/tests/human_pr_policy_docs_test.ts`                                               | This page's labels and author sets against the real predicates                    |
 | `worker/deno/tests/pr_bot_lookup_test.ts`, `pr_maintenance_bot_prs_test.ts`                    | That bot PRs reach all four scans and fork-headed ones do not                     |
+| `worker/deno/tests/pr_branch_update_bot_prs_test.ts`                                            | That a bot PR the worker pushed to is kept up to date with its base               |
 
 In the logs, `[pr-invitation] admitted …` is the only sanctioned route to a
 worker action on a human-authored PR.
