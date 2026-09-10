@@ -41,7 +41,7 @@ Deno.test("quotaCandidateFromCodexBudget - maps primary remaining fraction", () 
   }
 });
 
-Deno.test("buildIsolatedCodexChildEnv - only the selected account is visible", () => {
+Deno.test("buildIsolatedCodexChildEnv - subscription home excludes API keys", () => {
   const child = buildIsolatedCodexChildEnv({
     OPENAI_API_KEY: "other-account",
     CODEX_API_KEY: "other-codex",
@@ -53,7 +53,7 @@ Deno.test("buildIsolatedCodexChildEnv - only the selected account is visible", (
     openaiApiKey: "selected-account",
     codexHome: "/tmp/selected-home",
   });
-  assertEquals(child.OPENAI_API_KEY, "selected-account");
+  assertEquals(child.OPENAI_API_KEY, undefined);
   assertEquals(child.CODEX_API_KEY, undefined);
   assertEquals(child.CODEX_HOME, "/tmp/selected-home");
   assertEquals(child.ANTHROPIC_API_KEY, undefined);
