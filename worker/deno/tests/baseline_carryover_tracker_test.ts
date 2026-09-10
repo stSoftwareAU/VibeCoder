@@ -17,7 +17,11 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   BASELINE_CARRYOVER_MARKER,
   buildCarryoverTrackerTitle,
+  buildRedCheckTrackerTitle,
   fileBaselineCarryoverTracker,
+  fileRedCheckTracker,
+  formatRedCheckTrackerBody,
+  PRE_EXISTING_GATE_MARKER,
 } from "../lib/baseline_carryover_tracker.ts";
 import type { GenericFinding } from "../lib/baseline_gate.ts";
 import { mermaidFinding } from "../lib/baseline_gate.ts";
@@ -142,5 +146,118 @@ Deno.test(
       ),
       "the failure should be logged",
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// fileRedCheckTracker (Issue #1852) — names the check red on the untouched tree
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "fileRedCheckTracker - files one tracker naming each red check",
+  async () => {
+    const calls: string[][] = [];
+    const ghCommand = (args: string[]): Promise<string> => {
+      calls.push(args);
+      if (args[0] === "issue" && args[1] === "list") {
+        return Promise.resolve("[]");
+      }
+      return Promise.resolve("https://github.com/org/repo/issues/43");
+    };
+
+    await fileRedCheckTracker(REPO, ["repo quality.sh"], { ghCommand });
+
+    assertEquals(calls.length, 2, "expected a search then a create");
+    const create = calls[1]!;
+    const body = create[create.indexOf("--body") + 1]!;
+    assertStringIncludes(body, PRE_EXISTING_GATE_MARKER);
+    assertStringIncludes(body, "`repo quality.sh`");
+    assertStringIncludes(body, "default branch");
+    assertEquals(
+      create[create.indexOf("--title") + 1],
+      buildRedCheckTrackerTitle(REPO),
+      "its own stable title, so it dedups independently",
+    );
+  },
+);
+
+Deno.test(
+  "fileRedCheckTracker - skips filing when its own tracker is already open",
+  async () => {
+    const calls: string[][] = [];
+    const ghCommand = (args: string[]): Promise<string> => {
+      calls.push(args);
+      if (args[0] === "issue" && args[1] === "list") {
+        return Promise.resolve(
+          JSON.stringify([
+            {
+              number: 7,
+              title: buildRedCheckTrackerTitle(REPO),
+              author: { login: "vibe-bot" },
+            },
+          ]),
+        );
+      }
+      return Promise.resolve("");
+    };
+
+    await fileRedCheckTracker(REPO, ["repo quality.sh"], {
+      ghCommand,
+      dedupAuthors: { fleetAuthors: ["vibe-bot"] },
+    });
+
+    assertEquals(calls.length, 1, "dedup must short-circuit before create");
+  },
+);
+
+Deno.test(
+  "fileRedCheckTracker - an open findings tracker does not suppress it",
+  async () => {
+    // The two trackers answer different questions, so a findings tracker
+    // must never leave the repository unable to say which check is red.
+    const calls: string[][] = [];
+    const ghCommand = (args: string[]): Promise<string> => {
+      calls.push(args);
+      if (args[0] === "issue" && args[1] === "list") {
+        return Promise.resolve(
+          JSON.stringify([
+            {
+              number: 7,
+              title: buildCarryoverTrackerTitle(REPO),
+              author: { login: "vibe-bot" },
+            },
+          ]),
+        );
+      }
+      return Promise.resolve("https://github.com/org/repo/issues/44");
+    };
+
+    await fileRedCheckTracker(REPO, ["repo quality.sh"], {
+      ghCommand,
+      dedupAuthors: { fleetAuthors: ["vibe-bot"] },
+    });
+
+    assertEquals(calls.length, 2, "the red-check tracker is still filed");
+    assertEquals(
+      calls[1]![calls[1]!.indexOf("--title") + 1],
+      buildRedCheckTrackerTitle(REPO),
+    );
+  },
+);
+
+Deno.test("fileRedCheckTracker - is non-fatal when gh throws", async () => {
+  const logged: string[] = [];
+  await fileRedCheckTracker(REPO, ["repo quality.sh"], {
+    ghCommand: () => Promise.reject(new Error("gh boom")),
+    logger: { warn: (msg: string) => logged.push(msg) },
+  });
+  assert(logged.some((m) => m.includes("gh boom")), "the failure is logged");
+});
+
+Deno.test(
+  "formatRedCheckTrackerBody - says so plainly when no check could be named",
+  () => {
+    const body = formatRedCheckTrackerBody(REPO, []);
+    assertStringIncludes(body, "could not be named");
   },
 );

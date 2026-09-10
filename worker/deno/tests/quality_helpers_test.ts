@@ -132,6 +132,42 @@ Deno.test("recordCheck - preserves other entries when updating", () => {
   assertEquals(results[1]!.status, "PASSED");
 });
 
+Deno.test("recordCheck - records the output a check printed (Issue #1852)", () => {
+  const results: CheckResult[] = [];
+  recordCheck(results, "repo quality.sh", "FAILED", "version drift");
+  assertEquals(results[0]!.output, "version drift");
+});
+
+Deno.test("recordCheck - omits output entirely when none is given", () => {
+  const results: CheckResult[] = [];
+  recordCheck(results, "mermaid", "PASSED");
+  assertEquals(Object.hasOwn(results[0]!, "output"), false);
+});
+
+Deno.test("recordCheck - an update without output keeps what was recorded", () => {
+  // A caller that only revises a status must not silently erase the output
+  // the pre-existing-failure comparison reads.
+  const results: CheckResult[] = [];
+  recordCheck(results, "repo quality.sh", "FAILED", "version drift");
+  recordCheck(results, "repo quality.sh", "PASSED");
+  assertEquals(results[0]!.status, "PASSED");
+  assertEquals(results[0]!.output, "version drift");
+});
+
+Deno.test("recordCheck - an update with output replaces the old output", () => {
+  const results: CheckResult[] = [];
+  recordCheck(results, "repo quality.sh", "FAILED", "first");
+  recordCheck(results, "repo quality.sh", "FAILED", "second");
+  assertEquals(results.length, 1);
+  assertEquals(results[0]!.output, "second");
+});
+
+Deno.test("recordCheck - an empty output is recorded rather than ignored", () => {
+  const results: CheckResult[] = [];
+  recordCheck(results, "repo quality.sh", "FAILED", "");
+  assertEquals(results[0]!.output, "");
+});
+
 // =============================================================================
 // formatSummary tests
 // =============================================================================

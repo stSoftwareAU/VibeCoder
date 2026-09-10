@@ -21,6 +21,7 @@ import type {
 } from "../lib/baseline_quality_cache.ts";
 import { BASELINE_QUALITY_CACHE_VERSION } from "../lib/baseline_quality_cache.ts";
 import type { GenericFinding } from "../lib/baseline_gate.ts";
+import type { CheckResult } from "../lib/quality_helpers.ts";
 
 const CLEAN_SHA = "0123456789abcdef0123456789abcdef01234567";
 
@@ -73,6 +74,8 @@ interface Scenario {
   /** Gate outcome when it actually runs. */
   gatePassed?: boolean;
   gateOutput?: string;
+  /** Per-check results the gate reports (Issue #1852). */
+  gateChecks?: CheckResult[];
   findings?: GenericFinding[];
   gateErrors?: boolean;
   writeThrows?: boolean;
@@ -114,7 +117,7 @@ function makeDeps(
         return Promise.resolve({
           ok: true as const,
           value: {
-            checks: [],
+            checks: scenario.gateChecks ?? [],
             summary: {
               text: "summary",
               passed: scenario.gatePassed ?? true,
@@ -306,3 +309,68 @@ Deno.test("baselineQuality cache - findings captured on a miss are recorded for 
 
   assertEquals(recorder.writes[0]?.outcome.findings, findings);
 });
+
+// ---------------------------------------------------------------------------
+// Failing checks captured for the pre-existing comparison (Issue #1852)
+// ---------------------------------------------------------------------------
+
+Deno.test("baselineQuality - records what each failing check printed", async () => {
+  const { deps, recorder } = makeDeps({
+    gatePassed: false,
+    gateOutput: "combined",
+    gateChecks: [
+      { name: "repo quality.sh", status: "FAILED", output: "version drift" },
+      { name: "deno tests", status: "PASSED", output: "ok" },
+    ],
+  });
+  const state = makeState();
+
+  await workOnIssueBaselineQuality(makeContext(), state, deps);
+
+  assertEquals(state.baselineFailedChecks, [
+    { name: "repo quality.sh", output: "version drift" },
+  ]);
+  assertEquals(recorder.writes[0]?.outcome.failedChecks, [
+    { name: "repo quality.sh", output: "version drift" },
+  ]);
+});
+
+Deno.test("baselineQuality - a passing baseline records no failing checks", async () => {
+  const { deps } = makeDeps({ gatePassed: true });
+  const state = makeState();
+
+  await workOnIssueBaselineQuality(makeContext(), state, deps);
+
+  assertEquals(state.baselineFailedChecks, []);
+});
+
+Deno.test("baselineQuality cache - reuses the cached failing checks", async () => {
+  const failedChecks = [{ name: "repo quality.sh", output: "version drift" }];
+  const { deps, recorder } = makeDeps({
+    cached: cachedEntry({ passed: false, output: "boom", failedChecks }),
+  });
+  const state = makeState();
+
+  await workOnIssueBaselineQuality(makeContext(), state, deps);
+
+  assertEquals(recorder.gateRuns, 0);
+  assertEquals(state.baselineFailedChecks, failedChecks);
+});
+
+Deno.test(
+  "baselineQuality cache - a cached failure without recorded checks leaves the comparison unarmed",
+  async () => {
+    const { deps } = makeDeps({
+      cached: cachedEntry({ passed: false, output: "boom" }),
+    });
+    const state = makeState();
+
+    await workOnIssueBaselineQuality(makeContext(), state, deps);
+
+    assertEquals(
+      state.baselineFailedChecks,
+      undefined,
+      "an entry written before the comparison existed must not be trusted",
+    );
+  },
+);
