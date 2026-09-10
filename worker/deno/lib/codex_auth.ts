@@ -11,19 +11,35 @@
  * Australian English spelling throughout (behaviour, authorised, organisation).
  */
 
-/** Environment variables the Codex CLI accepts as an API credential. */
-export const CODEX_CREDENTIAL_ENV_VARS: readonly string[] = [
+/** Environment variables that select metered Codex API-key authentication. */
+export const CODEX_API_KEY_ENV_VARS: readonly string[] = [
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
+];
+
+/** Environment variable pointing Codex at persistent ChatGPT login state. */
+export const CODEX_HOME_ENV_VAR = "CODEX_HOME";
+
+/**
+ * Environment variables provisioned by VibeCoder's legacy Codex API-key flow.
+ *
+ * Keep this list API-key-only: the provider descriptor and setup scripts use
+ * it as the contract for pasteable/provisionable credential values.
+ * `CODEX_HOME` is a persistent state-directory selector, not a secret value
+ * to paste into provider.env, and is handled separately by the Codex runtime
+ * path (Issue #1924).
+ */
+export const CODEX_CREDENTIAL_ENV_VARS: readonly string[] = [
+  ...CODEX_API_KEY_ENV_VARS,
 ];
 
 /**
  * Authentication failure patterns, matched case-insensitively.
  *
  * Covers what the Codex CLI emits when it has no usable credential (it names
- * the variables it looked for, and tells the operator to run `codex login`),
- * what the Responses API returns for a rejected key, and the wording the
- * credential preflight uses for a missing provider credential.
+ * the API variables it looked for, and tells the operator to run `codex
+ * login`), what the Responses API returns for a rejected key, and the wording
+ * the credential preflight uses for a missing provider credential.
  */
 const AUTH_PATTERNS: readonly string[] = [
   "codex login",
@@ -37,7 +53,7 @@ const AUTH_PATTERNS: readonly string[] = [
   "invalid api key",
   "incorrect api key",
   "missing api key",
-  ...CODEX_CREDENTIAL_ENV_VARS.map((name) => name.toLowerCase()),
+  ...CODEX_API_KEY_ENV_VARS.map((name) => name.toLowerCase()),
 ];
 
 /**
@@ -63,14 +79,17 @@ export function isCodexAuthError(errorOutput: string): boolean {
  * Return a human-readable message telling the operator how to authenticate
  * the Codex CLI.
  *
- * Names the credential variables rather than an interactive login: the worker
- * runs unattended, so `codex login` is not something it can wait for.
+ * The unattended subscription path is named first: initial setup creates a
+ * persistent `CODEX_HOME`, after which the worker never waits for an
+ * interactive login. API-key variables are mentioned only as legacy explicit
+ * alternatives; the subscription-only automatic router refuses them.
  *
  * @returns The actionable error message.
  */
 export function codexAuthActionableMessage(): string {
-  return `Codex CLI authentication required — set ${
-    CODEX_CREDENTIAL_ENV_VARS.join(" or ")
-  } in the credential directory's codex/provider.env (the worker never ` +
+  return `Codex CLI authentication required — initialise a persistent ${CODEX_HOME_ENV_VAR} ` +
+    `with ChatGPT subscription login during initial setup. Legacy explicit ` +
+    `API-key deployments may use ${CODEX_API_KEY_ENV_VARS.join(" or ")}, but ` +
+    `subscription-only routing never falls back to them (the worker never ` +
     `performs an interactive login)`;
 }
