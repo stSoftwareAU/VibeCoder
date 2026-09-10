@@ -1,7 +1,7 @@
 /**
  * Discovery of *invited* human-authored PRs (Issue #4077).
  *
- * The five PR-maintenance scans list only fleet-operated PRs since
+ * The PR-maintenance scans listed only fleet-operated PRs after
  * Issue #4076. This module is the narrow, audited door back in: it lists
  * the open PRs authored by trusted humans (`allowed_authors`) and admits
  * only those where {@link isPrInvited} says a trusted human handed the PR

@@ -12,6 +12,7 @@ import { assertEquals } from "@std/assert";
 import {
   decidePrUpdateAction,
   executePrBranchUpdates,
+  isHostPushedBotPr,
   isWorkerPr,
   type PrBranchEntry,
   type PrBranchExecutionDeps,
@@ -1138,4 +1139,94 @@ Deno.test("executePrBranchUpdates - a performBranchUpdate failure is logged with
   assertEquals(line !== undefined, true, warnings.join(" | "));
   assertEquals(line!.includes("milestone/4217-feed"), true);
   assertEquals(line!.includes("Rebase failed: base moved"), true);
+});
+
+// ---------------------------------------------------------------------------
+// isHostPushedBotPr — bot PRs the worker has pushed to (Issue #1849)
+// ---------------------------------------------------------------------------
+
+Deno.test("isHostPushedBotPr - a same-repo bot PR carrying a host commit is selected", () => {
+  assertEquals(
+    isHostPushedBotPr(
+      "dependabot[bot]",
+      false,
+      ["dependabot[bot]", "vibe-coder"],
+      "vibe-coder",
+    ),
+    true,
+  );
+});
+
+Deno.test("isHostPushedBotPr - the host-login match is case-insensitive", () => {
+  assertEquals(
+    isHostPushedBotPr("renovate[bot]", false, ["Vibe-Coder"], "vibe-coder"),
+    true,
+  );
+});
+
+Deno.test("isHostPushedBotPr - a bot PR with no host commit is not selected", () => {
+  assertEquals(
+    isHostPushedBotPr(
+      "dependabot[bot]",
+      false,
+      ["dependabot[bot]"],
+      "vibe-coder",
+    ),
+    false,
+  );
+});
+
+Deno.test("isHostPushedBotPr - a fork-headed bot PR is not selected", () => {
+  assertEquals(
+    isHostPushedBotPr("dependabot[bot]", true, ["vibe-coder"], "vibe-coder"),
+    false,
+  );
+});
+
+Deno.test("isHostPushedBotPr - unknown head ownership fails closed", () => {
+  assertEquals(
+    isHostPushedBotPr(
+      "dependabot[bot]",
+      undefined,
+      ["vibe-coder"],
+      "vibe-coder",
+    ),
+    false,
+  );
+});
+
+Deno.test("isHostPushedBotPr - a human author with a host commit is not selected", () => {
+  assertEquals(
+    isHostPushedBotPr("some-developer", false, ["vibe-coder"], "vibe-coder"),
+    false,
+  );
+});
+
+Deno.test("isHostPushedBotPr - the fleet's own login stays on the isWorkerPr route", () => {
+  // A fleet account is often a GitHub App, so `isBotLogin` cannot tell it
+  // apart from a dependency bot — the host-login check must.
+  assertEquals(
+    isHostPushedBotPr(
+      "vibe-coder[bot]",
+      false,
+      ["vibe-coder[bot]"],
+      "vibe-coder[bot]",
+    ),
+    false,
+  );
+});
+
+Deno.test("isHostPushedBotPr - a blank author, blank host or missing commit list is not selected", () => {
+  assertEquals(
+    isHostPushedBotPr("", false, ["vibe-coder"], "vibe-coder"),
+    false,
+  );
+  assertEquals(
+    isHostPushedBotPr("dependabot[bot]", false, ["vibe-coder"], "  "),
+    false,
+  );
+  assertEquals(
+    isHostPushedBotPr("dependabot[bot]", false, undefined, "vibe-coder"),
+    false,
+  );
 });
