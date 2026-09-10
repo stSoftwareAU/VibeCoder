@@ -207,7 +207,7 @@ export interface AutoMergeOptions extends PrScanOptions {
     repo: string,
     prNumber: number,
     headRefName?: string,
-  ) => Promise<{ result: string; message: string }>;
+  ) => Promise<{ result: string; message: string; deferral?: string }>;
   /**
    * Function to attempt direct merge as fallback. Returns the outcome so
    * the scan can act on it loudly (Issue #3584) — a swallowed failure is
@@ -1493,6 +1493,13 @@ async function attemptMerge(
     // commented, so this is a deferral, never an escalation.
     if (result.result === "blocked_open_children") {
       return { kind: "milestone_children_open" };
+    }
+
+    // Issue #1779: a child whose milestone base is behind the default branch
+    // is left exactly as it is — no comment, no label. The every-cycle
+    // milestone sync clears it, so this is a deferral, never an escalation.
+    if (result.deferral === "milestone-behind") {
+      return { kind: "milestone_base_behind" };
     }
 
     if (result.result === "not_allowed" && directMergeFn) {

@@ -392,3 +392,316 @@ Deno.test("decideMilestoneBaseMerge - resolves the base itself when the caller h
   });
   assertEquals(d.decision, "allow");
 });
+
+// ---------------------------------------------------------------------------
+// decideMilestoneBaseMerge (Issue #1779) — never merge a child into a
+// milestone branch that is behind the default branch
+// ---------------------------------------------------------------------------
+
+import {
+  _resetMilestoneBehindMemo,
+  MILESTONE_BEHIND_MEMO_TTL_MS,
+} from "../lib/milestone_children_gate.ts";
+
+/**
+ * gh stub for the synced-base gate: an open milestone whose rollup has not
+ * merged, plus a `compare` that answers `behindBy` commits (or throws).
+ * Records every compare call so the memo can be asserted.
+ */
+function ghForSyncedGate(scenario: {
+  /** The PR's head branch, as `pr view --json headRefName` answers it. */
+  head?: string;
+  behindBy?: number;
+  failCompare?: boolean;
+  compares?: string[][];
+  rollups?: Array<
+    { number: number; state: string; baseRefName: string; mergedAt?: string }
+  >;
+  milestones?: Array<{ number: number; title: string; state: string }>;
+}) {
+  const base = ghForBaseGate({
+    rollups: scenario.rollups ?? [],
+    milestones: scenario.milestones ??
+      [{ number: 9, title: "Sync", state: "open" }],
+  });
+  return async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    // The synced-base check reads the head to exempt the sync PR.
+    if (key.includes("pr view") && key.includes("headRefName")) {
+      return JSON.stringify({ headRefName: scenario.head ?? "issue-1-child" });
+    }
+    if (key.includes("/compare/")) {
+      scenario.compares?.push(args);
+      if (scenario.failCompare) throw new Error("HTTP 500");
+      return `${scenario.behindBy ?? 0}\n`;
+    }
+    return await base(args);
+  };
+}
+
+Deno.test("decideMilestoneBaseMerge - a milestone base 3 commits behind the default branch DEFERS (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: ghForSyncedGate({ behindBy: 3 }),
+  });
+  assertEquals(d.decision, "defer");
+  if (d.decision === "defer" && d.reason === "milestone-behind") {
+    assertEquals(d.behindBy, 3);
+    assertEquals(d.milestoneBranch, "milestone/sync");
+    assertStringIncludes(d.detail, "3 commit");
+    assertStringIncludes(d.detail, "Develop");
+  } else {
+    throw new Error(`expected a milestone-behind defer, got ${d.decision}`);
+  }
+});
+
+Deno.test("decideMilestoneBaseMerge - a milestone base level with the default branch is allowed as before (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: ghForSyncedGate({ behindBy: 0 }),
+  });
+  assertEquals(d, { decision: "allow", reason: "route-open" });
+});
+
+Deno.test("decideMilestoneBaseMerge - a merged rollup still BLOCKS even when the branch is also behind (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const compares: string[][] = [];
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: ghForSyncedGate({
+      behindBy: 3,
+      compares,
+      rollups: [{ number: 900, state: "MERGED", baseRefName: "Develop" }],
+    }),
+  });
+  assertEquals(d.decision, "block");
+  if (d.decision === "block") assertEquals(d.reason, "rollup-merged");
+  assertEquals(compares.length, 0, "a closed route needs no compare");
+});
+
+Deno.test("decideMilestoneBaseMerge - a compare that cannot be read DEFERS as lookup-failed (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: ghForSyncedGate({ failCompare: true }),
+  });
+  assertEquals(d.decision, "defer");
+  if (d.decision === "defer") assertEquals(d.reason, "lookup-failed");
+});
+
+Deno.test("decideMilestoneBaseMerge - a default-branch base makes no compare call (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const compares: string[][] = [];
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "Develop",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: ghForSyncedGate({ behindBy: 3, compares }),
+  });
+  assertEquals(d, { decision: "allow", reason: "not-milestone-base" });
+  assertEquals(compares.length, 0);
+});
+
+Deno.test("decideMilestoneBaseMerge - two children of one milestone cost ONE compare call (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const compares: string[][] = [];
+  const gh = ghForSyncedGate({ behindBy: 2, compares });
+  for (const prNumber of [11, 12]) {
+    const d = await decideMilestoneBaseMerge({
+      repo: "org/repo",
+      prNumber,
+      baseRefName: "milestone/sync",
+      requireSyncedBase: true,
+      defaultBranch: "Develop",
+      ghCommandFn: gh,
+    });
+    assertEquals(d.decision, "defer");
+  }
+  assertEquals(
+    compares.length,
+    1,
+    "the compare is memoised per repo+milestone",
+  );
+});
+
+Deno.test("decideMilestoneBaseMerge - the memoised compare expires so the next cycle's sync clears the defer (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const compares: string[][] = [];
+  const scenario = { behindBy: 4, compares };
+  const gh = ghForSyncedGate(scenario);
+  let now = 1_000_000;
+  const first = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 11,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: gh,
+    nowMs: () => now,
+  });
+  assertEquals(first.decision, "defer");
+  scenario.behindBy = 0;
+  now += MILESTONE_BEHIND_MEMO_TTL_MS + 1;
+  const second = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 11,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: gh,
+    nowMs: () => now,
+  });
+  assertEquals(second, { decision: "allow", reason: "route-open" });
+  assertEquals(compares.length, 2);
+});
+
+Deno.test("decideMilestoneBaseMerge - the post-merge caller, which does not require a synced base, makes no compare call (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const compares: string[][] = [];
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    ghCommandFn: ghForSyncedGate({ behindBy: 3, compares }),
+  });
+  assertEquals(d, { decision: "allow", reason: "route-open" });
+  assertEquals(compares.length, 0);
+});
+
+Deno.test("decideMilestoneBaseMerge - the compare is oriented default...milestone so `behind_by` means behind (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const compares: string[][] = [];
+  await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: ghForSyncedGate({ behindBy: 1, compares }),
+  });
+  assertEquals(compares.length, 1);
+  assertStringIncludes(
+    compares[0]!.join(" "),
+    "repos/org/repo/compare/Develop...milestone/sync",
+  );
+  assertStringIncludes(compares[0]!.join(" "), ".behind_by");
+});
+
+Deno.test("decideMilestoneBaseMerge - a default branch that cannot be resolved DEFERS as lookup-failed (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: false as const, error: new Error("HTTP 403") }),
+    ghCommandFn: ghForSyncedGate({ behindBy: 3 }),
+  });
+  assertEquals(d.decision, "defer");
+  if (d.decision === "defer") {
+    assertEquals(d.reason, "lookup-failed");
+    assertStringIncludes(d.detail, "HTTP 403");
+  }
+});
+
+Deno.test("decideMilestoneBaseMerge - an EMPTY compare answer is unreadable, never 'level' (Issue #1779)", async () => {
+  // `Number("")` is 0: read as level, a compare that answered nothing would
+  // arm the merge this gate exists to refuse. It must defer instead.
+  _resetMilestoneBehindMemo();
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: async (args: string[]): Promise<string> => {
+      if (args.join(" ").includes("/compare/")) return "  \n";
+      return await ghForSyncedGate({})(args);
+    },
+  });
+  assertEquals(d.decision, "defer");
+  if (d.decision === "defer") assertEquals(d.reason, "lookup-failed");
+});
+
+Deno.test("decideMilestoneBaseMerge - the milestone SYNC PR is exempt: it is what clears 'behind' (Issue #1779)", async () => {
+  // Deferring the sync PR for the state it exists to fix would deadlock the
+  // milestone: the sync could never land, the branch could never catch up,
+  // and no child could ever merge.
+  _resetMilestoneBehindMemo();
+  const compares: string[][] = [];
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 77,
+    baseRefName: "milestone/sync",
+    headRefName: "sync/milestone-sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: ghForSyncedGate({ behindBy: 9, compares }),
+  });
+  assertEquals(d, { decision: "allow", reason: "route-open" });
+  assertEquals(compares.length, 0, "the exempt PR costs no compare call");
+});
+
+Deno.test("decideMilestoneBaseMerge - an unreadable head DEFERS rather than guessing which PR this is (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 77,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: async (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr view") && key.includes("headRefName")) {
+        throw new Error("HTTP 500");
+      }
+      return await ghForSyncedGate({ behindBy: 3 })(args);
+    },
+  });
+  assertEquals(d.decision, "defer");
+  if (d.decision === "defer") {
+    assertEquals(d.reason, "lookup-failed");
+    assertStringIncludes(d.detail, "head branch");
+  }
+});
+
+Deno.test("decideMilestoneBaseMerge - an ordinary child resolves its own head when the caller has none (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 77,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true,
+    defaultBranch: "Develop",
+    ghCommandFn: async (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr view") && key.includes("headRefName")) {
+        return JSON.stringify({ headRefName: "issue-1-child" });
+      }
+      return await ghForSyncedGate({ behindBy: 3 })(args);
+    },
+  });
+  assertEquals(d.decision, "defer");
+  if (d.decision === "defer") assertEquals(d.reason, "milestone-behind");
+});
