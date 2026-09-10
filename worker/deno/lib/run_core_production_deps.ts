@@ -75,6 +75,7 @@ import {
 } from "./health_check_cache.ts";
 
 // Issue finding
+import { createClaudeWeekPaceGate } from "./claude_week_pace.ts";
 import { findIssuesByLabel, findOldestIssue } from "./issue_finder.ts";
 import { IssueCache } from "./issue_cache.ts";
 import { ensureStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
@@ -593,6 +594,20 @@ export async function createProductionRunCoreDeps(
         : undefined,
     });
   }
+
+  // --- Weekly Claude quota pace (Issue #1885) ---
+  // One gate for the life of the process. The Priority 2 scan asks it once
+  // per scan cycle; the reading behind it is re-probed only once it is older
+  // than the credential pool's ten-minute snapshot age, and a host with no
+  // Claude subscription token makes no request at all.
+  const weekPaceGate = createClaudeWeekPaceGate({
+    // Declared here rather than read ambiently inside the gate (Issue #1177):
+    // the one environment value it depends on is visible at the wiring site,
+    // and a test factory's `options.env` reaches it like every other lookup.
+    token: () => env("CLAUDE_CODE_OAUTH_TOKEN") ?? null,
+    logInfo: (message) => logger.info(message),
+    logWarn: (message) => logger.warn(message),
+  });
 
   // --- Daily spend ceiling (Issue #3684) ---
   // Opt-in: unset or `0` leaves the hook unwired and behaviour unchanged. A
@@ -2964,8 +2979,15 @@ export async function createProductionRunCoreDeps(
       );
       // One line per paced milestone per scan, not one per issue in it.
       const pacingLogged = new Set<string>();
+      // Issue #1885: read once per scan cycle, before the tiers are ranked.
+      // Engaged means the weekly Claude quota is projected to run out before
+      // its window resets, so this scan claims no `low-priority` or
+      // `idle-task` issue and the quota left goes to `top-priority` and
+      // `work-on` work. An unknown reading never refuses work.
+      const weekPaceEngaged = await weekPaceGate.isEngaged();
       const result = await findOldestIssue(config, {
         githubUser,
+        weekPaceEngaged,
         ghCommandFn: runGhCommand,
         cache: issueCache,
         timelineCache,
@@ -4292,6 +4314,10 @@ export async function createProductionRunCoreDeps(
           // not refused — whatever the run's outcome. The census withdraws
           // it from the escalation set and reports it as served.
           claimedRepos,
+          // Issue #1885: the scan's own verdict, read without a probe or a
+          // log line. A tier the pace gate refused is a modelled refusal, not
+          // claimable work the scan mysteriously passed over.
+          weekPaceEngaged: weekPaceGate.lastEngaged(),
         });
         const censusLines = formatIdleDecisionCensus(census, host);
         for (const line of censusLines) {
@@ -4674,6 +4700,21 @@ async function syncMilestoneBranchesFn(
     // is never started on a promise the watchdog then breaks (#1693).
     ...(deadlineEpochMs !== undefined ? { deadlineEpochMs } : {}),
     agentTimeoutMs: config.claudeTimeout * 1000,
+    // Issue #1781: the default roll-back runs executeRollback in the
+    // same clone the sync just used.
+    rollbackGitFn: async (repo, args) => {
+      const { runGitCommand } = await import("./git_timeout.ts");
+      const cwd = `${workDir}/${repo.split("/")[1]}`;
+      const result = await runGitCommand(args, { cwd });
+      if (!result.ok) {
+        return { code: 1, stdout: "", stderr: result.error.message };
+      }
+      return {
+        code: result.value.code,
+        stdout: result.value.stdout,
+        stderr: result.value.stderr,
+      };
+    },
   });
 }
 

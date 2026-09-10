@@ -92,6 +92,78 @@ flowchart TD
     style I fill:#707070,stroke:,color:#fff
 ```
 
+### ⏳ Weekly Claude quota pace gate (tiers 3 and 4)
+
+The operator's goal is to spend the **whole** seven-day Claude subscription
+window by the time it resets, on as many issues as it covers, highest priority
+first. Tiers 3 and 4 work against that when the week is burning too fast: the
+last hours of a spent week went on backlog and busywork while `top-priority`
+issues waited for the reset.
+
+Issue #1885 adds a pace gate over those two tiers only. Once per scan cycle the
+worker reads the seven-day window of the token this run selected — through the
+existing budget probe, re-measured only when the reading is older than the
+credential pool's **ten-minute** snapshot age — and projects it linearly:
+
+```text
+projected share at reset = used share ÷ elapsed share
+```
+
+| Verdict | When | Effect on pickup |
+|---------|------|------------------|
+| **engaged** | at least **24 h** of the 168-hour window has elapsed **and** the projection is **≥ 1.0** | tiers 3 (`low-priority`) and 4 (`idle-task`) are dropped from the ladder this scan |
+| **off** | inside the first 24 h, projection under 1.0, or the reported reset is already in the past | every tier is eligible, exactly as before |
+| **unknown** | the probe reported no seven-day window (a failed probe, or a response carrying only the five-hour one) | every tier is eligible; one WARNING line |
+
+```mermaid
+flowchart TD
+    A[Scan cycle begins] --> B{Seven-day window<br/>reading available?}
+    B -- no --> W[WARNING: unknown<br/>every tier eligible]
+    B -- yes --> C{At least 24 h<br/>of the week elapsed?}
+    C -- no --> O[Gate off<br/>every tier eligible]
+    C -- yes --> D{used ÷ elapsed ≥ 1.0?}
+    D -- no --> O
+    D -- yes --> E[Gate engaged<br/>tiers 1, 2, 2b only]
+    style E fill:#c48a8a,stroke:#6a1d1d,color:#1a1a1a
+    style O fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style W fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+```
+
+Boundaries worth stating:
+
+- **Tiers 1, 2 and 2b are never gated.** The point is to redirect what is left
+  of the quota, never to stop working. A run that has already **claimed** a
+  `low-priority` or `idle-task` issue finishes it, and the idle-task *filer* is
+  untouched.
+- **A failed probe never refuses work.** `unknown` leaves the gate off — the
+  same rule the five-hour selection gate follows.
+- **No hysteresis, and no reserve.** The verdict is re-read from the fresh
+  reading each cycle, and the target is full use *exactly* at the reset, so
+  nothing is held back below 100%.
+- **The 24 h grace and the 1.0 threshold are code constants**
+  (`CLAUDE_WEEK_PACE_GRACE_HOURS`, `CLAUDE_WEEK_PACE_THRESHOLD` in
+  [`claude_token_selection.ts`](../../worker/deno/lib/claude_token_selection.ts)),
+  beside the five-hour gate's own constant and deliberately **not**
+  `.config.json` keys — they describe how Anthropic's windows behave, not how
+  one host is configured.
+
+- **The idle-decision census models the refusal.** A tier the gate skipped is
+  reported as `low_priority_suppressed`, not as claimable work the scan
+  refused, so an engaged week cannot file a false idle-inversion issue about
+  the worker's own pace gate.
+- **Only a Claude run is paced.** A run on another coding agent is never
+  gated, even if a stale `CLAUDE_CODE_OAUTH_TOKEN` is left in the shared
+  environment, and a mid-run token switch discards the previous token's
+  reading rather than judging the new subscription on it.
+
+The verdict itself is the pure
+[`claudeWeekPaceVerdict`](../../worker/deno/lib/claude_week_pace.ts); the gate
+emits one `claude-week-pace:` line when the verdict or its figures change —
+engaged, lifted, or a WARNING while the reading is unknown — rather than
+repeating the same sentence on every 30-second cycle in every slot. It is a
+**different** quota from the GraphQL window's `graphql-quota:` line — that one
+is GitHub's API budget, this one is the Claude subscription's.
+
 ### 🩺 Self-scheduled worker diagnostics (tier 2b)
 
 The worker detects its own faults, files them accurately, and states the

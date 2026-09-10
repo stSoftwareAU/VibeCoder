@@ -162,7 +162,9 @@ host builds and runs a Codex image rather than reusing the default one.
   CLI-only projects). Configuration is operator-side only — target repos carry
   no worker configuration.
 - **Milestone enhancements** — Progress notifications, configurable issue
-  ordering within milestones, periodic branch sync with the default branch, and
+  ordering within milestones, periodic branch sync with the default branch,
+  automatic roll-back of a stuck milestone branch (reverted children are
+  reopened and re-queued; a roll-back with nothing left escalates once), and
   milestone health diagnostics.
 - **Self-healing** — Shadow-copy execution, automatic repo resets, disk cleanup,
   failure recovery, rate-limit handling, and crash resilience keep the worker
@@ -510,7 +512,7 @@ These labels tell the worker which issues to pick up.
 | ------------------- | --------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Issue labels** | `top-priority` | — (hardwired,) | Issues with this label are scanned first, **fleet-wide**: a `top-priority` issue in any monitored repo is selected before any `work-on` / `low-priority` / `idle-task` issue in any other repo, whatever their [`repo_config.nice`](docs/CONFIGURATION.md#-per-repo-nice-rotation-tier) values — `nice` only orders repos *within* a label tier (Issue #1063). Add `top-priority` to a new issue to trigger highest-priority processing. Hardwired since — the retired `issue_labels` key is no longer accepted. |
 | **Work-on** | `work-on` | — (hardwired,) | Signals the worker to pick up an issue **not** created by an allowed author. Only an allowed author can add this label (verified via the GitHub timeline API). Hardwired since — the retired `work_on_label` key is no longer accepted. |
-| **Low-priority** | `low-priority` | — (hardwired,) | Backlog work — selected only when **no** eligible `top-priority` or `work-on` candidate exists in **any** scanned repo. Only an allowed author can add this label. The full priority order is `top-priority` > `work-on` > `low-priority` > `idle-task`. Only `idle-task` is self-appliable by the Vibe Coder. Hardwired since. See [Issue selection priority](docs/workflows/issue-processing.md#-issue-selection-priority). |
+| **Low-priority** | `low-priority` | — (hardwired,) | Backlog work — selected only when **no** eligible `top-priority` or `work-on` candidate exists in **any** scanned repo. Only an allowed author can add this label. The full priority order is `top-priority` > `work-on` > `low-priority` > `idle-task`. Only `idle-task` is self-appliable by the Vibe Coder. Hardwired since. Both this tier and `idle-task` are also **skipped while the weekly Claude quota will not last** — see [Weekly Claude quota pace gate](docs/workflows/issue-processing.md#-weekly-claude-quota-pace-gate-tiers-3-and-4). See [Issue selection priority](docs/workflows/issue-processing.md#-issue-selection-priority). |
 | **Ignore open PRs** | `ignore-open-prs`                       | —                    | Bypasses the default behaviour of skipping repositories with open PRs. Only effective when added by an allowed author.                                                                                                                                                                                                                                                                                                 |
 
 ### 🔄 Workflow Labels
