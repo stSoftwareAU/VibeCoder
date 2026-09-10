@@ -77,6 +77,17 @@ export interface PrEntry {
    * (Issue #1109).
    */
   author?: { login?: string } | null;
+  /**
+   * True when the head branch lives in a fork (Issue #1846). Set only when
+   * the listing asked for it; unset means "unknown", which a consumer that
+   * pushes to the head branch must treat as "not ours".
+   */
+  isCrossRepository?: boolean;
+  /**
+   * `MERGEABLE` / `CONFLICTING` / `UNKNOWN`, when the listing asked for it —
+   * the maintenance superset (`PR_MAINTENANCE_LIST_FIELDS`) always does.
+   */
+  mergeable?: string;
 }
 
 /** Comment entry from the GitHub API. */

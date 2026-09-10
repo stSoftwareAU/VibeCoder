@@ -963,6 +963,18 @@
       "sweptAt": "bc8002acde20d8766551f542ee262c08ac3a5c05"
     },
     {
+      "issue": 1846,
+      "chunk": "12n",
+      "title": "top-up: bot-authored PR lookup",
+      "ledger": "docs/audits/security-sweep-1846-pr-bot-lookup.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: pr_bot_lookup.ts (#1846)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/pr_bot_lookup.ts"
+      ],
+      "sweptAt": "00710432980dff1bfa712068558acd9eec2d03f6"
+    },
+    {
       "issue": 1218,
       "chunk": "13",
       "title": "commands CLI entry points",
