@@ -56,6 +56,10 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/container_restart_backoff_test.ts",
   "tests/container_tools_example_docs_test.ts",
   "tests/container_tools_install_test.ts",
+  // Issue #1891: drives .github/scripts/check-empty-array-expansions.sh
+  // against throwaway git repositories, the same shape as
+  // next_release_tag_test.ts below.
+  "tests/empty_array_expansion_check_test.ts",
   "tests/first_run_script_test.ts",
   // Issue #1594: runs container/install-toolchains.sh against fixture
   // fragments, the same shape as the provider-set suite above.
