@@ -29,9 +29,11 @@ authorisation decision (may this run act again?) hanging off it.
 | no filesystem, no network, no `gh` | nothing is read or written; the comments arrive from the caller's existing `getIssueComments` result, so no extra API call is made |
 | no environment or secret sinks | no `Deno.env`, no logging — the caller owns both |
 | a marker is not trusted because it exists | `collectFleetCiFixMarkers` drops every comment whose author is outside the fleet login set **before** it reads the body, so a drive-by comment carrying three attempt markers cannot exhaust the cap and one carrying a deferral marker cannot park the PR. This is `alert_dedup_authors.ts`'s control (#1216) applied to a new marker family |
-| an unresolved fleet identity collects nothing | an empty `fleetLogins` returns empty maps rather than falling back to "trust the body" — the fail direction the existing dedup sites already take. The consequence is the caller's to state, and each states it in its own log |
-| no value is passed through unvalidated | signature (`[0-9a-f]{8,64}`), head (40-character SHA), attempt (positive integer ≤ 999), outcome (one of two literals) and `depends-on` (`REPO_SLUG_PATTERN` plus `#N`) are each checked on parse; a marker failing any check is skipped whole, never half-read |
+| an unresolved fleet identity collects nothing, loudly | an empty `fleetLogins` returns empty maps rather than falling back to "trust the body" — the fail direction the existing dedup sites already take — and says so on the log sink. The result also carries `fleetResolved: false`, so "nobody has attempted this" and "who attempted it cannot be told" are not the same zero: for an attempt cap the ambiguous zero is the unsafe direction |
+| a discarded marker is counted and reported | comments outside the fleet that carry marker text increment `ignoredOutsideFleet` and produce one warning — somebody writing markers at the lane is visible rather than silently dropped |
+| no machine-read value is passed through unvalidated | signature (`[0-9a-f]{8,64}`), head (40-character SHA), attempt (positive integer ≤ 999), outcome (one of two literals) and `depends-on` (`REPO_SLUG_PATTERN` plus `#N`) are each checked on parse; a marker failing any check is skipped whole, never half-read |
 | a partial marker cannot be counted | every attribute is required — a marker with no `outcome`, or a deferral with no `depends-on`, yields nothing, so the surviving half of a truncated marker never reads as an attempt |
+| a marker name is exact | the patterns require the name to be followed by whitespace and do not fold case, so `vibe-ci-fix-attempt-v2` or a re-cased spelling is a *different* marker rather than one silently counted against this signature's cap |
 | the check name cannot break out of the comment | `sanitiseCheckName` removes `"`, `'`, `<` and `>` outright and flattens control characters, so a workflow job named `x --> <script>` can neither end the attribute nor end the HTML comment. Attribute values have no escaping to lean on, which is why the characters are removed rather than encoded |
 | the parsed text cannot inject into a later comment | the same sanitiser runs on **parse**, so a value a fleet account wrote under an older, laxer build is still rendered inert before it reaches the next comment body |
 | a diagnosis line is bounded | `firstDiagnosisLine` flattens control characters and caps at 200 characters, so an oversized or multi-line body cannot expand the cap summary; the doc comment states plainly that Markdown escaping for the table cell is the caller's job |
@@ -44,6 +46,16 @@ authorisation decision (may this run act again?) hanging off it.
 None.
 
 ### Accepted residuals
+
+- **The check name is sanitised, not validated.** Quotes, angle brackets and
+  control characters are removed, but Markdown metacharacters (`|`, `[`, a
+  backtick) survive, and a fork's workflow chooses the name. The value is
+  therefore inert in the *marker* but still prose in whatever renders it, which
+  is why `CiFixMarkerContext.diagnosed` and the check name both state plainly
+  that escaping for a Markdown table is the caller's job. Validating a check
+  name against an alphabet would silently mismatch legitimate names — the tally
+  is keyed on the signature, not the name, so a rejected name would spend
+  attempts twice.
 
 - **A fleet account can still write a marker by hand.** Author verification
   buys attribution, not intent: anyone holding a fleet credential could post an

@@ -18,8 +18,11 @@
  *        depends-on="owner/repo#149" -->
  *
  * Both use the canonical `vibe-` grammar — a bare prefix and `key="value"`
- * attributes, no colon payload — which `tests/marker_grammar_test.ts` pins,
- * so neither needs an `ACCEPTED_DEVIATIONS` entry.
+ * attributes, no colon payload — so neither needs an `ACCEPTED_DEVIATIONS`
+ * entry in `tests/marker_grammar_test.ts`. That scanner reads marker
+ * *literals* out of `lib/`, and these markers are assembled from a name
+ * constant, so the guard that holds the shape is this module's own test: it
+ * builds each marker and asserts the emitted text is canonical.
  *
  * Two properties this module exists to hold:
  *
@@ -55,10 +58,10 @@ export const CI_FIX_ATTEMPT_MARKER_NAME = "vibe-ci-fix-attempt";
 export const CI_FIX_DEFERRAL_MARKER_NAME = "vibe-ci-fix-deferred";
 
 /** Longest check name a marker carries; a longer one is truncated. */
-export const MAX_CHECK_NAME_LENGTH = 120;
+const MAX_CHECK_NAME_LENGTH = 120;
 
 /** Longest diagnosis line lifted from a comment body. */
-export const MAX_DIAGNOSIS_LENGTH = 200;
+const MAX_DIAGNOSIS_LENGTH = 200;
 
 /** Highest attempt number a marker may state. */
 const MAX_ATTEMPT = 999;
@@ -145,6 +148,22 @@ export interface FleetCiFixMarkers {
   attempts: Map<string, CiFixAttemptRecord[]>;
   /** Deferral records, keyed by failure signature, in comment order. */
   deferrals: Map<string, CiFixDeferralRecord[]>;
+  /**
+   * False when the fleet login set was empty, so nothing could be attributed.
+   *
+   * Without this flag an empty tally is ambiguous — "no attempt has been made"
+   * and "who made them cannot be told" both read as zero — and for the attempt
+   * cap the ambiguity resolves the unsafe way: the cap never binds and the
+   * fleet retries without limit, the very failure #1861 exists to stop. A
+   * caller must treat `false` as "cannot decide", not as "go ahead".
+   */
+  fleetResolved: boolean;
+  /**
+   * How many comments carrying CI-fix marker text were discarded because a
+   * login outside the fleet wrote them. Non-zero means somebody is writing
+   * markers at the lane; it is reported, never silently dropped.
+   */
+  ignoredOutsideFleet: number;
 }
 
 /**
@@ -156,16 +175,23 @@ export interface FleetCiFixMarkers {
  */
 const ATTRIBUTE_RE = /([A-Za-z][A-Za-z0-9_-]*)\s*=\s*"([^"]*)"/g;
 
-/** The attempt marker, wherever it appears in a body. */
+/**
+ * The attempt marker, wherever it appears in a body.
+ *
+ * The name must be followed by whitespace and the pattern is case-sensitive,
+ * so a future `vibe-ci-fix-attempt-<suffix>` marker — or a body spelling the
+ * name in another case — is a different marker rather than one silently
+ * counted against this signature's cap. `\b` alone allowed both.
+ */
 const ATTEMPT_MARKER_RE = new RegExp(
-  `<!--\\s*${CI_FIX_ATTEMPT_MARKER_NAME}\\b([^]*?)-->`,
-  "gi",
+  `<!--\\s*${CI_FIX_ATTEMPT_MARKER_NAME}(?=\\s)([^]*?)-->`,
+  "g",
 );
 
-/** The deferral marker, wherever it appears in a body. */
+/** The deferral marker, on the same terms. */
 const DEFERRAL_MARKER_RE = new RegExp(
-  `<!--\\s*${CI_FIX_DEFERRAL_MARKER_NAME}\\b([^]*?)-->`,
-  "gi",
+  `<!--\\s*${CI_FIX_DEFERRAL_MARKER_NAME}(?=\\s)([^]*?)-->`,
+  "g",
 );
 
 /** Read one attribute out of a marker's inner text. */
@@ -175,6 +201,19 @@ function attribute(inner: string, name: string): string | undefined {
     return match[2];
   }
   return undefined;
+}
+
+/**
+ * Cut `text` to `max` characters without splitting a surrogate pair.
+ *
+ * `String.slice` counts UTF-16 code units, so a cut landing between the two
+ * halves of an emoji leaves a lone surrogate — an unpaired code unit that
+ * renders as a replacement character. Dropping the orphaned half costs one
+ * character from a name already being truncated.
+ */
+function truncateWholeCharacters(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max).replace(/[\uD800-\uDBFF]$/, "");
 }
 
 /** Collapse control characters (newlines included) to spaces. */
@@ -201,17 +240,16 @@ function flattenControlCharacters(text: string): string {
  * @param checkName - The raw check name.
  * @returns The sanitised name, possibly empty.
  */
-export function sanitiseCheckName(checkName: string): string {
-  return flattenControlCharacters(checkName)
+function sanitiseCheckName(checkName: string): string {
+  const flat = flattenControlCharacters(checkName)
     .replace(/["'<>]/g, "")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_CHECK_NAME_LENGTH)
     .trim();
+  return truncateWholeCharacters(flat, MAX_CHECK_NAME_LENGTH).trim();
 }
 
 /** True when `ref` is a dependency reference in `owner/repo#N` form. */
-export function isDependencyRef(ref: string): boolean {
+function isDependencyRef(ref: string): boolean {
   const hash = ref.indexOf("#");
   if (hash < 0) return false;
   return REPO_SLUG_PATTERN.test(ref.slice(0, hash)) &&
@@ -348,20 +386,25 @@ export function parseCiFixDeferralMarkers(body: string): CiFixDeferralMarker[] {
 }
 
 /**
- * The comment's first line that is neither empty nor a marker.
+ * The comment's first line that is neither empty nor part of a marker.
  *
  * The CI-fix comment leads with the agent's own diagnosis and carries its
  * markers underneath, so this is the sentence the cap summary quotes back.
  *
+ * Every HTML comment is removed before the split, rather than every line that
+ * *starts* with `<!--`: a marker wrapped across lines — which the parsers
+ * accept — would otherwise have its continuation read as the diagnosis, and a
+ * marker trailing a sentence would be quoted back with it. Either way the cap
+ * summary would render raw attributes into a comment.
+ *
  * @param body - The comment body.
  * @returns The line, flattened and capped, or `""` when there is none.
  */
-export function firstDiagnosisLine(body: string): string {
-  for (const raw of body.split("\n")) {
+function firstDiagnosisLine(body: string): string {
+  for (const raw of body.replace(/<!--[^]*?-->/g, "\n").split("\n")) {
     const line = flattenControlCharacters(raw).trim();
     if (line.length === 0) continue;
-    if (line.startsWith("<!--")) continue;
-    return line.slice(0, MAX_DIAGNOSIS_LENGTH).trim();
+    return truncateWholeCharacters(line, MAX_DIAGNOSIS_LENGTH).trim();
   }
   return "";
 }
@@ -373,33 +416,66 @@ function append<T>(target: Map<string, T[]>, key: string, value: T): void {
   else existing.push(value);
 }
 
+/** True when a body carries marker text of either family, valid or not. */
+function mentionsCiFixMarker(body: string): boolean {
+  return body.includes(CI_FIX_ATTEMPT_MARKER_NAME) ||
+    body.includes(CI_FIX_DEFERRAL_MARKER_NAME);
+}
+
 /**
  * Collect the CI-fix markers a fleet account wrote, grouped by signature.
  *
- * Comments by anyone outside `fleetLogins` are dropped before their bodies
- * are read at all — a marker is a claim about what the fleet did, and only
- * the author of a comment is authenticated. An empty `fleetLogins` is an
- * unresolved fleet identity, so nothing is attributable and nothing is
- * collected; the caller decides what an empty tally means for it and says so
- * in its own log, as `alert_dedup_authors.ts` requires of its callers.
+ * Comments by anyone outside `fleetLogins` are dropped before their values are
+ * read — a marker is a claim about what the fleet did, and only the author of
+ * a comment is authenticated. An empty `fleetLogins` is an unresolved fleet
+ * identity: nothing is attributable, nothing is collected, and the result
+ * reports `fleetResolved: false` so a caller cannot mistake it for "no
+ * attempts yet". Both conditions are logged as they happen, the shape
+ * `alert_dedup_authors.ts` established — a dedup that has stopped working must
+ * be visible rather than inferred from a quiet zero.
  *
  * @param comments - The pull request's comments, in the order the API
  *   returned them (oldest first), so "the earliest marker" is the first.
  * @param fleetLogins - Logins whose markers are trusted.
+ * @param log - Sink for the unresolved-fleet and discard warnings. Defaults
+ *   to `console.warn`, which every entry point has already patched through
+ *   `installConsoleRedaction`; tests inject a recorder.
  * @returns Attempt and deferral records grouped by failure signature.
  */
 export function collectFleetCiFixMarkers(
   comments: readonly CiFixMarkerComment[],
   fleetLogins: readonly string[],
+  log: (message: string) => void = console.warn,
 ): FleetCiFixMarkers {
   const attempts = new Map<string, CiFixAttemptRecord[]>();
   const deferrals = new Map<string, CiFixDeferralRecord[]>();
   const fleet = [...fleetLogins];
-  if (fleet.length === 0) return { attempts, deferrals };
 
+  if (fleet.length === 0) {
+    const carrying = comments.filter((c) => mentionsCiFixMarker(c.body ?? ""));
+    if (carrying.length > 0) {
+      log(
+        `[ci-fix-markers] fleet author set unresolved — cannot verify who ` +
+          `wrote ${carrying.length} CI-fix marker comment(s), so none is ` +
+          `counted. Configure service_accounts / fleet_pr_authors to restore ` +
+          `the fleet-wide attempt tally.`,
+      );
+    }
+    return {
+      attempts,
+      deferrals,
+      fleetResolved: false,
+      ignoredOutsideFleet: 0,
+    };
+  }
+
+  let ignoredOutsideFleet = 0;
   for (const comment of comments) {
-    if (!isFleetAuthor(comment.author, fleet)) continue;
     const body = comment.body ?? "";
+    if (!isFleetAuthor(comment.author, fleet)) {
+      if (mentionsCiFixMarker(body)) ignoredOutsideFleet++;
+      continue;
+    }
     if (body.length === 0) continue;
 
     const context: CiFixMarkerContext = {
@@ -416,7 +492,15 @@ export function collectFleetCiFixMarkers(
     }
   }
 
-  return { attempts, deferrals };
+  if (ignoredOutsideFleet > 0) {
+    log(
+      `[ci-fix-markers] ignored ${ignoredOutsideFleet} CI-fix marker ` +
+        `comment(s) authored outside the fleet — a marker in a pull-request ` +
+        `comment is not evidence the fleet wrote it.`,
+    );
+  }
+
+  return { attempts, deferrals, fleetResolved: true, ignoredOutsideFleet };
 }
 
 /**
@@ -424,7 +508,8 @@ export function collectFleetCiFixMarkers(
  *
  * This is the fleet-wide tally the attempt cap binds on: every host reads it
  * off the same pull request, so three attempts are three across the fleet
- * rather than three per host.
+ * rather than three per host. A zero means "none yet" only when
+ * `markers.fleetResolved` is true.
  *
  * @param markers - Collected markers.
  * @param signature - Failure signature.

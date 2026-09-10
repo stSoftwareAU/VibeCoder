@@ -77,15 +77,51 @@ Deno.test("ci_fix_attempt_markers - a deferral marker round-trips", () => {
   }]);
 });
 
-Deno.test("ci_fix_attempt_markers - the marker names use the canonical grammar", () => {
-  for (
-    const name of [CI_FIX_ATTEMPT_MARKER_NAME, CI_FIX_DEFERRAL_MARKER_NAME]
-  ) {
-    assert(
-      /^vibe-[a-z0-9-]+$/.test(name),
-      `${name} is not a canonical vibe- marker name`,
-    );
+Deno.test("ci_fix_attempt_markers - both emitted markers are canonical", () => {
+  // The shape `marker_grammar_test.ts` calls canonical, applied to what the
+  // builders actually emit: a bare `vibe-` prefix, no colon payload, and
+  // `key="value"` attributes throughout.
+  const emitted = [
+    buildCiFixAttemptMarker({
+      signature: SIGNATURE,
+      checkName: "build",
+      head: HEAD,
+      attempt: 1,
+      outcome: "pushed",
+    }),
+    buildCiFixDeferralMarker({
+      signature: SIGNATURE,
+      checkName: "build",
+      dependsOn: "owner/repo#7",
+    }),
+  ];
+
+  for (const marker of emitted) {
+    const match = /^<!-- (vibe-[A-Za-z0-9:_-]+)((?: [a-z-]+="[^"]*")+) -->$/
+      .exec(marker);
+    assert(match !== null, `not a canonical marker: ${marker}`);
+    const name = match![1]!;
+    assert(/^vibe-[a-z0-9-]+$/.test(name), `${name} deviates from the grammar`);
+    assert(!name.endsWith(":"), `${name} carries a colon payload`);
   }
+});
+
+Deno.test("ci_fix_attempt_markers - a suffixed or re-cased marker name is a different marker", () => {
+  const attributes =
+    `signature="${SIGNATURE}" check="build" head="${HEAD}" attempt="1" outcome="pushed"`;
+
+  assertEquals(
+    parseCiFixAttemptMarkers(
+      `<!-- ${CI_FIX_ATTEMPT_MARKER_NAME}-v2 ${attributes} -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiFixAttemptMarkers(
+      `<!-- ${CI_FIX_ATTEMPT_MARKER_NAME.toUpperCase()} ${attributes} -->`,
+    ),
+    [],
+  );
 });
 
 Deno.test("ci_fix_attempt_markers - two markers in one comment both parse", () => {
@@ -181,7 +217,10 @@ Deno.test("ci_fix_attempt_markers - building with an invalid field fails loud", 
 Deno.test("ci_fix_attempt_markers - a hostile check name cannot break out of the comment", () => {
   const marker = buildCiFixAttemptMarker({
     signature: SIGNATURE,
-    checkName: 'build --> <script>alert("x")</script>',
+    // Every breakout the attribute has to survive: the comment terminator,
+    // a quote that would end the value, and an injected tag. Spelled with a
+    // benign tag name so the fixture is not itself a SAST finding.
+    checkName: 'build --> " <img src=x onerror=y>',
     head: HEAD,
     attempt: 1,
     outcome: "pushed",
@@ -189,10 +228,13 @@ Deno.test("ci_fix_attempt_markers - a hostile check name cannot break out of the
 
   // Exactly one HTML comment, and nothing escapes it.
   assertEquals(marker.split("-->").length, 2);
-  assert(!marker.includes("<script"));
+  assert(!marker.includes("<img"));
+  // The quote closed no attribute: the five the marker declares are all there.
+  assertEquals(marker.split('="').length - 1, 5);
   const parsed = parseCiFixAttemptMarkers(marker);
   assertEquals(parsed.length, 1);
   assert(!parsed[0]!.checkName.includes(">"));
+  assert(!parsed[0]!.checkName.includes('"'));
 });
 
 Deno.test("ci_fix_attempt_markers - malformed markers are ignored", () => {
@@ -267,7 +309,7 @@ Deno.test("ci_fix_attempt_markers - an author differing only in case is still th
   assertEquals(findDeferral(collected, SIGNATURE)?.dependsOn, "owner/repo#7");
 });
 
-Deno.test("ci_fix_attempt_markers - an unresolved fleet set counts nothing", () => {
+Deno.test("ci_fix_attempt_markers - an unresolved fleet set counts nothing, loudly", () => {
   const body = buildCiFixAttemptMarker({
     signature: SIGNATURE,
     checkName: "build",
@@ -275,18 +317,56 @@ Deno.test("ci_fix_attempt_markers - an unresolved fleet set counts nothing", () 
     attempt: 1,
     outcome: "pushed",
   });
+  const logged: string[] = [];
   const collected = collectFleetCiFixMarkers(
     [comment({ id: 4, author: "stservice", body })],
     [],
+    (message) => logged.push(message),
   );
 
   assertEquals(countAttempts(collected, SIGNATURE), 0);
   assertEquals(collected.attempts.size, 0);
+  // The zero is not mistaken for "no attempt has been made".
+  assertEquals(collected.fleetResolved, false);
+  assertEquals(logged.length, 1);
+  assert(logged[0]!.includes("fleet author set unresolved"));
+});
+
+Deno.test("ci_fix_attempt_markers - discarded outside-fleet markers are reported", () => {
+  const body = buildCiFixAttemptMarker({
+    signature: SIGNATURE,
+    checkName: "build",
+    head: HEAD,
+    attempt: 1,
+    outcome: "pushed",
+  });
+  const logged: string[] = [];
+  const collected = collectFleetCiFixMarkers(
+    [
+      comment({ id: 5, author: "drive-by-contributor", body }),
+      comment({ id: 6, author: "another-stranger", body }),
+      comment({ id: 7, author: "passer-by", body: "no marker here" }),
+    ],
+    FLEET,
+    (message) => logged.push(message),
+  );
+
+  assertEquals(collected.fleetResolved, true);
+  assertEquals(collected.ignoredOutsideFleet, 2);
+  assertEquals(logged.length, 1);
+  assert(logged[0]!.includes("ignored 2 CI-fix marker"));
 });
 
 Deno.test("ci_fix_attempt_markers - an empty comment list yields zero", () => {
-  const collected = collectFleetCiFixMarkers([], FLEET);
+  const logged: string[] = [];
+  const collected = collectFleetCiFixMarkers(
+    [],
+    FLEET,
+    (message) => logged.push(message),
+  );
 
+  assertEquals(logged, []);
+  assertEquals(collected.fleetResolved, true);
   assertEquals(collected.attempts.size, 0);
   assertEquals(collected.deferrals.size, 0);
   assertEquals(countAttempts(collected, SIGNATURE), 0);
@@ -368,6 +448,76 @@ Deno.test("ci_fix_attempt_markers - the first non-marker line becomes the diagno
   );
   assertEquals(record?.createdAt, "2026-09-01T00:00:00Z");
   assertEquals(record?.commentId, 11);
+});
+
+Deno.test("ci_fix_attempt_markers - marker text never leaks into the diagnosis", () => {
+  const attempt = buildCiFixAttemptMarker({
+    signature: SIGNATURE,
+    checkName: "build",
+    head: HEAD,
+    attempt: 1,
+    outcome: "no-change",
+  });
+  const collected = collectFleetCiFixMarkers(
+    [
+      // Trailing the sentence rather than on its own line.
+      comment({
+        id: 40,
+        body: `Base branch is red for the same reason. ${attempt}`,
+      }),
+      // Wrapped across lines — which the parser accepts.
+      comment({
+        id: 41,
+        body: attempt.replace(` head="`, `\n     head="`) +
+          "\nSecond diagnosis, wrapped marker above.",
+      }),
+    ],
+    FLEET,
+  );
+
+  assertEquals(
+    collected.attempts.get(SIGNATURE)?.map((record) => record.diagnosed),
+    [
+      "Base branch is red for the same reason.",
+      "Second diagnosis, wrapped marker above.",
+    ],
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - an over-long check name is truncated whole", () => {
+  const marker = buildCiFixAttemptMarker({
+    signature: SIGNATURE,
+    checkName: "x".repeat(119) + "\u{1F600}build",
+    head: HEAD,
+    attempt: 1,
+    outcome: "pushed",
+  });
+  const checkName = parseCiFixAttemptMarkers(marker)[0]!.checkName;
+
+  assertEquals(checkName, "x".repeat(119));
+  // No half of a surrogate pair survived the cut.
+  assertEquals(checkName, [...checkName].join(""));
+});
+
+Deno.test("ci_fix_attempt_markers - an attempt beyond the cap is refused both ways", () => {
+  assertThrows(
+    () =>
+      buildCiFixAttemptMarker({
+        signature: SIGNATURE,
+        checkName: "build",
+        head: HEAD,
+        attempt: 1000,
+        outcome: "pushed",
+      }),
+    Error,
+    "attempt",
+  );
+  assertEquals(
+    parseCiFixAttemptMarkers(
+      `<!-- ${CI_FIX_ATTEMPT_MARKER_NAME} signature="${SIGNATURE}" check="build" head="${HEAD}" attempt="1000" outcome="pushed" -->`,
+    ),
+    [],
+  );
 });
 
 Deno.test("ci_fix_attempt_markers - a body that is only markers has an empty diagnosis", () => {
