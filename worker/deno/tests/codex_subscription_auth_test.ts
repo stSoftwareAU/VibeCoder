@@ -8,8 +8,35 @@
  * CODEX_HOME is selected.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { resolveAgentProvider } from "../lib/agent_provider.ts";
+import { resolveCodexAuthMode } from "../lib/codex_auth_mode.ts";
 import { buildIsolatedCodexChildEnv } from "../lib/codex_env.ts";
+
+Deno.test("Codex subscription auth - provider recognises CODEX_HOME as credential material", () => {
+  const codex = resolveAgentProvider("codex");
+  assert(codex.credentials.envVars.includes("CODEX_HOME"));
+});
+
+Deno.test("Codex subscription auth - CODEX_HOME is not misclassified as an API key", async () => {
+  const home = await Deno.makeTempDir({ prefix: "codex-subscription-auth-" });
+  try {
+    await Deno.writeTextFile(
+      `${home}/auth.json`,
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: { access_token: "test-access", refresh_token: "test-refresh" },
+      }),
+    );
+    const result = resolveCodexAuthMode(
+      home,
+      (name) => name === "CODEX_HOME" ? home : undefined,
+    );
+    assertEquals(result.mode, "chatgpt");
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
 
 Deno.test("Codex subscription auth - CODEX_HOME suppresses every API-key fallback", () => {
   const parent = {
