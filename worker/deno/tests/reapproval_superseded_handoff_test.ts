@@ -138,7 +138,10 @@ Deno.test(
     // Why nothing happened.
     assertStringIncludes(escalation.reason, "superseded");
     // The request: say what the re-approval should change.
-    assertStringIncludes(escalation.nextStep, "Comment on this issue");
+    assertStringIncludes(
+      escalation.nextStep,
+      "Put it in the issue description",
+    );
     assertStringIncludes(escalation.nextStep, "needs-human");
     assertStringIncludes(escalation.nextStep, "re-apply `work-on`");
     assertEquals(escalation.dedupKey, "reapproval-superseded-106");
@@ -171,6 +174,24 @@ Deno.test(
     });
 
     assertEquals(escalation.reason.includes("The release named"), false);
+  },
+);
+
+Deno.test(
+  "buildReapprovalSupersededEscalation - an unusable re-approval time degrades to its raw form",
+  () => {
+    // A timestamp the API reported oddly must not take down the hand-off the
+    // comment exists to deliver: both a non-finite value and a finite one
+    // outside the Date range render raw.
+    for (const addedAt of [Number.NaN, 8.64e18]) {
+      const escalation = buildReapprovalSupersededEscalation({
+        issueNumber: 106,
+        reapproval: { ...REAPPROVAL, addedAt },
+        supersedingPrNumber: 116,
+      });
+      assertStringIncludes(escalation.reason, String(addedAt));
+      assertStringIncludes(escalation.reason, "PR #116");
+    }
   },
 );
 

@@ -175,7 +175,7 @@ Deno.test(
     assertStringIncludes(body, "PR #116");
     assertStringIncludes(body, "@nleck");
     // The request: say what the re-approval should change.
-    assertStringIncludes(body, "Comment on this issue with the scope");
+    assertStringIncludes(body, "Put it in the issue description");
     // The marker a repeat run recognises.
     assertStringIncludes(body, MARKER);
 

@@ -69,10 +69,21 @@ export function reapprovalSupersededDedupKey(issueNumber: number): string {
   return `reapproval-superseded-${issueNumber}`;
 }
 
-/** Render unix seconds as an ISO-8601 instant, or the raw value if unusable. */
+/**
+ * Render unix seconds as an ISO-8601 instant, or the raw value if unusable.
+ *
+ * `toISOString` throws a `RangeError` for a finite value outside the Date
+ * range, so the conversion is guarded: a timestamp the API reported oddly
+ * must degrade to its raw form in the comment, never take down the hand-off
+ * the comment exists to deliver.
+ */
 function formatUnixSeconds(seconds: number): string {
   if (!Number.isFinite(seconds)) return String(seconds);
-  return new Date(seconds * 1000).toISOString();
+  try {
+    return new Date(seconds * 1000).toISOString();
+  } catch {
+    return String(seconds);
+  }
 }
 
 /**
@@ -109,12 +120,12 @@ export function buildReapprovalSupersededEscalation(opts: {
       alsoNamed +
       ` The re-approval does not say what it is for, so re-claiming would ` +
       `repeat the same empty run every cycle.`,
-    nextStep: "Comment on this issue with the scope the re-approval is for — " +
-      "what is still missing after " +
+    nextStep: "Say what the re-approval is for — what is still missing after " +
       `PR #${reapproval.prNumber}, in its own words rather than the original ` +
-      "description — then remove `needs-human` and re-apply " +
-      `\`${reapproval.label}\`. If that PR finished the work, close this ` +
-      "issue instead.",
+      "description. **Put it in the issue description**, which is the text a " +
+      "fresh agent is given; a comment alone does not reach it. Then remove " +
+      `\`needs-human\` and re-apply \`${reapproval.label}\`. If that PR ` +
+      "finished the work, close this issue instead.",
     dedupKey: reapprovalSupersededDedupKey(opts.issueNumber),
   };
 }
@@ -126,7 +137,7 @@ export function buildReapprovalSupersededEscalation(opts: {
  * already carries this work"; every other kind — a PR raised, a failure, a
  * stale claim — leaves the loop untouched.
  */
-export function isSupersededOutcome(
+function isSupersededOutcome(
   outcome: RunOutcome | undefined,
 ): outcome is Extract<RunOutcome, { kind: "superseded" }> {
   return outcome?.kind === "superseded";
