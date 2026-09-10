@@ -62,6 +62,16 @@ Deno.test("isOwnedBranch - recognises the branch shapes a run creates", () => {
   assert(isOwnedBranch("fix/secret-scan", "main"));
   assert(isOwnedBranch("issue/630-rewrite", "main"));
   assert(isOwnedBranch("milestone/509", "main"));
+  // Issue #1850: the shape the worker really uses — VibeCoder#1842's branch.
+  assert(isOwnedBranch("issue-1727-preserve-markdown-redaction", "main"));
+  assert(isOwnedBranch("issue-49-build-the-mobile-read-only-pwa", "Develop"));
+});
+
+Deno.test("isOwnedBranch #1850 - the issue shape is anchored on the number", () => {
+  assertEquals(isOwnedBranch("issue-notes", "main"), false);
+  assertEquals(isOwnedBranch("issue-", "main"), false);
+  assertEquals(isOwnedBranch("issues-42-x", "main"), false);
+  assertEquals(isOwnedBranch("feature/issue-42-x", "main"), false);
 });
 
 Deno.test("isOwnedBranch - never the default branch, by name or by base", () => {
