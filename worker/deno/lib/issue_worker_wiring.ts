@@ -160,7 +160,10 @@ import { evaluateRunGuard } from "./run_entrypoint.ts";
 import { runQualityGate } from "./quality_gate.ts";
 import { formatSummary } from "./quality_helpers.ts";
 import { collectDiffableGateFindings } from "./baseline_gate.ts";
-import { fileBaselineCarryoverTracker } from "./baseline_carryover_tracker.ts";
+import {
+  fileBaselineCarryoverTracker,
+  fileRedCheckTracker,
+} from "./baseline_carryover_tracker.ts";
 import {
   readBaselineQualityCache,
   writeBaselineQualityCache,
@@ -351,6 +354,11 @@ export interface QualityDeps {
    * findings on a bypassed PR (Issue #2605).
    */
   fileBaselineCarryoverTracker: typeof fileBaselineCarryoverTracker;
+  /**
+   * File the same deduplicated tracker for the checks that are red on the
+   * repository's own default branch (Issue #1852).
+   */
+  fileRedCheckTracker: typeof fileRedCheckTracker;
   /**
    * Reuse a baseline gate outcome recorded for a byte-identical checkout
    * (Issue #4283) instead of re-running the whole suite.
@@ -600,6 +608,7 @@ export function createDefaultDeps(
       formatSummary,
       collectDiffableGateFindings,
       fileBaselineCarryoverTracker,
+      fileRedCheckTracker,
       readBaselineQualityCache,
       writeBaselineQualityCache,
     },
@@ -1170,6 +1179,9 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     fileBaselineCarryoverTracker: mockFn<
       QualityDeps["fileBaselineCarryoverTracker"]
     >(() => Promise.resolve()),
+    fileRedCheckTracker: mockFn<QualityDeps["fileRedCheckTracker"]>(() =>
+      Promise.resolve()
+    ),
     readBaselineQualityCache: mockFn<QualityDeps["readBaselineQualityCache"]>(
       () => Promise.resolve(null),
     ),

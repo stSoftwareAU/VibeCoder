@@ -18,6 +18,15 @@
 import type { Result } from "../types.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
+/**
+ * Characters kept from each end of a logged quality-gate excerpt (Issue
+ * #1852). The head carries the failing check's name — the gate prints it as it
+ * starts the check — and the tail carries the findings, so a log line that
+ * kept only one of the two could not say what was red.
+ */
+export const GATE_EXCERPT_HEAD_CHARS = 250;
+export const GATE_EXCERPT_TAIL_CHARS = 500;
+
 /** Status of an individual quality check. */
 export type CheckStatus = "PASSED" | "SKIPPED" | "FAILED";
 
@@ -25,6 +34,14 @@ export type CheckStatus = "PASSED" | "SKIPPED" | "FAILED";
 export interface CheckResult {
   name: string;
   status: CheckStatus;
+  /**
+   * What the check printed (Issue #1852). Recorded for FAILED checks so the
+   * post-change gate can ask whether a failure reproduces one the untouched
+   * tree already had. Absent when the caller recorded no output — the
+   * comparison then cannot attribute the failure and falls back to today's
+   * behaviour.
+   */
+  output?: string;
 }
 
 /** Parsed quality gate options. */
@@ -93,12 +110,16 @@ export function recordCheck(
   results: CheckResult[],
   name: string,
   status: CheckStatus,
+  output?: string,
 ): void {
   const existing = results.find((r) => r.name === name);
   if (existing) {
     existing.status = status;
+    // An omitted output leaves whatever was recorded before, so a caller that
+    // only updates a status cannot silently erase the recorded output.
+    if (output !== undefined) existing.output = output;
   } else {
-    results.push({ name, status });
+    results.push({ name, status, ...(output !== undefined ? { output } : {}) });
   }
 }
 
