@@ -21,6 +21,7 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
+import { classifyCiFailure } from "../lib/ci_failure_classifier.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 import type {
@@ -343,8 +344,15 @@ Deno.test("processCiFailure no-changes - posts the agent's message verbatim with
     true,
     `expected the agent's message first; got: ${body}`,
   );
-  assertStringIncludes(body, "**Classifier reason:**");
-  assertStringIncludes(body, "**Signals:**");
+  assertEquals(
+    body.endsWith(
+      `\n\n**Classifier reason:** ${
+        classifyCiFailure("Project Validation", annotations, "").reason
+      }\n**Signals:**\n- \`check:project validation\``,
+    ),
+    true,
+    `expected the classifier trailer last; got: ${body}`,
+  );
   // The stock text the agent's message replaces must be gone entirely.
   assertEquals(body.includes("could not determine a fix"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
@@ -375,6 +383,31 @@ Deno.test("processCiFailure no-changes - code-fix-required escalates with the ag
   assertStringIncludes(body, "**Why:**");
   assertStringIncludes(body, "**Next step:**");
   assertStringIncludes(body, "remove the `needs-human` label");
+  assertEquals(captured.labelsAdded.includes("needs-human"), true);
+});
+
+Deno.test("processCiFailure no-changes - a history-rewrite escalation keeps the rotate-the-credential next step (Issue #1876)", async () => {
+  // The agent's message replaces the escalation `reason` only. The
+  // `nextStep` is the worker's own instruction, and for a secret finding
+  // that instruction — rotate first — must survive.
+  const agentMessage =
+    "The gitleaks finding is in the base branch; I have nothing left to rewrite here.";
+  const annotations: CheckAnnotation[] = [
+    {
+      path: "config.yml",
+      start_line: 3,
+      message: "gitleaks: aws-access-key detected",
+    },
+  ];
+  const input = makeInput({
+    checkName: "gitleaks",
+    encodedAnnotations: btoa(JSON.stringify(annotations)),
+  });
+  const captured = await runNoChangesScenario(input, "", agentMessage);
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, agentMessage);
+  assertStringIncludes(body, "Rotate the exposed credential");
   assertEquals(captured.labelsAdded.includes("needs-human"), true);
 });
 
