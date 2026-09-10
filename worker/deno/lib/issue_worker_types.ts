@@ -25,6 +25,7 @@ import type { PreservedWip } from "./preserved_wip_branch.ts";
 import type { CallbackRunTelemetry } from "./run_callbacks.ts";
 import type { ImageReference } from "./untrusted_image_signal.ts";
 import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
+import type { PostMergeReapproval } from "./reapproval_superseded_handoff.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -244,6 +245,17 @@ export interface PhaseState {
    * one comment carries both verdicts.
    */
   securityGateBlocks?: SecurityGateRunVerdict[];
+  /**
+   * The trusted discovery label the merged-PR pre-check found added *after*
+   * the linked PR merged (Issue #1862), when there was one.
+   *
+   * Set by `workOnIssueMergedPrPrecheck` on the path where the re-approval
+   * stops it closing the issue (Issue #1618). Read once at the end of the
+   * run: a re-approved issue whose fresh run then ended superseded had
+   * nothing to do, so it is handed to a human instead of being re-claimed
+   * every cycle. Absent on every other run, which behaves exactly as before.
+   */
+  postMergeReapproval?: PostMergeReapproval;
   /**
    * Short facts to state on the claim-release comment (Issue #210) —
    * currently a follow-up reference the agent named that does not exist.

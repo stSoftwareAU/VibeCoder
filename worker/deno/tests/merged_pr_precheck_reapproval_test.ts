@@ -512,3 +512,64 @@ Deno.test(
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #1862 — the re-approval is recorded for the claim-release site
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "merged-pr-precheck - records the re-approval and the merged PR on the phase state (Issue #1862)",
+  async () => {
+    const warnings: Array<
+      { message: string; context?: Record<string, unknown> }
+    > = [];
+    const gh = makeGh({
+      timeline: () =>
+        timelineWith([
+          { label: "work-on", actor: "trusted-human", at: AFTER_MERGE },
+        ]),
+    });
+    const state = makeState();
+
+    const result = await workOnIssueMergedPrPrecheck(
+      makeContext({ issueLabels: ["work-on"] }),
+      state,
+      makeDeps(gh, warnings),
+    );
+
+    assertEquals(result, { status: "continue" });
+    // Both halves of the loop the hand-off needs: which label a trusted human
+    // re-applied, and which merged PR it post-dates.
+    assertEquals(state.postMergeReapproval, {
+      label: "work-on",
+      addedBy: "trusted-human",
+      addedAt: Math.floor(Date.parse(AFTER_MERGE) / 1000),
+      prNumber: 27,
+      mergedAt: MERGED_AT,
+    });
+  },
+);
+
+Deno.test(
+  "merged-pr-precheck - records nothing when the trusted add pre-dates the merge (Issue #1862)",
+  async () => {
+    const warnings: Array<
+      { message: string; context?: Record<string, unknown> }
+    > = [];
+    const gh = makeGh({
+      timeline: () =>
+        timelineWith([
+          { label: "top-priority", actor: "trusted-human", at: BEFORE_MERGE },
+        ]),
+    });
+    const state = makeState();
+
+    await workOnIssueMergedPrPrecheck(
+      makeContext(),
+      state,
+      makeDeps(gh, warnings),
+    );
+
+    assertEquals(state.postMergeReapproval, undefined);
+  },
+);

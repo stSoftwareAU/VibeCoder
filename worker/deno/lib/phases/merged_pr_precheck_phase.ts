@@ -41,6 +41,7 @@ import {
   describeStrandedBranches,
   findStrandedIssueBranches,
 } from "../stranded_issue_branch.ts";
+import type { PostMergeReapproval } from "../reapproval_superseded_handoff.ts";
 
 /** Reason string for the early-exit result — stable identifier used by the orchestrator. */
 export const MERGED_PR_PRECHECK_EARLY_EXIT_REASON = "pr_already_merged";
@@ -62,7 +63,7 @@ export const MERGED_PR_PRECHECK_UNRESOLVED_REASON = "merged_pr_did_not_land";
  */
 export async function workOnIssueMergedPrPrecheck(
   ctx: IssueContext,
-  _state: PhaseState,
+  state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
   const { repo, issueNumber, githubUser } = ctx;
@@ -161,6 +162,17 @@ export async function workOnIssueMergedPrPrecheck(
         mergedAt,
       },
     );
+    // Issue #1862: carry the re-approval to the claim-release site. A run
+    // that then ends superseded — the merged PR already satisfies the original
+    // description, so a fresh agent had nothing to change — is handed to a
+    // human rather than silently re-claimed every cycle.
+    state.postMergeReapproval = {
+      label: reapproval.label,
+      addedBy: reapproval.addedBy,
+      addedAt: reapproval.addedAt,
+      prNumber,
+      mergedAt,
+    };
     // Continue rather than early-exit: the run works the re-approved scope
     // and raises its own PR. That PR's merge is newer than the approval, so
     // the next claim closes the issue by the ordinary path.
@@ -267,15 +279,11 @@ export async function workOnIssueMergedPrPrecheck(
 
 /**
  * A trusted approval label added after the linked PR merged (Issue #1618).
+ *
+ * The label fields of {@link PostMergeReapproval}, which the phase completes
+ * with the PR facts before recording it on the state (Issue #1862).
  */
-interface PostMergeApproval {
-  /** The approval label whose add post-dates the merge. */
-  label: string;
-  /** The trusted login that added it. */
-  addedBy: string;
-  /** When it was added (unix seconds). */
-  addedAt: number;
-}
+type PostMergeApproval = Omit<PostMergeReapproval, "prNumber" | "mergedAt">;
 
 /**
  * Find a trusted approval label whose most recent add post-dates the linked
