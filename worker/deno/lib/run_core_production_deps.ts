@@ -345,7 +345,6 @@ import { setScanCacheForCloseInvalidation } from "./issue_close_notifier.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { SlotGovernor } from "./slot_governor.ts";
 import type { RunOutcome } from "./run_outcome.ts";
-import type { MilestoneConflictAgentRequest } from "./milestone_conflict_ladder.ts";
 import {
   resetAgentRunsTerminating,
   terminateActiveAgentRuns,
@@ -2940,6 +2939,27 @@ export async function createProductionRunCoreDeps(
       // Load the run-local holds once before scanning (synchronous check
       // per issue). Issue #655: the same set the census models.
       const runLocalHold = await loadRunLocalHolds();
+      // Issue #1780: a milestone branch its conflict ledger is pacing cannot
+      // take the default branch down yet, and a child run refuses to cut a
+      // branch off a base that is behind — so claiming one of the milestone's
+      // issues would claim it, defer it and comment on it again every cycle.
+      // The ledger is read once per scan: one local file, no API call.
+      const { loadSyncStreaks, milestoneSyncStreakPath } = await import(
+        "./milestone_sync_streak.ts"
+      );
+      const { milestonePacedUntil, MILESTONE_BEHIND } = await import(
+        "./milestone_presync.ts"
+      );
+      // The same directory the two writers use — the setup phase
+      // (`config.workDir`) and the periodic sweep (`config.workDir` with the
+      // factory's own as its fallback). A reader that resolved it differently
+      // would read a file nobody writes and silently pass every paced
+      // milestone through.
+      const pacingLedger = await loadSyncStreaks(
+        milestoneSyncStreakPath(config.workDir || workDir),
+      );
+      // One line per paced milestone per scan, not one per issue in it.
+      const pacingLogged = new Set<string>();
       const result = await findOldestIssue(config, {
         githubUser,
         ghCommandFn: runGhCommand,
@@ -2958,6 +2978,27 @@ export async function createProductionRunCoreDeps(
         isIssueInCooldown: (repo, num) =>
           runLocalHold(repo, num) ||
           options?.excludeIssues?.has(issueClaimKey(repo, num)) === true,
+        // Issue #1780: beside the scan's `milestone-occupied` gate — that one
+        // refuses a stream a sibling holds, this one refuses a stream whose
+        // branch is behind the default branch and paced by the ledger.
+        milestonePacedUntil: (repo, milestone) => {
+          const until = milestonePacedUntil(
+            pacingLedger,
+            repo,
+            milestone,
+            Date.now(),
+          );
+          if (until === undefined) return undefined;
+          const key = `${repo}|${milestone}`;
+          if (!pacingLogged.has(key)) {
+            pacingLogged.add(key);
+            logger.info(
+              `skipped: ${MILESTONE_BEHIND} (paced until ${until}) — ` +
+                `${repo} milestone '${milestone}'`,
+            );
+          }
+          return until;
+        },
         // Repositories the maintenance lane has leased wholesale (Issues
         // #4176, #213, narrowed by #1091): skipped before any eligibility
         // check, because that pass may touch any branch of the clone.
@@ -4530,7 +4571,9 @@ async function syncMilestoneBranchesFn(
   // Issue #1777: the sync climbs the same ladder the PR pass does, so it
   // needs the same agent — bound here because only this layer knows the
   // repository's instructions and the run's timeouts.
-  const { runMergeConflictAgent } = await import("./merge_conflict_agent.ts");
+  const { bindMilestoneConflictAgent } = await import(
+    "./milestone_conflict_agent_binding.ts"
+  );
   const { runClaudeWithRetry } = await import("./claude_runner.ts");
 
   const workDir = config.workDir || env("HOME") || ".";
@@ -4574,32 +4617,16 @@ async function syncMilestoneBranchesFn(
       // that was not granted it is handed no agent at all, so the ladder
       // stops after the deterministic rules rather than starting a run the
       // watchdog would kill mid-edit (#1693).
-      const agentFn = syncOptions.agentAllowed
-        ? (request: MilestoneConflictAgentRequest) =>
-          runMergeConflictAgent({
-            repo,
-            target: { kind: "branch", intoBranch: request.milestoneBranch },
-            baseBranch: request.defaultBranch,
-            conflictedFiles: request.conflictedFiles,
-            workDir: request.workDir,
-            qualityInstructions: buildQualityInstructions(
-              config.repoConfig,
-              repo,
-            ),
-            customInstructions: getCustomInstructions(config.repoConfig, repo),
-            timeouts: {
-              // The grant the sweep sized to the budget actually left
-              // (Issue #1693), not the configured timeout: an agent promised
-              // more time than the cycle holds is killed mid-edit.
-              claudeTimeout: syncOptions.agentTimeoutSeconds ??
-                config.claudeTimeout,
-              claudeNoOutputTimeout: config.claudeNoOutputTimeout,
-              maxRateLimitRetries: config.maxRateLimitRetries,
-            },
-            logger,
-            runAgent: runClaudeWithRetry,
-          })
-        : undefined;
+      // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
+      // this sweep and a child run's pre-cut sync hand the ladder exactly the
+      // same rung — including the grant's own timeout.
+      const agentFn = bindMilestoneConflictAgent({
+        repo,
+        grant: syncOptions,
+        config,
+        logger,
+        runAgent: runClaudeWithRetry,
+      });
       return await syncMilestoneBranchWithDefault(
         milestoneBranch,
         defaultBranch,

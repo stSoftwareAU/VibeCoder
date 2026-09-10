@@ -1576,6 +1576,7 @@ Each candidate issue is checked by functions in
 | **Open PR blocking**             | `get_blocking_pr_for_issue()`                   | issue_query        | Milestone-aware: only blocked by PRs targeting the same milestone branch                                |
 | **Ignore-open-prs bypass**       | `has_ignore_open_prs_label_by_allowed_author()` | issue_query        | Bypass open PR blocking when label added by allowed author                                              |
 | **One issue per repo/milestone** | `is_milestone_occupied`                         | issue_filter       | Only one issue per repo/milestone can be in-progress at a time                                          |
+| **Milestone behind default**     | `milestonePacedUntil()`                         | milestone_presync  | Skips every issue of a milestone whose branch ledger is pacing the next merge attempt (Issue #1780)     |
 | **Forward dependencies**         | `has_unmet_dependencies()`                      | dependency_checker | Blocked if any `Depends on` / `Blocked by` issue is open                                                |
 | **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items)                                               |
 | **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed`, `failed-once` from reopened issues (retired the `needs-clarification` cleanup)        |
@@ -3501,6 +3502,88 @@ cycle-deadline watchdog rather than the flat 600-second one.
 pre-merge guard skips it with `the conflict budget is spent` rather than
 charging a fourth attempt and re-entering the hand-off every cooldown.
 
+##### Sync before new work — the child run's own pre-cut sync
+
+The periodic sweep is not the only thing that merges the default branch down. A
+**milestone child run** does it too, before it cuts its issue branch
+([milestone_presync.ts](../worker/deno/lib/milestone_presync.ts), Issue #1780):
+a child cut from a branch that is 5 commits behind carries that drift into its
+PR, and the drift is then resolved once per child instead of once per branch.
+
+The setup phase (`setup_branch_phase.ts`) runs it immediately after
+`ensureMilestoneBranchExists`, and the ordinary path costs one
+`git rev-list --count origin/<milestone>..origin/<default>`: a branch already
+level touches neither git nor the ledger. A branch that **is** behind gets one
+attempt, and it is the ladder's own attempt — the same conflict budget, the same
+`conflictAttemptDue` pacing, the same `judgeSyncFailure` verdict, so a child run
+and the sweep can never disagree about what a branch has spent. Three
+consequences are worth naming:
+
+- **The merge runs in the shared `${WORK_DIR}/<repo>` clone**, the one the sweep
+  uses — never in the lane's worktree. A worktree parked on the milestone branch
+  is a branch git then refuses to every other lane and to the sweep itself. That
+  clone is shared scratch, and the merge opens with `reset --hard` +
+  `clean -fd`, so pre-cut syncs are **serialised per repository inside the
+  process**: since Issue #923 two lanes can hold one repository, and two
+  overlapping merges would reset the tree under each other. The periodic sweep's
+  own merge in that clone stays outside the chain, exactly as it was before.
+- **A landed merge that conflicted is still reported.** The resolution favoured
+  a side nobody chose, so the child run calls the sweep's own
+  `escalateSyncConflict` — once per conflicting default-branch commit, recorded
+  in the ledger's `conflictEscalatedSha` so neither pass repeats it — and names
+  the conflicting files in the log whether or not a reporter is wired.
+- **A landed sync concludes through the sweep's `recordSuccess`**, not a second
+  transition of its own: the budget is refilled, the open marker and the
+  deferral are dropped, and the failure streak ends with its escalation flags,
+  so the sweep cannot later escalate a branch this run already brought level.
+- **The agent rung is granted** (bounded by `grantAgentRun` against the run's own
+  deadline, exactly as the sweep bounds it). Only an attempt that climbed the
+  whole ladder may charge the branch's budget, and charging is what writes the
+  `deferUntil` that paces every other slot off the milestone.
+- **A base nobody could measure is never cut from.** An unreadable behind-count
+  defers rather than proceeding, and an unwritable ledger says so loudly and
+  still merges — what is lost is the pacing, not the branch. The default tip is
+  read **before** the count, because reading it is what fetches it: counting
+  against a stale `origin/<default>` would answer "level" for a branch that is
+  behind, which is the very defect this gate exists to stop.
+- **Only a charged failure paces the milestone.** A conflict every granted rung
+  left undecided writes `deferUntil`; a ruleset-refused push, a merge-gate
+  refusal or any other `not-charged` verdict does not — charging the branch for
+  a fault that is not its own is what Issues #1772 and #1778 removed. Those
+  deferrals are bounded by the per-issue expected-skip cooldown instead: one
+  bounce per issue, then the issue is in cooldown.
+
+When the branch cannot be brought level the run **defers**: it exits before any
+implementation agent is spent, with reason
+`deferred: milestone behind default branch` and `expectedSkip`, so the issue
+keeps its pickup label, nothing is tracked against it, no `needs-human` is
+applied and no `Depends on` line is written. The only comment is the ordinary
+claim-release comment, which states the reason.
+
+The loop guard is the other half. `findNextIssue` reads
+`milestone_sync_failures.json` once per scan — a local file, no API call — and
+`find_oldest_issue.ts` skips **every tier's** candidates in a milestone whose
+`deferUntil` is still in the future, logging
+`skipped: milestone behind default branch (paced until <deferUntil>)` and
+recording the `milestone-behind` skip reason. Without it a paced milestone was
+claimed, deferred and commented on again every 30-second cycle.
+
+```mermaid
+flowchart TD
+    A["child run claims a<br/>milestone issue"] --> B["ensureMilestoneBranchExists"]
+    B --> C{"rev-list --count<br/>milestone..origin/default"}
+    C -- "0" --> D["cut the issue branch<br/>from origin/&lt;milestone&gt;"]
+    C -- "unreadable" --> X
+    C -- "> 0" --> E{"ledger: attempt due?<br/>budget left?"}
+    E -- "no" --> X["early exit<br/>deferred: milestone behind<br/>default branch"]
+    E -- "yes" --> F["open attempt, merge default down<br/>(ladder + agent rung)"]
+    F -- "landed" --> G["reset budget,<br/>record tip"] --> D
+    F -- "conflict unresolved" --> H["charge 1 attempt,<br/>set deferUntil"] --> X
+    X --> Y["selector skips the milestone's<br/>issues until deferUntil passes"]
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style X fill:#9d4e15,stroke:#6b3410,color:#fff
+```
+
 #### 🔙 Rolling a stuck milestone branch back
 
 A branch that has spent that budget is **rolled back**, not escalated and not
@@ -4061,6 +4144,8 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_priority.ts](../worker/deno/lib/milestone_priority.ts)                                                 | Configurable issue ordering within milestones                                                                                                                                        |
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |
 |                             | [milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts)                                       | Reads `git rev-parse origin/<default>` for the sync's cadence gate, so a cycle in which the default tip did not move syncs nothing                                                          |
+|                             | [milestone_presync.ts](../worker/deno/lib/milestone_presync.ts)                                                   | Brings a milestone branch level with the default branch before a child issue branch is cut from it, charged to the same conflict ledger, and reports the pacing the claim scan skips on      |
+|                             | [milestone_conflict_agent_binding.ts](../worker/deno/lib/milestone_conflict_agent_binding.ts)                      | The one binding of the ladder's agent rung — same instructions, same branch target and same grant-sized timeout for the periodic sweep and a child run's pre-cut sync alike                  |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
 |                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |

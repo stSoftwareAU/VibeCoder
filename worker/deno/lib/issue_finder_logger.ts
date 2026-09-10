@@ -38,6 +38,12 @@ export const SKIP_REASONS = [
   "dependency-blocked",
   "cooldown",
   "cross-worker-cooldown",
+  /**
+   * Issue #1780: the issue's milestone branch is behind the default branch and
+   * its conflict ledger is pacing the next merge attempt. Claiming the issue
+   * would only defer it again, so the whole milestone waits out the deferral.
+   */
+  "milestone-behind",
   "label-author-not-allowed",
   "non-wrapper-title",
   "untrusted-operational-label",
