@@ -63,7 +63,7 @@ rendered-prompt tests and the full quality gate:
   ran `./quality.sh --validate-prompts` and reported `prompt placeholders:
   PASSED` — reviewer: met
 - **unrequested** — the prompt states that this subsection is the more specific
-  instruction and wins over the 24h floor in the injected `<coding_guidelines>`
+  instruction and wins over the 24h floor in the injected coding-guidelines block
   — evidence: `prompts/ci_fix/prompt.md:104` — reviewer: unrequested — reason:
   without it the run receives two contradicting instructions; the issue's own
   Context names this precedence as the mechanism the exemption relies on, so it
