@@ -176,7 +176,7 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last 1
 
 If the worker cannot fix a CI failure after the maximum retries:
 
-1. **Check the PR comment** — The worker posts a comment with details about what was attempted.
+1. **Check the PR comment** — The worker posts the agent's own `.pr_response_message` verbatim, followed by a `**Classifier reason:**` / `**Signals:**` line recording how the failure was categorised (Issue #1876). When the agent wrote no message, a stock category-specific explanation is posted instead. For a `code-fix-required` or `history-rewrite-required` failure the same text becomes the `**Why:**` of the `needs-human` escalation comment.
 2. **Review the annotations** — The CI check annotations show the exact file, line, and error.
 3. **Fix manually** — Push a fix to the PR branch; the worker will not retry the same check run.
 4. **Transient failures** — If the failure was caused by a flaky test or infrastructure issue, re-running the CI check may resolve it without code changes.

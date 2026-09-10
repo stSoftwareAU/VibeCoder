@@ -132,13 +132,24 @@ function makeInput(overrides?: Partial<CiFixInput>): CiFixInput {
 /**
  * Build a no-changes scenario: Claude returns the given output but no commits
  * are pushed, so the processor must hit the no-changes branch.
+ *
+ * Issue #1876: `responseMessage`, when given, is written to
+ * `<workDir>/.pr_response_message` before the run, so the processor reads it
+ * exactly as it would a message the agent wrote itself.
  */
 async function runNoChangesScenario(
   input: CiFixInput,
   claudeOutput: string,
+  responseMessage?: string,
 ): Promise<CapturedGh> {
   const tmpDir = await Deno.makeTempDir();
   try {
+    if (responseMessage !== undefined) {
+      await Deno.writeTextFile(
+        `${tmpDir}/.pr_response_message`,
+        responseMessage,
+      );
+    }
     const captured: CapturedGh = { comments: [], labelsAdded: [] };
 
     const mockClaude: Partial<ClaudeDeps> = {
@@ -303,6 +314,68 @@ Deno.test("processCiFailure no-changes - unknown category does not assert transi
   assertStringIncludes(body, "could not determine");
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1876 — the agent's .pr_response_message is posted verbatim
+// ---------------------------------------------------------------------------
+
+Deno.test("processCiFailure no-changes - posts the agent's message verbatim with the classifier trailer (Issue #1876)", async () => {
+  const agentMessage =
+    "No change required for Project Validation — the failure is in the base " +
+    "branch and is tracked by #149.";
+  const annotations: CheckAnnotation[] = [
+    {
+      path: "x.ts",
+      start_line: 1,
+      message: "obscure failure with no recognisable markers",
+    },
+  ];
+  const input = makeInput({
+    checkName: "Project Validation",
+    encodedAnnotations: btoa(JSON.stringify(annotations)),
+  });
+  const captured = await runNoChangesScenario(input, "", agentMessage);
+
+  const body = captured.comments.at(-1) ?? "";
+  assertEquals(
+    body.startsWith(agentMessage),
+    true,
+    `expected the agent's message first; got: ${body}`,
+  );
+  assertStringIncludes(body, "**Classifier reason:**");
+  assertStringIncludes(body, "**Signals:**");
+  // The stock text the agent's message replaces must be gone entirely.
+  assertEquals(body.includes("could not determine a fix"), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure no-changes - code-fix-required escalates with the agent's message as the reason (Issue #1876)", async () => {
+  const agentMessage =
+    "The semgrep finding is a genuine ReDoS in `some_regex.ts`; the rewrite " +
+    "needs a reviewer's call on the accepted pattern.";
+  const annotations: CheckAnnotation[] = [
+    {
+      path: "worker/deno/lib/some_regex.ts",
+      start_line: 42,
+      message:
+        "semgrep: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)",
+    },
+  ];
+  const input = makeInput({
+    checkName: "semgrep",
+    encodedAnnotations: btoa(JSON.stringify(annotations)),
+  });
+  const captured = await runNoChangesScenario(input, "", agentMessage);
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, agentMessage);
+  assertStringIncludes(body, "**Classifier reason:**");
+  // The escalation shape is unchanged — the message only replaces the reason.
+  assertStringIncludes(body, "**Why:**");
+  assertStringIncludes(body, "**Next step:**");
+  assertStringIncludes(body, "remove the `needs-human` label");
+  assertEquals(captured.labelsAdded.includes("needs-human"), true);
 });
 
 // ---------------------------------------------------------------------------
