@@ -73,8 +73,16 @@ function depsFor(options: {
   syncFails?: Error;
   syncCalls: SyncCall[];
   freshBranches: string[];
+  /** Every `gh` argv the phase issued, so a deferral can be shown silent. */
+  ghCalls?: string[][];
 }) {
   return createMockDeps({
+    github: {
+      runGhCommand: (args: string[]) => {
+        options.ghCalls?.push(args);
+        return Promise.resolve("");
+      },
+    },
     git: {
       countCommitsAhead: () =>
         Promise.resolve({ ok: true as const, value: options.behindBy }),
@@ -184,6 +192,7 @@ Deno.test("#1780 - a failed sync defers the run, charges the ledger once and cut
   try {
     const syncCalls: SyncCall[] = [];
     const freshBranches: string[] = [];
+    const ghCalls: string[][] = [];
     const ctx = buildContext(workDir, MILESTONE_TITLE);
     const state = buildState();
 
@@ -195,6 +204,7 @@ Deno.test("#1780 - a failed sync defers the run, charges the ledger once and cut
         syncFails: unresolvedConflict(),
         syncCalls,
         freshBranches,
+        ghCalls,
       }),
     );
 
@@ -212,6 +222,14 @@ Deno.test("#1780 - a failed sync defers the run, charges the ledger once and cut
     // No branch was cut from the behind base.
     assertEquals(freshBranches, []);
     assertEquals(syncCalls.length, 1);
+    // Nothing is posted, labelled or escalated: the release comment the worker
+    // writes afterwards is the whole record.
+    assertEquals(
+      ghCalls.filter((args) =>
+        args.includes("comment") || args.includes("--add-label")
+      ),
+      [],
+    );
 
     // The branch's ledger carries exactly one charged attempt, and a deferral.
     const entry = (await loadSyncStreaks(milestoneSyncStreakPath(workDir)))[

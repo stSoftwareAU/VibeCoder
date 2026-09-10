@@ -24,6 +24,23 @@ import {
   type SyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
+import type { MilestoneSyncConflict } from "../lib/milestone_sync_conflict.ts";
+import type { IssueRunPresyncArgs } from "../lib/milestone_presync.ts";
+import { presyncMilestoneBranchForIssueRun } from "../lib/milestone_presync.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import type { Logger, Result } from "../types.ts";
+
+const silentLogger: Logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+  security: () => {},
+  skipReason: () => {},
+  timing: () => {},
+  scanSummary: () => {},
+  workerSummary: () => {},
+};
 
 const REPO = "owner/repo";
 const MILESTONE = "milestone/1730-resolve-merge-conflicts";
@@ -65,6 +82,9 @@ function deps(overrides: Partial<MilestonePresyncDeps> & {
     syncBranch: overrides.syncBranch ??
       (() =>
         Promise.resolve({ ok: true as const, value: { message: "merged" } })),
+    ...(overrides.reportConflict
+      ? { reportConflict: overrides.reportConflict }
+      : {}),
     log: (message: string) => logs.push(message),
   };
 }
@@ -263,6 +283,59 @@ Deno.test("presyncMilestoneBranch - a non-conflict git failure defers without ch
   }
 });
 
+Deno.test("presyncMilestoneBranch - a merge that landed on a resolved conflict is reported once", async () => {
+  const fx = await ledger();
+  try {
+    const reported: string[] = [];
+    const conflict: MilestoneSyncConflict = {
+      files: ["lib/foo.ts"],
+      defaultSha: "d".repeat(40),
+      milestoneSha: "b".repeat(40),
+      resolution: "auto",
+    };
+    const request = {
+      repo: REPO,
+      milestoneBranch: MILESTONE,
+      defaultBranch: DEFAULT_BRANCH,
+      streakPath: fx.path,
+      grant: { agentAllowed: true },
+      nowMs: NOW,
+    };
+    const d = deps({
+      syncBranch: () =>
+        Promise.resolve({
+          ok: true as const,
+          value: { message: "merged with a resolved conflict", conflict },
+        }),
+      reportConflict: (c) => {
+        reported.push(c.defaultSha);
+        return Promise.resolve(true);
+      },
+    });
+
+    assertEquals((await presyncMilestoneBranch(request, d)).status, "synced");
+    assertEquals(reported, ["d".repeat(40)]);
+    // The conflicting commit is remembered, so the same one is not reported
+    // again — by this run, or by the periodic sweep.
+    assertEquals(
+      (await loadSyncStreaks(fx.path))[KEY]?.conflictEscalatedSha,
+      "d".repeat(40),
+    );
+
+    // A second run against the same conflicting commit reports nothing.
+    assertEquals((await presyncMilestoneBranch(request, d)).status, "synced");
+    assertEquals(reported.length, 1);
+
+    // And it is never silent: the log names the conflict either way.
+    assert(
+      d.logs.some((line) => line.includes("resolved a conflict itself")),
+      `the conflict is said out loud; logs were: ${d.logs.join(" | ")}`,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // The ledger holds the branch back
 // ---------------------------------------------------------------------------
@@ -414,7 +487,80 @@ Deno.test("presyncMilestoneBranch - a behind count that cannot be read defers ra
     assertEquals(result.status, "deferred");
     assertEquals(synced, 0);
     assertStringIncludes(result.detail, "could not be read");
+    assertStringIncludes(result.detail, "unverified base");
     assertEquals(await loadSyncStreaks(fx.path), {});
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("presyncMilestoneBranch - the default tip is read (and so fetched) before the branch is measured", async () => {
+  // Order is load-bearing: reading the tip is what fetches `origin/<default>`,
+  // and counting against a stale one would answer "level" for a branch that is
+  // behind — the defect this gate exists to stop.
+  const calls: string[] = [];
+  const fx = await ledger();
+  try {
+    const result = await presyncMilestoneBranch(
+      {
+        repo: REPO,
+        milestoneBranch: MILESTONE,
+        defaultBranch: DEFAULT_BRANCH,
+        streakPath: fx.path,
+        grant: { agentAllowed: true },
+        nowMs: NOW,
+      },
+      deps({
+        behindBy: 0,
+        defaultTipSha: () => {
+          calls.push("defaultTipSha");
+          return Promise.resolve({ ok: true as const, value: "d".repeat(40) });
+        },
+        countBehind: () => {
+          calls.push("countBehind");
+          return Promise.resolve({ ok: true as const, value: 0 });
+        },
+      }),
+    );
+
+    assertEquals(result.status, "level");
+    assertEquals(calls, ["defaultTipSha", "countBehind"]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("presyncMilestoneBranch - a landed sync ends the failure streak and its escalation flags", async () => {
+  // The sweep's own `recordSuccess` transition, not a second one: a branch that
+  // has synced must not keep a stale streak count or a spent escalation flag.
+  const fx = await ledger({
+    [KEY]: {
+      count: 2,
+      escalated: true,
+      gateEscalated: true,
+      analysisEscalatedSha: "c".repeat(40),
+      conflictAttempts: 1,
+    },
+  });
+  try {
+    const result = await presyncMilestoneBranch({
+      repo: REPO,
+      milestoneBranch: MILESTONE,
+      defaultBranch: DEFAULT_BRANCH,
+      streakPath: fx.path,
+      grant: { agentAllowed: true },
+      nowMs: NOW,
+    }, deps());
+
+    assertEquals(result.status, "synced");
+    const entry = (await loadSyncStreaks(fx.path))[KEY];
+    assert(entry);
+    assertEquals(entry.count, 0);
+    assertEquals(entry.escalated, false);
+    assertEquals(entry.gateEscalated, false);
+    assertEquals(entry.analysisEscalatedSha, undefined);
+    assertEquals(entry.conflictAttempts, 0);
+    assertEquals(entry.lastSyncedDefaultSha, "d".repeat(40));
   } finally {
     await fx.cleanup();
   }
@@ -442,6 +588,74 @@ Deno.test("presyncMilestoneBranch - a ledger that cannot be written still syncs,
     ),
     `the write failure is reported; logs were: ${d.logs.join(" | ")}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Two lanes, one shared clone
+// ---------------------------------------------------------------------------
+
+Deno.test("presyncMilestoneBranchForIssueRun - two runs on one repository do not merge at the same time", async () => {
+  // The merge resets and checks the shared clone out, so two lanes overlapping
+  // in it would reset the tree under each other's merge. The chain makes the
+  // second wait; `overlapped` proves it never ran inside the first.
+  const workDir = await Deno.makeTempDir({ prefix: "issue-1780-serial-" });
+  try {
+    let inFlight = 0;
+    let overlapped = false;
+    let entries = 0;
+    const release: Array<() => void> = [];
+    // Promise ordering, not timing: each merge announces that it started, so
+    // the test never sleeps or polls.
+    const entered: Array<() => void> = [];
+    const hasEntered = [0, 1].map(() =>
+      new Promise<void>((resolve) => entered.push(resolve))
+    );
+    const syncFn = () => {
+      inFlight++;
+      if (inFlight > 1) overlapped = true;
+      entered[entries++]?.();
+      return new Promise<Result<{ message: string }>>((resolve) => {
+        release.push(() => {
+          inFlight--;
+          resolve({ ok: true as const, value: { message: "merged" } });
+        });
+      });
+    };
+    const args = {
+      repo: REPO,
+      milestoneTitle: "#1730 Resolve merge conflicts",
+      milestoneBranch: MILESTONE,
+      defaultBranch: DEFAULT_BRANCH,
+      cwd: workDir,
+      workDir,
+      config: { ...buildDefaultWorkerConfig(), workDir },
+      logger: silentLogger,
+      countCommitsAheadFn: () =>
+        Promise.resolve({ ok: true as const, value: 2 }),
+      syncMilestoneBranchFn: syncFn as unknown as IssueRunPresyncArgs[
+        "syncMilestoneBranchFn"
+      ],
+      runGitCommandFn: () =>
+        Promise.resolve({
+          ok: true as const,
+          value: { code: 0, stdout: "a".repeat(40), stderr: "" },
+        }),
+    } satisfies IssueRunPresyncArgs;
+
+    const first = presyncMilestoneBranchForIssueRun(args);
+    const second = presyncMilestoneBranchForIssueRun(args);
+
+    await hasEntered[0];
+    assertEquals(release.length, 1, "only one merge is in flight");
+    release[0]!();
+    assertEquals((await first).status, "synced");
+    await hasEntered[1];
+    release[1]!();
+    assertEquals((await second).status, "synced");
+    assertEquals(overlapped, false);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => {});
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -22,10 +22,29 @@ const ALICE = { login: "alice" };
 const MILESTONE_TITLE = "#1730 Resolve merge conflicts";
 const NOW = Date.parse("2026-09-10T12:00:00.000Z");
 
+/** Temp directories each test removes when it finishes. */
+const tempDirs: string[] = [];
+
+function tempDir(prefix: string): string {
+  const dir = Deno.makeTempDirSync({ prefix });
+  tempDirs.push(dir);
+  return dir;
+}
+
+function cleanup(): void {
+  for (const dir of tempDirs.splice(0)) {
+    try {
+      Deno.removeSync(dir, { recursive: true });
+    } catch {
+      // A directory another test already removed is not a failure.
+    }
+  }
+}
+
 function makeConfig(): WorkerConfig {
   return {
     ...buildDefaultWorkerConfig(),
-    workDir: Deno.makeTempDirSync({ prefix: "paced-selector-workdir-" }),
+    workDir: tempDir("paced-selector-workdir-"),
     repos: ["owner/repo-a"],
     issueLabels: ["help-wanted"],
     allowedAuthors: ["alice"],
@@ -35,10 +54,7 @@ function makeConfig(): WorkerConfig {
 }
 
 function createTestCache(): IssueCache {
-  return new IssueCache(
-    Deno.makeTempDirSync({ prefix: "paced-selector-cache-" }),
-    600,
-  );
+  return new IssueCache(tempDir("paced-selector-cache-"), 600);
 }
 
 /** Two `work-on` issues: #10 in the paced milestone, #11 in none. */
@@ -106,33 +122,37 @@ Deno.test(
     const ledger = pacedLedger(deferUntil);
     const asked: string[] = [];
 
-    const result = await findOldestIssue(makeConfig(), {
-      githubUser: "bot",
-      ghCommandFn: mockGh(),
-      cache: createTestCache(),
-      milestonePacedUntil: (repo, milestone) => {
-        asked.push(`${repo}|${milestone}`);
-        return milestonePacedUntil(ledger, repo, milestone, NOW);
-      },
-    });
+    try {
+      const result = await findOldestIssue(makeConfig(), {
+        githubUser: "bot",
+        ghCommandFn: mockGh(),
+        cache: createTestCache(),
+        milestonePacedUntil: (repo, milestone) => {
+          asked.push(`${repo}|${milestone}`);
+          return milestonePacedUntil(ledger, repo, milestone, NOW);
+        },
+      });
 
-    assertEquals(result.found, true);
-    // #10 is older, so it would have won without the gate.
-    assertEquals(result.output.includes("|11|"), true);
-    assertEquals(result.output.includes("|10|"), false);
-    assert(
-      asked.includes(`owner/repo-a|${MILESTONE_TITLE}`),
-      "the gate is asked about the milestone-assigned candidate",
-    );
+      assertEquals(result.found, true);
+      // #10 is older, so it would have won without the gate.
+      assertEquals(result.output.includes("|11|"), true);
+      assertEquals(result.output.includes("|10|"), false);
+      assert(
+        asked.includes(`owner/repo-a|${MILESTONE_TITLE}`),
+        "the gate is asked about the milestone-assigned candidate",
+      );
 
-    const blocked = (result.blockedDetails ?? []).find((d) =>
-      d.issueNumber === 10
-    );
-    assertEquals(blocked?.reason, "milestone-behind");
-    assertEquals(
-      result.diagnosticSummary?.skippedByReason["milestone-behind"],
-      1,
-    );
+      const blocked = (result.blockedDetails ?? []).find((d) =>
+        d.issueNumber === 10
+      );
+      assertEquals(blocked?.reason, "milestone-behind");
+      assertEquals(
+        result.diagnosticSummary?.skippedByReason["milestone-behind"],
+        1,
+      );
+    } finally {
+      cleanup();
+    }
   },
 );
 
@@ -141,36 +161,44 @@ Deno.test(
   async () => {
     const ledger = pacedLedger(new Date(NOW - 1000).toISOString());
 
-    const result = await findOldestIssue(makeConfig(), {
-      githubUser: "bot",
-      ghCommandFn: mockGh(),
-      cache: createTestCache(),
-      milestonePacedUntil: (repo, milestone) =>
-        milestonePacedUntil(ledger, repo, milestone, NOW),
-      // Pin the selection pool so the oldest candidate wins deterministically.
-      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
-    });
+    try {
+      const result = await findOldestIssue(makeConfig(), {
+        githubUser: "bot",
+        ghCommandFn: mockGh(),
+        cache: createTestCache(),
+        milestonePacedUntil: (repo, milestone) =>
+          milestonePacedUntil(ledger, repo, milestone, NOW),
+        // Pin the selection pool so the oldest candidate wins deterministically.
+        selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+      });
 
-    assertEquals(result.found, true);
-    assertEquals(result.output.includes("|10|"), true);
-    assertEquals(
-      result.diagnosticSummary?.skippedByReason["milestone-behind"],
-      undefined,
-    );
+      assertEquals(result.found, true);
+      assertEquals(result.output.includes("|10|"), true);
+      assertEquals(
+        result.diagnosticSummary?.skippedByReason["milestone-behind"],
+        undefined,
+      );
+    } finally {
+      cleanup();
+    }
   },
 );
 
 Deno.test(
   "findOldestIssue - no pacing function leaves the scan exactly as it was (Issue #1780)",
   async () => {
-    const result = await findOldestIssue(makeConfig(), {
-      githubUser: "bot",
-      ghCommandFn: mockGh(),
-      cache: createTestCache(),
-      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
-    });
+    try {
+      const result = await findOldestIssue(makeConfig(), {
+        githubUser: "bot",
+        ghCommandFn: mockGh(),
+        cache: createTestCache(),
+        selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+      });
 
-    assertEquals(result.found, true);
-    assertEquals(result.output.includes("|10|"), true);
+      assertEquals(result.found, true);
+      assertEquals(result.output.includes("|10|"), true);
+    } finally {
+      cleanup();
+    }
   },
 );

@@ -345,7 +345,6 @@ import { setScanCacheForCloseInvalidation } from "./issue_close_notifier.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { SlotGovernor } from "./slot_governor.ts";
 import type { RunOutcome } from "./run_outcome.ts";
-import type { MilestoneConflictAgentRequest } from "./milestone_conflict_ladder.ts";
 import {
   resetAgentRunsTerminating,
   terminateActiveAgentRuns,
@@ -2948,9 +2947,16 @@ export async function createProductionRunCoreDeps(
       const { loadSyncStreaks, milestoneSyncStreakPath } = await import(
         "./milestone_sync_streak.ts"
       );
-      const { milestonePacedUntil } = await import("./milestone_presync.ts");
+      const { milestonePacedUntil, MILESTONE_BEHIND } = await import(
+        "./milestone_presync.ts"
+      );
+      // The same directory the two writers use — the setup phase
+      // (`config.workDir`) and the periodic sweep (`config.workDir` with the
+      // factory's own as its fallback). A reader that resolved it differently
+      // would read a file nobody writes and silently pass every paced
+      // milestone through.
       const pacingLedger = await loadSyncStreaks(
-        milestoneSyncStreakPath(workDir),
+        milestoneSyncStreakPath(config.workDir || workDir),
       );
       // One line per paced milestone per scan, not one per issue in it.
       const pacingLogged = new Set<string>();
@@ -2987,8 +2993,8 @@ export async function createProductionRunCoreDeps(
           if (!pacingLogged.has(key)) {
             pacingLogged.add(key);
             logger.info(
-              `skipped: milestone behind default branch (paced until ` +
-                `${until}) — ${repo} milestone '${milestone}'`,
+              `skipped: ${MILESTONE_BEHIND} (paced until ${until}) — ` +
+                `${repo} milestone '${milestone}'`,
             );
           }
           return until;
@@ -4565,7 +4571,9 @@ async function syncMilestoneBranchesFn(
   // Issue #1777: the sync climbs the same ladder the PR pass does, so it
   // needs the same agent — bound here because only this layer knows the
   // repository's instructions and the run's timeouts.
-  const { runMergeConflictAgent } = await import("./merge_conflict_agent.ts");
+  const { bindMilestoneConflictAgent } = await import(
+    "./milestone_conflict_agent_binding.ts"
+  );
   const { runClaudeWithRetry } = await import("./claude_runner.ts");
 
   const workDir = config.workDir || env("HOME") || ".";
@@ -4609,32 +4617,16 @@ async function syncMilestoneBranchesFn(
       // that was not granted it is handed no agent at all, so the ladder
       // stops after the deterministic rules rather than starting a run the
       // watchdog would kill mid-edit (#1693).
-      const agentFn = syncOptions.agentAllowed
-        ? (request: MilestoneConflictAgentRequest) =>
-          runMergeConflictAgent({
-            repo,
-            target: { kind: "branch", intoBranch: request.milestoneBranch },
-            baseBranch: request.defaultBranch,
-            conflictedFiles: request.conflictedFiles,
-            workDir: request.workDir,
-            qualityInstructions: buildQualityInstructions(
-              config.repoConfig,
-              repo,
-            ),
-            customInstructions: getCustomInstructions(config.repoConfig, repo),
-            timeouts: {
-              // The grant the sweep sized to the budget actually left
-              // (Issue #1693), not the configured timeout: an agent promised
-              // more time than the cycle holds is killed mid-edit.
-              claudeTimeout: syncOptions.agentTimeoutSeconds ??
-                config.claudeTimeout,
-              claudeNoOutputTimeout: config.claudeNoOutputTimeout,
-              maxRateLimitRetries: config.maxRateLimitRetries,
-            },
-            logger,
-            runAgent: runClaudeWithRetry,
-          })
-        : undefined;
+      // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
+      // this sweep and a child run's pre-cut sync hand the ladder exactly the
+      // same rung — including the grant's own timeout.
+      const agentFn = bindMilestoneConflictAgent({
+        repo,
+        grant: syncOptions,
+        config,
+        logger,
+        runAgent: runClaudeWithRetry,
+      });
       return await syncMilestoneBranchWithDefault(
         milestoneBranch,
         defaultBranch,

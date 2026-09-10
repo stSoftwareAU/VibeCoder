@@ -101,6 +101,7 @@ Deno.test(
 
       const result = await presyncMilestoneBranchForIssueRun({
         repo: REPO,
+        milestoneTitle: "#1780 Presync",
         milestoneBranch: MILESTONE_BRANCH,
         defaultBranch: "main",
         cwd: clone,
@@ -170,6 +171,7 @@ Deno.test(
 
       const result = await presyncMilestoneBranchForIssueRun({
         repo: REPO,
+        milestoneTitle: "#1780 Presync",
         milestoneBranch: MILESTONE_BRANCH,
         defaultBranch: "main",
         cwd: clone,

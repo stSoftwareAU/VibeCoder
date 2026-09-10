@@ -3518,14 +3518,37 @@ consequences are worth naming:
 
 - **The merge runs in the shared `${WORK_DIR}/<repo>` clone**, the one the sweep
   uses — never in the lane's worktree. A worktree parked on the milestone branch
-  is a branch git then refuses to every other lane and to the sweep itself.
+  is a branch git then refuses to every other lane and to the sweep itself. That
+  clone is shared scratch, and the merge opens with `reset --hard` +
+  `clean -fd`, so pre-cut syncs are **serialised per repository inside the
+  process**: since Issue #923 two lanes can hold one repository, and two
+  overlapping merges would reset the tree under each other. The periodic sweep's
+  own merge in that clone stays outside the chain, exactly as it was before.
+- **A landed merge that conflicted is still reported.** The resolution favoured
+  a side nobody chose, so the child run calls the sweep's own
+  `escalateSyncConflict` — once per conflicting default-branch commit, recorded
+  in the ledger's `conflictEscalatedSha` so neither pass repeats it — and names
+  the conflicting files in the log whether or not a reporter is wired.
+- **A landed sync concludes through the sweep's `recordSuccess`**, not a second
+  transition of its own: the budget is refilled, the open marker and the
+  deferral are dropped, and the failure streak ends with its escalation flags,
+  so the sweep cannot later escalate a branch this run already brought level.
 - **The agent rung is granted** (bounded by `grantAgentRun` against the run's own
   deadline, exactly as the sweep bounds it). Only an attempt that climbed the
   whole ladder may charge the branch's budget, and charging is what writes the
   `deferUntil` that paces every other slot off the milestone.
 - **A base nobody could measure is never cut from.** An unreadable behind-count
   defers rather than proceeding, and an unwritable ledger says so loudly and
-  still merges — what is lost is the pacing, not the branch.
+  still merges — what is lost is the pacing, not the branch. The default tip is
+  read **before** the count, because reading it is what fetches it: counting
+  against a stale `origin/<default>` would answer "level" for a branch that is
+  behind, which is the very defect this gate exists to stop.
+- **Only a charged failure paces the milestone.** A conflict every granted rung
+  left undecided writes `deferUntil`; a ruleset-refused push, a merge-gate
+  refusal or any other `not-charged` verdict does not — charging the branch for
+  a fault that is not its own is what Issues #1772 and #1778 removed. Those
+  deferrals are bounded by the per-issue expected-skip cooldown instead: one
+  bounce per issue, then the issue is in cooldown.
 
 When the branch cannot be brought level the run **defers**: it exits before any
 implementation agent is spent, with reason
@@ -4101,6 +4124,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |
 |                             | [milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts)                                       | Reads `git rev-parse origin/<default>` for the sync's cadence gate, so a cycle in which the default tip did not move syncs nothing                                                          |
 |                             | [milestone_presync.ts](../worker/deno/lib/milestone_presync.ts)                                                   | Brings a milestone branch level with the default branch before a child issue branch is cut from it, charged to the same conflict ledger, and reports the pacing the claim scan skips on      |
+|                             | [milestone_conflict_agent_binding.ts](../worker/deno/lib/milestone_conflict_agent_binding.ts)                      | The one binding of the ladder's agent rung — same instructions, same branch target and same grant-sized timeout for the periodic sweep and a child run's pre-cut sync alike                  |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
 |                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |

@@ -126,6 +126,20 @@ export interface SyncStreakEntry {
 /** Streak state keyed by "owner/repo|milestone-branch". */
 export type SyncStreaks = Record<string, SyncStreakEntry>;
 
+/**
+ * The ledger key one branch is recorded under (Issue #1780).
+ *
+ * Every reader and writer of `milestone_sync_failures.json` — the periodic
+ * sweep and the child run's pre-cut sync — must key a branch identically, so
+ * the key is spelled once, here, beside the ledger it keys.
+ *
+ * @param repo - Repository in `owner/repo` form
+ * @param milestoneBranch - The milestone branch name
+ */
+export function syncStreakKey(repo: string, milestoneBranch: string): string {
+  return `${repo}|${milestoneBranch}`;
+}
+
 /** Resolve the streak file path for a work directory. */
 export function milestoneSyncStreakPath(workDir: string): string {
   return `${workDir}/milestone_sync_failures.json`;

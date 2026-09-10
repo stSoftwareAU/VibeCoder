@@ -65,6 +65,7 @@ import {
   resetConflictLedgerOnSuccess,
   saveSyncStreaks,
   type SyncStreakEntry,
+  syncStreakKey,
   type SyncStreaks,
   trackingIssueFromMilestoneTitle,
 } from "./milestone_sync_streak.ts";
@@ -679,6 +680,10 @@ async function readDefaultTip(
 /**
  * Record a successful sync against the branch's ledger entry (Issue #1776).
  *
+ * Exported so the child run's pre-cut sync concludes a landed merge through
+ * this very function (Issue #1780) rather than a second, subtly different
+ * transition: two writers of one ledger must agree about what success does.
+ *
  * Success is the only thing that writes `lastSyncedDefaultSha`, so a failure
  * leaves the previous tip in place and the next cycle tries again. The
  * failure streak ends here (Issue #4260); the reported-conflict marker and
@@ -688,7 +693,7 @@ async function readDefaultTip(
  *   when there is one to remember.
  * @returns True when the ledger changed and needs persisting.
  */
-function recordSuccess(
+export function recordSuccess(
   streaks: SyncStreaks,
   streakKey: string,
   defaultSha: string | undefined,
@@ -852,7 +857,9 @@ export async function syncMilestoneBranches(
       // which of its branches are still open, so anything else it owns goes.
       if (streakPath) {
         const live = new Set(
-          milestonesResult.value.map((m) => `${repo}|${m.milestoneBranch}`),
+          milestonesResult.value.map((m) =>
+            syncStreakKey(repo, m.milestoneBranch)
+          ),
         );
         for (const key of Object.keys(streaks)) {
           if (key.startsWith(`${repo}|`) && !live.has(key)) {
@@ -863,7 +870,7 @@ export async function syncMilestoneBranches(
       }
 
       for (const milestone of milestonesResult.value) {
-        const streakKey = `${repo}|${milestone.milestoneBranch}`;
+        const streakKey = syncStreakKey(repo, milestone.milestoneBranch);
 
         // Cadence guard (Issue #1776): the branch already carries this tip,
         // so there is nothing to merge down. Checked before the branch probe,
@@ -1225,8 +1232,12 @@ export async function syncMilestoneBranches(
  *
  * Best-effort, and returns true only when the report went out, so the caller
  * remembers the commit it reported and does not repeat it every cycle.
+ *
+ * Exported so a child run's pre-cut sync reports a conflicted merge through
+ * this very function (Issue #1780): a resolution that favoured the default
+ * branch must be reported once, whichever pass made it.
  */
-async function escalateSyncConflict(
+export async function escalateSyncConflict(
   repo: string,
   milestone: ActiveMilestone,
   conflict: MilestoneSyncConflict,

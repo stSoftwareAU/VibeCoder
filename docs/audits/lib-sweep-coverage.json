@@ -271,6 +271,7 @@
         "worker/deno/lib/milestone_completion.ts",
         "worker/deno/lib/milestone_conflict_dedup.ts",
         "worker/deno/lib/milestone_conflict_git.ts",
+        "worker/deno/lib/milestone_conflict_agent_binding.ts",
         "worker/deno/lib/milestone_conflict_ladder.ts",
         "worker/deno/lib/milestone_conflict_triage.ts",
         "worker/deno/lib/milestone_escalation_target.ts",

@@ -26,13 +26,19 @@
  */
 
 import type { Logger, Result, WorkerConfig } from "../types.ts";
-import type { MilestoneSyncOutcome } from "./milestone_sync_conflict.ts";
-import type { MilestoneConflictAgentRequest } from "./milestone_conflict_ladder.ts";
+import {
+  type MilestoneSyncConflict,
+  type MilestoneSyncOutcome,
+  UNRESOLVED_SHA,
+} from "./milestone_sync_conflict.ts";
 import { isConflictEscalation } from "./milestone_conflict_triage.ts";
 import {
   conflictAttemptDue,
+  escalateSyncConflict,
+  type GhCommandFn,
   grantAgentRun,
   judgeSyncFailure,
+  recordSuccess,
   type SyncBranchOptions,
 } from "./milestone_branch_sync.ts";
 import {
@@ -42,32 +48,32 @@ import {
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   milestoneSyncStreakPath,
   openConflictAttempt,
-  recordDefaultSha,
-  resetConflictLedgerOnSuccess,
   saveSyncStreaks,
   type SyncStreakEntry,
+  syncStreakKey,
   type SyncStreaks,
 } from "./milestone_sync_streak.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import { readLocalDefaultTip } from "./milestone_default_tip.ts";
 import { countCommitsAhead } from "./git_issue_branches.ts";
 import { syncMilestoneBranchWithDefault } from "./git_pull.ts";
-import { runMergeConflictAgent } from "./merge_conflict_agent.ts";
+import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
-import {
-  buildQualityInstructions,
-  getCustomInstructions,
-} from "./repo_config.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
+
+/**
+ * What is wrong, in the words the log line and the deferral reason share
+ * (Issue #1780).
+ */
+export const MILESTONE_BEHIND = "milestone behind default branch";
 
 /**
  * The reason a child run reports when its milestone base is not level
  * (Issue #1780). One string, so the phase, the release comment and the tests
  * cannot drift apart.
  */
-export const MILESTONE_BEHIND_DEFER_REASON =
-  "deferred: milestone behind default branch";
+export const MILESTONE_BEHIND_DEFER_REASON = `deferred: ${MILESTONE_BEHIND}`;
 
 /** What the pre-cut sync concluded. */
 export type MilestonePresyncStatus =
@@ -123,12 +129,15 @@ export interface MilestonePresyncDeps {
   ) => Promise<Result<MilestoneSyncOutcome>>;
   /** The milestone tip a child branch would be cut from right now. */
   milestoneTipSha: () => Promise<Result<string>>;
+  /**
+   * Report a merge that landed but whose conflicts the worker resolved
+   * itself, returning true only when the report went out (Issue #1558).
+   *
+   * Absent, the conflict is still said out loud in the log — a resolution
+   * nobody chose must never pass in silence — but nothing is posted.
+   */
+  reportConflict?: (conflict: MilestoneSyncConflict) => Promise<boolean>;
   log: (message: string) => void;
-}
-
-/** The ledger key a branch is recorded under — the sweep's own key. */
-function streakKeyFor(repo: string, milestoneBranch: string): string {
-  return `${repo}|${milestoneBranch}`;
 }
 
 /**
@@ -154,7 +163,7 @@ export function milestonePacedUntil(
 ): string | undefined {
   if (!milestoneTitle) return undefined;
   const branch = createMilestoneBranchName(milestoneTitle);
-  const entry = streaks[streakKeyFor(repo, branch)];
+  const entry = streaks[syncStreakKey(repo, branch)];
   const deferUntil = entry?.deferUntil;
   if (deferUntil === undefined) return undefined;
   const until = Date.parse(deferUntil);
@@ -182,8 +191,9 @@ function deferral(
 /**
  * Bring the milestone branch level with the default branch, or defer.
  *
- * Sub-second on the ordinary path: a branch that already carries the default
- * tip costs one `rev-list --count` and touches neither the ledger nor git.
+ * Cheap on the ordinary path: a branch that already carries the default tip
+ * costs one fetch of the default branch (which is what makes the comparison
+ * truthful) and one `rev-list --count`, and touches the ledger not at all.
  *
  * @param request - The branch, the clone's ledger and this attempt's grant
  * @param deps - The git and merge work, injected
@@ -196,13 +206,29 @@ export async function presyncMilestoneBranch(
   const { repo, milestoneBranch, defaultBranch, streakPath, grant } = request;
   const nowMs = request.nowMs ?? Date.now();
 
+  // The default tip FIRST, because reading it is what fetches it. Counting
+  // against a stale `origin/<default>` would answer "level" for a branch that
+  // is behind — the very defect this gate exists to stop — so the order is
+  // load-bearing, not incidental.
+  const tip = await deps.defaultTipSha();
+  if (!tip.ok) {
+    deps.log(
+      `WARNING: Could not read the tip of '${defaultBranch}' for ` +
+        `'${milestoneBranch}' (${tip.error.message}) — the ledger paces this ` +
+        `branch on its deferral alone (Issue #1780)`,
+    );
+  }
+  const defaultSha = tip.ok ? tip.value : undefined;
+
   const behind = await deps.countBehind();
   if (!behind.ok) {
     // Never the permissive direction: a base nobody could measure is a base no
-    // child branch is cut from.
+    // child branch is cut from. The wording does not claim the branch IS
+    // behind — that is the one thing this case could not establish.
     return deferral(
-      `how far behind '${defaultBranch}' the branch is could not be read ` +
-        `(${behind.error.message}), so no branch is cut from an unverified base`,
+      `how far '${milestoneBranch}' stands from '${defaultBranch}' could not ` +
+        `be read (${behind.error.message}), so no branch is cut from an ` +
+        `unverified base`,
     );
   }
   if (behind.value === 0) {
@@ -215,37 +241,38 @@ export async function presyncMilestoneBranch(
   }
 
   const behindBy = behind.value;
-  const tip = await deps.defaultTipSha();
-  if (!tip.ok) {
-    deps.log(
-      `WARNING: Could not read the tip of '${defaultBranch}' for ` +
-        `'${milestoneBranch}' (${tip.error.message}) — the ledger paces this ` +
-        `branch on its deferral alone (Issue #1780)`,
-    );
-  }
-  const defaultSha = tip.ok ? tip.value : undefined;
 
   const streaks: SyncStreaks = streakPath
     ? await loadSyncStreaks(streakPath)
     : {};
-  const key = streakKeyFor(repo, milestoneBranch);
+  const key = syncStreakKey(repo, milestoneBranch);
   let entry: SyncStreakEntry = streaks[key] ?? { count: 0, escalated: false };
 
   /**
-   * Persist the ledger, or say the attempt cannot be recorded.
+   * Persist the ledger, reporting a refused write once, here.
    *
-   * A marker that never reaches disk is a marker the next cycle never sees,
-   * and an attempt nobody could record must not be made: the whole point of
-   * the ledger is that the branch's spend survives the run that spent it.
+   * A marker that never reaches disk is a marker the next run never sees, so
+   * the failure is never swallowed — but it is also never fatal: bringing the
+   * branch level is idempotent, useful work, and what a refused write costs is
+   * the *pacing*, which is what the message names.
+   *
+   * @param what - The transition being recorded, for the warning
+   * @param writeEntry - False when the caller has already written the map
+   *   itself (the shared success transition does)
    */
-  const persist = async (): Promise<Error | undefined> => {
-    if (!streakPath) return undefined;
-    streaks[key] = entry;
+  const persist = async (what: string, writeEntry = true): Promise<void> => {
+    if (!streakPath) return;
+    if (writeEntry) streaks[key] = entry;
     try {
       await saveSyncStreaks(streakPath, streaks);
-      return undefined;
     } catch (err) {
-      return err instanceof Error ? err : new Error(String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      deps.log(
+        `WARNING: The milestone sync ledger at ${streakPath} could not be ` +
+          `written while recording ${what} for '${milestoneBranch}' ` +
+          `(${message}) — this attempt cannot be charged or paced ` +
+          `(Issue #1780)`,
+      );
     }
   };
 
@@ -268,13 +295,7 @@ export async function presyncMilestoneBranch(
   }
 
   if (isConflictBudgetExhausted(entry)) {
-    const writeError = await persist();
-    if (writeError) {
-      deps.log(
-        `WARNING: Could not persist the milestone sync ledger: ` +
-          `${writeError.message} (Issue #1780)`,
-      );
-    }
+    await persist("the spent budget");
     return deferral(
       `the conflict budget is spent (${entry.conflictAttempts ?? 0} of ` +
         `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} concluded failures), so ` +
@@ -285,13 +306,7 @@ export async function presyncMilestoneBranch(
   }
 
   if (!conflictAttemptDue(entry, defaultSha, nowMs)) {
-    const writeError = await persist();
-    if (writeError) {
-      deps.log(
-        `WARNING: Could not persist the milestone sync ledger: ` +
-          `${writeError.message} (Issue #1780)`,
-      );
-    }
+    await persist("the live deferral");
     return deferral(
       `conflict attempt not due until ${entry.deferUntil}`,
       behindBy,
@@ -301,33 +316,38 @@ export async function presyncMilestoneBranch(
   // Opening charges nothing; it is the marker a kill leaves behind. On disk
   // before the merge starts, or it cannot record the kill it exists for.
   entry = openConflictAttempt(entry, nowMs);
-  const openWriteError = await persist();
-  if (openWriteError) {
-    // Said out loud rather than swallowed, and the merge still runs: bringing
-    // the branch level is the useful work and it is idempotent. What is lost
-    // is the pacing — a failure this run cannot record is a failure the next
-    // run will meet again — so the fault names that consequence.
-    deps.log(
-      `WARNING: The milestone sync ledger at ${streakPath} could not be ` +
-        `written (${openWriteError.message}) — this attempt on ` +
-        `'${milestoneBranch}' cannot be charged or paced (Issue #1780)`,
-    );
-  }
+  await persist("the attempt marker");
 
   const sync = await deps.syncBranch(grant);
 
   if (sync.ok) {
-    // Success is the only thing that refills the budget, and it records the
-    // tip the branch now carries so the sweep's cadence gate agrees.
-    entry = resetConflictLedgerOnSuccess(entry);
-    if (defaultSha) entry = recordDefaultSha(entry, defaultSha);
-    const writeError = await persist();
-    if (writeError) {
+    // The merge landed, but a merge that CONFLICTED landed on a resolution
+    // nobody chose (Issue #1558). Once per conflicting default-branch commit,
+    // exactly as the sweep reports it — and loudly in the log either way, so a
+    // run with no reporter wired still cannot pass it in silence.
+    const conflict = sync.value.conflict;
+    let reportedSha = entry.conflictEscalatedSha;
+    if (conflict) {
+      const conflictKey = conflict.defaultSha || UNRESOLVED_SHA;
       deps.log(
-        `WARNING: The milestone sync landed but its ledger entry could not be ` +
-          `written to ${streakPath}: ${writeError.message} (Issue #1780)`,
+        `WARNING: The pre-cut sync of '${milestoneBranch}' in ${repo} ` +
+          `resolved a conflict itself before landing: ` +
+          `${conflict.files.join(", ")} (Issue #1780)`,
       );
+      if (reportedSha !== conflictKey && deps.reportConflict) {
+        // Only a report that went out is remembered; one that failed must be
+        // retried rather than marked done.
+        if (await deps.reportConflict(conflict)) reportedSha = conflictKey;
+      }
     }
+    // What a landed sync does to the ledger is `recordSuccess` — the sweep's
+    // own transition, called here rather than restated: it refills the budget,
+    // drops the open marker and the deferral, ends the failure streak with its
+    // escalation flags, and records the tip the branch now carries so the
+    // sweep's cadence gate agrees with this run.
+    streaks[key] = entry;
+    recordSuccess(streaks, key, defaultSha, reportedSha);
+    await persist("the landed sync", false);
     const base = await deps.milestoneTipSha();
     if (!base.ok) {
       deps.log(
@@ -358,13 +378,7 @@ export async function presyncMilestoneBranch(
     conflict?.defaultSha ?? defaultSha,
     nowMs,
   );
-  const writeError = await persist();
-  if (writeError) {
-    deps.log(
-      `WARNING: The milestone sync failed and its conclusion could not be ` +
-        `written to ${streakPath}: ${writeError.message} (Issue #1780)`,
-    );
-  }
+  await persist(`the ${verdict.outcome} conclusion`);
   if (verdict.outcome === "failed") {
     const attempts = entry.conflictAttempts ?? 0;
     deps.log(
@@ -392,6 +406,8 @@ export async function presyncMilestoneBranch(
 /** What the issue run knows about itself when it asks for the pre-cut sync. */
 export interface IssueRunPresyncArgs {
   repo: string;
+  /** The milestone's title, as the conflict report names it. */
+  milestoneTitle: string;
   milestoneBranch: string;
   defaultBranch: string;
   /**
@@ -411,7 +427,42 @@ export interface IssueRunPresyncArgs {
   syncMilestoneBranchFn?: typeof syncMilestoneBranchWithDefault;
   runAgentFn?: typeof runClaudeWithRetry;
   runGitCommandFn?: typeof runGitCommand;
+  /**
+   * `gh` runner for the conflict report (Issue #1558). Absent leaves the
+   * conflict in the log only.
+   */
+  ghCommandFn?: GhCommandFn;
   nowMs?: number;
+}
+
+/**
+ * One pre-cut sync at a time per repository, within this process
+ * (Issue #1780).
+ *
+ * `syncMilestoneBranchWithDefault` opens with `reset --hard` + `clean -fd` +
+ * `checkout` in the shared `${WORK_DIR}/<repo>` clone. Since Issue #923 two
+ * lanes can work one repository, so without this two child runs could reset
+ * the tree under each other's merge — each losing the other's in-flight
+ * resolution and both deferring for nothing. Serialising them costs a wait and
+ * removes that whole class.
+ *
+ * It is an in-process chain, not a lease: it makes the runs this process
+ * starts orderly. The periodic sweep's own merge in the same clone is outside
+ * it, exactly as it was before this change.
+ */
+const repoPresyncChain = new Map<string, Promise<unknown>>();
+
+/** Run `fn` after any pre-cut sync this process already has in `repo`. */
+function serialisedPerRepo<T>(
+  repo: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = repoPresyncChain.get(repo) ?? Promise.resolve();
+  // A previous failure must not poison the chain — it is a queue, not a
+  // dependency.
+  const run = previous.catch(() => undefined).then(fn);
+  repoPresyncChain.set(repo, run.catch(() => undefined));
+  return run;
 }
 
 /** Read one ref's commit in a clone, naming what went wrong. */
@@ -462,6 +513,7 @@ export async function presyncMilestoneBranchForIssueRun(
 ): Promise<MilestonePresyncResult> {
   const {
     repo,
+    milestoneTitle,
     milestoneBranch,
     defaultBranch,
     cwd,
@@ -473,6 +525,7 @@ export async function presyncMilestoneBranchForIssueRun(
   const syncFn = args.syncMilestoneBranchFn ?? syncMilestoneBranchWithDefault;
   const runAgent = args.runAgentFn ?? runClaudeWithRetry;
   const gitFn = args.runGitCommandFn ?? runGitCommand;
+  const ghFn = args.ghCommandFn;
   const nowMs = args.nowMs ?? Date.now();
 
   // The same grant the sweep computes (Issue #1778): the rung is offered only
@@ -486,16 +539,17 @@ export async function presyncMilestoneBranchForIssueRun(
     agentTimeoutMs: config.claudeTimeout * 1000,
   });
 
-  return await presyncMilestoneBranch(
-    {
+  // One at a time per repository: the merge below resets and checks out the
+  // shared clone, and two lanes can hold one repository since Issue #923.
+  return await serialisedPerRepo(repo, () =>
+    presyncMilestoneBranch({
       repo,
       milestoneBranch,
       defaultBranch,
       streakPath: milestoneSyncStreakPath(workDir),
       grant,
       nowMs,
-    },
-    {
+    }, {
       countBehind: () =>
         countBehindFn(`origin/${milestoneBranch}`, `origin/${defaultBranch}`, {
           cwd,
@@ -503,6 +557,25 @@ export async function presyncMilestoneBranchForIssueRun(
       defaultTipSha: () => readLocalDefaultTip(defaultBranch, cwd),
       milestoneTipSha: () =>
         readRefSha(`origin/${milestoneBranch}`, cwd, gitFn),
+      ...(ghFn
+        ? {
+          reportConflict: (conflict: MilestoneSyncConflict) =>
+            escalateSyncConflict(
+              repo,
+              {
+                milestoneTitle,
+                // The report needs no milestone number: it comments where the
+                // sweep's own report goes, keyed on the branch.
+                milestoneNumber: 0,
+                milestoneBranch,
+                defaultBranch,
+              },
+              conflict,
+              ghFn,
+              (message: string) => logger.info(message),
+            ),
+        }
+        : {}),
       syncBranch: (syncGrant) =>
         syncFn(
           milestoneBranch,
@@ -515,35 +588,16 @@ export async function presyncMilestoneBranchForIssueRun(
           // stricter resolution gate derived from it.
           undefined,
           undefined,
-          syncGrant.agentAllowed
-            ? (request: MilestoneConflictAgentRequest) =>
-              runMergeConflictAgent({
-                repo,
-                target: { kind: "branch", intoBranch: request.milestoneBranch },
-                baseBranch: request.defaultBranch,
-                conflictedFiles: request.conflictedFiles,
-                workDir: request.workDir,
-                qualityInstructions: buildQualityInstructions(
-                  config.repoConfig,
-                  repo,
-                ),
-                customInstructions: getCustomInstructions(
-                  config.repoConfig,
-                  repo,
-                ),
-                timeouts: {
-                  claudeTimeout: syncGrant.agentTimeoutSeconds ??
-                    config.claudeTimeout,
-                  claudeNoOutputTimeout: config.claudeNoOutputTimeout,
-                  maxRateLimitRetries: config.maxRateLimitRetries,
-                },
-                logger,
-                runAgent,
-              })
-            : undefined,
+          // The ladder's last rung, bound exactly as the sweep binds it.
+          bindMilestoneConflictAgent({
+            repo,
+            grant: syncGrant,
+            config,
+            logger,
+            runAgent,
+          }),
           logger,
         ),
       log: (message: string) => logger.info(message),
-    },
-  );
+    }));
 }

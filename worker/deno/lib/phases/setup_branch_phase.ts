@@ -351,6 +351,7 @@ export async function workOnIssueSetupBranch(
     // the milestone branch would then be refused to every other lane.
     const presync = await presyncMilestoneBranchForIssueRun({
       repo,
+      milestoneTitle,
       milestoneBranch: state.milestoneBranch,
       defaultBranch: state.defaultBranch,
       cwd: `${config.workDir}/${repoDirName(repo)}`,
@@ -364,6 +365,9 @@ export async function workOnIssueSetupBranch(
       countCommitsAheadFn: deps.git.countCommitsAhead,
       runGitCommandFn: deps.git.runGitCommand,
       runAgentFn: deps.claude.runClaudeWithRetry,
+      // Issue #1558: a merge that landed on a resolution nobody chose is
+      // reported once, through the sweep's own escalation.
+      ghCommandFn: deps.github.runGhCommand,
     });
     if (presync.status === "deferred") {
       // No agent is spent, the issue keeps its pickup label and no human is
