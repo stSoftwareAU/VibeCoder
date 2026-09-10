@@ -258,10 +258,20 @@ export async function resolveActionPins(
  * Rewrite a template's already-pinned `uses:` lines to the resolved pins.
  *
  * Only a line of the form `uses: <owner>/<repo>@<40-hex>` — optionally
- * carrying a trailing `# comment` — is touched, and only when the catalogue
- * holds a resolved pin for that action. Every other byte of the template is
+ * carrying a trailing `# comment` — is touched, and only when the pin set
+ * holds an entry for that action. Every other byte of the template is
  * returned unchanged, including the Semgrep `image:` reference, whose tag and
  * digest are pinned separately and must not be rewritten as an action.
+ *
+ * A pin whose SHA is not 40 hex characters **throws** rather than being
+ * quietly skipped. `resolveActionPins` cannot produce one — a resolved SHA
+ * came from the runner and every catalogue SHA is shape-checked by
+ * `pinned_actions_test.ts` — so reaching this is a caller that built the map
+ * by hand, and emitting a stale template while swallowing that is exactly the
+ * silent failure the standards forbid. The template is never partially
+ * rewritten: the throw happens before anything is returned.
+ *
+ * @throws {Error} When a pin that would be emitted carries a malformed SHA.
  */
 export function applyResolvedPins(
   template: string,
@@ -274,10 +284,13 @@ export function applyResolvedPins(
       if (!match) return line;
       const [, prefix, action] = match;
       const pin = pins[action!];
-      // A pin whose SHA did not survive validation is not emitted — the
-      // template keeps whatever it already had rather than gaining a
-      // fabricated ref.
-      if (!pin || !SHA_PATTERN.test(pin.sha)) return line;
+      if (!pin) return line;
+      if (!SHA_PATTERN.test(pin.sha)) {
+        throw new Error(
+          `refusing to pin ${action}: "${pin.sha}" is not a 40-character ` +
+            `commit SHA`,
+        );
+      }
       return `${prefix}${action}@${pin.sha} # ${pin.version}`;
     })
     .join("\n");

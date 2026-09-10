@@ -7,7 +7,12 @@
  * and asserts on the returned pins, failures or log lines.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   applyResolvedPins,
   PIN_RESOLUTION_FAILURE_PREFIX,
@@ -403,12 +408,27 @@ Deno.test("applyResolvedPins - leaves an image: reference untouched", () => {
   assertEquals(applyResolvedPins(template, RESOLVED), template);
 });
 
-Deno.test("applyResolvedPins - never emits a malformed SHA", () => {
+Deno.test("applyResolvedPins - a malformed SHA throws rather than being skipped", () => {
+  // Fail loud: silently keeping the stale line would emit a template that
+  // reads as freshly pinned while the caller's bad map went unreported.
   const template = `      - uses: actions/checkout@${"0".repeat(40)} # v7.0.1`;
-  const output = applyResolvedPins(template, {
-    "actions/checkout": { sha: "not-a-sha", version: "v9.0.0" },
-  });
-  assertEquals(output, template);
+  const error = assertThrows(
+    () =>
+      applyResolvedPins(template, {
+        "actions/checkout": { sha: "not-a-sha", version: "v9.0.0" },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "actions/checkout");
+  assertStringIncludes(error.message, "not a 40-character commit SHA");
+});
+
+Deno.test("applyResolvedPins - an action with no pin is left untouched", () => {
+  // Absent is not malformed: an unresolved action keeps its existing ref.
+  const template = `      - uses: codecov/codecov-action@${
+    "9".repeat(40)
+  } # v7`;
+  assertEquals(applyResolvedPins(template, RESOLVED), template);
 });
 
 Deno.test("applyResolvedPins - an empty pin set returns the template verbatim", () => {
