@@ -133,7 +133,8 @@ export function isDownstreamOfRedJob(
   const queue = [...(map.get(checkName) ?? [])];
 
   while (queue.length > 0) {
-    const next = queue.shift() as string;
+    const next = queue.shift();
+    if (next === undefined) break;
     if (visited.has(next)) continue;
     visited.add(next);
     // The check's own redness is what we are explaining, so a cycle back

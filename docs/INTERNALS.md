@@ -1910,7 +1910,8 @@ route is never taken on a guess.
    claims — a check is excluded only when its failing *step* is a spelling
    tool (see [Routing by failed step](#routing-by-failed-step-issue-1579)),
    not merely because its name mentions spelling.
-4. Drops **aggregator** checks — a job whose `needs:` (read from the host's
+4. Drops **aggregator** checks, first thing in the per-check loop and so
+   ahead of the spelling-route lookup — a job whose `needs:` (read from the host's
    existing clone at `repoCheckoutPath`, never cloned by the scan) includes
    another job that is also red on the same head is downstream of that
    failure, not a failure of its own (Issue #1878, see

@@ -107,12 +107,14 @@ function ghStub(
  */
 async function scan(
   checks: Array<{ id: number; name: string }>,
-  withClone: boolean,
+  withClone: boolean | "clone-without-workflows",
   skips: string[] = [],
 ) {
   const workDir = await Deno.makeTempDir({ prefix: "ci-aggregator-" });
   try {
-    if (withClone) {
+    if (withClone === "clone-without-workflows") {
+      await Deno.mkdir(repoCheckoutPath(workDir, REPO), { recursive: true });
+    } else if (withClone) {
       const checkout = repoCheckoutPath(workDir, REPO);
       await Deno.mkdir(`${checkout}/.github/workflows`, { recursive: true });
       await Deno.writeTextFile(`${checkout}/.github/workflows/ci.yml`, CI_YML);
@@ -195,5 +197,17 @@ Deno.test("findFailedCiChecks - no clone means no filtering", async () => {
 
   // Without workflow YAML to read, the first failure is returned exactly
   // as it was before Issue #1878.
+  assertEquals(found?.checkName, "CI Required Checks");
+});
+
+Deno.test("findFailedCiChecks - a clone with no workflows filters nothing", async () => {
+  const found = await scan(
+    [
+      { id: 900, name: "CI Required Checks" },
+      { id: 901, name: "Project Validation" },
+    ],
+    "clone-without-workflows",
+  );
+
   assertEquals(found?.checkName, "CI Required Checks");
 });

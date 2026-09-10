@@ -82,7 +82,8 @@ function makeCommentCapturingGh(bodies: string[]): GitHubDeps["runGhCommand"] {
     if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
     if (args[0] === "pr" && args[1] === "comment") {
       const idx = args.indexOf("--body");
-      if (idx >= 0 && args[idx + 1] !== undefined) bodies.push(args[idx + 1]!);
+      const body = idx >= 0 ? args[idx + 1] : undefined;
+      if (body !== undefined) bodies.push(body);
     }
     return Promise.resolve("");
   }) as GitHubDeps["runGhCommand"];

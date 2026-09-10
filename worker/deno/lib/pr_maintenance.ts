@@ -1203,8 +1203,17 @@ async function readJobNeedsFromClone(
   try {
     const stat = await Deno.stat(checkout);
     if (!stat.isDirectory) return null;
-  } catch {
-    return null; // No clone on this host — nothing to read.
+  } catch (error: unknown) {
+    // No clone on this host is the ordinary case and stays quiet; anything
+    // else (permissions, I/O) loses aggregator filtering, so it is named.
+    if (!(error instanceof Deno.errors.NotFound)) {
+      logger.warn("Could not stat the clone for aggregator detection", {
+        repo,
+        checkout,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return null;
   }
 
   try {
