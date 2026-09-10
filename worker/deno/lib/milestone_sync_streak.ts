@@ -167,15 +167,25 @@ export async function loadSyncStreaks(path: string): Promise<SyncStreaks> {
   return {};
 }
 
-/** Persist streaks atomically. Failures are the caller's to ignore. */
+/**
+ * Persist streaks atomically, throwing when the write did not happen.
+ *
+ * `atomicWrite` reports a refused write as a failed `Result` rather than by
+ * throwing, and discarding it was a silent failure: the ledger's whole point
+ * is that an attempt marker survives the run that opened it, so a write
+ * nobody noticed turns the next cycle's `disrupted` reading into a charged
+ * failure for a conflict nobody judged. The caller decides what to do about
+ * it — it must not be able to miss it.
+ */
 export async function saveSyncStreaks(
   path: string,
   streaks: SyncStreaks,
 ): Promise<void> {
-  await atomicWrite({
+  const written = await atomicWrite({
     targetFile: path,
     content: JSON.stringify(streaks, null, 2) + "\n",
   });
+  if (!written.ok) throw written.error;
 }
 
 /** A non-empty string, or undefined. */

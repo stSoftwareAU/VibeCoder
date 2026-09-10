@@ -1709,3 +1709,115 @@ Deno.test("judgeSyncFailure - only an unresolved conflict is charged (Issue #177
   assertEquals(plain.outcome, "not-charged");
   assertStringIncludes(plain.reason, "unrelated histories");
 });
+
+Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged and still reports both halves (Issue #1778)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1778-resgate-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const calls: string[][] = [];
+    // Two cycles: the report goes out once, not every cycle.
+    for (let cycle = 0; cycle < 2; cycle++) {
+      await syncMilestoneBranches(ledgerDeps(calls, {
+        milestones: [{
+          title: LEDGER_TITLE,
+          branch: LEDGER_BRANCH,
+          failure: "resolution-gate",
+        }],
+        streakPath,
+        nowMs: 10_000 + cycle * 1_000,
+      }));
+    }
+
+    const entry = await readLedger(streakPath);
+    // A gate refusal is not a conflict the budget can retry its way out of.
+    assertEquals(entry?.conflictAttempts, 0);
+    assertEquals(entry?.lastAttempt?.outcome, "not-charged");
+    assertEquals(entry?.gateEscalated, true);
+
+    const comments = calls.filter((c) =>
+      c[0] === "issue" && c[1] === "comment"
+    );
+    assertEquals(comments.length, 1, "reported once, not every cycle");
+    const body = comments[0]![comments[0]!.length - 1] ?? "";
+    // Both halves: what the gate said, and the two sides that produced it.
+    assertStringIncludes(body, "TS2304");
+    assertStringIncludes(body, "worker/deno/lib/scan_content.ts");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - the default roll-back says the hand-off is not wired and posts nothing (Issue #1778)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1778-default-rb-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${LEDGER_BRANCH}`]: {
+        count: 2,
+        escalated: false,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+      },
+    });
+
+    const calls: string[][] = [];
+    const logs: string[] = [];
+    // No `rollbackFn` injected: this is the production default today.
+    await syncMilestoneBranches(ledgerDeps(calls, {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "conflict",
+      }],
+      streakPath,
+      nowMs: 10_000,
+      log: (m) => logs.push(m),
+    }));
+
+    assert(
+      logs.some((l) =>
+        l.includes("budget exhausted: roll-back not yet available")
+      ),
+      `no hand-off line in: ${JSON.stringify(logs)}`,
+    );
+    assertEquals(
+      humanFacingCalls(calls).length,
+      0,
+      `posted: ${JSON.stringify(humanFacingCalls(calls))}`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a ledger that cannot be persisted is said out loud (Issue #1778)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1778-persist-" });
+  try {
+    // A directory where the ledger file must go: every write fails.
+    const streakPath = milestoneSyncStreakPath(dir);
+    await Deno.mkdir(streakPath);
+
+    const logs: string[] = [];
+    const result = await syncMilestoneBranches(ledgerDeps([], {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "conflict",
+      }],
+      streakPath,
+      nowMs: 10_000,
+      log: (m) => logs.push(m),
+    }));
+
+    // The sweep still finishes — one repo's other milestones are not lost
+    // over a write — and the failure is reported rather than swallowed.
+    assertEquals(result.ok, true);
+    assert(
+      logs.some((l) =>
+        l.includes("Could not persist the milestone sync ledger")
+      ),
+      `the write failure was swallowed: ${JSON.stringify(logs)}`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

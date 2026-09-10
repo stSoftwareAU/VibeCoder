@@ -31,7 +31,12 @@ import {
   resolveBranchTips,
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
-import { isConflictEscalation } from "./milestone_conflict_triage.ts";
+import {
+  buildConflictAnalysisComment,
+  type FileAnalysis,
+  type FileDecision,
+  isConflictEscalation,
+} from "./milestone_conflict_triage.ts";
 import {
   DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
   DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
@@ -740,8 +745,18 @@ export async function syncMilestoneBranches(
     try {
       await saveSyncStreaks(streakPath, streaks);
       streaksDirty = false;
-    } catch {
-      // Persistence is an optimisation — never fail the sweep over it.
+    } catch (err) {
+      // The sweep still runs — one repo's other milestones must not be lost
+      // over a write — but the failure is said out loud rather than
+      // swallowed: an open attempt marker that never reached disk is an
+      // attempt the next cycle charges as a failure nobody judged.
+      log(
+        `WARNING: Could not persist the milestone sync ledger to ` +
+          `${streakPath}: ${
+            err instanceof Error ? err.message : String(err)
+          } — this cycle's attempt markers and conclusions are lost ` +
+          `(Issue #1778)`,
+      );
     }
   };
 
@@ -1033,14 +1048,34 @@ export async function syncMilestoneBranches(
             }
           }
 
-          if (conflictError) {
-            // Nothing is posted for a conflict (Issue #1778): the ledger
-            // above records why the branch is still behind, and the budget
-            // — not a human — decides when the automatic attempts are over.
-            // The per-conflict analysis escalation is gone (Issue #1778): it
-            // fired on the first conflicting commit, before any of the three
-            // automatic attempts had been spent, which is exactly the
-            // "needs-human while a rung remains" this budget removes.
+          if (conflictError?.gateFailure) {
+            // A gate refusal, not a conflict (Issue #1778): the resolution
+            // was made and the verification refused it, so it keeps the
+            // escalation Issue #1559 gave it — what the gate said AND both
+            // sides prepared — deduped by the same `gateEscalated` flag the
+            // Issue #974 refusal uses, because it is the same class of
+            // failure and a retry does not clear either.
+            if (entry && !entry.gateEscalated) {
+              const escalated = await escalateConflictAnalysis(
+                repo,
+                milestone,
+                conflictError.analyses,
+                conflictError.resolved,
+                conflictError.gateFailure,
+                ghCommandFn,
+                log,
+              );
+              if (escalated) entry.gateEscalated = true;
+            }
+          } else if (conflictError) {
+            // Nothing is posted for a conflict every rung left undecided
+            // (Issue #1778): the ledger above records why the branch is
+            // still behind, and the budget — not a human — decides when the
+            // automatic attempts are over. The per-conflicting-commit
+            // analysis escalation keyed on `analysisEscalatedSha` is gone:
+            // it fired before any of the three automatic attempts had been
+            // spent, which is exactly the "needs-human while a rung remains"
+            // this budget removes.
           } else if (isMergeGateFailure(syncResult.error)) {
             // Issue #974: a merged tree the repo's own check rejects is not a
             // transient condition a retry clears — it needs a human now, not
@@ -1153,6 +1188,67 @@ async function escalateSyncConflict(
     );
     return true;
   }
+
+  return await escalateToExistingIssue(
+    repo,
+    milestone,
+    body,
+    what,
+    ghCommandFn,
+    log,
+  );
+}
+
+/**
+ * Report a resolution the verification refused (Issues #1559 and #1778).
+ *
+ * The worker made the resolution and the gate said no, so the reader needs
+ * both halves: what the gate said, and the two sides that produced it — what
+ * each side exports, what each side tests, and which cases exist on one side
+ * only. A wall of `TS2304` on its own decides nothing, which is what made
+ * #1542 nearly useless.
+ *
+ * This is the one survivor of the old per-conflict escalation: a conflict no
+ * rung could settle is charged to the ledger and reported to nobody while an
+ * automatic attempt remains, but a gate refusal is not a conflict the budget
+ * can retry its way out of.
+ *
+ * Best-effort, and returns true only when the report went out, so the caller
+ * marks the streak escalated and does not repeat it every cycle.
+ */
+async function escalateConflictAnalysis(
+  repo: string,
+  milestone: ActiveMilestone,
+  analyses: FileAnalysis[],
+  resolved: FileDecision[],
+  /** What the verification said — the half a reader cannot reconstruct. */
+  gateFailure: string,
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const tips = await resolveBranchTips(
+    repo,
+    [
+      { branch: milestone.defaultBranch },
+      { branch: milestone.milestoneBranch },
+    ],
+    ghCommandFn,
+    log,
+  );
+
+  const body = `${
+    buildConflictAnalysisComment({
+      repo,
+      milestoneBranch: milestone.milestoneBranch,
+      defaultBranch: milestone.defaultBranch,
+      analyses,
+      resolved,
+      gateFailure,
+    })
+  }\n\n${describeBranchTips(tips)}`;
+
+  const what = `a milestone sync resolution the verification refused for ` +
+    `'${milestone.milestoneBranch}' (Issues #1559, #1778)`;
 
   return await escalateToExistingIssue(
     repo,

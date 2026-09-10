@@ -3157,8 +3157,11 @@ clone the merge conflicted in.
    caller that supplies none stops after the rules rather than pretending the
    conflict was decided.
 
-Only a file **every** rung leaves undecided aborts the merge and reaches a
-human, and the escalation then names the rung that failed (`agent: …`). An
+Only a file **every** rung leaves undecided aborts the merge; since Issue
+#1778 that abortion reaches nobody while the branch's conflict budget still
+has an attempt in it — it is charged to the ledger, named in one log line
+`conflict attempt n of 3 failed at rung <rung>`, and the exhausted budget is
+what reaches for the roll-back. An
 agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
 or leaves a conflict marker behind is a failed rung: the merge is aborted and
 the branch stands exactly at its pre-merge SHA. Only the agent's own paths are
@@ -3166,9 +3169,7 @@ staged (`git add -- <paths>`, never `-A`), so the worker's own state files in
 the shared clone never reach the pre-commit gate (Issue #1654). Each resolved
 file carries the rung that settled it — `triage: <case>`, `rule: <reason>` or
 `agent` — and that per-file list is what the merge commit, the sync's log line
-and the report comment all print. The escalation carries the preparation, not
-the compiler output #1542 was a wall of: what each side exports, what each side
-tests, and which cases exist on one side only.
+and the report comment all print.
 
 **No resolution may reduce test coverage.** A conflicted test file is resolved
 by taking a side only when that side already keeps every case *and* every line
@@ -3185,7 +3186,12 @@ the merged tree must pass the repository's own Issue #974 type check — reused,
 fallback and all, rather than reimplemented — its `check:manifests` task and
 its unit suite, inside one 15-minute budget so a sync cannot block the event
 loop. A red tree is reset to the pre-merge commit and escalated with **both**
-halves: what the verification said and both sides prepared. A tree with no type
+halves: what the verification said and both sides prepared — what each side
+exports, what each side tests, and which cases exist on one side only, rather
+than the wall of `TS2304` that made #1542 nearly useless. This is the one
+escalation Issue #1778 kept: a gate refusal is not a conflict the budget can
+retry its way out of, so it is reported once (deduped by `gateEscalated`,
+like the Issue #974 refusal) and charged nothing. A tree with no type
 check or no unit suite verified nothing and is refused the same way — a
 resolution that cannot be verified is not a resolution. What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
@@ -3201,7 +3207,10 @@ flowchart TD
     C -- yes --> T{"Triage: superset /<br/>duplicate fix / union?"}
     T -- "left over" --> RU{"Dependency rules?"}
     RU -- "left over" --> AG{"Resolution agent?"}
-    AG -- "fails or aborts" --> X["Abort — nothing pushed —<br/>escalate naming the failed rung,<br/>with both sides' exports and cases"]
+    AG -- "fails or aborts" --> X["Abort — nothing pushed —<br/>charge the ledger, log the rung,<br/>post nothing (Issue #1778)"]
+    X --> XB{"Budget exhausted?"}
+    XB -- "no" --> XW["Wait out the cooldown"]
+    XB -- "yes" --> XR["Hand off to the roll-back"]
     AG -- decided --> V["Commit the per-file rungs, then verify:<br/>#974 type check + check:manifests + unit suite"]
     T -- decided --> V
     RU -- decided --> V
@@ -3412,7 +3421,7 @@ is the branch's to answer for:
 | -------------------------------------------------------------- | ------------------------------------------ |
 | Conflicted and every rung left it undecided                     | `failed` — one attempt charged, cooldown set |
 | Conflicted while the cycle's agent rung was already spent       | `not-charged` — `agent deferred: cycle budget` |
-| Merge gate refused the merged tree or the resolution            | `not-charged` — the gate keeps its own escalation |
+| Merge gate refused the merged tree, or refused the resolution    | `not-charged` — the gate keeps its own escalation, reported once |
 | A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
 | Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
 | Merged                                                          | `resetConflictLedgerOnSuccess`             |
