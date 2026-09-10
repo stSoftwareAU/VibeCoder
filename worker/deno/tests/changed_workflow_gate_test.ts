@@ -58,6 +58,12 @@ function seed(find: string, replace: string): string {
   return CLEAN.replace(find, replace);
 }
 
+/** The clean workflow with its checkout pinned to a hijackable tag. */
+const TAG_PINNED = seed(
+  "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2",
+  "actions/checkout@v4",
+);
+
 /** A gitleaks workflow that has drifted from the canonical hardened shape. */
 const GITLEAKS_DRIFTED = `name: Gitleaks
 
@@ -290,6 +296,48 @@ for (const entry of SEEDED) {
     },
   );
 }
+
+Deno.test("changed-workflow gate - a nested file under .github/workflows is out of scope", async () => {
+  // GitHub runs nothing nested there and the audit's reader is non-recursive,
+  // so a template fixture must not block a PR.
+  const path = ".github/workflows/templates/ci.yml";
+  const { result, reads } = runGate({ [path]: TAG_PINNED });
+  const verdict = await result;
+
+  assertEquals(verdict.ok, true);
+  assertEquals(reads, [], "a nested path is never read");
+});
+
+Deno.test("changed-workflow gate - a traversing path is refused, not read", async () => {
+  const path = ".github/workflows/../../etc/passwd.yml";
+  const { result, reads } = runGate({ [path]: "irrelevant" });
+  const verdict = await result;
+
+  assertEquals(verdict.ok, true);
+  assertEquals(reads, [], "a `..` segment never reaches the filesystem");
+});
+
+Deno.test("changed-workflow gate - a long finding list is truncated, and says so", async () => {
+  // 25 tag-pinned steps — more than the message names in full.
+  const steps = Array.from(
+    { length: 25 },
+    (_, i) =>
+      `      - name: Step ${i}\n        uses: actions/checkout@v${i + 1}\n`,
+  )
+    .join("");
+  const many = seed(
+    "      - name: Checkout\n",
+    steps + "      - name: Checkout\n",
+  );
+
+  const { result } = runGate({ [CI_PATH]: many });
+  const verdict = await result;
+
+  assertEquals(verdict.ok, false);
+  assert(verdict.findings.length > 20, "the fixture must overflow the cap");
+  const message = buildChangedWorkflowGateMessage(verdict);
+  assertStringIncludes(message, `…and ${verdict.findings.length - 20} more`);
+});
 
 Deno.test("changed-workflow gate - an offending file the run did not touch is ignored", async () => {
   const { result, reads } = runGate(

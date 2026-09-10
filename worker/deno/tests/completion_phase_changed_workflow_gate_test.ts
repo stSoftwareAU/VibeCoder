@@ -1,6 +1,6 @@
 /**
- * Integration tests for the changed-workflow file-check gate running in the
- * LIVE completion phase (Issue #1859).
+ * Tests for the changed-workflow file-check gate running in the LIVE
+ * completion phase (Issue #1859).
  *
  * These drive `workOnIssueCompletion` — the path `issue_worker.ts` actually
  * runs — and assert on the observable outcome: whether `gh pr create` was
@@ -98,6 +98,7 @@ interface Outcome {
 async function runCompletion(
   files: Record<string, string>,
   changed?: string[],
+  opts: { unresolvableBase?: boolean } = {},
 ): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
@@ -159,7 +160,23 @@ async function runCompletion(
             ok: true as const,
             value: { code: 0, stdout, stderr: "" },
           });
-        if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
+        if (cmdArgs[0] === "rev-parse") {
+          // `resolveComparableBaseRef` reads the exit code, so a non-zero
+          // verify is how a clone with no usable base ref is simulated.
+          if (opts.unresolvableBase && cmdArgs.includes("--verify")) {
+            return Promise.resolve({
+              ok: true as const,
+              value: { code: 1, stdout: "", stderr: "" },
+            });
+          }
+          return ok(`${SHA}\n`);
+        }
+        if (cmdArgs[0] === "fetch" && opts.unresolvableBase) {
+          return Promise.resolve({
+            ok: true as const,
+            value: { code: 128, stdout: "", stderr: "fatal: no such remote" },
+          });
+        }
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok(diffOutput);
         }
@@ -174,15 +191,17 @@ async function runCompletion(
     },
   });
 
-  const result = await workOnIssueCompletion(ctx, state, deps);
-  await Deno.remove(repoPath, { recursive: true });
-
-  return {
-    status: result.status,
-    reason: result.status === "failure" ? result.reason : undefined,
-    prCreateCalls,
-    comments,
-  };
+  try {
+    const result = await workOnIssueCompletion(ctx, state, deps);
+    return {
+      status: result.status,
+      reason: result.status === "failure" ? result.reason : undefined,
+      prCreateCalls,
+      comments,
+    };
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
 }
 
 Deno.test(
@@ -251,5 +270,21 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 0);
     assertStringIncludes(outcome.reason ?? "", "could not read");
     assertStringIncludes(outcome.reason ?? "", ".github/workflows/gone.yml");
+  },
+);
+
+Deno.test(
+  "completion - an unresolvable base ref stands the gate down, not the run",
+  async () => {
+    // The ahead-of-base guard above the gate already reports this condition;
+    // blocking here would fail every run on such a clone.
+    const outcome = await runCompletion(
+      { ".github/workflows/ci.yml": TAG_PINNED_WORKFLOW },
+      undefined,
+      { unresolvableBase: true },
+    );
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
   },
 );

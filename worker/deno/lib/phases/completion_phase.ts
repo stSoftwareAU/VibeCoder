@@ -1349,7 +1349,7 @@ async function completionBody(
   // #3234). Per-repo only (Issue #3239); opt out with the
   // `skip_security_fix_check` repo config.
   //
-  // It runs **first** of the four PR gates (Issue #1140). The three summary
+  // It runs **first** of the five PR gates (Issue #1140). The three summary
   // gates below stop being a hard failure once the run has raised its PR, and
   // a `security` run whose summary also broke a format rule would otherwise
   // leave through the first of those and never be asked for its
@@ -1433,30 +1433,36 @@ async function completionBody(
   // a defect in the change rather than a documentation shortfall, so it stops
   // the run whether or not a PR already exists.
   // ---------------------------------------------------------------------
-  {
+  if (!comparableBase.ok) {
+    // No ref this clone can diff against — the same condition the ahead-of-base
+    // guard above already reported. Blocking here would fail every run on such
+    // a clone, including the ones that touch no workflow at all, so the gate
+    // stands down and says so at ERROR rather than passing quietly.
+    logger.error(
+      "Changed-workflow file checks did not run — base ref unresolvable, " +
+        "so the branch diff cannot be collected",
+      { baseBranch, error: comparableBase.error.message },
+    );
+  } else {
     const workflowGate = await evaluateChangedWorkflowGate({
       // The trigger check decides against the repository's default branch,
       // whatever this PR's base happens to be.
       defaultBranch: state.defaultBranch,
       deps: {
         listChangedFiles: async () => {
-          // `comparableBase` was resolved above (local branch → origin/<base>).
-          const base = comparableBase.ok ? comparableBase.value : baseBranch;
-          const diff = await deps.git.runGitCommand(
+          // Resolved above: the local branch, else `origin/<base>`.
+          const base = comparableBase.value;
+          // `runGitOrThrow` is the phase's existing adapter: it turns both a
+          // failed spawn and a non-zero exit into a throw, which is what
+          // stops an unreadable diff reading as "nothing changed".
+          const stdout = await runGitOrThrow(
             // Deletions excluded: a removed workflow has no text to check, and
             // its absence must not read as an unreadable file.
             ["diff", "--name-only", "--diff-filter=ACMR", `${base}...HEAD`],
-            { cwd: state.repoPath },
+            state.repoPath,
+            deps,
           );
-          if (!diff.ok) throw diff.error;
-          if (diff.value.code !== 0) {
-            throw new Error(
-              `git diff exited ${diff.value.code}: ${diff.value.stderr.trim()}`,
-            );
-          }
-          return diff.value.stdout.split("\n").map((l) => l.trim()).filter(
-            Boolean,
-          );
+          return stdout.split("\n").map((l) => l.trim()).filter(Boolean);
         },
         readFile: (path) => Deno.readTextFile(`${state.repoPath}/${path}`),
       },

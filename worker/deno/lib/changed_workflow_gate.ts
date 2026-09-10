@@ -15,6 +15,16 @@
  * caller injects "what did the branch change" and "read this path", and the
  * gate answers with the findings, or with the reason it could not.
  *
+ * **Known limitation — a check that reasons across files sees only the changed
+ * subset.** `scanGitleaksDrift` decides "no gitleaks workflow in this repo has
+ * a `pull_request` trigger" from the set it is handed, and
+ * `findVersionCommentDrift` compares pins "across the repo" the same way. Given
+ * one changed file they answer from that file, so the first can over-report and
+ * the second under-report against what the idle-task audit — which reads every
+ * workflow — would say. Reading the whole tree here to close that gap would put
+ * untouched files back in scope, which is exactly what the rule below forbids;
+ * the audit remains the authority on repository-wide questions.
+ *
  * **Scope — only what the run touched.** A repository whose *pre-existing*
  * workflow files already carry findings is not this gate's business: an
  * untouched offender must not block an unrelated PR (the idle-task audit files
@@ -35,7 +45,8 @@ import {
   WORKFLOW_FILE_CHECKS,
   type WorkflowFileCheckFinding,
 } from "./workflow_file_checks.ts";
-import { isWorkflowPath } from "./workflow_scope.ts";
+import { isWorkflowPath, WORKFLOWS_DIR } from "./workflow_scope.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** The two reads the gate needs, injected so the whole path unit-tests. */
 export interface ChangedWorkflowGateDeps {
@@ -61,14 +72,21 @@ export interface ChangedWorkflowGateResult {
 }
 
 /**
- * Only `*.yml` / `*.yaml` directly under `.github/workflows/` are workflow
- * files. A path with a `..` segment is refused: the caller turns these into a
- * filesystem read, and git never emits one, so it can only be mischief.
+ * Only `*.yml` / `*.yaml` **directly** under `.github/workflows/` are workflow
+ * files: GitHub runs nothing nested below that directory, and the audit's own
+ * reader (`readWorkflowFiles`) is non-recursive, so a fixture in
+ * `.github/workflows/templates/` must not block a PR the audit would never
+ * file against.
+ *
+ * A path with a `..` segment is refused before that: the caller turns these
+ * into a filesystem read, and git never emits one, so it can only be mischief.
  */
 function isWorkflowYaml(path: string): boolean {
-  if (path.split("/").includes("..")) return false;
-  return isWorkflowPath(path) &&
-    (path.endsWith(".yml") || path.endsWith(".yaml"));
+  const normalised = path.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (normalised.split("/").includes("..")) return false;
+  if (!isWorkflowPath(normalised)) return false;
+  if (normalised.slice(WORKFLOWS_DIR.length).includes("/")) return false;
+  return normalised.endsWith(".yml") || normalised.endsWith(".yaml");
 }
 
 /** Findings named in the failure message before it is truncated. */
@@ -160,6 +178,10 @@ function messageOf(err: unknown): string {
  * The failure message for a blocked run: every finding named by check id,
  * file, line and detail, and every fault that stopped a check from deciding.
  *
+ * The message goes to an issue comment and the run record, and an error line
+ * can carry a tail of `git` stderr, so the whole thing goes through the
+ * `redactSecrets()` chokepoint before it leaves.
+ *
  * @param result - A verdict whose `ok` is false
  * @returns One multi-line message for the phase failure and the issue thread
  */
@@ -168,9 +190,11 @@ export function buildChangedWorkflowGateMessage(
 ): string {
   const lines: string[] = [
     "Workflow files changed by this run did not pass the GitHub Actions " +
-    "file checks, so no PR was raised (Issue #1859). " +
-    "Fix the workflow file, or explain in the PR summary why the rule " +
-    "does not apply — only files this run touched are checked.",
+    "file checks, so no PR was raised (Issue #1859). Only files this run " +
+    "touched are checked, so the fix is in the file itself: correct it, or — " +
+    "for a scanner finding that genuinely does not apply — add a " +
+    "`# best-practice-ignore: <finding-id>` comment beside the offending " +
+    "line. Prose in the PR summary does not clear this gate.",
   ];
 
   if (result.findings.length > 0) {
@@ -193,5 +217,5 @@ export function buildChangedWorkflowGateMessage(
     for (const error of result.errors) lines.push(`- ${error}`);
   }
 
-  return lines.join("\n");
+  return redactSecrets(lines.join("\n"));
 }
