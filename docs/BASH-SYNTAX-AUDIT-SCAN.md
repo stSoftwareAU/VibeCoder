@@ -123,8 +123,16 @@ for x in "${arr[@]+"${arr[@]}"}"; do ...; done
 ```
 
 Equivalently, guard the access with `if [[ ${#arr[@]} -gt 0 ]]; then`. The
-`validate-scripts.yml` workflow greps for unguarded expansions as a CI check, so
-a new bare `"${arr[@]}"` is caught before merge.
+`validate-scripts.yml` workflow runs
+[`.github/scripts/check-empty-array-expansions.sh`](../.github/scripts/check-empty-array-expansions.sh)
+over the shell scripts the PR changed, so a new bare `"${arr[@]}"` is caught
+before merge. Findings are advisory — an array proven non-empty by control flow
+is a legitimate false positive — but the scan **not running** is fatal: the
+script exits non-zero when the PR's base commit is missing from the local
+object store, and always reports how many scripts it inspected. Issue #1891
+fixed the reverse of that: under a shallow checkout the diff printed
+`fatal: bad object`, a `|| true` swallowed it, and the gate reported "complete"
+having inspected nothing.
 
 ## Findings — one issue per missing gate
 
