@@ -279,6 +279,11 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     // the census. Omitting them over-counts.
     "closed-pr-cooldown": "run-local",
     "cross-worker-cooldown": "run-local",
+    // Issue #1780: the milestone branch's conflict ledger lives in this
+    // worker's own `milestone_sync_failures.json`, and nothing hands it to the
+    // census. Modelling it would need the ledger; omitting it over-counts by
+    // at most the paced milestone's issues.
+    "milestone-behind": "run-local",
     "content-modified-after-approval": "run-local",
     "content-check-error": "run-local",
     "content-editor-unresolved": "run-local",

@@ -510,8 +510,16 @@ export interface RunCoreDeps {
   // Priority 1.68: Recover assigned with closed PRs
   recoverAssignedWithClosedPr: () => Promise<Result<void>>;
 
-  // Priority 1.72: Milestone branch sync (Issue #1238)
-  syncMilestoneBranches: () => Promise<Result<void>>;
+  /**
+   * Priority 1.72: Milestone branch sync (Issue #1238).
+   *
+   * Receives the dispatcher's watchdog deadline (Issue #1778) so the cycle's
+   * single conflict-agent rung is only offered while the budget left covers
+   * a whole agent run.
+   */
+  syncMilestoneBranches: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<void>>;
 
   // Priority 1.7: Milestone completions
   checkMilestoneCompletions: () => Promise<Result<void>>;
@@ -1579,8 +1587,14 @@ export function buildPriorityDispatchTable(
     {
       priority: 1.72,
       name: "Milestone Branch Sync",
-      execute: () =>
-        deps.syncMilestoneBranches().then((r) =>
+      // Issue #1777 gave the sync the conflict ladder's agent rung, so the
+      // handler can spawn a coding agent and needs the cycle-deadline
+      // watchdog rather than the flat 600 s one. Issue #1778 spends the
+      // deadline it is handed: the rung is offered at most once a cycle, and
+      // only while the budget left covers a whole run.
+      agentBacked: true,
+      execute: (opts) =>
+        deps.syncMilestoneBranches(opts).then((r) =>
           r.ok
             ? { ok: true as const, value: { processed: false } }
             : { ok: false as const, error: r.error }

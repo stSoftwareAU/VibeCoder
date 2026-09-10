@@ -23,6 +23,7 @@ import {
 } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
+import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
   preparePrBranch,
@@ -274,6 +275,29 @@ export async function processPrFeedback(
   const { logger, deps, workerId } = processorDeps;
 
   logger.info("Processing PR feedback", { repo, prNumber, commentType });
+
+  // Issue #1774: the comment was found in a listing up to 10 minutes old, and
+  // claiming it writes to the PR. Re-read the live state first — a PR closed
+  // since the listing gets no claim comment, no reply and no reaction.
+  const liveState = await guardPrStillOpen({
+    repo,
+    prNumber,
+    pass: "review feedback",
+    gh: (args: string[]) => deps.github.runGhCommand(args),
+    logger,
+  });
+  if (!liveState.open) {
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        summary: `PR #${prNumber} comment #${commentId} — ${
+          prLiveSkipReason(liveState)
+        }`,
+      },
+    };
+  }
 
   // Claim the PR comment atomically before processing (Issue #1072).
   // Prevents multiple workers from responding to the same comment.

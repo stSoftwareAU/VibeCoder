@@ -454,6 +454,14 @@ async function workOnIssueCore(
         phase: "setup",
         reason: setupResult.reason,
         timings,
+        // Issue #1780: a bounce the phase declared for itself — the milestone
+        // base is behind and could not be brought level — is a skip, not a
+        // failure, so the issue keeps its pickup label and nothing is tracked
+        // against it.
+        ...(setupResult.expectedSkip ? { expectedSkip: true } : {}),
+        // A phase that decided its own outcome keeps it (Issue #218), so the
+        // release comment states the deferral rather than a derived failure.
+        ...(setupResult.outcome ? { outcome: setupResult.outcome } : {}),
         // Issue #1193: a refused claim is carried to the main loop so the
         // release path leaves the holder's assignee and heartbeat alone.
         ...(setupResult.claimNotHeld ? { claimNotHeld: true } : {}),

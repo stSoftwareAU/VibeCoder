@@ -19,6 +19,7 @@ import type { GitHubClient, Logger, Result, WorkerConfig } from "../types.ts";
 
 // GitHub operations
 import { createGitHubClient, runGhCommand } from "./github.ts";
+import { isPrLiveStateRead } from "./pr_live_state.ts";
 import { safeGhCommand } from "./gh_wrapper.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { handleIssueFailure } from "./label_failure.ts";
@@ -45,7 +46,10 @@ import {
 } from "./git_push.ts";
 import { resolveRebaseConflicts } from "./git_conflict_resolution.ts";
 import { recoverGitState } from "./git_state_recovery.ts";
-import { syncFeatureBranchWithDefault } from "./git_pull.ts";
+import {
+  syncFeatureBranchWithDefault,
+  syncMilestoneBranchWithDefault,
+} from "./git_pull.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
@@ -220,6 +224,12 @@ export interface GitDeps {
   recoverGitState: typeof recoverGitState;
   runGitCommand: typeof runGitCommand;
   syncFeatureBranchWithDefault: typeof syncFeatureBranchWithDefault;
+  /**
+   * Merge the default branch down into a milestone branch (Issue #1780).
+   * The setup phase runs it before it cuts a child branch, so no child is
+   * based on a milestone branch that is behind the default branch.
+   */
+  syncMilestoneBranchWithDefault: typeof syncMilestoneBranchWithDefault;
   recoverFromPushRejection: typeof recoverFromPushRejection;
   validateRepoState: typeof validateRepoState;
   ensureMilestoneBranchExists: typeof ensureMilestoneBranchExists;
@@ -506,6 +516,7 @@ export function createDefaultDeps(
       recoverGitState,
       runGitCommand,
       syncFeatureBranchWithDefault,
+      syncMilestoneBranchWithDefault,
       recoverFromPushRejection,
       validateRepoState,
       ensureMilestoneBranchExists,
@@ -747,7 +758,11 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         },
       })
     ),
-    runGhCommand: () => Promise.resolve(""),
+    // Issue #1774: every PR pass re-reads live PR state before its first
+    // write. A mock fleet's PRs are open, so the default answers that one
+    // read; a test that wants a closed PR overrides `runGhCommand` itself.
+    runGhCommand: (args: string[]) =>
+      isPrLiveStateRead(args) ? Promise.resolve("OPEN") : Promise.resolve(""),
     ensureLabelExists: mockFn<GitHubDeps["ensureLabelExists"]>(() =>
       Promise.resolve({ ok: true, value: undefined })
     ),
@@ -846,6 +861,11 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     syncFeatureBranchWithDefault: mockFn<
       GitDeps["syncFeatureBranchWithDefault"]
     >(() => Promise.resolve({ ok: true, value: "synced" })),
+    // Issue #1780: a mocked run's milestone branch merges cleanly, so the
+    // pre-cut sync is a no-op unless the test says otherwise.
+    syncMilestoneBranchWithDefault: mockFn<
+      GitDeps["syncMilestoneBranchWithDefault"]
+    >(() => Promise.resolve({ ok: true, value: { message: "synced" } })),
     recoverFromPushRejection: mockFn<GitDeps["recoverFromPushRejection"]>(() =>
       Promise.resolve({ ok: true, value: "recovered" })
     ),

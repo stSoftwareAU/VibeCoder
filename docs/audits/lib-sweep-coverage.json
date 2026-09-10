@@ -172,6 +172,7 @@
         "worker/deno/lib/backlog_fetch.ts",
         "worker/deno/lib/batch_api.ts",
         "worker/deno/lib/blocking_pr_stall_detector.ts",
+        "worker/deno/lib/both_inserted_conflict_rule.ts",
         "worker/deno/lib/branch_push_policy.ts",
         "worker/deno/lib/bulk_triage.ts",
         "worker/deno/lib/bump_age_audit.ts",
@@ -264,18 +265,20 @@
         "worker/deno/lib/merge_conflict_stall_watchdog.ts",
         "worker/deno/lib/merge_landing.ts",
         "worker/deno/lib/merged_sweep_watermark.ts",
-        "worker/deno/lib/milestone_activity_gate.ts",
         "worker/deno/lib/milestone_branch_self_heal.ts",
         "worker/deno/lib/milestone_branch_sync.ts",
         "worker/deno/lib/milestone_children_gate.ts",
         "worker/deno/lib/milestone_completion.ts",
+        "worker/deno/lib/milestone_conflict_agent_binding.ts",
         "worker/deno/lib/milestone_conflict_dedup.ts",
         "worker/deno/lib/milestone_conflict_git.ts",
+        "worker/deno/lib/milestone_conflict_ladder.ts",
         "worker/deno/lib/milestone_conflict_triage.ts",
         "worker/deno/lib/milestone_escalation_target.ts",
         "worker/deno/lib/milestone_health.ts",
         "worker/deno/lib/milestone_merge_gate.ts",
         "worker/deno/lib/milestone_open_children.ts",
+        "worker/deno/lib/milestone_presync.ts",
         "worker/deno/lib/milestone_resolution_gate.ts",
         "worker/deno/lib/milestone_ruleset_check.ts",
         "worker/deno/lib/milestone_sync_conflict.ts",
@@ -1192,6 +1195,66 @@
       "paths": [
         "worker/deno/lib/changed_workflow_gate.ts"
       ]
+    },
+    {
+      "issue": 1767,
+      "chunk": "12q",
+      "title": "the shared merge-conflict agent",
+      "ledger": "docs/audits/security-sweep-1767-merge-conflict-agent.md",
+      "definition": "modules added to lib/ after 12a-12p recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/merge_conflict_agent.ts"
+      ],
+      "sweptAt": "176af2fb8ecb9c8f438bdd38bd226f0dc2711d25"
+    },
+    {
+      "issue": 1770,
+      "chunk": "12r",
+      "title": "the milestone roll-back marker",
+      "ledger": "docs/audits/security-sweep-1770-milestone-rollback-marker.md",
+      "definition": "modules added to lib/ after 12a-12q recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_rollback_marker.ts"
+      ],
+      "sweptAt": "05f72ab8a77db1980fb3dea8a92792de9f8b4863"
+    },
+    {
+      "issue": 1771,
+      "chunk": "12s",
+      "title": "the milestone roll-back",
+      "ledger": "docs/audits/security-sweep-1771-milestone-rollback.md",
+      "definition": "modules added to lib/ after 12a-12r recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_rollback.ts"
+      ],
+      "sweptAt": "0556572a9b4b8e750a1540b2203e4bf693601e5b"
+    },
+    {
+      "issue": 1774,
+      "chunk": "12t",
+      "title": "the claim-point PR state read",
+      "ledger": "docs/audits/security-sweep-1774-pr-live-state.md",
+      "definition": "modules added to lib/ after 12a-12s recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/pr_live_state.ts"
+      ],
+      "sweptAt": "04a62ac5cbf76201450a9712549d3ad3e8707a6d"
+    },
+    {
+      "issue": 1776,
+      "chunk": "12u",
+      "title": "the milestone-sync cadence tip",
+      "ledger": "docs/audits/security-sweep-1776-milestone-default-tip.md",
+      "definition": "modules added to lib/ after 12a-12t recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_default_tip.ts"
+      ],
+      "sweptAt": "23e899b98daa8613993a16ba10f5b7e2abc28d61"
     }
   ],
   "roots": [

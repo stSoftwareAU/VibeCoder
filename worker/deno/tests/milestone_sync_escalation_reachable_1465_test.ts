@@ -90,8 +90,6 @@ function gateFailingDeps(
         }),
       }),
     log: options.log ?? (() => undefined),
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
     streakPath,
   };
 }

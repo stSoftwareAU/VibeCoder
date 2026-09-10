@@ -9,7 +9,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import { cleanWorkingTree } from "./ignored_path_clean.ts";
 import { spawnGh } from "./gh_spawn.ts";
@@ -37,9 +37,16 @@ import type { MilestoneSyncOutcome } from "./milestone_sync_conflict.ts";
 import {
   analyseConflictedFile,
   buildResolutionCommitMessage,
+  describeDecisionRung,
   MilestoneConflictEscalation,
   planConflictResolution,
 } from "./milestone_conflict_triage.ts";
+import {
+  climbConflictLadder,
+  hasConflictMarkers,
+  listUnmergedPaths,
+  type MilestoneConflictAgentFn,
+} from "./milestone_conflict_ladder.ts";
 import {
   applyConflictPlan,
   readConflictedSides,
@@ -386,19 +393,6 @@ async function gateThenPushMilestoneBranch(
   return { ok: true, value: `${gateNote}${pushNote}` };
 }
 
-/** Paths git currently reports as conflicted; empty when it reports none. */
-async function listConflictedFiles(
-  options: GitCommandOptions,
-): Promise<string[]> {
-  const result = await runGitCommand(
-    ["diff", "--name-only", "--diff-filter=U"],
-    options,
-  );
-  return result.ok
-    ? result.value.stdout.trim().split("\n").filter(Boolean)
-    : [];
-}
-
 /** Resolve a ref to its commit SHA; empty string when it cannot be read. */
 async function readRef(
   ref: string,
@@ -420,10 +414,15 @@ async function readRef(
  * conflict — the same fix landed twice, or one side keeps every line of the
  * other — the decision is applied, recorded on the merge commit, verified
  * against the repository's own check, manifest check and unit suite, and only
- * then pushed. Where no rule can decide it, the merge is aborted and the
- * refusal carries both sides prepared for a human. Either way the conflict
- * travels back with the outcome (Issue #1558): the files that collided and
- * the commit each side stood at.
+ * then pushed.
+ *
+ * What the triage cannot decide climbs the rest of the ladder the PR pass
+ * climbs (Issue #1777): the deterministic dependency rules, then the
+ * resolution agent, each over the paths still left. Only a file every rung
+ * leaves undecided aborts the merge, and the refusal then carries both sides
+ * prepared for a human, naming the rung that failed. Either way the conflict
+ * travels back with the outcome (Issue #1558): the files that collided, the
+ * commit each side stood at, and the rung that settled each file.
  *
  * @param milestoneBranch - The milestone branch name
  * @param defaultBranch - The default branch to sync from
@@ -457,6 +456,15 @@ export async function syncMilestoneBranchWithDefault(
   resolutionGate: MergeGateFn = mergeGate === checkMergedTree
     ? verifyResolvedTree
     : mergeGate,
+  /**
+   * The resolution agent, the ladder's last rung before a human
+   * (Issue #1777). Injected so a test needs no model, and so a caller that
+   * cannot run one simply stops after the dependency rules rather than
+   * pretending the conflict was decided.
+   */
+  agentFn?: MilestoneConflictAgentFn,
+  /** Logger for the ladder's diagnostics; absent logs nothing. */
+  logger?: Logger,
 ): Promise<Result<MilestoneSyncOutcome>> {
   // Refuse an option-injecting ref before any git runs (Issue #12). The
   // default branch used to be repo-derived (setupRepo read it from
@@ -691,7 +699,11 @@ export async function syncMilestoneBranchWithDefault(
   // — once the merge is aborted git no longer holds them, and a conflict
   // nobody can describe is a conflict nobody reconciles (Issues #1558,
   // #1559).
-  const conflictedFiles = await listConflictedFiles(options);
+  // A listing git could not produce reads as "no conflicted files", which the
+  // branch below reports as the non-conflict failure it is, quoting git's own
+  // merge stderr — so the failure is diagnosed there rather than swallowed.
+  const listed = await listUnmergedPaths(options);
+  const conflictedFiles = listed.ok ? listed.value : [];
   const defaultSha = await readRef(defaultBranch, options);
 
   if (conflictedFiles.length === 0) {
@@ -747,14 +759,35 @@ export async function syncMilestoneBranchWithDefault(
   for (const file of sides) {
     const decision = decided.get(file.path);
     if (decision?.action !== "union") continue;
-    const failure = await unionMergeConflictedFile(file, options);
+    // An append-only ledger reads the default branch's entry first (Issue
+    // #1768); a test-file union keeps the branch's own cases first as before.
+    const failure = await unionMergeConflictedFile(
+      file,
+      options,
+      decision.case === "both-inserted" ? "default-first" : "milestone-first",
+    );
     if (failure) {
       decision.action = "escalate";
       decision.reason = `${decision.reason} — and ${failure}`;
     }
   }
-  const resolved = plan.decisions.filter((d) => d.action !== "escalate");
-  const escalations = plan.decisions.filter((d) => d.action === "escalate");
+  // The ladder (Issue #1777): what the triage could not decide goes to the
+  // deterministic dependency rules, and what those defer goes to the
+  // resolution agent — the same two rungs the PR pass climbs, over the same
+  // clone. Only a file every rung leaves undecided reaches a human.
+  const triaged = plan.decisions.filter((d) => d.action !== "escalate");
+  const ladder = await climbConflictLadder({
+    escalations: plan.decisions.filter((d) => d.action === "escalate"),
+    options,
+    milestoneBranch,
+    defaultBranch,
+    agentFn,
+    logger,
+  });
+  const resolved = [...triaged, ...ladder.resolved];
+  const escalations = ladder.escalations;
+  /** Every settled file by path, carrying the rung that settled it. */
+  const settled = new Map(resolved.map((d) => [d.path, d]));
 
   // Case 3 (Issue #1559): no automatic rule can choose between the two sides,
   // so nothing is pushed and the branch is left exactly as it was. The
@@ -774,8 +807,9 @@ export async function syncMilestoneBranchWithDefault(
       error: new MilestoneConflictEscalation(
         `Refusing to resolve the merge of '${defaultBranch}' into ` +
           `'${milestoneBranch}': ${escalations.length} of ` +
-          `${conflictedFiles.length} conflicted file(s) need a human ` +
-          `(Issue #1559) — ${
+          `${conflictedFiles.length} conflicted file(s) need a human — ` +
+          `every rung of the ladder left them undecided (Issues #1559, ` +
+          `#1777) — ${
             escalations.map((d) => `${d.path}: ${d.reason}`).join("; ")
           }`,
         analyses,
@@ -797,6 +831,58 @@ export async function syncMilestoneBranchWithDefault(
   if (!applied.ok) {
     await runGitCommand(["merge", "--abort"], options);
     return applied;
+  }
+
+  // The tree must be fully resolved — by the triage, the rules, the agent or
+  // all three (Issue #1777). A path still unmerged, or a file still carrying
+  // conflict markers, is a half-resolution: it compiles nowhere and must
+  // never be committed as a merge. Both guards run over every conflicted
+  // path, so a rung that reported success while leaving a mess is caught
+  // here rather than pushed.
+  const unresolved = await listUnmergedPaths(options);
+  if (!unresolved.ok) {
+    await runGitCommand(["merge", "--abort"], options);
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to commit the resolution of '${defaultBranch}' into ` +
+          `'${milestoneBranch}': ${unresolved.error.message} (Issue #1777)`,
+      ),
+    };
+  }
+  if (unresolved.value.length > 0) {
+    await runGitCommand(["merge", "--abort"], options);
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to commit the resolution of '${defaultBranch}' into ` +
+          `'${milestoneBranch}': ${unresolved.value.length} path(s) are ` +
+          `still ` +
+          `unmerged (Issue #1777): ${unresolved.value.join(", ")}`,
+      ),
+    };
+  }
+  const markers = await hasConflictMarkers(conflictedFiles, options);
+  if (!markers.ok) {
+    await runGitCommand(["merge", "--abort"], options);
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to commit the resolution of '${defaultBranch}' into ` +
+          `'${milestoneBranch}': ${markers.error.message} (Issue #1777)`,
+      ),
+    };
+  }
+  if (markers.value) {
+    await runGitCommand(["merge", "--abort"], options);
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to commit the resolution of '${defaultBranch}' into ` +
+          `'${milestoneBranch}': the working tree still contains conflict ` +
+          `markers (Issue #1777)`,
+      ),
+    };
   }
 
   const commitResult = await runGitCommand(
@@ -858,10 +944,13 @@ export async function syncMilestoneBranchWithDefault(
       ok: false,
       error: new MilestoneConflictEscalation(
         gatedResolved.error.message,
+        // The rung that actually settled each file, not the triage's
+        // pre-ladder verdict on it: a file the rules or the agent decided
+        // would otherwise be presented as one nothing could decide.
         sides.map((side) =>
           analyseConflictedFile(
             side,
-            decided.get(side.path)?.reason ?? "resolved automatically",
+            settled.get(side.path)?.reason ?? "resolved automatically",
           )
         ),
         resolved,
@@ -872,12 +961,15 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
+  // Each file names the rung that settled it (Issue #1777), so the log line
+  // says which of triage, rules or agent did the work.
   const summary = resolved
     .map((d) =>
-      `${d.path} (${d.case}, ${
-        d.action === "union"
-          ? "kept both sides"
-          : `took ${d.action === "ours" ? milestoneBranch : defaultBranch}`
+      `${d.path} (${
+        describeDecisionRung(d, {
+          ours: milestoneBranch,
+          theirs: defaultBranch,
+        })
       })`
     )
     .join(", ");
@@ -885,7 +977,7 @@ export async function syncMilestoneBranchWithDefault(
     ok: true,
     value: {
       message:
-        `${selfHealNote}${gatedResolved.value}Issue #1559: resolved ${resolved.length} conflict(s) automatically — ${summary}`,
+        `${selfHealNote}${gatedResolved.value}Issues #1559, #1777: resolved ${resolved.length} conflict(s) automatically — ${summary}`,
       conflict: {
         files: conflictedFiles,
         milestoneSha: preMergeSha,

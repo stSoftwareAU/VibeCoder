@@ -302,6 +302,22 @@ function makeState(overrides?: Partial<FakeRepoState>): FakeRepoState {
   };
 }
 
+/**
+ * Marker pairs for `count` attempts that each opened and concluded as failed
+ * — the shape that spends the budget (Issue #395), sized from the budget
+ * itself so the fixtures track {@link DEFAULT_MAX_CONFLICT_ATTEMPTS}
+ * (Issue #1766).
+ */
+function concludedFailures(
+  count: number,
+  createdAt: string,
+): { body: string; created_at: string }[] {
+  return Array.from({ length: count }, (_, i) => i + 1).flatMap((n) => [
+    { body: `${CONFLICT_ATTEMPT_MARKER} n="${n}" -->`, created_at: createdAt },
+    { body: `${CONFLICT_FAILED_MARKER} n="${n}" -->`, created_at: createdAt },
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Attempt history
 // ---------------------------------------------------------------------------
@@ -615,12 +631,7 @@ Deno.test("findConflictingPr - refuses a PR that has spent its attempt budget", 
     // a human's — the escalation the last attempt posted is in the thread.
     labels: { 48: ["needs-human"] },
     comments: {
-      48: [
-        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
-        { body: `${CONFLICT_FAILED_MARKER} n="1" -->`, created_at: old },
-        { body: `${CONFLICT_ATTEMPT_MARKER} n="2" -->`, created_at: old },
-        { body: `${CONFLICT_FAILED_MARKER} n="2" -->`, created_at: old },
-      ],
+      48: concludedFailures(DEFAULT_MAX_CONFLICT_ATTEMPTS, old),
     },
   });
   const fake = makeFakeGh(state);
@@ -632,6 +643,35 @@ Deno.test("findConflictingPr - refuses a PR that has spent its attempt budget", 
   assertEquals(fake.commentsPosted.length, 0);
 });
 
+Deno.test("findConflictingPr - two concluded failures still buy a third attempt (Issue #1766)", async () => {
+  // The budget went from two to three, so the PR the old ladder had already
+  // given up on is handed back for one more judged attempt.
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const old = new Date(now - 48 * 3600_000).toISOString();
+  const state = makeState({
+    comments: {
+      48: concludedFailures(DEFAULT_MAX_CONFLICT_ATTEMPTS - 1, old),
+    },
+  });
+  const fake = makeFakeGh(state);
+
+  const result = await findConflictingPr(makeOptions(fake));
+
+  assert(result.ok);
+  assertEquals(result.value.selected?.prNumber, 48);
+  assertEquals(
+    result.value.selected?.attemptCount,
+    DEFAULT_MAX_CONFLICT_ATTEMPTS - 1,
+  );
+  assertEquals(
+    fake.labelsAdded.some((l) =>
+      l.prNumber === 48 && l.label === "needs-human"
+    ),
+    false,
+    "a PR with budget left is never handed to a human",
+  );
+});
+
 Deno.test("findConflictingPr - a spent budget with no needs-human is escalated, not stalled", async () => {
   // Issue #395: the last attempt escalates from the processor, so a failure
   // there (or a run cut short between the conclusion and the escalation)
@@ -641,12 +681,7 @@ Deno.test("findConflictingPr - a spent budget with no needs-human is escalated, 
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
     comments: {
-      48: [
-        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: old },
-        { body: `${CONFLICT_FAILED_MARKER} n="1" -->`, created_at: old },
-        { body: `${CONFLICT_ATTEMPT_MARKER} n="2" -->`, created_at: old },
-        { body: `${CONFLICT_FAILED_MARKER} n="2" -->`, created_at: old },
-      ],
+      48: concludedFailures(DEFAULT_MAX_CONFLICT_ATTEMPTS, old),
     },
   });
   const fake = makeFakeGh(state);
@@ -663,7 +698,7 @@ Deno.test("findConflictingPr - a spent budget with no needs-human is escalated, 
   );
 
   const escalation = fake.commentsPosted.at(-1)?.body ?? "";
-  assertStringIncludes(escalation, "2");
+  assertStringIncludes(escalation, String(DEFAULT_MAX_CONFLICT_ATTEMPTS));
   assertStringIncludes(escalation, "**Next step:**");
 });
 
@@ -1009,31 +1044,20 @@ Deno.test("findConflictingPr - the cooldown record carries the milliseconds stil
 Deno.test("findConflictingPr - the budget-spent record carries the attempts and the cap", async () => {
   const fake = makeFakeGh(makeState({
     comments: {
-      48: [
-        {
-          body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-          created_at: "2026-08-19T11:00:00Z",
-        },
-        {
-          body: `${CONFLICT_FAILED_MARKER} n="1" -->`,
-          created_at: "2026-08-19T11:30:00Z",
-        },
-        {
-          body: `${CONFLICT_ATTEMPT_MARKER} n="2" -->`,
-          created_at: "2026-08-19T15:00:00Z",
-        },
-        {
-          body: `${CONFLICT_FAILED_MARKER} n="2" -->`,
-          created_at: "2026-08-19T15:30:00Z",
-        },
-      ],
+      48: concludedFailures(
+        DEFAULT_MAX_CONFLICT_ATTEMPTS,
+        "2026-08-19T11:00:00Z",
+      ),
     },
   }));
 
   const { log } = await scanWith(fake);
 
   assertEquals(reasonFor(log, 48), "budget-spent");
-  assertEquals(recordFor(log, 48).context?.attemptsSpent, 2);
+  assertEquals(
+    recordFor(log, 48).context?.attemptsSpent,
+    DEFAULT_MAX_CONFLICT_ATTEMPTS,
+  );
   assertEquals(
     recordFor(log, 48).context?.maxAttempts,
     DEFAULT_MAX_CONFLICT_ATTEMPTS,
@@ -1206,12 +1230,15 @@ Deno.test("findConflictingPr - the cursor moves the repository too", async () =>
 // Abandon-and-restart — the last automatic rung (Issue #1115)
 // ---------------------------------------------------------------------------
 
-/** A PR whose two concluded attempts have both failed. */
+/** A PR whose every concluded attempt has failed — the budget is spent. */
 function exhaustedComments() {
   const old = new Date(
     Date.parse("2026-08-20T12:00:00Z") - 48 * 3600_000,
   ).toISOString();
-  return [1, 2].flatMap((n) => [
+  return Array.from(
+    { length: DEFAULT_MAX_CONFLICT_ATTEMPTS },
+    (_, i) => i + 1,
+  ).flatMap((n) => [
     { body: `${CONFLICT_ATTEMPT_MARKER} n="${n}" -->`, created_at: old },
     {
       body: [
@@ -1264,7 +1291,10 @@ Deno.test("findConflictingPr - an exhausted PR with a known issue is abandoned, 
 
   assertEquals(reasonFor(log, 48), "abandoned-restarted");
   assertEquals(recordFor(log, 48).context?.issueNumber, 16);
-  assertEquals(recordFor(log, 48).context?.attemptsSpent, 2);
+  assertEquals(
+    recordFor(log, 48).context?.attemptsSpent,
+    DEFAULT_MAX_CONFLICT_ATTEMPTS,
+  );
 
   // Closed, not merged, and the branch is left where it is.
   const closes = fake.calls.filter((c) => c[0] === "pr" && c[1] === "close");
@@ -1454,6 +1484,29 @@ Deno.test("findConflictingPr - planted failure markers cannot close a PR", async
   assertEquals(reasonFor(log, 48), "attempted");
   assertEquals(result.value.selected?.prNumber, 48);
   assertEquals(result.value.selected?.attemptCount, 0);
+});
+
+Deno.test("findConflictingPr - an abandon a human must re-queue names the label it awaits (Issue #1773)", async () => {
+  // The PR is closed either way; the operator-facing difference is that this
+  // issue is reopened at `needs-human` and needs one label re-applied, so the
+  // decision record has to carry that label rather than read as re-queued.
+  const fake = makeFakeGh(exhaustedState());
+
+  const { result, log } = await scanWith(fake, {
+    abandonRestart: () =>
+      Promise.resolve({
+        outcome: "abandoned-unlabelled",
+        issueNumber: 16,
+        workLabel: "work-on",
+      }),
+  });
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 48), "abandoned-restarted");
+  assertEquals(recordFor(log, 48).context?.issueNumber, 16);
+  assertEquals(recordFor(log, 48).context?.awaitingLabel, "work-on");
+  // The rung owns the escalation on the issue; the PR is not labelled here.
+  assertEquals(escalatedToHuman(fake, 48), false);
 });
 
 Deno.test("findConflictingPr - the fleet's own failure markers still spend the budget", async () => {

@@ -21,6 +21,11 @@ import type { Logger, Result } from "../types.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
 import {
+  findRollbackAfterMerge,
+  type RollbackRecord,
+  rollbackSkipReason,
+} from "./milestone_rollback_marker.ts";
+import {
   type CommentType,
   fetchCommentReactors,
   type PrCommentToFix,
@@ -77,6 +82,12 @@ export interface PrEntry {
    * (Issue #1109).
    */
   author?: { login?: string } | null;
+  /**
+   * Merge time, when the listing asked for it — {@link listMergedPrs} does,
+   * so the roll-back check can tell a marker posted after the merge from one
+   * posted before it (Issue #1770).
+   */
+  mergedAt?: string | null;
 }
 
 /** Comment entry from the GitHub API. */
@@ -196,7 +207,7 @@ export interface AutoMergeOptions extends PrScanOptions {
     repo: string,
     prNumber: number,
     headRefName?: string,
-  ) => Promise<{ result: string; message: string }>;
+  ) => Promise<{ result: string; message: string; deferral?: string }>;
   /**
    * Function to attempt direct merge as fallback. Returns the outcome so
    * the scan can act on it loudly (Issue #3584) — a swallowed failure is
@@ -248,6 +259,13 @@ export interface CloseIssuesOptions extends PrScanOptions {
    * subsequent reads in the same iteration see fresh state.
    */
   cache?: IssueCache;
+  /**
+   * Fleet logins whose milestone roll-back marker counts (Issue #1770). A
+   * child reopened because a roll-back reverted its merged PR must not be
+   * closed again — its PR stays `merged` for ever. Empty or omitted means
+   * no marker can be attributed, so none is trusted and the close proceeds.
+   */
+  fleetAuthors?: string[];
 }
 
 /** Result of an auto-merge scan. */
@@ -457,7 +475,7 @@ export async function listMergedPrs(
       "--author",
       githubUser,
       "--json",
-      "number,title",
+      "number,title,mergedAt",
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -1477,6 +1495,13 @@ async function attemptMerge(
       return { kind: "milestone_children_open" };
     }
 
+    // Issue #1779: a child whose milestone base is behind the default branch
+    // is left exactly as it is — no comment, no label. The every-cycle
+    // milestone sync clears it, so this is a deferral, never an escalation.
+    if (result.deferral === "milestone-behind") {
+      return { kind: "milestone_base_behind" };
+    }
+
     if (result.result === "not_allowed" && directMergeFn) {
       // Issue #553: say WHY. GitHub's refusal was dropped here, so a PR that
       // merged directly looked like one where auto-merge had "randomly" not
@@ -1704,6 +1729,40 @@ export async function closeIssuesForMergedPrs(
             );
             continue;
           }
+          // Issue #1770: a milestone roll-back reverted this PR, so the
+          // child was reopened and re-queued while its PR stayed `merged`.
+          let rollback: RollbackRecord | undefined;
+          try {
+            rollback = await findRollbackAfterMerge(
+              repo,
+              Number(issueNumber),
+              pr.mergedAt,
+              options.fleetAuthors ?? [],
+              ghCommandFn,
+            );
+          } catch (err) {
+            // An unreadable thread cannot prove the issue was NOT rolled
+            // back. Leave it open and name the cause — the outer catch
+            // would report it as an indistinguishable processing failure.
+            logger.warn(
+              `Not closing issue #${issueNumber}: could not read the comment ` +
+                `thread: ${
+                  err instanceof Error ? err.message : String(err)
+                } (Issue #1770)`,
+              { repo, issueNumber, prNumber },
+            );
+            continue;
+          }
+          if (rollback) {
+            logger.info(
+              `Not closing issue #${issueNumber}: ${
+                rollbackSkipReason(rollback)
+              } (Issue #1770)`,
+              { repo, issueNumber, prNumber },
+            );
+            continue;
+          }
+
           logger.info("Closing issue for merged PR", {
             repo,
             issueNumber,
