@@ -85,6 +85,13 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
   "cooldown": "self",
   "cross-worker-cooldown": "self",
   /**
+   * Issue #1780: the milestone branch's conflict ledger paces the next merge
+   * attempt, and the deferral expires on its own — the branch is then
+   * re-attempted by the next child run or by the periodic sweep. Nobody has to
+   * act, so it serialises the repo like the other waits do.
+   */
+  "milestone-behind": "self",
+  /**
    * Issue #3151: a **merged** fleet PR blocks for ever. Only a trusted
    * re-label dated after the merge lifts it (or the housekeeping sweep closes
    * the issue outright, Issue #504). This is the gate whose subtraction this

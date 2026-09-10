@@ -23,6 +23,7 @@ import type {
   GitHubDeps,
   PrDeps,
 } from "../lib/issue_worker_wiring.ts";
+import { openPrGh } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -71,7 +72,7 @@ function makeDeps(
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
   return createMockDeps({
     claude: mockClaude,

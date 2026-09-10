@@ -7,20 +7,25 @@
  * whole thing to a human asks a person to choose between two changes they did
  * not write, days after both were written.
  *
- * Most of what that person does is mechanical, so this module does it. Three
- * patterns have been seen, and they get three answers:
+ * Most of what that person does is mechanical, so this module does it. Four
+ * patterns have been seen, and they get four answers:
  *
  *   1. **The same fix landed twice** (#1270, #1264) — both sides cite the same
  *      issue. Keep the side whose tests are a superset and say what was
  *      dropped.
  *   2. **One side subsumes the other** — every line of the smaller side
  *      survives in the larger. Take the larger; nothing is lost.
- *   3. **Two designs for the same problem** (`IndirectSpawnRules` versus
- *      `scanContentForVariableBinarySpawn`) — neither contains the other, so a
- *      human chooses. The expensive preparation is still done here: each
+ *   3. **Both sides only appended** (`CHANGELOG.md`, release notes, the audit
+ *      ledgers) — every line of the merge base survives on both sides, so
+ *      nothing was deleted and both additions are kept, the default branch's
+ *      first (Issue #1768).
+ *   4. **Two designs for the same problem** (`IndirectSpawnRules` versus
+ *      `scanContentForVariableBinarySpawn`) — neither contains the other and
+ *      one of them changed what the base had, so a human chooses. Rival
+ *      designs that are *both* purely additive are case 3's union instead. The expensive preparation is still done here: each
  *      side's exports, each side's test names, and the difference between them.
  *
- * One rule outranks all three: **no resolution may reduce test coverage**. A
+ * One rule outranks all four: **no resolution may reduce test coverage**. A
  * conflicted test file resolves only when one side is a genuine union of both
  * — every case *and* every line of the other side survives in it — otherwise
  * it escalates. Equal case names are not enough: an assertion changed inside a
@@ -44,6 +49,8 @@ export type ConflictCase =
   | "superset"
   /** A test file where one side carries every case of the other. */
   | "test-union"
+  /** Both sides only appended, and nothing in the merge base was removed. */
+  | "both-inserted"
   /** The default branch deleted it; the deletion stands (Issue #1048). */
   | "incoming-delete"
   /** Both sides changed the same code and neither contains the other — case 3. */
@@ -59,11 +66,34 @@ export interface ConflictedFile {
   ours: string | null;
   /** The default branch's content; null when that side deleted it. */
   theirs: string | null;
+  /**
+   * The merge base's content (index stage 1); null when there is none — an
+   * add/add conflict — and undefined when the caller did not read it.
+   *
+   * Read, never inferred: "the base could not be read" must not become "the
+   * base was empty", which would turn a deletion into a union (Issue #1768).
+   */
+  base?: string | null;
   /** Issues the milestone side's commits touching this path close. */
   oursFixes: number[];
   /** Issues the default side's commits touching this path close. */
   theirsFixes: number[];
 }
+
+/**
+ * Which rung of the ladder settled a conflicted path (Issue #1777).
+ *
+ * The sync tries the deterministic triage, then the dependency rules, then
+ * the resolution agent. Absent means `triage` — the decisions already in the
+ * wild carry no rung and were all the triage's.
+ */
+export type ResolutionRung =
+  /** Decided by the deterministic triage in this module. */
+  | "triage"
+  /** Decided by the deterministic dependency rules. */
+  | "rule"
+  /** Decided by the merge-conflict resolution agent. */
+  | "agent";
 
 /** What the triage decided about one conflicted path. */
 export interface FileDecision {
@@ -76,6 +106,8 @@ export interface FileDecision {
   action: ConflictAction;
   /** One line, recorded on the merge commit or in the escalation. */
   reason: string;
+  /** The rung that settled it; absent means the triage did (Issue #1777). */
+  rung?: ResolutionRung;
 }
 
 /** What a decision does to a conflicted path. */
@@ -86,6 +118,11 @@ export type ConflictAction =
   | "theirs"
   /** Keep both sides' hunks, so no case on either side is lost. */
   | "union"
+  /**
+   * A rung below the human already wrote and staged the resolution, so
+   * nothing further is applied to the index (Issue #1777).
+   */
+  | "resolved"
   /** No rule decides it — a human does. */
   | "escalate";
 
@@ -420,12 +457,46 @@ function classifySourceFile(
     };
   }
 
+  // Append-only ledgers — `CHANGELOG.md`, release notes, the audit ledgers —
+  // conflict on every merge and are never a judgement: both sides appended and
+  // neither removed anything, so both entries are kept (Issue #1768). Decided
+  // last of the resolvable rules, so a duplicate fix is still a duplicate fix
+  // rather than an implementation kept twice.
+  if (isBothInserted(file.base, ours, theirs)) {
+    return {
+      path: file.path,
+      case: "both-inserted",
+      action: "union",
+      reason:
+        `both sides only added to this file — every line of the merge base ` +
+        `survives on both sides — so both additions are kept by a union ` +
+        `merge, the default branch's first`,
+    };
+  }
+
   return escalate(
     file.path,
     `both sides changed the same code and neither contains the other — two ` +
       `designs for the same problem, which only a human can choose between`,
     "rival-designs",
   );
+}
+
+/**
+ * Whether both sides only inserted: every line of the merge base survives on
+ * each side.
+ *
+ * A base that was not read (`undefined`) or does not exist (`null`, an add/add
+ * conflict) decides nothing — the rule needs the base to prove a deletion did
+ * not happen, and an unread base must never read as an empty one.
+ */
+export function isBothInserted(
+  base: string | null | undefined,
+  ours: string,
+  theirs: string,
+): boolean {
+  if (typeof base !== "string") return false;
+  return isLineSuperset(ours, base) && isLineSuperset(theirs, base);
 }
 
 /**
@@ -622,6 +693,31 @@ function bullets(items: string[], empty: string): string {
 }
 
 /**
+ * Name the rung that settled a decision, for every surface that reports it.
+ *
+ * One wording, three readers (Issue #1777): the merge commit, the sync's log
+ * line and the report comment all say `triage: <case>`, `rule: <reason>` or
+ * `agent`, so a file's resolution reads the same wherever it is found.
+ *
+ * @param d - The decision to describe
+ * @param sides - How to name each side, as that surface writes branch names
+ * @returns One line, without a leading bullet
+ */
+export function describeDecisionRung(
+  d: FileDecision,
+  sides: { ours: string; theirs: string },
+): string {
+  if (d.rung === "rule") return `rule: ${d.reason}`;
+  if (d.rung === "agent") return "agent";
+  const how = d.action === "union"
+    ? "kept both sides' hunks"
+    : d.action === "resolved"
+    ? "the resolution was already in the tree"
+    : `took the ${d.action === "ours" ? sides.ours : sides.theirs} side`;
+  return `triage: ${d.case}, ${how}: ${d.reason}`;
+}
+
+/**
  * The merge commit's message for a conflict the worker resolved itself.
  *
  * Every decision is named with its reasoning, because the commit is where
@@ -634,13 +730,12 @@ export function buildResolutionCommitMessage(o: {
   plan: ConflictPlan;
 }): string {
   const lines = o.plan.resolved.map((d) =>
-    `- \`${d.path}\` — ${d.case}, ${
-      d.action === "union"
-        ? "kept both sides' hunks"
-        : `took the ${
-          d.action === "ours" ? "milestone branch's" : `'${o.defaultBranch}'`
-        } side`
-    }: ${d.reason}`
+    `- \`${d.path}\` — ${
+      describeDecisionRung(d, {
+        ours: "milestone branch's",
+        theirs: `'${o.defaultBranch}'`,
+      })
+    }`
   );
   return `Merge '${o.defaultBranch}' into '${o.milestoneBranch}' — ${o.plan.resolved.length} conflict(s) resolved automatically\n\n` +
     `${lines.join("\n")}\n\n` +
