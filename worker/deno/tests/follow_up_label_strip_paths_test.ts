@@ -34,6 +34,7 @@ import type {
   Logger,
   WorkerConfig,
 } from "../types.ts";
+import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -119,6 +120,7 @@ function makeGithubDeps(capture: StripCapture): Partial<GitHubDeps> {
   return {
     createClient: (_logger: Logger) => makeStripClient(capture),
     runGhCommand: (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
       if (args[0] === "label" && args[1] === "list") {
         return Promise.resolve("[]");
       }

@@ -49,12 +49,16 @@ type Topology = Record<string, string[]>;
 
 /** The live shape when the bug was found: three ahead, nothing behind. */
 const CURRENT_TOPOLOGY: Topology = {
+  // Issue #1779: the synced-base gate compares the milestone branch with the
+  // default branch, so the default branch is part of the topology now.
+  [DEFAULT_BRANCH]: ["c1", "c2", "c3", "c4"],
   [MILESTONE_BASE]: ["c1", "c2", "c3", "c4"],
   [PR_HEAD]: ["c1", "c2", "c3", "c4", "f1", "f2", "f3"],
 };
 
 /** A genuinely stale branch: two ahead and four behind its base. */
 const STALE_TOPOLOGY: Topology = {
+  [DEFAULT_BRANCH]: ["c1", "c2", "c3", "c4"],
   [MILESTONE_BASE]: ["c1", "c2", "c3", "c4", "b1", "b2", "b3", "b4"],
   [PR_HEAD]: ["c1", "c2", "c3", "c4", "f1", "f2"],
 };
@@ -175,6 +179,21 @@ function fakeGitHub(
 
     if (joined.includes("default_branch")) {
       return Promise.resolve(DEFAULT_BRANCH);
+    }
+
+    // Synced-base gate (Issue #1779): `repos/<repo>/compare/<base>...<head>`
+    // answered from the topology by GitHub's own rules, so an inverted
+    // comparison receives the truthfully-swapped answer here too.
+    const compareArg = args.find((a) => a.includes("/compare/"));
+    if (compareArg) {
+      const [comparisonBase, comparisonHead] = compareArg.split("/compare/")[1]!
+        .split("...");
+      const comparison = compareRefs(
+        topology,
+        comparisonBase!,
+        comparisonHead!,
+      );
+      return Promise.resolve(`${comparison.behindBy}\n`);
     }
 
     if (joined.includes("pr view")) {

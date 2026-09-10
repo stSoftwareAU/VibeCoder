@@ -177,3 +177,35 @@ Deno.test("redactSecrets - secret CLI flags are still masked after the bound (Is
     "cmd --token --verbose",
   );
 });
+
+/**
+ * Hostile input size for the emphasis strip (Issue #1727). The unbounded
+ * `[*_]+$` this replaced cost ~700 ms at 40,000 characters, so quadratic
+ * growth puts this length near two minutes — it does not overrun a budget,
+ * it does not return. The bounded strip answers in single-digit milliseconds.
+ */
+const EMPHASIS_HOSTILE_CHARS = 524_288;
+
+Deno.test("redactSecrets - a long emphasis run in a cross-line value stays linear (Issue #1727)", () => {
+  // The secret-assignment rule strips emphasis markers off a value before
+  // judging its shape. An unanchored, unbounded strip backtracked from every
+  // position in the run, and the run is attacker-controlled: it reaches this
+  // code from an issue body through the inbound ingestion chokepoint.
+  for (const fill of ["*", "_"]) {
+    const hostile = `PASSWORD:\na${fill.repeat(EMPHASIS_HOSTILE_CHARS)}b`;
+    assertEquals(
+      redactSecrets(hostile),
+      `PASSWORD:\n${REDACTION_PLACEHOLDER}`,
+      `a long ${fill} run must be masked, not backtracked over`,
+    );
+  }
+});
+
+Deno.test("redactSecrets - a long fence run after a label passes through unchanged (Issue #1727)", () => {
+  // The fence and image tests are anchored at both ends, so a run of fence
+  // characters is rejected in one pass rather than scanned from every offset.
+  for (const fill of ["`", "~"]) {
+    const hostile = `PASSWORD:\n${fill.repeat(HOSTILE_CHARS)}`;
+    assertEquals(redactSecrets(hostile), hostile);
+  }
+});

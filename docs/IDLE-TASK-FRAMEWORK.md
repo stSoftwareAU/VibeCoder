@@ -134,7 +134,14 @@ Key points:
   cooldown (`issue_retry_cooldown`) then gates the retry, and a later claim runs
   the scan again. The route used to close every handled wrapper regardless of
   `ok`, so an infrastructure failure was recorded as the scan's result and
-  nothing re-raised it until the next cadence tick.
+  nothing re-raised it until the next cadence tick. Both writes — the summary
+  comment and the close, or the failure comment — are REST `gh api` calls on
+  the **core** quota (Issue #1753): the `gh issue close` / `gh issue comment`
+  subcommands are GraphQL-backed, and while the primary-quota latch is set the
+  spawn chokepoint refuses them, which left a finished wrapper open for the
+  next scan to claim and run all over again (GRQ-health#204). The finaliser
+  reports whether each write actually landed, and a close that did not is
+  logged with `wrapperStillOpen: true`.
 - **The repo is cloned on demand before a template runs** (Issue #179). A
   template walks `${workDir}/<repo>`, and nothing on the idle-task path had ever
   cloned it — a repo freshly added to `.config.json` failed every scan with
@@ -2225,6 +2232,25 @@ The context is ambient rather than an argument threaded through all nineteen
 templates — the same choke-point reasoning as the budget itself: a template
 cannot forget to pass what it never sees. It is removed in `finally`, by
 identity, so two concurrent slots each drop only their own entry.
+
+**The bound is judged before the claim, too** (Issue #1757). The post-#397
+runway floor gates an *issue* claim against the supervisor hard cap, because
+issue work may outlive the cycle; nothing gated an idle-task claim against the
+bound it would receive, so near the end of a cycle the two rules combined into
+"claim it, then give it a budget that cannot fit" — a wrapper claimed with
+60 s of cycle left was granted 60 s for a 3600 s security scan, spent them
+reading a 130 KB prompt, was killed by construction, and went through the full
+failure path with a health failure recorded against the host
+(NEAT-AI-Explore#629). The route now computes the same bound *before*
+`claimRoutedIssue` and, when it would fall below a **ten-minute floor**
+(`IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS`, the silence watchdog's window — a scan
+that cannot be given even the time in which it must show a sign of life is not
+a scan), declines the claim for this cycle with one `INFO` line naming the
+shortfall. The wrapper is untouched on GitHub and drawn by the next cycle. The
+refusal is `claimReason: "insufficient_runway"`, which `routeRunResult` records
+as a **skip** — never a failure, never a health record — like a wrapper a
+sibling host holds. A claim the floor admits is bounded exactly as the table
+above describes.
 
 ```mermaid
 sequenceDiagram

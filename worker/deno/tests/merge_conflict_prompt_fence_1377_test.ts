@@ -41,7 +41,7 @@ async function conflictPrompt(
   return unwrap(
     await buildMergeConflictPrompt({
       repo: "stSoftwareAU/VibeCoder",
-      prNumber: "4321",
+      target: { kind: "pr", prNumber: 4321 },
       baseBranch: HOSTILE_BRANCH,
       conflictedFiles: [HOSTILE_PATH],
       qualityInstructions: "Run ./quality.sh",

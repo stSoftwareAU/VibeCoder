@@ -21,6 +21,8 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   authoriseCrossRepoTarget,
+  cargoDeclaredInternalRepos,
+  cargoWorkspaceMembers,
   classifyDependencySpec,
   type CommandOutput,
   type CrossRepoFixRequest,
@@ -525,4 +527,112 @@ Deno.test("authoriseCrossRepoTarget - a malformed slug is refused before any com
   );
   assertEquals(decision.authorised, false);
   assertEquals(calls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Cargo consumers (Issue #1864)
+// ---------------------------------------------------------------------------
+
+const RUST_CONSUMER = "stSoftwareAU/NEAT-AI-Ockham";
+const CORE = "stSoftwareAU/NEAT-AI-core";
+
+const OCKHAM_ROOT = `[workspace]
+members = ["ockham"]
+resolver = "2"
+
+[profile.dev]
+debug = "line-tables-only"
+`;
+
+const OCKHAM_MEMBER = `[package]
+name = "ockham"
+version = "0.1.0"
+
+[dependencies]
+# CI checks out NEAT-AI-core beside this repo (see .github/actions/setup-rust-workspace).
+neat-core = { path = "../../NEAT-AI-core/neat-core" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+neat-fixtures = { git = "https://github.com/stSoftwareAU/NEAT-AI-Forests.git", branch = "main" }
+`;
+
+Deno.test("authoriseCrossRepoTarget #1864 - a workspace member's Cargo path dependency authorises its repo", async () => {
+  const { runner } = manifestRunner({
+    "Cargo.toml": OCKHAM_ROOT,
+    "ockham/Cargo.toml": OCKHAM_MEMBER,
+  });
+  const decision = await authoriseCrossRepoTarget(RUST_CONSUMER, CORE, runner);
+  assertEquals(decision.authorised, true);
+  if (!decision.authorised) return;
+  assertEquals(decision.via, "dependency");
+  assertEquals(decision.manifestPath, "ockham/Cargo.toml");
+});
+
+Deno.test("authoriseCrossRepoTarget #1864 - a Cargo git dependency on github.com authorises its repo", async () => {
+  const { runner } = manifestRunner({
+    "Cargo.toml": OCKHAM_ROOT,
+    "ockham/Cargo.toml": OCKHAM_MEMBER,
+  });
+  const decision = await authoriseCrossRepoTarget(
+    RUST_CONSUMER,
+    "stSoftwareAU/NEAT-AI-Forests",
+    runner,
+  );
+  assertEquals(decision.authorised, true);
+});
+
+Deno.test("authoriseCrossRepoTarget #1864 - a Rust consumer that does not declare the target is refused as undeclared, not as unreadable", async () => {
+  const { runner } = manifestRunner({
+    "Cargo.toml": OCKHAM_ROOT,
+    "ockham/Cargo.toml": OCKHAM_MEMBER,
+  });
+  const decision = await authoriseCrossRepoTarget(
+    RUST_CONSUMER,
+    "stSoftwareAU/NEAT-AI-Lamarck",
+    runner,
+  );
+  assertEquals(decision.authorised, false);
+  if (decision.authorised) return;
+  assertEquals(
+    decision.reason,
+    "stSoftwareAU/NEAT-AI-Lamarck is not a dependency stSoftwareAU/NEAT-AI-Ockham declares",
+  );
+});
+
+Deno.test("cargoDeclaredInternalRepos #1864 - only dependency tables count, and only the internal owner", () => {
+  const manifest = `[package]
+name = "x"
+path = "../../NEAT-AI-scorer/src/lib.rs"
+
+[[bin]]
+path = "../../NEAT-AI-Lamarck/main.rs"
+
+[dependencies]
+neat-core = { path = "../../NEAT-AI-core/neat-core" }
+other = { git = "https://github.com/someone-else/NEAT-AI-core" }
+local = { path = "./vendor/thing" }
+
+[target.'cfg(unix)'.dependencies]
+nix-helper = { git = "git@github.com:stSoftwareAU/GRQ-AWS.git" }
+
+[workspace.dependencies]
+shared = { path = "../GRQ-validation/shared" }
+`;
+  // `./vendor/thing` is inside this repository, so it names no other repo.
+  assertEquals(cargoDeclaredInternalRepos(manifest), [
+    "stSoftwareAU/NEAT-AI-core",
+    "stSoftwareAU/GRQ-AWS",
+    "stSoftwareAU/GRQ-validation",
+  ]);
+});
+
+Deno.test("cargoWorkspaceMembers #1864 - literal members only, never a glob or a parent path", () => {
+  assertEquals(
+    cargoWorkspaceMembers(
+      `[workspace]\nmembers = ["ockham", "crates/*", "../escape", "tools/cli/"]\n`,
+    ),
+    ["ockham", "tools/cli"],
+  );
+  assertEquals(cargoWorkspaceMembers(`[package]\nname = "solo"\n`), []);
 });

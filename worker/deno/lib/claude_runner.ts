@@ -260,14 +260,13 @@ export interface ClaudeRunResult {
   };
   /**
    * The spawn was refused before it happened because every credential in the
-   * host's pool is spent (Issue #1669, parent #1653).
-   *
-   * Terminal for this call and reported with exit code 2 beside
-   * {@link usageLimit}, which carries the soonest five-hour reset among the
-   * pool. **No child process ran**: an invocation against a closed window is
-   * a request spent to be refused. Nothing is paused — the dispatch loop
-   * moves on to the next priority, and the host keeps doing everything that
-   * does not need the agent.
+   * host's pool is spent (Issue #1669, parent #1653) — no child process ran,
+   * so nothing is paused and the dispatch loop moves on to the next
+   * priority. Carried beside {@link usageLimit}, which carries the soonest
+   * five-hour reset among the pool, so a phase can tell "this token is
+   * spent, another may serve" from "every token is spent": the execute
+   * phase switches credential on the first and parks the work on the issue
+   * branch on the second (Issue #1670).
    */
   noEligibleCredential?: boolean;
   /**

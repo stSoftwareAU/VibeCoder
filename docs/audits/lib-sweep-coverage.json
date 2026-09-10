@@ -1,13 +1,12 @@
 {
-  "root": "worker/deno/lib",
   "parent": 1209,
-  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts \u2014 a module absent from every slice is an unswept file and fails the test.",
+  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/ and worker/deno/setup/. Every non-test module under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate.",
   "slices": [
     {
       "issue": 1214,
       "chunk": "12a",
       "title": "subprocess and argv construction",
-      "ledger": "docs/audits/security-sweep-1214-subprocess-argv.md",
+      "ledger": "docs/audits/security-sweep-1610-lib-delta-12a-12c.md",
       "definition": "grep -rl \"Deno.Command\" lib/ --include='*.ts' | grep -v '_test\\.ts$'",
       "status": "swept",
       "paths": [
@@ -60,13 +59,14 @@
         "worker/deno/lib/worker_log_gzip.ts",
         "worker/deno/lib/workflow_auditor.ts",
         "worker/deno/lib/write_repo_allowlist.ts"
-      ]
+      ],
+      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
     },
     {
       "issue": 1215,
       "chunk": "12b",
       "title": "filesystem, path and temp-file handling",
-      "ledger": "docs/audits/filesystem-path-temp-sweep-1215.md",
+      "ledger": "docs/audits/security-sweep-1610-lib-delta-12a-12c.md",
       "definition": "grep -rl \"Deno.writeTextFile|Deno.writeFile|Deno.remove|Deno.mkdir|Deno.makeTempDir|Deno.symlink|Deno.open\" lib/ minus 12a",
       "status": "swept",
       "paths": [
@@ -152,13 +152,14 @@
         "worker/deno/lib/work_volume_prune.ts",
         "worker/deno/lib/work_volume_tiers.ts",
         "worker/deno/lib/worker_log_cleanup.ts"
-      ]
+      ],
+      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
     },
     {
       "issue": 1216,
       "chunk": "12c",
       "title": "untrusted GitHub-data ingestion",
-      "ledger": "docs/audits/security-sweep-1216-untrusted-github-ingestion.md",
+      "ledger": "docs/audits/security-sweep-1610-lib-delta-12a-12c.md",
       "definition": "grep -rl \"gh_spawn|runGhOrThrow|spawnGh|JSON.parse\" lib/ minus 12a and 12b",
       "status": "swept",
       "paths": [
@@ -171,6 +172,7 @@
         "worker/deno/lib/backlog_fetch.ts",
         "worker/deno/lib/batch_api.ts",
         "worker/deno/lib/blocking_pr_stall_detector.ts",
+        "worker/deno/lib/both_inserted_conflict_rule.ts",
         "worker/deno/lib/branch_push_policy.ts",
         "worker/deno/lib/bulk_triage.ts",
         "worker/deno/lib/bump_age_audit.ts",
@@ -263,19 +265,24 @@
         "worker/deno/lib/merge_conflict_stall_watchdog.ts",
         "worker/deno/lib/merge_landing.ts",
         "worker/deno/lib/merged_sweep_watermark.ts",
-        "worker/deno/lib/milestone_activity_gate.ts",
         "worker/deno/lib/milestone_branch_self_heal.ts",
         "worker/deno/lib/milestone_branch_sync.ts",
         "worker/deno/lib/milestone_children_gate.ts",
         "worker/deno/lib/milestone_completion.ts",
+        "worker/deno/lib/milestone_conflict_agent_binding.ts",
+        "worker/deno/lib/milestone_conflict_dedup.ts",
         "worker/deno/lib/milestone_conflict_git.ts",
+        "worker/deno/lib/milestone_conflict_ladder.ts",
         "worker/deno/lib/milestone_conflict_triage.ts",
+        "worker/deno/lib/milestone_escalation_target.ts",
         "worker/deno/lib/milestone_health.ts",
         "worker/deno/lib/milestone_merge_gate.ts",
         "worker/deno/lib/milestone_open_children.ts",
+        "worker/deno/lib/milestone_presync.ts",
         "worker/deno/lib/milestone_resolution_gate.ts",
         "worker/deno/lib/milestone_ruleset_check.ts",
         "worker/deno/lib/milestone_sync_conflict.ts",
+        "worker/deno/lib/milestone_sync_diagnostic_closeout.ts",
         "worker/deno/lib/milestone_sync_pr.ts",
         "worker/deno/lib/milestone_sync_streak.ts",
         "worker/deno/lib/milestone_tracker_identity.ts",
@@ -350,13 +357,14 @@
         "worker/deno/lib/worker_build_info.ts",
         "worker/deno/lib/worker_token_privilege_scanner.ts",
         "worker/deno/lib/workflow_annotation_fetcher.ts"
-      ]
+      ],
+      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
     },
     {
       "issue": 1217,
       "chunk": "12d",
       "title": "environment, configuration and secret sinks",
-      "ledger": "docs/audits/security-sweep-1217-env-config-secrets.md",
+      "ledger": "docs/audits/security-sweep-1611-lib-delta-12d-12f.md",
       "definition": "grep -rl \"Deno.env\" lib/ --include='*.ts' minus 12a, 12b and 12c; plus container_stamp.ts, the stamp reader this slice's SEC-1217-11 fix (#1262) extracted from agent_provider.ts, service_account_env.ts and stuck_issue_detector.ts",
       "status": "swept",
       "paths": [
@@ -408,13 +416,14 @@
         "worker/deno/lib/timeline_cache.ts",
         "worker/deno/lib/unit_test_passes.ts",
         "worker/deno/lib/workflow_scope.ts"
-      ]
+      ],
+      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
     },
     {
       "issue": 1219,
       "chunk": "12e",
       "title": "closing pass over the remainder",
-      "ledger": "docs/audits/security-sweep-1219-lib-closing-pass.md",
+      "ledger": "docs/audits/security-sweep-1611-lib-delta-12d-12f.md",
       "definition": "every lib/ module not claimed by 12a, 12b, 12c or 12d",
       "status": "swept",
       "paths": [
@@ -855,19 +864,21 @@
         "worker/deno/lib/worktree_cleanup.ts",
         "worker/deno/lib/worktree_progress.ts",
         "worker/deno/lib/xml_escape.ts"
-      ]
+      ],
+      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
     },
     {
       "issue": 1325,
       "chunk": "12f",
       "title": "top-up: gh chokepoint modules added after the chunk-12 slices",
-      "ledger": "docs/audits/security-sweep-1325-gh-body-file-io-and-timeout.md",
+      "ledger": "docs/audits/security-sweep-1611-lib-delta-12d-12f.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12e recorded their coverage: gh_body_file_io.ts (#1254, PR #1304) and gh_timeout.ts (#1229, PR #1319)",
       "status": "swept",
       "paths": [
         "worker/deno/lib/gh_body_file_io.ts",
         "worker/deno/lib/gh_timeout.ts"
-      ]
+      ],
+      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
     },
     {
       "issue": 1443,
@@ -878,7 +889,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/ignored_path_clean.ts"
-      ]
+      ],
+      "sweptAt": "166321ddc5328e180cc00138f88383aa858d6725"
     },
     {
       "issue": 1631,
@@ -889,7 +901,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/worker_record_block.ts"
-      ]
+      ],
+      "sweptAt": "a02f0eb756e5c73c8f5b670d8e20029bde662f26"
     },
     {
       "issue": 1597,
@@ -901,7 +914,8 @@
       "paths": [
         "worker/deno/lib/gate_skip_drift_scanner.ts",
         "worker/deno/lib/idle_task_templates/gate_skip_drift_template.ts"
-      ]
+      ],
+      "sweptAt": "41674dc8885586084dc0923bf1bf264b66fd5921"
     },
     {
       "issue": 1661,
@@ -912,7 +926,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/worker_state_paths.ts"
-      ]
+      ],
+      "sweptAt": "beba5b6428a8b69e939489fc0d1b8e533b2f89b0"
     },
     {
       "issue": 1668,
@@ -923,7 +938,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/claude_credential_pool.ts"
-      ]
+      ],
+      "sweptAt": "fdd79338eacdb45c614ed30d46b44c87ebad636a"
     },
     {
       "issue": 1679,
@@ -934,6 +950,179 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/gated_head_guard.ts"
+      ],
+      "sweptAt": "f0143d626880871eeb1ce205e32298e5b7ba5afd"
+    },
+    {
+      "issue": 1649,
+      "chunk": "12m",
+      "title": "top-up: prompt security ignorables normalisation",
+      "ledger": "docs/audits/security-sweep-1649-prompt-security-normalisation.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12l recorded their coverage: prompt_security_normalisation.ts (#1649)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/prompt_security_normalisation.ts"
+      ],
+      "sweptAt": "bc8002acde20d8766551f542ee262c08ac3a5c05"
+    },
+    {
+      "issue": 1218,
+      "chunk": "13",
+      "title": "commands CLI entry points",
+      "ledger": "docs/audits/security-sweep-1612-commands-setup-delta.md",
+      "definition": "ls commands/*.ts | grep -v _test.ts",
+      "status": "swept",
+      "sweptAt": "3ec544a22e5a43264e7576aab425919e6b8f3b8a",
+      "paths": [
+        "worker/deno/commands/analyse_failed_once.ts",
+        "worker/deno/commands/answer_sanitiser.ts",
+        "worker/deno/commands/assess_clarity.ts",
+        "worker/deno/commands/atomic_write.ts",
+        "worker/deno/commands/audit_chain_verify.ts",
+        "worker/deno/commands/audit_default_branch_rulesets.ts",
+        "worker/deno/commands/audit_heartbeat_recoveries.ts",
+        "worker/deno/commands/audit_log_tail.ts",
+        "worker/deno/commands/backfill_idle_task_labels.ts",
+        "worker/deno/commands/backlog_report.ts",
+        "worker/deno/commands/batch_api.ts",
+        "worker/deno/commands/benchmark.ts",
+        "worker/deno/commands/branch_cleanup.ts",
+        "worker/deno/commands/bulk_triage_security.ts",
+        "worker/deno/commands/callback_conformance.ts",
+        "worker/deno/commands/check_main_ruleset.ts",
+        "worker/deno/commands/check_markdownlint.ts",
+        "worker/deno/commands/check_mermaid.ts",
+        "worker/deno/commands/check_parent_dependencies.ts",
+        "worker/deno/commands/check_release_tag_ruleset.ts",
+        "worker/deno/commands/check_repo_availability.ts",
+        "worker/deno/commands/check_resurrected_files.ts",
+        "worker/deno/commands/circuit_breaker.ts",
+        "worker/deno/commands/claim_issue.ts",
+        "worker/deno/commands/clarity_phase.ts",
+        "worker/deno/commands/claude_auth.ts",
+        "worker/deno/commands/claude_runner.ts",
+        "worker/deno/commands/claude_tail_cleanup.ts",
+        "worker/deno/commands/clean_deno_cache.ts",
+        "worker/deno/commands/cleanup_stale_temp_files.ts",
+        "worker/deno/commands/collect_security_batch.ts",
+        "worker/deno/commands/comment_filter.ts",
+        "worker/deno/commands/container_build_heal.ts",
+        "worker/deno/commands/container_egress_probe.ts",
+        "worker/deno/commands/container_image_hash.ts",
+        "worker/deno/commands/container_image_prune.ts",
+        "worker/deno/commands/container_launch_plan.ts",
+        "worker/deno/commands/container_reap.ts",
+        "worker/deno/commands/container_restart_backoff.ts",
+        "worker/deno/commands/container_runtime_detect.ts",
+        "worker/deno/commands/container_store_prune.ts",
+        "worker/deno/commands/cooldown_state.ts",
+        "worker/deno/commands/crash_cleanup.ts",
+        "worker/deno/commands/crash_notification.ts",
+        "worker/deno/commands/create_all_idle_task_wrappers.ts",
+        "worker/deno/commands/credit_summary.ts",
+        "worker/deno/commands/deno_cache_guard.ts",
+        "worker/deno/commands/diagnose.ts",
+        "worker/deno/commands/diagnose_issue.ts",
+        "worker/deno/commands/diagnose_repo.ts",
+        "worker/deno/commands/disk_space.ts",
+        "worker/deno/commands/execute_claude_phase.ts",
+        "worker/deno/commands/export_branding.ts",
+        "worker/deno/commands/export_links.ts",
+        "worker/deno/commands/export_redact.ts",
+        "worker/deno/commands/export_scrub_gate.ts",
+        "worker/deno/commands/failure_diagnosis.ts",
+        "worker/deno/commands/failure_tracker.ts",
+        "worker/deno/commands/feature_availability.ts",
+        "worker/deno/commands/fetch_issue_data.ts",
+        "worker/deno/commands/find_issues.ts",
+        "worker/deno/commands/find_issues_by_label.ts",
+        "worker/deno/commands/first_run_verify.ts",
+        "worker/deno/commands/gh_auth.ts",
+        "worker/deno/commands/gh_wrapper.ts",
+        "worker/deno/commands/git_operations.ts",
+        "worker/deno/commands/github_app_auth.ts",
+        "worker/deno/commands/github_status.ts",
+        "worker/deno/commands/green_gate_report.ts",
+        "worker/deno/commands/grill_me_processor.ts",
+        "worker/deno/commands/health_check_cache.ts",
+        "worker/deno/commands/idle_task_freshness.ts",
+        "worker/deno/commands/label_manager.ts",
+        "worker/deno/commands/load_config.ts",
+        "worker/deno/commands/log_dir.ts",
+        "worker/deno/commands/log_rotation.ts",
+        "worker/deno/commands/maybe_file_idle_task.ts",
+        "worker/deno/commands/merge_if_checks_passed.ts",
+        "worker/deno/commands/merged_pr_issue_sweep.ts",
+        "worker/deno/commands/mermaid_validator.ts",
+        "worker/deno/commands/milestone_branch_sync.ts",
+        "worker/deno/commands/milestone_completion.ts",
+        "worker/deno/commands/milestone_health.ts",
+        "worker/deno/commands/notify_audit_failure.ts",
+        "worker/deno/commands/partial_answer.ts",
+        "worker/deno/commands/path_bootstrap.ts",
+        "worker/deno/commands/pid_guard.ts",
+        "worker/deno/commands/planning_processor.ts",
+        "worker/deno/commands/pr_ci_processor.ts",
+        "worker/deno/commands/pr_feedback_processor.ts",
+        "worker/deno/commands/pr_maintenance.ts",
+        "worker/deno/commands/pr_manager.ts",
+        "worker/deno/commands/pr_spelling_processor.ts",
+        "worker/deno/commands/process_add_repo.ts",
+        "worker/deno/commands/process_seed_idle_tasks.ts",
+        "worker/deno/commands/prompt_builder.ts",
+        "worker/deno/commands/prompt_manager.ts",
+        "worker/deno/commands/publish_decision_check.ts",
+        "worker/deno/commands/purge_stale_workflow_issues.ts",
+        "worker/deno/commands/quality_gate_phase.ts",
+        "worker/deno/commands/quality_helpers.ts",
+        "worker/deno/commands/question_clarification.ts",
+        "worker/deno/commands/question_processor.ts",
+        "worker/deno/commands/raise_all_idle_tasks.ts",
+        "worker/deno/commands/raise_boy_scout_idle_tasks.ts",
+        "worker/deno/commands/raise_single_idle_task.ts",
+        "worker/deno/commands/references_refresh.ts",
+        "worker/deno/commands/refinement_processor.ts",
+        "worker/deno/commands/release_manifest.ts",
+        "worker/deno/commands/release_notice.ts",
+        "worker/deno/commands/repo_blocked_alert.ts",
+        "worker/deno/commands/repo_config.ts",
+        "worker/deno/commands/repo_failure_tracker.ts",
+        "worker/deno/commands/repo_settings_harden.ts",
+        "worker/deno/commands/resolve_cross_repo_dep.ts",
+        "worker/deno/commands/revision_processor.ts",
+        "worker/deno/commands/run_bootstrap.ts",
+        "worker/deno/commands/run_core.ts",
+        "worker/deno/commands/run_entrypoint.ts",
+        "worker/deno/commands/run_housekeeping.ts",
+        "worker/deno/commands/run_id.ts",
+        "worker/deno/commands/run_mode.ts",
+        "worker/deno/commands/run_security_scan.ts",
+        "worker/deno/commands/secrets_history_scan.ts",
+        "worker/deno/commands/security.ts",
+        "worker/deno/commands/security_tabletop.ts",
+        "worker/deno/commands/security_tree_sweep.ts",
+        "worker/deno/commands/self_heal_summary.ts",
+        "worker/deno/commands/session_sweep.ts",
+        "worker/deno/commands/shuffle_repos.ts",
+        "worker/deno/commands/software_updates.ts",
+        "worker/deno/commands/stale_workdir.ts",
+        "worker/deno/commands/stale_workflow_detector.ts",
+        "worker/deno/commands/strip_containerfile.ts",
+        "worker/deno/commands/stuck_issue_detector.ts",
+        "worker/deno/commands/suggest_improvements.ts",
+        "worker/deno/commands/supply_chain_gate.ts",
+        "worker/deno/commands/sweep_drift.ts",
+        "worker/deno/commands/sweep_heartbeat_comments.ts",
+        "worker/deno/commands/terminal_title.ts",
+        "worker/deno/commands/upgrade.ts",
+        "worker/deno/commands/version.ts",
+        "worker/deno/commands/work_on_issue.ts",
+        "worker/deno/commands/work_volume_prune.ts",
+        "worker/deno/commands/work_volume_tiers.ts",
+        "worker/deno/commands/worker_checkout_update.ts",
+        "worker/deno/commands/worker_identity.ts",
+        "worker/deno/commands/worker_log_cleanup.ts",
+        "worker/deno/commands/worktree_cleanup.ts"
       ]
     },
     {
@@ -943,6 +1132,7 @@
       "ledger": "docs/audits/security-sweep-1684-pending-work.md",
       "definition": "modules added to lib/ after 12a-12l recorded their coverage",
       "status": "swept",
+      "sweptAt": "386e05817d837ac5ffc17ec7dacbd49854162511",
       "paths": [
         "worker/deno/lib/pending_work.ts"
       ]
@@ -954,6 +1144,7 @@
       "ledger": "docs/audits/security-sweep-1666-claude-rate-limit-event.md",
       "definition": "modules added to lib/ after 12a-12m recorded their coverage: claude_rate_limit_event.ts (#1666)",
       "status": "swept",
+      "sweptAt": "1e7d1ba4f651f9cf49172ff4308c2faaa589002e",
       "paths": [
         "worker/deno/lib/claude_rate_limit_event.ts"
       ]
@@ -965,9 +1156,146 @@
       "ledger": "docs/audits/security-sweep-1669-claude-spawn-gate.md",
       "definition": "modules added to lib/ after 12a-12n recorded their coverage: claude_spawn_gate.ts (#1669)",
       "status": "swept",
+      "sweptAt": "c2672c5a6e11479deeeff66403fb3f38bd328773",
       "paths": [
         "worker/deno/lib/claude_spawn_gate.ts"
       ]
+    },
+    {
+      "issue": 1220,
+      "chunk": "14",
+      "title": "setup CLI",
+      "ledger": "docs/audits/security-sweep-1612-commands-setup-delta.md",
+      "definition": "ls setup/*.ts | grep -v _test.ts",
+      "status": "swept",
+      "sweptAt": "3ec544a22e5a43264e7576aab425919e6b8f3b8a",
+      "paths": [
+        "worker/deno/setup/agent_providers.ts",
+        "worker/deno/setup/best_practices_relabel.ts",
+        "worker/deno/setup/best_practices_sync.ts",
+        "worker/deno/setup/branch_protection_sync.ts",
+        "worker/deno/setup/collaborator_precheck.ts",
+        "worker/deno/setup/config_setup.ts",
+        "worker/deno/setup/config_writer.ts",
+        "worker/deno/setup/consent_prompt.ts",
+        "worker/deno/setup/container_runtime_install.ts",
+        "worker/deno/setup/content_label_definitions.ts",
+        "worker/deno/setup/gitignore_sync.ts",
+        "worker/deno/setup/label_colour_reconcile.ts",
+        "worker/deno/setup/label_definitions.ts",
+        "worker/deno/setup/label_sync.ts",
+        "worker/deno/setup/launchagent.ts",
+        "worker/deno/setup/prerequisite_install_plan.ts",
+        "worker/deno/setup/prerequisite_installer.ts",
+        "worker/deno/setup/prerequisites.ts",
+        "worker/deno/setup/scheduled_task.ts",
+        "worker/deno/setup/screenshot.ts",
+        "worker/deno/setup/setup_cli.ts",
+        "worker/deno/setup/setup_command_runner.ts",
+        "worker/deno/setup/update_mode_setup.ts",
+        "worker/deno/setup/workflow_sync.ts"
+      ]
+    },
+    {
+      "issue": 1822,
+      "chunk": "12n",
+      "title": "top-up: the file-scoped audit check table",
+      "ledger": "docs/audits/security-sweep-1822-workflow-file-checks.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: workflow_file_checks.ts (#1822)",
+      "status": "swept",
+      "sweptAt": "6c7fc07336ad1b10cdd17c9db32a5b75118f9e3d",
+      "paths": [
+        "worker/deno/lib/workflow_file_checks.ts"
+      ]
+    },
+    {
+      "issue": 1823,
+      "chunk": "12o",
+      "title": "top-up: the action pin resolver",
+      "ledger": "docs/audits/security-sweep-1823-action-pin-resolver.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: action_pin_resolver.ts (#1823)",
+      "status": "swept",
+      "sweptAt": "fe545122ac033ff4304ce6c3b635851e8f3e46d5",
+      "paths": [
+        "worker/deno/lib/action_pin_resolver.ts"
+      ]
+    },
+    {
+      "issue": 1859,
+      "chunk": "12p",
+      "title": "top-up: the pre-PR changed-workflow gate",
+      "ledger": "docs/audits/security-sweep-1859-changed-workflow-gate.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: changed_workflow_gate.ts (#1859)",
+      "status": "swept",
+      "sweptAt": "73b80a6f0355917642fb2a8c3249cdc504f519e6",
+      "paths": [
+        "worker/deno/lib/changed_workflow_gate.ts"
+      ]
+    },
+    {
+      "issue": 1767,
+      "chunk": "12q",
+      "title": "the shared merge-conflict agent",
+      "ledger": "docs/audits/security-sweep-1767-merge-conflict-agent.md",
+      "definition": "modules added to lib/ after 12a-12p recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/merge_conflict_agent.ts"
+      ],
+      "sweptAt": "176af2fb8ecb9c8f438bdd38bd226f0dc2711d25"
+    },
+    {
+      "issue": 1770,
+      "chunk": "12r",
+      "title": "the milestone roll-back marker",
+      "ledger": "docs/audits/security-sweep-1770-milestone-rollback-marker.md",
+      "definition": "modules added to lib/ after 12a-12q recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_rollback_marker.ts"
+      ],
+      "sweptAt": "05f72ab8a77db1980fb3dea8a92792de9f8b4863"
+    },
+    {
+      "issue": 1771,
+      "chunk": "12s",
+      "title": "the milestone roll-back",
+      "ledger": "docs/audits/security-sweep-1771-milestone-rollback.md",
+      "definition": "modules added to lib/ after 12a-12r recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_rollback.ts"
+      ],
+      "sweptAt": "0556572a9b4b8e750a1540b2203e4bf693601e5b"
+    },
+    {
+      "issue": 1774,
+      "chunk": "12t",
+      "title": "the claim-point PR state read",
+      "ledger": "docs/audits/security-sweep-1774-pr-live-state.md",
+      "definition": "modules added to lib/ after 12a-12s recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/pr_live_state.ts"
+      ],
+      "sweptAt": "04a62ac5cbf76201450a9712549d3ad3e8707a6d"
+    },
+    {
+      "issue": 1776,
+      "chunk": "12u",
+      "title": "the milestone-sync cadence tip",
+      "ledger": "docs/audits/security-sweep-1776-milestone-default-tip.md",
+      "definition": "modules added to lib/ after 12a-12t recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_default_tip.ts"
+      ],
+      "sweptAt": "23e899b98daa8613993a16ba10f5b7e2abc28d61"
     }
+  ],
+  "roots": [
+    "worker/deno/lib",
+    "worker/deno/commands",
+    "worker/deno/setup"
   ]
 }

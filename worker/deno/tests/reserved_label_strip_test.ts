@@ -24,6 +24,9 @@ import {
   filterReservedLabelsWithWarning,
 } from "../lib/github.ts";
 import {
+  fleetReservedLabelApplierCheck,
+  RESERVED_LABEL_KEPT_MESSAGE,
+  type ReservedLabelApplierCheck,
   stripReservedLabelsFromIssueRefs,
   stripReservedLabelsFromIssues,
 } from "../lib/reserved_label_strip.ts";
@@ -691,5 +694,245 @@ Deno.test("stripReservedLabelsFromIssueRefs - an issue that does not exist is un
     warnings.filter((w) => w.msg.includes("does not exist in this repo"))
       .length,
     1,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Who applied it (Issue #1791)
+// ---------------------------------------------------------------------------
+
+/** VibeCoder#1766's timeline: the fleet's `enhancement`, a human's `work-on`. */
+function applierOf(
+  adders: Record<string, string | null>,
+  fleetAuthors: string[] = ["VibeCoderST", "stservice"],
+): ReservedLabelApplierCheck & { lookups: string[] } {
+  const lookups: string[] = [];
+  return {
+    fleetAuthors,
+    lookups,
+    lastAddedBy: (_repo, issueNumber, label) => {
+      lookups.push(`${issueNumber}:${label}`);
+      return Promise.resolve(adders[label] ?? null);
+    },
+  };
+}
+
+function recordingInfoLogger(): {
+  logger: Logger;
+  infos: Array<{ msg: string; context?: Record<string, unknown> }>;
+  warnings: Array<{ msg: string; context?: Record<string, unknown> }>;
+} {
+  const infos: Array<{ msg: string; context?: Record<string, unknown> }> = [];
+  const warnings: Array<{ msg: string; context?: Record<string, unknown> }> =
+    [];
+  const noop = () => {};
+  const logger: Logger = {
+    info: (msg: string, context?: Record<string, unknown>) =>
+      infos.push({ msg, context }),
+    warn: (msg: string, context?: Record<string, unknown>) =>
+      warnings.push({ msg, context }),
+    error: noop,
+    debug: noop,
+    security: noop,
+    skipReason: noop,
+    timing: noop,
+    scanSummary: noop,
+    workerSummary: noop,
+  };
+  return { logger, infos, warnings };
+}
+
+Deno.test("strip #1791 - a reserved label a human applied is kept, named, and not a failure", async () => {
+  assertReserved(RESERVED_2);
+  const { ghClient, removeCalls } = fakeClient({
+    labelsByIssue: { 1766: ["enhancement", RESERVED_2] },
+  });
+  const { logger, infos, warnings } = recordingInfoLogger();
+  const applier = applierOf({ [RESERVED_2]: "nleck" });
+
+  const result = await stripReservedLabelsFromIssueRefs({
+    refs: [{ repo: "stSoftwareAU/VibeCoder", number: 1766 }],
+    currentRepo: "stSoftwareAU/VibeCoder",
+    ghClient,
+    logger,
+    applier,
+  });
+
+  assert(result.ok);
+  assertEquals(removeCalls, []);
+  assertEquals(result.value.stripped, []);
+  assertEquals(result.value.kept, [{
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 1766,
+    label: RESERVED_2,
+    appliedBy: "nleck",
+  }]);
+  // Only the reserved label was looked up — `enhancement` is not reserved.
+  assertEquals(applier.lookups, [`1766:${RESERVED_2}`]);
+  assertEquals(warnings.length, 0);
+  const kept = infos.filter((i) => i.msg === RESERVED_LABEL_KEPT_MESSAGE);
+  assertEquals(kept.length, 1);
+  assertEquals(kept[0]!.context?.appliedBy, "nleck");
+  assertEquals(kept[0]!.context?.label, RESERVED_2);
+});
+
+Deno.test("strip #1791 - a reserved label the fleet applied is still stripped (any fleet login, case-insensitive)", async () => {
+  assertReserved(RESERVED);
+  assertReserved(RESERVED_2);
+  const { ghClient, removeCalls } = fakeClient({
+    labelsByIssue: { 5: [RESERVED, RESERVED_2] },
+  });
+  const { logger, warnings } = recordingInfoLogger();
+
+  const result = await stripReservedLabelsFromIssueRefs({
+    refs: [{ repo: "o/r", number: 5 }],
+    currentRepo: "o/r",
+    ghClient,
+    logger,
+    applier: applierOf({
+      [RESERVED]: "vibecoderst",
+      [RESERVED_2]: "stservice",
+    }),
+  });
+
+  assert(result.ok);
+  assertEquals(
+    removeCalls.map((c) => c.label).sort(),
+    [RESERVED, RESERVED_2].sort(),
+  );
+  assertEquals(result.value.kept, []);
+  assertEquals(warnings.length, 2);
+  assertEquals(warnings[0]!.context?.appliedBy, "vibecoderst");
+});
+
+Deno.test("strip #1791 - an adder that cannot be read is treated as the model's: stripped, and the log says so", async () => {
+  assertReserved(RESERVED);
+  const { ghClient, removeCalls } = fakeClient({
+    labelsByIssue: { 5: [RESERVED] },
+  });
+  const { logger, warnings } = recordingInfoLogger();
+
+  const result = await stripReservedLabelsFromIssueRefs({
+    refs: [{ repo: "o/r", number: 5 }],
+    currentRepo: "o/r",
+    ghClient,
+    logger,
+    applier: applierOf({}),
+  });
+
+  assert(result.ok);
+  assertEquals(removeCalls, [{ issue: 5, label: RESERVED }]);
+  const strip = warnings.find((w) =>
+    w.msg === "Stripped reserved label from worker-created issue"
+  );
+  assert(strip);
+  assertStringIncludes(String(strip.context?.appliedBy), "unreadable");
+});
+
+Deno.test("strip #1791 - a lookup that throws is contained: stripped as the model's, warned, never a failure", async () => {
+  assertReserved(RESERVED);
+  const { ghClient, removeCalls } = fakeClient({
+    labelsByIssue: { 5: [RESERVED] },
+  });
+  const { logger, warnings } = recordingInfoLogger();
+
+  const result = await stripReservedLabelsFromIssueRefs({
+    refs: [{ repo: "o/r", number: 5 }],
+    currentRepo: "o/r",
+    ghClient,
+    logger,
+    applier: {
+      fleetAuthors: ["VibeCoderST"],
+      lastAddedBy: () => Promise.reject(new Error("timeline 502")),
+    },
+  });
+
+  assert(result.ok);
+  assertEquals(removeCalls.length, 1);
+  assert(warnings.some((w) => w.msg.includes("Could not read who applied")));
+  assertEquals(result.value.failures, []);
+});
+
+Deno.test("strip #1791 - without an applier check every reserved label goes, as before", async () => {
+  assertReserved(RESERVED_2);
+  const { ghClient, removeCalls } = fakeClient({
+    labelsByIssue: { 1766: [RESERVED_2] },
+  });
+  const { logger, infos } = recordingInfoLogger();
+
+  const result = await stripReservedLabelsFromIssueRefs({
+    refs: [{ repo: "o/r", number: 1766 }],
+    currentRepo: "o/r",
+    ghClient,
+    logger,
+  });
+
+  assert(result.ok);
+  assertEquals(removeCalls, [{ issue: 1766, label: RESERVED_2 }]);
+  assertEquals(result.value.kept, []);
+  assertEquals(infos.length, 0);
+});
+
+Deno.test("strip #1791 - the single-repo wrapper threads the applier check through", async () => {
+  assertReserved(RESERVED_2);
+  const { ghClient, removeCalls } = fakeClient({
+    labelsByIssue: { 7: [RESERVED_2] },
+  });
+  const { logger } = recordingInfoLogger();
+
+  const result = await stripReservedLabelsFromIssues({
+    repo: "o/r",
+    issueNumbers: [7],
+    ghClient,
+    logger,
+    applier: applierOf({ [RESERVED_2]: "a-human" }),
+  });
+
+  assert(result.ok);
+  assertEquals(removeCalls, []);
+  assertEquals(result.value.kept.length, 1);
+});
+
+Deno.test("fleetReservedLabelApplierCheck #1791 - the fleet set is host ∪ siblings ∪ service accounts, and the adder comes from the exhaustive timeline read", async () => {
+  const calls: string[][] = [];
+  const check = fleetReservedLabelApplierCheck({
+    githubUser: "VibeCoderST",
+    fleetPrAuthors: ["sibling-host"],
+    serviceAccounts: ["stservice"],
+    ghFn: (args) => {
+      calls.push(args);
+      // One page, complete: the human's add is the most recent.
+      return Promise.resolve(JSON.stringify([
+        {
+          event: "labeled",
+          label: { name: "work-on" },
+          actor: { login: "VibeCoderST" },
+          created_at: "2026-09-09T15:30:10Z",
+        },
+        {
+          event: "unlabeled",
+          label: { name: "work-on" },
+          actor: { login: "VibeCoderST" },
+          created_at: "2026-09-09T15:34:13Z",
+        },
+        {
+          event: "labeled",
+          label: { name: "work-on" },
+          actor: { login: "nleck" },
+          created_at: "2026-09-09T15:40:17Z",
+        },
+      ]));
+    },
+  });
+
+  assertEquals(
+    [...check.fleetAuthors].sort(),
+    ["VibeCoderST", "sibling-host", "stservice"].sort(),
+  );
+  assertEquals(await check.lastAddedBy("o/r", 1766, "work-on"), "nleck");
+  assert(
+    calls.some((a) =>
+      a[0] === "api" && a[1]!.includes("/issues/1766/timeline")
+    ),
   );
 });

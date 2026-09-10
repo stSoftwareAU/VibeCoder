@@ -19,16 +19,26 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import type { BumpInfo } from "../bump_deps.ts";
-import { formatQualityFailureMessage } from "../quality_helpers.ts";
+import {
+  formatQualityFailureMessage,
+  GATE_EXCERPT_HEAD_CHARS,
+  GATE_EXCERPT_TAIL_CHARS,
+} from "../quality_helpers.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
-import { redactedTail } from "../redacted_text.ts";
+import { redactedHeadTail } from "../redacted_text.ts";
 import {
   detectFailureCategory,
   isInfrastructureFailure,
 } from "../failure_diagnosis.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
 import { isBaselineAwareQualityGateEnabled } from "../baseline_aware_gate.ts";
-import { decideGateBypass, formatCarryoverFindings } from "../baseline_gate.ts";
+import {
+  decideGateBypass,
+  decidePreExistingGateFailure,
+  failedChecks,
+  formatCarryoverFindings,
+} from "../baseline_gate.ts";
+import { expectedNoPrOutcome } from "../run_outcome.ts";
 import { formatBaselineCarryoverNote } from "../quality_helpers.ts";
 import { fenceQualityOutput } from "../untrusted_quality_output.ts";
 import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
@@ -55,6 +65,15 @@ interface QualityGateBodyResult {
 
 /** Characters of quality output carried into the fix prompt. */
 const FIX_PROMPT_OUTPUT_CHARS = 2000;
+
+/**
+ * Head and tail budgets for the failure message's snippet (Issue #1852).
+ * Their sum plus the elision marker stays inside the 500-character cap
+ * `formatDetailedFailureMessage` applies, which cuts from the tail — a wider
+ * excerpt would lose the head again at that sink.
+ */
+const SNIPPET_HEAD_CHARS = 200;
+const SNIPPET_TAIL_CHARS = 280;
 
 /**
  * Build the Claude fix prompt from failing `quality.sh` output (Issue #3706,
@@ -582,9 +601,81 @@ async function runQualityGateBody(
       }
     }
 
+    // Check-agnostic pre-existing failure (Issue #1852): the repository's own
+    // gate is red on the untouched tree and this run reproduced exactly that.
+    // The bypass above cannot see it — a non-diffable check produces no
+    // findings to diff — so every run used to fail here, record a host health
+    // failure and cool the issue down, after which the next claim repeated the
+    // same doomed run. Nothing the agent can do to its own change clears a
+    // check that fails without it, so stop: no PR, no failure tracking, no
+    // `failed-once` label, and one deduplicated tracker naming what is red.
+    // The issue takes the ordinary bounce cooldown, not the failure path.
+    if (isBaselineAwareQualityGateEnabled(config, repo)) {
+      const failing = failedChecks(qualityResult.value.checks);
+      // An environment fault reproduces itself perfectly — a host without
+      // `deno` fails the baseline and the post-change gate with byte-identical
+      // output — so without this guard a broken HOST would be reported as a
+      // repository whose gate is red, silencing the very health failure an
+      // operator needs and filing a tracker on an innocent repo. The
+      // diagnosis comes from the single classification path.
+      const infrastructure = failing.find((check) =>
+        isInfrastructureFailure(detectFailureCategory(check.output))
+      );
+      const preExisting = infrastructure
+        ? undefined
+        : decidePreExistingGateFailure(
+          {
+            passed: state.baselineQualityPassed,
+            ...(state.baselineFailedChecks
+              ? { failedChecks: state.baselineFailedChecks }
+              : {}),
+          },
+          failing,
+        );
+      if (infrastructure) {
+        logger.warn(
+          "Quality gate failed on an infrastructure-class check — treated as " +
+            "a worker failure, not a pre-existing repository failure " +
+            "(Issue #1852)",
+          { repo, check: infrastructure.name },
+        );
+      }
+      if (preExisting?.preExisting) {
+        const named = preExisting.checks.join(", ");
+        logger.warn(
+          "Quality gate failed on checks already red on the untouched tree — " +
+            "ending the run as a pre-existing gate failure (Issue #1852)",
+          { repo, checks: named, attempt },
+        );
+        // Non-fatal, deduplicated: the repository's own gate is what needs
+        // fixing, and it needs a human, not another run.
+        await deps.quality.fileRedCheckTracker(repo, preExisting.checks, {
+          logger,
+        });
+        return {
+          phaseResult: {
+            status: "early_exit",
+            reason: `pre_existing_gate_failure: ${named}`,
+            expectedSkip: true,
+            outcome: expectedNoPrOutcome(
+              "quality_gate",
+              `No PR raised — \`${named}\` is already failing on ` +
+                `${repo}'s default branch, so this change could not clear it.`,
+            ),
+          },
+        };
+      }
+    }
+
     if (attempt >= maxAttempts) {
       logger.warn("Quality gate failed after fix attempt", {
-        output: qualityResult.value.output.slice(-500),
+        // Head as well as tail (Issue #1852) — the gate names a check as it
+        // starts it, so a tail-only excerpt cannot say what is red.
+        output: redactedHeadTail(
+          qualityResult.value.output,
+          GATE_EXCERPT_HEAD_CHARS,
+          GATE_EXCERPT_TAIL_CHARS,
+        ),
       });
 
       // Report failure with baseline context (Issue #1183).
@@ -602,7 +693,14 @@ async function runQualityGateBody(
       const elapsedSeconds = state.executeStartTime > 0
         ? Math.round((Date.now() - state.executeStartTime) / 1000)
         : 0;
-      const snippet = redactedTail(qualityResult.value.output, 500);
+      // Head and tail within the 500-character snippet budget the detailed
+      // failure message applies (Issue #1852), so the failing check's name
+      // survives that sink's own tail cut.
+      const snippet = redactedHeadTail(
+        qualityResult.value.output,
+        SNIPPET_HEAD_CHARS,
+        SNIPPET_TAIL_CHARS,
+      );
       const detailedReason = formatDetailedFailureMessage(
         "Quality gate failed after remediation attempt",
         {

@@ -1,12 +1,13 @@
 /**
- * The default branch is merged down after each sub-issue PR merges, not once
- * per cooldown window (Issue #1558).
+ * The sync runs on every cycle in which the default-branch tip moved
+ * (Issue #1776).
  *
- * A milestone whose REST `closed_issues` count has moved since the previous
- * cycle has just had something closed — a sub-issue PR merged — which is
- * exactly the moment both sides have moved and a conflict is still one day
- * wide. That milestone syncs now; every other milestone still waits out the
- * cooldown, so the cadence costs no extra API calls.
+ * `main` takes ~27 commits a day, so an hourly per-branch cooldown left a
+ * milestone branch up to an hour behind, and the closed-issue gate left a
+ * milestone that had completed nothing out of the sweep entirely — the two
+ * conditions under which drift is cheapest to clear. The cadence is now one
+ * comparison: the default tip as git sees it, against the tip the branch was
+ * last successfully synced against in `milestone_sync_failures.json`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -17,86 +18,117 @@ import {
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
 import {
-  milestoneActivityPath,
-  saveMilestoneActivity,
-} from "../lib/milestone_activity_gate.ts";
+  loadSyncStreaks,
+  milestoneSyncStreakPath,
+  saveSyncStreaks,
+} from "../lib/milestone_sync_streak.ts";
 
 const TITLE = "#1558 Drift";
 const BRANCH = "milestone/1558-drift";
+const FRESH_TITLE = "#1776 Fresh";
+const FRESH_BRANCH = "milestone/1776-fresh";
+const KEY = `owner/repo|${BRANCH}`;
 
-/** Deps for one repo with one milestone at `closedIssues` closed items. */
-function deps(
-  closedIssues: number,
-  syncedBranches: string[],
-  activityPath: string,
-  lastSyncTimes: Map<string, number>,
+/** One cycle's worth of recorded activity. */
+interface Recorded {
+  /** Milestone branches handed to `syncBranchFn`. */
+  synced: string[];
+  /** Every gh argument list the pass issued. */
+  ghCalls: string[][];
+  /** Every log line the pass wrote. */
+  logs: string[];
+}
+
+/** Options for {@link cadenceDeps}. */
+interface CadenceOptions {
+  /** Path of the streak/ledger file. */
+  streakPath: string;
+  /** Default tip as git reports it; `undefined` means it could not be read. */
+  defaultSha?: string;
+  /** Milestone branch keys whose ledger entries should survive the sweep. */
+  expectPruned?: string[];
+  /** Milestones the REST listing returns. */
+  milestones?: Array<{ title: string; number: number; closed_issues?: number }>;
+  /** False makes every sync fail. */
+  succeed?: boolean;
+}
+
+/** Deps for one repo, recording what the cycle did. */
+function cadenceDeps(
+  options: CadenceOptions,
+  recorded: Recorded,
 ): MilestoneBranchSyncDeps {
+  const milestones = options.milestones ??
+    [{ title: TITLE, number: 7, closed_issues: 3 }];
+  const succeed = options.succeed ?? true;
   return {
     repos: ["owner/repo"],
     ghCommandFn: (args: string[]): Promise<string> => {
+      recorded.ghCalls.push([...args]);
       const key = args.join(" ");
       if (key.includes("repos/owner/repo/milestones")) {
-        return Promise.resolve(
-          JSON.stringify([{
-            title: TITLE,
-            number: 7,
-            closed_issues: closedIssues,
-          }]),
-        );
+        return Promise.resolve(JSON.stringify(milestones));
       }
       if (key.includes("default_branch")) return Promise.resolve("main");
-      if (key.includes("issue list") && key.includes("--state closed")) {
-        return Promise.resolve(
-          JSON.stringify([{
-            number: 10,
-            title: "t",
-            milestone: { title: TITLE },
-          }]),
-        );
+      if (key.includes("branches/milestone")) {
+        // The branch probe answers with the branch it was asked about.
+        return Promise.resolve(key.split("branches/")[1]?.split(" ")[0] ?? "");
       }
-      if (key.includes("branches/milestone")) return Promise.resolve(BRANCH);
-      return Promise.resolve("");
+      return Promise.resolve("[]");
     },
+    defaultTipShaFn: () =>
+      Promise.resolve(
+        options.defaultSha
+          ? { ok: true as const, value: options.defaultSha }
+          : {
+            ok: false as const,
+            error: new Error("local 'main' could not be read"),
+          },
+      ),
     syncBranchFn: (_repo, milestoneBranch) => {
-      syncedBranches.push(milestoneBranch);
-      return Promise.resolve({
-        ok: true as const,
-        value: { message: "merged" },
-      });
+      recorded.synced.push(milestoneBranch);
+      return succeed
+        ? Promise.resolve({ ok: true as const, value: { message: "merged" } })
+        : Promise.resolve({
+          ok: false as const,
+          error: new Error("refusing to merge unrelated histories"),
+        });
     },
-    log: () => undefined,
-    // An hour of cooldown, and a sync that just happened.
-    cooldownSeconds: 3600,
-    lastSyncTimes,
-    activityPath,
+    log: (message: string) => recorded.logs.push(message),
+    streakPath: options.streakPath,
   };
 }
 
+/** Fresh recorder. */
+function recorder(): Recorded {
+  return { synced: [], ghCalls: [], logs: [] };
+}
+
 Deno.test(
-  "syncMilestoneBranches - a milestone that just closed an issue syncs despite the cooldown (Issue #1558)",
+  "syncMilestoneBranches - an unchanged default tip syncs nothing (Issue #1776)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-1558-cadence-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-1776-unchanged-" });
     try {
-      const activityPath = milestoneActivityPath(dir);
-      // The previous cycle observed two closed items; a sub-issue PR has
-      // since merged and closed a third.
-      await saveMilestoneActivity(activityPath, {
-        "owner/repo|7": { closedIssues: 2, active: true },
+      const streakPath = milestoneSyncStreakPath(dir);
+      await saveSyncStreaks(streakPath, {
+        [KEY]: { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" },
       });
 
-      const synced: string[] = [];
-      const lastSyncTimes = new Map([["owner/repo|" + TITLE, Date.now()]]);
+      const recorded = recorder();
       const result = await syncMilestoneBranches(
-        deps(3, synced, activityPath, lastSyncTimes),
+        cadenceDeps({ streakPath, defaultSha: "sha-a" }, recorded),
       );
 
       assert(result.ok);
-      assertEquals(
-        synced,
-        [BRANCH],
-        "a sub-issue PR merging pulls the merge-down forward",
+      assertEquals(recorded.synced, [], "the tip has not moved since the sync");
+      assertEquals(result.value.skipped, 1);
+      assertEquals(result.value.synced, 0);
+      assert(
+        recorded.logs.some((line) => line.includes("default tip unchanged")),
+        `expected a 'default tip unchanged' skip line, got ${
+          JSON.stringify(recorded.logs)
+        }`,
       );
-      assertEquals(result.value.skipped, 0);
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
@@ -104,24 +136,189 @@ Deno.test(
 );
 
 Deno.test(
-  "syncMilestoneBranches - an unchanged milestone still waits out the cooldown (Issue #1558)",
+  "syncMilestoneBranches - a moved tip syncs every open milestone, including one with no closed issues (Issue #1776)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-1558-cooldown-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-1776-moved-" });
     try {
-      const activityPath = milestoneActivityPath(dir);
-      await saveMilestoneActivity(activityPath, {
-        "owner/repo|7": { closedIssues: 3, active: true },
+      const streakPath = milestoneSyncStreakPath(dir);
+      await saveSyncStreaks(streakPath, {
+        [KEY]: { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" },
       });
 
-      const synced: string[] = [];
-      const lastSyncTimes = new Map([["owner/repo|" + TITLE, Date.now()]]);
+      const recorded = recorder();
       const result = await syncMilestoneBranches(
-        deps(3, synced, activityPath, lastSyncTimes),
+        cadenceDeps({
+          streakPath,
+          defaultSha: "sha-b",
+          milestones: [
+            { title: TITLE, number: 7, closed_issues: 3 },
+            // Nothing closed here yet: under the old gate this milestone was
+            // never swept at all.
+            { title: FRESH_TITLE, number: 8, closed_issues: 0 },
+          ],
+        }, recorded),
       );
 
       assert(result.ok);
-      assertEquals(synced, [], "nothing closed, so the cooldown still holds");
+      assertEquals(recorded.synced, [BRANCH, FRESH_BRANCH]);
+      assertEquals(result.value.synced, 2);
+      assertEquals(result.value.skipped, 0);
+      assertEquals(
+        recorded.ghCalls.filter((args) =>
+          args.join(" ").includes("--state closed")
+        ).length,
+        0,
+        "the closed-issue query is gone, not merely skipped",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranches - a successful sync records the tip, so the next cycle skips it (Issue #1776)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1776-record-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+
+      const first = recorder();
+      await syncMilestoneBranches(
+        cadenceDeps({ streakPath, defaultSha: "sha-b" }, first),
+      );
+      assertEquals(first.synced, [BRANCH]);
+      assertEquals(
+        (await loadSyncStreaks(streakPath))[KEY]?.lastSyncedDefaultSha,
+        "sha-b",
+      );
+
+      const second = recorder();
+      const result = await syncMilestoneBranches(
+        cadenceDeps({ streakPath, defaultSha: "sha-b" }, second),
+      );
+      assert(result.ok);
+      assertEquals(second.synced, [], "same tip, nothing to merge down");
       assertEquals(result.value.skipped, 1);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranches - a failed sync leaves the recorded tip alone so the next cycle retries (Issue #1776)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1776-retry-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      await saveSyncStreaks(streakPath, {
+        [KEY]: { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" },
+      });
+
+      const first = recorder();
+      const failed = await syncMilestoneBranches(
+        cadenceDeps(
+          { streakPath, defaultSha: "sha-b", succeed: false },
+          first,
+        ),
+      );
+      assert(failed.ok);
+      assertEquals(failed.value.failed, 1);
+      assertEquals(
+        (await loadSyncStreaks(streakPath))[KEY]?.lastSyncedDefaultSha,
+        "sha-a",
+        "a failure records nothing — the branch is not synced against sha-b",
+      );
+
+      // The next cycle tries again against the same moved tip.
+      const second = recorder();
+      await syncMilestoneBranches(
+        cadenceDeps(
+          { streakPath, defaultSha: "sha-b", succeed: false },
+          second,
+        ),
+      );
+      assertEquals(second.synced, [BRANCH], "the failed sync is retried");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranches - a tip git cannot report is synced rather than silently skipped (Issue #1776)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1776-no-tip-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      await saveSyncStreaks(streakPath, {
+        [KEY]: { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" },
+      });
+
+      const recorded = recorder();
+      const result = await syncMilestoneBranches(
+        cadenceDeps({ streakPath, defaultSha: undefined }, recorded),
+      );
+
+      assert(result.ok);
+      assertEquals(
+        recorded.synced,
+        [BRANCH],
+        "an unreadable tip must not read as 'unchanged'",
+      );
+      assertEquals(
+        (await loadSyncStreaks(streakPath))[KEY]?.lastSyncedDefaultSha,
+        "sha-a",
+        "with no tip to record, the last known one stands",
+      );
+      assert(
+        recorded.logs.some((line) =>
+          line.includes("Could not read the tip") &&
+          line.includes("could not be read")
+        ),
+        `the reason git gave must reach the log, got ${
+          JSON.stringify(recorded.logs)
+        }`,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranches - a closed milestone's ledger entry does not outlive it (Issue #1776)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1776-prune-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      await saveSyncStreaks(streakPath, {
+        [KEY]: { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" },
+        // This milestone has since closed: the listing no longer returns it.
+        "owner/repo|milestone/999-done": {
+          count: 0,
+          escalated: false,
+          lastSyncedDefaultSha: "sha-a",
+        },
+        // Another repo's entry is not this repo's to judge.
+        "owner/other|milestone/5-elsewhere": { count: 2, escalated: false },
+      });
+
+      const recorded = recorder();
+      await syncMilestoneBranches(
+        cadenceDeps({ streakPath, defaultSha: "sha-b" }, recorded),
+      );
+
+      const streaks = await loadSyncStreaks(streakPath);
+      assertEquals(
+        Object.keys(streaks).sort(),
+        [
+          "owner/other|milestone/5-elsewhere",
+          KEY,
+        ].sort(),
+      );
+      assertEquals(streaks[KEY]?.lastSyncedDefaultSha, "sha-b");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

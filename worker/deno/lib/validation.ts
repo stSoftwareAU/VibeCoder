@@ -185,7 +185,6 @@ export interface ConfigFileJson {
   min_disk_space_mb?: number;
   host_disk_low_floor_gb?: number;
   host_disk_low_floor_percent?: number;
-  milestone_sync_cooldown_seconds?: number;
   stale_failed_diagnostic_days?: number;
   stale_planning_warning_days?: number;
   phase_model_overrides?: Record<string, string>;
@@ -701,7 +700,6 @@ export function validateConfigFileJson(
     "min_disk_space_mb",
     "host_disk_low_floor_gb",
     "host_disk_low_floor_percent",
-    "milestone_sync_cooldown_seconds",
     "stale_failed_diagnostic_days",
     "stale_planning_warning_days",
     "context_budget_warning_percent",

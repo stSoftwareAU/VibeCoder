@@ -859,6 +859,7 @@ ${CHECKOUT_NO_CREDENTIALS}
       - name: Detect Deno worker module
         id: detect-deno
         run: |
+          set -euo pipefail
           if [ -f worker/deno/mod.ts ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else

@@ -23,6 +23,7 @@ import type {
 } from "../lib/issue_worker_wiring.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import type { Logger } from "../types.ts";
+import { openPrGh } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -70,7 +71,7 @@ Deno.test("processCiFailure - logs the recovery failure reason, not just 'push f
         })) as unknown as ClaudeDeps["runClaudeWithRetry"],
     };
     const mockGithub: Partial<GitHubDeps> = {
-      runGhCommand: () => Promise.resolve(""),
+      runGhCommand: openPrGh(),
     };
     const deps = createMockDeps({
       claude: mockClaude,

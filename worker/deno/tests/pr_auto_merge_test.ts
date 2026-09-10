@@ -6,13 +6,20 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  _resetBaseProtectionMemo,
   AutoMergeResult,
   classifyAutoMergeFailure,
   enableAutoMerge,
+  isBasePolicyRefusal,
   isBaseProtected,
   isTransientError,
+  logAutoMergeOutcome,
 } from "../lib/pr_auto_merge.ts";
-import { OPEN_CHILDREN_BLOCK_MARKER } from "../lib/milestone_children_gate.ts";
+import {
+  _resetMilestoneBehindMemo,
+  OPEN_CHILDREN_BLOCK_MARKER,
+} from "../lib/milestone_children_gate.ts";
+import type { LogContext, Logger } from "../types.ts";
 
 // --- classifyAutoMergeFailure ---
 
@@ -557,4 +564,393 @@ Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (
     calls.some((c) => c[0] === "pr" && c[1] === "edit"),
     "still retargeted",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1779: a child never merges into a milestone branch that is behind
+// the default branch
+// ---------------------------------------------------------------------------
+
+/** gh stub for a healthy, open milestone whose branch is `behindBy` behind. */
+function ghForBehindMilestone(
+  behindBy: number,
+  calls: string[][],
+): (args: string[]) => Promise<string> {
+  return async (args: string[]): Promise<string> => {
+    calls.push(args);
+    const key = args.join(" ");
+    if (key.includes("/compare/")) return `${behindBy}\n`;
+    if (key.includes("pr list") && key.includes("--head")) return "[]";
+    if (key.includes("/milestones?state=all")) {
+      return JSON.stringify([{ number: 9, title: "Sync", state: "open" }]);
+    }
+    return "";
+  };
+}
+
+Deno.test("pr_auto_merge - a milestone base behind the default branch is DEFERRED: no `--auto`, no direct merge, no comment (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  let directMerges = 0;
+  let comments = 0;
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1779,
+    headRefName: "issue-1779-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    ghCommandFn: ghForBehindMilestone(3, calls),
+    commentFn: async () => {
+      comments++;
+    },
+    directMergeFn: async () => {
+      directMerges++;
+      return { ok: true as const, value: { merged: true } };
+    },
+  });
+
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertStringIncludes(result.message, "milestone behind default branch");
+  assertStringIncludes(result.message, "(3 commits)");
+  assertEquals(directMerges, 0, "a behind milestone base must not be merged");
+  assertEquals(comments, 0, "the deferral is silent on the PR");
+  assertEquals(
+    calls.some((a) => a[0] === "pr" && a[1] === "merge"),
+    false,
+    "`gh pr merge` must not run for a behind milestone base",
+  );
+  assertEquals(
+    calls.some((a) => a.includes("--auto")),
+    false,
+    "GitHub auto-merge must not be armed for a behind milestone base",
+  );
+  assertEquals(
+    calls.some((a) => a.includes("--add-label")),
+    false,
+    "the deferral applies no label",
+  );
+});
+
+Deno.test("pr_auto_merge - a milestone base level with the default branch still arms auto-merge (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1780,
+    headRefName: "issue-1780-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    isBaseProtectedFn: async () => true,
+    ghCommandFn: ghForBehindMilestone(0, calls),
+  });
+
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(
+    calls.some((a) => a.includes("--auto")),
+    true,
+    "a synced milestone base is armed exactly as before",
+  );
+});
+
+Deno.test("pr_auto_merge - the behind deferral is recorded by logAutoMergeOutcome (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const lines: Array<{ level: string; message: string }> = [];
+  const unused = () => {};
+  const logger = {
+    info: (message: string, _c?: LogContext) =>
+      void lines.push({ level: "info", message }),
+    warn: (message: string, _c?: LogContext) =>
+      void lines.push({ level: "warn", message }),
+    error: unused,
+    debug: unused,
+    security: unused,
+    skipReason: unused,
+    timing: unused,
+    scanSummary: unused,
+    workerSummary: unused,
+  } as unknown as Logger;
+
+  const outcome = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1781,
+    headRefName: "issue-1781-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    ghCommandFn: ghForBehindMilestone(2, []),
+  });
+  logAutoMergeOutcome(logger, "owner/repo", 1781, outcome);
+
+  assertEquals(lines.length, 1);
+  assertStringIncludes(
+    lines[0]!.message,
+    "deferred: milestone behind default branch (2 commits)",
+  );
+});
+
+Deno.test("pr_auto_merge - two children of one behind milestone cost ONE compare call (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  const gh = ghForBehindMilestone(5, calls);
+  for (const prNumber of [1, 2]) {
+    const result = await enableAutoMerge({
+      repo: "owner/repo",
+      prNumber,
+      headRefName: `issue-${prNumber}-child`,
+      baseRefName: "milestone/1730-sync",
+      getDefaultBranchFn: () =>
+        Promise.resolve({ ok: true as const, value: "Develop" }),
+      ghCommandFn: gh,
+    });
+    assertEquals(result.result, AutoMergeResult.Deferred);
+  }
+  assertEquals(
+    calls.filter((a) => a.join(" ").includes("/compare/")).length,
+    1,
+    "the milestone compare is memoised across the sweep",
+  );
+});
+
+Deno.test("pr_auto_merge - a default-branch base makes no milestone compare call (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 3,
+    headRefName: "issue-3-child",
+    baseRefName: "Develop",
+    isBaseProtectedFn: async () => true,
+    ghCommandFn: ghForBehindMilestone(9, calls),
+  });
+  assertEquals(
+    calls.some((a) => a.join(" ").includes("/compare/")),
+    false,
+    "a non-milestone base costs no extra call",
+  );
+});
+
+Deno.test("pr_auto_merge - the gate seam still governs: an injected behind decision defers without any gh call (Issue #1779)", async () => {
+  const calls: string[][] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 4,
+    headRefName: "issue-4-child",
+    baseRefName: "milestone/1730-sync",
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({
+        decision: "defer" as const,
+        reason: "milestone-behind" as const,
+        milestoneBranch: "milestone/1730-sync",
+        behindBy: 1,
+        detail: "milestone/1730-sync is 1 commit behind Develop",
+      }),
+    ghCommandFn: async (args: string[]) => {
+      calls.push(args);
+      return "";
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertStringIncludes(result.message, "(1 commit)");
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("pr_auto_merge - the milestone sync PR is still armed while its base is behind (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1782,
+    headRefName: "sync/milestone-1730-sync",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    isBaseProtectedFn: async () => true,
+    ghCommandFn: ghForBehindMilestone(6, calls),
+  });
+
+  assertEquals(
+    result.result,
+    AutoMergeResult.Enabled,
+    "deferring the sync PR for being behind would deadlock the milestone",
+  );
+  assertEquals(calls.some((a) => a.includes("--auto")), true);
+});
+
+Deno.test("pr_auto_merge - a behind deferral names itself so callers do not escalate it (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1783,
+    headRefName: "issue-1783-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    ghCommandFn: ghForBehindMilestone(3, []),
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertEquals(result.deferral, "milestone-behind");
+});
+
+// ---------------------------------------------------------------------------
+// Draft PRs (Issue #1800)
+// ---------------------------------------------------------------------------
+
+/** GitHub's refusal, as `gh pr merge --auto` surfaces it on #1794. */
+const DRAFT_REFUSAL =
+  "gh command failed (exit 1): GraphQL: Pull Request is still a draft (mergePullRequest)";
+
+Deno.test("pr_auto_merge - classifyAutoMergeFailure recognises a draft refusal (Issue #1800)", () => {
+  assertEquals(classifyAutoMergeFailure(DRAFT_REFUSAL), AutoMergeResult.Draft);
+  assertEquals(
+    classifyAutoMergeFailure("HTTP 502 Bad Gateway"),
+    AutoMergeResult.Failed,
+  );
+});
+
+Deno.test("pr_auto_merge - arming a draft is a typed non-failure: no retries, no comment, logged at info (Issue #1800)", async () => {
+  let mergeCalls = 0;
+  let commented = false;
+  const result = await enableAutoMerge({
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: 1794,
+    baseRefName: "milestone/1653-x",
+    isBaseProtectedFn: async () => true,
+    decideMilestoneBaseFn: async () => ({
+      decision: "allow" as const,
+      reason: "not-milestone-base" as const,
+    }),
+    ghCommandFn: async (args) => {
+      if (args[0] === "pr" && args[1] === "merge") {
+        mergeCalls++;
+        throw new Error(DRAFT_REFUSAL);
+      }
+      return "";
+    },
+    commentFn: async () => {
+      commented = true;
+    },
+    maxRetries: 3,
+    retryDelay: 0,
+  });
+  assertEquals(result.result, AutoMergeResult.Draft);
+  assertStringIncludes(result.message, "it is a draft");
+  assertEquals(mergeCalls, 1, "a draft refusal is permanent — never retried");
+  assertEquals(commented, false);
+
+  const sink: { level: string; message: string }[] = [];
+  logAutoMergeOutcome(
+    {
+      info: (m: string) => void sink.push({ level: "info", message: m }),
+      warn: (m: string) => void sink.push({ level: "warn", message: m }),
+    },
+    "stSoftwareAU/VibeCoder",
+    1794,
+    result,
+  );
+  assertEquals(sink.length, 1);
+  assertEquals(sink[0]!.level, "info");
+  assertStringIncludes(sink[0]!.message, "Auto-merge draft");
+});
+
+// ---------------------------------------------------------------------------
+// A policy GitHub enforces that the rules endpoint does not show (Issue #1763)
+// ---------------------------------------------------------------------------
+
+/** GRQ-FX#58's refusal, as `directMergePr` surfaces it. */
+const POLICY_REFUSAL =
+  "Failed to merge PR #58 in stSoftwareAU/GRQ-FX: gh command failed (exit 1): " +
+  "X Pull request stSoftwareAU/GRQ-FX#58 is not mergeable: the base branch " +
+  "policy prohibits the merge.";
+
+Deno.test("pr_auto_merge - isBasePolicyRefusal recognises the rules refusals and nothing else (Issue #1763)", () => {
+  assertEquals(isBasePolicyRefusal(POLICY_REFUSAL), true);
+  assertEquals(
+    isBasePolicyRefusal(
+      "remote: error: GH013: Repository rule violations found for refs/heads/Develop.",
+    ),
+    true,
+  );
+  assertEquals(isBasePolicyRefusal("HTTP 502 Bad Gateway"), false);
+  assertEquals(isBasePolicyRefusal("Pull request is not mergeable"), false);
+  assertEquals(isBasePolicyRefusal("merge conflict"), false);
+});
+
+Deno.test("pr_auto_merge - a direct merge GitHub refuses as policy-prohibited arms auto-merge instead and marks the base protected for the cycle (Issue #1763)", async () => {
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  const logged: string[] = [];
+  let ruleLookups = 0;
+  let directCalls = 0;
+  const opts = {
+    repo: "stSoftwareAU/GRQ-FX",
+    baseRefName: "Develop",
+    headRefName: "issue-57-fix",
+    isBaseProtectedFn: async () => {
+      ruleLookups++;
+      return false;
+    },
+    directMergeFn: async () => {
+      directCalls++;
+      return { ok: false as const, error: new Error(POLICY_REFUSAL) };
+    },
+    ghCommandFn: async (args: string[]) => {
+      calls.push(args);
+      return "";
+    },
+    log: (m: string) => logged.push(m),
+  };
+
+  const first = await enableAutoMerge({ ...opts, prNumber: 58 });
+  // The refusal is the authority: auto-merge is armed, which honours the
+  // rule the token could not list.
+  assertEquals(first.result, AutoMergeResult.Enabled, first.message);
+  assertEquals(calls.some((a) => a.includes("--auto")), true);
+  assertEquals(directCalls, 1);
+  const warnings = logged.filter((m) => m.includes("policy-protected"));
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "stSoftwareAU/GRQ-FX 'Develop'");
+  assertStringIncludes(warnings[0]!, "Issue #1763");
+
+  // The same base in the same cycle takes the protected path outright: no
+  // second direct merge, no second rules lookup, no second warning.
+  const second = await enableAutoMerge({ ...opts, prNumber: 59 });
+  assertEquals(second.result, AutoMergeResult.Enabled, second.message);
+  assertEquals(directCalls, 1);
+  assertEquals(ruleLookups, 1);
+  assertEquals(logged.filter((m) => m.includes("policy-protected")).length, 1);
+  _resetBaseProtectionMemo();
+});
+
+Deno.test("pr_auto_merge - any other direct-merge failure on an unprotected base is still Failed, and the base stays unprotected (Issue #1763)", async () => {
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  let directCalls = 0;
+  const opts = {
+    repo: "owner/repo",
+    baseRefName: "Develop",
+    isBaseProtectedFn: async () => false,
+    directMergeFn: async () => {
+      directCalls++;
+      return {
+        ok: false as const,
+        error: new Error("Failed to merge PR #9 in owner/repo: HTTP 502"),
+      };
+    },
+    ghCommandFn: async (args: string[]) => {
+      calls.push(args);
+      return "";
+    },
+    log: () => {},
+  };
+
+  const first = await enableAutoMerge({ ...opts, prNumber: 9 });
+  assertEquals(first.result, AutoMergeResult.Failed);
+  assertEquals(calls.some((a) => a.includes("--auto")), false);
+
+  const second = await enableAutoMerge({ ...opts, prNumber: 10 });
+  assertEquals(second.result, AutoMergeResult.Failed);
+  assertEquals(directCalls, 2);
+  _resetBaseProtectionMemo();
 });

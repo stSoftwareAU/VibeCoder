@@ -19,6 +19,18 @@
  *   pin that branch's HEAD so behaviour is preserved while the reference
  *   becomes immutable.
  *
+ * **The catalogue is the fallback floor, not the final emitted value**
+ * (Issue #1823). `lib/action_pin_resolver.ts` resolves every `"release"`
+ * entry against upstream's own release history and rewrites a rendered
+ * template to the highest release that has cleared the supply-chain
+ * quarantine window; the SHA recorded here is what survives when that lookup
+ * cannot produce an answer, and every such fallback is logged. Only the
+ * `"catalogue"` entries below are never looked up.
+ *
+ * That resolver is a library — `workflow-sync` is its intended caller and is
+ * wired up separately (Issue #1755), so `pinnedAction()` below still renders
+ * the catalogue SHA verbatim on its own.
+ *
  * Bumping: change the SHA and the `version` label together, honouring the
  * supply-chain quarantine (Issue #1613) — do not adopt a release younger
  * than 24 hours. `worker/deno/tests/pinned_actions_test.ts` and
@@ -27,12 +39,26 @@
  * cannot regress to a floating tag.
  */
 
+/**
+ * How an entry's emitted pin is chosen at sync time (Issue #1823).
+ *
+ * - `"release"` (the default) — resolve upstream's release history and emit
+ *   the highest release past the quarantine window, falling back to the
+ *   catalogue SHA with a logged reason.
+ * - `"catalogue"` — emit the SHA recorded here verbatim. The action is never
+ *   looked up and a fallback is never logged, because there is no stable
+ *   release series to resolve against.
+ */
+export type ActionPinResolution = "release" | "catalogue";
+
 /** An immutable pin: the commit SHA plus the human-readable version. */
 export interface ActionPin {
   /** 40-character lowercase hex commit SHA. */
   sha: string;
   /** Human-readable label rendered as a trailing YAML comment. */
   version: string;
+  /** Resolution strategy; absent means {@link ActionPinResolution} `"release"`. */
+  resolution?: ActionPinResolution;
 }
 
 /** Action coordinate (`owner/repo`) → immutable pin. */
@@ -59,9 +85,18 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
     version: "v3.0.0",
   },
   // Latest upstream release at time of pinning.
+  // Issue #1822: the one-off review against audit check 16 (a pinned action
+  // a major behind the latest) found v5.6.0 behind upstream's v6 line. The
+  // native check resolves "latest" from `github_actions_catalogue.ts`,
+  // which still records `latestMajor: 4` here, so it would not have fired —
+  // the finding is against real upstream state, and refreshing that
+  // catalogue is its own change. v6.0.0 is the newest release outside the
+  // 24h supply-chain quarantine (v6.0.1 published the same day); upstream
+  // records the v6 ESM migration as not user-facing breaking, and the Java
+  // template passes only `distribution:`/`java-version:`.
   "actions/setup-java": {
-    sha: "03ad4de0992f5dab5e18fcb136590ce7c4a0ac95",
-    version: "v5.6.0",
+    sha: "dd06d9cba3e5552c54d9f8ea23572deb30010f7c",
+    version: "v6.0.0",
   },
   "actions/dependency-review-action": {
     sha: "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
@@ -69,9 +104,16 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
   },
   // The ref no longer names the toolchain once pinned, so consumers must
   // pass an explicit `toolchain:` input (see the Rust templates).
+  //
+  // `"catalogue"`: upstream publishes exactly one release, the rolling `v1`
+  // tag (published 2022-07-15) — no `MAJOR.MINOR.PATCH` release has ever been
+  // cut, so the resolver has nothing to select and would log a fallback on
+  // every sync. Verified against `gh api repos/dtolnay/rust-toolchain/releases`
+  // (Issue #1823); revisit if upstream ever starts cutting semver releases.
   "dtolnay/rust-toolchain": {
     sha: "e97e2d8cc328f1b50210efc529dca0028893a2d9",
     version: "v1",
+    resolution: "catalogue",
   },
   // The ref no longer names the tool once pinned, so consumers must pass
   // an explicit `tool:` input (see the Rust quality template).
@@ -92,10 +134,12 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
   "dependency-check/Dependency-Check_Action": {
     sha: "1e54355a8b4c8abaa8cc7d0b70aa655a3bb15a6c",
     version: "main HEAD 2025-12-10",
+    resolution: "catalogue",
   },
   "ludeeus/action-shellcheck": {
     sha: "00b27aa7cb85167568cb48a3838b75f4265f2bca",
     version: "master HEAD 2024-06-20",
+    resolution: "catalogue",
   },
 };
 

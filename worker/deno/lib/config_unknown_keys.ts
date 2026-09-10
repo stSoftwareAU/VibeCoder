@@ -153,7 +153,10 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Issue #732: the claiming floor, stated where the rest of the host is.
   "host_disk_low_floor_gb",
   "host_disk_low_floor_percent",
-  "milestone_sync_cooldown_seconds",
+  // Issue #1776: `milestone_sync_cooldown_seconds` removed — the milestone
+  // sync now runs on every cycle in which the default tip moved, so there is
+  // no cooldown to configure. A config still carrying it gets one
+  // unknown-key warning and is otherwise ignored, not refused.
   "stale_failed_diagnostic_days",
   "stale_planning_warning_days",
 

@@ -89,7 +89,7 @@ This means: if a non-milestone issue has a stuck PR targeting the default branch
 
 1. **Select** — Issue is in a milestone; no other open PR by the configured GitHub user for **this milestone branch**; issue is otherwise eligible (labels, author, not blocked by dependencies or open children).
 2. **Branch** — Ensure `milestone/<name>` exists (from default); sync it with default (merge); **create feature branch from the milestone branch** (not from default).
-3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push.
+3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push. One deliberate difference: the **dependency-bump phase is skipped** (Issue #1775). The default branch's own PRs bump dependencies and the [periodic sync](#-periodic-milestone-branch-sync) carries those bumps down into the milestone branch, so a child PR that bumped as well would rewrite the same lockfile lines and conflict with the sync for no new versions. The child PR body carries `Dependency bump: skipped — milestone child; the default branch's own PRs bump and the sync carries them down`, and the milestone summary PR therefore inherits the current versions rather than bumping separately.
 4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). Enable auto-merge at create, like any other PR (Issue #1136); the catch-up scan and post-scan sweep are the backstop.
 
 ### ✅ Milestone completion
@@ -204,25 +204,22 @@ Long-running milestones can drift significantly from the default branch, causing
 
 ### How it works
 
-1. **Active milestone detection:** For each configured repo, the worker finds open milestones with at least one closed issue (meaning work has started).
-
-   The closed-issue lookup is the expensive half — a GraphQL `gh issue list --state closed` — while the milestone listing itself is a cheap REST call billed against a separate budget. Since the REST payload already carries `closed_issues` per milestone, that cheap call decides whether the expensive one is worth making (Issue #1488):
+1. **Milestone detection:** For each configured repo, the worker takes **every open milestone** — except an `idle-task:` one, which never carries a branch (Issue #2125). The closed-issue query that once decided whether work had "started" is gone (Issue #1776): a milestone that has completed nothing still drifts, and it was exactly the branch nobody was watching.
+2. **Cadence guard:** One `git rev-parse origin/<default>` per repo, compared against the tip each branch was last **successfully** synced against (`lastSyncedDefaultSha` in `milestone_sync_failures.json`). A branch already carrying that tip is skipped with `default tip unchanged`; anything else syncs on that cycle, which on a 30-second loop means within 30 seconds of a push to the default branch. A tip git cannot report is logged and synced — never read as "unchanged".
 
    ```mermaid
    flowchart TD
-       A["REST: repos/&lt;repo&gt;/milestones<br/>(cheap, separate budget)"] --> B{closed_issues == 0?}
-       B -- yes --> S["Skip — nothing completed yet<br/>(no GraphQL)"]
-       B -- no --> C{"count unchanged<br/>since last cycle?"}
-       C -- yes --> R["Reuse the previous verdict<br/>(no GraphQL)"]
-       C -- no --> Q["GraphQL: closed issues for the milestone"]
-       Q --> V["Record {number → closed_issues, verdict}"]
+       A["Cycle (30 s)"] --> B["git rev-parse origin/&lt;default&gt;<br/>(no API budget)"]
+       B --> C{"tip == branch's<br/>lastSyncedDefaultSha?"}
+       C -- yes --> S["Skip — default tip unchanged"]
+       C -- "no, or unreadable" --> M["Merge the default branch down"]
+       M -- success --> R["Record the tip"]
+       M -- failure --> W["WARNING, record nothing<br/>→ retried next cycle"]
    ```
 
-   This is invalidation by change, not a time-based cache: the gate reads the same authority the answer comes from, so a skipped cycle cannot act on a stale view. **Any** movement in the count invalidates — a reopened issue, or one moved out of the milestone, lowers it — and the observations are keyed by milestone **number**, so a rename does not lose them. The first observation after a restart has no baseline and queries once. Observations persist in `milestone_activity.json` in the work directory, beside `milestone_sync_failures.json`.
-2. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
-3. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
-4. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). A conflict no rule can settle aborts the merge and escalates with both sides prepared, without blocking other work.
-5. **Frequency guard:** Each milestone is synced at most once per cooldown period (default: 1 hour). The cooldown resets after each successful sync.
+3. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
+4. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
+5. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). What the triage cannot decide climbs the rest of the ladder (Issue #1777): the deterministic dependency rules, then the resolution agent. Only a file **every** rung leaves undecided aborts the merge and escalates with both sides prepared, without blocking other work.
 6. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
 
 ### Conflict triage
@@ -250,10 +247,14 @@ flowchart TD
     E -- yes --> K
     E -- no --> H
     D -- no --> H
-    K --> G{"Any file escalated?"}
-    H --> G
-    G -- yes --> X["Abort the merge — nothing pushed —<br/>and post both sides' exports,<br/>test names and the difference"]
-    G -- no --> V["Commit with the reasoning, then verify:<br/>the Issue #974 type check +<br/>check:manifests + the unit suite"]
+    K --> G{"Any file still undecided?"}
+    H --> RU{"Dependency rules?"}
+    RU -- "left over" --> AG{"Resolution agent?"}
+    RU -- decided --> G
+    AG -- decided --> G
+    AG -- "fails or aborts" --> G
+    G -- yes --> X["Abort the merge — nothing pushed —<br/>escalate naming the failed rung, with both<br/>sides' exports, test names and the difference"]
+    G -- no --> V["Commit each file's rung, then verify:<br/>the Issue #974 type check +<br/>check:manifests + the unit suite"]
     V -- green --> P["Push"]
     V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate with both halves"]
 ```
@@ -271,10 +272,27 @@ Three rules decide a file, and one rule outranks all of them:
    Where neither side wrote a case for the fix, or the evidence could not be
    read, nothing is decided — the file escalates rather than being resolved on
    no evidence.
-3. **Two designs for the same problem** — neither side contains the other, so a
-   human chooses. The merge is aborted and the escalation carries the
-   preparation: what each side exports, what each side tests, and which cases
-   exist on one side only.
+3. **Two designs for the same problem** — neither side contains the other, so
+   the triage decides nothing and the file climbs to the next rung.
+
+**The rest of the ladder (Issue #1777).** What the triage cannot decide is not
+a human's problem yet. The sync climbs the same two rungs the PR merge-conflict
+pass climbs, in the very clone the merge conflicted in:
+
+1. **The dependency rules** — a lock file or a manifest bumped on both sides
+   needs no judgement, so it never costs a model run.
+2. **The resolution agent** — asked only about the paths the rules deferred,
+   and required to resolve *and stage* them, exactly as the PR pass requires.
+
+Only a file every rung leaves undecided aborts the merge and reaches a human,
+and the escalation then names the rung that failed (`agent: …`). An agent that
+fails, is ended by the worker, leaves a path unmerged or leaves a conflict
+marker behind is a failed rung: nothing is pushed and the branch stands exactly
+at its pre-merge commit. The escalation carries the preparation: what each side
+exports, what each side tests, and which cases exist on one side only. Each
+file that *was* settled carries the rung that settled it — `triage: <case>`,
+`rule: <reason>` or `agent` — on the merge commit, in the sync's log line and
+in the report comment.
 
 **No resolution may reduce test coverage.** A conflicted test file is resolved
 by taking a side only when that side already keeps every case *and* every line
@@ -353,15 +371,16 @@ Two things hold this in place:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `sync_milestone_branches` | `true` | Enable or disable periodic milestone branch sync |
-| `milestone_sync_cooldown_seconds` | `3600` | Minimum seconds between sync attempts for the same milestone — bypassed for a milestone that has just closed an issue (see below) |
 
 To disable milestone branch sync entirely, set `sync_milestone_branches: false` in `.config.json`.
+
+`milestone_sync_cooldown_seconds` was retired by Issue #1776 — the cadence is the default-branch tip, not a clock. A `.config.json` still carrying the key loads normally and reports it once as an unknown key.
 
 ### Design notes
 
 - The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
-- The cooldown state is held in memory and resets when the worker process restarts.
-- A milestone whose REST `closed_issues` count has **moved** since the previous cycle skips the cooldown and syncs now (Issue #1558): something just closed, which means a sub-issue PR merged, which is exactly when both sides have moved and a conflict is still one day wide.
+- The cadence state is the `lastSyncedDefaultSha` in `milestone_sync_failures.json`, so it survives a worker restart — there is no in-memory cooldown to lose (Issue #1776).
+- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out (subject to the branch's conflict-attempt pacing).
 - A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
 - This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 
