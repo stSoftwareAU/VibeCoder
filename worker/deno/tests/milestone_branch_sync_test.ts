@@ -19,6 +19,10 @@ import {
   milestoneActivityPath,
   type MilestoneActivityState,
 } from "../lib/milestone_activity_gate.ts";
+import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
+import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
+import { stuckSyncDiagnosticTitle } from "../lib/milestone_sync_diagnostic_closeout.ts";
+import { milestoneSyncStreakPath } from "../lib/milestone_sync_streak.ts";
 
 // ============================================================================
 // findActiveMilestoneBranches
@@ -1236,4 +1240,340 @@ Deno.test("syncMilestoneBranches - a failed sync emits a self-heal event when wi
   assertEquals(events.length, 1);
   assertStringIncludes(events[0]!, "sync_failed");
   assertStringIncludes(events[0]!, "unrelated histories");
+});
+
+// ============================================================================
+// Escalations comment on an existing issue — never file one (Issue #1769)
+// ============================================================================
+
+/** How the injected sync fails, per escalation path. */
+type FailureKind = "plain" | "gate" | "analysis";
+
+/** Options for {@link escalationDeps}. */
+interface EscalationOptions {
+  /** Milestone title — a leading `#NNN` is the parent planning issue. */
+  milestoneTitle: string;
+  /** How the sync fails; omitted means it succeeds with a conflict. */
+  failure?: FailureKind;
+  /** The milestone's open children. */
+  children?: { number: number; title: string }[];
+  /** Whether the parent planning issue reads as closed. */
+  parentClosed?: boolean;
+  /** Make every `issue comment` call throw. */
+  commentFails?: boolean;
+  streakPath?: string;
+  log?: (message: string) => void;
+}
+
+const ESCALATION_BRANCH = "milestone/1769-escalations";
+const ESCALATION_DEFAULT_SHA = "d".repeat(40);
+
+/** The failing (or conflicting) sync outcome for one escalation path. */
+function escalationOutcome(
+  options: EscalationOptions,
+): ReturnType<MilestoneBranchSyncDeps["syncBranchFn"]> {
+  if (options.failure === "gate") {
+    return Promise.resolve({
+      ok: false as const,
+      error: mergeGateFailureError(ESCALATION_BRANCH, "main", {
+        status: "failed",
+        detail: "the merged tree does not type-check",
+        output: "TS2304: Cannot find name 'foo'",
+      }),
+    });
+  }
+  if (options.failure === "analysis") {
+    return Promise.resolve({
+      ok: false as const,
+      error: new MilestoneConflictEscalation(
+        "two designs for the same problem",
+        [{
+          path: "worker/deno/lib/scan_content.ts",
+          reason: "both sides rewrote it",
+          oursExports: ["a"],
+          theirsExports: ["b"],
+          oursTests: [],
+          theirsTests: [],
+          onlyOursTests: [],
+          onlyTheirsTests: [],
+        }],
+        [],
+        ESCALATION_DEFAULT_SHA,
+      ),
+    });
+  }
+  if (options.failure === "plain") {
+    return Promise.resolve({
+      ok: false as const,
+      error: new Error("refusing to merge unrelated histories"),
+    });
+  }
+  return Promise.resolve({
+    ok: true as const,
+    value: {
+      message: "merged with conflicts",
+      conflict: {
+        files: ["worker/deno/lib/scan_content.ts"],
+        milestoneSha: "e".repeat(40),
+        defaultSha: ESCALATION_DEFAULT_SHA,
+        resolution: "theirs" as const,
+      },
+    },
+  });
+}
+
+/** Sync deps for the escalation-destination tests, recording every argv. */
+function escalationDeps(
+  calls: string[][],
+  options: EscalationOptions,
+): MilestoneBranchSyncDeps {
+  const deps: MilestoneBranchSyncDeps = {
+    repos: ["owner/repo"],
+    ghCommandFn: (args: string[]): Promise<string> => {
+      calls.push([...args]);
+      const key = args.join(" ");
+      if (key.includes("repos/owner/repo/milestones")) {
+        return Promise.resolve(
+          JSON.stringify([{ title: options.milestoneTitle, number: 5 }]),
+        );
+      }
+      if (key.includes("default_branch")) return Promise.resolve("main");
+      if (key.includes("issue list") && key.includes("--state closed")) {
+        return Promise.resolve(
+          JSON.stringify([{
+            number: 10,
+            title: "t",
+            milestone: { title: options.milestoneTitle },
+          }]),
+        );
+      }
+      if (key.startsWith("issue view")) {
+        return Promise.resolve(options.parentClosed ? "CLOSED" : "OPEN");
+      }
+      if (key.includes("issues?milestone=")) {
+        return Promise.resolve(JSON.stringify(options.children ?? []));
+      }
+      if (key.startsWith("issue list")) return Promise.resolve("[]");
+      if (key.startsWith("issue comment") && options.commentFails) {
+        return Promise.reject(new Error("404 not found"));
+      }
+      if (key.includes("branches/milestone")) {
+        return Promise.resolve(ESCALATION_BRANCH);
+      }
+      return Promise.resolve("");
+    },
+    syncBranchFn: () => escalationOutcome(options),
+    log: options.log ?? (() => undefined),
+    cooldownSeconds: 0,
+    lastSyncTimes: new Map(),
+  };
+  if (options.streakPath) deps.streakPath = options.streakPath;
+  return deps;
+}
+
+const escalationCreateCalls = (calls: string[][]): string[][] =>
+  calls.filter((c) => c[0] === "issue" && c[1] === "create");
+
+Deno.test("syncMilestoneBranches - no escalation path ever files an issue (Issue #1769)", async () => {
+  // Every escalation shape, on a milestone with no parent planning issue and
+  // no open children — the state that used to file one issue per branch.
+  for (
+    const failure of [
+      undefined,
+      "plain",
+      "gate",
+      "analysis",
+    ] as (FailureKind | undefined)[]
+  ) {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1769-create-" });
+    try {
+      const calls: string[][] = [];
+      const streakPath = milestoneSyncStreakPath(dir);
+      // Three cycles: the plain-failure escalation only fires at the streak
+      // threshold, so a single cycle would not reach it.
+      for (let cycle = 0; cycle < 3; cycle++) {
+        await syncMilestoneBranches(escalationDeps(calls, {
+          milestoneTitle: "Escalations with no parent",
+          ...(failure ? { failure } : {}),
+          children: [],
+          streakPath,
+        }));
+      }
+      assertEquals(
+        escalationCreateCalls(calls).length,
+        0,
+        `failure '${failure ?? "conflict"}' filed an issue; gh calls: ${
+          JSON.stringify(calls)
+        }`,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("syncMilestoneBranches - a streak escalation with nowhere to go is recorded as escalated (Issue #1769)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1769-none-" });
+  try {
+    const calls: string[][] = [];
+    const logs: string[] = [];
+    const streakPath = milestoneSyncStreakPath(dir);
+    for (let cycle = 0; cycle < 4; cycle++) {
+      await syncMilestoneBranches(escalationDeps(calls, {
+        milestoneTitle: "Escalations with no parent",
+        failure: "plain",
+        children: [],
+        streakPath,
+        log: (m) => logs.push(m),
+      }));
+    }
+
+    assertEquals(escalationCreateCalls(calls).length, 0);
+    assertEquals(
+      logs.filter((l) => l.includes("no open children")).length,
+      1,
+      `one log line, not one per cycle; logs: ${JSON.stringify(logs)}`,
+    );
+    const streaks = JSON.parse(await Deno.readTextFile(streakPath));
+    assertEquals(
+      Object.values(streaks).map((e) =>
+        (e as { escalated: boolean }).escalated
+      ),
+      [true],
+      "the streak is marked escalated so the line is not repeated",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a closed parent planning issue is reopened and commented on once (Issue #1769)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1769-reopen-" });
+  try {
+    const calls: string[][] = [];
+    const streakPath = milestoneSyncStreakPath(dir);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      await syncMilestoneBranches(escalationDeps(calls, {
+        milestoneTitle: "#1730 Resolve merge conflicts",
+        failure: "gate",
+        parentClosed: true,
+        streakPath,
+      }));
+    }
+
+    assertEquals(
+      calls.filter((c) => c[0] === "issue" && c[1] === "reopen").map((c) =>
+        c[2]
+      ),
+      ["1730"],
+      "reopened once, on the first cycle only",
+    );
+    const labels = calls
+      .filter((c) => c.includes("--add-label"))
+      .map((c) => c[c.indexOf("--add-label") + 1]);
+    assertEquals(labels, ["needs-human"], "no pickup label is ever added");
+
+    const comments = calls.filter((c) =>
+      c[0] === "issue" && c[1] === "comment"
+    );
+    assertEquals(comments.length, 1, "a second cycle posts nothing");
+    assertEquals(comments[0]![2], "1730");
+    assertStringIncludes(comments[0]!.join(" "), "Reopened by the milestone");
+    assertEquals(escalationCreateCalls(calls).length, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a comment that throws leaves the streak unescalated (Issue #1769)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1769-throw-" });
+  try {
+    const calls: string[][] = [];
+    const streakPath = milestoneSyncStreakPath(dir);
+    for (let cycle = 0; cycle < 4; cycle++) {
+      await syncMilestoneBranches(escalationDeps(calls, {
+        milestoneTitle: "#1730 Resolve merge conflicts",
+        failure: "plain",
+        commentFails: true,
+        streakPath,
+      }));
+    }
+
+    const streaks = JSON.parse(await Deno.readTextFile(streakPath));
+    assertEquals(
+      Object.values(streaks).map((e) =>
+        (e as { escalated: boolean }).escalated
+      ),
+      [false],
+      "an escalation that did not go out is not marked done",
+    );
+    assert(
+      calls.filter((c) => c[0] === "issue" && c[1] === "comment").length > 1,
+      "and it is retried on the next cycle",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a successful sync closes the branch's own diagnostics (Issue #1769)", async () => {
+  const calls: string[][] = [];
+  const stuckTitle = stuckSyncDiagnosticTitle("milestone/v1-0");
+  const deps: MilestoneBranchSyncDeps = {
+    repos: ["owner/repo"],
+    ghCommandFn: (args: string[]): Promise<string> => {
+      calls.push([...args]);
+      const key = args.join(" ");
+      if (key.includes("repos/owner/repo/milestones")) {
+        return Promise.resolve(JSON.stringify([{ title: "v1.0", number: 1 }]));
+      }
+      if (key.includes("default_branch")) return Promise.resolve("main");
+      if (key.includes("issue list") && key.includes("--state closed")) {
+        return Promise.resolve(
+          JSON.stringify([{
+            number: 10,
+            title: "t",
+            milestone: { title: "v1.0" },
+          }]),
+        );
+      }
+      if (key.startsWith("issue list")) {
+        const search = args[args.indexOf("--search") + 1] ?? "";
+        return Promise.resolve(
+          search.includes("stuck")
+            ? JSON.stringify([{
+              number: 1754,
+              title: stuckTitle,
+              author: { login: "vibe-coder" },
+              body: "",
+            }, {
+              number: 4242,
+              title: stuckTitle,
+              author: { login: "passer-by" },
+              body: "",
+            }])
+            : "[]",
+        );
+      }
+      if (key.includes("branches/milestone")) return Promise.resolve("ok");
+      return Promise.resolve("");
+    },
+    syncBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: { message: "merged" } }),
+    log: () => undefined,
+    cooldownSeconds: 0,
+    lastSyncTimes: new Map(),
+    dedupAuthors: { fleetAuthors: ["vibe-coder"] },
+  };
+
+  const result = await syncMilestoneBranches(deps);
+  assert(result.ok);
+  assertEquals(result.value.synced, 1);
+
+  const closes = calls.filter((c) => c[0] === "issue" && c[1] === "close");
+  assertEquals(closes.map((c) => c[2]), ["1754"], "only the fleet's own issue");
+  assertStringIncludes(
+    closes[0]![closes[0]!.indexOf("--comment") + 1] ?? "",
+    "milestone/v1-0",
+  );
 });

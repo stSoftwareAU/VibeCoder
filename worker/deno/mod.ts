@@ -170,6 +170,7 @@ import { checkResurrectedFilesCommand } from "./commands/check_resurrected_files
 import { notifyAuditFailureCommand } from "./commands/notify_audit_failure.ts";
 import { purgeStaleWorkflowIssuesCommand } from "./commands/purge_stale_workflow_issues.ts";
 import { sweepHeartbeatCommentsCommand } from "./commands/sweep_heartbeat_comments.ts";
+import { sweepDriftCommand } from "./commands/sweep_drift.ts";
 import { containerImageHashCommand } from "./commands/container_image_hash.ts";
 import { firstRunVerifyCommand } from "./commands/first_run_verify.ts";
 import { containerRuntimeDetectCommand } from "./commands/container_runtime_detect.ts";
@@ -367,6 +368,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(checkResurrectedFilesCommand);
   registry.register(purgeStaleWorkflowIssuesCommand);
   registry.register(sweepHeartbeatCommentsCommand);
+  registry.register(sweepDriftCommand);
   registry.register(containerImageHashCommand);
   registry.register(firstRunVerifyCommand);
   registry.register(containerRuntimeDetectCommand);
