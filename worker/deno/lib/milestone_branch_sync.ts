@@ -69,6 +69,11 @@ import {
   type SyncStreaks,
   trackingIssueFromMilestoneTitle,
 } from "./milestone_sync_streak.ts";
+import { executeRollback, type RollbackOutcome } from "./milestone_rollback.ts";
+import {
+  escalateRollbackFailure,
+  requeueRolledBackChildren,
+} from "./milestone_rollback_requeue.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -134,6 +139,14 @@ export interface MilestoneRollbackRequest {
   attempts: number;
   /** The last attempt's reason, so the hand-off says what it tripped on. */
   reason: string;
+  /** Milestone title, so the re-queue notice can find the parent issue. */
+  milestoneTitle: string;
+  /** GitHub milestone number, for the oldest-child fallback. */
+  milestoneNumber: number;
+  /** Paths the last conflict named, when they are known. */
+  conflictingPaths?: string[];
+  /** Child PRs a previous roll-back already reverted. */
+  alreadyReverted?: number[];
 }
 
 /**
@@ -149,7 +162,16 @@ export interface MilestoneRollbackRequest {
  */
 export type MilestoneRollbackFn = (
   request: MilestoneRollbackRequest,
-) => Promise<void>;
+) => Promise<RollbackOutcome | void>;
+
+/**
+ * Git runner the wired roll-back uses in the repo's clone
+ * (Issue #1781). `args` are the git arguments after the binary.
+ */
+export type RollbackGitFn = (
+  repo: string,
+  args: string[],
+) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /**
  * Function signature for checking whether a repository has been cloned
@@ -275,10 +297,16 @@ export interface MilestoneBranchSyncDeps {
   now?: () => number;
   /**
    * Where a branch that has spent its conflict budget is handed
-   * (Issue #1778). Defaults to one log line and nothing posted — the
-   * roll-back wiring is Issue #1771's.
+   * (Issue #1778). Defaults to {@link executeRollback} when
+   * {@link rollbackGitFn} is set, otherwise one log line.
    */
   rollbackFn?: MilestoneRollbackFn;
+  /**
+   * Git in the repo's clone, used by the default roll-back to run
+   * {@link executeRollback} (Issue #1781). Omitted (most tests): the
+   * default stays the "not yet available" log line.
+   */
+  rollbackGitFn?: RollbackGitFn;
 }
 
 // ---------------------------------------------------------------------------
@@ -465,18 +493,160 @@ export function judgeSyncFailure(
  * a `needs-human` label or a diagnostic issue, which is the whole point of
  * the budget.
  */
+function isRollbackOutcome(
+  value: RollbackOutcome | void,
+): value is RollbackOutcome {
+  return value !== undefined && typeof value === "object" &&
+    typeof value.merged === "boolean" && Array.isArray(value.reverted);
+}
+
+/**
+ * Apply a roll-back's GitHub half and update the ledger (Issue #1781).
+ *
+ * `merged: true` resets the budget, increments `rollbacks`, records the
+ * reverted SHAs and re-queues the children. `merged: false` escalates
+ * once — `needs-human` on the existing target — and leaves the budget spent.
+ */
+async function applyRollbackOutcome(opts: {
+  repo: string;
+  milestone: ActiveMilestone;
+  entry: SyncStreakEntry;
+  outcome: RollbackOutcome;
+  attempts: number;
+  ghCommandFn: GhCommandFn;
+  log: (message: string) => void;
+  emitSelfHealEvent?: MilestoneBranchSyncDeps["emitSelfHealEvent"];
+}): Promise<SyncStreakEntry> {
+  const { repo, milestone, outcome, attempts, ghCommandFn, log } = opts;
+  let entry = opts.entry;
+
+  if (outcome.merged) {
+    const nextRollbacks = (entry.rollbacks ?? 0) + 1;
+    entry = resetConflictLedgerOnSuccess(entry);
+    entry.rollbacks = nextRollbacks;
+    const prs = new Set(entry.revertedPrs ?? []);
+    const shas = new Set(entry.revertedShas ?? []);
+    for (const child of outcome.reverted) {
+      prs.add(child.prNumber);
+      if (child.sha) shas.add(child.sha);
+    }
+    entry.revertedPrs = [...prs];
+    entry.revertedShas = [...shas];
+    await requeueRolledBackChildren({
+      repo,
+      milestoneTitle: milestone.milestoneTitle,
+      milestoneNumber: milestone.milestoneNumber,
+      milestoneBranch: milestone.milestoneBranch,
+      defaultBranch: milestone.defaultBranch,
+      rollbacks: nextRollbacks,
+      attempts,
+      reverted: outcome.reverted,
+      ghCommandFn,
+      log,
+    });
+    await opts.emitSelfHealEvent?.({
+      module: "milestone_branch_sync",
+      action: "rolled_back",
+      reason: `${repo} branch ${milestone.milestoneBranch}: reverted ` +
+        `${outcome.reverted.map((c) => `#${c.prNumber}`).join(",") || "none"}`,
+      result: "ok",
+    }).catch(() => undefined);
+    return entry;
+  }
+
+  const escalation = await escalateRollbackFailure({
+    repo,
+    milestoneTitle: milestone.milestoneTitle,
+    milestoneNumber: milestone.milestoneNumber,
+    milestoneBranch: milestone.milestoneBranch,
+    defaultBranch: milestone.defaultBranch,
+    reason: outcome.reason ?? "roll-back did not merge",
+    alreadyEscalated: entry.escalated === true,
+    ghCommandFn,
+    log,
+  });
+  if (escalation.countedAsEscalated) entry.escalated = true;
+  await opts.emitSelfHealEvent?.({
+    module: "milestone_branch_sync",
+    action: "rollback_failed",
+    reason: `${repo} branch ${milestone.milestoneBranch}: ${
+      outcome.reason ?? "roll-back did not merge"
+    }`,
+    result: "failed",
+  }).catch(() => undefined);
+  return entry;
+}
+
 function defaultRollbackFn(
   log: (message: string) => void,
+  gitFn?: RollbackGitFn,
+  ghCommandFn?: GhCommandFn,
 ): MilestoneRollbackFn {
-  return (request) => {
-    log(
-      `WARNING: Milestone branch '${request.milestoneBranch}' in ` +
-        `${request.repo}: budget exhausted: roll-back not yet available — ` +
-        `${request.attempts} concluded conflict failure(s), last: ` +
-        `${request.reason} (Issue #1778)`,
-    );
-    return Promise.resolve();
+  return async (request) => {
+    if (gitFn === undefined) {
+      log(
+        `WARNING: Milestone branch '${request.milestoneBranch}' in ` +
+          `${request.repo}: budget exhausted: roll-back not yet available — ` +
+          `${request.attempts} concluded conflict failure(s), last: ` +
+          `${request.reason} (Issue #1778)`,
+      );
+      return;
+    }
+    try {
+      await prepareRollbackWorktree(gitFn, request);
+    } catch (err) {
+      return {
+        merged: false,
+        reverted: [],
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const outcome = await executeRollback({
+      repo: request.repo,
+      milestoneBranch: request.milestoneBranch,
+      defaultBranch: request.defaultBranch,
+      git: (args) => gitFn(request.repo, args),
+      gh: ghCommandFn ?? ((args) =>
+        Promise.reject(
+          new Error(`gh is not wired for roll-back: ${args.join(" ")}`),
+        )),
+      log,
+      ...(request.conflictingPaths !== undefined
+        ? { conflictingPaths: request.conflictingPaths }
+        : {}),
+      ...(request.alreadyReverted !== undefined
+        ? { alreadyReverted: request.alreadyReverted }
+        : {}),
+    });
+    if (!outcome.ok) {
+      return {
+        merged: false,
+        reverted: [],
+        reason: outcome.error.message,
+      };
+    }
+    return outcome.value;
   };
+}
+
+/** Reset a leftover merge and check the milestone branch out. */
+async function prepareRollbackWorktree(
+  gitFn: RollbackGitFn,
+  request: MilestoneRollbackRequest,
+): Promise<void> {
+  await gitFn(request.repo, ["merge", "--abort"]);
+  const checkout = await gitFn(request.repo, [
+    "checkout",
+    "-B",
+    request.milestoneBranch,
+    `origin/${request.milestoneBranch}`,
+  ]);
+  if (checkout.code !== 0) {
+    throw new Error(
+      `Could not check out '${request.milestoneBranch}' for roll-back: ` +
+        `${checkout.stderr || checkout.stdout} (Issue #1781)`,
+    );
+  }
 }
 
 /**
@@ -810,7 +980,8 @@ export async function syncMilestoneBranches(
   };
 
   const now = deps.now ?? (() => Date.now());
-  const rollbackFn = deps.rollbackFn ?? defaultRollbackFn(log);
+  const rollbackFn = deps.rollbackFn ??
+    defaultRollbackFn(log, deps.rollbackGitFn, ghCommandFn);
   // The cycle's single agent rung, across every repo and every milestone
   // (Issue #1778). Spent by the first branch that actually conflicts while
   // holding it — a branch that merged cleanly asked nothing of the agent.
@@ -1104,14 +1275,41 @@ export async function syncMilestoneBranches(
               const attempts = entry.conflictAttempts ?? 0;
               if (isConflictBudgetExhausted(entry)) {
                 // Every automatic rung has been spent, so the branch is
-                // rolled back rather than reported to anyone (Issue #1771).
-                await rollbackFn({
+                // rolled back rather than reported to anyone (Issue #1781).
+                const outcome = await rollbackFn({
                   repo,
                   milestoneBranch: milestone.milestoneBranch,
                   defaultBranch: milestone.defaultBranch,
                   attempts,
                   reason: verdict.reason,
+                  milestoneTitle: milestone.milestoneTitle,
+                  milestoneNumber: milestone.milestoneNumber,
+                  ...(conflictError
+                    ? {
+                      conflictingPaths: [
+                        ...conflictError.analyses.map((a) => a.path),
+                        ...conflictError.resolved.map((d) => d.path),
+                      ],
+                    }
+                    : {}),
+                  ...(entry.revertedPrs !== undefined
+                    ? { alreadyReverted: entry.revertedPrs }
+                    : {}),
                 });
+                if (isRollbackOutcome(outcome)) {
+                  entry = await applyRollbackOutcome({
+                    repo,
+                    milestone,
+                    entry,
+                    outcome,
+                    attempts,
+                    ghCommandFn,
+                    log,
+                    emitSelfHealEvent: deps.emitSelfHealEvent,
+                  });
+                  streaks[streakKey] = entry;
+                  streaksDirty = true;
+                }
               } else {
                 // One line, and nothing posted: an automatic attempt still
                 // remains, so no human is asked about it yet.

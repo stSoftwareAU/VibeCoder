@@ -1267,6 +1267,18 @@
         "worker/deno/lib/milestone_default_tip.ts"
       ],
       "sweptAt": "23e899b98daa8613993a16ba10f5b7e2abc28d61"
+    },
+    {
+      "issue": 1781,
+      "chunk": "12v",
+      "title": "the milestone roll-back re-queue",
+      "ledger": "docs/audits/security-sweep-1781-milestone-rollback-requeue.md",
+      "definition": "modules added to lib/ after 12a-12u recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_rollback_requeue.ts"
+      ],
+      "sweptAt": "137f25be5460cbeebaa7cc68a359d05c9108922b"
     }
   ],
   "roots": [

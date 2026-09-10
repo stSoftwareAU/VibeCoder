@@ -162,7 +162,9 @@ host builds and runs a Codex image rather than reusing the default one.
   CLI-only projects). Configuration is operator-side only — target repos carry
   no worker configuration.
 - **Milestone enhancements** — Progress notifications, configurable issue
-  ordering within milestones, periodic branch sync with the default branch, and
+  ordering within milestones, periodic branch sync with the default branch,
+  automatic roll-back of a stuck milestone branch (reverted children are
+  reopened and re-queued; a roll-back with nothing left escalates once), and
   milestone health diagnostics.
 - **Self-healing** — Shadow-copy execution, automatic repo resets, disk cleanup,
   failure recovery, rate-limit handling, and crash resilience keep the worker
