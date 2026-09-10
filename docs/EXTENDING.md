@@ -250,6 +250,48 @@ Universal specs (applied to every repo regardless of language) include:
 Language-specific specs cover Rust, Deno, Node, Java, and Bash projects;
 see `WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.
 
+### Pins are resolved when the issue is filed, and the body says so
+
+The catalogue in `pinned_actions.ts` is the **fallback floor**, not the value
+an issue hands a human. `setup workflow-sync` therefore calls
+`resolveActionPins()` **once per sync run** — the pins do not vary by
+repository — and renders every missing- and partial-workflow body through
+`applyResolvedPins()`, so each `uses:` line carries the highest upstream
+release that has aged past `VIBE_BUMP_QUARANTINE_HOURS` rather than whatever
+SHA the catalogue was last edited with. The resolution is **lazy**: a
+`dryRun` renders no body and issues no lookup at all.
+
+An action whose lookup fails keeps its catalogue SHA and emits exactly one
+`[workflow-sync] pin resolution failed: <action> — <reason>` line, so a stale
+pin is loud rather than silent — grep the setup log for that prefix.
+
+Because the YAML the body carries is final, both body variants tell the
+implementer what to do with it:
+
+- **copy it verbatim** — no value in a template is repository-specific, and
+  the body says so rather than leaving the implementer to guess which strings
+  are placeholders;
+- **copy the pins as given** — do not re-resolve, bump or reformat them; and
+- **the checks the committed file must pass**, rendered from the `label` of
+  every `WORKFLOW_FILE_CHECKS` entry in
+  `worker/deno/lib/workflow_file_checks.ts` — the same file-scoped checks the
+  Actions audit and `quality.sh` run, so a check added there reaches every
+  body the next sync files.
+
+```mermaid
+sequenceDiagram
+    participant S as setup workflow-sync
+    participant R as resolveActionPins
+    participant G as gh api
+    participant T as target repo issue
+    S->>R: once per sync run (lazily, before the first body)
+    R->>G: releases (drafts and pre-releases filtered)
+    R->>G: commits/<tag> → sha
+    R-->>S: pins + failures (one log line each)
+    S->>S: applyResolvedPins(template)
+    S->>T: body: resolved YAML + How to apply (checks, pin rule)
+```
+
 ### Security specs tell the human how to make the check block merges
 
 Adding a workflow only makes its scan advisory — a red run reports and the
@@ -289,9 +331,9 @@ When you add or bump a template:
   each entry to the highest upstream release that has cleared
   `VIBE_BUMP_QUARANTINE_HOURS`, and falls back to the recorded SHA with one
   `[workflow-sync] pin resolution failed:` line. `applyResolvedPins()` then
-  rewrites the rendered template's `uses:` lines. The resolver is a library
-  whose intended caller, `workflow-sync`, is wired up separately, so
-  `pinnedAction()` on its own still renders the catalogue SHA.
+  rewrites the rendered template's `uses:` lines, and `workflow-sync` calls
+  both when it files an issue (see below), so `pinnedAction()` on its own
+  still renders the catalogue SHA but no issue body carries it unresolved.
 - Mark an entry `resolution: "catalogue"` only when there is no stable
   release series to resolve it against — an entry deliberately pinned to a
   branch HEAD, or an upstream that cuts no `MAJOR.MINOR.PATCH` release at

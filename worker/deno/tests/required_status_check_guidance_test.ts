@@ -24,6 +24,14 @@ import {
   partialDeduplicationTag,
 } from "../setup/workflow_sync.ts";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
+import { PINNED_ACTIONS } from "../lib/pinned_actions.ts";
+
+/**
+ * The catalogue pins, which is what a body renders with when the resolver
+ * reports no change (Issue #1824). These tests are about the guidance prose,
+ * not the pins, so the catalogue keeps them independent of upstream.
+ */
+const CATALOGUE_PINS = { ...PINNED_ACTIONS };
 import { scanGitleaksDrift } from "../lib/gitleaks_drift_scanner.ts";
 import type { WorkflowFile } from "../lib/workflow_scan_common.ts";
 
@@ -148,11 +156,19 @@ Deno.test("requiredStatusCheckSection - lists every check name when a workflow r
 // ---------------------------------------------------------------------------
 
 Deno.test("issueBody - the gitleaks missing-workflow issue tells the human how to make the check block merges", () => {
-  assertCarriesGuidance(issueBody(gitleaksSpec), "Gitleaks / gitleaks");
+  assertCarriesGuidance(
+    issueBody(gitleaksSpec, CATALOGUE_PINS),
+    "Gitleaks / gitleaks",
+  );
 });
 
 Deno.test("issueBodyPartial - the gitleaks partial-match issue carries the same instructions", () => {
-  const body = issueBodyPartial(gitleaksSpec, "gitleaks.yml", []);
+  const body = issueBodyPartial(
+    gitleaksSpec,
+    "gitleaks.yml",
+    [],
+    CATALOGUE_PINS,
+  );
   assertCarriesGuidance(body, "Gitleaks / gitleaks");
 });
 
@@ -164,9 +180,9 @@ Deno.test("issueBody/issueBodyPartial - every security spec carries the guidance
       spec.template,
       spec.suggestedFilename,
     )[0]!;
-    assertCarriesGuidance(issueBody(spec), checkName);
+    assertCarriesGuidance(issueBody(spec, CATALOGUE_PINS), checkName);
     assertCarriesGuidance(
-      issueBodyPartial(spec, spec.suggestedFilename, []),
+      issueBodyPartial(spec, spec.suggestedFilename, [], CATALOGUE_PINS),
       checkName,
     );
   }
@@ -174,13 +190,14 @@ Deno.test("issueBody/issueBodyPartial - every security spec carries the guidance
 
 Deno.test("issueBody - non-security specs are unaffected by the guidance", () => {
   const other = WORKFLOW_SPECS.find((s) => s.category !== "security")!;
-  const body = issueBody(other);
+  const body = issueBody(other, CATALOGUE_PINS);
   assert(!body.includes("Require status checks to pass"));
   assert(!body.includes("Make this scan block merges"));
   assert(
-    !issueBodyPartial(other, other.suggestedFilename, []).includes(
-      "Make this scan block merges",
-    ),
+    !issueBodyPartial(other, other.suggestedFilename, [], CATALOGUE_PINS)
+      .includes(
+        "Make this scan block merges",
+      ),
   );
 });
 
@@ -194,11 +211,16 @@ Deno.test("issueBody - dedup tags are unchanged and still appear exactly once", 
     "<!-- vibe-coder:workflow-sync:partial:gitleaks -->",
   );
 
-  const body = issueBody(gitleaksSpec);
+  const body = issueBody(gitleaksSpec, CATALOGUE_PINS);
   assertEquals(body.split(deduplicationTag("gitleaks")).length - 1, 1);
   assert(body.trimEnd().endsWith(deduplicationTag("gitleaks")));
 
-  const partial = issueBodyPartial(gitleaksSpec, "gitleaks.yml", []);
+  const partial = issueBodyPartial(
+    gitleaksSpec,
+    "gitleaks.yml",
+    [],
+    CATALOGUE_PINS,
+  );
   assertEquals(
     partial.split(partialDeduplicationTag("gitleaks")).length - 1,
     1,
