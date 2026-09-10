@@ -22,17 +22,14 @@
  *   3. code-fix-required  (lint/check tool name match or actionable code-fix
  *                          patterns — semgrep, eslint, ReDoS, type errors, etc.).
  *   4. timing             (often a downstream symptom of #1 or a slow test).
- *                          A timing statement only — "timed out", a cancelled
- *                          job, or a timeout named as the failure itself. A
- *                          BARE "timeout" mention no longer qualifies: CI logs
- *                          routinely echo `timeout-minutes:` or a `timeout 900
- *                          …` wrapper, and Issue #1882 saw an ordinary exit-1
- *                          script failure steered to a timing remedy by one.
- *   5. code-fix-required  (explicit non-zero exit — the failing step's own
- *                          verdict. Ranked below a genuine timing statement,
- *                          because a step that timed out also exits non-zero,
- *                          but above the fallback: an incidental "timeout"
- *                          mention must never outrank it — Issue #1882).
+ *                          An explicit timing statement only — a bare
+ *                          "timeout" mention does not qualify, see
+ *                          TIMING_TEXT_PATTERNS.
+ *   5. code-fix-required, second rung
+ *                         (the failing step's own non-zero exit, see
+ *                          EXPLICIT_EXIT_REGEX_PATTERNS — ranked here, below
+ *                          rung 4, because a step that timed out also exits
+ *                          non-zero).
  *   6. unknown            (fallback — caller should attempt a code fix).
  */
 
@@ -181,11 +178,9 @@ const TIMING_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
 ];
 
 /**
- * An explicit non-zero exit is the failing step's own verdict — "Process
- * completed with exit code 1", "exited with code 2", "exit status 1". Checked
- * after the timing patterns (a step that times out also exits non-zero) but
- * ahead of the unknown fallback, so an ordinary script failure routes to a
- * code fix instead of being read as timing or shrugged off (Issue #1882).
+ * The failing step's own verdict — "Process completed with exit code 1",
+ * "exited with code 2", "exit status 1". An ordinary script failure carrying
+ * no other recognised pattern is a code fix, not a shrug (Issue #1882).
  */
 const EXPLICIT_EXIT_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
   /\bexit(?:ed)?\s*(?:with\s*)?(?:code|status)\s*[:=]?\s*[1-9]\d*/i,
@@ -325,9 +320,7 @@ export function classifyCiFailure(
     };
   }
 
-  // ---- Explicit non-zero exit (Issue #1882) ----
-  // No timing or infrastructure signal, but the step reported its own
-  // non-zero exit: an ordinary failure the working tree can fix.
+  // ---- Explicit non-zero exit ----
   const matchedExit = EXPLICIT_EXIT_REGEX_PATTERNS.filter((re) =>
     re.test(haystack)
   );

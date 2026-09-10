@@ -296,10 +296,8 @@ Deno.test("ci_failure_classifier - semgrep stays a code fix", () => {
 // Incidental "timeout" mentions (Issue #1882)
 //
 // NEAT-AI-Backpropagation PR 150's `Project Validation` failure was an ordinary
-// exit-1 script failure — `check-neat-core-version.sh` refusing a breaking
-// dependency bump — but the job log echoed a `timeout-minutes:` setting, so the
-// bare "timeout" substring outranked the failing step's own verdict and the
-// agent was steered toward a timing remedy.
+// exit-1 script failure, but the job log echoed a `timeout-minutes:` setting
+// and the bare "timeout" substring outranked the failing step's own verdict.
 // =============================================================================
 
 Deno.test("ci_failure_classifier - regression for PR 150 (exit-1 script, incidental timeout mention)", () => {
@@ -314,6 +312,10 @@ Deno.test("ci_failure_classifier - regression for PR 150 (exit-1 script, inciden
     ].join("\n"),
   );
   assertEquals(result.category, "code-fix-required");
+  // The routing must be explainable: the step's own exit is the evidence.
+  assertEquals(result.reason.includes("exited non-zero"), true);
+  assertEquals(result.signals.includes("check:project validation"), true);
+  assertEquals(result.signals.some((s) => s.startsWith("regex:")), true);
 });
 
 Deno.test("ci_failure_classifier - a bare timeout-minutes echo alone is not a timing failure", () => {
@@ -341,6 +343,8 @@ Deno.test("ci_failure_classifier - a timeout named as the failure still routes t
     "Timeout of 30000ms exceeded while waiting for the fixture",
   );
   assertEquals(result.category, "timing");
+  assertEquals(result.reason.startsWith("timing failure:"), true);
+  assertEquals(result.signals.some((s) => s.startsWith("regex:")), true);
 });
 
 Deno.test("ci_failure_classifier - a timeout named as the cause of a failure routes to timing", () => {
