@@ -990,6 +990,18 @@
       "sweptAt": "2d1e11776c5765a1a2d8b5c9caf003d958c529d1"
     },
     {
+      "issue": 1862,
+      "chunk": "12p",
+      "title": "top-up: the re-approved-then-superseded hand-off",
+      "ledger": "docs/audits/security-sweep-1862-reapproval-superseded-handoff.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: reapproval_superseded_handoff.ts (#1862)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/reapproval_superseded_handoff.ts"
+      ],
+      "sweptAt": "3e0f1a4de011350ed772e10df1216a4d7d48bd59"
+    },
+    {
       "issue": 1218,
       "chunk": "13",
       "title": "commands CLI entry points",

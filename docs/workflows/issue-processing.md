@@ -1131,11 +1131,31 @@ an orphaned merge too:
   issue outgrows. An unverifiable approval time — no or unparseable `mergedAt`,
   or a timeline read that fails or exceeds the page cap — is stated at
   `WARNING` and keeps the close.
+- **The re-approval that says nothing (Issue #1862).** Honouring the
+  re-approval keeps the issue open, and the #218 superseded release honours the
+  merge — and nothing in between asked what the re-approval was *for*. On
+  GRQ-AutoTrader#106 the two combined into a per-cycle loop: `work-on` re-added
+  6h14m after PR #116 merged, a fresh agent started on the original description
+  that PR already satisfied, the level branch released as superseded, a success
+  with no output and the label untouched, so the next scan claimed it again —
+  three Opus invocations in four hours. The pre-check now records the
+  re-approval on the phase state, and a run that **then** ends superseded is
+  handed to a human: one marker-deduped comment naming the PR that resolved the
+  issue and asking what the re-approval should change, `needs-human` applied
+  through the shared escalation chokepoint, and the discovery labels stripped by
+  `stripDiscoveryLabelsOnEscalation` — so the issue is not re-claimed until
+  someone answers. Both facts are required: a re-approved run that raised a PR
+  was worked normally, and a superseded release with no re-approval is the
+  ordinary #218 stop.
 
 ```mermaid
 flowchart TD
   Pre["Merged-PR pre-check"] --> Reapp{"Trusted approval label<br/>added after mergedAt?"}
   Reapp -->|"Yes — re-approved"| Work["Continue the run:<br/>WARNING, no close"]
+  Work --> Sup{"Run ended superseded?<br/>(nothing left to change)"}
+  Sup -->|No| Pr["Ordinary outcome:<br/>the re-approved scope's PR"]
+  Sup -->|Yes| Hand["Hand off (Issue #1862):<br/>one deduped comment +<br/>needs-human, labels stripped"]
+  Hand --> Wait["Not re-claimed until<br/>a human answers"]
   Reapp -->|No| Landed{"Merge reachable from<br/>the default branch?"}
   Landed -->|Yes| Close["Close the issue<br/>(success)"]
   Landed -->|"No — orphaned"| Heal["Raise / confirm a rollup PR<br/>milestone branch → default"]
@@ -1147,11 +1167,16 @@ flowchart TD
   style Heal fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Bounce fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
   style Work fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Pr fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Hand fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Wait fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
 ```
 
 **Implementation:** [orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts)
 (the repair), [phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
-(detect → self-heal → bounce, and the re-approval skip), `isExpectedSkipResult` in
+(detect → self-heal → bounce, and the re-approval skip),
+[reapproval_superseded_handoff.ts](../../worker/deno/lib/reapproval_superseded_handoff.ts)
+(the re-approved-then-superseded hand-off), `isExpectedSkipResult` in
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
 
