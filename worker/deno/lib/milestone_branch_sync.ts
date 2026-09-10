@@ -1092,13 +1092,7 @@ export async function syncMilestoneBranches(
     );
   }
 
-  if (streakPath && streaksDirty) {
-    try {
-      await saveSyncStreaks(streakPath, streaks);
-    } catch {
-      // Persistence is an optimisation — never fail the sweep over it.
-    }
-  }
+  await persistStreaks();
 
   return { ok: true, value: { synced, skipped, failed } };
 }
