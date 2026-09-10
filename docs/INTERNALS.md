@@ -3136,11 +3136,39 @@ not write. Four rules decide what is mechanical:
   ledger whose union does not parse escalates rather than being written.
 - **Two designs for the same problem** — `IndirectSpawnRules` (#1378) against
   `scanContentForVariableBinarySpawn` (#1227) — neither contains the other and
-  at least one side changed a line the merge base had, so the merge is
-  **aborted** and a human chooses. Two rival designs that are *both* purely
-  additive are a union by the rule above, and are verified before they land. The escalation carries the
-  preparation, not the compiler output #1542 was a wall of: what each side
-  exports, what each side tests, and which cases exist on one side only.
+  at least one side changed a line the merge base had, so the triage decides
+  nothing and the file climbs to the next rung. Two rival designs that are
+  *both* purely additive are a union by the rule above, and are verified before
+  they land.
+
+**The rest of the ladder** (Issue #1777,
+[milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)).
+What the triage cannot decide is not a human's problem yet: the sync climbs the
+same two rungs the PR pass climbs, over the paths still left, inside the very
+clone the merge conflicted in.
+
+1. **The dependency rules** — the same
+   [dependency_conflict_apply.ts](../worker/deno/lib/dependency_conflict_apply.ts)
+   pass the PR lane runs. A lock file or a manifest bumped on both sides needs
+   no judgement, so it never costs a model run.
+2. **The resolution agent** — [merge_conflict_agent.ts](../worker/deno/lib/merge_conflict_agent.ts)
+   with a *branch* target, asked only about the paths the rules deferred. It is
+   injected (`agentFn`), so a test drives the whole ladder with no model; a
+   caller that supplies none stops after the rules rather than pretending the
+   conflict was decided.
+
+Only a file **every** rung leaves undecided aborts the merge and reaches a
+human, and the escalation then names the rung that failed (`agent: …`). An
+agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
+or leaves a conflict marker behind is a failed rung: the merge is aborted and
+the branch stands exactly at its pre-merge SHA. Only the agent's own paths are
+staged (`git add -- <paths>`, never `-A`), so the worker's own state files in
+the shared clone never reach the pre-commit gate (Issue #1654). Each resolved
+file carries the rung that settled it — `triage: <case>`, `rule: <reason>` or
+`agent` — and that per-file list is what the merge commit, the sync's log line
+and the report comment all print. The escalation carries the preparation, not
+the compiler output #1542 was a wall of: what each side exports, what each side
+tests, and which cases exist on one side only.
 
 **No resolution may reduce test coverage.** A conflicted test file is resolved
 by taking a side only when that side already keeps every case *and* every line
@@ -3170,9 +3198,13 @@ flowchart TD
     A[Sub-issue PR merges → closed count moves] --> B[Cooldown skipped: merge default down now]
     B --> C{Conflicts?}
     C -- no --> D[Push, no issue, no comment]
-    C -- yes --> T{"Every file decidable?<br/>superset / duplicate fix /<br/>test-file union"}
-    T -- no --> X["Abort — nothing pushed —<br/>escalate with both sides'<br/>exports, cases and the difference"]
-    T -- yes --> V["Commit the reasoning, then verify:<br/>#974 type check + check:manifests + unit suite"]
+    C -- yes --> T{"Triage: superset /<br/>duplicate fix / union?"}
+    T -- "left over" --> RU{"Dependency rules?"}
+    RU -- "left over" --> AG{"Resolution agent?"}
+    AG -- "fails or aborts" --> X["Abort — nothing pushed —<br/>escalate naming the failed rung,<br/>with both sides' exports and cases"]
+    AG -- decided --> V["Commit the per-file rungs, then verify:<br/>#974 type check + check:manifests + unit suite"]
+    T -- decided --> V
+    RU -- decided --> V
     V -- red or unverifiable --> R[Reset to the pre-merge commit and escalate]
     V -- green --> P[Push]
     P --> F["Report the same cycle:<br/>decisions + both sides' commits"]
@@ -3909,6 +3941,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
 |                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |
 |                             | [milestone_conflict_git.ts](../worker/deno/lib/milestone_conflict_git.ts)                                         | Reads both sides out of the conflicted index, gathers the per-issue test evidence, union-merges a test file and stages what the triage decided                                        |
+|                             | [milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)                                   | Climbs the rungs the triage left: the dependency rules, then the resolution agent, naming the rung that settled each file                                        |
 |                             | [milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)                                   | Verifies a resolution the worker made itself against the repo's own check, manifest check and unit suite before it can be pushed                                                      |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |

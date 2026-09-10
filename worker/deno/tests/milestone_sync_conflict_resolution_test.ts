@@ -14,6 +14,12 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
+import type {
+  MilestoneConflictAgentFn,
+  MilestoneConflictAgentRequest,
+} from "../lib/milestone_conflict_ladder.ts";
+import type { MergeConflictAgentOutcome } from "../lib/merge_conflict_agent.ts";
+import type { Result } from "../types.ts";
 
 async function git(
   args: string[],
@@ -433,6 +439,243 @@ Deno.test(
       );
     } finally {
       await fx.cleanup();
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The ladder — rules, then the agent, before any human (Issue #1777)
+// ---------------------------------------------------------------------------
+
+/** A `deno.json` whose import map pins `@std/assert` at `version`. */
+function denoJson(version: string): string {
+  return `{\n  "imports": {\n    "@std/assert": "jsr:@std/assert@${version}"\n  }\n}\n`;
+}
+
+/** An agent stub that records its calls and does whatever `act` says. */
+function recordingAgent(
+  act: (request: MilestoneConflictAgentRequest) => Promise<
+    Result<MergeConflictAgentOutcome>
+  >,
+): { fn: MilestoneConflictAgentFn; calls: MilestoneConflictAgentRequest[] } {
+  const calls: MilestoneConflictAgentRequest[] = [];
+  return {
+    calls,
+    fn: (request) => {
+      calls.push(request);
+      return act(request);
+    },
+  };
+}
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a manifest conflict the triage cannot decide is settled by the dependency rules and pushed, with no agent run (Issue #1777)",
+  async () => {
+    const fx = await setup(
+      { "deno.json": denoJson("1.0.0") },
+      {
+        files: { "deno.json": denoJson("1.0.1") },
+        subject: "Issue #1777: the branch bumped assert",
+      },
+      {
+        files: { "deno.json": denoJson("1.0.6") },
+        subject: "Issue #1777: main bumped assert",
+      },
+    );
+    const agent = recordingAgent(() =>
+      Promise.resolve({ ok: true as const, value: { terminated: false } })
+    );
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+        undefined,
+        agent.fn,
+      );
+
+      assert(
+        result.ok,
+        `expected the rules to settle the manifest: ${
+          !result.ok && result.error.message
+        }`,
+      );
+      assertEquals(
+        agent.calls.length,
+        0,
+        "a file the deterministic rules can decide never reaches the agent",
+      );
+      assertStringIncludes(
+        await Deno.readTextFile(`${fx.clone}/deno.json`),
+        "1.0.6",
+        "the higher published version wins, per the dependency rules",
+      );
+      const decision = result.value.conflict?.decisions?.find((d) =>
+        d.path === "deno.json"
+      );
+      assertEquals(decision?.rung, "rule");
+      assertStringIncludes(result.value.message, "rule:");
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        (await gitOk(["rev-parse", "origin/milestone/1559"], fx.clone)).trim(),
+        "the resolution is pushed in the same call",
+      );
+      assertStringIncludes(
+        await gitOk(["log", "-1", "--format=%B", "milestone/1559"], fx.clone),
+        "rule:",
+        "the merge commit names the rung that settled each file",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a source conflict neither the triage nor the rules can decide is handed to the agent, then gated and pushed (Issue #1777)",
+  async () => {
+    const fx = await setup(
+      { "lib/spawn.ts": "export const impl = 'seed';\n" },
+      {
+        files: { "lib/spawn.ts": "export const impl = 'branch';\n" },
+        subject: "Issue #1777: the branch's design",
+      },
+      {
+        files: { "lib/spawn.ts": "export const impl = 'main';\n" },
+        subject: "Issue #1777: main's rival design",
+      },
+    );
+    // A conforming agent resolves the file and stages it, exactly as the
+    // merge-conflict prompt instructs and as the PR pass already requires.
+    const agent = recordingAgent(async (request) => {
+      await Deno.writeTextFile(
+        `${request.workDir}/lib/spawn.ts`,
+        "export const impl = 'branch' ?? 'main';\n",
+      );
+      await gitOk(["add", "--", "lib/spawn.ts"], request.workDir);
+      return { ok: true as const, value: { terminated: false } };
+    });
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+        undefined,
+        agent.fn,
+      );
+
+      assert(
+        result.ok,
+        `expected the agent's resolution to land: ${
+          !result.ok && result.error.message
+        }`,
+      );
+      assertEquals(agent.calls.length, 1);
+      assertEquals(agent.calls[0]?.conflictedFiles, ["lib/spawn.ts"]);
+      assertEquals(agent.calls[0]?.milestoneBranch, "milestone/1559");
+      assertEquals(agent.calls[0]?.defaultBranch, "main");
+      assertEquals(
+        await Deno.readTextFile(`${fx.clone}/lib/spawn.ts`),
+        "export const impl = 'branch' ?? 'main';\n",
+        "what the agent wrote is what was committed",
+      );
+      assertEquals(
+        result.value.conflict?.decisions?.[0]?.rung,
+        "agent",
+        "the outcome names the rung that settled the file",
+      );
+      assertStringIncludes(result.value.message, "agent");
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        (await gitOk(["rev-parse", "origin/milestone/1559"], fx.clone)).trim(),
+        "the agent's resolution is pushed in the same call",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - an agent that aborts leaves the branch at its pre-merge SHA and names the failed rung (Issue #1777)",
+  async () => {
+    for (
+      const [what, outcome] of [
+        [
+          "a failed run",
+          { ok: false as const, error: new Error("agent run failed: refused") },
+        ],
+        [
+          "a run the worker ended",
+          { ok: true as const, value: { terminated: true } },
+        ],
+      ] as const
+    ) {
+      const fx = await setup(
+        { "lib/spawn.ts": "export const impl = 'seed';\n" },
+        {
+          files: { "lib/spawn.ts": "export const impl = 'branch';\n" },
+          subject: "Issue #1777: the branch's design",
+        },
+        {
+          files: { "lib/spawn.ts": "export const impl = 'main';\n" },
+          subject: "Issue #1777: main's rival design",
+        },
+      );
+      // Half-edits the tree first: an agent that aborts mid-resolution must
+      // still leave the branch exactly where it started.
+      const agent = recordingAgent(async (request) => {
+        await Deno.writeTextFile(
+          `${request.workDir}/lib/spawn.ts`,
+          "export const impl = 'half-edited';\n",
+        );
+        return outcome;
+      });
+      try {
+        const published =
+          (await gitOk(["rev-parse", "milestone/1559"], fx.clone)).trim();
+
+        const result = await syncMilestoneBranchWithDefault(
+          "milestone/1559",
+          "main",
+          { cwd: fx.clone },
+          undefined,
+          passingGate,
+          undefined,
+          agent.fn,
+        );
+
+        assert(!result.ok, `${what}: nothing may be pushed`);
+        assert(isConflictEscalation(result.error), `${what}: an escalation`);
+        assertStringIncludes(
+          result.error.message,
+          "agent: ",
+          `${what}: the escalation names the agent as the rung that failed, ` +
+            `not merely that no agent ran`,
+        );
+        assertEquals(
+          (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+          published,
+          `${what}: the branch is exactly at its pre-merge SHA`,
+        );
+        assertEquals(
+          (await gitOk(["rev-parse", "origin/milestone/1559"], fx.clone))
+            .trim(),
+          published,
+          `${what}: nothing reached the remote`,
+        );
+        assertEquals(
+          (await gitOk(["status", "--porcelain"], fx.clone)).trim(),
+          "",
+          `${what}: the agent's half-edit is gone with the aborted merge`,
+        );
+      } finally {
+        await fx.cleanup();
+      }
     }
   },
 );

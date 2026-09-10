@@ -80,6 +80,21 @@ export interface ConflictedFile {
   theirsFixes: number[];
 }
 
+/**
+ * Which rung of the ladder settled a conflicted path (Issue #1777).
+ *
+ * The sync tries the deterministic triage, then the dependency rules, then
+ * the resolution agent. Absent means `triage` — the decisions already in the
+ * wild carry no rung and were all the triage's.
+ */
+export type ResolutionRung =
+  /** Decided by the deterministic triage in this module. */
+  | "triage"
+  /** Decided by the deterministic dependency rules. */
+  | "rule"
+  /** Decided by the merge-conflict resolution agent. */
+  | "agent";
+
 /** What the triage decided about one conflicted path. */
 export interface FileDecision {
   path: string;
@@ -91,6 +106,8 @@ export interface FileDecision {
   action: ConflictAction;
   /** One line, recorded on the merge commit or in the escalation. */
   reason: string;
+  /** The rung that settled it; absent means the triage did (Issue #1777). */
+  rung?: ResolutionRung;
 }
 
 /** What a decision does to a conflicted path. */
@@ -101,6 +118,11 @@ export type ConflictAction =
   | "theirs"
   /** Keep both sides' hunks, so no case on either side is lost. */
   | "union"
+  /**
+   * A rung below the human already wrote and staged the resolution, so
+   * nothing further is applied to the index (Issue #1777).
+   */
+  | "resolved"
   /** No rule decides it — a human does. */
   | "escalate";
 
@@ -663,6 +685,31 @@ function bullets(items: string[], empty: string): string {
 }
 
 /**
+ * Name the rung that settled a decision, for every surface that reports it.
+ *
+ * One wording, three readers (Issue #1777): the merge commit, the sync's log
+ * line and the report comment all say `triage: <case>`, `rule: <reason>` or
+ * `agent`, so a file's resolution reads the same wherever it is found.
+ *
+ * @param d - The decision to describe
+ * @param sides - How to name each side, as that surface writes branch names
+ * @returns One line, without a leading bullet
+ */
+export function describeDecisionRung(
+  d: FileDecision,
+  sides: { ours: string; theirs: string },
+): string {
+  if (d.rung === "rule") return `rule: ${d.reason}`;
+  if (d.rung === "agent") return "agent";
+  const how = d.action === "union"
+    ? "kept both sides' hunks"
+    : d.action === "resolved"
+    ? "the resolution was already in the tree"
+    : `took the ${d.action === "ours" ? sides.ours : sides.theirs} side`;
+  return `triage: ${d.case}, ${how}: ${d.reason}`;
+}
+
+/**
  * The merge commit's message for a conflict the worker resolved itself.
  *
  * Every decision is named with its reasoning, because the commit is where
@@ -675,13 +722,12 @@ export function buildResolutionCommitMessage(o: {
   plan: ConflictPlan;
 }): string {
   const lines = o.plan.resolved.map((d) =>
-    `- \`${d.path}\` — ${d.case}, ${
-      d.action === "union"
-        ? "kept both sides' hunks"
-        : `took the ${
-          d.action === "ours" ? "milestone branch's" : `'${o.defaultBranch}'`
-        } side`
-    }: ${d.reason}`
+    `- \`${d.path}\` — ${
+      describeDecisionRung(d, {
+        ours: "milestone branch's",
+        theirs: `'${o.defaultBranch}'`,
+      })
+    }`
   );
   return `Merge '${o.defaultBranch}' into '${o.milestoneBranch}' — ${o.plan.resolved.length} conflict(s) resolved automatically\n\n` +
     `${lines.join("\n")}\n\n` +

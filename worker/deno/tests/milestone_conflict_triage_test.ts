@@ -16,6 +16,7 @@ import {
   buildConflictAnalysisComment,
   buildResolutionCommitMessage,
   type ConflictedFile,
+  describeDecisionRung,
   extractExports,
   extractTestNames,
   isLineSuperset,
@@ -489,3 +490,80 @@ Deno.test("planConflictResolution - rival designs still escalate once a side cha
 
   assertEquals(plan.escalations[0]?.case, "rival-designs");
 });
+
+// ---------------------------------------------------------------------------
+// The rung each file was settled by (Issue #1777)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "describeDecisionRung - names the triage's case, the rule's reason, or the agent (Issue #1777)",
+  () => {
+    const sides = { ours: "the milestone branch's", theirs: "'main'" };
+
+    assertEquals(
+      describeDecisionRung({
+        path: "lib/spawn.ts",
+        case: "superset",
+        action: "theirs",
+        reason: "main keeps every line of the other",
+      }, sides),
+      "triage: superset, took the 'main' side: main keeps every line of the other",
+      "a decision with no rung is the triage's, as every decision in the wild is",
+    );
+
+    assertEquals(
+      describeDecisionRung({
+        path: "deno.json",
+        case: "rival-designs",
+        action: "resolved",
+        rung: "rule",
+        reason: "manifest resolved by deno.json",
+      }, sides),
+      "rule: manifest resolved by deno.json",
+    );
+
+    assertEquals(
+      describeDecisionRung({
+        path: "lib/rival.ts",
+        case: "rival-designs",
+        action: "resolved",
+        rung: "agent",
+        reason: "resolved by the merge-conflict agent",
+      }, sides),
+      "agent",
+    );
+  },
+);
+
+Deno.test(
+  "buildResolutionCommitMessage - the merge commit names each file's rung (Issue #1777)",
+  () => {
+    const message = buildResolutionCommitMessage({
+      defaultBranch: "main",
+      milestoneBranch: "milestone/1777",
+      plan: {
+        decisions: [],
+        escalations: [],
+        resolved: [
+          {
+            path: "deno.json",
+            case: "rival-designs",
+            action: "resolved",
+            rung: "rule",
+            reason: "manifest resolved by deno.json",
+          },
+          {
+            path: "lib/rival.ts",
+            case: "rival-designs",
+            action: "resolved",
+            rung: "agent",
+            reason: "resolved by the merge-conflict agent",
+          },
+        ],
+      },
+    });
+
+    assertStringIncludes(message, "`deno.json` — rule: manifest resolved by");
+    assertStringIncludes(message, "`lib/rival.ts` — agent");
+  },
+);

@@ -17,6 +17,7 @@
  */
 
 import type { GhCommandFn } from "./milestone_branch_sync.ts";
+import { describeDecisionRung } from "./milestone_conflict_triage.ts";
 import type { FileDecision } from "./milestone_conflict_triage.ts";
 
 /** What collided when the default branch was merged down, and how it landed. */
@@ -189,20 +190,18 @@ export function buildConflictEscalationComment(
   // overwritten.
   if (e.conflict.resolution === "auto") {
     const decisions = (e.conflict.decisions ?? []).map((d) =>
-      `- \`${d.path}\` — **${d.case}**, ${
-        d.action === "union"
-          ? "kept both sides' hunks"
-          : `took the ${
-            d.action === "ours"
-              ? `\`${e.milestoneBranch}\``
-              : `\`${e.defaultBranch}\``
-          } side`
-      }: ${d.reason}`
+      `- \`${d.path}\` — ${
+        describeDecisionRung(d, {
+          ours: `\`${e.milestoneBranch}\``,
+          theirs: `\`${e.defaultBranch}\``,
+        })
+      }`
     ).join("\n");
     return `## Milestone sync resolved a conflict automatically\n\n` +
       `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
-      `\`${e.repo}\` conflicted, and every conflicted file was decided by a ` +
-      `rule that loses nothing (Issue #1559). The merged tree passed the ` +
+      `\`${e.repo}\` conflicted, and every conflicted file was settled by a ` +
+      `rung of the ladder — the triage, the dependency rules, then the ` +
+      `resolution agent (Issues #1559, #1777). The merged tree passed the ` +
       `repository's own check, its manifest check and its unit suite before ` +
       `it was pushed — a red tree would have been rolled back instead.\n\n` +
       `${decisions || "- (no decision was recorded)"}\n\n` +

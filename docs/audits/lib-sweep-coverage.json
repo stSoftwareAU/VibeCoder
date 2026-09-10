@@ -269,6 +269,7 @@
         "worker/deno/lib/milestone_children_gate.ts",
         "worker/deno/lib/milestone_completion.ts",
         "worker/deno/lib/milestone_conflict_git.ts",
+        "worker/deno/lib/milestone_conflict_ladder.ts",
         "worker/deno/lib/milestone_conflict_triage.ts",
         "worker/deno/lib/milestone_escalation_target.ts",
         "worker/deno/lib/milestone_health.ts",
