@@ -8,6 +8,7 @@
 import { assertEquals } from "@std/assert";
 import {
   detectUiChanges,
+  keywordFallbackApplies,
   validateScreenshotEvidence,
 } from "../lib/screenshot_validation.ts";
 
@@ -234,5 +235,55 @@ Deno.test("screenshot_validation - failure message includes retry instructions",
   assertEquals(
     result.failureMessage!.includes("browser_take_screenshot"),
     true,
+  );
+});
+
+// --- Issue #1909: the keyword fallback needs a file that could carry a UI ---
+
+Deno.test("screenshot_validation #1909 - a Rust-only change is not a UI change on two English words", () => {
+  // NEAT-AI-Ockham#198's summary: graph colouring and visual inspection.
+  const summary =
+    "prune_neuron rewrites an IF left short a role. The color of each " +
+    "role is preserved; visual inspection of the sweep confirms the repair.";
+  assertEquals(
+    detectUiChanges(summary, "enhancement", [
+      "ockham/src/prune.rs",
+      "ockham/src/repair.rs",
+      "docs/archive/pr-summaries/pr-summary-198.md",
+      "Cargo.lock",
+    ]),
+    false,
+  );
+});
+
+Deno.test("screenshot_validation #1909 - the same words with a web source file changed are still a UI change", () => {
+  const summary = "Changed the button color and the visual spacing.";
+  assertEquals(
+    detectUiChanges(summary, "enhancement", ["src/toolbar.ts"]),
+    true,
+  );
+  assertEquals(
+    detectUiChanges(summary, "enhancement", ["engine.rs", "web/index.html"]),
+    true,
+  );
+});
+
+Deno.test("screenshot_validation #1909 - with no changed-file information the keyword fallback still applies", () => {
+  assertEquals(
+    detectUiChanges("Changed the button color and visual spacing.", "bug", []),
+    true,
+  );
+});
+
+Deno.test("screenshot_validation #1909 - keywordFallbackApplies", () => {
+  assertEquals(keywordFallbackApplies([]), true);
+  assertEquals(
+    keywordFallbackApplies(["a.rs", "README.md", "Cargo.toml"]),
+    false,
+  );
+  assertEquals(keywordFallbackApplies(["a.rs", "app.js"]), true);
+  assertEquals(
+    keywordFallbackApplies(["scripts/run.sh", "config.yaml"]),
+    false,
   );
 });
