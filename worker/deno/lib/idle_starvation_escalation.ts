@@ -331,7 +331,14 @@ export function formatIdleStarvationTitle(): string {
 export function describeIdleHooksRefusal(opts: {
   inversionDetected: boolean;
   claimableTotal: number;
+  /**
+   * Whether the week-pace guard was engaged (Issues #1885, #1915). It is
+   * checked ahead of the other two because the hooks check it ahead of them:
+   * engaged, filing is deferred whatever the census and the audit saw.
+   */
+  weekPaceEngaged?: boolean;
 }): string {
+  if (opts.weekPaceEngaged === true) return "week_pace_engaged";
   if (opts.inversionDetected) return "unblocked_work_exists";
   if (opts.claimableTotal > 0) return "audit_found_claimable";
   return "none";

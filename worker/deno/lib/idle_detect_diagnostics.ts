@@ -128,6 +128,22 @@ export const CLAIMABLE_LABELS: readonly string[] = [
 ] as const;
 
 /**
+ * Discovery labels the week-pace guard leaves in the ladder (Issues #1885,
+ * #1915).
+ *
+ * `selectHighestPriority` drops tiers 3 and 4 while the guard is engaged, so
+ * an issue carrying one of these is still claimable and everything else in
+ * {@link CLAIMABLE_LABELS} is not. Expressed as the exemption rather than the
+ * suppression so a discovery label added to the ladder above tier 3 has to be
+ * named here deliberately, and an unrecognised one fails safe by
+ * under-counting claimable work — the direction this module always prefers.
+ */
+const PACE_EXEMPT_LABELS: readonly string[] = [
+  LABEL_DEFAULTS.topPriorityLabel,
+  LABEL_DEFAULTS.workOnLabel,
+] as const;
+
+/**
  * Labels that exclude an issue from the discovery scan regardless of
  * its discovery label. Matches the blocking set in
  * `issue_filter.ts::filterAndSort`.
@@ -160,6 +176,8 @@ export type ClaimableSkipReason =
   | "merged_pr_blocked"
   /** Every candidate is held back by this run itself (Issue #655). */
   | "run_local_hold"
+  /** Every candidate sits in a tier the week-pace guard skipped (#1915). */
+  | "pace_suppressed"
   | "probe_error";
 
 /**
@@ -357,7 +375,12 @@ export type IssueExclusionReason =
   /** Names an open dependency the scan refuses it for (#460, GRQ#4465). */
   | "dependency_blocked"
   /** Held back by this run's own cooldown / processed-issue registry (#655). */
-  | "run_local_hold";
+  | "run_local_hold"
+  /**
+   * In a tier the week-pace guard dropped from the ladder (Issues #1885,
+   * #1915) — `low-priority` or `idle-task`, for the rest of the week.
+   */
+  | "pace_suppressed";
 
 export interface IssueVerdict {
   number: number;
@@ -447,6 +470,22 @@ export interface ClassifyOptions {
    * every cross-repo reference blocks.
    */
   knownRepos?: readonly string[];
+  /**
+   * Whether the weekly-quota pace guard is engaged for this scan (Issues
+   * #1885, #1915).
+   *
+   * Engaged, `selectHighestPriority` drops tiers 3 and 4 — `low-priority`
+   * and `idle-task` — from the ladder entirely, so an issue whose only
+   * discovery label is one of those cannot be claimed until the window
+   * resets. The audit did not model that gate: on GRQ-25 it counted 87
+   * pace-suppressed `low-priority` issues as claimable, so `mis_classification`
+   * fired against a scan that was right and the claimable total drove the
+   * idle-hooks disagreement bound.
+   *
+   * Omitted → off, which is the behaviour every caller had before this
+   * option existed.
+   */
+  weekPaceEngaged?: boolean;
 }
 
 /**
@@ -511,6 +550,8 @@ export function classifyIssues(
 ): IssueVerdict[] {
   const claimableSet = new Set(opts.claimableLabels ?? CLAIMABLE_LABELS);
   const blockingSet = new Set(BLOCKING_LABELS);
+  const paceExemptSet = new Set(PACE_EXEMPT_LABELS);
+  const weekPaceEngaged = opts.weekPaceEngaged === true;
   const openPRs = opts.openPRs ?? [];
   const mergedPRs = opts.mergedPRs ?? [];
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
@@ -686,6 +727,22 @@ export function classifyIssues(
       });
       continue;
     }
+    // Issues #1885, #1915: the pace gate is the scan's own last word — it
+    // drops whole tiers at selection time, after every per-issue filter has
+    // run — so it is applied last here too, and an issue refused for a more
+    // fundamental reason keeps that reason. `pace_suppressed` marks only work
+    // that would otherwise be claimable right now.
+    if (
+      weekPaceEngaged && !issue.labels.some((l) => paceExemptSet.has(l))
+    ) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "pace_suppressed",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
     // No wrapper-title gate: `idle-task` is just the lowest work-trigger
     // priority, so any unblocked, unassigned idle-task issue is
     // claimable here — matching the collector
@@ -731,6 +788,12 @@ export function pickDominantReason(
   // cooldown expires, so it is the less urgent answer of the three — but it
   // is only ever set on an issue nothing else refused, which makes it more
   // specific than stream occupancy and the filters above that.
+  // Issue #1915: above the run-local hold and everything below it. It is only
+  // ever set on an issue nothing else refused, and "the week-pace guard is
+  // spending what is left of the quota on urgency signals" is the answer an
+  // operator asking why the fleet is idle actually needs — a hold clears when
+  // the run ends, the guard stands until the weekly window resets.
+  if (seen.has("pace_suppressed")) return "pace_suppressed";
   if (seen.has("run_local_hold")) return "run_local_hold";
   if (seen.has("stream_occupied")) return "stream_occupied";
   // Issue #1050: below stream occupancy — a tracker is only ever refused
@@ -905,6 +968,13 @@ export interface AuditClaimableStateOptions {
    * rather than silently reporting a repo as having nothing to do.
    */
   runLocalHoldFn?: (repo: string, issueNumber: number) => boolean;
+  /**
+   * Whether the weekly-quota pace guard is engaged for this cycle (Issues
+   * #1885, #1915) — forwarded verbatim to
+   * {@link ClassifyOptions.weekPaceEngaged}, so the audit counts only work
+   * the scan could actually claim. Omitted → off.
+   */
+  weekPaceEngaged?: boolean;
   /** Progress log sink. Defaults to `console.log`. */
   log?: (line: string) => void;
   /** Hostname source — exposed for tests. Defaults to `Deno.hostname()`. */
@@ -1075,6 +1145,9 @@ export async function auditClaimableState(
       // monitors, so a dependency on anything else is not a blocker it can
       // be silenced by.
       knownRepos: opts.repos,
+      // Issues #1885, #1915: a tier the pace gate dropped is a modelled
+      // refusal, not claimable work the scan mysteriously passed over.
+      weekPaceEngaged: opts.weekPaceEngaged,
     });
     const claimableCount = verdicts.filter((v) => v.claimable).length;
     const reason: ClaimableSkipReason = claimableCount > 0

@@ -1193,6 +1193,69 @@ The pure builder lives in
 wired into the idle gate in
 [`worker/deno/lib/run_core.ts`](../worker/deno/lib/run_core.ts).
 
+### The week-pace guard defers idle-task filing (Issue #1915)
+
+Every gate above asks *is there work the scan could claim?* The week-pace
+guard (Issue #1885) asks a different question — *will the weekly Claude quota
+last?* — and while it is engaged the scan drops tiers 3 and 4, `low-priority`
+and `idle-task`, from its ladder until the window resets.
+
+Three correct pieces made one wrong outcome on GRQ-25 (2026-09-10, 0 issues
+processed in 1h 9m). The guard refused every backlog pickup, so the scan
+claimed nothing although 87 issues were eligible. The idle-detect audit did not
+model the guard, so it counted those 87 as claimable and every cycle read as a
+scan/probe disagreement. Once the twenty-minute disagreement bound was exceeded
+the idle-task filer was forced through it, walked all nineteen monitored
+repositories to decide where to file — `issue-list=700`,
+`priority:idle-work-hooks=800` GraphQL points out of the fleet's shared 5,000 —
+and filed nothing, because wrappers were already open. Even had it filed, the
+guard forbids claiming an `idle-task` for the rest of the week. The account's
+GraphQL usage went 1,223 → 4,846 across that window.
+
+Both halves are now told about the guard:
+
+- The **audit** takes `weekPaceEngaged` and applies it as its last gate, so an
+  issue whose only discovery label is `low-priority` or `idle-task` is excluded
+  as `pace_suppressed` rather than counted as claimable. A more fundamental
+  refusal still wins, exactly as it does for `pr_blocked` and `run_local_hold`.
+  The verdict is read from `ClaudeWeekPaceGate.lastEngaged()` — the value the
+  scan already computed, so asking costs no probe and no log line, and it is
+  the same reading the census uses for its own tier-3 suppression.
+- The **idle hooks** defer filing outright while the guard holds, above the
+  disagreement chain, so none of its cost is paid:
+
+  ```text
+  [idle-hooks] foundClaimableIssue=false scanHadSuccess=false
+  skipping=idle-task-filer reason=week_pace_engaged — pace guard engaged,
+  idle-task filing deferred
+  ```
+
+  A cycle whose eligible work is entirely pace-suppressed is **agreement**, not
+  a disagreement: the tiers were refused by a rule the fleet applied
+  deliberately. The observer's disagreement run is therefore cleared rather
+  than extended, so the guard's own suppression can no longer drive the
+  #2475 bound and force a filer attempt every twenty minutes for a week.
+
+```mermaid
+flowchart TD
+    I["Idle observation<br/>(nothing claimed)"] --> A["Idle-detect audit<br/>+ idle-decision census"]
+    A --> P{"Week-pace guard<br/>engaged?"}
+    P -- yes --> D["reason=week_pace_engaged<br/>streak cleared, filer deferred"]
+    P -- no --> C{"Census inversion<br/>or audit disagreement?"}
+    C -- yes --> B["Disagreement bound (#2475)"]
+    C -- no --> F["Run the idle-task filer"]
+```
+
+The guard is off by default and unknown readings never engage it, so with no
+Claude subscription window in play every path above behaves exactly as it did
+before. Regression coverage:
+[`idle_detect_week_pace_1915_test.ts`](../worker/deno/tests/idle_detect_week_pace_1915_test.ts)
+for the audit and
+[`run_core_week_pace_idle_hooks_1915_test.ts`](../worker/deno/tests/run_core_week_pace_idle_hooks_1915_test.ts)
+for the hooks — the second drives `runCoreLoop` over five observations spanning
+forty-five minutes, more than twice the bound, and asserts the filer never runs
+and the persisted streak never advances.
+
 ### Idle capacity that files no idle task (Issue #1052)
 
 The census above escalates a **per-repo** contradiction. It does not cover the
