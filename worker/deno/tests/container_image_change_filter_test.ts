@@ -117,7 +117,11 @@ Deno.test("image filter - a commit outside the object store fails loud (Issue #1
 
     const run = await filter(dir, base, ABSENT_SHA);
 
-    assertEquals(run.code, 2, "an unreachable commit must not decide the build");
+    assertEquals(
+      run.code,
+      2,
+      "an unreachable commit must not decide the build",
+    );
     assertStringIncludes(run.stderr, ABSENT_SHA);
     assertStringIncludes(run.stderr, "not in the local object store");
     // The silent skip the issue reported: a failed diff read as "no changes".
@@ -129,7 +133,11 @@ Deno.test("image filter - a commit outside the object store fails loud (Issue #1
 Deno.test("image filter - an unreachable base commit fails loud", async () => {
   await withTempDir(async (dir) => {
     await repoWithBase(dir);
-    const head = await commitFile(dir, "container/entrypoint.sh", "#!/bin/sh\n");
+    const head = await commitFile(
+      dir,
+      "container/entrypoint.sh",
+      "#!/bin/sh\n",
+    );
 
     const run = await filter(dir, ABSENT_SHA, head);
 
