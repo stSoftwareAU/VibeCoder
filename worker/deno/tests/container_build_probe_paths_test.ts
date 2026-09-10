@@ -49,7 +49,9 @@ function pullRequestPathspecs(workflowYaml: string): string[] {
   );
   const start = script.indexOf("git diff --name-only");
   assert(start >= 0, "the filter step no longer runs `git diff --name-only`");
-  const end = script.indexOf("|| true)", start);
+  // Issue #1891: the command substitution used to end `|| true)`; the
+  // swallow is gone, so the terminator is the closing `)"` of `$( … )`.
+  const end = script.indexOf(')"', start);
   assert(end > start, "the `git diff` pathspec list is unterminated");
   const specs = [...script.slice(start, end).matchAll(/'([^']+)'/g)]
     .map((match) => match[1] ?? "");
