@@ -791,9 +791,10 @@ its one-restart-per-issue bound and its exits are in
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
 constant, two consumers — so the PR ladder and the milestone ladder cannot
-drift apart. The per-branch ledger that records what a milestone branch has
-spent lands with it; the sync pass is wired to charge that ledger by
-Issue #1778.
+drift apart. The sync pass opens and concludes an attempt around every
+conflicting merge, paces the retries and hands an exhausted budget to the
+roll-back (Issue #1778); nothing is posted to a comment, a label or an issue
+while an automatic attempt remains.
 
 What does and does not spend an attempt:
 

@@ -43,13 +43,24 @@ import {
   hasConflictEscalationComment,
 } from "./milestone_conflict_dedup.ts";
 import {
+  DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
+  DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
+} from "./merge_conflict_drain.ts";
+import { isRuleViolationPush } from "./milestone_sync_pr.ts";
+import {
   type MilestoneEscalationTarget,
   resolveMilestoneEscalationTarget,
 } from "./milestone_escalation_target.ts";
 import { closeResolvedSyncDiagnostics } from "./milestone_sync_diagnostic_closeout.ts";
 import {
+  concludeConflictAttempt,
+  type ConflictAttemptOutcome,
+  isConflictAttemptDue,
+  isConflictBudgetExhausted,
   loadSyncStreaks,
+  MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
+  openConflictAttempt,
   recordDefaultSha,
   resetConflictLedgerOnSuccess,
   saveSyncStreaks,
@@ -84,7 +95,60 @@ export type SyncBranchFn = (
   repo: string,
   milestoneBranch: string,
   defaultBranch: string,
+  options: SyncBranchOptions,
 ) => Promise<Result<MilestoneSyncOutcome>>;
+
+/** What the cycle allows one sync attempt to do (Issue #1778). */
+export interface SyncBranchOptions {
+  /**
+   * Whether this attempt may climb the ladder's agent rung.
+   *
+   * False once the cycle's single agent run has been spent, and false when
+   * too little of the handler's budget remains to cover one. A sync given
+   * `false` climbs the triage and the deterministic rules and stops there.
+   */
+  agentAllowed: boolean;
+  /**
+   * Seconds the agent may run, sized to the budget that is actually left
+   * (Issue #1693).
+   *
+   * Absent means "keep the configured timeout" — the pass stated no deadline
+   * or no agent timeout, so there is nothing to shrink it to. Present, it is
+   * never more than the handler has: an agent promised more time than the
+   * cycle holds is an agent the watchdog kills mid-edit, and that kill is the
+   * shape this whole bound exists to stop repeating.
+   */
+  agentTimeoutSeconds?: number;
+}
+
+/** What a branch that has spent its conflict budget is handed to. */
+export interface MilestoneRollbackRequest {
+  /** Repository in `owner/repo` form. */
+  repo: string;
+  /** The milestone branch that cannot be merged into. */
+  milestoneBranch: string;
+  /** The default branch it conflicts with. */
+  defaultBranch: string;
+  /** Concluded conflict failures the branch has spent. */
+  attempts: number;
+  /** The last attempt's reason, so the hand-off says what it tripped on. */
+  reason: string;
+}
+
+/**
+ * Hand a branch whose conflict budget is exhausted to the roll-back
+ * (Issue #1778).
+ *
+ * A branch that has spent every automatic attempt is rolled back, not
+ * escalated: the merged children that touch the conflicting files are
+ * reverted until the default branch merges cleanly (Issue #1771). Injected,
+ * because the sync pass owns *when* that happens and the roll-back owns
+ * *how* — and until the wiring lands the default says so in the log rather
+ * than posting anything.
+ */
+export type MilestoneRollbackFn = (
+  request: MilestoneRollbackRequest,
+) => Promise<void>;
 
 /**
  * Function signature for checking whether a repository has been cloned
@@ -181,6 +245,237 @@ export interface MilestoneBranchSyncDeps {
    * the fleet instead of writing a config file.
    */
   dedupAuthors?: AlertDedupAuthorOptions;
+  /**
+   * Watchdog deadline of the handler this sweep runs inside (Issue #1778).
+   *
+   * The cycle's single agent rung is only offered while the budget left
+   * covers a whole agent run plus the work around it. Omitted means the pass
+   * is unbounded, and the rung is offered on its own merits.
+   */
+  deadlineEpochMs?: number;
+  /**
+   * The agent timeout one conflict resolution would be granted, in
+   * milliseconds (Issue #1778). Defaults to the merge-conflict drain's own
+   * floor, {@link DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT}.
+   */
+  agentTimeoutMs?: number;
+  /**
+   * Budget reserved for everything a resolution does outside the agent —
+   * the fetch, the merge, the gates, the push. Defaults to
+   * {@link DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS}.
+   */
+  attemptOverheadMs?: number;
+  /**
+   * Agent time that must remain before an agent rung is started at all.
+   * Defaults to the drain's own {@link DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT}.
+   */
+  minMsPerAgentAttempt?: number;
+  /** Clock seam (epoch milliseconds); defaults to `Date.now`. */
+  now?: () => number;
+  /**
+   * Where a branch that has spent its conflict budget is handed
+   * (Issue #1778). Defaults to one log line and nothing posted — the
+   * roll-back wiring is Issue #1771's.
+   */
+  rollbackFn?: MilestoneRollbackFn;
+}
+
+// ---------------------------------------------------------------------------
+// The conflict ledger's decisions, as pure functions (Issue #1778)
+// ---------------------------------------------------------------------------
+
+/** The ladder rung a conflict failure got as far as. */
+export type ConflictLadderRung = "triage" | "rules" | "agent";
+
+/** What the ledger records for one failed sync. */
+export interface ConflictConclusion {
+  /** How the attempt concluded; only `failed` spends the budget. */
+  outcome: ConflictAttemptOutcome;
+  /** One line naming what it tripped on. */
+  reason: string;
+  /** The rung that could not decide, when the failure was a conflict. */
+  rung?: ConflictLadderRung;
+}
+
+/**
+ * What the cycle may grant one conflict resolution's agent rung
+ * (Issue #1778).
+ *
+ * The merge-conflict drain's shape, spending the drain's own constants and
+ * both halves of its rule (`merge_conflict_drain.ts`):
+ *
+ * - **A floor.** An agent run is not started at all unless the budget left,
+ *   less what the resolution spends outside the agent, still covers
+ *   {@link DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT}. Ten minutes was enough to
+ *   *start* the resolution killed mid-edit on NEAT-AI-core#637 and never
+ *   enough to finish it (Issue #1693).
+ * - **A clamp.** What is granted is never more than that budget, so an agent
+ *   that runs to its full grant still has room to conclude rather than being
+ *   killed on the way there. Gating on the *configured* timeout instead would
+ *   refuse the rung on every cycle a run's remaining budget is shorter than
+ *   `claudeTimeout` — which is almost all of them — and silently disable the
+ *   ladder's last rung.
+ *
+ * A pass with no deadline is unbounded: the rung is allowed and the agent
+ * keeps its configured timeout.
+ *
+ * @param opts.deadlineEpochMs - The handler's watchdog deadline, when it has one
+ * @param opts.nowMs - Current time in epoch milliseconds
+ * @param opts.agentTimeoutMs - The agent timeout a resolution would otherwise get
+ * @param opts.attemptOverheadMs - Budget the resolution spends outside the agent
+ * @param opts.minMsPerAttempt - Agent time that must remain to start one at all
+ */
+export function grantAgentRun(opts: {
+  deadlineEpochMs?: number;
+  nowMs: number;
+  agentTimeoutMs?: number;
+  attemptOverheadMs?: number;
+  minMsPerAttempt?: number;
+}): SyncBranchOptions {
+  if (opts.deadlineEpochMs === undefined) return { agentAllowed: true };
+  const overhead = opts.attemptOverheadMs ??
+    DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS;
+  const floor = opts.minMsPerAttempt ?? DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT;
+  const attemptBudgetMs = opts.deadlineEpochMs - opts.nowMs - overhead;
+  if (attemptBudgetMs < floor) return { agentAllowed: false };
+  if (opts.agentTimeoutMs === undefined) return { agentAllowed: true };
+  return {
+    agentAllowed: true,
+    // Never below a second: a nonsense bound must not become a nonsense
+    // grant. The floor above already guarantees a sane value.
+    agentTimeoutSeconds: Math.max(
+      1,
+      Math.floor(Math.min(opts.agentTimeoutMs, attemptBudgetMs) / 1000),
+    ),
+  };
+}
+
+/**
+ * Whether another conflict-resolution attempt is due for this branch
+ * (Issue #1778).
+ *
+ * The ledger's own rule ({@link isConflictAttemptDue}) with one guard around
+ * it: a tip git could not read is never allowed to look like a *moved* tip.
+ * Reading an unknown tip as "the conflict is a different one now" would hand
+ * the branch straight back every cycle and spend the whole budget inside one
+ * cooldown, so with no tip to compare only the deferral decides.
+ *
+ * @param entry - The branch's ledger entry, or undefined when it has none
+ * @param defaultSha - The default branch's tip now, or undefined if unknown
+ * @param nowMs - Current time in epoch milliseconds
+ */
+export function conflictAttemptDue(
+  entry: SyncStreakEntry | undefined,
+  defaultSha: string | undefined,
+  nowMs: number,
+): boolean {
+  if (!entry) return true;
+  // Falling back to the branch's own last tip says "it has not moved", which
+  // is the conservative reading of a tip nobody could read.
+  const tip = defaultSha ?? entry.lastAttempt?.defaultSha ?? "";
+  return isConflictAttemptDue(entry, tip, nowMs);
+}
+
+/**
+ * The rung a conflict failure got as far as, read from the reasons the
+ * escalation carries (Issue #1778).
+ *
+ * Each rung of the ladder writes its own prefix into the reason it leaves on
+ * an undecided file, so the reasons are the record of how far the merge got —
+ * there is no second field to keep in step with them.
+ *
+ * @param reasons - The escalated files' reasons, as the ladder wrote them
+ */
+export function failedConflictRung(
+  reasons: readonly string[],
+): ConflictLadderRung {
+  if (reasons.some((reason) => reason.includes("agent:"))) return "agent";
+  if (
+    reasons.some((reason) =>
+      reason.includes("no resolution agent was available")
+    )
+  ) {
+    return "rules";
+  }
+  return "triage";
+}
+
+/**
+ * Judge a failed sync against the branch's conflict budget (Issue #1778).
+ *
+ * Only a conflict every automatic rung reached and none could settle is the
+ * branch's to answer for. A gate that refused the tree or the resolution, a
+ * push a repository ruleset declined, and an ordinary git failure are all
+ * conclusions the branch is not charged for — each keeps whatever reporting
+ * it already had. So is a conflict on a branch that was never offered the
+ * agent this cycle: charging it would spend an attempt on a rung it never
+ * climbed.
+ *
+ * @param error - The failure the sync returned
+ * @param agentAllowed - Whether this attempt was offered the agent rung
+ */
+export function judgeSyncFailure(
+  error: Error,
+  agentAllowed: boolean,
+): ConflictConclusion {
+  if (isConflictEscalation(error)) {
+    if (error.gateFailure) {
+      return {
+        outcome: "not-charged",
+        reason: "the merge gate refused the resolution",
+      };
+    }
+    const rung = failedConflictRung(error.analyses.map((a) => a.reason));
+    return agentAllowed
+      ? {
+        outcome: "failed",
+        reason: `conflict unresolved at rung ${rung}`,
+        rung,
+      }
+      : {
+        outcome: "not-charged",
+        reason: "agent deferred: cycle budget",
+        rung,
+      };
+  }
+  if (isMergeGateFailure(error)) {
+    return {
+      outcome: "not-charged",
+      reason: "the merge gate refused the merged tree",
+    };
+  }
+  if (isRuleViolationPush(error.message)) {
+    return { outcome: "not-charged", reason: "push rejected by ruleset" };
+  }
+  const firstLine = error.message.split("\n")[0]!.trim();
+  return {
+    outcome: "not-charged",
+    reason: `non-conflict git failure: ${firstLine}`,
+  };
+}
+
+/**
+ * The default hand-off for an exhausted budget (Issue #1778): one log line,
+ * and nothing posted to anyone.
+ *
+ * The roll-back that belongs here is Issue #1771's, and it is wired by the
+ * sub-issue that lands it. Until then the branch's state is loud in the log
+ * rather than quietly reported as an ordinary failure — and it is still not
+ * a `needs-human` label or a diagnostic issue, which is the whole point of
+ * the budget.
+ */
+function defaultRollbackFn(
+  log: (message: string) => void,
+): MilestoneRollbackFn {
+  return (request) => {
+    log(
+      `WARNING: Milestone branch '${request.milestoneBranch}' in ` +
+        `${request.repo}: budget exhausted: roll-back not yet available — ` +
+        `${request.attempts} concluded conflict failure(s), last: ` +
+        `${request.reason} (Issue #1778)`,
+    );
+    return Promise.resolve();
+  };
 }
 
 /**
@@ -482,6 +777,40 @@ export async function syncMilestoneBranches(
   const streaks = streakPath ? await loadSyncStreaks(streakPath) : {};
   let streaksDirty = false;
 
+  /**
+   * Persist the ledger, best-effort (Issue #1778).
+   *
+   * Called mid-sweep as well as at the end: an attempt marker that is only
+   * in memory when the run is killed is a marker the next cycle never sees,
+   * and the attempt nobody judged would then be charged as a failure.
+   */
+  const persistStreaks = async (): Promise<void> => {
+    if (!streakPath || !streaksDirty) return;
+    try {
+      await saveSyncStreaks(streakPath, streaks);
+      streaksDirty = false;
+    } catch (err) {
+      // The sweep still runs — one repo's other milestones must not be lost
+      // over a write — but the failure is said out loud rather than
+      // swallowed: an open attempt marker that never reached disk is an
+      // attempt the next cycle charges as a failure nobody judged.
+      log(
+        `WARNING: Could not persist the milestone sync ledger to ` +
+          `${streakPath}: ${
+            err instanceof Error ? err.message : String(err)
+          } — this cycle's attempt markers and conclusions are lost ` +
+          `(Issue #1778)`,
+      );
+    }
+  };
+
+  const now = deps.now ?? (() => Date.now());
+  const rollbackFn = deps.rollbackFn ?? defaultRollbackFn(log);
+  // The cycle's single agent rung, across every repo and every milestone
+  // (Issue #1778). Spent by the first branch that actually conflicts while
+  // holding it — a branch that merged cleanly asked nothing of the agent.
+  let agentSpent = false;
+
   for (const repo of repos) {
     try {
       // Issue #1519: sync is a local-git operation. Skip repos that have
@@ -572,11 +901,99 @@ export async function syncMilestoneBranches(
           continue;
         }
 
+        // --- The conflict ledger, before the merge (Issue #1778) --------
+        // Every conclusion is charged, paced and recorded here, so a branch
+        // that keeps conflicting spends a bounded budget instead of an
+        // unbounded stream of retries and escalations.
+        if (streakPath) {
+          let entry = streaks[streakKey] ?? { count: 0, escalated: false };
+
+          // An attempt still open judged nothing: the run died before the
+          // conflict was decided. It concludes `disrupted` and is charged
+          // nothing, exactly as an unconcluded PR attempt marker is
+          // (Issues #395 and #1693).
+          if (entry.attemptOpenedAt) {
+            entry = concludeConflictAttempt(
+              entry,
+              "disrupted",
+              "the run ended before the conflict was judged",
+              defaultSha,
+              now(),
+            );
+            streaks[streakKey] = entry;
+            streaksDirty = true;
+            log(
+              `Milestone sync for '${milestone.milestoneTitle}' in ${repo}: ` +
+                `the previous conflict attempt never concluded — recorded ` +
+                `as disrupted and not charged (Issue #1778)`,
+            );
+          }
+
+          // A branch past its budget belongs to the roll-back, not to another
+          // merge: without this guard it keeps conflicting every cooldown,
+          // charging attempt 4, 5, 6… and re-entering the hand-off each time.
+          if (isConflictBudgetExhausted(entry)) {
+            log(
+              `WARNING: Skipping sync for '${milestone.milestoneTitle}' in ` +
+                `${repo} — the conflict budget is spent ` +
+                `(${entry.conflictAttempts ?? 0} of ` +
+                `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} concluded failures), ` +
+                `so '${milestone.milestoneBranch}' is the roll-back's now and ` +
+                `no further attempt is made (Issue #1778)`,
+            );
+            skipped++;
+            continue;
+          }
+
+          if (!conflictAttemptDue(entry, defaultSha, now())) {
+            log(
+              `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+                `skipped: conflict attempt not due until ${entry.deferUntil}`,
+            );
+            skipped++;
+            continue;
+          }
+
+          // Opening charges nothing; it is the marker a kill leaves behind.
+          streaks[streakKey] = openConflictAttempt(entry, now());
+          streaksDirty = true;
+          // On disk before the merge, or the marker cannot survive the kill
+          // it exists to record.
+          await persistStreaks();
+        }
+
+        // The cycle's agent rung goes to the first branch that needs it, and
+        // only while the handler's budget still covers a whole run.
+        const grant = agentSpent ? { agentAllowed: false } : grantAgentRun({
+          nowMs: now(),
+          ...(deps.deadlineEpochMs !== undefined
+            ? { deadlineEpochMs: deps.deadlineEpochMs }
+            : {}),
+          ...(deps.agentTimeoutMs !== undefined
+            ? { agentTimeoutMs: deps.agentTimeoutMs }
+            : {}),
+          ...(deps.attemptOverheadMs !== undefined
+            ? { attemptOverheadMs: deps.attemptOverheadMs }
+            : {}),
+          ...(deps.minMsPerAgentAttempt !== undefined
+            ? { minMsPerAttempt: deps.minMsPerAgentAttempt }
+            : {}),
+        });
+        const agentAllowed = grant.agentAllowed;
+        // Spent on hand-out, refunded below only for a merge that had no
+        // conflict at all. The bound is "at most one agent run a cycle", so
+        // the direction that must never be wrong is over-spending: a merge
+        // that failed after the agent ran — a half-applied plan, a leftover
+        // marker, a refused commit, a throw — leaves the grant spent rather
+        // than handing a second branch a second run.
+        if (agentAllowed) agentSpent = true;
+
         // Attempt sync
         const syncResult = await syncBranchFn(
           repo,
           milestone.milestoneBranch,
           milestone.defaultBranch,
+          grant,
         );
 
         if (syncResult.ok) {
@@ -601,6 +1018,9 @@ export async function syncMilestoneBranches(
           // default-branch commit, so a branch that keeps conflicting against
           // the same commit is not reported every cycle.
           const conflict = syncResult.value.conflict;
+          // Refund the grant: nothing collided, so no rung was climbed and
+          // the next conflicting branch this cycle may still have the agent.
+          if (!conflict && agentAllowed) agentSpent = false;
           if (conflict) {
             // A conflict whose default-branch commit could not be read still
             // needs a dedup key, or the same report goes out every cycle.
@@ -657,46 +1077,86 @@ export async function syncMilestoneBranches(
             streaksDirty = true;
           }
 
-          if (isConflictEscalation(syncResult.error)) {
-            // Case 3 (Issue #1559): the conflict is two designs for the same
-            // problem, so nothing was pushed and the branch is untouched.
-            // What reaches the human is the preparation — both sides'
-            // exports, both sides' test names, and the difference between
-            // them — reported once per conflicting default-branch commit, so
-            // a branch that keeps conflicting against the same commit is not
-            // reported every cycle.
-            // Without a streak file there is nowhere to record that the
-            // report went out, so escalating would repeat every cycle — the
-            // loud WARNING log above stands on its own there, as it does for
-            // the Issue #974 gate refusal below.
-            // Issue #1786: keyed on the conflict, not on the default
-            // branch's tip. That tip moves every few minutes on a busy
-            // repository, so keying on it made every cycle look like a new
-            // conflict and posted the same analysis again — four copies on
-            // stSoftwareAU/VibeCoder#1653 in 36 minutes.
-            const conflictKey = conflictEscalationKey({
+          const conflictError = isConflictEscalation(syncResult.error)
+            ? syncResult.error
+            : undefined;
+
+          // Conclude the ledger attempt this failure ends (Issue #1778).
+          if (streakPath && entry) {
+            const verdict = judgeSyncFailure(syncResult.error, agentAllowed);
+            entry = concludeConflictAttempt(
+              entry,
+              verdict.outcome,
+              verdict.reason,
+              conflictError ? conflictError.defaultSha : defaultSha,
+              now(),
+            );
+            streaks[streakKey] = entry;
+            streaksDirty = true;
+            if (verdict.outcome === "failed") {
+              const attempts = entry.conflictAttempts ?? 0;
+              if (isConflictBudgetExhausted(entry)) {
+                // Every automatic rung has been spent, so the branch is
+                // rolled back rather than reported to anyone (Issue #1771).
+                await rollbackFn({
+                  repo,
+                  milestoneBranch: milestone.milestoneBranch,
+                  defaultBranch: milestone.defaultBranch,
+                  attempts,
+                  reason: verdict.reason,
+                });
+              } else {
+                // One line, and nothing posted: an automatic attempt still
+                // remains, so no human is asked about it yet.
+                log(
+                  `WARNING: Milestone branch '${milestone.milestoneBranch}' ` +
+                    `in ${repo}: conflict attempt ${attempts} of ` +
+                    `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed at rung ` +
+                    `${verdict.rung} (Issue #1778)`,
+                );
+              }
+            }
+          }
+
+          if (conflictError?.gateFailure) {
+            // A gate refusal, not a conflict (Issue #1778): the resolution
+            // was made and the verification refused it, so it keeps the
+            // escalation Issue #1559 gave it — what the gate said AND both
+            // sides prepared. Keyed on the conflict itself (Issue #1786),
+            // not the default branch's tip: that tip moves every few
+            // minutes and would re-report the same refusal every cycle.
+            const gateKey = conflictEscalationKey({
               milestoneBranch: milestone.milestoneBranch,
-              ...(syncResult.error.milestoneSha
-                ? { milestoneSha: syncResult.error.milestoneSha }
+              ...(conflictError.milestoneSha
+                ? { milestoneSha: conflictError.milestoneSha }
                 : {}),
               files: [
-                ...syncResult.error.analyses.map((a) => a.path),
-                ...syncResult.error.resolved.map((d) => d.path),
+                ...conflictError.analyses.map((a) => a.path),
+                ...conflictError.resolved.map((d) => d.path),
               ],
             });
-            if (entry && entry.analysisEscalatedSha !== conflictKey) {
+            if (entry && entry.analysisEscalatedSha !== gateKey) {
               const escalated = await escalateConflictAnalysis(
                 repo,
                 milestone,
-                syncResult.error.analyses,
-                syncResult.error.resolved,
-                syncResult.error.gateFailure,
-                conflictKey,
+                conflictError.analyses,
+                conflictError.resolved,
+                conflictError.gateFailure,
+                gateKey,
                 ghCommandFn,
                 log,
               );
-              if (escalated) entry.analysisEscalatedSha = conflictKey;
+              if (escalated) entry.analysisEscalatedSha = gateKey;
             }
+          } else if (conflictError) {
+            // Nothing is posted for a conflict every rung left undecided
+            // (Issue #1778): the ledger above records why the branch is
+            // still behind, and the budget — not a human — decides when the
+            // automatic attempts are over. The per-conflicting-commit
+            // analysis escalation keyed on `analysisEscalatedSha` is gone:
+            // it fired before any of the three automatic attempts had been
+            // spent, which is exactly the "needs-human while a rung remains"
+            // this budget removes.
           } else if (isMergeGateFailure(syncResult.error)) {
             // Issue #974: a merged tree the repo's own check rejects is not a
             // transient condition a retry clears — it needs a human now, not
@@ -748,13 +1208,7 @@ export async function syncMilestoneBranches(
     );
   }
 
-  if (streakPath && streaksDirty) {
-    try {
-      await saveSyncStreaks(streakPath, streaks);
-    } catch {
-      // Persistence is an optimisation — never fail the sweep over it.
-    }
-  }
+  await persistStreaks();
 
   return { ok: true, value: { synced, skipped, failed } };
 }
@@ -827,23 +1281,29 @@ async function escalateSyncConflict(
 }
 
 /**
- * Report a conflict no automatic rule could resolve (Issue #1559).
+ * Report a resolution the verification refused (Issues #1559 and #1778).
  *
- * Nothing was pushed and the branch is exactly as it was, so this is not a
- * "check what was overwritten" report — it is the preparation a human would
- * otherwise spend an hour on: what each side exports, what each side tests,
- * and which cases exist on one side only.
+ * The worker made the resolution and the gate said no, so the reader needs
+ * both halves: what the gate said, and the two sides that produced it — what
+ * each side exports, what each side tests, and which cases exist on one side
+ * only. A wall of `TS2304` on its own decides nothing, which is what made
+ * #1542 nearly useless.
+ *
+ * This is the one survivor of the old per-conflict escalation: a conflict no
+ * rung could settle is charged to the ledger and reported to nobody while an
+ * automatic attempt remains, but a gate refusal is not a conflict the budget
+ * can retry its way out of.
  *
  * Best-effort, and returns true only when the report went out, so the caller
- * remembers the commit it reported and does not repeat it every cycle.
+ * marks the streak escalated and does not repeat it every cycle.
  */
 async function escalateConflictAnalysis(
   repo: string,
   milestone: ActiveMilestone,
   analyses: FileAnalysis[],
   resolved: FileDecision[],
-  /** What the verification said, when it is what refused the resolution. */
-  gateFailure: string | undefined,
+  /** What the verification said — the half a reader cannot reconstruct. */
+  gateFailure: string,
   /** The conflict's own identity, carried as a marker for cross-host dedup. */
   conflictKey: string,
   ghCommandFn: GhCommandFn,
@@ -867,12 +1327,12 @@ async function escalateConflictAnalysis(
       defaultBranch: milestone.defaultBranch,
       analyses,
       resolved,
-      ...(gateFailure ? { gateFailure } : {}),
+      gateFailure,
     })
   }\n\n${describeBranchTips(tips)}`;
 
-  const what = `a milestone sync conflict only a human can resolve for ` +
-    `'${milestone.milestoneBranch}' (Issue #1559)`;
+  const what = `a milestone sync resolution the verification refused for ` +
+    `'${milestone.milestoneBranch}' (Issues #1559, #1778)`;
 
   // Issue #1786: each host keeps its own streak file, so the local record
   // alone cannot stop a second host reporting a conflict the first already

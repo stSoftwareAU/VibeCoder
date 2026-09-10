@@ -1167,7 +1167,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/merge_conflict_agent.ts"
-      ]
+      ],
+      "sweptAt": "176af2fb8ecb9c8f438bdd38bd226f0dc2711d25"
     },
     {
       "issue": 1770,
@@ -1178,7 +1179,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_rollback_marker.ts"
-      ]
+      ],
+      "sweptAt": "05f72ab8a77db1980fb3dea8a92792de9f8b4863"
     },
     {
       "issue": 1771,
@@ -1189,7 +1191,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_rollback.ts"
-      ]
+      ],
+      "sweptAt": "0556572a9b4b8e750a1540b2203e4bf693601e5b"
     },
     {
       "issue": 1774,
@@ -1200,7 +1203,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/pr_live_state.ts"
-      ]
+      ],
+      "sweptAt": "04a62ac5cbf76201450a9712549d3ad3e8707a6d"
     },
     {
       "issue": 1776,
@@ -1211,7 +1215,8 @@
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_default_tip.ts"
-      ]
+      ],
+      "sweptAt": "23e899b98daa8613993a16ba10f5b7e2abc28d61"
     }
   ],
   "roots": [

@@ -153,11 +153,13 @@ Deno.test("sync streaks - a success clears the streak so it can re-escalate late
       Promise.resolve({ ok: true as const, value: { message: "synced" } });
     await syncMilestoneBranches(okDeps);
     streaks = await loadSyncStreaks(streakPath);
-    assertEquals(
-      streaks["owner/repo|milestone/77-stuck-milestone"],
-      undefined,
-      "a successful sync clears the streak entry",
-    );
+    // Issue #1778 changed what survives a success: the failure streak and its
+    // escalation flag are cleared as before, and the ledger's `lastAttempt`
+    // audit record is kept, so the entry itself now outlives the streak.
+    const cleared = streaks["owner/repo|milestone/77-stuck-milestone"];
+    assertEquals(cleared?.count, 0, "a successful sync clears the streak");
+    assertEquals(cleared?.escalated, false, "and it can escalate again later");
+    assertEquals(cleared?.conflictAttempts, 0, "and the budget is refilled");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
