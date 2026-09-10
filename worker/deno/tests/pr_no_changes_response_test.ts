@@ -164,7 +164,15 @@ Deno.test("formatClassifierTrailer - more than six signals are truncated with a 
 });
 
 Deno.test("formatClassifierTrailer - the stock body ends with exactly this trailer", () => {
+  // The literal text, not `formatClassifierTrailer(c)` — an expectation
+  // derived from the function under test would stay green even if the
+  // trailer rendered nonsense.
+  const expected =
+    "\n\n**Classifier reason:** no recognised pattern\n**Signals:**\n- `check:x`";
   const c = classification("unknown", "no recognised pattern", ["check:x"]);
-  const res = buildCiNoChangesResponse("custom", c);
-  assertEquals(res.body.endsWith(formatClassifierTrailer(c)), true);
+  assertEquals(formatClassifierTrailer(c), expected);
+  assertEquals(
+    buildCiNoChangesResponse("custom", c).body.endsWith(expected),
+    true,
+  );
 });
