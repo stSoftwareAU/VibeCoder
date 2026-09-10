@@ -145,12 +145,18 @@ export class ProviderSubscriptionStatusCache {
     return `${provider}\u0000${credentialLabel}`;
   }
 
-  latest(provider: string, credentialLabel: string): ProviderSubscriptionStatus | undefined {
+  latest(
+    provider: string,
+    credentialLabel: string,
+  ): ProviderSubscriptionStatus | undefined {
     return this.#values.get(this.#key(provider, credentialLabel));
   }
 
   record(status: ProviderSubscriptionStatus): void {
-    this.#values.set(this.#key(status.provider, status.credentialLabel), status);
+    this.#values.set(
+      this.#key(status.provider, status.credentialLabel),
+      status,
+    );
   }
 
   /** Immediately replace cached evidence after a real quota-exhausted result. */
