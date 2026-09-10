@@ -30,6 +30,12 @@ import {
   restoreSession,
 } from "../session_manager.ts";
 import { runPreSetupCommand } from "../repo_config.ts";
+import {
+  MILESTONE_BEHIND_DEFER_REASON,
+  presyncMilestoneBranchForIssueRun,
+} from "../milestone_presync.ts";
+import { expectedNoPrOutcome } from "../run_outcome.ts";
+import { repoDirName } from "../work_volume_tiers.ts";
 import { escalateToHuman } from "../needs_human_escalation.ts";
 import { loadResumeState } from "../resume_state_store.ts";
 import { readHandoverNote } from "../handover_prompt_note.ts";
@@ -337,6 +343,52 @@ export async function workOnIssueSetupBranch(
           `'${milestoneTitle}': ${detail}`,
       };
     }
+
+    // Sync before new work (Issue #1780): no child branch is cut while the
+    // milestone branch is behind the default branch. One ladder attempt,
+    // charged to the branch's own conflict ledger, in the shared clone the
+    // periodic sweep uses — never in this lane's worktree, whose checkout of
+    // the milestone branch would then be refused to every other lane.
+    const presync = await presyncMilestoneBranchForIssueRun({
+      repo,
+      milestoneBranch: state.milestoneBranch,
+      defaultBranch: state.defaultBranch,
+      cwd: `${config.workDir}/${repoDirName(repo)}`,
+      workDir: config.workDir,
+      config,
+      logger,
+      ...(ctx.cycleDeadlineEpochMs !== undefined
+        ? { cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs }
+        : {}),
+      syncMilestoneBranchFn: deps.git.syncMilestoneBranchWithDefault,
+      countCommitsAheadFn: deps.git.countCommitsAhead,
+      runGitCommandFn: deps.git.runGitCommand,
+      runAgentFn: deps.claude.runClaudeWithRetry,
+    });
+    if (presync.status === "deferred") {
+      // No agent is spent, the issue keeps its pickup label and no human is
+      // asked about it: the ledger's deferral paces the branch, the selector
+      // skips the milestone's issues while it does, and the release comment
+      // states the reason.
+      logger.warn(presync.detail, {
+        repo,
+        issueNumber,
+        milestoneBranch: state.milestoneBranch,
+        defaultBranch: state.defaultBranch,
+      });
+      return {
+        status: "early_exit",
+        reason: MILESTONE_BEHIND_DEFER_REASON,
+        expectedSkip: true,
+        outcome: expectedNoPrOutcome("setup", presync.detail),
+      };
+    }
+    logger.info(presync.detail, {
+      repo,
+      issueNumber,
+      milestoneBranch: state.milestoneBranch,
+      ...(presync.baseSha ? { baseSha: presync.baseSha } : {}),
+    });
   }
 
   // Milestone-aware session branching (Issue #1322):

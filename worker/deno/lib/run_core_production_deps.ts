@@ -2940,6 +2940,20 @@ export async function createProductionRunCoreDeps(
       // Load the run-local holds once before scanning (synchronous check
       // per issue). Issue #655: the same set the census models.
       const runLocalHold = await loadRunLocalHolds();
+      // Issue #1780: a milestone branch its conflict ledger is pacing cannot
+      // take the default branch down yet, and a child run refuses to cut a
+      // branch off a base that is behind — so claiming one of the milestone's
+      // issues would claim it, defer it and comment on it again every cycle.
+      // The ledger is read once per scan: one local file, no API call.
+      const { loadSyncStreaks, milestoneSyncStreakPath } = await import(
+        "./milestone_sync_streak.ts"
+      );
+      const { milestonePacedUntil } = await import("./milestone_presync.ts");
+      const pacingLedger = await loadSyncStreaks(
+        milestoneSyncStreakPath(workDir),
+      );
+      // One line per paced milestone per scan, not one per issue in it.
+      const pacingLogged = new Set<string>();
       const result = await findOldestIssue(config, {
         githubUser,
         ghCommandFn: runGhCommand,
@@ -2958,6 +2972,27 @@ export async function createProductionRunCoreDeps(
         isIssueInCooldown: (repo, num) =>
           runLocalHold(repo, num) ||
           options?.excludeIssues?.has(issueClaimKey(repo, num)) === true,
+        // Issue #1780: beside the scan's `milestone-occupied` gate — that one
+        // refuses a stream a sibling holds, this one refuses a stream whose
+        // branch is behind the default branch and paced by the ledger.
+        milestonePacedUntil: (repo, milestone) => {
+          const until = milestonePacedUntil(
+            pacingLedger,
+            repo,
+            milestone,
+            Date.now(),
+          );
+          if (until === undefined) return undefined;
+          const key = `${repo}|${milestone}`;
+          if (!pacingLogged.has(key)) {
+            pacingLogged.add(key);
+            logger.info(
+              `skipped: milestone behind default branch (paced until ` +
+                `${until}) — ${repo} milestone '${milestone}'`,
+            );
+          }
+          return until;
+        },
         // Repositories the maintenance lane has leased wholesale (Issues
         // #4176, #213, narrowed by #1091): skipped before any eligibility
         // check, because that pass may touch any branch of the clone.
