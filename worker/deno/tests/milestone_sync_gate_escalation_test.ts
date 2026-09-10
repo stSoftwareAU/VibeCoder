@@ -65,8 +65,6 @@ function gateFailingDeps(
         }),
       }),
     log: () => undefined,
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
   };
   if (streakPath) deps.streakPath = streakPath;
   return deps;

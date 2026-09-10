@@ -353,7 +353,6 @@ export const OPERATIONAL_DEFAULTS = {
   enableModelFallback: true,
   minDiskSpaceMb: 500,
   syncMilestoneBranches: true,
-  milestoneSyncCooldownSeconds: 3600,
   repoTimeoutThreshold: 3,
   staleFailedDiagnosticDays: 3,
   stalePlanningWarningDays: 2,
@@ -1436,8 +1435,6 @@ export function buildDefaultWorkerConfig(
     enableModelFallback: OPERATIONAL_DEFAULTS.enableModelFallback,
     minDiskSpaceMb: OPERATIONAL_DEFAULTS.minDiskSpaceMb,
     syncMilestoneBranches: OPERATIONAL_DEFAULTS.syncMilestoneBranches,
-    milestoneSyncCooldownSeconds:
-      OPERATIONAL_DEFAULTS.milestoneSyncCooldownSeconds,
     staleFailedDiagnosticDays: OPERATIONAL_DEFAULTS.staleFailedDiagnosticDays,
     stalePlanningWarningDays: OPERATIONAL_DEFAULTS.stalePlanningWarningDays,
     phaseModelOverrides: {},

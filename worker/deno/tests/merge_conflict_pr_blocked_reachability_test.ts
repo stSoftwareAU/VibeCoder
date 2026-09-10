@@ -174,6 +174,8 @@ Deno.test(
 
     const resolved: number[] = [];
     const drain = await drainConflictingPrs({
+      // Issue #1774: this PR is still open at the claim point.
+      prLiveState: () => Promise.resolve({ open: true }),
       logger: makeSilentLogger(),
       findNext: async (exclude) => {
         const scan = await scanOckham("CONFLICTING", []);
@@ -222,6 +224,8 @@ Deno.test(
   "conflict drain - a queue of stale-labelled PRs stops as queue-empty",
   async () => {
     const drain = await drainConflictingPrs({
+      // Issue #1774: this PR is still open at the claim point.
+      prLiveState: () => Promise.resolve({ open: true }),
       logger: makeSilentLogger(),
       findNext: async () => {
         const scan = await scanOckham("BEHIND", [MERGE_CONFLICT_LABEL]);

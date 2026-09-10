@@ -54,6 +54,7 @@ import {
   describeUnresolvedFollowUp,
   stripReservedLabelsFromModelFollowUp,
 } from "./escape_hatch_label_strip.ts";
+import { fleetReservedLabelApplierCheck } from "./reserved_label_strip.ts";
 import {
   resetWriteRepoAllowlist,
   seedWriteRepoAllowlist,
@@ -453,6 +454,14 @@ async function workOnIssueCore(
         phase: "setup",
         reason: setupResult.reason,
         timings,
+        // Issue #1780: a bounce the phase declared for itself — the milestone
+        // base is behind and could not be brought level — is a skip, not a
+        // failure, so the issue keeps its pickup label and nothing is tracked
+        // against it.
+        ...(setupResult.expectedSkip ? { expectedSkip: true } : {}),
+        // A phase that decided its own outcome keeps it (Issue #218), so the
+        // release comment states the deferral rather than a derived failure.
+        ...(setupResult.outcome ? { outcome: setupResult.outcome } : {}),
         // Issue #1193: a refused claim is carried to the main loop so the
         // release path leaves the holder's assignee and heartbeat alone.
         ...(setupResult.claimNotHeld ? { claimNotHeld: true } : {}),
@@ -604,6 +613,13 @@ async function workOnIssueCore(
         excludeIssueNumber: ctx.issueNumber,
         ghClient: deps.github.createClient(logger),
         logger,
+        // Issue #1791: a label a human applied to the follow-up is kept.
+        applier: fleetReservedLabelApplierCheck({
+          githubUser: ctx.githubUser,
+          fleetPrAuthors: ctx.config.fleetPrAuthors,
+          serviceAccounts: ctx.config.serviceAccounts,
+          ghFn: deps.github.runGhCommand,
+        }),
       });
       if (!stripResult.ok) {
         logger.error(
@@ -694,6 +710,27 @@ async function workOnIssueCore(
         timings,
       };
     }
+    // The gate stopped without raising a PR and without failing (Issue
+    // #1852): the repository's own gate is red on the untouched tree, so no
+    // change of this run's could clear it. Reported as an expected skip —
+    // the issue keeps its labels and is left for the ordinary retry
+    // cooldown, and the run is not counted as a worker failure.
+    //
+    // `success` is never true here: the only producer declares itself an
+    // expected skip, and an early exit that does not would otherwise be
+    // reported as a successful run that quietly skipped the completion
+    // phase and raised no PR.
+    if (qualityResult.status === "early_exit") {
+      const expectedSkip = qualityResult.expectedSkip === true;
+      return {
+        success: false,
+        ...(expectedSkip ? { expectedSkip: true } : {}),
+        phase: "quality_gate",
+        reason: qualityResult.reason,
+        timings,
+        ...(qualityResult.outcome ? { outcome: qualityResult.outcome } : {}),
+      };
+    }
 
     // Phase 5 — Completion
     const completionResult = await runPhase(
@@ -713,8 +750,14 @@ async function workOnIssueCore(
     // branch was level with its base. Report the phase's own outcome; the
     // durable resume state is deleted below only on the PR path.
     if (completionResult.status === "early_exit") {
+      // The security-fix retry re-runs the quality gate through the
+      // completion path, so a pre-existing gate failure (Issue #1852) can
+      // surface here too. It declares itself an expected skip; the existing
+      // completion bounces do not, and behave exactly as before.
+      const expectedSkip = completionResult.expectedSkip === true;
       return {
-        success: true,
+        success: !expectedSkip,
+        ...(expectedSkip ? { expectedSkip: true } : {}),
         phase: "completion",
         reason: completionResult.reason,
         timings,

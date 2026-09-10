@@ -430,6 +430,28 @@ export type RuleOutcome =
   | { kind: "resolved"; text: string }
   | { kind: "unresolved"; reason: string };
 
+/**
+ * What a rule knows about the file beyond its own text (Issue #1768).
+ *
+ * The PR merge runs without `diff3` markers, so a hunk carries no
+ * `||||||| base` section and a rule that has to know what the merge base said
+ * cannot read it from the file. The pass reads it out of the conflicted index
+ * instead (`git show :1:<path>`, the stage `merge_conflict_stages.ts` reports)
+ * and hands it over here.
+ */
+export interface RuleContext {
+  /** Repository-relative path of the conflicted file. */
+  readonly path: string;
+  /**
+   * The merge base's version of that file, or null when there is none to be
+   * had — an add/add conflict with no stage 1, or a stage git refused. Null
+   * never reads as "the base was empty": a rule that needs the base defers.
+   *
+   * Only populated for a rule that sets {@link ManifestRule.needsBase}.
+   */
+  readonly base: string | null;
+}
+
 /** A per-manifest deterministic resolution rule. */
 export interface ManifestRule {
   /** Unique, stable name — used for logging and duplicate detection. */
@@ -437,12 +459,24 @@ export interface ManifestRule {
   /** Whether this rule handles the given repository-relative path. */
   matches(path: string): boolean;
   /**
+   * Whether the pass should read the merge base (index stage 1) for this rule.
+   *
+   * Off by default: reading it costs a git call per conflicted file, and the
+   * manifest rules decide per dependency key without it.
+   */
+  readonly needsBase?: boolean;
+  /**
    * Attempt to resolve a parsed file.
    *
    * Receives the full ordered parse (literals and hunks) rather than the hunks
-   * alone, so a `resolved` outcome can reproduce every unconflicted byte.
+   * alone, so a `resolved` outcome can reproduce every unconflicted byte, plus
+   * the context above. A rule that does not need the context may declare a
+   * single parameter.
    */
-  resolve(segments: readonly ConflictSegment[]): RuleOutcome;
+  resolve(
+    segments: readonly ConflictSegment[],
+    context: RuleContext,
+  ): RuleOutcome;
 }
 
 /** Lookup of manifest rules keyed on file path. */

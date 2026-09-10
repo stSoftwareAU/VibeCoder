@@ -18,9 +18,11 @@ import type {
 } from "../lib/claude_runner.ts";
 import {
   getIdleTaskRunContext,
+  IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS,
   IDLE_TASK_NO_OUTPUT_TIMEOUT_SECONDS,
   IDLE_TASK_TIMEOUT_SECONDS,
   resolveIdleTaskBudget,
+  resolveIdleTaskClaimRunway,
   runIdleTaskClaude,
   withIdleTaskBudget,
   withIdleTaskRunContext,
@@ -337,4 +339,69 @@ Deno.test("runIdleTaskClaude forwards retry options unchanged", async () => {
   );
 
   assertEquals(seenRetry, { maxRetries: 1, maxTotalInvocations: 3 });
+});
+
+// ---------------------------------------------------------------------------
+// The claim-runway floor (Issue #1757)
+// ---------------------------------------------------------------------------
+
+Deno.test("claim runway - with no cycle deadline nothing binds and the claim is taken", () => {
+  const runway = resolveIdleTaskClaimRunway(undefined, 1_000_000);
+  assertEquals(runway.budgetSeconds, IDLE_TASK_TIMEOUT_SECONDS);
+  assertEquals(runway.deadlineBound, false);
+  assertEquals(runway.belowFloor, false);
+});
+
+Deno.test("claim runway - 60 s of cycle left is below the floor (NEAT-AI-Explore#629)", () => {
+  const now = 1_000_000_000;
+  const runway = resolveIdleTaskClaimRunway(now + 60_000, now);
+  // The same arithmetic the post-claim bound applies: runway + kill grace.
+  assertEquals(
+    runway.budgetSeconds,
+    Math.max(
+      EXECUTE_TIMEOUT_FLOOR_SECONDS,
+      60 + OPERATIONAL_DEFAULTS.claudeKillAfter,
+    ),
+  );
+  assertEquals(runway.deadlineBound, true);
+  assertEquals(runway.floorSeconds, IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS);
+  assertEquals(runway.belowFloor, true);
+});
+
+Deno.test("claim runway - 20 min of cycle left clears the floor and is still deadline-bound", () => {
+  const now = 1_000_000_000;
+  const runway = resolveIdleTaskClaimRunway(now + 20 * 60_000, now);
+  assertEquals(runway.deadlineBound, true);
+  assertEquals(runway.belowFloor, false);
+  assertEquals(
+    runway.budgetSeconds,
+    20 * 60 + OPERATIONAL_DEFAULTS.claudeKillAfter,
+  );
+});
+
+Deno.test("claim runway - the floor is the silence watchdog's window", () => {
+  assertEquals(
+    IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS,
+    IDLE_TASK_NO_OUTPUT_TIMEOUT_SECONDS,
+  );
+  // Exactly at the floor is enough; one second under is not.
+  const now = 1_000_000_000;
+  const grace = OPERATIONAL_DEFAULTS.claudeKillAfter * 1000;
+  const atFloor = resolveIdleTaskClaimRunway(
+    now + IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS * 1000 - grace,
+    now,
+  );
+  assertEquals(atFloor.belowFloor, false);
+  const underFloor = resolveIdleTaskClaimRunway(
+    now + IDLE_TASK_CLAIM_RUNWAY_FLOOR_SECONDS * 1000 - grace - 1000,
+    now,
+  );
+  assertEquals(underFloor.belowFloor, true);
+});
+
+Deno.test("claim runway - a deadline already passed is below the floor, not negative", () => {
+  const now = 1_000_000_000;
+  const runway = resolveIdleTaskClaimRunway(now - 5 * 60_000, now);
+  assertEquals(runway.budgetSeconds, EXECUTE_TIMEOUT_FLOOR_SECONDS);
+  assertEquals(runway.belowFloor, true);
 });

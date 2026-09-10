@@ -124,7 +124,8 @@ background service is offered, where files land — is covered in
    - `label-sync` — standardises the worker's label set in every monitored
      repository.
    - `workflow-sync` — audits each repository's CI workflows and files issues
-     for missing protections.
+     for missing protections, each carrying a template whose action pins were
+     resolved when the issue was filed.
    - `best-practices-sync` — audits the same workflows for best-practice
      findings.
    - `gitignore-sync` — applies the canonical `.gitignore` safety block to
@@ -1389,7 +1390,7 @@ re-run converges on the same state rather than piling up duplicates.
 | `launchagent` | Installs the macOS LaunchAgent (background service). `--status` asks launchd (`launchctl print gui/<uid>/<label>`) and reports `installed`, `plist-not-loaded` (the plist is on disk but launchd has no such service — nothing is running the worker), or `not-installed`; `--uninstall` removes it. Re-running `launchagent` on a `plist-not-loaded` host bootstraps the agent back rather than reporting it up to date. | Yes — background services are the [Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service)'s job, after the first foreground run. |
 | `screenshot` | Installs Playwright MCP on the host so the worker can capture page screenshots. | Yes — a convenience; nothing else depends on it. |
 | `label-sync` | Repo-side. Creates or updates the worker's canonical labels (`work-on`, `top-priority`, `needs-human`, `question`, `planning`, …) in every monitored repository, with canonical colours and descriptions, and deletes the worker labels that have since been retired. GitHub's stock `good first issue` and `help wanted` are never deleted. Supports `--dry-run`. | Not in practice — see below for what skipping it breaks. |
-| `workflow-sync` | Repo-side. Audits each monitored repository's GitHub Actions workflows and raises issues for missing protections. Writes nothing but issues. | Yes — idempotent housekeeping; the audit simply runs later. |
+| `workflow-sync` | Repo-side. Audits each monitored repository's GitHub Actions workflows and raises issues for missing protections. Writes nothing but issues. Each body's YAML is rendered with the action pins **resolved at filing time** — once per run, shared by every repository — so the implementer is handed the highest release past the supply-chain quarantine window rather than the catalogue's frozen SHA; an action whose lookup fails keeps its catalogue SHA and logs one `[workflow-sync] pin resolution failed:` line. The body tells the implementer to copy the YAML and its pins as given, and lists the file-scoped checks the committed file must pass. A `--dry-run` renders no body and resolves no pin. | Yes — idempotent housekeeping; the audit simply runs later. |
 | `best-practices-sync` | Repo-side. Audits workflows for best-practice findings and files (or updates) one follow-up issue per repository. | Yes — same housekeeping category. |
 | `best-practices-relabel` | Repo-side. One-off back-fill of severity and category labels onto best-practice issues filed before those labels existed. Supports `--dry-run`. | Yes — internal maintenance; not part of `setup all`, and a fresh setup has nothing to relabel. |
 | `gitignore-sync` | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits. | Yes, but recommended — the safety blocks exist for a reason. |

@@ -35,13 +35,13 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { buildMergeConflictPrompt } from "./prompt_builder.ts";
-import { loadRepoContextContent } from "./repo_context_reader.ts";
-import { guardGatedHead } from "./gated_head_guard.ts";
 import {
-  preparePrBranch,
-  readPrResponseMessage,
-} from "./pr_branch_preparation.ts";
+  createMergeConflictReplyReader,
+  runMergeConflictAgent,
+} from "./merge_conflict_agent.ts";
+import { standDownMilestoneHead } from "./gated_head_guard.ts";
+import { isRuleViolationPush } from "./milestone_sync_pr.ts";
+import { preparePrBranch } from "./pr_branch_preparation.ts";
 import {
   type HeartbeatHandle,
   startHeartbeat,
@@ -57,7 +57,7 @@ import { resolvePreFlightSpec } from "./git_push.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
-import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
+import { BOTH_INSERTED_RULE_NAME } from "./both_inserted_conflict_rule.ts";
 import {
   applyDependencyConflictRules,
   type DependencyRuleApplier,
@@ -78,6 +78,7 @@ import {
   abandonAndRestart,
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
+  DEFAULT_NEEDS_HUMAN_LABEL,
   describeExhaustedRoute,
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
@@ -126,13 +127,23 @@ export interface MergeConflictResult {
   /** Human-readable summary. */
   summary: string;
   /**
-   * Explicitly `false` when this pass opened an attempt and then withdrew it
-   * (Issue #1693): the watchdog SIGTERMed the agent because the cycle ended,
-   * which is the worker's decision and not the PR's fault, so the attempt
-   * marker is deleted and the PR's budget is untouched. Absent everywhere
-   * else — those paths either concluded their attempt or never opened one.
+   * Explicitly `false` when this pass opened an attempt and then withdrew it:
+   * the watchdog SIGTERMed the agent because the cycle ended (Issue #1693),
+   * or a repository ruleset refused the push (Issue #1772). Neither is the
+   * PR's fault, so the attempt marker is deleted and the PR's budget is
+   * untouched. Absent everywhere else — those paths either concluded their
+   * attempt or never opened one.
    */
   attemptCharged?: boolean;
+  /**
+   * Explicitly `true` when the withdrawal happened because **the run itself**
+   * was ending (Issue #1693) — the one withdrawal the drain must stop on,
+   * because taking the next PR would open an attempt marker and withdraw it
+   * again. Kept apart from {@link MergeConflictResult.attemptCharged}
+   * (Issue #1772): a ruleset refusal is also uncharged, but it says nothing
+   * about the run's remaining time, so the drain carries on to the next PR.
+   */
+  runEnded?: boolean;
 }
 
 /** Dependencies for {@link processMergeConflict}. */
@@ -212,11 +223,6 @@ export interface MergeConflictProcessorDeps {
    */
   trustedAuthors?: readonly string[];
 }
-
-const DEFAULT_CLAUDE_TIMEOUT = OPERATIONAL_DEFAULTS.prFeedbackTimeout;
-const DEFAULT_CLAUDE_NO_OUTPUT_TIMEOUT =
-  OPERATIONAL_DEFAULTS.claudeNoOutputTimeout;
-const DEFAULT_MAX_RATE_LIMIT_RETRIES = 3;
 
 /** What the human must do when the worker gives up on a conflict. */
 export const CONFLICT_ESCALATION_NEXT_STEP =
@@ -402,6 +408,17 @@ export function buildRuleResolutionSection(
       );
       continue;
     }
+    if (file.resolvedBy === BOTH_INSERTED_RULE_NAME) {
+      // Not a dependency decision at all (Issue #1768): both sides only added
+      // to this file, so the per-dependency wording below would describe a
+      // pick that was never made.
+      lines.push(
+        `- \`${file.path}\` (rule \`${file.resolvedBy}\`) — both sides only ` +
+          `added to this file, so both additions were kept, ` +
+          `\`${baseBranch}\`'s first`,
+      );
+      continue;
+    }
     lines.push(`- \`${file.path}\` (rule \`${file.resolvedBy}\`)`);
     if (file.decisionsUnattributed) {
       lines.push(
@@ -418,12 +435,16 @@ export function buildRuleResolutionSection(
       lines.push(describeDependencyDecision(decision, baseBranch, branchName));
     }
   }
-  lines.push(
-    "",
-    "Per dependency key the higher published version wins and every other " +
-      "entry from both sides survives, so nothing either branch changed was " +
-      "dropped. Audit the picks above rather than in the diff.",
-  );
+  if (
+    ruleResolved.some((file) => file.resolvedBy !== BOTH_INSERTED_RULE_NAME)
+  ) {
+    lines.push(
+      "",
+      "Per dependency key the higher published version wins and every other " +
+        "entry from both sides survives, so nothing either branch changed was " +
+        "dropped. Audit the picks above rather than in the diff.",
+    );
+  }
   return lines;
 }
 
@@ -632,28 +653,31 @@ export async function processMergeConflict(
     attemptCount: input.attemptCount,
   });
 
-  // Issue #1679: a head under a ruleset that refuses direct pushes can never
-  // receive the resolved merge — the push is declined with GH013. Stand down
-  // before the lock, the lock comment and the heartbeat, so a PR the worker
-  // will never work leaves one comment rather than churn on every run, and
-  // before the attempt marker below, so the refusal spends no attempt.
-  const pushGate = await guardGatedHead({
-    repo,
-    prNumber,
-    branchName: input.branchName,
-    pass: "Merge-conflict resolution",
-    logger,
-    runGhCommand: processorDeps.deps.github.runGhCommand,
-  });
-  if (pushGate.gated) {
+  // Issue #1772: a `milestone/**` head belongs to the every-cycle milestone
+  // branch sync, which owns `default -> milestone/*` merges and already lands
+  // them through a sync PR when a ruleset refuses the direct push (#589).
+  // Running the ladder here too would duplicate that merge on the same branch
+  // and race its push — so stand down whether or not a rule is in force
+  // (#1679 stood down only on the gated case). Before the lock, the lock
+  // comment and the heartbeat, so the PR churns nothing on every run, and
+  // before the attempt marker below, so no attempt is spent.
+  if (
+    await standDownMilestoneHead({
+      repo,
+      prNumber,
+      branchName: input.branchName,
+      logger,
+      runGhCommand: processorDeps.deps.github.runGhCommand,
+    })
+  ) {
     return {
       ok: true,
       value: {
         processed: false,
         merged: false,
         escalated: false,
-        summary:
-          `PR #${prNumber} head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
+        summary: `PR #${prNumber} head '${input.branchName}' is a milestone ` +
+          `branch — left to the milestone branch sync, no attempt spent`,
       },
     };
   }
@@ -856,18 +880,10 @@ async function resolveConflict(
   /** The originating issues behind both sides, when the agent is involved. */
   let issueContext: ConflictIssueContext | null = null;
 
-  // `readPrResponseMessage` consumes the file so a stale reply cannot be
-  // reused, and this attempt reads it in up to three places — the override
-  // guard, the ancestor failure and the resolved comment. Read it once.
-  let replyRead = false;
-  let reply: string | undefined;
-  const agentReply = async (): Promise<string | undefined> => {
-    if (!replyRead) {
-      reply = await readPrResponseMessage(workDir);
-      replyRead = true;
-    }
-    return reply;
-  };
+  // The reply file is consumed on read so a stale reply cannot be reused, and
+  // this attempt reads it in up to three places — the override guard, the
+  // ancestor failure and the resolved comment. Read it once (Issue #1767).
+  const agentReply = createMergeConflictReplyReader(workDir);
   if (merge.code !== 0) {
     const unmerged = await git(
       run,
@@ -960,12 +976,24 @@ async function resolveConflict(
       );
 
       agentRan = true;
-      const agentOutcome = await runResolutionAgent(
-        input,
-        processorDeps,
-        deferredFiles,
+      const agentOutcome = await runMergeConflictAgent({
+        repo,
+        target: { kind: "pr", prNumber },
+        baseBranch,
+        conflictedFiles: deferredFiles,
         issueContext,
-      );
+        workDir,
+        promptsDir: processorDeps.promptsDir,
+        qualityInstructions: processorDeps.qualityInstructions,
+        customInstructions: processorDeps.customInstructions,
+        timeouts: {
+          claudeTimeout: processorDeps.claudeTimeout,
+          claudeNoOutputTimeout: processorDeps.claudeNoOutputTimeout,
+          maxRateLimitRetries: processorDeps.maxRateLimitRetries,
+        },
+        logger,
+        runAgent: deps.claude.runClaudeWithRetry,
+      });
       if (!agentOutcome.ok) {
         await abortMerge(run, workDir);
         return await failAttempt(
@@ -1062,6 +1090,18 @@ async function resolveConflict(
     preFlight,
   );
   if (!finalise.ok) {
+    // A ruleset refusing the push is a configuration fact, not a resolution
+    // the agent got wrong (Issue #1772) — it recurs identically every run, so
+    // charging it would burn the PR's budget on something no retry can fix.
+    if (isRuleViolationPush(finalise.error.message)) {
+      return await withdrawRulesetRefusedAttempt(
+        input,
+        processorDeps,
+        attemptCommentId,
+        attemptNumber,
+        finalise.error.message,
+      );
+    }
     return await failAttempt(
       input,
       processorDeps,
@@ -1079,8 +1119,19 @@ async function resolveConflict(
       ["push", "--dry-run", "--end-of-options", "origin", branchName],
       workDir,
     );
-    const gitDetail = (dryRun.stderr + dryRun.stdout).trim().split("\n")
+    const pushOutput = dryRun.stderr + dryRun.stdout;
+    const gitDetail = pushOutput.trim().split("\n")
       .slice(-3).join(" | ");
+    // Same refusal, reported by the dry run rather than by the push itself.
+    if (isRuleViolationPush(pushOutput)) {
+      return await withdrawRulesetRefusedAttempt(
+        input,
+        processorDeps,
+        attemptCommentId,
+        attemptNumber,
+        gitDetail,
+      );
+    }
     return await failAttempt(
       input,
       processorDeps,
@@ -1215,108 +1266,6 @@ async function gatherIssueContext(
 }
 
 /**
- * What one agent run left behind.
- *
- * `terminated` is the run the worker itself ended (Issue #1693): the
- * maintenance-lane watchdog abandoned the handler at the cycle deadline and
- * SIGTERMed the agent mid-edit. The tree is then half-resolved through no
- * fault of the PR, so it is not a verdict on the conflict and must not be
- * judged as one.
- */
-interface ResolutionAgentOutcome {
-  /** The run was ended by the worker (SIGTERM, exit 143). */
-  terminated: boolean;
-}
-
-/**
- * Run the resolution agent against the conflicted working tree.
- *
- * @returns An error result when the agent could not run or timed out;
- *   otherwise whether the worker itself ended the run.
- */
-async function runResolutionAgent(
-  input: MergeConflictInput,
-  processorDeps: MergeConflictProcessorDeps,
-  conflictedFiles: readonly string[],
-  issueContext: ConflictIssueContext | null,
-): Promise<Result<ResolutionAgentOutcome>> {
-  const {
-    logger,
-    deps,
-    workDir,
-    qualityInstructions,
-    customInstructions,
-    claudeTimeout = DEFAULT_CLAUDE_TIMEOUT,
-    claudeNoOutputTimeout = DEFAULT_CLAUDE_NO_OUTPUT_TIMEOUT,
-    maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES,
-  } = processorDeps;
-
-  // `workDir` already is the checkout, so the repo context is read directly —
-  // appending the repo name looked one level too deep and injected nothing
-  // (Issue #1673).
-  const repoContextContent = await loadRepoContextContent(workDir, logger);
-
-  const promptResult = await buildMergeConflictPrompt({
-    repo: input.repo,
-    prNumber: String(input.prNumber),
-    baseBranch: input.baseBranch,
-    conflictedFiles,
-    qualityInstructions,
-    customInstructions,
-    repoContextContent,
-    promptsDir: processorDeps.promptsDir,
-    issueContext,
-  });
-  if (!promptResult.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `failed to build the merge-conflict prompt: ${promptResult.error.message}`,
-      ),
-    };
-  }
-
-  const claudeResult = await deps.claude.runClaudeWithRetry(
-    {
-      prompt: promptResult.value.prompt,
-      systemPrompt: promptResult.value.systemPrompt,
-      timeoutSeconds: claudeTimeout,
-      noOutputTimeout: claudeNoOutputTimeout,
-      phase: "merge_conflict",
-      cwd: workDir,
-      logger,
-    },
-    { maxRetries: maxRateLimitRetries },
-  );
-
-  if (!claudeResult.ok) {
-    return {
-      ok: false,
-      error: new Error(`agent run failed: ${claudeResult.error.message}`),
-    };
-  }
-  // Issue #1693: the worker ended this run — the handler was abandoned by the
-  // watchdog, or the run is shutting down. Reported, never judged: the caller
-  // withdraws the attempt instead of reading the half-edited tree as a
-  // failure the PR must pay for.
-  if (claudeResult.value.terminated) {
-    return { ok: true, value: { terminated: true } };
-  }
-  if (claudeResult.value.timedOut) {
-    return {
-      ok: false,
-      error: new Error(
-        claudeResult.value.timeoutReason === "no-output"
-          ? `agent produced no output for ${claudeNoOutputTimeout}s`
-          : `agent timed out after ${claudeTimeout}s`,
-      ),
-    };
-  }
-
-  return { ok: true, value: { terminated: false } };
-}
-
-/**
  * Withdraw an attempt marker opened before the attempt turned out not to be
  * one the PR should pay for — a clone fault (Issue #1458), or a run that
  * ended under the agent (Issue #1693).
@@ -1432,6 +1381,63 @@ async function escalateNoCommonAncestor(
 }
 
 /**
+ * Withdraw an attempt whose push a repository ruleset refused (Issue #1772).
+ *
+ * GH013 is not a resolution the agent got wrong — the merge itself succeeded,
+ * and the same refusal arrives on every run for as long as the rule stands.
+ * Charging it spent the PR's two-attempt budget on a push that could never
+ * land and escalated a conflict nobody had failed to resolve. So this posts no
+ * `CONFLICT_FAILED_MARKER` and deletes the attempt marker instead: the next
+ * scan counts neither a concluded attempt nor an open one.
+ *
+ * A marker that cannot be deleted is left and said out loud by
+ * {@link deleteAttemptMarker} — the PR then reads as disrupted, which is
+ * retried rather than judged, and that bound still holds.
+ */
+async function withdrawRulesetRefusedAttempt(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  attemptCommentId: number | null,
+  attemptNumber: number,
+  detail: string,
+): Promise<Result<MergeConflictResult>> {
+  const { logger, deps } = processorDeps;
+  const { repo, prNumber, branchName } = input;
+
+  await deleteAttemptMarker(
+    deps,
+    repo,
+    attemptCommentId,
+    logger,
+    "the push was refused by a repository ruleset (Issue #1772)",
+  );
+
+  logger.warn(
+    "Merge-conflict resolution not charged: push rejected by ruleset",
+    {
+      repo,
+      prNumber,
+      branchName,
+      attempt: attemptNumber,
+      attemptCharged: false,
+      detail,
+    },
+  );
+
+  return {
+    ok: true,
+    value: {
+      processed: false,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      summary: `Merge-conflict resolution on PR #${prNumber} was not ` +
+        `charged: push rejected by ruleset — ${detail}`,
+    },
+  };
+}
+
+/**
  * Withdraw an attempt the worker itself cut short (Issue #1693).
  *
  * The maintenance-lane watchdog SIGTERMs the agent when the handler is
@@ -1485,6 +1491,7 @@ async function withdrawCutShortAttempt(
       merged: false,
       escalated: false,
       attemptCharged: false,
+      runEnded: true,
       summary:
         `Merge-conflict resolution on PR #${prNumber} was cut short by ` +
         `the run ending — the attempt was withdrawn, not spent`,
@@ -1571,6 +1578,9 @@ async function failAttempt(
         gh: deps.github.runGhCommand,
         logger,
         trustedAuthors: processorDeps.trustedAuthors ?? [],
+        // Same configured label the escalation below would use.
+        needsHumanLabel: processorDeps.needsHumanLabel ??
+          DEFAULT_NEEDS_HUMAN_LABEL,
       })))({
       repo,
       prNumber,
@@ -1596,6 +1606,37 @@ async function failAttempt(
         summary:
           `Merge-conflict attempts exhausted on PR #${prNumber} — abandoned ` +
           `it and re-queued issue #${abandon.issueNumber}`,
+      },
+    };
+  }
+
+  // Issue #1773: the pickup label the fleet reads can be one the worker may
+  // not apply. The rung still abandons — PR closed, issue reopened — and
+  // hands the issue to a human naming that label. `needs-human` belongs on
+  // the issue that must be re-queued, not on the PR that is already closed.
+  if (abandon.outcome === "abandoned-unlabelled") {
+    logger.warn(
+      `Merge-conflict attempts exhausted on PR #${prNumber} — closed it and ` +
+        `reopened issue #${abandon.issueNumber}, which needs ` +
+        `\`${abandon.workLabel}\` re-applied by a trusted author`,
+      {
+        repo,
+        prNumber,
+        issueNumber: abandon.issueNumber,
+        workLabel: abandon.workLabel,
+        maxAttempts,
+      },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        summary:
+          `Merge-conflict attempts exhausted on PR #${prNumber} — abandoned ` +
+          `it and reopened issue #${abandon.issueNumber} for a human to ` +
+          `re-apply \`${abandon.workLabel}\``,
       },
     };
   }

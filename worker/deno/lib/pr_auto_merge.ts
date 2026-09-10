@@ -42,6 +42,14 @@ export enum AutoMergeResult {
   /** Skipped because auto-merge is disabled in config */
   Skipped = "skipped",
   /**
+   * The PR is a draft, so GitHub refuses to arm auto-merge on it
+   * (Issue #1800). Not a failure: the author asked for eyes. The sweep
+   * skips drafts before arming; this is the result when the arming call
+   * itself meets one (at creation, or from a listing that predates the
+   * `isDraft` field).
+   */
+  Draft = "draft",
+  /**
    * Refused: this is a milestone summary PR and the milestone still has open
    * children (Issue #3909). Merging would delete the milestone branch and
    * auto-close those children's PRs, so the merge is not attempted. The PR is
@@ -77,6 +85,9 @@ const SUCCESSFUL_OUTCOMES: ReadonlySet<AutoMergeResult> = new Set([
   AutoMergeResult.Enabled,
   AutoMergeResult.MergedDirectly,
   AutoMergeResult.Skipped,
+  // Issue #1800: a draft is the author's choice, not a fault of the worker's
+  // — logged at info so a long-lived draft is not a warning per cycle.
+  AutoMergeResult.Draft,
 ]);
 
 /**
@@ -177,6 +188,13 @@ export interface EnableAutoMergeResult {
   result: AutoMergeResult;
   /** Human-readable message */
   message: string;
+  /**
+   * Why a `deferred` outcome deferred, when the caller must treat it as a
+   * deliberate hold rather than a merge error (Issue #1779). A milestone
+   * base behind the default branch gets no comment and no label — the next
+   * cycle's milestone sync clears it.
+   */
+  deferral?: "milestone-behind";
 }
 
 /**
@@ -203,6 +221,12 @@ export function classifyAutoMergeFailure(output: string): AutoMergeResult {
     lower.includes("auto-merge is not enabled")
   ) {
     return AutoMergeResult.NotEnabledOnRepo;
+  }
+
+  // Issue #1800: "GraphQL: Pull Request is still a draft (mergePullRequest)"
+  // — the PR's author has not marked it ready. Not a failure to retry.
+  if (lower.includes("still a draft") || lower.includes("is a draft")) {
+    return AutoMergeResult.Draft;
   }
 
   // Transient errors worth retrying
@@ -315,6 +339,46 @@ export function _resetBaseProtectionMemo(): void {
 }
 
 /**
+ * Recognise GitHub refusing a merge because a rule governs the base
+ * (Issue #1763).
+ *
+ * `stSoftwareAU/GRQ-FX#58` is the shape: the effective-rules endpoint
+ * returned `[]` for `Develop` and legacy protection was 404, so the base was
+ * judged unprotected and the gated direct merge attempted — and GitHub
+ * refused it with "the base branch policy prohibits the merge", the wording
+ * of a rules refusal. An organisation-level ruleset needs `admin:org` to
+ * list, so the fleet token cannot see every policy that binds a branch; the
+ * refusal itself is the authority.
+ *
+ * @param message - Error message from the failed direct merge.
+ * @returns True when the base is policy-protected whatever the rules
+ *   endpoint showed.
+ */
+export function isBasePolicyRefusal(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("base branch policy prohibits the merge") ||
+    lower.includes("repository rule violations") ||
+    /\bgh013\b/.test(lower);
+}
+
+/**
+ * Message logged once per base per cycle when GitHub enforced a policy the
+ * rules endpoint did not show (Issue #1763). Exported so tests and log greps
+ * share the wording.
+ */
+export function invisiblePolicyWarning(
+  repo: string,
+  baseRefName: string,
+  refusal: string,
+): string {
+  return `WARNING: ${repo} '${baseRefName}' is policy-protected but the ` +
+    `effective-rules endpoint shows no rule the fleet token can read — ` +
+    `an organisation ruleset (needs admin:org to list) or a repository ` +
+    `setting; arming GitHub auto-merge instead of retrying the direct ` +
+    `merge (Issue #1763): ${refusal}`;
+}
+
+/**
  * Enable auto squash merge on a PR (Issue #63, #430, #927).
  *
  * Retries on transient failures (HTTP 5xx, network errors).
@@ -384,21 +448,45 @@ export async function enableAutoMerge(
   // whose route to the default branch has closed (rollup PR merged, or
   // milestone closed). Seven fixes were lost that way with their issues
   // reading COMPLETED. Refuse loud and retarget the PR at the default branch.
+  // Issue #1779: `requireSyncedBase` adds the second half — a child never
+  // lands on a milestone tip that is behind the default branch, so it is
+  // built on what the default branch already has. The compare is memoised
+  // per milestone, so the N children of one milestone in a sweep cost one
+  // call, and a non-milestone base costs none.
   const routeGate = await (options.decideMilestoneBaseFn ??
     decideMilestoneBaseMerge)({
       repo,
       prNumber,
       baseRefName: options.baseRefName,
+      // Issue #1779: lets the synced-base check exempt the milestone sync
+      // PR — the one PR whose whole job is to clear "behind".
+      ...(options.headRefName ? { headRefName: options.headRefName } : {}),
       ghCommandFn,
+      requireSyncedBase: true,
+      ...(options.getDefaultBranchFn
+        ? { getDefaultBranchFn: options.getDefaultBranchFn }
+        : {}),
     });
   // Issue #477: an unreadable route is not a closed one. Leave the PR
   // untouched and look again next scan — a rate limit must never move a
   // healthy milestone child onto the review-gated default branch.
+  //
+  // Issue #1779: a behind milestone base defers the same way — no `--auto`,
+  // no gated direct merge, no comment and no label. The next cycle's
+  // milestone sync (or a roll-back) clears it. Known limit: a PR whose
+  // GitHub auto-merge was armed *before* the branch fell behind still merges
+  // when its checks pass — this gate governs arming, not GitHub's merge.
   if (routeGate.decision === "defer") {
     return {
       result: AutoMergeResult.Deferred,
-      message:
-        `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — retrying next scan (Issue #477)`,
+      ...(routeGate.reason === "milestone-behind"
+        ? { deferral: "milestone-behind" as const }
+        : {}),
+      message: routeGate.reason === "milestone-behind"
+        ? `milestone behind default branch (${routeGate.behindBy} commit${
+          routeGate.behindBy === 1 ? "" : "s"
+        }) — PR #${prNumber} left on ${routeGate.milestoneBranch} until the next sync (Issue #1779)`
+        : `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — retrying next scan (Issue #477)`,
     };
   }
   if (routeGate.decision === "block") {
@@ -465,33 +553,43 @@ export async function enableAutoMerge(
           : {},
       );
       if (!merge.ok) {
-        return {
-          result: AutoMergeResult.Failed,
-          message:
-            `Gated direct merge of PR #${prNumber} onto unprotected '${baseRefName}' failed: ${merge.error.message}`,
-        };
-      }
-      if (merge.value.merged) {
+        // Issue #1763: GitHub's own refusal outranks the rules endpoint. A
+        // base it calls policy-prohibited IS protected — by a rule the
+        // token cannot list — so record that for the cycle, say so once,
+        // and take the path a protected base takes: arm GitHub auto-merge,
+        // which honours whatever rules exist, instead of a refused direct
+        // merge per cycle for as long as the PR stays open.
+        if (isBasePolicyRefusal(merge.error.message)) {
+          baseProtectionMemo.set(memoKey, true);
+          log(invisiblePolicyWarning(repo, baseRefName, merge.error.message));
+        } else {
+          return {
+            result: AutoMergeResult.Failed,
+            message:
+              `Gated direct merge of PR #${prNumber} onto unprotected '${baseRefName}' failed: ${merge.error.message}`,
+          };
+        }
+      } else if (merge.value.merged) {
         return {
           result: AutoMergeResult.MergedDirectly,
           message:
             `PR #${prNumber} merged directly onto unprotected '${baseRefName}' after the pre-merge gate (Issue #4375)`,
         };
-      }
-      if (merge.value.blocked === "default_branch_unapproved") {
+      } else if (merge.value.blocked === "default_branch_unapproved") {
         return {
           result: AutoMergeResult.Deferred,
           message:
             `PR #${prNumber} held on default branch '${baseRefName}': no approving review from outside the fleet, and the base has no required checks to enforce one (Issue #1082)`,
         };
+      } else {
+        return {
+          result: AutoMergeResult.Deferred,
+          message:
+            `PR #${prNumber} not merged onto unprotected '${baseRefName}': ${
+              merge.value.blocked ?? "gate deferred"
+            } (Issue #4375)`,
+        };
       }
-      return {
-        result: AutoMergeResult.Deferred,
-        message:
-          `PR #${prNumber} not merged onto unprotected '${baseRefName}': ${
-            merge.value.blocked ?? "gate deferred"
-          } (Issue #4375)`,
-      };
     }
   }
 
@@ -549,6 +647,15 @@ export async function enableAutoMerge(
       }
 
       const classification = classifyAutoMergeFailure(errorMsg);
+
+      if (classification === AutoMergeResult.Draft) {
+        return {
+          result: AutoMergeResult.Draft,
+          message:
+            `Auto-merge not armed on PR #${prNumber}: it is a draft — GitHub ` +
+            `arms nothing until it is marked ready for review (Issue #1800)`,
+        };
+      }
 
       if (classification === AutoMergeResult.NotAllowed) {
         return {

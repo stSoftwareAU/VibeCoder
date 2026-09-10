@@ -145,7 +145,10 @@ the agent's boundary**:
    declaration is parsed out of the run's own generated text, so the owner check
    alone establishes only that the target is in-house — not that this run has
    any business writing to it. The dependency manifests
-   (`deno.json`, `deno.jsonc`, `package.json`, `worker/deno/deno.json`) are read
+   (`deno.json`, `deno.jsonc`, `package.json`, `worker/deno/deno.json`, and —
+   Issue #1864 — `Cargo.toml` with each literal workspace member's `Cargo.toml`,
+   where a `path = "../../<Repo>/…"` sibling checkout or a github.com `git` URL
+   under the fleet owner names the dependency) are read
    from the consuming repo's **default branch on GitHub**, never from the run's
    working tree: that tree is writable by the very agent whose output produced
    the request, so it cannot also be the authority for it. A target that
