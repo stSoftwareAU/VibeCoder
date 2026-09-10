@@ -57,18 +57,25 @@ import {
   claudeAuthActionableMessage,
   isClaudeAuthError,
 } from "./claude_auth.ts";
+import type { AgentOutputAdapter } from "./agent_output.ts";
+import { CLAUDE_OUTPUT_ADAPTER } from "./claude_output_adapter.ts";
+import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
 import {
   buildSessionResumeArgs,
   buildSessionResumeFlags,
+  codexResumeSessionId,
+  sessionResumeForProvider,
   type SessionResumeState,
 } from "./session_resume.ts";
 import {
   buildCodexArgs,
+  buildCodexMcpConfigArgs,
+  composeCodexPrompt,
   resolveCodexEffort,
   resolveCodexModel,
 } from "./codex_executor.ts";
 import {
-  buildCodexChildEnv,
+  buildIsolatedCodexChildEnv,
   CODEX_ENV_DENYLIST,
   CODEX_ENV_SECRET_ALLOWLIST,
 } from "./codex_env.ts";
@@ -263,9 +270,10 @@ export interface AgentInvocationRequest {
   /** Session continuity state, when session resume is enabled. */
   sessionResumeState?: SessionResumeState;
   /**
-   * MCP server configuration file for this run (Issue #4355) — the
-   * Playwright headless browser. Absent → no `--mcp-config` flag, exactly
-   * as before.
+   * MCP server configuration for this run (Issue #4355) — the Playwright
+   * headless browser. Claude takes the path as `--mcp-config`. Codex has
+   * no such flag: the descriptor turns the same JSON into `-c mcp_servers.*`
+   * overrides (Issue #1702). Absent → no browser capability.
    */
   mcpConfigPath?: string;
   /**
@@ -335,8 +343,30 @@ export interface AgentProviderDescriptor {
   cheaperModel?(model: string): string | null;
   /** Build the CLI argument list for one invocation. */
   buildInvocation(request: AgentInvocationRequest): string[];
+  /**
+   * Body written to the child's stdin when {@link promptTransport} is
+   * `stdin` (Issue #1702). Absent → the runner writes {@link AgentInvocationRequest.prompt}
+   * unchanged. Codex folds the system prompt and disallowed-tools list
+   * into this body because it has no separate flags for them.
+   */
+  stdinBody?(request: AgentInvocationRequest): string;
   /** Build the child subprocess environment, minus worker-only secrets. */
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string>;
+  /**
+   * How this provider's CLI output is decoded and its failures classified
+   * (Issue #1695).
+   *
+   * The adapter owns the CLI's event shapes; the shared contract in
+   * `agent_output.ts` owns the result and failure types every provider is
+   * decoded into. Naming it here is what keeps vendor knowledge out of
+   * `claude_runner.ts` — the runner asks the descriptor, never an id.
+   *
+   * **Absent** means no adapter has been written for this CLI yet: the runner
+   * keeps the shared `stream-json` text extraction it has always used and
+   * reports no normalised result, rather than decoding one vendor's events
+   * with another's parser.
+   */
+  output?: AgentOutputAdapter;
   /** Report whether CLI output indicates a provider authentication failure. */
   isAuthError(output: string): boolean;
   /** Operator-facing message for an authentication failure. */
@@ -484,6 +514,16 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/claude.sh` },
   // `claude -p` with no positional prompt reads it from stdin (Issue #4385).
   promptTransport: "stdin",
+  // The Claude `stream-json` decoder and failure classifier (Issue #1695).
+  // A getter, not a value (the `defaultQuorumPlanners()` precedent): the
+  // adapter module reaches `claude_executor.ts`, which imports
+  // `config_defaults.ts`, which imports this module back, so reading the
+  // constant at module-evaluation time throws a temporal-dead-zone error.
+  // Deferring the read to property access keeps the descriptor declarative
+  // without the cycle.
+  get output(): AgentOutputAdapter {
+    return CLAUDE_OUTPUT_ADAPTER;
+  },
 
   // Claude is the provider with phase routing today: both resolvers delegate
   // to the chain `claude_executor.ts` owns (Issue #362).
@@ -502,7 +542,16 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {
-    return buildClaudeCliArgs(request, resolveInvocationRouting(this, request));
+    return buildClaudeCliArgs(
+      {
+        ...request,
+        sessionResumeState: sessionResumeForProvider(
+          request.sessionResumeState,
+          this.id,
+        ),
+      },
+      resolveInvocationRouting(this, request),
+    );
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {
@@ -542,7 +591,15 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     denylist: CODEX_ENV_DENYLIST,
   },
   install: { fragment: `${PROVIDER_FRAGMENT_DIR}/codex.sh` },
-  promptTransport: "argv",
+  // The prompt travels on stdin (Issue #1702): Linux caps one argv element
+  // at 128 KiB, and a long issue thread exceeds that. Codex reads `-` as
+  // "the prompt is on stdin".
+  promptTransport: "stdin",
+  // The `codex exec --json` decoder and failure classifier (Issue #1695),
+  // deferred for the same import cycle as Claude's above.
+  get output(): AgentOutputAdapter {
+    return CODEX_OUTPUT_ADAPTER;
+  },
 
   // Codex routes `phase` through its own tables (Issue #363), the way Claude
   // does: the chain lives in `codex_executor.ts` and is never restated here.
@@ -556,20 +613,59 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
 
   buildInvocation(request: AgentInvocationRequest): string[] {
     const routing = resolveInvocationRouting(this, request);
+    let mcpConfigOverrides: readonly string[] | undefined;
+    if (request.mcpConfigPath) {
+      let json: string;
+      try {
+        json = Deno.readTextFileSync(request.mcpConfigPath);
+      } catch (error) {
+        throw new Error(
+          `Codex MCP config at ${request.mcpConfigPath} could not be read: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      mcpConfigOverrides = buildCodexMcpConfigArgs(json);
+      if (mcpConfigOverrides.length === 0) {
+        throw new Error(
+          `Codex MCP config at ${request.mcpConfigPath} produced no ` +
+            `mcp_servers overrides; refusing to run without the requested ` +
+            `browser server (Issue #1702).`,
+        );
+      }
+    }
     return buildCodexArgs({
       prompt: request.prompt,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
       model: routing.model,
       effort: routing.effort,
-      // Codex resumes its own most recent session; the first phase of an issue
-      // starts one instead (`phaseCount === 0`).
-      resumeSession: buildSessionResumeFlags(request.sessionResumeState).resume,
+      // Resume the thread this issue's previous Codex phase reported
+      // (Issue #1699). A Claude UUID, a missing capture, or `--last` is
+      // never a substitute — concurrent slots share a working directory.
+      resumeSessionId: codexResumeSessionId(request.sessionResumeState),
+      promptViaStdin: request.promptViaStdin,
+      ...(mcpConfigOverrides ? { mcpConfigOverrides } : {}),
+    });
+  },
+
+  stdinBody(request: AgentInvocationRequest): string {
+    return composeCodexPrompt({
+      prompt: request.prompt,
+      systemPrompt: request.systemPrompt,
+      disallowedTools: request.disallowedTools,
     });
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {
-    return parentEnv ? buildCodexChildEnv(parentEnv) : buildCodexChildEnv();
+    const source = parentEnv ?? Deno.env.toObject();
+    // Issue #1698: only the selected account's Codex secrets are copied
+    // back after the denylist strip. The parent object is not mutated.
+    return buildIsolatedCodexChildEnv(source, {
+      openaiApiKey: source.OPENAI_API_KEY,
+      codexApiKey: source.CODEX_API_KEY,
+      codexHome: source.CODEX_HOME,
+    });
   },
 
   isAuthError(output: string): boolean {
@@ -589,6 +685,12 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
  * machine-readable output where a planner's may stay prose. Every field
  * delegates to the Gemini-owned modules (`gemini_executor.ts`,
  * `gemini_env.ts`, `gemini_auth.ts`), so no Gemini CLI knowledge lives here.
+ *
+ * It carries **no** `output` adapter (Issue #1695): its event shapes were not
+ * confirmable against the pinned CLI here, and decoding them with Claude's
+ * parser is exactly the guesswork this seam exists to end. The runner keeps
+ * the shared text extraction for it and reports no normalised result — an
+ * absent decode, never a fabricated one.
  */
 const GEMINI_PROVIDER: AgentProviderDescriptor = {
   id: GEMINI_PROVIDER_ID,
@@ -694,6 +796,11 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
   // The same CLI as Claude, so a bare `-p` reads the prompt from stdin
   // (Issue #4385).
   promptTransport: "stdin",
+  // The same CLI as Claude, so the same event decoder (Issue #1695),
+  // deferred for the same import cycle.
+  get output(): AgentOutputAdapter {
+    return CLAUDE_OUTPUT_ADAPTER;
+  },
 
   // Every phase is pinned to a real DeepSeek model id: Claude's routing
   // resolves to Anthropic tier aliases the endpoint cannot resolve, and a
@@ -715,7 +822,16 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     if (routing.effort) {
       warnDeepSeekEffortUnsupported(routing.effort, request.phase);
     }
-    return buildClaudeCliArgs(request, { model: routing.model });
+    return buildClaudeCliArgs(
+      {
+        ...request,
+        sessionResumeState: sessionResumeForProvider(
+          request.sessionResumeState,
+          this.id,
+        ),
+      },
+      { model: routing.model },
+    );
   },
 
   buildChildEnv(parentEnv?: Record<string, string>): Record<string, string> {

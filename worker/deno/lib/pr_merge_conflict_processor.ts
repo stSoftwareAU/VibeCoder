@@ -1269,8 +1269,7 @@ async function gatherIssueContext(
  * Withdraw an attempt marker opened before the attempt turned out not to be
  * one the PR should pay for — a clone fault (Issue #1458), or a run that
  * ended under the agent (Issue #1693).
- *
- * A marker that cannot be withdrawn is left and said out loud, `why` and all,
+ * * A marker that cannot be withdrawn is left and said out loud, `why` and all,
  * so the cause is never misattributed: the PR then reads as *disrupted* on
  * the next scan, which is retried rather than judged, and that bound holds.
  *
@@ -1437,8 +1436,7 @@ async function withdrawRulesetRefusedAttempt(
   };
 }
 
-/**
- * Withdraw an attempt the worker itself cut short (Issue #1693).
+/** * Withdraw an attempt the worker itself cut short (Issue #1693).
  *
  * The maintenance-lane watchdog SIGTERMs the agent when the handler is
  * abandoned at the cycle deadline. The tree it leaves is half-resolved, and

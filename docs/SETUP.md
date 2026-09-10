@@ -1303,6 +1303,14 @@ vendor whose credentials are provisioned, preflighted and mounted:
 }
 ```
 
+A mixed host that wants **opt-in** failover after a classified outage lists
+the alternative in `agent_provider_fallback`. The default is pinned — Claude
+stays Claude, Codex stays Codex — and a Claude usage limit does not pause
+Codex work (Issue #1696 / #1700). Multiple Codex subscription files
+(`codex/provider.env`, `codex/provider-2.env`) are ranked by the same
+quota policy; only the selected account's secrets reach the child
+(Issue #1698). See [Provider parity](PROVIDER-PARITY.md).
+
 Omit both and the worker uses Claude Code alone, exactly as a deployment that
 predates the choice. `VIBE_AGENT_PROVIDER` and `VIBE_AGENT_PROVIDERS`
 (comma-separated) select the provider on a host whose file names none — since

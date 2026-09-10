@@ -50,6 +50,17 @@ export interface RateLimitSignalData {
    * {@link DEFAULT_RATE_LIMIT_BLOCK_KIND}.
    */
   kind?: RateLimitBlockKind;
+  /**
+   * Provider whose quota ran out (Issue #1696). Absent on GitHub signals
+   * and on usage signals written before this field existed (those read as
+   * Claude). A Claude usage limit must not pause Codex.
+   */
+  provider?: string;
+  /**
+   * Credential label that ran out (`provider`, `provider-2`), never a
+   * secret value (Issue #1696 / #1698).
+   */
+  credentialLabel?: string;
 }
 
 /** Result of checking whether a rate limit is currently active. */
@@ -81,6 +92,7 @@ export async function writeRateLimitSignal(
   waitSeconds: number,
   resetEpochMs?: number,
   kind: RateLimitBlockKind = DEFAULT_RATE_LIMIT_BLOCK_KIND,
+  scope?: { provider?: string; credentialLabel?: string },
 ): Promise<Result<void>> {
   try {
     const data: RateLimitSignalData = {
@@ -88,6 +100,10 @@ export async function writeRateLimitSignal(
       waitSeconds,
       ...(resetEpochMs !== undefined ? { resetEpochMs } : {}),
       kind,
+      ...(scope?.provider ? { provider: scope.provider } : {}),
+      ...(scope?.credentialLabel
+        ? { credentialLabel: scope.credentialLabel }
+        : {}),
     };
     await Deno.writeTextFile(
       rateLimitSignalPath(workDir),

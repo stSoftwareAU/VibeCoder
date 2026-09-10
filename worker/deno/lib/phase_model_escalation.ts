@@ -30,6 +30,11 @@ import {
   MODEL_CONTEXT_WINDOWS,
 } from "./context_budget.ts";
 import { resolveCurrentModel } from "./model_fallback.ts";
+import {
+  type AgentProviderSelector,
+  CLAUDE_PROVIDER_ID,
+  selectAgentProvider,
+} from "./agent_provider.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 
 /**
@@ -80,6 +85,12 @@ export interface SelectModelOptions {
    * (Issue #957); defaults to the process environment.
    */
   env?: EnvLookup;
+  /**
+   * Provider whose routing and model ids this check must honour
+   * (Issue #1701). Omit for the active provider. Codex must never be
+   * escalated to Claude aliases such as `sonnet` or `haiku`.
+   */
+  provider?: AgentProviderSelector;
 }
 
 /**
@@ -112,10 +123,19 @@ export function selectModelForLargeInput(
   const resolved = resolveCurrentModel(
     undefined,
     phase,
-    undefined,
+    overrides?.provider,
     overrides?.env,
   );
-  const target = overrides?.escalationTarget ?? DEFAULT_ESCALATION_TARGET;
+  const descriptor = selectAgentProvider(overrides?.provider, {
+    env: overrides?.env,
+  });
+  // Claude-only default: `sonnet` is an Anthropic alias. Any other
+  // provider keeps its own resolved id — escalating Codex to `sonnet`
+  // would send a model the CLI cannot serve (Issue #1701).
+  const target = overrides?.escalationTarget ??
+    (descriptor.id === CLAUDE_PROVIDER_ID
+      ? DEFAULT_ESCALATION_TARGET
+      : resolved);
   const thresholdPercent = overrides?.thresholdPercent ??
     HAIKU_ESCALATION_THRESHOLD_PERCENT;
 

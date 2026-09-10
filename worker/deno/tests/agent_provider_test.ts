@@ -107,6 +107,20 @@ Deno.test("agent provider - Claude descriptor produces the invocation the worker
   ]);
 });
 
+Deno.test("agent provider - Claude drops a Codex thread rather than passing it as --resume (Issue #1699)", () => {
+  const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
+  const args = provider.buildInvocation({
+    prompt: "PROMPT",
+    sessionResumeState: {
+      sessionId: "thread-codex-1",
+      phaseCount: 2,
+      providerId: "codex",
+    },
+  });
+  assertEquals(args.includes("--resume"), false);
+  assertEquals(args.includes("thread-codex-1"), false);
+});
+
 Deno.test("agent provider - Claude invocation falls back to the phase model/effort routing", () => {
   const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
 
@@ -578,12 +592,15 @@ Deno.test("agent provider - the default configuration selects Claude", () => {
 // Issue #4385 — the prompt travels on stdin, never as one argv element
 // ---------------------------------------------------------------------------
 
-Deno.test("agent provider - Claude declares the stdin prompt transport; Codex and Gemini keep argv (Issue #4385)", () => {
+Deno.test("agent provider - Claude and Codex declare the stdin prompt transport; Gemini keeps argv (Issue #4385, #1702)", () => {
   assertEquals(
     resolveAgentProvider(CLAUDE_PROVIDER_ID).promptTransport,
     "stdin",
   );
-  assertEquals(resolveAgentProvider(CODEX_PROVIDER_ID).promptTransport, "argv");
+  assertEquals(
+    resolveAgentProvider(CODEX_PROVIDER_ID).promptTransport,
+    "stdin",
+  );
   assertEquals(
     resolveAgentProvider(GEMINI_PROVIDER_ID).promptTransport,
     "argv",

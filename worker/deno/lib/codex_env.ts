@@ -96,3 +96,35 @@ export function buildCodexChildEnv(
     secretAllowlist: CODEX_ENV_SECRET_ALLOWLIST,
   });
 }
+
+/**
+ * Per-invocation Codex environment (Issue #1698): only the selected
+ * account's secrets and `CODEX_HOME` reach the child. Other Codex
+ * accounts, Claude credentials and worker-only secrets stay out.
+ *
+ * Does not mutate the parent object or process-global HOME / CODEX_HOME.
+ */
+export function buildIsolatedCodexChildEnv(
+  parentEnv: Record<string, string>,
+  selected: {
+    readonly openaiApiKey?: string;
+    readonly codexApiKey?: string;
+    readonly codexHome?: string;
+  },
+): Record<string, string> {
+  const stripped = { ...parentEnv };
+  delete stripped.OPENAI_API_KEY;
+  delete stripped.CODEX_API_KEY;
+  delete stripped.CODEX_HOME;
+  const child = buildCodexChildEnv(stripped);
+  if (selected.openaiApiKey !== undefined) {
+    child.OPENAI_API_KEY = selected.openaiApiKey;
+  }
+  if (selected.codexApiKey !== undefined) {
+    child.CODEX_API_KEY = selected.codexApiKey;
+  }
+  if (selected.codexHome !== undefined) {
+    child.CODEX_HOME = selected.codexHome;
+  }
+  return child;
+}

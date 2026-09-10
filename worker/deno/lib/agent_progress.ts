@@ -66,6 +66,16 @@ export interface AgentActivitySnapshot {
   lastChunkAtMs: number;
 }
 
+/** Tool-like Codex item types counted as progress (Issue #1702). */
+const CODEX_TOOL_ITEM_TYPES = new Set([
+  "command_execution",
+  "command",
+  "function_call",
+  "mcp_tool_call",
+  "mcp_tool",
+  "tool",
+]);
+
 /** Folds stream-json chunks into periodic one-line progress reports. */
 export class AgentProgressTracker {
   readonly #phase: string;
@@ -78,6 +88,8 @@ export class AgentProgressTracker {
   #lastTool: LastToolCall | undefined;
   #lastEmitMs: number;
   #lastChunkMs: number;
+  /** Codex item ids already counted, so started+completed is not two calls. */
+  #seenCodexItems = new Set<string>();
 
   constructor(options: AgentProgressTrackerOptions) {
     this.#phase = options.phase;
@@ -122,6 +134,11 @@ export class AgentProgressTracker {
     this.#carry = pieces.pop() ?? "";
     for (const line of pieces) {
       if (line.includes('"tool_use"')) this.#recordToolUses(line, atMs);
+      if (
+        line.includes('"item.started"') || line.includes('"item.completed"')
+      ) {
+        this.#recordCodexItems(line, atMs);
+      }
     }
     this.#maybeEmit();
   }
@@ -151,6 +168,65 @@ export class AgentProgressTracker {
         };
       }
     }
+  }
+
+  /**
+   * Count Codex `item.started` / `item.completed` tool-like events
+   * (Issue #1702). Reasoning and the final agent message are not tools.
+   */
+  #recordCodexItems(line: string, atMs: number): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (typeof parsed !== "object" || parsed === null) return;
+    const record = parsed as Record<string, unknown>;
+    const msg = record.msg !== null && typeof record.msg === "object" &&
+        !Array.isArray(record.msg)
+      ? record.msg as Record<string, unknown>
+      : undefined;
+    const kind = typeof record.type === "string"
+      ? record.type
+      : typeof msg?.type === "string"
+      ? msg.type
+      : undefined;
+    if (kind !== "item.started" && kind !== "item.completed") return;
+    const rawItem = record.item ?? msg?.item;
+    if (
+      typeof rawItem !== "object" || rawItem === null || Array.isArray(rawItem)
+    ) {
+      return;
+    }
+    const item = rawItem as Record<string, unknown>;
+    const itemType = typeof item.item_type === "string"
+      ? item.item_type
+      : typeof item.type === "string"
+      ? item.type
+      : undefined;
+    if (!itemType || !CODEX_TOOL_ITEM_TYPES.has(itemType)) return;
+    const id = typeof item.id === "string" ? item.id : undefined;
+    if (id) {
+      if (this.#seenCodexItems.has(id)) return;
+      this.#seenCodexItems.add(id);
+    }
+    const name = itemType === "command_execution" || itemType === "command"
+      ? "Bash"
+      : itemType === "mcp_tool_call" || itemType === "mcp_tool"
+      ? String(item.name ?? item.server ?? "mcp")
+      : String(item.name ?? itemType);
+    const detail = describeToolInput({
+      command: item.command,
+      path: item.path,
+      file_path: item.file_path,
+      url: item.url,
+    });
+    this.#toolCalls++;
+    this.#lastTool = {
+      summary: detail ? `${name} ${detail}` : name,
+      atMs,
+    };
   }
 
   #maybeEmit(): void {
