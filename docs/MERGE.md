@@ -405,6 +405,42 @@ sequenceDiagram
     G->>G: next cycle: CI passed + behindBy == 0 → merge
 ```
 
+#### The milestone base is behind the default branch
+
+The same defer-and-retry shape covers the *base* as well as the head
+(Issue #1779). A child PR whose base is a `milestone/*` branch is **not armed
+and not merged** while that milestone branch is behind the default branch —
+`decideMilestoneBaseMerge` in
+[`worker/deno/lib/milestone_children_gate.ts`](../worker/deno/lib/milestone_children_gate.ts)
+returns `defer` / `milestone-behind`, so the child would otherwise land on a
+stale tip and the milestone rollup would carry work never tested against what
+the default branch already has.
+
+- **What is compared.** `repos/{repo}/compare/{default}...{milestone}`, whose
+  `behind_by` is the milestone branch measured against the default branch. The
+  orientation is the Issue #470 one: in `compare/{base}...{head}` the numbers
+  describe the **head**, so the milestone branch must be the head.
+- **What it costs.** The comparison is memoised per (repo, milestone branch)
+  for 60 seconds, so the N children of one milestone in a single Priority 1.65
+  sweep cost **one** API call, and a PR based on the default branch costs none.
+  The memo expires well inside a cycle, so the next sync is seen rather than a
+  stale reading held for the life of the process.
+- **What the worker does.** Nothing: no `--auto`, no gated direct merge, no
+  comment and no label. `logAutoMergeOutcome` records
+  `deferred: milestone behind default branch (N commits)` and the PR is left
+  exactly as it was. The every-cycle milestone sync (Issue #1776) — or a
+  roll-back — clears it, and the next sweep merges.
+- **An unreadable comparison defers as `lookup-failed`**, exactly as an
+  unreadable route does (Issue #477). "I could not read it" is never actioned.
+- **Known limit.** The gate governs **arming**, not GitHub's merge. A PR whose
+  GitHub auto-merge was armed *before* the milestone branch fell behind still
+  merges when its checks pass — GitHub owns that merge, and nothing the worker
+  decides afterwards is consulted.
+
+The post-merge landing check (`merge_landing.ts`) deliberately does **not**
+require a synced base: that PR has already merged, and how far the branch has
+drifted since says nothing about whether its work landed.
+
 ## Hands-off landing — precedence and loud failure
 
 The auto-fix loop (fetch → diagnose → fix → merge) is only hands-off if a green

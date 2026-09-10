@@ -384,21 +384,42 @@ export async function enableAutoMerge(
   // whose route to the default branch has closed (rollup PR merged, or
   // milestone closed). Seven fixes were lost that way with their issues
   // reading COMPLETED. Refuse loud and retarget the PR at the default branch.
+  // Issue #1779: `requireSyncedBase` adds the second half — a child never
+  // lands on a milestone tip that is behind the default branch, so it is
+  // built on what the default branch already has. The compare is memoised
+  // per milestone, so the N children of one milestone in a sweep cost one
+  // call, and a non-milestone base costs none.
   const routeGate = await (options.decideMilestoneBaseFn ??
     decideMilestoneBaseMerge)({
       repo,
       prNumber,
       baseRefName: options.baseRefName,
       ghCommandFn,
+      requireSyncedBase: true,
+      ...(options.getDefaultBranchFn
+        ? { getDefaultBranchFn: options.getDefaultBranchFn }
+        : {}),
     });
   // Issue #477: an unreadable route is not a closed one. Leave the PR
   // untouched and look again next scan — a rate limit must never move a
   // healthy milestone child onto the review-gated default branch.
+  //
+  // Issue #1779: a behind milestone base defers the same way — no `--auto`,
+  // no gated direct merge, no comment and no label. The next cycle's
+  // milestone sync (or a roll-back) clears it. Known limit: a PR whose
+  // GitHub auto-merge was armed *before* the branch fell behind still merges
+  // when its checks pass — this gate governs arming, not GitHub's merge.
   if (routeGate.decision === "defer") {
+    const behindBy = routeGate.reason === "milestone-behind"
+      ? routeGate.behindBy ?? 0
+      : 0;
     return {
       result: AutoMergeResult.Deferred,
-      message:
-        `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — retrying next scan (Issue #477)`,
+      message: routeGate.reason === "milestone-behind"
+        ? `milestone behind default branch (${behindBy} commit${
+          behindBy === 1 ? "" : "s"
+        }) — PR #${prNumber} left on ${routeGate.milestoneBranch} until the next sync (Issue #1779)`
+        : `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — retrying next scan (Issue #477)`,
     };
   }
   if (routeGate.decision === "block") {
