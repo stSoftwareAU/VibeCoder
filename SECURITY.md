@@ -496,6 +496,46 @@ scheme was capped at 64 characters. The answer is a bounded *pattern*, never a
 bounded *input* — capping the text would silently leave its tail unmasked, in
 direct conflict with "redact before you truncate" above.
 
+### An assignment's value is judged, not only its label
+
+The `*_TOKEN=`/`*_SECRET=` rule matches a key, a separator and a value, and its
+separator (`["']?\s*[=:]\s*`) spans line breaks. A prose line ending in a
+credential-ish label therefore adopted the **next** non-blank line as the
+assignment's value: a PR body reading `… now picks a credential:` had the
+Mermaid fence beneath it published as `***REDACTED***`, and the diagram
+`CODING-STANDARDS.md` requires stopped rendering (Issue #1727). The prose
+variant masked the following sentence's first word.
+
+The label side stays deliberately blunt — it catches real secrets. The value is
+judged before the mask is applied, and **only when the separator crossed a line
+break**:
+
+- An **inline** assignment is masked exactly as it always was.
+  `secret_scanning: enabled`, `PASSWORD=12345`, and a value wrapped in
+  backticks or opening with `#`, `>` or `|` — all legitimate password
+  characters — are untouched by the judgement. That boundary is load-bearing:
+  an earlier cut judged inline values too, and a secret wearing a code fence
+  (`SECRET: ` + fence + key) was published verbatim.
+- Across a line break, **complete** Markdown is never a credential: a fence
+  line (three or more backticks or tildes plus at most a language tag) or a
+  closed inline image. The test matches the *whole* value, never a prefix, for
+  the same reason.
+- Anything else across a line break needs at least eight characters and a shape
+  that is not a single word without a digit, symbol or internal capital. That
+  word test is **length-bounded**: an unbounded one read a lower-case
+  passphrase such as `correcthorsebatterystaple` as prose.
+
+`containsSecret()` asks the value predicate the same question the replacement
+does, so detection and redaction cannot drift apart — a body that redacts to
+itself must not report as carrying a secret, and vice versa.
+
+The accepted cost is one rule: a credential shorter than eight characters, or
+one whose emphasis-stripped value is a single lower-case word, sitting alone on
+the line **after** its label. That is narrower than the false positive it
+removes, which silently degraded every PR body whose lead-in sentence ended in
+a credential label. A credential in that position still carrying a provider
+prefix is masked by its own signature rule regardless.
+
 ### Transformed secrets are decoded, then re-scanned
 
 A signature rule only recognises the credential's **original** bytes, so a
