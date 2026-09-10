@@ -112,7 +112,7 @@ a section without a marker, fails `deno test`.
 | [Session Persistence Allowlist](#session-persistence-allowlist) | ✅ | ❌ | ❌ | ✅ | Nothing of Codex's or Gemini's is copied, so there is nothing to filter |
 | [Milestone-Aware Session Branching](#milestone-aware-session-branching) | ✅ | ❌ | ❌ | ✅ | One CLI state per container for Codex and Gemini — no milestone branch, no copy-on-first-use |
 | [Session Compaction](#session-compaction) | ✅ | ❌ | ❌ | ✅ | Codex's and Gemini's state is outside `.claude-sessions/` and is bounded only by the container's lifetime |
-| [Session Resume](#session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Different mechanism: `codex exec resume --last` and `--resume latest`. DeepSeek takes Claude's `--session-id` / `--resume <id>`, but out of its own `CLAUDE_CONFIG_DIR`, so the two transcripts never cross |
+| [Session Resume](#session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Different mechanism: Codex captures the CLI thread and resumes with `codex exec resume <SESSION_ID>` (never `--last`). Gemini uses `--resume latest`. DeepSeek takes Claude's `--session-id` / `--resume <id>`, but out of its own `CLAUDE_CONFIG_DIR`, so the two transcripts never cross |
 | [Issue Claiming](#issue-claiming) | ✅ | ✅ | ✅ | ✅ | — |
 | [Heartbeat Tracking](#heartbeat-tracking) | ✅ | ✅ | ✅ | ✅ | — |
 | [Processing Phases](#processing-phases) | ✅ | ⚠️ | ⚠️ | ✅ | The pipeline is shared; for Codex and Gemini the system prompt is folded into one prompt string and no `.claude/` session is restored |
@@ -120,25 +120,25 @@ a section without a marker, fails `deno test`.
 | [Layer 1: Prompt Compilation Cache (Disk)](#layer-1-prompt-compilation-cache-disk) | ✅ | ✅ | ✅ | ✅ | — |
 | [Layer 2: Claude Built-in Prompt Caching](#layer-2-claude-built-in-prompt-caching) | ✅ | ❌ | ❌ | ⚠️ | Codex and Gemini have no `--system-prompt` channel, so `composeAgentPrompt` folds it in. DeepSeek does carry the channel, but the 70–90% saving is Anthropic's server-side cache, which its endpoint neither promises nor reports |
 | [Stable Prefix Ordering](#stable-prefix-ordering) | ✅ | ⚠️ | ⚠️ | ⚠️ | The prompt is still ordered and volatility is still warned about, but no non-Anthropic prefix cache rewards it |
-| [Cache Hit-Rate Telemetry](#cache-hit-rate-telemetry) | ✅ | ❌ | ❌ | ⚠️ | Codex and Gemini report no parseable usage, so no rate is computed. DeepSeek's usage block parses, but the read/write counts are Anthropic-cache fields, so the rate covers only what its endpoint populates |
+| [Cache Hit-Rate Telemetry](#cache-hit-rate-telemetry) | ✅ | ❌ | ❌ | ⚠️ | Codex reports cached input tokens, but they are not Anthropic's prefix cache, so no Anthropic hit rate is logged. Gemini reports no parseable usage. DeepSeek's usage block parses, but the read/write counts are Anthropic-cache fields, so the rate covers only what its endpoint populates |
 | [SHA-256 Invalidation](#sha-256-invalidation) | ✅ | ✅ | ✅ | ✅ | — |
 | [Codebase Map](#codebase-map) | ✅ | ✅ | ✅ | ✅ | — |
 | **[Batch API](#batch-api)** | ➖ | ➖ | ➖ | ➖ | Not wired for any provider |
 | [Why it was rejected](#why-it-was-rejected) | ➖ | ➖ | ➖ | ➖ | The async/bounded-run mismatch is the worker's, not a vendor's |
 | [What remains in the code](#what-remains-in-the-code) | ➖ | ➖ | ➖ | ➖ | Offline estimation helpers only; nothing calls them at run time |
-| **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Logged with a `provider` id. Codex's and Gemini's usage is UNKNOWN; DeepSeek's parses, but every non-Claude model id is unpriced |
-| [Token Extraction](#token-extraction) | ✅ | ❌ | ❌ | ✅ | Codex's and Gemini's output shapes do not parse: warned once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads |
-| [Model Pricing](#model-pricing) | ✅ | ❌ | ❌ | ❌ | No pricing rows: charged at the dearest known rate and named in `unpricedModels` |
-| [Credit Logging](#credit-logging) | ✅ | ⚠️ | ⚠️ | ⚠️ | The entry is written and names the provider; its token fields read `usageUnknown` when unparseable, and its cost is an upper bound whenever the model id is unpriced |
-| [Context Window Budget Monitoring](#context-window-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Measured against the 200,000-token default ceiling, since no non-Claude model id has a `MODEL_CONTEXT_WINDOWS` row |
+| **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Logged with a `provider` id. Codex usage is measured when the CLI reports it; its model ids are unpriced (ChatGPT subscription ≠ API bill) and charged at the conservative upper bound. Gemini's usage is UNKNOWN; DeepSeek's parses, but every non-Claude model id is unpriced |
+| [Token Extraction](#token-extraction) | ✅ | ✅ | ❌ | ✅ | Codex usage is decoded from `turn.completed` / `token_count` (#1701). Gemini's output shape does not parse: warned once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads |
+| [Model Pricing](#model-pricing) | ✅ | ❌ | ❌ | ❌ | No Codex/Gemini/DeepSeek pricing rows: ChatGPT subscription usage is not an API bill, so `gpt-5-codex` is charged at the dearest known rate and named in `unpricedModels` rather than costed at a fabricated list price |
+| [Credit Logging](#credit-logging) | ✅ | ⚠️ | ⚠️ | ⚠️ | The entry is written and names the provider; Codex token fields are measured when the CLI reports them, else `usageUnknown`; cost is an upper bound whenever the model id is unpriced |
+| [Context Window Budget Monitoring](#context-window-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex GPT-5 ids use a 400k `MODEL_CONTEXT_WINDOWS` row; Gemini (and unrecognised ids) still fall back to the 200,000-token default ceiling |
 | **[Token Saving Strategies](#token-saving-strategies)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Prompt-level strategies apply to everyone; the session-store ones reach DeepSeek but not Codex or Gemini, and the Anthropic-cache ones are Claude's alone |
 | [1. Prompt Caching (Two-Layer)](#1-prompt-caching-two-layer) | ✅ | ⚠️ | ⚠️ | ⚠️ | Layer 1 only |
 | [2. Session Persistence](#2-session-persistence) | ✅ | ❌ | ❌ | ✅ | No per-repo state is stored for Codex or Gemini |
-| [3. Session Resume](#3-session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex and Gemini resume their own most recent session, per container rather than per issue; DeepSeek resumes a worker-named one from its own config directory |
+| [3. Session Resume](#3-session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex resumes the captured per-issue thread (`exec resume <SESSION_ID>`); Gemini resumes its own most recent session (`--resume latest`); DeepSeek resumes a worker-named one from its own config directory |
 | [4. Session Compaction](#4-session-compaction) | ✅ | ❌ | ❌ | ✅ | No Codex or Gemini store to compact |
 | [5. Verbosity Configuration](#5-verbosity-configuration) | ✅ | ✅ | ✅ | ✅ | — |
 | [6. Batch API (considered, not wired)](#6-batch-api-considered-not-wired) | ➖ | ➖ | ➖ | ➖ | No provider submits batch work |
-| [7. Context Budget Monitoring](#7-context-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Runs, but against the default ceiling for a non-Claude model id |
+| [7. Context Budget Monitoring](#7-context-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Runs; Codex GPT-5 ids are measured against a 400k window, other non-Claude ids against the default ceiling |
 | [8. Effort-First Routing by Phase](#8-effort-first-routing-by-phase) | ✅ | ✅ | ❌ | ❌ | Codex varies its own four effort levels; Gemini and DeepSeek have no effort lever, so both vary tier alone and warn once per phase |
 | **[Configuration](#configuration)** | ✅ | ⚠️ | ⚠️ | ⚠️ | `codex_*` / `gemini_*` / `deepseek_*` keys instead; the session-store keys are Claude's and DeepSeek's |
 
@@ -1516,7 +1516,7 @@ Implementation:
 
 ### Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one worker-level switch and phase count drives all four, but the mechanism differs: Claude starts a phase under `--session-id <uuid>` and continues it with `--resume <uuid>`, Codex resumes with `codex exec resume --last`, and Gemini with `--resume latest`. DeepSeek takes Claude's `--session-id <uuid>` / `--resume <uuid>` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a Claude transcript is never replayed into a DeepSeek run and back.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one worker-level switch and phase count drives all four, but the mechanism differs: Claude starts a phase under `--session-id <uuid>` and continues it with `--resume <uuid>`, Codex captures the CLI thread and continues it with `codex exec resume <SESSION_ID>` (never `--last`), and Gemini with `--resume latest`. DeepSeek takes Claude's `--session-id <uuid>` / `--resume <uuid>` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a Claude transcript is never replayed into a DeepSeek run and back.
 
 While [per-repository session persistence](#per-repository-session-persistence)
 preserves the `.claude/` directory between invocations (file-system-level
@@ -1541,6 +1541,13 @@ Pairing them (`--session-id <id> --resume`) asks the CLI for a fork, and
 Claude Code 2.1.261 refuses it at start-up unless `--fork-session` is also
 given — every resumed phase died 0.1 s after spawn until the worker sent the
 continuation form (Issue #1580).
+
+Codex names its own thread. The first phase of an issue is a plain
+`codex exec`; later phases send `codex exec resume <SESSION_ID>` with the
+id captured from the previous run of **this** issue. `--last` is never used:
+concurrent slots share a working directory and would otherwise resume each
+other's sessions (Issue #1699). A stored Claude UUID is never fed to Codex,
+and a Codex thread is never passed as Claude's `--resume`.
 
 #### Session ID — a UUID (Issue #204)
 
@@ -1804,7 +1811,7 @@ of `-p`, and identical requests produce byte-identical argument lists.
 
 ### Cache Hit-Rate Telemetry
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — the read/write/uncached counts come from Anthropic usage reporting, and a Codex or Gemini run reports no parseable usage, so no hit rate is computed or logged for them. DeepSeek's output is the Claude CLI's, so the usage block parses; the read/write counts a hit rate is computed from are Anthropic-cache fields, so a DeepSeek run reports a rate only over whatever its endpoint populates.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — the read/write/uncached counts that make an Anthropic hit rate are Claude's. Codex reports `cached_input_tokens`, but they are not Anthropic's prefix cache, so no hit rate is logged for them. A Gemini run reports no parseable usage. DeepSeek's output is the Claude CLI's, so the usage block parses; the read/write counts a hit rate is computed from are Anthropic-cache fields, so a DeepSeek run reports a rate only over whatever its endpoint populates.
 
 The API reports, per invocation, how many prompt tokens were read from the
 cache, written to it, and charged as plain input. The cached share of those
@@ -1974,11 +1981,11 @@ which only *reports* what a hypothetical discount would be. No
 
 ## Token Usage & Cost Tracking
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — every invocation is credit-logged with its provider id, but extraction and pricing are Claude-shaped, so non-Claude usage is recorded UNKNOWN (never zero) and non-Claude model ids are charged at a conservative upper bound. DeepSeek's counts do parse — same CLI, same `stream-json` — but its model ids are unpriced, so its cost is an upper bound rather than a measured one.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — every invocation is credit-logged with its provider id. Codex usage is measured when the CLI reports it; its model ids are unpriced (ChatGPT subscription ≠ API bill) and charged at a conservative upper bound. Gemini usage is recorded UNKNOWN (never zero). DeepSeek's counts do parse — same CLI, same `stream-json` — but its model ids are unpriced, so its cost is an upper bound rather than a measured one.
 
 ### Token Extraction
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — Codex's `--json` JSONL and Gemini's stream events do not parse, so `extractProviderTokenUsage()` warns once and flags the entry `usageUnknown` instead of recording a silent zero. DeepSeek emits the Claude CLI's `stream-json`, so the shared extractor parses it and no `usageUnknown` flag is raised.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ❌ · `deepseek` ✅ — Codex usage is decoded from `turn.completed` / `token_count` by `CODEX_OUTPUT_ADAPTER`. Gemini's stream events do not parse, so `extractProviderTokenUsage()` warns once and flags the entry `usageUnknown` instead of recording a silent zero. DeepSeek emits the Claude CLI's `stream-json`, so the shared extractor parses it and no `usageUnknown` flag is raised.
 
 After each Claude CLI invocation, the worker extracts token usage from the
 stream-json output:
@@ -1993,17 +2000,21 @@ stream-json output:
 Implementation:
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts)
 
-#### Non-Claude providers: unknown, never zero
+#### Non-Claude providers: measured, or unknown — never zero
 
-Extraction reads the **Claude** `stream-json` shape. Codex emits its own JSONL
-under `--json` and Gemini its own `--output-format stream-json` events, so
-neither parses today — real Codex/Gemini token parsing is **not implemented**.
+Extraction reads the **Claude** `stream-json` shape by default. Codex emits
+its own JSONL under `--json`; that stream is decoded by
+[`worker/deno/lib/codex_output_adapter.ts`](../worker/deno/lib/codex_output_adapter.ts)
+and the counts reach the credit log as measured usage (Issue #1701). Gemini
+has no decoder yet.
 
-That gap is loud rather than silent. Every run goes through
+Every run still goes through
 [`worker/deno/lib/provider_token_usage.ts`](../worker/deno/lib/provider_token_usage.ts),
 which dispatches on the active provider descriptor:
 
 - **Claude** — unchanged, and quiet when a run genuinely reports no usage.
+- **Codex** — `turn.completed` / `token_count` usage is mapped onto the shared
+  `TokenUsage` shape. A run that reports none is still `usageUnknown`.
 - **Any other provider** — the shared extractor is tried first (a CLI whose
   output happens to be Claude-compatible is parsed normally); when nothing is
   parseable the run is warned about once, naming the provider, repo, phase and
@@ -2012,23 +2023,27 @@ which dispatches on the active provider descriptor:
 An `usageUnknown` invocation contributes **no** tokens or cost to the daily
 totals and is counted separately, so `credit summary` ends with a line such as
 `WARNING: 2 invocation(s) reported no parseable token usage (provider(s):
-codex, gemini) — their tokens and cost are UNKNOWN, not zero, and are NOT
-counted in the totals above.` Adding a real extractor is a new branch in
-`extractProviderTokenUsage()` plus a pricing row below.
+gemini) — their tokens and cost are UNKNOWN, not zero, and are NOT
+counted in the totals above.` Codex model ids remain unpriced: ChatGPT
+subscription usage is not an API bill, so spend-ceiling accounting uses the
+conservative upper bound rather than a fabricated list price.
 
 ```mermaid
 flowchart LR
     R["raw CLI stdout"] --> X["extractProviderTokenUsage()"]
     X -->|claude| C["extractTokenUsage()<br/>(unchanged)"]
+    X -->|codex| D["CODEX_OUTPUT_ADAPTER.decode()"]
     X -->|other| T["try shared extractor"]
-    T -->|parsed| U["TokenUsage → priced"]
-    T -->|nothing| W["usageUnknown<br/>+ warning"]
+    D -->|usage| U["TokenUsage"]
+    D -->|none| W["usageUnknown<br/>+ warning"]
+    T -->|parsed| U
+    T -->|nothing| W
     C --> U
 ```
 
 ### Model Pricing
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — `MODEL_PRICING` holds Claude rows only, so a `gpt-5-codex` or `gemini-2.5-pro` id is charged at the dearest known rate and named in `unpricedModels` rather than costed at zero. `MODEL_PRICING` has no `deepseek-reasoner` or `deepseek-chat` row either, so a DeepSeek run is charged at the dearest known rate and named in `unpricedModels`.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — `MODEL_PRICING` holds Claude rows only. ChatGPT subscription usage is not an API bill, so a `gpt-5-codex` id is charged at the dearest known rate and named in `unpricedModels` rather than costed at a fabricated OpenAI list price. `MODEL_PRICING` has no `deepseek-reasoner` or `deepseek-chat` row either, so a DeepSeek run is charged at the dearest known rate and named in `unpricedModels`.
 
 Approximate list prices (USD per million tokens, as of September 2026):
 
@@ -2256,7 +2271,7 @@ tokens — this is why prompt caching delivers such large savings.
 
 ### Credit Logging
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an entry is written for every invocation and carries the `provider` id, but its token fields read `usageUnknown` and its cost is an upper-bound estimate whenever the vendor's output cannot be parsed. A DeepSeek entry carries real token fields and an upper-bound cost.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an entry is written for every invocation and carries the `provider` id. Codex token fields are measured when the CLI reports them; its cost is an upper-bound estimate because the model id is unpriced (ChatGPT subscription ≠ API bill). Gemini token fields read `usageUnknown`. A DeepSeek entry carries real token fields and an upper-bound cost.
 
 Every Claude invocation is logged to a daily credit log file (newline-
 delimited JSON):
@@ -2456,7 +2471,7 @@ phase.
 
 ### 3. Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — both resume their own most recent session (`codex exec resume --last`, `--resume latest`) rather than one the worker names, so continuity is per-container rather than per-issue. DeepSeek resumes a worker-named session as Claude does, but out of its own `CLAUDE_CONFIG_DIR`, so the continuity never crosses the two.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Codex resumes the captured per-issue thread (`codex exec resume <SESSION_ID>`, never `--last`); Gemini resumes its own most recent session (`--resume latest`) rather than one the worker names, so continuity is per-container rather than per-issue. DeepSeek resumes a worker-named session as Claude does, but out of its own `CLAUDE_CONFIG_DIR`, so the continuity never crosses the two.
 
 CLI-level session continuity uses `--session-id` and `--resume` flags to
 carry conversation context across phases of the same issue. Later phases
@@ -2551,7 +2566,7 @@ earned. See [Batch API](#batch-api) for the full negative-result note.
 
 ### 7. Context Budget Monitoring
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — monitoring runs for every provider, but against the 200,000-token default ceiling whenever the model id is not a Claude one. DeepSeek is measured against the default ceiling too.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — monitoring runs for every provider. Codex GPT-5 ids are measured against a 400k window; Gemini and unrecognised ids fall back to the 200,000-token default ceiling. DeepSeek is measured against the default ceiling too.
 
 Real-time monitoring of context window usage alerts the system when
 prompts grow too large. This enables proactive prompt trimming and

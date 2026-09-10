@@ -21,6 +21,7 @@ import {
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
 } from "./agent_provider.ts";
+import { resolveProviderFallbackPolicy } from "./provider_fallback_policy.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { resolveRunMode } from "./run_mode.ts";
 import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
@@ -540,6 +541,14 @@ export async function loadConfig(
   });
   setConfiguredEnabledAgentProviderIds(enabledAgentProviderIds);
 
+  // Opt-in ordered fallback (Issue #1700). Validated here so an unconfigured
+  // alternative fails at startup, not mid-run. The empty default is pinned.
+  const agentProviderFallback = resolveProviderFallbackPolicy({
+    preferred: agentProvider,
+    enabled: enabledAgentProviderIds,
+    fallback: file.agent_provider_fallback,
+  }).alternatives;
+
   // Claude model selection (Issue #260)
   const claudeModel = file.claude_model ?? DEFAULT_CLAUDE_MODEL;
 
@@ -931,6 +940,7 @@ export async function loadConfig(
     pinnedToolVersions,
     agentProvider,
     enabledAgentProviders: enabledAgentProviderIds,
+    agentProviderFallback: [...agentProviderFallback],
     claudeModel,
     bestPlanningModel,
     claudeTimeout,

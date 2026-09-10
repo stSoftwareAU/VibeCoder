@@ -124,6 +124,39 @@ Deno.test("#220 - a retitled issue resumes its pushed branch instead of starting
   }
 });
 
+Deno.test("#1699 - a Codex resume record restores providerId onto session state", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue1699-setup-" });
+  try {
+    const ctx = buildContext(workDir, true);
+    const state = buildState();
+    const deps = depsWithPushedWip();
+    const threadId = "0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e77";
+
+    await saveResumeState(workDir, ctx.repo, 211, {
+      sessionId: threadId,
+      phaseCount: 2,
+      branch: WIP_BRANCH,
+      providerId: "codex",
+      credentialScope: "chatgpt-plus",
+    });
+
+    const result = await workOnIssueSetupBranch(ctx, state, deps);
+
+    assertEquals(result.status, "continue");
+    assertEquals(state.sessionResumeState?.sessionId, threadId);
+    assertEquals(state.sessionResumeState?.providerId, "codex");
+    assertEquals(state.sessionResumeState?.credentialScope, "chatgpt-plus");
+    assertEquals(
+      (state.sessionResumeState?.phaseCount ?? 0) >= 1,
+      true,
+    );
+
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
 Deno.test("#220 - pushed WIP is resumed with enable_session_resume off", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "issue220-setup-" });
   try {

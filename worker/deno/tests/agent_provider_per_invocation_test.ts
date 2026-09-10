@@ -228,6 +228,11 @@ type StubProvider = keyof typeof STUB_NAME;
  * waits for its peer to start before exiting. The rendezvous is what proves
  * genuine concurrency: run sequentially, the first stub would never see the
  * peer marker and would exit 9.
+ *
+ * Each stub prints its **own** CLI's event shape (Issue #1695): the runner
+ * decodes output through the invoked provider's adapter, so a Codex stub that
+ * printed Claude's `result` line would be asserting that one vendor's parser
+ * reads another's events — the very thing the adapter seam exists to stop.
  */
 function stubBody(peer: string, rendezvous: boolean): string {
   const wait = rendezvous
@@ -248,7 +253,15 @@ if [ ! -t 0 ]; then cat > "$dir/$name.stdin"; else : > "$dir/$name.stdin"; fi
   printf 'OPENAI_API_KEY=%s\\n' "\${OPENAI_API_KEY:-}"
 } > "$dir/$name.creds"
 touch "$dir/$name.started"
-${wait}printf '%s\\n' '{"type":"result","result":"ran-'"$name"'"}'
+${wait}case "$name" in
+  *codex)
+    printf '%s\\n' '{"type":"item.completed","item":{"item_type":"agent_message","text":"ran-'"$name"'"}}'
+    printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+    ;;
+  *)
+    printf '%s\\n' '{"type":"result","result":"ran-'"$name"'"}'
+    ;;
+esac
 exit 0
 `;
 }
@@ -361,7 +374,15 @@ Deno.test({
 
       const codex = await stubs.readRecord("codex");
       assertEquals(codex.args[0], "exec");
-      assert(codex.args.some((a) => a.includes("draft the plan")));
+      // Codex's prompt travels on stdin behind `-` (Issue #1702): Linux
+      // caps one argv element at 128 KiB, so a long thread cannot sit in
+      // argv.
+      assertEquals(codex.args.at(-1), "-");
+      assertStringIncludes(codex.stdin, "draft the plan");
+      assertEquals(
+        codex.args.some((a) => a.includes("draft the plan")),
+        false,
+      );
       // Codex sees its own credential and never Anthropic's.
       assertEquals(codex.openaiKey, "test-openai-key");
       assertEquals(codex.anthropicKey, "");
@@ -434,17 +455,20 @@ Deno.test({
       // prompt, with nothing from the other.
       assert(claude.args.includes("--dangerously-skip-permissions"));
       // Claude's prompt travels on stdin behind a bare `-p` (Issue #4385);
-      // Codex's stays on argv.
+      // Codex's travels on stdin behind `-` (Issue #1702).
       assertEquals(claude.args.at(-1), "-p");
       assertEquals(claude.stdin, "claude draft");
       assertEquals(claude.args[0], "--model");
       assertEquals(codex.args[0], "exec");
+      assertEquals(codex.args.at(-1), "-");
       assertEquals(
         codex.args.includes("--dangerously-skip-permissions"),
         false,
       );
-      assert(codex.args.some((a) => a.includes("codex draft")));
+      assertStringIncludes(codex.stdin, "codex draft");
+      assertEquals(codex.args.some((a) => a.includes("codex draft")), false);
       assertEquals(codex.args.some((a) => a.includes("claude draft")), false);
+      assertEquals(codex.stdin.includes("claude draft"), false);
       assertEquals(claude.args.some((a) => a.includes("codex draft")), false);
 
       // Per-invocation environment: neither child saw the other vendor's key.

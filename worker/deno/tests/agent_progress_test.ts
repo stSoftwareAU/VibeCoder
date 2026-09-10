@@ -420,3 +420,59 @@ Deno.test({
     }
   },
 });
+
+function codexItemLine(
+  kind: "item.started" | "item.completed",
+  item: Record<string, unknown>,
+): string {
+  return JSON.stringify({ type: kind, item }) + "\n";
+}
+
+Deno.test("agent_progress - counts Codex command_execution items (Issue #1702)", () => {
+  let clock = 1_000_000;
+  const lines: string[] = [];
+  const tracker = new AgentProgressTracker({
+    phase: "execute",
+    intervalMs: 60_000,
+    log: (m) => lines.push(m),
+    now: () => clock,
+  });
+
+  tracker.feed(codexItemLine("item.started", {
+    id: "item_0",
+    item_type: "reasoning",
+    text: "thinking",
+  }));
+  tracker.feed(codexItemLine("item.completed", {
+    id: "item_1",
+    item_type: "command_execution",
+    command: "deno test",
+  }));
+  clock += 61_000;
+  tracker.feed(codexItemLine("item.completed", {
+    id: "item_2",
+    item_type: "agent_message",
+    text: "done",
+  }));
+
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0]!, "1 tool call");
+  assertStringIncludes(lines[0]!, "Bash deno test");
+});
+
+Deno.test("agent_progress - started then completed of the same Codex item counts once (Issue #1702)", () => {
+  const tracker = new AgentProgressTracker({
+    phase: "execute",
+    intervalMs: 60_000,
+    log: () => undefined,
+    now: () => 1_000_000,
+  });
+  const item = {
+    id: "item_9",
+    item_type: "command_execution",
+    command: "git status",
+  };
+  tracker.feed(codexItemLine("item.started", item));
+  tracker.feed(codexItemLine("item.completed", item));
+  assertEquals(tracker.snapshot().toolCalls, 1);
+});

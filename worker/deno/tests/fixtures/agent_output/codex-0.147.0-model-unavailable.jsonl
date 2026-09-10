@@ -1,0 +1,2 @@
+{"type":"thread.started","thread_id":"0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e7b"}
+{"type":"turn.failed","error":{"type":"model_not_found","message":"The model `gpt-5-codex-preview` does not exist or you do not have access to it.","http_status":404}}

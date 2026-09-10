@@ -376,9 +376,14 @@ Deno.test("createProductionRunCoreDeps - accepts custom logger", async () => {
   });
 
   const { deps } = await createProductionRunCoreDeps(options);
+  assertEquals(
+    logs.some((msg) => msg.startsWith("[quota] provider fallback pinned")),
+    true,
+  );
+  const before = logs.length;
   deps.log("test message");
-  assertEquals(logs.length, 1);
-  assertEquals(logs[0], "test message");
+  assertEquals(logs.length, before + 1);
+  assertEquals(logs[before], "test message");
 });
 
 // ---------------------------------------------------------------------------

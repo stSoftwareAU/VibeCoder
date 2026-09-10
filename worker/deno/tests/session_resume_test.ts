@@ -17,11 +17,15 @@
 
 import { assertEquals, assertMatch, assertNotEquals } from "@std/assert";
 import {
+  adoptProviderSession,
   buildSessionResumeArgs,
   buildSessionResumeFlags,
+  codexResumeSessionId,
   createSessionResumeState,
   generateSessionId,
+  isPersistableSessionId,
   recordPhaseCompletion,
+  sessionResumeForProvider,
   type SessionResumeState,
 } from "../lib/session_resume.ts";
 
@@ -176,4 +180,88 @@ Deno.test("session resume lifecycle - first phase then subsequent phase", () => 
   // Third phase: still has resume
   const thirdFlags = buildSessionResumeFlags(afterSecond);
   assertEquals(thirdFlags.resume, true);
+});
+
+// =============================================================================
+// Codex / cross-provider session identity (Issue #1699)
+// =============================================================================
+
+Deno.test("adoptProviderSession - captures a Codex thread id without inventing one", () => {
+  const state = createSessionResumeState();
+  const adopted = adoptProviderSession(state, {
+    sessionId: "thread-codex-1",
+    providerId: "codex",
+    credentialScope: "account-a",
+  });
+  assertEquals(adopted.sessionId, "thread-codex-1");
+  assertEquals(adopted.providerId, "codex");
+  assertEquals(adopted.credentialScope, "account-a");
+  assertEquals(adopted.phaseCount, 0);
+  assertEquals(state.sessionId !== "thread-codex-1", true);
+});
+
+Deno.test("adoptProviderSession - a missing capture leaves the worker UUID unlabelled", () => {
+  const state = createSessionResumeState();
+  const adopted = adoptProviderSession(state, { providerId: "codex" });
+  assertEquals(adopted, state);
+  assertEquals(adopted.providerId, undefined);
+});
+
+Deno.test("codexResumeSessionId - empty until a Codex run has reported an id", () => {
+  assertEquals(codexResumeSessionId(undefined), undefined);
+  assertEquals(
+    codexResumeSessionId({
+      sessionId: "uuid",
+      phaseCount: 0,
+      providerId: "codex",
+    }),
+    undefined,
+  );
+  assertEquals(
+    codexResumeSessionId({ sessionId: "uuid", phaseCount: 1 }),
+    undefined,
+  );
+  assertEquals(
+    codexResumeSessionId({
+      sessionId: "uuid",
+      phaseCount: 1,
+      providerId: "claude",
+    }),
+    undefined,
+  );
+  assertEquals(
+    codexResumeSessionId({
+      sessionId: "thread-1",
+      phaseCount: 1,
+      providerId: "codex",
+    }),
+    "thread-1",
+  );
+});
+
+Deno.test("sessionResumeForProvider - refuses a cross-vendor id", () => {
+  const codexState: SessionResumeState = {
+    sessionId: "thread-1",
+    phaseCount: 1,
+    providerId: "codex",
+  };
+  assertEquals(sessionResumeForProvider(codexState, "codex"), codexState);
+  assertEquals(sessionResumeForProvider(codexState, "claude"), undefined);
+  const legacy: SessionResumeState = {
+    sessionId: "6f1f2c0a-9b7d-4c3e-8a11-2b3c4d5e6f70",
+    phaseCount: 1,
+  };
+  assertEquals(sessionResumeForProvider(legacy, "claude"), legacy);
+  assertEquals(sessionResumeForProvider(legacy, "deepseek"), legacy);
+  assertEquals(sessionResumeForProvider(legacy, "codex"), undefined);
+});
+
+Deno.test("isPersistableSessionId - Codex accepts a non-UUID thread id", () => {
+  assertEquals(isPersistableSessionId("thread_abc", "codex"), true);
+  assertEquals(isPersistableSessionId("", "codex"), false);
+  assertEquals(isPersistableSessionId("thread_abc", "claude"), false);
+  assertEquals(
+    isPersistableSessionId("6f1f2c0a-9b7d-4c3e-8a11-2b3c4d5e6f70", "claude"),
+    true,
+  );
 });

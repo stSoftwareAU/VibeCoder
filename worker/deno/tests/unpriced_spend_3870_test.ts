@@ -129,6 +129,24 @@ Deno.test("token_usage - estimateCostWithUpperBound charges an unknown id at the
   assertAlmostEquals(bounded.cost.totalCost, expected, 1e-9);
 });
 
+Deno.test("token_usage - Codex GPT-5 ids are unpriced (subscription ≠ API bill, Issue #1701)", () => {
+  for (const id of ["gpt-5-codex", "gpt-5", "gpt-5-mini"]) {
+    assertEquals(lookupModelPricing(id), null);
+    const bounded = estimateCostWithUpperBound({
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    }, id);
+    assertEquals(bounded.priced, false);
+    assertAlmostEquals(
+      bounded.cost.totalCost,
+      UNPRICED_UPPER_BOUND_PRICING.inputPerMillion,
+      1e-9,
+    );
+  }
+});
+
 Deno.test("token_usage - a future model id still costs more than zero", () => {
   const bounded = estimateCostWithUpperBound({
     inputTokens: 1_000,

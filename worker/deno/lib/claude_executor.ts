@@ -26,6 +26,7 @@ import type { RepoConfig } from "../types.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { ScheduledReleaseReason } from "./failure_diagnosis.ts";
+import type { AgentDecodedOutput, AgentFailure } from "./agent_output.ts";
 
 /** Exit code returned when a process times out. */
 export const TIMEOUT_EXIT_CODE = 124;
@@ -136,6 +137,20 @@ export interface ClaudeExecutionResult {
    * a spawn failure never reaches the provider.
    */
   provider?: string;
+  /**
+   * This invocation decoded into the provider-neutral contract (Issue #1695).
+   *
+   * Produced by the provider descriptor's own output adapter, so the shape is
+   * the same whichever CLI ran. Absent for a provider that has no adapter yet
+   * — an absent decode, never one vendor's events read with another's parser.
+   */
+  agentOutput?: AgentDecodedOutput;
+  /**
+   * This invocation's failure, normalised into one named category with the
+   * evidence it was read from (Issue #1695). Absent when the run did not
+   * fail.
+   */
+  agentFailure?: AgentFailure;
   /**
    * Cheaper model the run fell back to after rate-limit exhaustion (#1113).
    * Populated only by the retry wrapper (`runClaudeWithRetry`); the low-level
@@ -747,14 +762,20 @@ export function detectModelUnavailable(
  *   --fork-session is also specified.` — the flag pairing (Issue #1580,
  *   Claude Code 2.1.261). The worker no longer sends that pairing, but a
  *   refusal of the flags is still the flags' fault, and the remedy is the
- *   same: drop them and retry once, loudly.
+ *   same: drop them and retry once, loudly;
+ * - `Error: --resume requires a valid session ID or session title when used
+ *   with --print.` — what 2.1.261 actually prints for a non-UUID id
+ *   (Issue #1695, recorded in
+ *   `tests/fixtures/agent_output/claude-2.1.261-invalid-session.stderr`).
+ *   None of the arms above matched it, so the recorded refusal was reaching
+ *   the ordinary failure path instead of dropping the flags.
  *
  * Anchored to session-id phrasing so an unrelated "invalid" (a bad model
  * alias, a git reference) cannot match: dropping the session flags would
  * silently discard continuity if it fired on the wrong failure.
  */
 const INVALID_SESSION_ID_RE =
-  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with/i;
+  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with|--resume requires a valid session/i;
 
 /**
  * Check if the tail of output indicates the CLI rejected the session id.

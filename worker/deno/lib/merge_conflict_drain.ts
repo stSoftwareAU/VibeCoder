@@ -187,8 +187,7 @@ export interface ConflictDrainOptions {
    * production the day someone adds a wiring site and forgets it.
    */
   prLiveState: (pr: ConflictingPr) => Promise<PrLiveStateReading>;
-  /**
-   * Resolve one conflict. Returns null when the attempt failed loudly.
+  /**   * Resolve one conflict. Returns null when the attempt failed loudly.
    *
    * `budget` is the agent timeout this attempt may grant, sized to the
    * handler budget still left (Issue #1693). Absent when the pass runs
