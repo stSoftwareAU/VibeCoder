@@ -48,7 +48,6 @@ import {
   resolveActionPins,
   type ResolvedActionPins,
 } from "../lib/action_pin_resolver.ts";
-import type { ActionPin } from "../lib/pinned_actions.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 import { createSetupRunCommand } from "./setup_command_runner.ts";
 
@@ -98,8 +97,9 @@ export interface WorkflowSyncOptions extends AlertDedupAuthorOptions {
    * #1824). Defaults to {@link resolveActionPins} over the same runner the
    * `gh` calls use, so no new credential path is introduced.
    *
-   * Called at most once per sync — lazily, immediately before the first
-   * body is rendered — so a dry run, which renders no body, never resolves.
+   * Called at most once per sync, lazily — immediately before the first body
+   * it renders — so a run that files nothing (a dry run, or a repo whose
+   * issues all exist already) never resolves at all.
    */
   resolvePins?: PinResolver;
 }
@@ -108,7 +108,7 @@ export interface WorkflowSyncOptions extends AlertDedupAuthorOptions {
 export type PinResolver = () => Promise<ResolvedActionPins>;
 
 /** The pins a rendered issue body is interpolated with. */
-export type ResolvedPins = Record<string, ActionPin>;
+export type ResolvedPins = ResolvedActionPins["pins"];
 
 /** Result of syncing workflows for a single repo. */
 export interface WorkflowSyncResult {
@@ -409,11 +409,10 @@ ${tag}`;
 async function createWorkflowIssue(
   repo: string,
   spec: WorkflowSpec,
+  body: string,
   runner: (cmd: string[]) => Promise<CommandOutput>,
-  pins: ResolvedPins,
 ): Promise<boolean> {
   const title = issueTitle(spec);
-  const body = issueBody(spec, pins);
 
   // Try to create with the "enhancement" label first.
   const withLabel = await runner([
@@ -454,13 +453,10 @@ async function createWorkflowIssue(
 async function createPartialWorkflowIssue(
   repo: string,
   spec: WorkflowSpec,
-  foundIn: string,
-  missingGroups: string[][],
+  body: string,
   runner: (cmd: string[]) => Promise<CommandOutput>,
-  pins: ResolvedPins,
 ): Promise<boolean> {
   const title = issueTitlePartial(spec);
-  const body = issueBodyPartial(spec, foundIn, missingGroups, pins);
 
   // Try to create with the "enhancement" label first.
   const withLabel = await runner([
@@ -496,25 +492,69 @@ async function createPartialWorkflowIssue(
 /**
  * Adapt the setup runner to the resolver's `runFn` shape.
  *
- * The setup runner owns its own timeout (`spawnGh` → `runGitCommand`), so the
- * resolver's per-call budget is not re-applied here. A process that ran and
- * exited non-zero is reported as such rather than as a runner error, which is
- * the distinction `resolveGitHubReleaseHistory` branches on: either way the
- * action falls back to its catalogue pin with one logged reason.
+ * Two faults this has to avoid, both of which would be silent:
+ *
+ * - **The lookup must be bounded.** `createSetupRunCommand` sends `gh` to
+ *   `spawnGh` without a signal, and `spawnGh` applies a deadline only when
+ *   one is given — so nothing else on this path times the call out, and a
+ *   wedged `gh api` would hang the whole sync. The resolver's own
+ *   `timeoutSeconds` is honoured here instead, and a call that overruns it
+ *   is reported as a failure so the action falls back with a logged reason.
+ * - **The reason must survive.** A failed process is reported as a runner
+ *   error carrying its `stderr`, not as a zero-output non-zero exit: the
+ *   resolver's non-zero branch rebuilds its message from the exit code alone
+ *   and would throw away "gh: not found" or an HTTP 403, which is exactly
+ *   what the `[workflow-sync] pin resolution failed:` line is read for.
  */
-function pinResolverRunFn(
+export function pinResolverRunFn(
   runner: (cmd: string[]) => Promise<CommandOutput>,
 ): ActionPinResolverDeps["runFn"] {
-  return async (cmd: string[]) => {
-    const result = await runner(cmd);
-    return {
-      ok: true,
-      value: {
-        exitCode: result.success ? 0 : 1,
-        output: result.success ? result.stdout : result.stderr,
-      },
-    };
+  return async (cmd: string[], timeoutSeconds: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<CommandOutput>((resolve) => {
+      timer = setTimeout(
+        () =>
+          resolve({
+            success: false,
+            stdout: "",
+            stderr: `timed out after ${timeoutSeconds}s`,
+          }),
+        timeoutSeconds * 1000,
+      );
+    });
+    try {
+      const result = await Promise.race([runner(cmd), budget]);
+      if (!result.success) {
+        return {
+          ok: false,
+          error: new Error(result.stderr || "the command reported no reason"),
+        };
+      }
+      return { ok: true, value: { exitCode: 0, output: result.stdout } };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   };
+}
+
+/** The runner every `gh` call in a sync goes through. */
+function syncRunner(
+  options: WorkflowSyncOptions,
+): (cmd: string[]) => Promise<CommandOutput> {
+  return options.runCommand ?? createSetupRunCommand(options.ghConfigDir);
+}
+
+/** The diagnostics sink a sync writes its skips and fallbacks to. */
+function syncLog(options: WorkflowSyncOptions): (message: string) => void {
+  return options.log ?? ((message: string) => console.warn(message));
+}
+
+/** The resolver used when the caller injects none. */
+function defaultPinResolver(
+  runner: (cmd: string[]) => Promise<CommandOutput>,
+  log: (message: string) => void,
+): PinResolver {
+  return () => resolveActionPins({ runFn: pinResolverRunFn(runner), log });
 }
 
 /**
@@ -522,7 +562,8 @@ function pinResolverRunFn(
  *
  * The returned function memoises the resolution — the pins do not vary by
  * repository, so a fleet-wide sync resolves the catalogue once — and is
- * **lazy**, so a dry run (which renders no body) issues no `gh` call at all.
+ * **lazy**, so a run that renders no body (a dry run, or a repo whose issues
+ * have all been filed already) issues no `gh` call at all.
  */
 function createPinLookup(
   options: WorkflowSyncOptions,
@@ -530,8 +571,7 @@ function createPinLookup(
   log: (message: string) => void,
 ): () => Promise<ResolvedPins> {
   const resolve = memoisePinResolver(
-    options.resolvePins ??
-      (() => resolveActionPins({ runFn: pinResolverRunFn(runner), log })),
+    options.resolvePins ?? defaultPinResolver(runner, log),
   );
   return async () => (await resolve()).pins;
 }
@@ -540,6 +580,17 @@ function createPinLookup(
 function memoisePinResolver(resolve: PinResolver): PinResolver {
   let inFlight: Promise<ResolvedActionPins> | undefined;
   return () => (inFlight ??= resolve());
+}
+
+/** One line naming a spec the sync skipped, and why — a skip is never silent. */
+function skipReason(
+  repo: string,
+  specId: string,
+  stage: string,
+  err: unknown,
+): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return `[workflow-sync] ${repo}: skipped ${specId} — ${stage} failed: ${message}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -561,9 +612,8 @@ export async function syncWorkflowsForRepo(
   repo: string,
   options: WorkflowSyncOptions = {},
 ): Promise<WorkflowSyncResult> {
-  const runner = options.runCommand ??
-    createSetupRunCommand(options.ghConfigDir);
-  const log = options.log ?? ((message: string) => console.warn(message));
+  const runner = syncRunner(options);
+  const log = syncLog(options);
   const langOpts: LanguageDetectorOptions = {
     runCommand: runner,
     ghConfigDir: options.ghConfigDir,
@@ -573,8 +623,8 @@ export async function syncWorkflowsForRepo(
     ghConfigDir: options.ghConfigDir,
     localRepoPath: options.localRepoPath,
   };
-  // Lazy and memoised: resolved once, immediately before the first body is
-  // rendered, and never at all when nothing is filed (Issue #1824).
+  // Lazy and memoised: resolved once, immediately before the first body this
+  // sync renders, and never at all when nothing is filed (Issue #1824).
   const pins = createPinLookup(options, runner, log);
 
   // Step 1: Detect languages
@@ -654,68 +704,26 @@ export async function syncWorkflowsForRepo(
   let partialIssuesSkipped = 0;
 
   if (!options.dryRun) {
-    for (const spec of audit.missing) {
-      // Resolved outside the per-spec `catch`: a pin-resolution fault is
-      // fleet-wide, not one spec's, so it must surface rather than be
-      // swallowed into a sync that quietly files nothing (Issue #1824).
-      const resolvedPins = await pins();
-      try {
-        const exists = await issueExistsByTag(
-          repo,
-          deduplicationTag(spec.id),
-          runner,
-          options,
-          log,
-        );
-        if (exists) {
-          issuesSkipped++;
-          continue;
-        }
-
-        const created = await createWorkflowIssue(
-          repo,
-          spec,
-          runner,
-          resolvedPins,
-        );
-        if (created) {
-          issuesRaised++;
-        }
-      } catch {
-        // Skip this spec on failure — do not block other specs.
-      }
-    }
-
-    // Step 4: Raise issues for partially matching workflows
-    for (const partialMatch of audit.partial) {
-      const resolvedPins = await pins();
-      try {
-        const exists = await issueExistsByTag(
-          repo,
-          partialDeduplicationTag(partialMatch.spec.id),
-          runner,
-          options,
-          log,
-        );
-        if (exists) {
-          partialIssuesSkipped++;
-          continue;
-        }
-
-        const created = await createPartialWorkflowIssue(
-          repo,
-          partialMatch.spec,
-          partialMatch.foundIn,
-          partialMatch.missingGroups,
-          runner,
-          resolvedPins,
-        );
-        if (created) {
-          partialIssuesRaised++;
-        }
-      } catch {
-        // Skip this spec on failure — do not block other specs.
-      }
+    try {
+      await fileIssues();
+    } catch (err) {
+      // Only a pin fault reaches here — every per-spec failure is caught and
+      // logged inside. It is fleet-wide and deterministic, so it is reported
+      // as this repo's failure (the CLI prints it and exits non-zero) rather
+      // than filing a stale template or quietly filing nothing.
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        repo,
+        languages: audit.languages,
+        present: audit.present.length,
+        issuesRaised,
+        issuesSkipped,
+        partial: audit.partial.length,
+        partialIssuesRaised,
+        partialIssuesSkipped,
+        error: `Action pin resolution failed: ${message}`,
+      };
     }
   } else {
     // Dry run: count all missing and partial as would-be-raised.
@@ -734,6 +742,80 @@ export async function syncWorkflowsForRepo(
     partialIssuesRaised,
     partialIssuesSkipped,
   };
+
+  /** Raise one issue per missing spec, then one per partial match. */
+  async function fileIssues(): Promise<void> {
+    for (const spec of audit.missing) {
+      let exists: boolean;
+      try {
+        exists = await issueExistsByTag(
+          repo,
+          deduplicationTag(spec.id),
+          runner,
+          options,
+          log,
+        );
+      } catch (err) {
+        // One spec's dedup search must not block the others, but a skip is
+        // never silent (Issue #1824).
+        log(skipReason(repo, spec.id, "dedup search", err));
+        continue;
+      }
+      if (exists) {
+        issuesSkipped++;
+        continue;
+      }
+
+      // Rendered outside the `catch`: a pin fault is fleet-wide, not one
+      // spec's, and `applyResolvedPins` throws on a malformed pin by design
+      // (Issue #1823) — swallowing that would file a stale template or
+      // nothing at all, silently.
+      const body = issueBody(spec, await pins());
+      try {
+        if (await createWorkflowIssue(repo, spec, body, runner)) {
+          issuesRaised++;
+        }
+      } catch (err) {
+        log(skipReason(repo, spec.id, "issue creation", err));
+      }
+    }
+
+    // Step 4: Raise issues for partially matching workflows
+    for (const partialMatch of audit.partial) {
+      const spec = partialMatch.spec;
+      let exists: boolean;
+      try {
+        exists = await issueExistsByTag(
+          repo,
+          partialDeduplicationTag(spec.id),
+          runner,
+          options,
+          log,
+        );
+      } catch (err) {
+        log(skipReason(repo, spec.id, "partial dedup search", err));
+        continue;
+      }
+      if (exists) {
+        partialIssuesSkipped++;
+        continue;
+      }
+
+      const body = issueBodyPartial(
+        spec,
+        partialMatch.foundIn,
+        partialMatch.missingGroups,
+        await pins(),
+      );
+      try {
+        if (await createPartialWorkflowIssue(repo, spec, body, runner)) {
+          partialIssuesRaised++;
+        }
+      } catch (err) {
+        log(skipReason(repo, spec.id, "partial issue creation", err));
+      }
+    }
+  }
 }
 
 /**
@@ -753,23 +835,14 @@ export async function syncWorkflowsForAllRepos(
   // when no body is rendered (Issue #1824).
   const sharedResolve = memoisePinResolver(
     options.resolvePins ??
-      (() =>
-        resolveActionPins({
-          runFn: pinResolverRunFn(
-            options.runCommand ?? createSetupRunCommand(options.ghConfigDir),
-          ),
-          log: options.log ?? ((message: string) => console.warn(message)),
-        })),
+      defaultPinResolver(syncRunner(options), syncLog(options)),
   );
+  const base: WorkflowSyncOptions = { ...options, resolvePins: sharedResolve };
   for (const repo of repos) {
     if (!repo) continue;
     // Derive a per-repo `localRepoPath` from `workDir` when the caller
     // hasn't already set one explicitly (Issue #1811). Each repo lives
     // under `<workDir>/<repoName>` (matches `gitignore_sync.ts`).
-    const base: WorkflowSyncOptions = {
-      ...options,
-      resolvePins: sharedResolve,
-    };
     const perRepoOptions: WorkflowSyncOptions =
       options.localRepoPath !== undefined ? base : (options.workDir
         ? {

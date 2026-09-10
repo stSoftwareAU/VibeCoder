@@ -14,6 +14,7 @@ import {
   issueBodyPartial,
   partialDeduplicationTag,
   type PinResolver,
+  pinResolverRunFn,
   type ResolvedPins,
   syncWorkflowsForAllRepos,
   syncWorkflowsForRepo,
@@ -1055,6 +1056,10 @@ Deno.test("syncWorkflowsForRepo - an action the resolver failed on keeps its cat
       resolveActionPins({
         runFn: () =>
           Promise.resolve({ ok: false, error: new Error("network down") }),
+        // Both seams named, so the case cannot inherit the host's
+        // VIBE_BUMP_QUARANTINE_HOURS or its wall clock.
+        quarantineHours: 24,
+        now: () => new Date("2026-01-01T00:00:00Z"),
         log: (message) => logged.push(message),
       }),
   });
@@ -1193,4 +1198,244 @@ Deno.test("syncWorkflowsForAllRepos - resolves the pins once across every repo",
     1,
     "the pins do not vary by repo, so one call serves all",
   );
+});
+
+Deno.test("syncWorkflowsForRepo - a malformed pin fails loud rather than filing nothing", async () => {
+  // `applyResolvedPins` throws on a pin whose SHA is not 40 hex characters
+  // (Issue #1823) — a caller-built map is the only way to reach it. That
+  // throw must reach the caller: swallowing it would report a clean sync
+  // that quietly filed no issue at all.
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+    resolvePins: () =>
+      Promise.resolve({
+        pins: {
+          ...cataloguePinMap(),
+          "actions/checkout": { sha: "not-a-sha", version: "v9" },
+        },
+        failures: [],
+      }),
+  });
+
+  assertEquals(result.ok, false, "a pin fault must not report a clean sync");
+  assertEquals(
+    (result.error ?? "").includes("not a 40-character"),
+    true,
+    `error should name the malformed pin, got: ${result.error}`,
+  );
+  assertEquals(state.issuesCreated.length, 0);
+});
+
+Deno.test("syncWorkflowsForRepo - a spec skipped by a failure says so", async () => {
+  // The per-spec catch keeps one bad spec from blocking the others, but the
+  // skip is logged rather than silent.
+  const { runner } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const logged: string[] = [];
+  const exploding: WorkflowSyncOptions["runCommand"] = (cmd) => {
+    if (cmd.join(" ").includes("gh issue create")) {
+      return Promise.reject(new Error("gh exploded"));
+    }
+    return runner!(cmd);
+  };
+
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: exploding,
+    resolvePins: cataloguePins,
+    log: (message) => logged.push(message),
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(result.issuesRaised, 0);
+  assertEquals(
+    logged.some((line) =>
+      line.includes("skipped") && line.includes("gh exploded")
+    ),
+    true,
+    "a swallowed per-spec failure must still be reported",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The default resolver — the setup runner adapted to the resolver's runFn
+// ---------------------------------------------------------------------------
+
+/**
+ * Extend a mock runner with the release and commit lookups the default
+ * resolver makes, so a sync with no injected `resolvePins` resolves through
+ * `pinResolverRunFn` exactly as production does.
+ */
+function withUpstreamLookups(
+  base: WorkflowSyncOptions["runCommand"],
+  upstream: { tag: string; publishedAt: string; sha: string } | "unreachable",
+): WorkflowSyncOptions["runCommand"] {
+  return (cmd: string[]): Promise<CommandOutput> => {
+    const joined = cmd.join(" ");
+    const isRelease = joined.includes("/releases");
+    const isCommit = /repos\/[^ ]+\/commits\//.test(joined);
+    if (!isRelease && !isCommit) return base!(cmd);
+    if (upstream === "unreachable") return Promise.resolve(fail("no network"));
+    if (isRelease) {
+      return Promise.resolve(ok(`${upstream.tag} ${upstream.publishedAt}`));
+    }
+    return Promise.resolve(ok(`${upstream.sha} ${upstream.publishedAt}`));
+  };
+}
+
+Deno.test("syncWorkflowsForRepo - the default resolver pins from upstream through the setup runner", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const sha = "c".repeat(40);
+
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    // No `resolvePins`: the default resolver runs over this runner.
+    runCommand: withUpstreamLookups(runner, {
+      tag: "v9.9.9",
+      publishedAt: "2020-01-01T00:00:00Z",
+      sha,
+    }),
+    log: () => {},
+  });
+
+  const semgrep = state.issuesCreated.find((i) => i.title.includes("Semgrep"));
+  assertEquals(semgrep !== undefined, true);
+  assertEquals(
+    semgrep!.body.includes(`actions/checkout@${sha} # v9.9.9`),
+    true,
+    "the default resolver's pin should reach the filed body",
+  );
+});
+
+Deno.test("syncWorkflowsForRepo - the default resolver falls back loudly when the runner fails", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const logged: string[] = [];
+
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: withUpstreamLookups(runner, "unreachable"),
+    log: (message) => logged.push(message),
+  });
+
+  const semgrep = state.issuesCreated.find((i) => i.title.includes("Semgrep"));
+  assertEquals(semgrep !== undefined, true);
+  assertEquals(
+    semgrep!.body.includes(
+      `actions/checkout@${PINNED_ACTIONS["actions/checkout"]!.sha}`,
+    ),
+    true,
+    "an unreachable upstream falls back to the catalogue SHA",
+  );
+  assertEquals(
+    logged.some((line) =>
+      line.includes("[workflow-sync] pin resolution failed:")
+    ),
+    true,
+  );
+});
+
+Deno.test("syncWorkflowsForRepo - a failed lookup's reason reaches the fallback line", async () => {
+  // `resolveGitHubReleaseHistory` rebuilds its message from the exit code
+  // alone, so a runner failure has to be reported as a runner *error*
+  // carrying stderr — otherwise "gh: not found" is thrown away and the
+  // operator's only diagnostic reads "exited 1".
+  const { runner } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    workflowFiles: [],
+  });
+  const logged: string[] = [];
+
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: (cmd: string[]) => {
+      if (cmd.join(" ").includes("/releases")) {
+        return Promise.resolve(fail("HTTP 403: rate limit exceeded"));
+      }
+      return runner!(cmd);
+    },
+    log: (message) => logged.push(message),
+  });
+
+  assertEquals(
+    logged.some((line) => line.includes("HTTP 403: rate limit exceeded")),
+    true,
+    `the upstream reason should survive into the log, got: ${logged.join("|")}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// pinResolverRunFn — the adapter between the setup runner and the resolver
+// ---------------------------------------------------------------------------
+
+Deno.test("pinResolverRunFn - a successful command yields its stdout at exit zero", async () => {
+  const runFn = pinResolverRunFn(() =>
+    Promise.resolve(ok("v1.2.3 2020-01-01T00:00:00Z"))
+  );
+
+  const result = await runFn(["gh", "api", "repos/o/r/releases"], 30);
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.exitCode, 0);
+    assertEquals(result.value.output, "v1.2.3 2020-01-01T00:00:00Z");
+  }
+});
+
+Deno.test("pinResolverRunFn - a failed command is an error carrying its stderr", async () => {
+  const runFn = pinResolverRunFn(() =>
+    Promise.resolve(fail("HTTP 403: rate limit exceeded"))
+  );
+
+  const result = await runFn(["gh", "api", "repos/o/r/releases"], 30);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message, "HTTP 403: rate limit exceeded");
+  }
+});
+
+Deno.test("pinResolverRunFn - a failure with no stderr still says why it failed", async () => {
+  const runFn = pinResolverRunFn(() =>
+    Promise.resolve({ success: false, stdout: "", stderr: "" })
+  );
+
+  const result = await runFn(["gh", "api", "repos/o/r/releases"], 30);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message.length > 0, true);
+  }
+});
+
+Deno.test("pinResolverRunFn - a command that never settles is bounded by the budget", async () => {
+  // Nothing else on the setup `gh` path applies a deadline (`spawnGh` times a
+  // call out only when given a signal), so the adapter is what stops a wedged
+  // `gh api` hanging the whole sync.
+  const runFn = pinResolverRunFn(() => new Promise<CommandOutput>(() => {}));
+
+  const result = await runFn(["gh", "api", "repos/o/r/releases"], 0.01);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message.includes("timed out after"), true);
+  }
 });

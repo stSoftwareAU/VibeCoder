@@ -258,12 +258,21 @@ an issue hands a human. `setup workflow-sync` therefore calls
 repository — and renders every missing- and partial-workflow body through
 `applyResolvedPins()`, so each `uses:` line carries the highest upstream
 release that has aged past `VIBE_BUMP_QUARANTINE_HOURS` rather than whatever
-SHA the catalogue was last edited with. The resolution is **lazy**: a
-`dryRun` renders no body and issues no lookup at all.
+SHA the catalogue was last edited with. The resolution is **lazy**: a run
+that renders no body — a `dryRun`, or a repository whose sync issues have all
+been filed already — issues no lookup at all.
 
 An action whose lookup fails keeps its catalogue SHA and emits exactly one
 `[workflow-sync] pin resolution failed: <action> — <reason>` line, so a stale
-pin is loud rather than silent — grep the setup log for that prefix.
+pin is loud rather than silent — grep the setup log for that prefix. The
+`<reason>` carries the failure `gh` reported (an HTTP 403, a missing binary),
+and a wedged lookup is bounded by the resolver's own timeout, since nothing
+else on the setup `gh` path applies a deadline.
+
+A pin the resolver could not have produced — a malformed SHA in a
+caller-supplied map — is a different class: `applyResolvedPins` throws, and
+the sync reports that repository as **failed** rather than filing a stale
+template or quietly filing nothing.
 
 Because the YAML the body carries is final, both body variants tell the
 implementer what to do with it:

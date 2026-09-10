@@ -25,6 +25,8 @@ import {
 } from "../setup/workflow_sync.ts";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
 import { PINNED_ACTIONS } from "../lib/pinned_actions.ts";
+import { scanGitleaksDrift } from "../lib/gitleaks_drift_scanner.ts";
+import type { WorkflowFile } from "../lib/workflow_scan_common.ts";
 
 /**
  * The catalogue pins, which is what a body renders with when the resolver
@@ -32,8 +34,6 @@ import { PINNED_ACTIONS } from "../lib/pinned_actions.ts";
  * not the pins, so the catalogue keeps them independent of upstream.
  */
 const CATALOGUE_PINS = { ...PINNED_ACTIONS };
-import { scanGitleaksDrift } from "../lib/gitleaks_drift_scanner.ts";
-import type { WorkflowFile } from "../lib/workflow_scan_common.ts";
 
 const gitleaksSpec = WORKFLOW_SPECS.find((s) => s.id === "gitleaks")!;
 
