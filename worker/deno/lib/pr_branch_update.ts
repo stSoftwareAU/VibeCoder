@@ -26,7 +26,7 @@ import {
   releaseBranchUpdateLock,
 } from "./pr_branch_lock.ts";
 import { WORKER_PR_MARKER_PREFIX } from "./pr_body.ts";
-import { isBotLogin } from "./trust_exclusions.ts";
+import { isBotAuthorForMaintenance } from "./trust_exclusions.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { sanitiseLogField } from "./issue_finder_logger.ts";
 import {
@@ -392,7 +392,7 @@ export function isWorkerPr(
  *
  * Three conditions, all required:
  *
- * - `author` is a bot login ({@link isBotLogin}).
+ * - `author` is a bot login ({@link isBotAuthorForMaintenance}).
  * - `isCrossRepository` is exactly `false` — the head branch lives in the
  *   target repo, so the worker can push to it. Unknown ownership
  *   (`undefined`) fails closed, matching `pr_bot_lookup.ts`.
@@ -430,7 +430,7 @@ function isBotPrCandidate(
   githubUser: string,
 ): boolean {
   const login = (author ?? "").trim();
-  if (login === "" || !isBotLogin(login)) return false;
+  if (login === "" || !isBotAuthorForMaintenance(login)) return false;
   // Unknown head ownership fails closed, matching `pr_bot_lookup.ts`.
   if (isCrossRepository !== false) return false;
   const host = (githubUser ?? "").trim();
