@@ -123,6 +123,33 @@ Deno.test("listBotPrs - carries the maintenance PrEntry fields through", async (
   });
 });
 
+Deno.test("listBotPrs - a human login sharing a bot prefix is not admitted", async () => {
+  // `isBotLogin` matches `cursor`, `snyk`, `copilot` and `codecov` by
+  // prefix, so these humans read as bots to it (Issue #1872). Admission
+  // means the worker claims the PR and pushes to its head branch, so it
+  // must use the narrower predicate instead.
+  const lines: string[] = [];
+  const admitted = await listBotPrs({
+    repo: REPO,
+    ghCommandFn: buildGh([
+      prJson({ number: 20, author: { login: "cursorjoe" } }),
+      prJson({ number: 21, author: { login: "snyked" } }),
+      prJson({ number: 22, author: { login: "copilotjoe" } }),
+      prJson({ number: 23, author: { login: "codecoverage-nerd" } }),
+      prJson({ number: 24, author: { login: "dependabotanist" } }),
+      prJson({ number: 25, author: { login: "dependabot[bot]" } }),
+    ]),
+    log: (message) => lines.push(message),
+  });
+
+  assertEquals(admitted.map((pr) => pr.number), [25]);
+  // Not admitted and not logged as an exclusion either: a human PR is never
+  // this door's business, so it leaves no trace of having been considered.
+  assertEquals(lines, [
+    `[pr-bot] admitted repo=${REPO} prNumber=25 author=dependabot[bot]`,
+  ]);
+});
+
 Deno.test("listBotPrs - a human PR and the host's own bot-shaped PR are not admitted", async () => {
   // The host login here ends in `[bot]`, so `isBotLogin` alone would admit
   // it. The fleet set is what keeps the maintenance listing's own PR out.
@@ -284,12 +311,15 @@ Deno.test("listBotPrs - an entry with no author login is not admitted", async ()
 });
 
 Deno.test("listBotPrs - sanitises a hostile bot login in the admission log", async () => {
+  // The hostile login carries the `[bot]` suffix so it still reaches the
+  // admission log under the narrowed predicate (Issue #1872) — the payload,
+  // not the prefix, is what this case is about.
   const lines: string[] = [];
   await listBotPrs({
     repo: REPO,
     ghCommandFn: buildGh([prJson({
       number: 4,
-      author: { login: 'dependabot"\ninjected=line' },
+      author: { login: 'dependabot"\ninjected=line[bot]' },
     })]),
     log: (message) => lines.push(message),
   });

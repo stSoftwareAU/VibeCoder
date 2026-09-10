@@ -15,6 +15,7 @@ import {
 import { normaliseLogin } from "../lib/identity_guard.ts";
 import {
   fetchTeamMembers,
+  isBotAuthorForMaintenance,
   isBotLogin,
   resolveVibeCoderLogins,
   type TeamMemberSet,
@@ -86,6 +87,49 @@ Deno.test("isBotLogin - rejects ordinary human logins", () => {
   assertEquals(isBotLogin("alice"), false);
   assertEquals(isBotLogin("nleck"), false);
   assertEquals(isBotLogin(""), false);
+});
+
+// =============================================================================
+// isBotAuthorForMaintenance — the admission-grade predicate (Issue #1872)
+// =============================================================================
+
+Deno.test("isBotAuthorForMaintenance - admits [bot]-suffixed and known suffix-less bots", () => {
+  assertEquals(isBotAuthorForMaintenance("dependabot[bot]"), true);
+  assertEquals(isBotAuthorForMaintenance("copilot-swe-agent[BOT]"), true);
+  assertEquals(isBotAuthorForMaintenance("  renovate[bot]  "), true);
+  assertEquals(isBotAuthorForMaintenance("dependabot"), true);
+  assertEquals(isBotAuthorForMaintenance("Renovate"), true);
+  assertEquals(isBotAuthorForMaintenance("GITHUB-ACTIONS"), true);
+});
+
+Deno.test("isBotAuthorForMaintenance - rejects human logins sharing a bot prefix", () => {
+  for (
+    const human of [
+      "cursorjoe",
+      "snyked",
+      "copilotjoe",
+      "github-copilot-fan",
+      "codecoverage-nerd",
+      "dependabotanist",
+      "renovategirl",
+    ]
+  ) {
+    // The loose predicate reads each of these as a bot; the admission-grade
+    // one must not, or the worker adopts their PRs uninvited.
+    assertEquals(isBotLogin(human), true, `isBotLogin(${human})`);
+    assertEquals(
+      isBotAuthorForMaintenance(human),
+      false,
+      `isBotAuthorForMaintenance(${human})`,
+    );
+  }
+});
+
+Deno.test("isBotAuthorForMaintenance - rejects ordinary human logins and blanks", () => {
+  assertEquals(isBotAuthorForMaintenance("alice"), false);
+  assertEquals(isBotAuthorForMaintenance("nleck"), false);
+  assertEquals(isBotAuthorForMaintenance(""), false);
+  assertEquals(isBotAuthorForMaintenance("   "), false);
 });
 
 // =============================================================================

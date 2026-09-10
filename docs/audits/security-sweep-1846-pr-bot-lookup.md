@@ -43,3 +43,8 @@ No findings. The accepted residual, carried from the issue: `isBotLogin`'s
 prefix patterns (`dependabot*`, `copilot*`, …) could match a human login with
 a bot-like name. The same-repository requirement limits that to accounts that
 already hold push access to the repo, which is accepted.
+
+**Residual closed (Issue #1872).** Admission no longer uses `isBotLogin`: it
+uses `isBotAuthorForMaintenance`, which matches the `[bot]` suffix or an exact
+known suffix-less bot and never a prefix. `cursorjoe` and `snyked` are no
+longer admitted.
