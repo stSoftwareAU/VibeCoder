@@ -21,16 +21,15 @@ export const CODEX_API_KEY_ENV_VARS: readonly string[] = [
 export const CODEX_HOME_ENV_VAR = "CODEX_HOME";
 
 /**
- * Credential selectors accepted by VibeCoder's Codex provider.
+ * Environment variables provisioned by VibeCoder's legacy Codex API-key flow.
  *
- * `CODEX_HOME` is deliberately a first-class credential selector (Issue
- * #1924): it points at file-backed ChatGPT subscription state that Codex can
- * refresh in place. API-key variables remain recognised for backwards
- * compatibility with explicit legacy deployments, but automatic
- * subscription-only routing must never choose them.
+ * Keep this list API-key-only: the provider descriptor and setup scripts use
+ * it as the contract for pasteable/provisionable credential values.
+ * `CODEX_HOME` is a persistent state-directory selector, not a secret value
+ * to paste into provider.env, and is handled separately by the Codex runtime
+ * path (Issue #1924).
  */
 export const CODEX_CREDENTIAL_ENV_VARS: readonly string[] = [
-  CODEX_HOME_ENV_VAR,
   ...CODEX_API_KEY_ENV_VARS,
 ];
 
@@ -88,10 +87,9 @@ export function isCodexAuthError(errorOutput: string): boolean {
  * @returns The actionable error message.
  */
 export function codexAuthActionableMessage(): string {
-  return `Codex CLI authentication required — set ${CODEX_HOME_ENV_VAR} in ` +
-    `codex/provider.env to a persistent ChatGPT subscription login created ` +
-    `during initial setup. Legacy explicit API-key deployments may use ${
-      CODEX_API_KEY_ENV_VARS.join(" or ")
-    }, but subscription-only routing never falls back to them (the worker ` +
-    `never performs an interactive login)`;
+  return `Codex CLI authentication required — initialise a persistent ${CODEX_HOME_ENV_VAR} ` +
+    `with ChatGPT subscription login during initial setup. Legacy explicit ` +
+    `API-key deployments may use ${CODEX_API_KEY_ENV_VARS.join(" or ")}, but ` +
+    `subscription-only routing never falls back to them (the worker never ` +
+    `performs an interactive login)`;
 }
