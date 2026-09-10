@@ -234,6 +234,17 @@ Deno.test("branch-update selection - a fork-headed bot PR costs no commit lookup
   assertEquals(harness.ghCalls.length, 0);
 });
 
+Deno.test("branch-update selection - a dash-leading head ref is never selected (Issue #12)", async () => {
+  // The marker route refuses an argument-injection-shaped branch; the bot
+  // route must too, and the refusal costs no commit lookup.
+  const harness = makeHarness({ 19: ["dependabot[bot]", HOST] });
+  const selected = await harness.select([
+    makeCandidate({ number: 19, headRefName: "--upload-pack=touch /tmp/x" }),
+  ]);
+  assertEquals(selected, []);
+  assertEquals(harness.ghCalls.length, 0);
+});
+
 Deno.test("branch-update selection - a failed commit lookup excludes the PR and is logged", async () => {
   const harness = makeHarness({}, [15]);
   const prNumbers = await scanWith(() =>

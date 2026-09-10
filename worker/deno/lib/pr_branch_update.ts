@@ -547,6 +547,9 @@ export async function selectBranchUpdatePrs(
     // costs a commit lookup, and neither does one with no host to match.
     const login = (pr.authorLogin ?? "").trim();
     if (!isBotPrCandidate(login, pr.isCrossRepository, host)) continue;
+    // The same argument-injection guard the marker route applies (Issue #12):
+    // a dash-leading head ref never reaches the maintenance git commands.
+    if (!isSafeGitRef(pr.headRefName)) continue;
 
     let commitAuthorLogins: string[];
     try {
@@ -555,7 +558,9 @@ export async function selectBranchUpdatePrs(
       log(
         `[branch-update] excluded repo=${repo} prNumber=${pr.number} ` +
           `author=${sanitiseLogField(login)} reason=commit-lookup-failed ` +
-          `error=${err instanceof Error ? err.message : String(err)}`,
+          `error=${
+            sanitiseLogField(err instanceof Error ? err.message : String(err))
+          }`,
       );
       continue;
     }
