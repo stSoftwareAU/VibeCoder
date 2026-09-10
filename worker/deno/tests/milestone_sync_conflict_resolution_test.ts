@@ -547,11 +547,14 @@ Deno.test(
         subject: "Issue #1777: main's rival design",
       },
     );
+    // A conforming agent resolves the file and stages it, exactly as the
+    // merge-conflict prompt instructs and as the PR pass already requires.
     const agent = recordingAgent(async (request) => {
       await Deno.writeTextFile(
         `${request.workDir}/lib/spawn.ts`,
         "export const impl = 'branch' ?? 'main';\n",
       );
+      await gitOk(["add", "--", "lib/spawn.ts"], request.workDir);
       return { ok: true as const, value: { terminated: false } };
     });
     try {
@@ -623,7 +626,15 @@ Deno.test(
           subject: "Issue #1777: main's rival design",
         },
       );
-      const agent = recordingAgent(() => Promise.resolve(outcome));
+      // Half-edits the tree first: an agent that aborts mid-resolution must
+      // still leave the branch exactly where it started.
+      const agent = recordingAgent(async (request) => {
+        await Deno.writeTextFile(
+          `${request.workDir}/lib/spawn.ts`,
+          "export const impl = 'half-edited';\n",
+        );
+        return outcome;
+      });
       try {
         const published =
           (await gitOk(["rev-parse", "milestone/1559"], fx.clone)).trim();
@@ -642,8 +653,9 @@ Deno.test(
         assert(isConflictEscalation(result.error), `${what}: an escalation`);
         assertStringIncludes(
           result.error.message,
-          "agent",
-          `${what}: the escalation names the rung that failed`,
+          "agent: ",
+          `${what}: the escalation names the agent as the rung that failed, ` +
+            `not merely that no agent ran`,
         );
         assertEquals(
           (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
@@ -655,6 +667,11 @@ Deno.test(
             .trim(),
           published,
           `${what}: nothing reached the remote`,
+        );
+        assertEquals(
+          (await gitOk(["status", "--porcelain"], fx.clone)).trim(),
+          "",
+          `${what}: the agent's half-edit is gone with the aborted merge`,
         );
       } finally {
         await fx.cleanup();

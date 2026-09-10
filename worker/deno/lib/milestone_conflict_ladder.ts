@@ -25,6 +25,8 @@ import {
   type DependencyRuleApplier,
 } from "./dependency_conflict_apply.ts";
 import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
+import { unstageWorkerStateFiles } from "./git_push.ts";
+import { assertSafeToCommit } from "./pre_commit_safety.ts";
 
 /** One agent run asked for by the milestone sync. */
 export interface MilestoneConflictAgentRequest {
@@ -88,19 +90,46 @@ function gitRunner(options: GitCommandOptions): ConflictGitRunner {
   };
 }
 
-/** Paths git still reports as unmerged, restricted to those given. */
-async function stillUnmerged(
-  paths: readonly string[],
+/**
+ * Paths git reports as unmerged, over the whole tree or the paths given.
+ *
+ * A listing git could not produce is an error, never an empty list: "the
+ * check could not run" read as "nothing is unmerged" is exactly the silent
+ * pass that lets a half-resolved tree be committed.
+ *
+ * @param options - Git options; `cwd` is the clone holding the merge
+ * @param paths - Restrict the listing to these paths; empty means the tree
+ * @returns The unmerged paths, or the failure that stopped the listing
+ */
+export async function listUnmergedPaths(
   options: GitCommandOptions,
-): Promise<string[]> {
-  if (paths.length === 0) return [];
+  paths: readonly string[] = [],
+): Promise<Result<string[]>> {
   const result = await runGitCommand(
-    ["diff", "--name-only", "--diff-filter=U", "--", ...paths],
+    [
+      "diff",
+      "--name-only",
+      "--diff-filter=U",
+      ...(paths.length > 0 ? ["--", ...paths] : []),
+    ],
     options,
   );
-  return result.ok
-    ? result.value.stdout.trim().split("\n").filter(Boolean)
-    : [];
+  if (!result.ok || result.value.code !== 0) {
+    const detail = (result.ok ? result.value.stderr : result.error.message)
+      .trim();
+    return {
+      ok: false,
+      error: new Error(
+        `the unmerged paths could not be listed: ${
+          detail || `git exited ${result.ok ? result.value.code : 1}`
+        }`,
+      ),
+    };
+  }
+  return {
+    ok: true,
+    value: result.value.stdout.trim().split("\n").filter(Boolean),
+  };
 }
 
 /**
@@ -108,19 +137,79 @@ async function stillUnmerged(
  *
  * A staged file full of `<<<<<<<` is resolved as far as the index is
  * concerned and broken as far as everything else is concerned, so it is
- * checked before the resolution is committed.
+ * checked before the resolution is committed. `git grep` exits 1 for "no
+ * match" and 2 or more for a real failure, so the two are told apart rather
+ * than both read as a clean tree.
+ *
+ * @param paths - The paths to check; empty checks nothing and reports none
+ * @param options - Git options; `cwd` is the clone holding the merge
+ * @returns Whether a marker was found, or the failure that stopped the check
  */
 export async function hasConflictMarkers(
   paths: readonly string[],
   options: GitCommandOptions,
-): Promise<boolean> {
-  if (paths.length === 0) return false;
+): Promise<Result<boolean>> {
+  if (paths.length === 0) return { ok: true, value: false };
   const result = await runGitCommand(
     ["grep", "-l", "-I", "-E", "^(<<<<<<<|>>>>>>>) ", "--", ...paths],
     options,
   );
-  return result.ok && result.value.code === 0 &&
-    result.value.stdout.trim().length > 0;
+  if (!result.ok || result.value.code > 1) {
+    const detail = (result.ok ? result.value.stderr : result.error.message)
+      .trim();
+    return {
+      ok: false,
+      error: new Error(
+        `the conflict-marker check could not be run: ${
+          detail || `git exited ${result.ok ? result.value.code : 1}`
+        }`,
+      ),
+    };
+  }
+  return {
+    ok: true,
+    value: result.value.code === 0 && result.value.stdout.trim().length > 0,
+  };
+}
+
+/**
+ * Stage what the agent produced, exactly as `commitAndPushPending` would.
+ *
+ * `git add -- <the conflicted paths>` is not enough: an agent that resolves a
+ * collision by extracting a helper leaves that new file unstaged, so the
+ * merge commit would carry a tree the resolution gate never verified. So the
+ * whole working tree is staged, the worker's own state files come straight
+ * back out (Issue #1654 — a stray `.heartbeat_*` in the shared clone must not
+ * cost the commit), and the pre-commit safety gate then refuses any hidden or
+ * secret-bearing path exactly as it does on every other commit path.
+ *
+ * @param options - Git options; `cwd` is the clone holding the merge
+ * @returns Nothing on success, or the failure that stopped the staging
+ */
+async function stageAgentResolution(
+  options: GitCommandOptions,
+): Promise<Result<void>> {
+  const added = await runGitCommand(["add", "-A"], options);
+  if (!added.ok || added.value.code !== 0) {
+    const detail = (added.ok ? added.value.stderr : added.error.message).trim();
+    return {
+      ok: false,
+      error: new Error(
+        `its resolution could not be staged: ${
+          detail || "git reported no stderr"
+        }`,
+      ),
+    };
+  }
+
+  const unstaged = await unstageWorkerStateFiles(options);
+  if (!unstaged.ok) return { ok: false, error: unstaged.error };
+  if (unstaged.value.remainingStaged === 0) {
+    return { ok: true, value: undefined };
+  }
+
+  const safe = await assertSafeToCommit(options);
+  return safe.ok ? { ok: true, value: undefined } : safe;
 }
 
 /**
@@ -230,40 +319,52 @@ export async function climbConflictLadder(
     };
   }
 
-  // Stage exactly what the agent was asked to resolve. Never `git add -A`:
-  // the shared clone carries the worker's own state files, and staging those
-  // is what the pre-commit gate refuses (Issue #1654).
-  const staged = await runGitCommand(["add", "--", ...deferred], options);
-  if (!staged.ok || staged.value.code !== 0) {
-    const detail = (staged.ok ? staged.value.stderr : staged.error.message)
-      .trim();
+  // Read the index BEFORE staging anything. `git add` on a conflicted path is
+  // how a conflict is marked resolved, so staging first would answer this
+  // question with its own side effect — and an agent that touched nothing
+  // would have the working-tree side committed as if it had decided.
+  const unmerged = await listUnmergedPaths(options, deferred);
+  if (!unmerged.ok) {
     return {
       resolved,
       escalations: stillEscalated(() =>
-        `agent: its resolution could not be staged: ${
-          detail || "git reported no stderr"
+        `agent: its resolution could not be verified — ${unmerged.error.message}`
+      ),
+    };
+  }
+  if (unmerged.value.length > 0) {
+    return {
+      resolved,
+      escalations: stillEscalated(() =>
+        `agent: it left ${unmerged.value.length} path(s) unmerged: ${
+          unmerged.value.join(", ")
         }`
       ),
     };
   }
-
-  const unmerged = await stillUnmerged(deferred, options);
-  if (unmerged.length > 0) {
+  const markers = await hasConflictMarkers(deferred, options);
+  if (!markers.ok) {
     return {
       resolved,
       escalations: stillEscalated(() =>
-        `agent: it left ${unmerged.length} path(s) unmerged: ${
-          unmerged.join(", ")
-        }`
+        `agent: its resolution could not be verified — ${markers.error.message}`
       ),
     };
   }
-  if (await hasConflictMarkers(deferred, options)) {
+  if (markers.value) {
     return {
       resolved,
       escalations: stillEscalated(() =>
         `agent: its resolution still contains conflict markers`
       ),
+    };
+  }
+
+  const staged = await stageAgentResolution(options);
+  if (!staged.ok) {
+    return {
+      resolved,
+      escalations: stillEscalated(() => `agent: ${staged.error.message}`),
     };
   }
 

@@ -219,7 +219,7 @@ Long-running milestones can drift significantly from the default branch, causing
 
 3. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
 4. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
-5. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). A conflict no rule can settle aborts the merge and escalates with both sides prepared, without blocking other work.
+5. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). What the triage cannot decide climbs the rest of the ladder (Issue #1777): the deterministic dependency rules, then the resolution agent. Only a file **every** rung leaves undecided aborts the merge and escalates with both sides prepared, without blocking other work.
 6. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
 
 ### Conflict triage
@@ -247,10 +247,14 @@ flowchart TD
     E -- yes --> K
     E -- no --> H
     D -- no --> H
-    K --> G{"Any file escalated?"}
-    H --> G
-    G -- yes --> X["Abort the merge — nothing pushed —<br/>and post both sides' exports,<br/>test names and the difference"]
-    G -- no --> V["Commit with the reasoning, then verify:<br/>the Issue #974 type check +<br/>check:manifests + the unit suite"]
+    K --> G{"Any file still undecided?"}
+    H --> RU{"Dependency rules?"}
+    RU -- "left over" --> AG{"Resolution agent?"}
+    RU -- decided --> G
+    AG -- decided --> G
+    AG -- "fails or aborts" --> G
+    G -- yes --> X["Abort the merge — nothing pushed —<br/>escalate naming the failed rung, with both<br/>sides' exports, test names and the difference"]
+    G -- no --> V["Commit each file's rung, then verify:<br/>the Issue #974 type check +<br/>check:manifests + the unit suite"]
     V -- green --> P["Push"]
     V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate with both halves"]
 ```
@@ -268,10 +272,27 @@ Three rules decide a file, and one rule outranks all of them:
    Where neither side wrote a case for the fix, or the evidence could not be
    read, nothing is decided — the file escalates rather than being resolved on
    no evidence.
-3. **Two designs for the same problem** — neither side contains the other, so a
-   human chooses. The merge is aborted and the escalation carries the
-   preparation: what each side exports, what each side tests, and which cases
-   exist on one side only.
+3. **Two designs for the same problem** — neither side contains the other, so
+   the triage decides nothing and the file climbs to the next rung.
+
+**The rest of the ladder (Issue #1777).** What the triage cannot decide is not
+a human's problem yet. The sync climbs the same two rungs the PR merge-conflict
+pass climbs, in the very clone the merge conflicted in:
+
+1. **The dependency rules** — a lock file or a manifest bumped on both sides
+   needs no judgement, so it never costs a model run.
+2. **The resolution agent** — asked only about the paths the rules deferred,
+   and required to resolve *and stage* them, exactly as the PR pass requires.
+
+Only a file every rung leaves undecided aborts the merge and reaches a human,
+and the escalation then names the rung that failed (`agent: …`). An agent that
+fails, is ended by the worker, leaves a path unmerged or leaves a conflict
+marker behind is a failed rung: nothing is pushed and the branch stands exactly
+at its pre-merge commit. The escalation carries the preparation: what each side
+exports, what each side tests, and which cases exist on one side only. Each
+file that *was* settled carries the rung that settled it — `triage: <case>`,
+`rule: <reason>` or `agent` — on the merge commit, in the sync's log line and
+in the report comment.
 
 **No resolution may reduce test coverage.** A conflicted test file is resolved
 by taking a side only when that side already keeps every case *and* every line

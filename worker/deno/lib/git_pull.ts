@@ -44,6 +44,7 @@ import {
 import {
   climbConflictLadder,
   hasConflictMarkers,
+  listUnmergedPaths,
   type MilestoneConflictAgentFn,
 } from "./milestone_conflict_ladder.ts";
 import {
@@ -392,19 +393,6 @@ async function gateThenPushMilestoneBranch(
   return { ok: true, value: `${gateNote}${pushNote}` };
 }
 
-/** Paths git currently reports as conflicted; empty when it reports none. */
-async function listConflictedFiles(
-  options: GitCommandOptions,
-): Promise<string[]> {
-  const result = await runGitCommand(
-    ["diff", "--name-only", "--diff-filter=U"],
-    options,
-  );
-  return result.ok
-    ? result.value.stdout.trim().split("\n").filter(Boolean)
-    : [];
-}
-
 /** Resolve a ref to its commit SHA; empty string when it cannot be read. */
 async function readRef(
   ref: string,
@@ -711,7 +699,11 @@ export async function syncMilestoneBranchWithDefault(
   // — once the merge is aborted git no longer holds them, and a conflict
   // nobody can describe is a conflict nobody reconciles (Issues #1558,
   // #1559).
-  const conflictedFiles = await listConflictedFiles(options);
+  // A listing git could not produce reads as "no conflicted files", which the
+  // branch below reports as the non-conflict failure it is, quoting git's own
+  // merge stderr — so the failure is diagnosed there rather than swallowed.
+  const listed = await listUnmergedPaths(options);
+  const conflictedFiles = listed.ok ? listed.value : [];
   const defaultSha = await readRef(defaultBranch, options);
 
   if (conflictedFiles.length === 0) {
@@ -794,6 +786,8 @@ export async function syncMilestoneBranchWithDefault(
   });
   const resolved = [...triaged, ...ladder.resolved];
   const escalations = ladder.escalations;
+  /** Every settled file by path, carrying the rung that settled it. */
+  const settled = new Map(resolved.map((d) => [d.path, d]));
 
   // Case 3 (Issue #1559): no automatic rule can choose between the two sides,
   // so nothing is pushed and the branch is left exactly as it was. The
@@ -843,19 +837,41 @@ export async function syncMilestoneBranchWithDefault(
   // never be committed as a merge. Both guards run over every conflicted
   // path, so a rung that reported success while leaving a mess is caught
   // here rather than pushed.
-  const unresolved = await listConflictedFiles(options);
-  if (unresolved.length > 0) {
+  const unresolved = await listUnmergedPaths(options);
+  if (!unresolved.ok) {
     await runGitCommand(["merge", "--abort"], options);
     return {
       ok: false,
       error: new Error(
         `Refusing to commit the resolution of '${defaultBranch}' into ` +
-          `'${milestoneBranch}': ${unresolved.length} path(s) are still ` +
-          `unmerged (Issue #1777): ${unresolved.join(", ")}`,
+          `'${milestoneBranch}': ${unresolved.error.message} (Issue #1777)`,
       ),
     };
   }
-  if (await hasConflictMarkers(conflictedFiles, options)) {
+  if (unresolved.value.length > 0) {
+    await runGitCommand(["merge", "--abort"], options);
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to commit the resolution of '${defaultBranch}' into ` +
+          `'${milestoneBranch}': ${unresolved.value.length} path(s) are ` +
+          `still ` +
+          `unmerged (Issue #1777): ${unresolved.value.join(", ")}`,
+      ),
+    };
+  }
+  const markers = await hasConflictMarkers(conflictedFiles, options);
+  if (!markers.ok) {
+    await runGitCommand(["merge", "--abort"], options);
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to commit the resolution of '${defaultBranch}' into ` +
+          `'${milestoneBranch}': ${markers.error.message} (Issue #1777)`,
+      ),
+    };
+  }
+  if (markers.value) {
     await runGitCommand(["merge", "--abort"], options);
     return {
       ok: false,
@@ -926,10 +942,13 @@ export async function syncMilestoneBranchWithDefault(
       ok: false,
       error: new MilestoneConflictEscalation(
         gatedResolved.error.message,
+        // The rung that actually settled each file, not the triage's
+        // pre-ladder verdict on it: a file the rules or the agent decided
+        // would otherwise be presented as one nothing could decide.
         sides.map((side) =>
           analyseConflictedFile(
             side,
-            decided.get(side.path)?.reason ?? "resolved automatically",
+            settled.get(side.path)?.reason ?? "resolved automatically",
           )
         ),
         resolved,
