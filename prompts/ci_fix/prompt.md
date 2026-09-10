@@ -97,6 +97,18 @@ With the loop red and the cause named, read the failing test, CI config, and rel
 The failing test, the CI config, the workflow file, and the source under test are independent reads — issue them in a single message so they run in parallel, rather than one per turn. Only sequence a read when it needs the result of a previous one, such as a path resolved from a search or a run id resolved from `gh pr checks`.
 </use_parallel_tool_calls>
 
+### Dependency audit failures
+
+When the failing check is a **dependency audit** — `deno audit`, `cargo audit`, or any check whose log names a GHSA or RUSTSEC advisory — the fix is the change that clears the advisory: a **direct bump** of the vulnerable package to the fixed version; a `deno.json` or `package.json` **override** for a transitive npm entry pinned in `deno.lock`; a `Cargo.toml` `[patch]` entry or a bump of the **parent crate** for a transitive crate.
+
+**That advisory-clearing bump is applied regardless of the fixed version's publish age.** The 24h quarantine blunts a freshly published malicious release; an audit already red on a named advisory is not the case it defends, so the bump goes in this run rather than waiting the window out. The injected `<coding_guidelines>` state that floor as the default — this subsection is the more specific instruction and wins over it here. Apply the exemption by passing an explicit zero age for that package — `deno outdated --update --minimum-dependency-age=0 <pkg>` — or by editing the manifest and lockfile directly. Do **not** edit the repository's `minimumDependencyAge` config or its `exclude` globs: the exemption belongs to this one bump, not to the repository.
+
+**Any other bump you make in the same run keeps the 24h floor** (`VIBE_BUMP_QUARANTINE_HOURS` / `minimumDependencyAge`). The exemption reaches no further than the advisory-clearing change, so do not sweep unrelated dependencies forward while you are in the manifest.
+
+The fix may touch files the bot's own pull request did not — a GitHub Actions bump PR whose audit check went red is fixed in `deno.lock` and the manifest beside it, not in the workflow file the PR edited. Fix where the advisory lives.
+
+The audit command is your red-capable command from step 1: run it (`deno audit < /dev/null`, `cargo audit < /dev/null`), watch it name the advisory, apply the bump, then re-run it locally and watch it go green before you push.
+
 ### What you may change
 
 This is someone else's pull request. You may edit files, commit, and push to the PR branch. You may not force-push, amend, rebase, or otherwise rewrite commits you did not author; you may not close, merge, reopen, or retarget the PR; you may not delete branches or re-run destructive workflows. If a fix genuinely requires one of those, stop and say so in `.pr_response_message` instead.
