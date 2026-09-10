@@ -26,6 +26,7 @@ if your worker login is read-only on any monitored repository.**
 
 | Change | Issue |
 | ------ | ----- |
+| The screenshot gate's keyword fallback no longer fires when every changed file is a systems-language, document, configuration or lock file: a Rust-only change is not a UI change because its summary says `color` and `visual`; web source files and unknown file lists keep the fallback | #1909 |
 | Lock regeneration defers a Cargo workspace lock when any member manifest is still unresolved, naming it, instead of running `cargo update --workspace` on a tree with conflict markers and recording the tool's parse error as a regeneration failure | #1903 |
 | A GraphQL rate-limit refusal that lands on the hourly window boundary no longer latches the whole next window: the latch holds the short cool-down when the probe shows the refused window already closed, and the mid-cycle pause re-probes the quota and continues when points are available instead of idling the run for an hour with `used=0/5000` | #1888 |
 | Cross-repo dependency PRs are authorised for Rust consumers: the manifest check reads `Cargo.toml` (and each literal workspace member's) for `path` and `git` dependencies on a monitored repo, so a NEAT-AI-* fix that belongs in NEAT-AI-core is no longer refused as "no dependency manifest could be read" and discarded | #1864 |
