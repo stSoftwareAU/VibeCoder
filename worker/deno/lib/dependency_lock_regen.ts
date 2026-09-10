@@ -77,6 +77,16 @@ export interface LockFileSpec {
   /** Manifest basenames beside the lock, in preference order. */
   manifests: readonly string[];
   /**
+   * The lock describes a whole workspace (Issue #1903): its dependency
+   * tables live in member manifests below the lock's directory, and the
+   * regeneration command reads every one of them. An unresolved member
+   * manifest therefore defers the lock exactly as an unresolved manifest
+   * beside it does — `cargo update --workspace` on a tree that still carries
+   * conflict markers fails with "key with no value, expected `=`", which
+   * used to be recorded as the regeneration having failed.
+   */
+  workspace?: true;
+  /**
    * Regeneration commands, tried in order until one exits zero.
    *
    * Only `cargo` has more than one: the offline refresh is preferred, and the
@@ -208,6 +218,7 @@ export const LOCK_FILE_SPECS: readonly LockFileSpec[] = [
     lockFile: "Cargo.lock",
     binary: "cargo",
     manifests: ["Cargo.toml"],
+    workspace: true,
     commands: [
       { bin: "cargo", args: ["update", "--workspace", "--offline"] },
       { bin: "cargo", args: ["update", "--workspace"] },
@@ -445,6 +456,23 @@ export async function regenerateLockFile(
       return defer(
         `its manifest ${manifestPath} is unresolved, so a regenerated lock ` +
           `would describe the wrong dependency set`,
+      );
+    }
+  }
+
+  // Issue #1903: a workspace lock is regenerated from every member manifest
+  // under it, not only the one beside it.
+  if (spec.workspace) {
+    const prefix = directory === "" ? "" : `${directory}/`;
+    for (const [path, status] of manifestOutcomes) {
+      if (status !== "unresolved" || !path.startsWith(prefix)) continue;
+      const isMember = spec.manifests.some((manifest) =>
+        path.endsWith(`/${manifest}`) && path !== `${prefix}${manifest}`
+      );
+      if (!isMember) continue;
+      return defer(
+        `its workspace manifest ${path} is unresolved, so a regenerated ` +
+          `lock would describe the wrong dependency set`,
       );
     }
   }
