@@ -966,6 +966,30 @@
       "sweptAt": "bc8002acde20d8766551f542ee262c08ac3a5c05"
     },
     {
+      "issue": 1846,
+      "chunk": "12n",
+      "title": "top-up: bot-authored PR lookup",
+      "ledger": "docs/audits/security-sweep-1846-pr-bot-lookup.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: pr_bot_lookup.ts (#1846)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/pr_bot_lookup.ts"
+      ],
+      "sweptAt": "00710432980dff1bfa712068558acd9eec2d03f6"
+    },
+    {
+      "issue": 1885,
+      "chunk": "12o",
+      "title": "top-up: the weekly Claude quota pace gate",
+      "ledger": "docs/audits/security-sweep-1885-claude-week-pace.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: claude_week_pace.ts (#1885)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/claude_week_pace.ts"
+      ],
+      "sweptAt": "2d1e11776c5765a1a2d8b5c9caf003d958c529d1"
+    },
+    {
       "issue": 1218,
       "chunk": "13",
       "title": "commands CLI entry points",
@@ -1004,6 +1028,7 @@
         "worker/deno/commands/claude_tail_cleanup.ts",
         "worker/deno/commands/clean_deno_cache.ts",
         "worker/deno/commands/cleanup_stale_temp_files.ts",
+        "worker/deno/commands/codex_budget.ts",
         "worker/deno/commands/collect_security_batch.ts",
         "worker/deno/commands/comment_filter.ts",
         "worker/deno/commands/container_build_heal.ts",
@@ -1291,6 +1316,62 @@
       "paths": [
         "worker/deno/lib/claude_spawn_gate.ts"
       ]
+    },
+    {
+      "issue": 1781,
+      "chunk": "12v",
+      "title": "the milestone roll-back re-queue",
+      "ledger": "docs/audits/security-sweep-1781-milestone-rollback-requeue.md",
+      "definition": "modules added to lib/ after 12a-12u recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/milestone_rollback_requeue.ts"
+      ],
+      "sweptAt": "137f25be5460cbeebaa7cc68a359d05c9108922b"
+    },
+    {
+      "issue": 1697,
+      "chunk": "12w",
+      "title": "the Codex budget adapter",
+      "ledger": "docs/audits/security-sweep-1697-codex-budget.md",
+      "definition": "modules added to lib/ after 12a-12v recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/codex_auth_mode.ts",
+        "worker/deno/lib/codex_budget.ts",
+        "worker/deno/lib/codex_budget_source.ts"
+      ],
+      "sweptAt": "d5445e2bc2b961872a7fbd75f10250cd088456f9"
+    },
+    {
+      "issue": 1695,
+      "chunk": "12x",
+      "title": "the agent output adapters",
+      "ledger": "docs/audits/security-sweep-1695-agent-output-adapters.md",
+      "definition": "modules added to lib/ after 12a-12w recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/agent_output.ts",
+        "worker/deno/lib/claude_output_adapter.ts",
+        "worker/deno/lib/codex_output_adapter.ts"
+      ],
+      "sweptAt": "1a42e917ba7a77eb604cd22a1cb3e18582f7d5b4"
+    },
+    {
+      "issue": 1696,
+      "chunk": "12y",
+      "title": "the shared provider quota scheduler",
+      "ledger": "docs/audits/security-sweep-1696-provider-quota.md",
+      "definition": "modules added to lib/ after 12a-12x recorded their coverage",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/codex_quota.ts",
+        "worker/deno/lib/provider_fallback_policy.ts",
+        "worker/deno/lib/provider_quota.ts",
+        "worker/deno/lib/provider_quota_scheduler.ts",
+        "worker/deno/lib/provider_quota_scope.ts"
+      ],
+      "sweptAt": "adfd4a9fff74efc4eb7eb582b751d885c2aec2c3"
     }
   ],
   "roots": [

@@ -75,6 +75,7 @@ import {
 } from "./health_check_cache.ts";
 
 // Issue finding
+import { createClaudeWeekPaceGate } from "./claude_week_pace.ts";
 import { findIssuesByLabel, findOldestIssue } from "./issue_finder.ts";
 import { IssueCache } from "./issue_cache.ts";
 import { ensureStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
@@ -144,11 +145,12 @@ import {
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
 import {
   executePrBranchUpdates,
-  isWorkerPr,
+  fetchPrCommitAuthorLogins,
   makeGhPrStateFetcher,
   type PrBranchEntry,
   type PrBranchStateEntry,
   scanPrBranchUpdates,
+  selectBranchUpdatePrs,
 } from "./pr_branch_update.ts";
 import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { prBranchFailureStatePath } from "./pr_branch_update_failure_streak.ts";
@@ -235,6 +237,8 @@ import {
   readRateLimitBlockKind,
   writeRateLimitSignal,
 } from "./rate_limit_signal.ts";
+import { isHostRateLimitPauseActive } from "./provider_quota_scope.ts";
+import { fallbackPolicyFromWorkerConfig } from "./provider_fallback_policy.ts";
 import { deriveIdleReason } from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
@@ -592,6 +596,28 @@ export async function createProductionRunCoreDeps(
         : undefined,
     });
   }
+
+  const providerFallback = fallbackPolicyFromWorkerConfig(config);
+  logger.info(
+    `[quota] provider fallback ${providerFallback.mode} ` +
+      `preferred=${providerFallback.preferred}` +
+      (providerFallback.alternatives.length > 0
+        ? ` alternatives=${providerFallback.alternatives.join(",")}`
+        : ""),
+  );
+  // --- Weekly Claude quota pace (Issue #1885) ---
+  // One gate for the life of the process. The Priority 2 scan asks it once
+  // per scan cycle; the reading behind it is re-probed only once it is older
+  // than the credential pool's ten-minute snapshot age, and a host with no
+  // Claude subscription token makes no request at all.
+  const weekPaceGate = createClaudeWeekPaceGate({
+    // Declared here rather than read ambiently inside the gate (Issue #1177):
+    // the one environment value it depends on is visible at the wiring site,
+    // and a test factory's `options.env` reaches it like every other lookup.
+    token: () => env("CLAUDE_CODE_OAUTH_TOKEN") ?? null,
+    logInfo: (message) => logger.info(message),
+    logWarn: (message) => logger.warn(message),
+  });
 
   // --- Daily spend ceiling (Issue #3684) ---
   // Opt-in: unset or `0` leaves the hook unwired and behaviour unchanged. A
@@ -1842,15 +1868,18 @@ export async function createProductionRunCoreDeps(
                 50,
                 runGhCommand,
               );
-              // Filter for worker PRs by body marker (not author) so
-              // identity changes don't orphan existing PRs.
-              return prs
-                .filter((pr) => isWorkerPr(pr.body, pr.headRefName))
-                .map(({ number, headRefName, baseRefName }) => ({
-                  number,
-                  headRefName,
-                  baseRefName,
-                }));
+              // Worker PRs by body marker (not author) so identity changes
+              // don't orphan existing PRs, plus the bot PRs this host has
+              // pushed a commit to (Issue #1849) — their bot stops rebasing
+              // them, so nobody else brings them up to date.
+              return await selectBranchUpdatePrs({
+                repo,
+                prs,
+                githubUser,
+                fetchCommitAuthorLogins: (prRepo, prNumber) =>
+                  fetchPrCommitAuthorLogins(prRepo, prNumber, runGhCommand),
+                log: (message: string) => logger.warn(message),
+              });
             } catch {
               return [];
             }
@@ -2966,8 +2995,15 @@ export async function createProductionRunCoreDeps(
       );
       // One line per paced milestone per scan, not one per issue in it.
       const pacingLogged = new Set<string>();
+      // Issue #1885: read once per scan cycle, before the tiers are ranked.
+      // Engaged means the weekly Claude quota is projected to run out before
+      // its window resets, so this scan claims no `low-priority` or
+      // `idle-task` issue and the quota left goes to `top-priority` and
+      // `work-on` work. An unknown reading never refuses work.
+      const weekPaceEngaged = await weekPaceGate.isEngaged();
       const result = await findOldestIssue(config, {
         githubUser,
+        weekPaceEngaged,
         ghCommandFn: runGhCommand,
         cache: issueCache,
         timelineCache,
@@ -3531,11 +3567,12 @@ export async function createProductionRunCoreDeps(
       return await circuitBreakerGetSleep(circuitBreakerConfig);
     },
     async isRateLimitActive() {
-      const signalResult = await rateLimitSignalIsActive(workDir);
-      if (signalResult.ok && signalResult.value.active) {
-        return true;
-      }
-      return false;
+      // Issue #1696: a Claude usage signal must not drain a host that
+      // still has a healthy Codex (or other) provider.
+      return await isHostRateLimitPauseActive(
+        workDir,
+        config.enabledAgentProviders,
+      );
     },
 
     async getRateLimitRemainingSeconds() {
@@ -3617,6 +3654,15 @@ export async function createProductionRunCoreDeps(
         log: (m) => logger.info(m),
         noCache,
       });
+    },
+
+    // Issue #1888: the same free probe, as numbers, for the pause path's
+    // "has the window reopened?" check.
+    async readGraphqlQuota() {
+      const probe = await probeGraphqlQuota();
+      if (!probe.ok) return null;
+      const { limit, remaining, reset } = probe.value;
+      return { limit, remaining, reset };
     },
 
     async describeGraphqlQuota() {
@@ -4285,6 +4331,10 @@ export async function createProductionRunCoreDeps(
           // not refused — whatever the run's outcome. The census withdraws
           // it from the escalation set and reports it as served.
           claimedRepos,
+          // Issue #1885: the scan's own verdict, read without a probe or a
+          // log line. A tier the pace gate refused is a modelled refusal, not
+          // claimable work the scan mysteriously passed over.
+          weekPaceEngaged: weekPaceGate.lastEngaged(),
         });
         const censusLines = formatIdleDecisionCensus(census, host);
         for (const line of censusLines) {
@@ -4667,6 +4717,21 @@ async function syncMilestoneBranchesFn(
     // is never started on a promise the watchdog then breaks (#1693).
     ...(deadlineEpochMs !== undefined ? { deadlineEpochMs } : {}),
     agentTimeoutMs: config.claudeTimeout * 1000,
+    // Issue #1781: the default roll-back runs executeRollback in the
+    // same clone the sync just used.
+    rollbackGitFn: async (repo, args) => {
+      const { runGitCommand } = await import("./git_timeout.ts");
+      const cwd = `${workDir}/${repo.split("/")[1]}`;
+      const result = await runGitCommand(args, { cwd });
+      if (!result.ok) {
+        return { code: 1, stdout: "", stderr: result.error.message };
+      }
+      return {
+        code: result.value.code,
+        stdout: result.value.stdout,
+        stderr: result.value.stderr,
+      };
+    },
   });
 }
 

@@ -106,3 +106,85 @@ Deno.test("formatCiFailureClassification - other categories carry no rebuild ins
   });
   assertEquals(block.includes("Do NOT run"), false);
 });
+
+// --- Issue #1847: an advisory-clearing bump is exempt from the 24h floor ---
+
+/** Render the CI-fix prompt for a failing `deno audit` check. */
+async function renderAuditFailure(): Promise<string> {
+  const annotations: CiAnnotation[] = [
+    {
+      message: "GHSA-xxxx-yyyy-zzzz: prototype pollution in left-pad",
+      title: "deno audit",
+      path: "deno.lock",
+    },
+  ];
+  const result = await buildCiFixPrompt({
+    repo: "owner/repo",
+    prNumber: "45",
+    checkName: "deno audit",
+    annotationDetails: "GHSA-xxxx-yyyy-zzzz reported by deno audit",
+    annotations,
+    promptsDir: PROMPTS_DIR,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("ci_fix prompt failed to build");
+  return result.value.prompt;
+}
+
+Deno.test("ci_fix - an advisory-clearing bump is exempt from the publish-age floor (Issue #1847)", async () => {
+  const prompt = (await renderAuditFailure()).toLowerCase();
+
+  // The exemption itself, and the audits it applies to.
+  assertStringIncludes(prompt, "dependency audit failures");
+  assertStringIncludes(prompt, "deno audit");
+  assertStringIncludes(prompt, "cargo audit");
+  assertStringIncludes(prompt, "ghsa");
+  assertStringIncludes(prompt, "rustsec");
+  assertStringIncludes(
+    prompt,
+    "applied regardless of the fixed version's publish age",
+  );
+
+  // The mechanism: an explicit zero age for that package, never a config edit.
+  assertStringIncludes(prompt, "--minimum-dependency-age=0");
+  assertStringIncludes(prompt, "edit the repository's");
+  assertStringIncludes(prompt, "minimumdependencyage` config or its `exclude`");
+});
+
+Deno.test("ci_fix - the audit exemption names all three override mechanisms (Issue #1847)", async () => {
+  const prompt = (await renderAuditFailure()).toLowerCase();
+
+  // Direct bump; npm override for a transitive `deno.lock` entry; Cargo
+  // `[patch]` or parent-crate bump for a transitive crate.
+  assertStringIncludes(prompt, "direct bump");
+  assertStringIncludes(prompt, "deno.json` or `package.json`");
+  assertStringIncludes(prompt, "override");
+  assertStringIncludes(prompt, "deno.lock");
+  assertStringIncludes(prompt, "cargo.toml` `[patch]`");
+  assertStringIncludes(prompt, "parent crate");
+
+  // The reproduction loop is the audit command itself.
+  assertStringIncludes(prompt, "red-capable command");
+  assertStringIncludes(prompt, "watch it go green before you push");
+});
+
+Deno.test("ci_fix - every other bump in the run keeps the 24h floor (Issue #1847)", async () => {
+  const prompt = await renderAuditFailure();
+
+  assertStringIncludes(
+    prompt,
+    "Any other bump you make in the same run keeps the 24h floor",
+  );
+  assertStringIncludes(prompt, "VIBE_BUMP_QUARANTINE_HOURS");
+  assertStringIncludes(
+    prompt,
+    "reaches no further than the advisory-clearing change",
+  );
+
+  // No template placeholder survives rendering.
+  assertEquals(
+    /\{\{[A-Z_]+\}\}/.test(prompt),
+    false,
+    "an unsubstituted {{PLACEHOLDER}} remains in the rendered prompt",
+  );
+});

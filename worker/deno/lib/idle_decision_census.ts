@@ -547,10 +547,14 @@ export interface RepoCensusEntry {
   runLocalHold: number;
   /**
    * Count of `low-priority` issues that passed every per-issue gate but are
-   * not claimable this cycle because the repo holds a *suppressing* open
-   * `work-on` issue — the tier-3 suppression `selectHighestPriority` applies
-   * via `reposWithOpenWorkOn` (Issues #2164, #2610, #499). Kept separate from
-   * `unblocked` so the deferral stays observable in the `[idle-census]` line.
+   * not claimable this cycle because tier 3 itself is suppressed — either the
+   * repo holds a *suppressing* open `work-on` issue (the `reposWithOpenWorkOn`
+   * rule, Issues #2164, #2610, #499) or the weekly Claude quota pace gate is
+   * engaged (Issue #1885). Both are refusals `selectHighestPriority` applies
+   * to the whole tier, and both must be modelled here: an unmodelled one
+   * reads as claimable work the scan keeps refusing and files a false
+   * idle-inversion issue. Kept separate from `unblocked` so the deferral
+   * stays observable in the `[idle-census]` line.
    */
   lowPrioritySuppressed: number;
   /**
@@ -842,6 +846,7 @@ function countUnblocked(
   repo: string,
   runLocalHolds: ReadonlySet<number>,
   pushCapableAuthors: readonly string[] = [],
+  weekPaceEngaged = false,
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
@@ -869,7 +874,9 @@ function countUnblocked(
   const claimableIssues: number[] = [];
   // Issue #499: tier-3 suppression is a repo-level property, so it is
   // resolved once before the per-issue pass.
-  const tierThreeSuppressed = hasSuppressingWorkOn(
+  // Issue #1885: the weekly-quota pace gate suppresses the whole tier for
+  // every repo at once, exactly as this repo-level rule does for one.
+  const tierThreeSuppressed = weekPaceEngaged || hasSuppressingWorkOn(
     issues,
     mergedPRs,
     repo,
@@ -1005,6 +1012,18 @@ export function buildIdleDecisionCensus(opts: {
    */
   claimedRepos?: readonly string[];
   /**
+   * True when the weekly Claude quota pace gate refused tiers 3 and 4 on the
+   * scan this census describes (Issue #1885).
+   *
+   * The census must model every refusal the scan applied. Without this a
+   * `low-priority` backlog the gate deliberately skipped reads as claimable
+   * work the scan keeps refusing, and after
+   * `IDLE_INVERSION_THRESHOLD` cycles the worker files an idle-inversion
+   * issue about its own pace gate. Omitted → not gated, which is the
+   * behaviour before the gate existed.
+   */
+  weekPaceEngaged?: boolean;
+  /**
    * The accounts the fleet operates beside `workerUser`, from
    * `resolveFleetMaintenanceAuthorSet` — the host login, `fleet_pr_authors`
    * and `service_accounts` — so this census models the selector's
@@ -1040,6 +1059,7 @@ export function buildIdleDecisionCensus(opts: {
       input.repo,
       input.runLocalHolds ?? new Set<number>(),
       opts.pushCapableAuthors ?? [],
+      opts.weekPaceEngaged ?? false,
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,

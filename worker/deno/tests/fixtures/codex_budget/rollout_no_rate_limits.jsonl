@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-09T02:00:00.000Z","ordinal":1,"type":"session_meta","payload":{"meta":{"id":"0199a0aa-2222-7000-8000-bbbbbbbbbbbb"}}}
+{"timestamp":"2026-09-09T02:00:10.000Z","ordinal":2,"type":"response_item","payload":{"type":"message","role":"user","content":[]}}
+{"timestamp":"2026-09-09T02:01:00.000Z","ordinal":3,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":11},"model_context_window":272000},"rate_limits":null}}
+{"timestamp":"2026-09-09T02:01:30.000Z","ordinal":4,"type":"event_msg","payload":{"type":"turn_complete"}}

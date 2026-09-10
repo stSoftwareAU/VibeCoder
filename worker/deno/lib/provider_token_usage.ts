@@ -1,44 +1,43 @@
 /**
- * Provider-aware token-usage extraction (Issue #366, parent #357).
+ * Provider-aware token-usage extraction (Issue #366, parent #357; #1701).
  *
  * `token_usage.ts` reads the Claude CLI `stream-json` shape — a `result` line
  * carrying `usage.input_tokens` and friends. Codex emits its own JSONL under
- * `--json` and Gemini its own `--output-format stream-json` events, so neither
- * matches and the extractor returns `null`. The runner turned that `null` into
- * "no usage", which the credit log then recorded as **zero tokens and zero
- * cost** — silently. Cost dashboards, the daily budget log and the
- * context-window budget monitor all under-reported, and nothing said so.
+ * `--json`; Gemini its own `--output-format stream-json` events. The runner
+ * used to turn an unparseable stream into "no usage", which the credit log
+ * then recorded as **zero tokens and zero cost** — silently.
  *
  * This is the seam that makes the gap loud (fail-loud standard, Issue #3234).
  * One entry point dispatches on the active provider descriptor's id:
  *
  * - **Claude** keeps the existing behaviour byte-for-byte, including staying
  *   quiet when a run legitimately reports no usage line.
+ * - **Codex** is decoded by {@link CODEX_OUTPUT_ADAPTER}: a `turn.completed`
+ *   / `token_count` usage object is mapped onto the shared {@link TokenUsage}
+ *   shape. Missing usage is still UNKNOWN, never zero (Issue #1701).
  * - **Any other provider** is offered the shared extractor first — a CLI whose
  *   output happens to be Claude-compatible is parsed rather than warned about
  *   — and when nothing is parseable the result is marked `usageUnknown` with a
  *   warning naming the provider and the run. An absent count, never a zero.
  *
- * Real Codex/Gemini token parsing is **not** implemented: their JSONL shapes
- * are version-specific and were not confirmable from the CLIs themselves in
- * this environment, and guessing a shape would re-introduce the same silent
- * undercount behind a parser that looks authoritative. Adding one is a new
- * branch in {@link extractProviderTokenUsage} plus a pricing row.
- *
  * ```mermaid
  * flowchart LR
  *     R["raw CLI stdout"] --> X["extractProviderTokenUsage()"]
  *     X -->|claude| C["extractTokenUsage()<br/>(unchanged)"]
+ *     X -->|codex| D["CODEX_OUTPUT_ADAPTER.decode()"]
  *     X -->|other| T["try shared extractor"]
- *     T -->|parsed| U["TokenUsage"]
- *     T -->|nothing| W["usageUnknown + warning"]
+ *     D -->|usage| U["TokenUsage"]
+ *     D -->|none| W["usageUnknown + warning"]
+ *     T -->|parsed| U
+ *     T -->|nothing| W
  *     C --> U
  * ```
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { CLAUDE_PROVIDER_ID } from "./agent_provider.ts";
+import { CLAUDE_PROVIDER_ID, CODEX_PROVIDER_ID } from "./agent_provider.ts";
+import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
 import { extractTokenUsage, type TokenUsage } from "./token_usage.ts";
 
 /** The run whose usage is being extracted, for the warning message. */
@@ -98,9 +97,17 @@ export function extractProviderTokenUsage(
     return { ...(usage ? { usage } : {}), usageUnknown: false };
   }
 
-  // A non-Claude CLI whose output happens to be Claude-compatible is parsed
-  // like any other: real counts, no warning.
-  if (usage) return { usage, usageUnknown: false };
+  // Codex: decode its own JSONL (Issue #1701). The shared Claude extractor
+  // never matches, so without this branch every Codex run was UNKNOWN even
+  // when `turn.completed` carried real counts.
+  if (context.provider === CODEX_PROVIDER_ID) {
+    const decoded = CODEX_OUTPUT_ADAPTER.decode(rawOutput).usage;
+    if (decoded) return { usage: decoded, usageUnknown: false };
+  } else if (usage) {
+    // A non-Claude CLI whose output happens to be Claude-compatible is
+    // parsed like any other: real counts, no warning.
+    return { usage, usageUnknown: false };
+  }
 
   const name = context.displayName ?? context.provider;
   return {

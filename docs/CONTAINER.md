@@ -1493,6 +1493,7 @@ specific through it:
 | child environment (allowlist / denylist) | the agent subprocess |
 | invocation (the CLI argument list) | `claude_runner.ts` |
 | installation fragment  | `container/providers/<id>.sh`, one per id in the `AGENT_PROVIDERS` build set |
+| output adapter         | `claude_runner.ts` asks it to decode the CLI's events and classify the run's failure |
 
 ```mermaid
 flowchart LR
@@ -1503,6 +1504,7 @@ flowchart LR
     D --> K["credentials<br/>credential_preflight.ts"]
     D --> M["credential mounts<br/>container_launch.ts"]
     D --> F["container/providers/&lt;id&gt;.sh"]
+    D --> O["output adapter<br/>agent_output.ts contract"]
     R -->|unknown id| X["❌ fails loudly,<br/>naming the supported providers"]
     style X fill:#c9184a,stroke:#800f2f,color:#fff
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -1526,6 +1528,62 @@ selection.
 > other setting follows ([RELEASE-NOTES.md](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)).
 > A host that sets both now runs the provider the file names, and a run that
 > still takes its provider from a variable says so once at startup.
+
+### Normalised CLI events and failures
+
+Every provider's output is decoded into **one** contract
+([`worker/deno/lib/agent_output.ts`](../worker/deno/lib/agent_output.ts)), by
+the adapter its descriptor names — `claude_output_adapter.ts` for Claude and
+DeepSeek (one CLI, one event shape), `codex_output_adapter.ts` for Codex. The
+runner asks the descriptor; it never tests a vendor id.
+
+The decode carries the agent's answer **and where it came from**, the
+provider's session identity, token usage, progress, the terminal status its
+events reported, and every structured error event verbatim. The classification
+carries one named category — `authentication`, `model-unavailable`,
+`quota-exhausted`, `rate-limit`, `network`, `invalid-session`, `timeout`,
+`out-of-memory`, `cancelled`, `task-failure` — with the evidence it was read
+from (`structured`, `prose` or `process`), the quota scope and reset where the
+provider stated them, and any retry-after. Both reach the caller on the run
+result as `agentOutput` and `agentFailure`.
+
+```mermaid
+flowchart LR
+    S["stdout · stderr · exit"] --> A["provider.output"]
+    A --> C{"which evidence?"}
+    C -->|worker's own facts| P["cancelled · timeout"]
+    C -->|exit 0| N["no failure<br/>(a quoted limit is a quotation)"]
+    C -->|CLI event| ST["structured category"]
+    C -->|CLI prose| PR["narrow prose category"]
+    ST --> F["AgentFailure"]
+    PR --> F
+    P --> F
+```
+
+Four rules the contract keeps, each of which had been broken by reading one
+vendor's output with another's parser:
+
+- **A JSON envelope is not prose.** An adapter that finds no answer reports
+  `textSource: "none"` rather than handing back the event stream.
+- **A success is a success.** Classification runs only on a failed process, so
+  an agent *quoting* "429 Too Many Requests" in its answer is not a refusal;
+  on a failure it is the CLI's own error surface that is read, not the agent's
+  answer.
+- **A status code is not a diagnosis.** 401/403 is `authentication` unless the
+  refusal also names the model; 429 is a transient `rate-limit`, never an
+  exhausted subscription.
+- **Nothing is invented.** An unstated quota window stays `"unknown"`,
+  unrecognised event fields are preserved verbatim, and an undecodable line is
+  counted rather than dropped in silence.
+
+A provider with **no** adapter yet — Gemini today — keeps the shared
+`stream-json` text extraction and reports no normalised result. An absent
+decode, never a guessed one.
+
+The fixtures behind this are in
+[`worker/deno/tests/fixtures/agent_output/`](../worker/deno/tests/fixtures/agent_output/),
+whose `README.md` states which were recorded from the pinned CLI and which were
+written to a documented event shape.
 
 ### Per-invocation selection
 
@@ -1616,7 +1674,10 @@ the registry:
   prompt — which is how the sandboxed-environment guidance of
   reaches the agent — is composed into that single prompt rather than dropped,
   as is any disallowed-tools list, since Codex has no per-tool disable flag.
-  Session continuity across phases is `codex exec resume --last`.
+  Session continuity across phases is `codex exec resume <SESSION_ID>` with
+  the thread the previous phase of *this* issue reported — never `--last`,
+  which would resume another issue's session when slots share a working
+  directory.
 - **No credential crosses vendors.** Each provider's denylist names the *other*
   vendor's credentials explicitly, so the Anthropic key cannot reach the Codex
   child (or the OpenAI key the Claude child) even if a future allowlist edit

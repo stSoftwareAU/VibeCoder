@@ -955,6 +955,39 @@ already said the window is gone, so the pool records it rather than spending a
 request to be told again. The second is the switch itself, naming the one
 variable that was replaced. Neither carries a token value.
 
+#### The weekly quota also paces what work is picked up
+
+The seven-day window does one more thing beyond ranking tokens (Issue #1885).
+Once per scan cycle the worker projects it — `used share ÷ elapsed share` —
+and while that projection is **at or above 1.0**, with at least 24 hours of
+the 168-hour window elapsed, the Priority 2 scan claims no `low-priority` or
+`idle-task` issue. The quota that remains goes to `top-priority` and `work-on`
+work instead of to backlog and busywork, so a week that will not last is spent
+on the issues that matter most.
+
+The reading uses the same probe and the same ten-minute snapshot age as the
+selection above — it keeps its **own** snapshot rather than the credential
+pool's, because the pool is built at worker start and the scan loop cannot
+reach it — so it costs at most one extra request per ten minutes. A host with
+no Claude subscription token, or one running a different coding agent, makes
+none at all, and a mid-run token switch discards the previous token's reading
+rather than judging the new subscription on it. The gate names itself in the
+log:
+
+```text
+[2026-09-10 04:31:12Z] INFO: claude-week-pace: engaged — used=62.0% elapsed=50.0% projected=124.0% at reset 2026-09-13T12:00:00.000Z; skipping low-priority and idle-task pickup so the remaining weekly quota goes to top-priority and work-on issues (Issue #1885)
+```
+
+The line is emitted when the verdict or the figures behind it change, not once
+per 30-second cycle per slot — the state is what an operator needs, and
+repeating one sentence thousands of times over an engaged week buries it. A
+probe that fails, or a response carrying no seven-day window, logs one
+`claude-week-pace: unknown` WARNING and leaves **every** tier eligible — a
+failed probe never refuses work. The 1.0 threshold and the 24-hour grace are
+code constants beside the five-hour gate's own, not `.config.json` keys. The
+full rules are in
+[Weekly Claude quota pace gate](workflows/issue-processing.md#-weekly-claude-quota-pace-gate-tiers-3-and-4).
+
 **What the choice isolates.** Selection decides what the run's *environment*
 carries — one token file's variables, and no other subscription's. It decides
 nothing about the credential *mount*, which still exposes every token file in
@@ -1299,6 +1332,14 @@ vendor whose credentials are provisioned, preflighted and mounted:
   "agent_providers": ["codex"]
 }
 ```
+
+A mixed host that wants **opt-in** failover after a classified outage lists
+the alternative in `agent_provider_fallback`. The default is pinned — Claude
+stays Claude, Codex stays Codex — and a Claude usage limit does not pause
+Codex work (Issue #1696 / #1700). Multiple Codex subscription files
+(`codex/provider.env`, `codex/provider-2.env`) are ranked by the same
+quota policy; only the selected account's secrets reach the child
+(Issue #1698). See [Provider parity](PROVIDER-PARITY.md).
 
 Omit both and the worker uses Claude Code alone, exactly as a deployment that
 predates the choice. `VIBE_AGENT_PROVIDER` and `VIBE_AGENT_PROVIDERS`
