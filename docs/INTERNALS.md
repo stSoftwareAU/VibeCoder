@@ -1910,10 +1910,18 @@ route is never taken on a guess.
    claims — a check is excluded only when its failing *step* is a spelling
    tool (see [Routing by failed step](#routing-by-failed-step-issue-1579)),
    not merely because its name mentions spelling.
-4. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
+4. Drops **aggregator** checks — a job whose `needs:` (read from the host's
+   existing clone at `repoCheckoutPath`, never cloned by the scan) includes
+   another job that is also red on the same head is downstream of that
+   failure, not a failure of its own (Issue #1878, see
+   [workflow_job_needs.ts](../worker/deno/lib/workflow_job_needs.ts)). One
+   `skipReason` line per PR names what was dropped; no clone means no
+   filtering, and the surviving check carries `siblingFailedCheckNames` so
+   the processor can repeat the decision against the real checkout.
+5. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
    over-retried failures.
-5. Prioritises PRs targeting the default branch (where integration tests run).
-6. Fetches check annotations and returns the highest-priority failure.
+6. Prioritises PRs targeting the default branch (where integration tests run).
+7. Fetches check annotations and returns the highest-priority failure.
 
 **Retry tracking** — uses local state files in `$CI_CHECK_STATE_DIR` (default
 `$WORK_DIR/.ci_check_state`, resolved to an **always absolute** path by

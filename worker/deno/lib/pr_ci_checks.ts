@@ -33,6 +33,19 @@ export interface FailedCiCheck {
    * because not all check sources populate it.
    */
   targetUrl?: string;
+  /**
+   * Every check name failing on the same head, including this one
+   * (Issue #1878).
+   *
+   * Carried so the CI-fix processor can repeat the scanner's
+   * aggregator decision against the real checkout: a job that `needs:`
+   * another job which is also red has no failure of its own, and
+   * diagnosing it produces a stock comment about a job that ran none of
+   * the repo's code. Optional because the spelling route and the
+   * failure-action synthesiser build this shape without a sibling list;
+   * absent means "unknown", and the processor then filters nothing.
+   */
+  siblingFailedCheckNames?: string[];
 }
 
 /**

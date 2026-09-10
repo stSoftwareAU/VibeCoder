@@ -87,6 +87,11 @@ import {
   runPrFailureActions,
 } from "./pr_failure_actions.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
+import { readWorkflowFiles } from "./workflow_scan_common.ts";
+import {
+  buildJobNeedsMap,
+  isDownstreamOfRedJob,
+} from "./workflow_job_needs.ts";
 import type { FetchFn } from "./ci_fetch_types.ts";
 import type { fetchGithubActionsLogExcerpt } from "./github_actions_log_fetcher.ts";
 import {
@@ -127,6 +132,16 @@ export interface CiFixInput {
    * the repo's `ciProviders` configuration anyway.
    */
   targetUrl?: string;
+  /**
+   * Every check name failing on the same head, as the scan saw them
+   * (Issue #1878).
+   *
+   * The scan filters aggregator checks against the host's clone, which
+   * sits on the default branch; this list lets the processor repeat that
+   * decision against the branch it actually checked out. Absent means
+   * "unknown" and nothing is filtered here.
+   */
+  siblingFailedCheckNames?: string[];
 }
 
 /** Result of CI fix processing. */
@@ -661,6 +676,41 @@ async function recordCiMilestone(
 }
 
 /**
+ * Is this check an aggregator whose needed job is also red on this head
+ * (Issue #1878)?
+ *
+ * Re-runs the scan's decision against the **checked-out** branch, whose
+ * `.github/workflows` is the head's own topology rather than the default
+ * branch's. Returns `false` — diagnose normally — whenever the question
+ * cannot be answered: no sibling list from the scan, no work directory,
+ * or workflow YAML that will not read.
+ */
+async function _isDownstreamAggregator(
+  input: CiFixInput,
+  processorDeps: CiProcessorDeps,
+): Promise<boolean> {
+  const siblings = input.siblingFailedCheckNames;
+  if (siblings === undefined || siblings.length === 0) return false;
+  const workDir = processorDeps.workDir;
+  if (workDir === undefined || workDir.length === 0) return false;
+
+  try {
+    const map = buildJobNeedsMap(await readWorkflowFiles(workDir));
+    return isDownstreamOfRedJob(input.checkName, siblings, map);
+  } catch (error: unknown) {
+    processorDeps.logger.warn(
+      "Could not read workflow YAML for aggregator detection",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return false;
+  }
+}
+
+/**
  * Inner CI fix processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
  */
@@ -732,6 +782,32 @@ async function _processCiWithHeartbeat(
   // The branch is the PR's: this is a real attempt, so it counts against
   // `maxCiRetries` (Issue #1677 — see `_processCiFailureLocked`).
   await recordCiCheckRetry(stateDir, repo, checkRunId);
+
+  // Issue #1878: repeat the scan's aggregator decision against the branch
+  // that was actually checked out. The scan reads the host's clone, which
+  // sits on the default branch, so a head that added or renamed the
+  // aggregator is only caught here. The retry above stands: a check the
+  // scan could not filter must not be re-selected on every cycle for ever.
+  if (await _isDownstreamAggregator(input, processorDeps)) {
+    logger.info(
+      `CI fix skipped for PR #${prNumber}: check '${checkName}' needs a job ` +
+        `that is also failing on this head — it has no failure of its own ` +
+        `(Issue #1878)`,
+      { repo, prNumber, checkName, checkRunId },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: 0,
+        retryCount: newRetryCount,
+        summary:
+          `Check '${checkName}' is downstream of another failing check on ` +
+          `PR #${prNumber} — skipped`,
+      },
+    };
+  }
 
   // Capture pre-Claude HEAD so we can detect commits Claude pushes itself
   // (Issue #1863). The final-mile commitAndPushPending only sees uncommitted
