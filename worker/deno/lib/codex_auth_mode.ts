@@ -24,7 +24,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { CODEX_CREDENTIAL_ENV_VARS } from "./codex_auth.ts";
+import { CODEX_API_KEY_ENV_VARS } from "./codex_auth.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** How Codex is authenticated, as far as the budget question is concerned. */
@@ -67,8 +67,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Resolve which Codex credential kind is in play.
  *
  * Precedence, most authoritative first:
- *   1. `OPENAI_API_KEY` / `CODEX_API_KEY` in the environment — this is how the
- *      worker provisions Codex (`codex_env.ts`), and the CLI prefers it.
+ *   1. `OPENAI_API_KEY` / `CODEX_API_KEY` in the environment — metered API
+ *      authentication. `CODEX_HOME` is deliberately NOT in this check: it is
+ *      only a pointer to the file-backed login inspected below (#1924).
  *   2. `auth.json`'s own `auth_mode` field, when it names a mode.
  *   3. `auth.json`'s shape: a `tokens` object is a ChatGPT login; a non-empty
  *      `OPENAI_API_KEY` is an API key.
@@ -81,7 +82,7 @@ export function resolveCodexAuthMode(
   codexHome: string,
   env: EnvLookup = processEnvLookup,
 ): CodexAuthModeResult {
-  for (const name of CODEX_CREDENTIAL_ENV_VARS) {
+  for (const name of CODEX_API_KEY_ENV_VARS) {
     if ((env(name) ?? "").trim().length > 0) {
       return { mode: "api-key", source: "env", detail: `${name} is set` };
     }
