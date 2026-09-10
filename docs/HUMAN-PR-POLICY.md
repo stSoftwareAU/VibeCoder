@@ -156,7 +156,7 @@ reason (`reason=cross-repository-head`, `reason=cross-repository-unknown`).
 A dependency bot stops rebasing its own PR the moment a foreign commit lands on
 it, so once the worker pushes a fix the PR drifts behind its base until the
 merge gate skips it as "branch not fresh". The branch-update scan (Priority
-1.27, `pr_branch_update.ts`) therefore selects those PRs too: alongside the
+1.6, `pr_branch_update.ts`) therefore selects those PRs too: alongside the
 worker's own PRs (body marker or `issue-<n>-` branch), it admits a PR whose
 author is a bot, whose head branch lives in **this** repository, and whose
 commits include at least one by this host's login — `isHostPushedBotPr`.

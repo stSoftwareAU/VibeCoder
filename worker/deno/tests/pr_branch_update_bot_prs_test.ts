@@ -68,6 +68,69 @@ interface Harness {
 }
 
 /**
+ * A fake of `gh pr view <n> --repo <r> --json commits [--jq <expr>]`.
+ *
+ * It models the service rather than recording the request: it answers only
+ * questions `gh` itself would answer, and rejects anything else the way `gh`
+ * does — an unknown JSON field or a `jq` expression that does not match the
+ * modelled `commits` payload yields an error, not an empty list. A lookup
+ * that asked the wrong question therefore fails here instead of quietly
+ * reading as "this PR has no host commits".
+ */
+function makeGhFake(
+  commitAuthorsByPr: Record<number, string[]>,
+  failFor: number[],
+  ghCalls: string[][],
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> => {
+    ghCalls.push(args);
+    if (args[0] !== "pr" || args[1] !== "view") {
+      return Promise.reject(new Error(`gh: unknown command: ${args[0]}`));
+    }
+    const prNumber = Number(args[2]);
+    if (
+      !Number.isInteger(prNumber) || commitAuthorsByPr[prNumber] === undefined
+    ) {
+      if (!failFor.includes(prNumber)) {
+        return Promise.reject(
+          new Error(`gh: no pull request found: ${args[2]}`),
+        );
+      }
+    }
+    if (args[3] !== "--repo" || args[4] !== REPO) {
+      return Promise.reject(new Error(`gh: unknown repository: ${args[4]}`));
+    }
+    if (failFor.includes(prNumber)) {
+      return Promise.reject(new Error(`gh: HTTP 502 on PR ${prNumber}`));
+    }
+    if (args[5] !== "--json") {
+      return Promise.reject(new Error("gh: expected --json"));
+    }
+    if (args[6] !== "commits") {
+      return Promise.reject(new Error(`gh: unknown JSON field: ${args[6]}`));
+    }
+    // The modelled payload: `commits[].authors[]` is the list of a commit's
+    // authors, each carrying a `login`. Only a `jq` expression that walks it
+    // is answered; any other path is a `jq` error, as it would be against
+    // real output.
+    const commits = (commitAuthorsByPr[prNumber] ?? []).map((login) => ({
+      authors: [{ login }],
+    }));
+    if (args[7] !== "--jq") {
+      return Promise.resolve(JSON.stringify({ commits }));
+    }
+    if (args[8] !== "[.commits[].authors[].login]") {
+      return Promise.reject(
+        new Error(`jq: error: cannot index commits with ${args[8]}`),
+      );
+    }
+    return Promise.resolve(
+      JSON.stringify(commits.flatMap((c) => c.authors.map((a) => a.login))),
+    );
+  };
+}
+
+/**
  * A selector wired to a `gh` stub that answers the commit-author lookup.
  *
  * @param commitAuthorsByPr - Commit author logins per PR number.
@@ -79,16 +142,7 @@ function makeHarness(
 ): Harness {
   const ghCalls: string[][] = [];
   const logLines: string[] = [];
-  const gh = (args: string[]): Promise<string> => {
-    ghCalls.push(args);
-    const prNumber = Number(args[2]);
-    if (failFor.includes(prNumber)) {
-      return Promise.reject(new Error(`gh: HTTP 502 on PR ${prNumber}`));
-    }
-    return Promise.resolve(
-      JSON.stringify(commitAuthorsByPr[prNumber] ?? []),
-    );
-  };
+  const gh = makeGhFake(commitAuthorsByPr, failFor, ghCalls);
   return {
     ghCalls,
     logLines,
@@ -210,34 +264,30 @@ Deno.test("branch-update selection - the scan never asks the bot to rebase", asy
   // commits, so the selection may only ever *read* the PR.
   const harness = makeHarness({ 18: ["dependabot[bot]", HOST] });
   await harness.select([makeCandidate({ number: 18 })]);
-  for (const call of harness.ghCalls) {
-    assertEquals(call[0], "pr");
-    assertEquals(call[1], "view");
-  }
+  const mutating = ["comment", "edit", "review", "close", "merge"];
+  const writes = harness.ghCalls.filter((call) =>
+    mutating.includes(call[1] ?? "")
+  );
+  assertEquals(writes, []);
 });
 
 // ---------------------------------------------------------------------------
 // Commit-author lookup
 // ---------------------------------------------------------------------------
 
-Deno.test("fetchPrCommitAuthorLogins - asks gh for the PR's commit author logins", async () => {
-  const calls: string[][] = [];
-  const logins = await fetchPrCommitAuthorLogins(REPO, 20, (args) => {
-    calls.push(args);
-    return Promise.resolve('["dependabot[bot]","vibe-coder"]\n');
-  });
+Deno.test("fetchPrCommitAuthorLogins - reads every commit author login from the PR", async () => {
+  // The fake answers only the question `gh` can answer, so a lookup that
+  // asked for the wrong field or walked the wrong path would reject here.
+  const gh = makeGhFake({ 20: ["dependabot[bot]", HOST] }, [], []);
+  const logins = await fetchPrCommitAuthorLogins(REPO, 20, gh);
   assertEquals(logins, ["dependabot[bot]", HOST]);
-  assertEquals(calls, [[
-    "pr",
-    "view",
-    "20",
-    "--repo",
-    REPO,
-    "--json",
-    "commits",
-    "--jq",
-    "[.commits[].authors[].login]",
-  ]]);
+});
+
+Deno.test("fetchPrCommitAuthorLogins - a PR with only bot commits yields no host login", async () => {
+  const gh = makeGhFake({ 23: ["dependabot[bot]"] }, [], []);
+  assertEquals(await fetchPrCommitAuthorLogins(REPO, 23, gh), [
+    "dependabot[bot]",
+  ]);
 });
 
 Deno.test("fetchPrCommitAuthorLogins - a non-array answer throws rather than reading as no commits", async () => {

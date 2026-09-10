@@ -409,17 +409,34 @@ export function isHostPushedBotPr(
   commitAuthorLogins: readonly string[] | undefined,
   githubUser: string,
 ): boolean {
+  if (!isBotPrCandidate(author, isCrossRepository, githubUser)) return false;
+  if (!Array.isArray(commitAuthorLogins)) return false;
+  const host = (githubUser ?? "").trim();
+  return commitAuthorLogins.some((commitAuthor) =>
+    isFleetAuthor(commitAuthor, [host])
+  );
+}
+
+/**
+ * The half of {@link isHostPushedBotPr} that needs no commit lookup.
+ *
+ * The selector screens on this before paying for `gh pr view --json commits`,
+ * so the two never disagree about which PRs are worth the call: one rule,
+ * asked twice.
+ */
+function isBotPrCandidate(
+  author: string | undefined,
+  isCrossRepository: boolean | undefined,
+  githubUser: string,
+): boolean {
   const login = (author ?? "").trim();
   if (login === "" || !isBotLogin(login)) return false;
+  // Unknown head ownership fails closed, matching `pr_bot_lookup.ts`.
   if (isCrossRepository !== false) return false;
   const host = (githubUser ?? "").trim();
   if (host === "") return false;
   // The fleet's own PRs are already selected by `isWorkerPr`.
-  if (isFleetAuthor(login, [host])) return false;
-  if (!Array.isArray(commitAuthorLogins)) return false;
-  return commitAuthorLogins.some((commitAuthor) =>
-    isFleetAuthor(commitAuthor, [host])
-  );
+  return !isFleetAuthor(login, [host]);
 }
 
 /**
@@ -526,12 +543,10 @@ export async function selectBranchUpdatePrs(
       continue;
     }
 
-    const login = (pr.authorLogin ?? "").trim();
     // Cheap checks first: a non-bot, fork-headed or unattributable PR never
     // costs a commit lookup, and neither does one with no host to match.
-    if (login === "" || !isBotLogin(login)) continue;
-    if (pr.isCrossRepository !== false) continue;
-    if (host === "" || isFleetAuthor(login, [host])) continue;
+    const login = (pr.authorLogin ?? "").trim();
+    if (!isBotPrCandidate(login, pr.isCrossRepository, host)) continue;
 
     let commitAuthorLogins: string[];
     try {
