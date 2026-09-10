@@ -101,20 +101,28 @@ flowchart LR
     style U fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-What counts as a bot is the worker's single `[bot]`-detection predicate,
-`isBotLogin` (`worker/deno/lib/trust_exclusions.ts`). It matches three shapes:
+What counts as a bot **for admission** is `isBotAuthorForMaintenance`
+(`worker/deno/lib/trust_exclusions.ts`). It matches two shapes, and no prefix:
 
-- a login **ending** in `[bot]` — `dependabot[bot]`, `renovate[bot]`;
+- a login **ending** in `[bot]` — `dependabot[bot]`, `renovate[bot]`,
+  `copilot-swe-agent[bot]`;
 - one of the three known **suffix-less** bots, matched whole:
-  `dependabot`, `renovate`, `github-actions`;
-- a login **starting** with `github-copilot`, `copilot`, `cursor`,
-  `dependabot`, `renovate`, `snyk` or `codecov`.
+  `dependabot`, `renovate`, `github-actions`.
 
-The last group is a prefix match, not an exact one, so a human login that
-happens to start with one of those words is read as a bot. That predicate is
-shared with the rest of the worker and is not specific to this door; narrowing
-it for admission is tracked in
-[#1872](https://github.com/stSoftwareAU/VibeCoder/issues/1872).
+That is deliberately narrower than `isBotLogin`, the worker's general
+`[bot]`-detection predicate, which also matches a login **starting** with
+`github-copilot`, `copilot`, `cursor`, `dependabot`, `renovate`, `snyk` or
+`codecov`. Those are prefix matches, so `isBotLogin` reads `cursorjoe` and
+`snyked` as bots — harmless where it decides whether to *trust* a review
+comment (over-detecting a bot only withholds trust), and unacceptable here,
+where a match means the worker claims the PR and pushes to its head branch.
+The two predicates were split for exactly that reason
+([#1872](https://github.com/stSoftwareAU/VibeCoder/issues/1872)): a human whose
+login happens to start with a bot's name keeps their PR.
+
+The same narrow predicate gates the branch-update scan's `isHostPushedBotPr`
+(below), so a human PR that happens to carry a commit by this host — they
+cherry-picked one — is not rebased and pushed either.
 
 The boundaries, all of which fail **closed**:
 

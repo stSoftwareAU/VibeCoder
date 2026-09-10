@@ -16,9 +16,9 @@
  *   ownership (a listing or cache entry that never carried the field) is
  *   dropped by the same rule: fail closed.
  * - **Not the fleet's own PRs.** A fleet account is often a GitHub App whose
- *   login ends in `[bot]`, which `isBotLogin` cannot tell apart from a
- *   dependency bot. Its PRs already arrive through the maintenance listing,
- *   so they are dropped here.
+ *   login ends in `[bot]`, which the bot predicate cannot tell apart from
+ *   a dependency bot. Its PRs already arrive through the maintenance
+ *   listing, so they are dropped here.
  * - **Fail closed on an unreadable listing.** `fetchAllOpenPRs` throws
  *   rather than pass a failed call off as "no open PRs" (Issue #4257); the
  *   failure is logged once and no PR is admitted. Nothing is cached — the
@@ -37,7 +37,7 @@
 import { fetchAllOpenPRs, type OpenPRWithBody } from "./issue_query.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { sanitiseLogField } from "./issue_finder_logger.ts";
-import { isBotLogin } from "./trust_exclusions.ts";
+import { isBotAuthorForMaintenance } from "./trust_exclusions.ts";
 import {
   isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
@@ -69,8 +69,8 @@ export interface ListBotPrsOptions {
    * This host's own GitHub login. Its PRs are the *first* source of
    * `listActionablePrs` (the maintenance listing), so admitting them here
    * too would only duplicate work — and a fleet account is often a GitHub
-   * App whose login ends in `[bot]`, which `isBotLogin` cannot tell apart
-   * from a dependency bot.
+   * App whose login ends in `[bot]`, which the bot predicate cannot tell
+   * apart from a dependency bot.
    */
   githubUser?: string;
   /** Sibling fleet logins (`fleet_pr_authors`), excluded for the same reason. */
@@ -141,7 +141,7 @@ export async function listBotPrs(
     seen.add(pr.number);
 
     const login = (pr.authorLogin ?? "").trim();
-    if (login === "" || !isBotLogin(login)) continue;
+    if (login === "" || !isBotAuthorForMaintenance(login)) continue;
     // A fleet account's own PR arrives through the maintenance listing.
     if (isFleetAuthor(login, [...fleet])) continue;
 
