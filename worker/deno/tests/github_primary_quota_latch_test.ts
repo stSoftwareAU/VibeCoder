@@ -419,3 +419,63 @@ Deno.test("chokepoint - a refusal seen by a DIRECT spawnGh caller latches the pr
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+Deno.test("chokepoint #1888 - a refusal on the window boundary latches for the short cool-down, not the next window", async () => {
+  // Observed 2026-09-10 04:57:58Z: the refusal arrived one second after the
+  // window reset. The probe still reported the closed window (remaining 0,
+  // reset in the past) and `gh api rate_limit` named the NEW window's reset,
+  // an hour out — the latch held that hour with a fresh 5000 points unused.
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "quota_latch_boundary_" });
+  const nowSec = Math.floor(Date.now() / 1000);
+  const closedReset = nowSec - 1;
+  const nextWindowReset = nowSec + 3600;
+  _setGhSpawnRunner((args) => {
+    if (isGraphqlQuotaProbe(args)) {
+      return Promise.resolve({
+        code: 1,
+        success: false,
+        stdout: [
+          "HTTP/2.0 200 OK",
+          "X-Ratelimit-Limit: 5000",
+          "X-Ratelimit-Remaining: 0",
+          `X-Ratelimit-Reset: ${closedReset}`,
+          "X-Ratelimit-Resource: graphql",
+          "X-Ratelimit-Used: 5000",
+          "",
+          JSON.stringify({ errors: [{ type: "RATE_LIMITED" }] }),
+        ].join("\n"),
+        stderr: "",
+      });
+    }
+    if (args[0] === "api" && args.includes("rate_limit")) {
+      return Promise.resolve(ok(rateLimitDoc(nextWindowReset)));
+    }
+    return Promise.resolve(fail(RATE_LIMIT_MSG));
+  });
+  try {
+    await assertRejects(
+      () => runGhCommandRaw(["pr", "list", "--repo", "o/r"], { workDir }),
+      Error,
+      "already exceeded",
+    );
+    assert(isPrimaryQuotaLatched(nowSec), "the refusal still latches");
+    const until = primaryQuotaLatchedUntil();
+    assert(until !== null);
+    assert(
+      until <= nowSec + SECONDARY_LIMIT_BACKOFF_SECONDS + 1,
+      `latched until +${
+        until - nowSec
+      }s — must be the short cool-down, not the next window`,
+    );
+    const signal = await readRateLimitSignal(workDir);
+    assert(signal.ok);
+    if (signal.ok) {
+      assert(signal.value.waitSeconds <= SECONDARY_LIMIT_BACKOFF_SECONDS);
+    }
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

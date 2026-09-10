@@ -26,6 +26,9 @@ import {
   releaseBranchUpdateLock,
 } from "./pr_branch_lock.ts";
 import { WORKER_PR_MARKER_PREFIX } from "./pr_body.ts";
+import { isBotLogin } from "./trust_exclusions.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
+import { sanitiseLogField } from "./issue_finder_logger.ts";
 import {
   checkPrBranchUpdateSuppression,
   clearPrBranchUpdateFailure,
@@ -371,6 +374,205 @@ export function isWorkerPr(
     return isSafeGitRef(branchName);
   }
   return false;
+}
+
+/**
+ * Whether a PR is a bot's PR the worker has already pushed a commit to
+ * (Issue #1849).
+ *
+ * Dependabot and Renovate stop rebasing a PR the moment a foreign commit
+ * lands on it, so a bot PR the worker fixed is never brought up to date by
+ * its own bot again — it drifts behind its base until the merge gate skips
+ * it as "branch not fresh". The worker therefore does the update itself, and
+ * this predicate is how the branch-update scan recognises those PRs.
+ *
+ * The worker must never ask the bot to do it instead: `@dependabot rebase`
+ * (and every equivalent bot command) recreates the branch from scratch and
+ * **discards the worker's commits**, undoing the fix that was just pushed.
+ *
+ * Three conditions, all required:
+ *
+ * - `author` is a bot login ({@link isBotLogin}).
+ * - `isCrossRepository` is exactly `false` — the head branch lives in the
+ *   target repo, so the worker can push to it. Unknown ownership
+ *   (`undefined`) fails closed, matching `pr_bot_lookup.ts`.
+ * - `commitAuthorLogins` contains `githubUser` (case-insensitively, via
+ *   {@link isFleetAuthor}) — this host actually pushed a commit onto the PR.
+ *
+ * The host's own login is excluded as an *author*: a fleet account is often
+ * a GitHub App whose login ends in `[bot]`, and its PRs stay on the
+ * {@link isWorkerPr} route rather than being selected twice.
+ */
+export function isHostPushedBotPr(
+  author: string | undefined,
+  isCrossRepository: boolean | undefined,
+  commitAuthorLogins: readonly string[] | undefined,
+  githubUser: string,
+): boolean {
+  if (!isBotPrCandidate(author, isCrossRepository, githubUser)) return false;
+  if (!Array.isArray(commitAuthorLogins)) return false;
+  const host = (githubUser ?? "").trim();
+  return commitAuthorLogins.some((commitAuthor) =>
+    isFleetAuthor(commitAuthor, [host])
+  );
+}
+
+/**
+ * The half of {@link isHostPushedBotPr} that needs no commit lookup.
+ *
+ * The selector screens on this before paying for `gh pr view --json commits`,
+ * so the two never disagree about which PRs are worth the call: one rule,
+ * asked twice.
+ */
+function isBotPrCandidate(
+  author: string | undefined,
+  isCrossRepository: boolean | undefined,
+  githubUser: string,
+): boolean {
+  const login = (author ?? "").trim();
+  if (login === "" || !isBotLogin(login)) return false;
+  // Unknown head ownership fails closed, matching `pr_bot_lookup.ts`.
+  if (isCrossRepository !== false) return false;
+  const host = (githubUser ?? "").trim();
+  if (host === "") return false;
+  // The fleet's own PRs are already selected by `isWorkerPr`.
+  return !isFleetAuthor(login, [host]);
+}
+
+/**
+ * Fetch the login of every commit author on a PR (Issue #1849).
+ *
+ * Throws — never returns an empty list — when `gh` fails or answers with
+ * anything but a JSON array. An unreadable answer is not "no host commits":
+ * the caller excludes the PR and logs the failure rather than silently
+ * treating it as a bot PR nobody has touched.
+ */
+export async function fetchPrCommitAuthorLogins(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<string[]> {
+  const output = await ghCommandFn([
+    "pr",
+    "view",
+    String(prNumber),
+    "--repo",
+    repo,
+    "--json",
+    "commits",
+    "--jq",
+    "[.commits[].authors[].login]",
+  ]);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.trim());
+  } catch (err) {
+    throw new Error(
+      `commit author lookup for ${repo}#${prNumber} returned unparseable ` +
+        `output: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `commit author lookup for ${repo}#${prNumber} did not return a JSON ` +
+        `array`,
+    );
+  }
+  return parsed.filter((login): login is string => typeof login === "string");
+}
+
+/** One open-PR listing entry the branch-update scan decides on. */
+export interface BranchUpdateCandidate {
+  number: number;
+  headRefName: string;
+  baseRefName: string;
+  /** PR body — carries the worker marker on worker PRs. */
+  body?: string;
+  /** PR author login, when the listing reported it (Issue #1846). */
+  authorLogin?: string;
+  /** Whether the head branch lives in a fork (Issue #1846). */
+  isCrossRepository?: boolean;
+}
+
+/** Inputs for {@link selectBranchUpdatePrs}. */
+export interface SelectBranchUpdatePrsOptions {
+  /** Repository in "owner/repo" format. */
+  repo: string;
+  /** The repo's un-filtered open-PR listing. */
+  prs: readonly BranchUpdateCandidate[];
+  /** This host's GitHub login. */
+  githubUser: string;
+  /**
+   * Commit-author lookup, issued **only** for bot-authored same-repository
+   * PRs so a non-bot PR costs no extra API call. Rejects on failure.
+   */
+  fetchCommitAuthorLogins: (
+    repo: string,
+    prNumber: number,
+  ) => Promise<string[]>;
+  /** Sink for lookup failures — an excluded PR is never silently dropped. */
+  log: (message: string) => void;
+}
+
+/**
+ * Select the open PRs whose branches the scan should keep current
+ * (Issue #1849).
+ *
+ * Two doors: the worker's own PRs ({@link isWorkerPr}, by body marker or
+ * `issue-<n>-` branch), and bot PRs this host has pushed a commit to
+ * ({@link isHostPushedBotPr}). Only the second door needs the per-PR commit
+ * lookup, and it is issued only after the cheap bot/same-repo checks pass.
+ */
+export async function selectBranchUpdatePrs(
+  options: SelectBranchUpdatePrsOptions,
+): Promise<PrBranchEntry[]> {
+  const { repo, prs, githubUser, fetchCommitAuthorLogins, log } = options;
+  const host = (githubUser ?? "").trim();
+  const selected: PrBranchEntry[] = [];
+
+  for (const pr of prs) {
+    const entry: PrBranchEntry = {
+      number: pr.number,
+      headRefName: pr.headRefName,
+      baseRefName: pr.baseRefName,
+    };
+    // Worker PRs are identified by body marker (not author) so identity
+    // changes don't orphan existing PRs.
+    if (isWorkerPr(pr.body, pr.headRefName)) {
+      selected.push(entry);
+      continue;
+    }
+
+    // Cheap checks first: a non-bot, fork-headed or unattributable PR never
+    // costs a commit lookup, and neither does one with no host to match.
+    const login = (pr.authorLogin ?? "").trim();
+    if (!isBotPrCandidate(login, pr.isCrossRepository, host)) continue;
+    // The same argument-injection guard the marker route applies (Issue #12):
+    // a dash-leading head ref never reaches the maintenance git commands.
+    if (!isSafeGitRef(pr.headRefName)) continue;
+
+    let commitAuthorLogins: string[];
+    try {
+      commitAuthorLogins = await fetchCommitAuthorLogins(repo, pr.number);
+    } catch (err) {
+      log(
+        `[branch-update] excluded repo=${repo} prNumber=${pr.number} ` +
+          `author=${sanitiseLogField(login)} reason=commit-lookup-failed ` +
+          `error=${
+            sanitiseLogField(err instanceof Error ? err.message : String(err))
+          }`,
+      );
+      continue;
+    }
+
+    if (
+      isHostPushedBotPr(login, pr.isCrossRepository, commitAuthorLogins, host)
+    ) {
+      selected.push(entry);
+    }
+  }
+
+  return selected;
 }
 
 // ---------------------------------------------------------------------------

@@ -144,11 +144,12 @@ import {
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
 import {
   executePrBranchUpdates,
-  isWorkerPr,
+  fetchPrCommitAuthorLogins,
   makeGhPrStateFetcher,
   type PrBranchEntry,
   type PrBranchStateEntry,
   scanPrBranchUpdates,
+  selectBranchUpdatePrs,
 } from "./pr_branch_update.ts";
 import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { prBranchFailureStatePath } from "./pr_branch_update_failure_streak.ts";
@@ -1836,15 +1837,18 @@ export async function createProductionRunCoreDeps(
                 50,
                 runGhCommand,
               );
-              // Filter for worker PRs by body marker (not author) so
-              // identity changes don't orphan existing PRs.
-              return prs
-                .filter((pr) => isWorkerPr(pr.body, pr.headRefName))
-                .map(({ number, headRefName, baseRefName }) => ({
-                  number,
-                  headRefName,
-                  baseRefName,
-                }));
+              // Worker PRs by body marker (not author) so identity changes
+              // don't orphan existing PRs, plus the bot PRs this host has
+              // pushed a commit to (Issue #1849) — their bot stops rebasing
+              // them, so nobody else brings them up to date.
+              return await selectBranchUpdatePrs({
+                repo,
+                prs,
+                githubUser,
+                fetchCommitAuthorLogins: (prRepo, prNumber) =>
+                  fetchPrCommitAuthorLogins(prRepo, prNumber, runGhCommand),
+                log: (message: string) => logger.warn(message),
+              });
             } catch {
               return [];
             }
@@ -3611,6 +3615,15 @@ export async function createProductionRunCoreDeps(
         log: (m) => logger.info(m),
         noCache,
       });
+    },
+
+    // Issue #1888: the same free probe, as numbers, for the pause path's
+    // "has the window reopened?" check.
+    async readGraphqlQuota() {
+      const probe = await probeGraphqlQuota();
+      if (!probe.ok) return null;
+      const { limit, remaining, reset } = probe.value;
+      return { limit, remaining, reset };
     },
 
     async describeGraphqlQuota() {

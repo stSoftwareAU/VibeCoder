@@ -2201,3 +2201,86 @@ Deno.test("slot pool - a cycle ending in the primary-rate-limit pause still logs
   assert(logs.some((l) => l.startsWith("gh-calls-by-priority:")));
   assert(logs.some((l) => l.startsWith("graphql-calls:")));
 });
+
+// ============================================================================
+// A stale latch does not pause a run whose quota has reopened (Issue #1888)
+// ============================================================================
+
+Deno.test("slot pool - a rate-limit refusal with the GraphQL window reopened clears the latch and continues instead of pausing (Issue #1888)", async () => {
+  const logs: string[] = [];
+  let now = 0;
+  let processed = 0;
+  let resetConsulted = false;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([
+      issue("o/r0", 0),
+      issue("o/r1", 1),
+      issue("o/r2", 2),
+    ]),
+    processIssue: async (i) => {
+      processed++;
+      await new Promise((r) => setTimeout(r, 5));
+      if (i.issueNumber === 0) {
+        throw new Error("API rate limit exceeded for user ID 1");
+      }
+      return { ok: true, value: { success: false } };
+    },
+    // The account holds a fresh window: the refusal was a boundary artefact.
+    readGraphqlQuota: () =>
+      Promise.resolve({ limit: 5000, remaining: 5000, reset: 3600 }),
+    getRateLimitReset: () => {
+      resetConsulted = true;
+      return Promise.resolve(Math.floor(now / 1000) + 3600);
+    },
+  });
+  await runOneCycle(deps, 2);
+
+  assert(
+    logs.some((l) => l.includes("GraphQL window has reopened")),
+    `no reopened line: ${logs.join(" | ")}`,
+  );
+  assert(
+    !logs.some((l) => l.startsWith("Primary rate limit hit mid-cycle")),
+    "the run must not announce a pause it did not need",
+  );
+  assertEquals(resetConsulted, false, "no pause, so no reset lookup");
+  // The loop went on to the remaining issues rather than exiting.
+  assert(processed >= 3, `only ${processed} issue(s) processed`);
+});
+
+Deno.test("slot pool - a rate-limit refusal with the quota still spent pauses as before (Issue #1888)", async () => {
+  const logs: string[] = [];
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/r0", 0), issue("o/r1", 1)]),
+    processIssue: async (i) => {
+      await new Promise((r) => setTimeout(r, 5));
+      if (i.issueNumber === 0) {
+        throw new Error("API rate limit exceeded for user ID 1");
+      }
+      return { ok: true, value: { success: false } };
+    },
+    readGraphqlQuota: () =>
+      Promise.resolve({ limit: 5000, remaining: 0, reset: 3600 }),
+    getRateLimitReset: () => Promise.resolve(Math.floor(now / 1000) + 3600),
+  });
+  await runOneCycle(deps, 2);
+  assert(logs.some((l) => l.startsWith("Primary rate limit hit mid-cycle")));
+  assert(!logs.some((l) => l.includes("GraphQL window has reopened")));
+});
