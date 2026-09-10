@@ -66,7 +66,14 @@ export type WipPreservationCause =
   /** A SIGTERM the worker never requested (Issue #46). */
   | "external-sigterm"
   /** The cycle ended or the supervisor's hard cap was reached (Issue #424). */
-  | "scheduled-release";
+  | "scheduled-release"
+  /**
+   * The subscription's usage window ran out mid-run (Issue #1670). Not a
+   * failure of the issue and not a timeout: the work is checkpointed here so
+   * the run can resume on another credential, or be parked on the branch
+   * until the window reopens.
+   */
+  | "usage-limit";
 
 /** Subject phrase for each cause — the tail of the `wip:` commit subject. */
 const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
@@ -75,6 +82,7 @@ const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
   "external-sigterm": "was killed by an external SIGTERM",
   "scheduled-release":
     "was released on schedule (cycle ended or run hard cap reached)",
+  "usage-limit": "hit the Claude subscription usage limit",
 };
 
 /**

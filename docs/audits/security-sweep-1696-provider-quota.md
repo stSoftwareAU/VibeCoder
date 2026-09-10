@@ -1,10 +1,10 @@
 # Security sweep — shared provider quota scheduler
 
 **Issue:** [#1696](https://github.com/stSoftwareAU/VibeCoder/issues/1696)
-(chunk 12o) · **Parent:** #1694
+(chunk 12y) · **Parent:** #1694
 
 The written record for the modules that entered `worker/deno/lib/`
-after 12n recorded its coverage:
+after 12x recorded its coverage:
 
 - `worker/deno/lib/provider_quota.ts`
 - `worker/deno/lib/provider_quota_scope.ts`
@@ -15,7 +15,7 @@ after 12n recorded its coverage:
 ## Why a new slice
 
 Appending a module to a slice whose sweep ran before it existed is a
-false record. These five are claimed by **12o**.
+false record. These five are claimed by **12y**.
 
 ## `provider_quota.ts`
 

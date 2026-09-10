@@ -33,6 +33,7 @@ import type {
   runPrFailureActions,
 } from "../lib/pr_failure_actions.ts";
 import type { fetchGithubActionsLogExcerpt } from "../lib/github_actions_log_fetcher.ts";
+import { openPrGh } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -118,7 +119,7 @@ async function makeRig(opts: {
     }) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: () => Promise.resolve(""),
+    runGhCommand: openPrGh(),
   };
   const deps = createMockDeps({
     claude: mockClaude,

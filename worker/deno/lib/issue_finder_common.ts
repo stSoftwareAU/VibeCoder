@@ -93,6 +93,21 @@ export interface FindIssuesOptions {
   /** Optional function to check if issue is in cooldown */
   isIssueInCooldown?: (repo: string, issueNumber: number) => boolean;
   /**
+   * Whether a milestone's branch is paced by its conflict ledger, and until
+   * when (Issue #1780).
+   *
+   * A child run brings the milestone branch level with the default branch
+   * before it cuts its issue branch; a charged conflict failure writes
+   * `deferUntil` and the branch cannot take the default branch down until it
+   * passes. Claiming that milestone's issues meanwhile would claim, defer and
+   * comment on one of them every 30 seconds, so they are skipped here — a
+   * local ledger read, no API call.
+   *
+   * Returns the `deferUntil` still in the future, or undefined when the
+   * milestone is not paced.
+   */
+  milestonePacedUntil?: (repo: string, milestone: string) => string | undefined;
+  /**
    * Optional async function to check cross-worker cooldown via GitHub comments.
    * Issue #1087: Supplementary to local cooldown — catches cases where
    * a different worker on another machine failed on this issue.
@@ -242,6 +257,62 @@ export function memoiseIssueFetcher(fetcher: IssueFetcher): IssueFetcher {
  */
 export function createIssueFetcher(
   ghCommandFn: (args: string[]) => Promise<string>,
+  /**
+   * Iteration cache (Issue #1818). With it, a referenced issue's state,
+   * body and sub-issues are read once per iteration and served from the
+   * cache on every idle re-scan; without it each `findNextIssue` re-views
+   * them, which is where most of a cycle's `gh issue view` calls went.
+   */
+  cache?: IssueCache,
+): IssueFetcher {
+  const cached = async <T>(
+    repo: string,
+    key: string,
+    read: () => Promise<T>,
+  ): Promise<T> => {
+    if (cache) {
+      const hit = await cache.read<T>(repo, key);
+      if (hit !== null) return hit;
+    }
+    const value = await read();
+    if (cache) await cache.write(repo, key, value);
+    return value;
+  };
+  return {
+    getIssueState(repo: string, issueNumber: number) {
+      return cached(
+        repo,
+        `${ISSUE_STATE_CACHE_PREFIX}${issueNumber}`,
+        () => fetchIssueState(ghCommandFn, repo, issueNumber),
+      );
+    },
+    getSubIssues(repo: string, issueNumber: number) {
+      return cached(
+        repo,
+        `${ISSUE_SUB_ISSUES_CACHE_PREFIX}${issueNumber}`,
+        () => fetchSubIssues(ghCommandFn, repo, issueNumber),
+      );
+    },
+    getIssueBody(repo: string, issueNumber: number) {
+      return cached(
+        repo,
+        `${ISSUE_BODY_CACHE_PREFIX}${issueNumber}`,
+        () => fetchIssueBody(ghCommandFn, repo, issueNumber),
+      );
+    },
+  };
+}
+
+/** Cache key prefix for a referenced issue's state (Issue #1818). */
+export const ISSUE_STATE_CACHE_PREFIX = "issue_state_v1_";
+/** Cache key prefix for a referenced issue's body (Issue #1818). */
+export const ISSUE_BODY_CACHE_PREFIX = "issue_body_v1_";
+/** Cache key prefix for a referenced issue's sub-issue numbers (Issue #1818). */
+export const ISSUE_SUB_ISSUES_CACHE_PREFIX = "issue_sub_issues_v1_";
+
+/** The uncached reads behind {@link createIssueFetcher}. */
+function uncachedIssueFetcher(
+  ghCommandFn: (args: string[]) => Promise<string>,
 ): IssueFetcher {
   return {
     async getIssueState(repo: string, issueNumber: number) {
@@ -304,6 +375,30 @@ export function createIssueFetcher(
       return parsed.body ?? "";
     },
   };
+}
+
+function fetchIssueState(
+  ghCommandFn: (args: string[]) => Promise<string>,
+  repo: string,
+  issueNumber: number,
+): Promise<IssueState> {
+  return uncachedIssueFetcher(ghCommandFn).getIssueState(repo, issueNumber);
+}
+
+function fetchSubIssues(
+  ghCommandFn: (args: string[]) => Promise<string>,
+  repo: string,
+  issueNumber: number,
+): Promise<number[]> {
+  return uncachedIssueFetcher(ghCommandFn).getSubIssues(repo, issueNumber);
+}
+
+function fetchIssueBody(
+  ghCommandFn: (args: string[]) => Promise<string>,
+  repo: string,
+  issueNumber: number,
+): Promise<string> {
+  return uncachedIssueFetcher(ghCommandFn).getIssueBody(repo, issueNumber);
 }
 
 /**

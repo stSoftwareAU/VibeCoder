@@ -18,7 +18,6 @@ import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { ensureDefaultBranchCurrent } from "../lib/git_push.ts";
 import { getRepoDefaultBranch } from "../lib/shell_helpers.ts";
-import { milestoneActivityPath } from "../lib/milestone_activity_gate.ts";
 
 export const milestoneBranchSyncCommand: Command = {
   name: "sync-milestone-branches",
@@ -91,11 +90,10 @@ export const milestoneBranchSyncCommand: Command = {
       },
       localCloneExistsFn,
       log: (msg: string) => logs.push(msg),
-      cooldownSeconds: config.milestoneSyncCooldownSeconds ?? 3600,
-      lastSyncTimes: new Map(),
-      // Issue #1488: skip the closed-issue query for milestones whose
-      // REST closed count has not moved since the previous run.
-      activityPath: milestoneActivityPath(workDir),
+      // No `defaultTipShaFn` and no ledger here (Issue #1776): asking for this
+      // command is asking for a sync now, so it merges the default branch down
+      // whether or not the tip has moved. The periodic pass in
+      // `run_core_production_deps.ts` is the one that paces itself on the tip.
     };
 
     const result = await syncMilestoneBranches(deps);

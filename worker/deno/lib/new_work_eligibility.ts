@@ -168,7 +168,7 @@ export async function buildNewWorkGateContext(
     repoPRs,
     repoClosedPRs,
     repoAllIssues,
-    fetcher: memoiseIssueFetcher(createIssueFetcher(ghFn)),
+    fetcher: memoiseIssueFetcher(createIssueFetcher(ghFn, options.cache)),
     openStateMap: buildOpenIssueStateMap(repoAllIssues),
     fleetWorkerLogins: resolveFleetAuthors(
       options.githubUser,

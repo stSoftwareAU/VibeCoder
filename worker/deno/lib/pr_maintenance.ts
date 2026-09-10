@@ -21,6 +21,11 @@ import type { Logger, Result } from "../types.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
 import {
+  findRollbackAfterMerge,
+  type RollbackRecord,
+  rollbackSkipReason,
+} from "./milestone_rollback_marker.ts";
+import {
   type CommentType,
   fetchCommentReactors,
   type PrCommentToFix,
@@ -48,6 +53,7 @@ export {
   isSupersededByFleetPush,
 } from "./pr_feedback_supersede.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
+import { listBotPrs } from "./pr_bot_lookup.ts";
 import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import type { IssueCache } from "./issue_cache.ts";
@@ -77,6 +83,23 @@ export interface PrEntry {
    * (Issue #1109).
    */
   author?: { login?: string } | null;
+  /**
+   * True when the head branch lives in a fork (Issue #1846). Set only when
+   * the listing asked for it; unset means "unknown", which a consumer that
+   * pushes to the head branch must treat as "not ours".
+   */
+  isCrossRepository?: boolean;
+  /**
+   * `MERGEABLE` / `CONFLICTING` / `UNKNOWN`, when the listing asked for it —
+   * the maintenance superset (`PR_MAINTENANCE_LIST_FIELDS`) always does.
+   */
+  mergeable?: string;
+  /**
+   * Merge time, when the listing asked for it — {@link listMergedPrs} does,
+   * so the roll-back check can tell a marker posted after the merge from one
+   * posted before it (Issue #1770).
+   */
+  mergedAt?: string | null;
 }
 
 /** Comment entry from the GitHub API. */
@@ -131,6 +154,10 @@ export interface PrScanOptions {
    * {@link PR_MAINTENANCE_LIST_FIELDS} and served to every scan from the
    * cache — the scans used to issue four to six identical listings per
    * repo per cycle.
+   *
+   * Also serves the bot-PR door (Issue #1848): `listBotPrs` reads the
+   * repo's one un-filtered listing (`prs_open_all`), so admitting bot PRs
+   * costs no extra API call on a cycle that already fetched it.
    */
   cache?: IssueCache;
   /** Function to shuffle repos for fairness. */
@@ -196,7 +223,7 @@ export interface AutoMergeOptions extends PrScanOptions {
     repo: string,
     prNumber: number,
     headRefName?: string,
-  ) => Promise<{ result: string; message: string }>;
+  ) => Promise<{ result: string; message: string; deferral?: string }>;
   /**
    * Function to attempt direct merge as fallback. Returns the outcome so
    * the scan can act on it loudly (Issue #3584) — a swallowed failure is
@@ -248,6 +275,13 @@ export interface CloseIssuesOptions extends PrScanOptions {
    * subsequent reads in the same iteration see fresh state.
    */
   cache?: IssueCache;
+  /**
+   * Fleet logins whose milestone roll-back marker counts (Issue #1770). A
+   * child reopened because a roll-back reverted its merged PR must not be
+   * closed again — its PR stays `merged` for ever. Empty or omitted means
+   * no marker can be attributed, so none is trusted and the close proceeds.
+   */
+  fleetAuthors?: string[];
 }
 
 /** Result of an auto-merge scan. */
@@ -379,25 +413,36 @@ export async function listOpenPrs(
 }
 
 /**
- * List every open PR this scan may act on in `repo` (Issue #4077).
+ * List every open PR this scan may act on in `repo` (Issues #4077, #1848).
  *
- * Two sources, in order:
+ * Three sources, in order:
  *
  * 1. the **maintenance set** — PRs authored by accounts the fleet operates
  *    (`resolveFleetMaintenanceAuthorSet`, Issue #4076); plus
  * 2. any human-authored PR whose author has **explicitly invited** the
  *    worker, by applying the invite label or @mentioning the fleet
- *    (`listInvitedHumanPrs`). Each admission is logged with its cause.
+ *    (`listInvitedHumanPrs`). Each admission is logged with its cause; plus
+ * 3. every **bot-authored** PR whose head branch lives in this repository
+ *    (`listBotPrs`, Issue #1846) — a dependency bump from `dependabot[bot]`
+ *    or `renovate[bot]` is nobody's PR to maintain otherwise, so its red
+ *    quality check sat unattended. Fork-headed bot PRs are excluded (the
+ *    worker cannot push a fix to a fork), and there is no per-repo opt-out
+ *    key: `skip_auto_merge` still governs the merge step alone.
  *
- * An uninvited human PR appears in neither, which is the #4074 default.
- * The invitation is re-evaluated on every scan, so dropping the label
- * removes the PR again on the next pass — no sticky state.
+ * An uninvited human PR appears in none of the three, which is the #4074
+ * default. The invitation is re-evaluated on every scan, so dropping the
+ * label removes the PR again on the next pass — no sticky state.
+ *
+ * This is the single admission point: every scan that calls it — PR
+ * feedback, spelling, CI fix and auto-merge — sees the same set, so a
+ * source added here reaches all of them at once.
  *
  * @param repo - Repository in "owner/repo" format
  * @param scanAuthors - The resolved push-capable maintenance author set
  * @param fields - JSON fields the scan needs
  * @param options - The scan options (author configuration + gh runner)
- * @returns Fleet-authored PRs followed by invited human PRs
+ * @returns Fleet-authored PRs, then invited human PRs, then bot PRs,
+ *   de-duplicated by number so a PR in more than one source appears once
  */
 export async function listActionablePrs(
   repo: string,
@@ -424,8 +469,16 @@ export async function listActionablePrs(
     log: (message) => logger.info(message),
     cache: options.cache,
   });
+  const bots = await listBotPrs({
+    repo,
+    githubUser,
+    fleetPrAuthors: prAuthors,
+    ghCommandFn,
+    log: (message) => logger.info(message),
+    cache: options.cache,
+  });
   const seen = new Set(prs.map((pr) => pr.number));
-  for (const pr of invited) {
+  for (const pr of [...invited, ...bots]) {
     if (seen.has(pr.number)) continue;
     seen.add(pr.number);
     prs.push(pr);
@@ -457,7 +510,7 @@ export async function listMergedPrs(
       "--author",
       githubUser,
       "--json",
-      "number,title",
+      "number,title,mergedAt",
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -1477,6 +1530,13 @@ async function attemptMerge(
       return { kind: "milestone_children_open" };
     }
 
+    // Issue #1779: a child whose milestone base is behind the default branch
+    // is left exactly as it is — no comment, no label. The every-cycle
+    // milestone sync clears it, so this is a deferral, never an escalation.
+    if (result.deferral === "milestone-behind") {
+      return { kind: "milestone_base_behind" };
+    }
+
     if (result.result === "not_allowed" && directMergeFn) {
       // Issue #553: say WHY. GitHub's refusal was dropped here, so a PR that
       // merged directly looked like one where auto-merge had "randomly" not
@@ -1704,6 +1764,40 @@ export async function closeIssuesForMergedPrs(
             );
             continue;
           }
+          // Issue #1770: a milestone roll-back reverted this PR, so the
+          // child was reopened and re-queued while its PR stayed `merged`.
+          let rollback: RollbackRecord | undefined;
+          try {
+            rollback = await findRollbackAfterMerge(
+              repo,
+              Number(issueNumber),
+              pr.mergedAt,
+              options.fleetAuthors ?? [],
+              ghCommandFn,
+            );
+          } catch (err) {
+            // An unreadable thread cannot prove the issue was NOT rolled
+            // back. Leave it open and name the cause — the outer catch
+            // would report it as an indistinguishable processing failure.
+            logger.warn(
+              `Not closing issue #${issueNumber}: could not read the comment ` +
+                `thread: ${
+                  err instanceof Error ? err.message : String(err)
+                } (Issue #1770)`,
+              { repo, issueNumber, prNumber },
+            );
+            continue;
+          }
+          if (rollback) {
+            logger.info(
+              `Not closing issue #${issueNumber}: ${
+                rollbackSkipReason(rollback)
+              } (Issue #1770)`,
+              { repo, issueNumber, prNumber },
+            );
+            continue;
+          }
+
           logger.info("Closing issue for merged PR", {
             repo,
             issueNumber,

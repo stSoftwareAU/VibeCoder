@@ -1483,6 +1483,16 @@ export async function runChecksSequential(
 }
 
 /**
+ * A FAILED check's own output, for the baseline comparison (Issue #1852).
+ *
+ * Only failures are kept: the comparison never reads a passing check, and
+ * the combined `output` field already carries everything for display.
+ */
+function failedOutput(result: CheckExecutionResult): string | undefined {
+  return result.status === "FAILED" ? result.output : undefined;
+}
+
+/**
  * Run the full quality gate.
  *
  * Orchestrates all quality checks: pre-checks (sequential), then main checks
@@ -1499,7 +1509,7 @@ export async function runQualityGate(
   /** Keep a settled check's output, record it, and stream it (Issue #399). */
   const note = (result: CheckExecutionResult): void => {
     allOutput.push(result.output);
-    recordCheck(checks, result.name, result.status);
+    recordCheck(checks, result.name, result.status, failedOutput(result));
     report(config.onProgress, result);
   };
 
@@ -1511,15 +1521,20 @@ export async function runQualityGate(
   if (!denoResult.ok) {
     // Fail loud: four FAILED Deno checks with no stated reason cost a CI run
     // to diagnose (PR #888). Say why, in the gate output and on stderr.
+    // Worded so `detectFailureCategory` reads it as `missing_tools` rather
+    // than `unknown` (Issue #1852): a host without deno is the environment,
+    // not the repository, and the pre-existing comparison must be able to
+    // tell the two apart before it decides a run failed on someone else's
+    // breakage.
     const why =
-      `[quality-gate] deno could not be located: ${denoResult.error.message} — every Deno check is reported FAILED`;
+      `[quality-gate] deno is not installed or not in PATH: ${denoResult.error.message} — every Deno check is reported FAILED`;
     console.error(why);
     allOutput.push(why);
     config.onProgress?.(why);
-    recordCheck(checks, "deno tests", "FAILED");
-    recordCheck(checks, "deno lint", "FAILED");
-    recordCheck(checks, "deno type check", "FAILED");
-    recordCheck(checks, "deno fmt", "FAILED");
+    recordCheck(checks, "deno tests", "FAILED", why);
+    recordCheck(checks, "deno lint", "FAILED", why);
+    recordCheck(checks, "deno type check", "FAILED", why);
+    recordCheck(checks, "deno fmt", "FAILED", why);
     const summary = formatSummary(checks, config.options.strict);
     return {
       ok: true,
@@ -1681,7 +1696,7 @@ export async function runQualityGate(
         `  ⏱  ${result.name}: ${(result.durationMs / 1000).toFixed(1)}s`,
       );
     }
-    recordCheck(checks, result.name, result.status);
+    recordCheck(checks, result.name, result.status, failedOutput(result));
   }
 
   // Record skipped checks for missing tools

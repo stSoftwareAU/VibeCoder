@@ -162,7 +162,9 @@ host builds and runs a Codex image rather than reusing the default one.
   CLI-only projects). Configuration is operator-side only — target repos carry
   no worker configuration.
 - **Milestone enhancements** — Progress notifications, configurable issue
-  ordering within milestones, periodic branch sync with the default branch, and
+  ordering within milestones, periodic branch sync with the default branch,
+  automatic roll-back of a stuck milestone branch (reverted children are
+  reopened and re-queued; a roll-back with nothing left escalates once), and
   milestone health diagnostics.
 - **Self-healing** — Shadow-copy execution, automatic repo resets, disk cleanup,
   failure recovery, rate-limit handling, and crash resilience keep the worker
@@ -480,7 +482,7 @@ flowchart LR
 | **[Merge Enforcement](docs/MERGE.md)**                                         | Operator manual for the dual-layer pre-merge gate: required checks, defer-and-retry, read-only default branch                                          |
 | **[Release Tagging](docs/RELEASE-TAGGING.md)**                                 | How every merge to `main` is tagged with the next patch semver: the patch-only rule, the `.release-floor` that moves the series, idempotency, concurrency, and the `tool-versions.json` manifest each release ships |
 | **[Release Notes](docs/RELEASE-NOTES.md)**                                     | Notes for the releases that change a configuration contract: what moved, the migration, the canary gate, and how to pin and roll back                  |
-| **[Human-authored PR Policy](docs/HUMAN-PR-POLICY.md)**                        | What the worker will and will not do to a PR it did not author: the two author lists, inviting it onto your PR, revoking, and the blocked-issue nudge  |
+| **[Human-authored PR Policy](docs/HUMAN-PR-POLICY.md)**                        | What the worker will and will not do to a PR it did not author: the two author lists, inviting it onto your PR, revoking, the blocked-issue nudge, and bot-authored PRs |
 | **[Add-repo Onboarding](docs/ADD-REPO.md)**                                    | Onboarding a new repository to the monitored set via an `add-repo:` issue: validation, label/branch-protection sync                                    |
 | **Switching Identity**                           | Migrating an existing deployment to a new worker GitHub identity                                                                                       |
 | **[CI-failure Issue Log Fetch](docs/ci-failure-issue-log-fetch.md)**           | Automatic root-cause log fetch for issue-mode CI failures: label config, build-reference parsing, and the provider trust boundary                      |

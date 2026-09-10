@@ -1,21 +1,24 @@
 /**
- * A stuck milestone sync escalates even with no `#NNN` in the title (#1465).
+ * A stuck milestone sync escalates even with no `#NNN` in the title (#1465),
+ * onto an issue that already exists (#1769).
  *
- * The escalation resolved its destination by parsing a tracking issue number
- * out of the milestone TITLE. A milestone whose title does not begin with
- * `#NNN` therefore had no destination at all: the failure streak still counted
- * to the threshold, the escalation returned `false`, and one line went to the
- * worker log. Every milestone open at the time was in that state, so the
- * escalation was off for effectively all of the fleet's work — and off
- * silently, because `false` is indistinguishable from "nothing to report".
- *
+ * The escalation used to resolve its destination by parsing a tracking issue
+ * number out of the milestone TITLE, and returned `false` when there was none:
+ * the streak counted to the threshold and one line went to the worker log.
  * That is how `milestone/fix-scan-issues-20260906` sat 32 commits behind
- * `main` for over a day with 14 conflicting files while PRs kept merging into
- * it, and nothing was raised.
+ * `main` for over a day with 14 conflicting files and nothing was raised.
  *
- * These tests pin the property that matters: an escalation that cannot find
- * its preferred destination must still reach somewhere a human looks, and it
- * must do so once rather than every cycle.
+ * Issue #1465 closed that silence by filing a `needs-human` issue instead —
+ * and Issue #1769 reversed **that** half: filing one issue per branch and per
+ * conflicting commit produced #1754, #1756, #1764, NEAT-AI-scorer#612/#613 and
+ * GRQ-AutoTrader#120, none of which anything ever closed. The destination is
+ * now an issue that already exists — the milestone's parent planning issue,
+ * else its oldest open child — and where neither exists the log line is the
+ * whole escalation.
+ *
+ * These tests pin what survived: an escalation that cannot find its preferred
+ * destination still reaches a human where one exists, it does so once rather
+ * than every cycle, and it never files a new issue.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -33,12 +36,20 @@ const UNPREFIXED_TITLE = "Fix scan issues 20260906";
 const PREFIXED_TITLE = "#974 CI gates";
 const MILESTONE_BRANCH = "milestone/fix-scan-issues-20260906";
 
+/** Options for {@link gateFailingDeps}. */
+interface DepsOptions {
+  /** Open children the milestone answers with (issue-shaped rows). */
+  children?: { number: number; title: string }[];
+  /** Log sink, when the test reads the log lines. */
+  log?: (message: string) => void;
+}
+
 /** Sync deps whose sync always fails the merge gate, recording gh calls. */
 function gateFailingDeps(
   calls: string[][],
   streakPath: string,
   milestoneTitle: string,
-  existingIssues = "[]",
+  options: DepsOptions = {},
 ): MilestoneBranchSyncDeps {
   return {
     repos: ["owner/repo"],
@@ -60,8 +71,10 @@ function gateFailingDeps(
           }]),
         );
       }
-      // The idempotency lookup for an already-filed diagnostic.
-      if (key.includes("issue list")) return Promise.resolve(existingIssues);
+      // The milestone's open children — the fallback destination (#1769).
+      if (key.includes("issues?milestone=")) {
+        return Promise.resolve(JSON.stringify(options.children ?? []));
+      }
       if (key.includes("branches/milestone")) {
         return Promise.resolve(MILESTONE_BRANCH);
       }
@@ -76,9 +89,7 @@ function gateFailingDeps(
           output: "CONFLICT (content): Merge conflict in setup.sh",
         }),
       }),
-    log: () => undefined,
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
+    log: options.log ?? (() => undefined),
     streakPath,
   };
 }
@@ -89,84 +100,84 @@ const createCalls = (calls: string[][]) =>
   calls.filter((c) => c[0] === "issue" && c[1] === "create");
 
 // ---------------------------------------------------------------------------
-// The gap: no `#NNN`, no escalation at all
+// The gap #1465 found: no `#NNN`, no escalation at all
 // ---------------------------------------------------------------------------
 
-Deno.test("milestone sync #1465 - a milestone with no #NNN title still escalates", async () => {
+Deno.test("milestone sync #1465 - a milestone with no #NNN title still escalates, onto its oldest open child (#1769)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "issue-1465-" });
   try {
     const calls: string[][] = [];
     const result = await syncMilestoneBranches(
-      gateFailingDeps(calls, milestoneSyncStreakPath(dir), UNPREFIXED_TITLE),
+      gateFailingDeps(calls, milestoneSyncStreakPath(dir), UNPREFIXED_TITLE, {
+        children: [
+          { number: 88, title: "A later sub-issue" },
+          { number: 41, title: "The oldest sub-issue" },
+        ],
+      }),
     );
     assert(result.ok);
     assertEquals(result.value.failed, 1, "the sync is reported as failed");
 
-    // The destination is a filed diagnostic rather than a tracking-issue
-    // comment, because there is no tracking issue to comment on.
-    const created = createCalls(calls);
+    const comments = commentCalls(calls);
     assertEquals(
-      created.length,
+      comments.length,
       1,
       `a stuck sync must reach somewhere a human looks; gh calls: ${
         JSON.stringify(calls)
       }`,
     );
-    const body = created[0]!.join(" ");
-    assertStringIncludes(body, MILESTONE_BRANCH);
+    assertEquals(comments[0]![2], "41", "the oldest open child carries it");
+    assertStringIncludes(comments[0]!.join(" "), MILESTONE_BRANCH);
+    assertEquals(createCalls(calls).length, 0, "no new issue is ever filed");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("milestone sync #1465 - the diagnostic is filed once, not every cycle", async () => {
+Deno.test("milestone sync #1465 - the escalation is posted once, not every cycle", async () => {
   const dir = await Deno.makeTempDir({ prefix: "issue-1465-" });
   try {
     const all: string[][] = [];
     const streakPath = milestoneSyncStreakPath(dir);
     for (let cycle = 0; cycle < 4; cycle++) {
       await syncMilestoneBranches(
-        gateFailingDeps(all, streakPath, UNPREFIXED_TITLE),
+        gateFailingDeps(all, streakPath, UNPREFIXED_TITLE, {
+          children: [{ number: 41, title: "The oldest sub-issue" }],
+        }),
       );
     }
     assertEquals(
-      createCalls(all).length,
+      commentCalls(all).length,
       1,
-      "exactly one diagnostic across four failing cycles",
+      "exactly one escalation across four failing cycles",
     );
+    assertEquals(createCalls(all).length, 0);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("milestone sync #1465 - an issue nobody can vouch for does not suppress the escalation", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "issue-1465-" });
+Deno.test("milestone sync #1769 - no parent and no open child is one log line, not an issue", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1769-" });
   try {
     const calls: string[][] = [];
-    // An open issue with exactly the diagnostic's title, authored by someone
-    // outside the fleet. A title-only dedup would read this as "already
-    // handled" and stay silent for ever — which is the very failure this
-    // escalation exists to prevent, so anyone able to open an issue could
-    // switch the alarm off. The lookup is author-verified
-    // (`marker_dedup_author_cap`), so an unvouched match is not evidence.
-    const impostor = JSON.stringify([{
-      number: 4242,
-      title: `Milestone branch sync is stuck: ${MILESTONE_BRANCH}`,
-      author: { login: "passer-by" },
-      body: "",
-    }]);
-    await syncMilestoneBranches(
-      gateFailingDeps(
-        calls,
-        milestoneSyncStreakPath(dir),
-        UNPREFIXED_TITLE,
-        impostor,
-      ),
-    );
+    const logs: string[] = [];
+    const streakPath = milestoneSyncStreakPath(dir);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      await syncMilestoneBranches(
+        gateFailingDeps(calls, streakPath, UNPREFIXED_TITLE, {
+          children: [],
+          log: (m) => logs.push(m),
+        }),
+      );
+    }
+
+    assertEquals(createCalls(calls).length, 0, "nothing is filed");
+    assertEquals(commentCalls(calls).length, 0, "there is nowhere to comment");
     assertEquals(
-      createCalls(calls).length,
+      logs.filter((l) => l.includes("no open children")).length,
       1,
-      "an unverified title match must not silence the escalation",
+      `said once, not every cycle; logs: ${JSON.stringify(logs)}`,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

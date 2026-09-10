@@ -1,9 +1,9 @@
 /**
  * Tests for the dependency-bump phase orchestrator (Issue #1613).
  *
- * Verifies the three scenarios called out in the issue's acceptance
- * criteria, exercised through `workOnIssueBumpDeps` with an injected
- * `BumpDepsDeps` stub:
+ * Verifies the scenarios called out in the issue's acceptance criteria,
+ * exercised through `workOnIssueBumpDeps` with an injected `BumpDepsDeps`
+ * stub:
  *   1. Script absent — phase is a no-op, behaves as before.
  *   2. Script present + clean bump — `state.bumpInfo` records the
  *      applied bump.
@@ -12,7 +12,9 @@
  *
  * Plus environment-variable propagation — the phase reads
  * `GH_TOKEN_HAS_WORKFLOW_SCOPE` and `VIBE_BUMP_QUARANTINE_HOURS` from
- * the parent process and threads them into the script's environment.
+ * the parent process and threads them into the script's environment — and
+ * the milestone-child skip (Issue #1775): a run whose PR targets a
+ * milestone branch never invokes the script.
  *
  * Australian English used throughout (behaviour, organisation, etc.).
  */
@@ -819,5 +821,136 @@ Deno.test(
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
+  },
+);
+
+// =============================================================================
+// Milestone child run skips the bump (Issue #1775)
+// =============================================================================
+
+Deno.test(
+  "workOnIssueBumpDeps - skips the script when the PR targets a milestone branch",
+  async () => {
+    const ctx = makeContext();
+    const state = makeState({
+      milestoneBranch: "milestone/1730-resolve-merge-conflicts",
+    });
+    let fileExistsCalled = false;
+    let runScriptCalled = false;
+    const bumpDeps = makeBumpDeps({
+      fileExists: () => {
+        fileExistsCalled = true;
+        return Promise.resolve(true);
+      },
+      runScript: () => {
+        runScriptCalled = true;
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+    });
+
+    const result = await workOnIssueBumpDeps(
+      ctx,
+      state,
+      createMockDeps(),
+      bumpDeps,
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(state.bumpInfo?.status, "skipped_milestone_child");
+    assertEquals(state.bumpInfo?.files, []);
+    assertEquals(runScriptCalled, false, "must not run bump-deps.sh");
+    assertEquals(
+      fileExistsCalled,
+      true,
+      "the skip is claimed only for a repo that actually has a script",
+    );
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - a milestone skip leaves the rejection streak untouched",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "bump-phase-milestone-" });
+    try {
+      const statePath = `${dir}/bump_script_failures.json`;
+      // Two rejections on default-branch runs build a streak...
+      for (let i = 0; i < 2; i++) {
+        await workOnIssueBumpDeps(
+          makeContext(),
+          makeState(),
+          createMockDeps(),
+          makeBumpDeps({
+            runScript: () => Promise.resolve({ exitCode: 7, output: "boom" }),
+          }),
+          statePath,
+        );
+      }
+      assertEquals(
+        (await loadBumpScriptStreaks(statePath))["org/repo"]?.count,
+        2,
+      );
+
+      // ...and a milestone child run neither clears nor advances it, because
+      // the script never ran.
+      await workOnIssueBumpDeps(
+        makeContext(),
+        makeState({ milestoneBranch: "milestone/1730-sync" }),
+        createMockDeps(),
+        makeBumpDeps(),
+        statePath,
+      );
+      assertEquals(
+        (await loadBumpScriptStreaks(statePath))["org/repo"]?.count,
+        2,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - a default-branch run still bumps (no milestone branch)",
+  async () => {
+    const ctx = makeContext();
+    const state = makeState();
+    let runScriptCalled = false;
+    const bumpDeps = makeBumpDeps({
+      runScript: () => {
+        runScriptCalled = true;
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+      getModifiedFiles: () => Promise.resolve(["deno.lock"]),
+    });
+
+    await workOnIssueBumpDeps(ctx, state, createMockDeps(), bumpDeps);
+
+    assertEquals(runScriptCalled, true, "default-branch runs still bump");
+    assertEquals(state.bumpInfo?.status, "applied");
+  },
+);
+
+Deno.test(
+  "workOnIssueBumpDeps - milestone child with no script reports absent, not skipped",
+  async () => {
+    const ctx = makeContext();
+    const state = makeState({ milestoneBranch: "milestone/1730-sync" });
+    let runScriptCalled = false;
+    const bumpDeps = makeBumpDeps({
+      fileExists: () => Promise.resolve(false),
+      runScript: () => {
+        runScriptCalled = true;
+        return Promise.resolve({ exitCode: 0, output: "" });
+      },
+    });
+
+    await workOnIssueBumpDeps(ctx, state, createMockDeps(), bumpDeps);
+
+    assertEquals(
+      state.bumpInfo?.status,
+      "absent",
+      "a repo with no bump script has no bump to claim it skipped",
+    );
+    assertEquals(runScriptCalled, false);
   },
 );

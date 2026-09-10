@@ -21,6 +21,7 @@ const CAUSES: readonly WipPreservationCause[] = [
   "killed",
   "external-sigterm",
   "scheduled-release",
+  "usage-limit",
 ];
 
 Deno.test("wip_commit_marker - recognises every worker-authored WIP subject", () => {

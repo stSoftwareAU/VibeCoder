@@ -44,6 +44,14 @@
 
 import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
 
+/**
+ * The `secret-assignment` rule's pattern, named so detection and replacement
+ * share one literal (Issue #1727). See the rule in `RULES` for what each group
+ * means and why every quantifier is bounded.
+ */
+const SECRET_ASSIGNMENT_PATTERN =
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!\*\*\*REDACTED)(?![{[])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|\S+)/gi;
+
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
 
@@ -57,6 +65,129 @@ interface RedactionRule {
   readonly name: string;
   readonly pattern: RegExp;
   readonly replace: (match: string, ...groups: string[]) => string;
+}
+
+/**
+ * The complete Markdown a cross-line assignment value can be, and no
+ * credential ever is (Issue #1727).
+ *
+ * Both alternatives match the **whole** value, and both are consulted only
+ * when the separator crossed a line break. Neither restriction is cosmetic —
+ * an earlier pass had this as a *prefix* test applied on any line, and that
+ * turned the chokepoint off: `SECRET: ```<40-char AWS key>``` ` and
+ * `API_KEY=![<key>` were published verbatim, because a value merely *opening*
+ * with a fence or an image was excluded whatever followed it. A fence line
+ * carries at most a language tag; an inline image closes its own brackets; a
+ * credential does neither.
+ *
+ * Every alternative is anchored at both ends with no nested quantifier, so
+ * the test is linear in the value length (the Issue #3942 linearity rule).
+ */
+const FENCE_VALUE = /^(?:`{3,}|~{3,})[A-Za-z0-9_+#-]*$/;
+
+/** A complete inline image — `![alt](path)` — as the whole value. */
+const IMAGE_VALUE = /^!\[[^\][]*\]\([^()]*\)$/;
+
+/** A value in matching quotes: explicit assignment syntax, not prose. */
+const QUOTED_VALUE = /^(?:"[^"]*"|'[^']*')$/;
+
+/**
+ * A single word with no digit, symbol or internal capital — the shape of an
+ * English sentence's first word.
+ *
+ * The length is **bounded**, and that bound is the rule (Issue #1727): an
+ * unbounded `[a-z]*` let a lower-case passphrase such as
+ * `correcthorsebatterystaple` pass as "a plain word" however long it ran,
+ * which is a credential shape, not a prose shape. Fifteen characters covers
+ * the words English sentences actually open with.
+ */
+const PLAIN_WORD = /^[A-Za-z][a-z]{0,14}$/;
+
+/** Emphasis markers wrapping a value: at most `***`, so the strip is linear. */
+const LEADING_EMPHASIS = /^[*_]{1,3}/;
+
+/** The closing half of {@link LEADING_EMPHASIS}, bounded for the same reason. */
+const TRAILING_EMPHASIS = /[*_]{1,3}$/;
+
+/**
+ * Shortest cross-line value still treated as a credential.
+ *
+ * Eight characters is shorter than anything a credential generator emits, and
+ * long enough to spare what prose actually opens a line with — `The`, `A`,
+ * `When`, `(see`, `It's`, `1.`, and an inline-code span such as `` `inline ``,
+ * whose value stops at the first space. A floor of six was tried and put back:
+ * it masked the opening of every sentence that began with a code span, which
+ * is the same class of defect as the fence this issue is about.
+ *
+ * The floor applies only across a line break, so an inline `PASSWORD=12345` is
+ * unaffected. A credential shorter than eight characters sitting alone on the
+ * line *after* its label is the accepted cost, and it is the cost the issue
+ * asked for ("minimum length"). A credential that short still carrying a
+ * provider prefix is masked by its own signature rule regardless.
+ */
+const MIN_CROSS_LINE_LENGTH = 8;
+
+/** Characters that end a line, so a value found past one is on a later line. */
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+
+/**
+ * Report whether a matched `secret-assignment` value is credential-shaped
+ * (Issue #1727).
+ *
+ * The rule's separator — `["']?\s*[=:]\s*` — spans line breaks, so a prose
+ * line ending in a credential-ish label adopted the *next* non-blank line as
+ * the assignment's value. A PR body whose lead-in read
+ * `… now picks a credential:` had the Mermaid fence on the following line
+ * published as the placeholder, and the diagram `CODING-STANDARDS.md` requires
+ * stopped rendering; the prose variant masked a sentence's first word.
+ *
+ * The label side of the rule is deliberately blunt and stays that way — it
+ * catches real secrets. Only the value is judged, and only when the separator
+ * crossed a line break. **An inline assignment is masked exactly as before**:
+ * `secret_scanning: enabled`, `PASSWORD=12345` and a value wrapped in
+ * backticks, or opening with `#`, `>` or `|` — all legitimate password
+ * characters — are untouched by this predicate. That boundary is load-bearing:
+ * judging inline values too is what let a fence-wrapped secret through.
+ *
+ * Across a line break the value must earn the mask: complete Markdown
+ * ({@link FENCE_VALUE}, {@link IMAGE_VALUE}) never does, a quoted value always
+ * does, and anything else needs {@link MIN_CROSS_LINE_LENGTH} characters and a
+ * shape that is not a {@link PLAIN_WORD}.
+ *
+ * Exported for direct boundary tests; {@link assignmentIsMasked} is its only
+ * caller in this module.
+ *
+ * @param value - The value the `secret-assignment` rule captured.
+ * @param sameLine - True when the separator did not cross a line break.
+ * @returns True when the value should be replaced with the placeholder.
+ */
+export function isCredentialShapedValue(
+  value: string,
+  sameLine: boolean,
+): boolean {
+  if (sameLine) return true;
+  if (FENCE_VALUE.test(value) || IMAGE_VALUE.test(value)) return false;
+  if (QUOTED_VALUE.test(value)) return true;
+  if (value.length < MIN_CROSS_LINE_LENGTH) return false;
+  // Emphasis markers belong to the rendering, not to the value inside them.
+  // The length floor above is measured on the whole value, so stripping them
+  // cannot drop a long value under it.
+  const scalar = value.replace(LEADING_EMPHASIS, "").replace(
+    TRAILING_EMPHASIS,
+    "",
+  );
+  return !PLAIN_WORD.test(scalar);
+}
+
+/**
+ * Apply {@link isCredentialShapedValue} to one `secret-assignment` match.
+ *
+ * The single place the separator's shape is turned into a `sameLine` verdict,
+ * so the replacement pass and {@link matchesSignatureRule} cannot drift apart
+ * (Issue #1727).
+ */
+function assignmentIsMasked(sep: string, value: string): boolean {
+  return isCredentialShapedValue(value, !LINE_TERMINATOR.test(sep));
 }
 
 /** Shortest wrap width the PEM-body fallback treats as a "long" line. */
@@ -377,12 +508,21 @@ const RULES: readonly RedactionRule[] = [
   // truncated, invalid JSON. Excluding `{` and `[` costs no coverage: a
   // credential never starts with either, and a secret nested inside the object
   // is still masked by this rule's own pass over the inner `"key": "value"`.
+  //
+  // The separator's `\s*` runs spans line breaks, so a prose line ending in a
+  // credential label adopted the *next* line as its value (Issue #1727) — a
+  // Mermaid fence was published as the placeholder and the diagram stopped
+  // rendering. `isCredentialShapedValue` judges the value before the
+  // substitution: Markdown structure is never a credential, and a value the
+  // separator reached across a line break must look like one. An inline
+  // assignment is unaffected, so the label side stays as blunt as it was.
   {
     name: "secret-assignment",
-    pattern:
-      /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!\*\*\*REDACTED)(?![{[])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|\S+)/gi,
-    replace: (_m, key: string, sep: string) =>
-      `${key}${sep}${REDACTION_PLACEHOLDER}`,
+    pattern: SECRET_ASSIGNMENT_PATTERN,
+    replace: (match: string, key: string, sep: string, value: string) =>
+      assignmentIsMasked(sep, value)
+        ? `${key}${sep}${REDACTION_PLACEHOLDER}`
+        : match,
   },
   // Space-separated CLI flag carrying a secret (Issue #3648). The
   // `secret-assignment` rule above requires an `=` or `:` separator, so a
@@ -446,9 +586,52 @@ const RULES: readonly RedactionRule[] = [
  * do the same job but trips semgrep's `detect-non-literal-regexp` rule, and a
  * dynamically-built regex is the wrong primitive here anyway — the patterns
  * are all hardcoded literals.
+ *
+ * The `secret-assignment` rule is the one exception: its match is not the
+ * whole decision, so it is detected through `detectsSecretAssignment`
+ * instead (Issue #1727).
  */
 function matchesSignatureRule(text: string): boolean {
-  return RULES.some((rule) => text.search(rule.pattern) !== -1);
+  return RULES.some((rule) =>
+    rule.pattern === SECRET_ASSIGNMENT_PATTERN
+      ? detectsSecretAssignment(text)
+      : text.search(rule.pattern) !== -1
+  );
+}
+
+/**
+ * Detect a `secret-assignment` the replacement pass would actually mask.
+ *
+ * The pattern alone is no longer the whole decision (Issue #1727), so a
+ * pattern-only scan made `containsSecret` disagree with `redactSecrets` — it
+ * reported a secret in a PR body whose only "secret" was a Mermaid fence after
+ * a `credential:` lead-in. Every candidate is put through
+ * `assignmentIsMasked`, the same verdict the rule's `replace` returns.
+ *
+ * Running *every* rule through `replace` and comparing would answer this too,
+ * and it was tried — but it silently narrowed the other rules:
+ * `pem-body-block`'s callback legitimately returns its input unchanged for a
+ * non-uniform line width, and that had been a detection. The other rules
+ * therefore keep their pattern scan; only this one consults its value
+ * predicate.
+ *
+ * `lastIndex` is saved and restored around the walk. The pattern is global and
+ * shared with the replacement pass, so a leaked offset would make the next
+ * scan depend on this one.
+ */
+function detectsSecretAssignment(text: string): boolean {
+  const pattern = SECRET_ASSIGNMENT_PATTERN;
+  const resume = pattern.lastIndex;
+  pattern.lastIndex = 0;
+  try {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      if (assignmentIsMasked(match[2] ?? "", match[3] ?? "")) return true;
+    }
+    return false;
+  } finally {
+    pattern.lastIndex = resume;
+  }
 }
 
 /**

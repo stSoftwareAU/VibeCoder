@@ -23,6 +23,13 @@
  * A check that is NOT diffable (deno test/lint/type-check, etc.) failing
  * means the PR likely touched code — never bypass in that case.
  *
+ * Issue #1852 adds the check-agnostic half of the same question. A repository
+ * whose OWN check is red on its default branch produces no findings to diff,
+ * so it failed the gate on every run and recorded a host health failure each
+ * time. `decidePreExistingGateFailure` compares the failing checks and their
+ * output against the untouched tree's instead: same checks, same lines, so the
+ * run reproduced a failure it did not cause and ends without failing.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation,
  * favour, centre).
  */
@@ -36,6 +43,7 @@ import {
   scanWorkflowsForHygiene,
   type WorkflowHygieneResult,
 } from "./workflow_hygiene_check.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 /**
  * The diffable check kinds the generic bypass can reason over. Each maps
  * one-to-one to a `GenericFinding.check` value and to a quality-gate
@@ -280,4 +288,154 @@ export function formatCarryoverFindings(findings: GenericFinding[]): string {
     "tracked separately and should NOT be modified as part of this change.",
   ];
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Pre-existing whole-gate failure (Issue #1852)
+// ---------------------------------------------------------------------------
+
+/**
+ * One quality-gate check that failed, with what it printed.
+ *
+ * The bypass above reasons over *findings*, which only the diffable checks
+ * produce. A repository whose own non-diffable check is red on its default
+ * branch has no findings to diff, so every run failed the gate on breakage
+ * it did not create, recorded a host health failure, and cooled the issue
+ * down — after which the next claim repeated the same doomed run. The
+ * comparison below is check-agnostic: it asks whether the post-change gate
+ * failed on the *same checks* with the *same output* as the untouched tree.
+ */
+export interface FailedCheck {
+  /** Quality-gate check name, as reported in `CheckResult.name`. */
+  name: string;
+  /** What that check printed. */
+  output: string;
+}
+
+/** Why {@link decidePreExistingGateFailure} decided as it did. */
+export type PreExistingGateReason =
+  /** Every failing check was already red, printing the same or less. */
+  | "pre_existing"
+  /** No baseline outcome, or the baseline gate passed. */
+  | "baseline_passed"
+  /** The baseline failed but recorded no per-check output to compare. */
+  | "baseline_unattributed"
+  /** The current run reported no failing check to attribute. */
+  | "no_failing_checks"
+  /** A check that was green on the untouched tree is now red. */
+  | "new_failing_check"
+  /** A check red at baseline is printing something it did not print then. */
+  | "new_output";
+
+/** Outcome of the pre-existing whole-gate failure decision. */
+export interface PreExistingGateDecision {
+  /** Whether this failure predates the run entirely. */
+  preExisting: boolean;
+  /** Machine-readable reason (logging/telemetry). */
+  reason: PreExistingGateReason;
+  /** Names of the checks red both on the untouched tree and now. */
+  checks: string[];
+  /** Normalised output lines the baseline did not have (empty when pre-existing). */
+  newLines: string[];
+}
+
+/** Escape sequences a terminal-aware check writes around its output. */
+// deno-lint-ignore no-control-regex -- ANSI SGR sequences are control chars.
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+
+/** A wall-clock measurement, which differs run to run on identical content. */
+const DURATION_RE = /\b\d+(?:[.,]\d+)?\s*(?:ns|µs|us|ms|s|m)\b/g;
+
+/** The per-check duration line the gate appends (Issue #86). */
+const TIMING_LINE_RE = /⏱/;
+
+/**
+ * Reduce gate output to the lines that identify *what failed*, dropping what
+ * differs between two runs over identical content.
+ *
+ * Secrets are masked first, because a cached baseline is stored redacted
+ * while the live run's output is raw — comparing the two unmasked would read
+ * a masked credential as a brand-new line and refuse every comparison.
+ */
+export function normaliseGateOutputLines(output: string): string[] {
+  return redactSecrets(output)
+    .replace(ANSI_ESCAPE_RE, "")
+    .split("\n")
+    .map((line) => line.replace(DURATION_RE, "<duration>").trim())
+    .map((line) => line.replace(/\s+/g, " "))
+    .filter((line) => line !== "" && !TIMING_LINE_RE.test(line));
+}
+
+/** The failing checks of a gate run, with the output each one printed. */
+export function failedChecks(
+  checks: readonly { name: string; status: string; output?: string }[],
+): FailedCheck[] {
+  return checks
+    .filter((check) => check.status === "FAILED")
+    .map((check) => ({ name: check.name, output: check.output ?? "" }));
+}
+
+/**
+ * Decide whether a failing gate run reproduces a failure the untouched tree
+ * already had (Issue #1852).
+ *
+ * True only when the run is **entirely** accounted for by the baseline: every
+ * failing check was failing then, and every line it prints now was printed
+ * then. A check that has gone red since, or a red check that has gained a
+ * line, is a regression this run owns — today's failure behaviour stands.
+ *
+ * Fail-closed by construction: a missing baseline, a baseline that recorded
+ * no per-check output (an entry written before this comparison existed), or
+ * a run reporting no failing check at all all decide `false`.
+ *
+ * @param baseline - The untouched tree's outcome, or `undefined` when none
+ *   was captured.
+ * @param current - The failing checks of the post-change run.
+ */
+export function decidePreExistingGateFailure(
+  baseline:
+    | { passed: boolean; failedChecks?: readonly FailedCheck[] }
+    | undefined,
+  current: readonly FailedCheck[],
+): PreExistingGateDecision {
+  const no = (
+    reason: PreExistingGateReason,
+    newLines: string[] = [],
+  ): PreExistingGateDecision => ({
+    preExisting: false,
+    reason,
+    checks: [],
+    newLines,
+  });
+
+  if (!baseline || baseline.passed) return no("baseline_passed");
+  const baselineFailed = baseline.failedChecks ?? [];
+  if (baselineFailed.length === 0) return no("baseline_unattributed");
+  if (current.length === 0) return no("no_failing_checks");
+
+  const baselineByName = new Map(
+    baselineFailed.map((check) => [check.name, check]),
+  );
+
+  for (const check of current) {
+    if (!baselineByName.has(check.name)) return no("new_failing_check");
+  }
+
+  const newLines: string[] = [];
+  for (const check of current) {
+    const before = new Set(
+      normaliseGateOutputLines(baselineByName.get(check.name)?.output ?? ""),
+    );
+    for (const line of normaliseGateOutputLines(check.output)) {
+      if (!before.has(line)) newLines.push(`${check.name}: ${line}`);
+    }
+  }
+  if (newLines.length > 0) return no("new_output", newLines);
+
+  return {
+    preExisting: true,
+    reason: "pre_existing",
+    checks: current.map((check) => check.name),
+    newLines: [],
+  };
 }

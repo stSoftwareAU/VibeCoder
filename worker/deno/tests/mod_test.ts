@@ -226,9 +226,12 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // with the rest of the GitHub Pages publishing pipeline — the repository is
   // public, so nothing publishes the READMEs to a Jekyll site any more
   // (count 150 -> 148).
+  // Issue #1609 added `sweep-drift` (count 148 -> 149), the report that
+  // lists modules added or modified since each sweep slice's `sweptAt`.
   // Issue #1697 added `codex-budget`, the opt-in read-only diagnostic that
-  // prints redacted Codex budget metadata (count 148 -> 149).
-  assertEquals(commands.length, 149);
+  // prints redacted Codex budget metadata (count 149 -> 150).
+  assertEquals(commands.length, 150);
+  assertEquals(commands.includes("sweep-drift"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
   assertEquals(commands.includes("container-egress-probe"), true);

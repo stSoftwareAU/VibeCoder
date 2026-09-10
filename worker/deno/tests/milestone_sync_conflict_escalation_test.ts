@@ -35,6 +35,8 @@ function deps(
     milestoneTitle: string;
     conflict?: MilestoneSyncConflict;
     streakPath?: string;
+    /** The milestone's open children — the #1769 fallback destination. */
+    children?: { number: number; title: string }[];
   },
 ): MilestoneBranchSyncDeps {
   const built: MilestoneBranchSyncDeps = {
@@ -57,6 +59,9 @@ function deps(
           }]),
         );
       }
+      if (key.includes("issues?milestone=")) {
+        return Promise.resolve(JSON.stringify(options.children ?? []));
+      }
       if (key.includes("branches/milestone")) {
         return Promise.resolve(MILESTONE_BRANCH);
       }
@@ -78,8 +83,6 @@ function deps(
         },
       }),
     log: () => undefined,
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
   };
   if (options.streakPath) built.streakPath = options.streakPath;
   return built;
@@ -185,7 +188,7 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - a conflict on a milestone with no tracking issue is filed where a human sees it (Issues #1558, #1465)",
+  "milestone sync - a conflict on a milestone with no tracking issue lands on its oldest open child (Issues #1558, #1769)",
   async () => {
     const dir = await Deno.makeTempDir({ prefix: "issue-1558-diagnostic-" });
     try {
@@ -194,23 +197,22 @@ Deno.test(
         milestoneTitle: "Drift with no tracking issue",
         conflict: CONFLICT,
         streakPath: milestoneSyncStreakPath(dir),
+        children: [
+          { number: 77, title: "A later sub-issue" },
+          { number: 33, title: "The oldest sub-issue" },
+        ],
       }));
 
       assert(result.ok);
       assertEquals(
-        commentCalls(calls).length,
+        createCalls(calls).length,
         0,
-        "there is no issue to comment on",
+        "no diagnostic issue is filed for a milestone sync any more",
       );
-      const created = createCalls(calls);
-      assertEquals(created.length, 1, "the conflict is filed instead");
-      const args = created[0]!;
-      const body = args[args.indexOf("--body") + 1] ?? "";
-      // Titled per branch AND per conflicting commit, so a branch that
-      // conflicts twice against different commits raises two reports.
-      const title = args[args.indexOf("--title") + 1] ?? "";
-      assertStringIncludes(title, "milestone/drift-with-no-tracking-issue");
-      assertStringIncludes(title, DEFAULT_SHA.slice(0, 8));
+      const comments = commentCalls(calls);
+      assertEquals(comments.length, 1, "the conflict is reported once");
+      assertEquals(comments[0]![2], "33", "on the oldest open child");
+      const body = comments[0]![comments[0]!.indexOf("--body") + 1] ?? "";
       assertStringIncludes(body, DEFAULT_SHA);
       assertStringIncludes(body, "worker/deno/lib/scan_content.ts");
     } finally {

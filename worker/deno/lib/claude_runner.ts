@@ -247,6 +247,21 @@ export interface ClaudeRunResult {
    * agent work; `resetEpochMs` is present when the message named a time.
    */
   usageLimit?: { waitSeconds: number; resetEpochMs?: number };
+  /**
+   * No credential in the pool passed the pre-spawn quota gate, so **no child
+   * was spawned** (Issue #1669). Carried beside {@link usageLimit} so a phase
+   * can tell "this token is spent, another may serve" from "every token is
+   * spent": the execute phase switches credential on the first and parks the
+   * work on the issue branch on the second (Issue #1670).
+   */
+  noEligibleCredential?: boolean;
+  /**
+   * Billed `claude` invocations this call made, against the #3648 call
+   * ceiling. Reported so a caller that makes a **second** call for the same
+   * unit of work — the execute phase's credential switch (Issue #1670) —
+   * can hand it what is left of the budget instead of a fresh one.
+   */
+  invocationsBilled?: number;
   /** Path to the output file (if written). */
   outputFile?: string;
   /** The output text from Claude. */
@@ -2500,6 +2515,15 @@ async function runRetryLadder(
    */
   let invokedExtensions: ExtensionTelemetry | undefined;
 
+  // Issue #3648: call-scoped invocation budget. `retryCount` and
+  // `totalWaitTime` are deliberately reset on each fallback rung so each model
+  // tier gets a fresh backoff, which means neither bounds the total spend of
+  // the call. This counter never resets, and rides out on every result
+  // (`invocationsBilled`) so a caller making a second call — the execute
+  // phase's credential switch, Issue #1670 — can spend what is left of the
+  // budget rather than a fresh one.
+  let totalInvocations = 0;
+
   /**
    * The last invocation's normalised decode and classification (Issue #1695),
    * stamped onto every result the retry wrapper builds for itself — a
@@ -2512,15 +2536,16 @@ async function runRetryLadder(
   let invokedAgentFailure: AgentFailure | undefined;
 
   /**
-   * Thread the pre-flight degraded flag, the invoked provider and the
-   * extension telemetry onto a run result. The degraded fields stay absent
-   * when the reroute did not fire, so a normal run's result shape is
-   * otherwise unchanged.
+   * Thread the pre-flight degraded flag, the invoked provider, the extension
+   * telemetry and what this call billed onto a run result. The degraded
+   * fields stay absent when the reroute did not fire, so a normal run's
+   * result shape is otherwise unchanged.
    */
   const withPreflight = (value: ClaudeRunResult): ClaudeRunResult => ({
     ...(invokedAgentOutput ? { agentOutput: invokedAgentOutput } : {}),
     ...(invokedAgentFailure ? { agentFailure: invokedAgentFailure } : {}),
     ...value,
+    invocationsBilled: totalInvocations,
     ...(invokedProvider ? { provider: invokedProvider } : {}),
     ...(invokedExtensions ? { extensions: invokedExtensions } : {}),
     ...(preflightDegraded
@@ -2554,12 +2579,6 @@ async function runRetryLadder(
   let retryCount = 0;
   let totalWaitTime = 0;
   let waitInterval = initialWaitInterval;
-  // Issue #3648: call-scoped invocation budget. `retryCount` and
-  // `totalWaitTime` are deliberately reset on each fallback rung so each model
-  // tier gets a fresh backoff, which means neither bounds the total spend of
-  // the call. This counter never resets.
-  let totalInvocations = 0;
-
   while (true) {
     // This ladder was cancelled (Issue #1667): a watchdog abandoned the
     // handler while the loop slept between attempts. Checked ahead of the

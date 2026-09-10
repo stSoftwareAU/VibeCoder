@@ -334,6 +334,30 @@ async function notePrimaryQuotaExhaustion(
       return;
     }
 
+    // Issue #1888: a refusal that lands on the window boundary. The probe
+    // still reports the window that just closed — `remaining` spent, `reset`
+    // already behind us — and reading the reset from `gh api rate_limit`
+    // instead would name the NEW window's, an hour out. The 04:47Z run of
+    // 2026-09-10 latched exactly that way and sat out a full hour with
+    // used=0/5000. A closed window's exhaustion has lifted: hold the short
+    // cool-down and let the next call re-probe.
+    if (probe.ok && probe.value.reset <= now) {
+      const waitSeconds = SECONDARY_LIMIT_BACKOFF_SECONDS;
+      latchPrimaryQuota(now + waitSeconds, now, "secondary");
+      if (workDir) {
+        await writeRateLimitSignal(workDir, waitSeconds, undefined, "github");
+      }
+      defaultLogger.warn(
+        `GitHub refused a GraphQL call as rate-limited for a window that ` +
+          `has already closed (reset ${
+            formatRateLimitReset(probe.value.reset, now)
+          }) — a boundary refusal, not the new hour's quota. Pausing ` +
+          `GraphQL-backed gh calls for ${waitSeconds}s, then re-probing ` +
+          `(Issue #1888).`,
+      );
+      return;
+    }
+
     const resetEpoch = probe.ok && probe.value.reset > now
       ? probe.value.reset
       : await readGraphqlResetEpoch(now);
