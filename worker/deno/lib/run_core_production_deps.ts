@@ -345,6 +345,7 @@ import { setScanCacheForCloseInvalidation } from "./issue_close_notifier.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { SlotGovernor } from "./slot_governor.ts";
 import type { RunOutcome } from "./run_outcome.ts";
+import type { MilestoneConflictAgentRequest } from "./milestone_conflict_ladder.ts";
 import {
   resetAgentRunsTerminating,
   terminateActiveAgentRuns,
@@ -2602,12 +2603,18 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 1.72: Milestone branch sync (Issue #1238) --
-    async syncMilestoneBranches() {
+    async syncMilestoneBranches(opts?: HandlerExecuteOptions) {
       if (!config.syncMilestoneBranches) {
         return { ok: true, value: undefined };
       }
       try {
-        await syncMilestoneBranchesFn(repos, config, logger, env);
+        await syncMilestoneBranchesFn(
+          repos,
+          config,
+          logger,
+          env,
+          opts?.deadlineEpochMs,
+        );
         return { ok: true, value: undefined };
       } catch (err) {
         return {
@@ -4499,6 +4506,12 @@ async function syncMilestoneBranchesFn(
   config: WorkerConfig,
   logger: Logger,
   env: EnvLookup,
+  /**
+   * The handler's watchdog deadline (Issue #1778). The sweep offers its
+   * single conflict-agent rung only while this covers a whole agent run;
+   * absent, the pass is unbounded and the rung is offered on its own merits.
+   */
+  deadlineEpochMs?: number,
 ): Promise<void> {
   const { syncMilestoneBranches } = await import("./milestone_branch_sync.ts");
   const { milestoneSyncStreakPath } = await import(
@@ -4552,21 +4565,14 @@ async function syncMilestoneBranchesFn(
     repos,
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
-    syncBranchFn: async (repo, milestoneBranch, defaultBranch) => {
-      return await syncMilestoneBranchWithDefault(
-        milestoneBranch,
-        defaultBranch,
-        { cwd: `${workDir}/${repo.split("/")[1]}` },
-        // Issue #589: named so the sync can raise a PR when a repository
-        // rule refuses the direct push.
-        repo,
-        // The default gates: the repository's own type check, and the
-        // stricter resolution gate derived from it.
-        undefined,
-        undefined,
-        // Issue #1777: the last rung before a human. It runs in the very
-        // clone the merge conflicted in, against a branch target.
-        (request) =>
+    syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
+      // Issue #1778: the cycle grants the agent rung to at most one branch,
+      // and only while the handler's budget covers a whole run. A branch
+      // that was not granted it is handed no agent at all, so the ladder
+      // stops after the deterministic rules rather than starting a run the
+      // watchdog would kill mid-edit (#1693).
+      const agentFn = syncOptions.agentAllowed
+        ? (request: MilestoneConflictAgentRequest) =>
           runMergeConflictAgent({
             repo,
             target: { kind: "branch", intoBranch: request.milestoneBranch },
@@ -4585,7 +4591,22 @@ async function syncMilestoneBranchesFn(
             },
             logger,
             runAgent: runClaudeWithRetry,
-          }),
+          })
+        : undefined;
+      return await syncMilestoneBranchWithDefault(
+        milestoneBranch,
+        defaultBranch,
+        { cwd: `${workDir}/${repo.split("/")[1]}` },
+        // Issue #589: named so the sync can raise a PR when a repository
+        // rule refuses the direct push.
+        repo,
+        // The default gates: the repository's own type check, and the
+        // stricter resolution gate derived from it.
+        undefined,
+        undefined,
+        // Issue #1777: the last rung before a human. It runs in the very
+        // clone the merge conflicted in, against a branch target.
+        agentFn,
         logger,
       );
     },
@@ -4600,6 +4621,12 @@ async function syncMilestoneBranchesFn(
     // tracking issue (proposal 2).
     emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
     streakPath: milestoneSyncStreakPath(workDir),
+    // Issue #1778: the conflict ledger's pacing and the one-agent-per-cycle
+    // bound both read the handler's own budget. The agent timeout stated
+    // here is the one `runMergeConflictAgent` is bound to above, so a rung
+    // is never started on a promise the watchdog then breaks (#1693).
+    ...(deadlineEpochMs !== undefined ? { deadlineEpochMs } : {}),
+    agentTimeoutMs: config.claudeTimeout * 1000,
   });
 }
 

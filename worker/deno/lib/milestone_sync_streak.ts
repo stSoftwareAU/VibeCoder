@@ -81,11 +81,14 @@ export interface SyncStreakEntry {
    */
   conflictEscalatedSha?: string;
   /**
-   * The default-branch commit whose *unresolvable* conflict has already been
-   * escalated with the prepared analysis (Issue #1559). Tracked apart from
-   * {@link conflictEscalatedSha} — which records a conflict the worker
-   * resolved and merely reported — so a report about the same commit never
-   * suppresses the "only a human can settle this" escalation, or the reverse.
+   * The default-branch commit whose *unresolvable* conflict was escalated
+   * with the prepared analysis (Issue #1559).
+   *
+   * Nothing writes it since Issue #1778: that escalation fired on the first
+   * conflicting commit, before any of the three automatic attempts had been
+   * spent, and the conflict budget replaced it. The field is still read and
+   * carried so a `milestone_sync_failures.json` written before #1778 loads
+   * unchanged rather than losing a key on the next save.
    */
   analysisEscalatedSha?: string;
   /**

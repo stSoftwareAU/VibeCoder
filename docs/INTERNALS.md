@@ -3344,9 +3344,9 @@ itself — one constant, two consumers, so the two ladders cannot drift apart
 A PR carries its attempt history in marker comments on the PR; a milestone
 branch has nowhere to write one, so the ledger is persisted per branch in
 `milestone_sync_failures.json` beside the failure streak and survives worker
-restarts. The ledger and the rules below are the **state and the pure helpers**; the sync
-pass already writes `lastSyncedDefaultSha` through it for the cadence gate
-(Issue #1776), and Issue #1778 wires the conflict *attempts* it charges. Each entry carries `conflictAttempts` (concluded failures),
+restarts. The sync pass writes `lastSyncedDefaultSha` through it for the
+cadence gate (Issue #1776) and charges the conflict *attempts* around every
+merge it makes (Issue #1778). Each entry carries `conflictAttempts` (concluded failures),
 `attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
 (`at`, `outcome`, `reason`, `defaultSha`), `deferUntil`, `lastSyncedDefaultSha`
 and `rollbacks`. Every field is optional and every malformed field is dropped,
@@ -3394,6 +3394,51 @@ stateDiagram-v2
     Open --> Idle: resetConflictLedgerOnSuccess
     Exhausted --> Idle: resetConflictLedgerOnSuccess
 ```
+
+##### What the sync pass charges, cycle by cycle
+
+[milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts) spends
+those helpers around every merge it makes (Issue #1778). Before the merge it
+concludes any attempt a previous run left open as `disrupted`, skips the branch
+outright when `isConflictAttemptDue` is false — `skipped: conflict attempt not
+due until <deferUntil>` — and otherwise opens an attempt and **persists it
+before the merge starts**, so a run killed mid-merge leaves the marker the next
+cycle reads.
+
+The conclusion is decided by `judgeSyncFailure`, and only one shape of failure
+is the branch's to answer for:
+
+| What the merge did                                             | Ledger outcome                             |
+| -------------------------------------------------------------- | ------------------------------------------ |
+| Conflicted and every rung left it undecided                     | `failed` — one attempt charged, cooldown set |
+| Conflicted while the cycle's agent rung was already spent       | `not-charged` — `agent deferred: cycle budget` |
+| Merge gate refused the merged tree or the resolution            | `not-charged` — the gate keeps its own escalation |
+| A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
+| Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
+| Merged                                                          | `resetConflictLedgerOnSuccess`             |
+
+**Nothing is posted while an attempt remains.** A conflict failure produces one
+log line — `conflict attempt n of 3 failed at rung <rung>` — and no comment, no
+label and no issue. The per-conflict analysis escalation Issue #1559 posted on
+the first conflicting commit is gone: it fired before any of the three
+automatic attempts had been spent, which is exactly the "needs-human while a
+rung remains" this budget removes. On the third concluded failure the branch is
+handed to the roll-back (`rollbackFn`); until that wiring lands the default
+logs `budget exhausted: roll-back not yet available` and still posts nothing.
+
+**One agent run per cycle, across every repo and milestone.** The ladder's
+agent rung is offered to the first branch that actually collides while holding
+the grant, and only while `cycleCoversAgentRun` says the handler's remaining
+budget covers a whole agent run plus the work around it — the merge-conflict
+drain's "too little of the cycle left" shape, spending the drain's own
+`DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT` and
+`DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS`. Every other conflicting branch that
+cycle climbs the triage and the deterministic rules only, and its attempt is
+concluded `not-charged`. An agent started with too little cycle left is killed
+mid-edit by the watchdog, and Issue #1693 is the record of what charging that
+kill costs — so the milestone ladder never charges it either. Priority 1.72 is
+declared `agentBacked` for the same reason: the handler that spawns that agent
+needs the cycle-deadline watchdog rather than the flat 600-second one.
 
 #### 🔙 Rolling a stuck milestone branch back
 
