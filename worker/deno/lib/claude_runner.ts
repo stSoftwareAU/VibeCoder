@@ -15,6 +15,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { AgentDecodedOutput, AgentFailure } from "./agent_output.ts";
 import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
 import {
   type ClaudeRateLimitEvent,
@@ -146,6 +147,7 @@ import type { SessionResumeState } from "./session_resume.ts";
 import {
   activeAgentProvider,
   type AgentProviderSelector,
+  CLAUDE_PROVIDER_ID,
   selectAgentProvider,
 } from "./agent_provider.ts";
 
@@ -204,6 +206,11 @@ export function buildClaudeFailureLog(input: {
     (stderrTail ? `; stderr tail:\n${stderrTail}` : " (stderr empty)");
 }
 export type { RunStats } from "./run_stats.ts";
+export type {
+  AgentDecodedOutput,
+  AgentFailure,
+  AgentFailureCategory,
+} from "./agent_output.ts";
 
 /** Default error scan tail lines. */
 const DEFAULT_ERROR_SCAN_TAIL_LINES = 30;
@@ -385,6 +392,30 @@ export interface ClaudeRunResult {
    * (`"fable-unavailable (pre-flight health probe)"`).
    */
   preflightDegradedReason?: string;
+  /**
+   * This invocation decoded into the provider-neutral contract (Issue #1695).
+   *
+   * The agent's answer with its source, the provider's session identity,
+   * usage, progress and terminal status, plus every structured error event
+   * verbatim. Present whenever the run's provider has an output adapter;
+   * absent for a provider whose CLI events are not decoded yet, which is an
+   * absent decode rather than one vendor's events read with another's parser.
+   */
+  agentOutput?: AgentDecodedOutput;
+  /**
+   * This invocation's failure, normalised (Issue #1695).
+   *
+   * A named category — authentication, model-unavailable, quota-exhausted,
+   * rate-limit, network, invalid-session, timeout, out-of-memory, cancelled
+   * or task-failure — with the evidence it was read from, the quota scope and
+   * reset where the provider stated them, and any retry-after. Absent when
+   * the run did not fail, which is what keeps a success that merely *quotes*
+   * a rate limit from reading as a refusal.
+   *
+   * Reporting only: the retry, wait and model-fallback ladder below is
+   * unchanged by it.
+   */
+  agentFailure?: AgentFailure;
   /**
    * Id of the coding-agent provider that produced this result (Issue #4109).
    *
@@ -1134,7 +1165,7 @@ export async function runClaudeWithTimeout(
   // round or a long issue thread exceeds that — "Argument list too long"
   // at spawn, observed live in container mode.
   const promptViaStdin = provider.promptTransport === "stdin";
-  const args = provider.buildInvocation({
+  const invocationRequest = {
     prompt,
     systemPrompt,
     model,
@@ -1144,8 +1175,14 @@ export async function runClaudeWithTimeout(
     disallowedTools,
     sessionResumeState: options.sessionResumeState,
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
+  };
+  const args = provider.buildInvocation({
+    ...invocationRequest,
     promptViaStdin,
   });
+  const stdinPayload = promptViaStdin
+    ? (provider.stdinBody?.(invocationRequest) ?? prompt)
+    : prompt;
 
   const timeoutMs = timeoutSeconds * 1000;
   const noOutputMs = noOutputTimeout > 0 ? noOutputTimeout * 1000 : 0;
@@ -1309,10 +1346,10 @@ export async function runClaudeWithTimeout(
         prefix: "vibe-agent-prompt-",
         suffix: ".md",
       });
-      await Deno.writeTextFile(promptFilePath, prompt);
+      await Deno.writeTextFile(promptFilePath, stdinPayload);
       logger?.info(
         `Prompt file: ${promptFilePath} (${
-          new TextEncoder().encode(prompt).length
+          new TextEncoder().encode(stdinPayload).length
         } bytes, streamed to the agent's stdin)`,
       );
     }
@@ -2109,11 +2146,18 @@ export async function runClaudeWithTimeout(
     const rawOutput = new TextDecoder().decode(stdoutBytes);
     const rateLimitEvents = parseRateLimitEvents(rawOutput);
     const rateLimitEvent = rateLimitEvents.at(-1);
-    const output = extractStreamJsonText(rawOutput);
     const stderrBytes = concatChunks(stderrChunks);
     const stderr = stripEscapeCodes(
       new TextDecoder().decode(stderrBytes),
     ).trim();
+
+    // Decode through the provider's own adapter (Issue #1695). The descriptor
+    // names it, so this call site knows no vendor: Claude's adapter returns
+    // exactly what `extractStreamJsonText` returned, and a provider with no
+    // adapter yet keeps that shared extraction rather than being decoded with
+    // another vendor's parser.
+    const agentOutput = provider.output?.decode(rawOutput);
+    const output = agentOutput?.text ?? extractStreamJsonText(rawOutput);
 
     // Resolve the requested model and effort once (Issue #2392, #2647) so both
     // credit logging and the per-run stats reuse the same resolution rather
@@ -2130,21 +2174,25 @@ export async function runClaudeWithTimeout(
     // model/effort, token usage, turn count, and durations. Parsed from the
     // same raw stream-json; the effort string is passed through verbatim so
     // new levels (e.g. xhigh, #2620) flow untouched.
-    const runStats = buildRunStats(rawOutput, {
-      requestedModel: resolvedModel,
-      ...(resolvedEffort ? { effort: resolvedEffort } : {}),
-      wallClockMs: clock.now() - startMs,
-      // Attribute the run to the provider that produced it (Issue #4109).
-      provider: provider.id,
-    });
+    const runStats = {
+      ...buildRunStats(rawOutput, {
+        requestedModel: resolvedModel,
+        ...(resolvedEffort ? { effort: resolvedEffort } : {}),
+        wallClockMs: clock.now() - startMs,
+        // Attribute the run to the provider that produced it (Issue #4109).
+        provider: provider.id,
+      }),
+      ...(agentOutput?.usage ? { tokenUsage: agentOutput.usage } : {}),
+    };
 
     // Anthropic prompt-cache effectiveness for this invocation (Issue #4282).
     // Distinct from the disk prompt cache logged above: this is the share of
     // prompt tokens the API served from its own cache. Logging it per
     // invocation makes a prefix regression visible at the run that caused it,
-    // not a fortnight later in the bill.
+    // not a fortnight later in the bill. Codex usage is measured but is not
+    // Anthropic's cache, so the line stays Claude-only (Issue #1701).
     const cacheRate = computeCacheHitRate(runStats.tokenUsage);
-    if (cacheRate.measured) {
+    if (cacheRate.measured && provider.id === CLAUDE_PROVIDER_ID) {
       const context = `${repo ?? "unknown"} phase=${phase ?? "unknown"}`;
       logger?.info(
         `Anthropic prompt cache: ${formatCacheHitRate(cacheRate)} ${context}`,
@@ -2174,11 +2222,16 @@ export async function runClaudeWithTimeout(
       ...(phase ? { phase } : {}),
       ...(billedModel ? { model: billedModel } : {}),
     });
-    if (providerUsage.warning) logger?.warn(providerUsage.warning);
+    const tokenUsage = agentOutput?.usage ?? providerUsage.usage;
+    const usageUnknown = agentOutput?.usage
+      ? false
+      : providerUsage.usageUnknown;
+    if (!agentOutput?.usage && providerUsage.warning) {
+      logger?.warn(providerUsage.warning);
+    }
 
     // Log credit usage (Issue #1074) — fire-and-forget, never block execution
     if (creditLogDir && workerName) {
-      const tokenUsage = providerUsage.usage;
       logInvocation({
         logDir: creditLogDir,
         workerName,
@@ -2190,7 +2243,7 @@ export async function runClaudeWithTimeout(
         provider: provider.id,
         ...(options.fallbackFrom ? { fallbackFrom: options.fallbackFrom } : {}),
         ...(resolvedEffort ? { effort: resolvedEffort } : {}),
-        ...(providerUsage.usageUnknown ? { usageUnknown: true } : {}),
+        ...(usageUnknown ? { usageUnknown: true } : {}),
         tokenUsage,
       }).catch((err: unknown) => {
         // Credit logging must never fail the main flow — but it must never be
@@ -2220,6 +2273,19 @@ export async function runClaudeWithTimeout(
     // silent run-end that lets the phase continue over a half-done tree.
     const ourShutdown = isAgentRunsTerminating();
     const terminated = gotSigterm && ourShutdown;
+
+    // Classify the run into the shared failure contract (Issue #1695), now
+    // that the process facts are settled: a cancelled or watchdog-killed run
+    // is never re-explained by whatever its output happened to end with.
+    const normalisedFailure = provider.output && agentOutput
+      ? provider.output.classify({
+        stdout: rawOutput,
+        stderr,
+        exitCode: timedOut ? TIMEOUT_EXIT_CODE : status.code,
+        timedOut,
+        cancelled: terminated || scheduledRelease !== undefined,
+      }, agentOutput)
+      : undefined;
     const externalSigterm = gotSigterm && !ourShutdown;
     // The child died from outside, or our kill never settled: collect the
     // descendants it left behind before anything else starts (Issue #4382).
@@ -2296,6 +2362,11 @@ export async function runClaudeWithTimeout(
           : {}),
         ...(killDiagnostics !== undefined ? { killDiagnostics } : {}),
         ...(extensions ? { extensions } : {}),
+        // The normalised decode/classification (Issue #1695). Additive: every
+        // pre-existing field above is unchanged, so a consumer that has never
+        // heard of the contract reads the same result it always did.
+        ...(agentOutput ? { agentOutput } : {}),
+        ...(normalisedFailure ? { agentFailure: normalisedFailure } : {}),
         runStats,
         provider: provider.id,
         ...(rateLimitEvent ? { rateLimitEvent } : {}),
@@ -2586,12 +2657,25 @@ async function runRetryLadder(
   let totalInvocations = 0;
 
   /**
+   * The last invocation's normalised decode and classification (Issue #1695),
+   * stamped onto every result the retry wrapper builds for itself — a
+   * rate-limit give-up, a fallback exhaustion, an ordinary failure — so the
+   * contract survives the wrapper the way the provider id does. A result that
+   * already carries its own (the invocation's own value, returned verbatim)
+   * keeps it.
+   */
+  let invokedAgentOutput: AgentDecodedOutput | undefined;
+  let invokedAgentFailure: AgentFailure | undefined;
+
+  /**
    * Thread the pre-flight degraded flag, the invoked provider, the extension
    * telemetry and what this call billed onto a run result. The degraded
    * fields stay absent when the reroute did not fire, so a normal run's
    * result shape is otherwise unchanged.
    */
   const withPreflight = (value: ClaudeRunResult): ClaudeRunResult => ({
+    ...(invokedAgentOutput ? { agentOutput: invokedAgentOutput } : {}),
+    ...(invokedAgentFailure ? { agentFailure: invokedAgentFailure } : {}),
     ...value,
     invocationsBilled: totalInvocations,
     ...(invokedProvider ? { provider: invokedProvider } : {}),
@@ -2784,6 +2868,10 @@ async function runRetryLadder(
     } = result.value;
     invokedProvider = result.value.provider ?? invokedProvider;
     invokedExtensions = result.value.extensions ?? invokedExtensions;
+    invokedAgentOutput = result.value.agentOutput ?? invokedAgentOutput;
+    // Cleared, not carried, when this invocation did not fail: a stale
+    // failure from a previous attempt must never describe a later success.
+    invokedAgentFailure = result.value.agentFailure;
 
     // Out of memory (Issue #2741, parent #2721) — TERMINAL. Checked first,
     // before the timeout and rate-limit paths, for two reasons:
@@ -2799,9 +2887,19 @@ async function runRetryLadder(
     // Both streams are scanned (Issue #4237): a Node/V8 heap abort prints
     // its FATAL ERROR to STDERR, and scanning stdout alone misclassified
     // the agent's own heap ceiling as an external SIGKILL.
+    // The provider's own structured error messages join the scan surface
+    // (Issue #1695): a CLI whose refusal never reaches `output` — Codex says
+    // it in a `turn.failed` event, not in prose — would otherwise be read as
+    // an ordinary failure. Additive: for Claude the same words are already in
+    // `output`, so every existing classification is unchanged.
+    const structuredEvidence = (result.value.agentOutput?.errors ?? [])
+      .map((error) => error.message)
+      .join("\n");
+    const scanSurface = `${output}\n${stderr ?? ""}\n${structuredEvidence}`;
+
     if (
       exitCode !== 0 && !timedOut &&
-      detectOutOfMemory(`${output}\n${stderr ?? ""}`, errorScanTailLines)
+      detectOutOfMemory(scanSurface, errorScanTailLines)
     ) {
       currentOptions.logger?.warn(
         `Out of memory detected (exit code: ${exitCode}). Terminal — no retry, no wait.`,
@@ -2929,10 +3027,11 @@ async function runRetryLadder(
       // rate-limit pattern, which would otherwise route it into the
       // wait-and-retry loop. Fall back to the next-best model immediately,
       // with no wait.
-      // Both streams (Issue #4315): the CLI writes its refusals to stderr,
-      // and with no stream-json `result` line stdout is empty — scanning
-      // stdout alone made every stderr-only refusal an "unknown" failure.
-      const bothStreams = `${output}\n${stderr ?? ""}`;
+      // Both streams (Issue #4315) plus the provider's structured error
+      // messages (Issue #1695): the CLI writes its refusals to stderr, and
+      // with no stream-json `result` line stdout is empty — scanning stdout
+      // alone made every stderr-only refusal an "unknown" failure.
+      const bothStreams = scanSurface;
 
       // The CLI refused the session id (Issue #204) — checked first because it
       // is a start-up failure: the process died before any model call, so
@@ -3215,6 +3314,7 @@ async function runRetryLadder(
             jitteredWait,
             undefined,
             "usage",
+            { provider: "claude" },
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(
@@ -3710,6 +3810,16 @@ export interface SummariseOptions {
   /** Logger instance. */
   logger?: Logger;
   /**
+   * Provider for this summarisation (Issue #1701). Omit and the active
+   * coding-agent provider is used, so a Codex worker never escalates to
+   * Claude aliases such as `sonnet`.
+   */
+  agentProvider?: AgentProviderSelector;
+  /**
+   * Environment lookup the model resolution reads through (Issue #957).
+   */
+  env?: EnvLookup;
+  /**
    * Injectable Claude runner — test seam (Issue #3037).
    *
    * Defaults to {@link runClaudeWithTimeout}. Tests pass a stub so the
@@ -3752,7 +3862,10 @@ export async function summariseLargeContent(
   // exceeds the Haiku window — silently truncating the input degrades the
   // summary without any signal. When the estimate approaches/exceeds the
   // Haiku window we escalate to a larger-window tier for this run only.
-  const escalation = selectModelForLargeInput("summarise", tokenEstimate);
+  const escalation = selectModelForLargeInput("summarise", tokenEstimate, {
+    ...(options.agentProvider ? { provider: options.agentProvider } : {}),
+    ...(options.env ? { env: options.env } : {}),
+  });
   if (escalation.escalated) {
     logger?.info(`Phase model escalation: ${escalation.reason}`);
   }
@@ -3767,6 +3880,8 @@ export async function summariseLargeContent(
     logger,
     // Text-in/text-out — no write or execute capability (Issue #1607).
     disallowedTools: [...SUMMARISE_DISALLOWED_TOOLS],
+    ...(options.agentProvider ? { agentProvider: options.agentProvider } : {}),
+    ...(options.env ? { env: options.env } : {}),
   });
 
   if (!result.ok) {

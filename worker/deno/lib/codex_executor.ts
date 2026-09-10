@@ -34,7 +34,7 @@ import type { RepoConfig } from "../types.ts";
 /** The Codex subcommand for a non-interactive run. */
 const EXEC_SUBCOMMAND = "exec";
 
-/** Resume the most recent recorded session (`codex exec resume --last`). */
+/** Resume a named thread (`codex exec resume <SESSION_ID>`). */
 const RESUME_SUBCOMMAND = "resume";
 
 /**
@@ -221,24 +221,130 @@ export interface CodexInvocation extends CodexPromptParts {
   model?: string;
   /** Explicit reasoning effort; omitted leaves Codex on its default. */
   effort?: string;
-  /** Continue the previous run of this issue rather than starting fresh. */
-  resumeSession?: boolean;
+  /**
+   * Resume this Codex thread (Issue #1699). The pinned CLI's explicit
+   * `codex exec resume <SESSION_ID>` — never `--last`, which resumes
+   * whichever session last wrote in this working directory.
+   */
+  resumeSessionId?: string;
+  /**
+   * The prompt will be written to the child's stdin (Issue #1702): argv
+   * carries `-` so the CLI reads it there, and no prompt text sits in
+   * argv (Linux MAX_ARG_STRLEN).
+   */
+  promptViaStdin?: boolean;
+  /**
+   * `-c mcp_servers.*` overrides from the per-run Playwright config
+   * (Issue #1702). Codex has no `--mcp-config` flag.
+   */
+  mcpConfigOverrides?: readonly string[];
+}
+
+/** A TOML string value, quoted. */
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+/** A TOML array of strings. */
+function tomlStringArray(values: readonly string[]): string {
+  return `[${values.map(tomlString).join(", ")}]`;
+}
+
+/**
+ * A TOML inline table of string values. Non-string entries are dropped
+ * rather than stringified into a shape the CLI would refuse.
+ */
+function tomlInlineTable(record: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(record)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(key)) continue;
+    if (typeof value !== "string") continue;
+    parts.push(`${key} = ${tomlString(value)}`);
+  }
+  return `{ ${parts.join(", ")} }`;
+}
+
+/**
+ * Build the `-c mcp_servers.<name>.*` overrides Codex understands
+ * (Issue #1702).
+ *
+ * The shared Playwright config is Claude's `--mcp-config` JSON. Codex
+ * reads MCP servers from `config.toml` keys, overridden per invocation
+ * with `-c`. Unknown JSON yields no flags — the caller fails closed when
+ * a path was given and nothing could be applied.
+ */
+export function buildCodexMcpConfigArgs(configJson: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(configJson);
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return [];
+  }
+  const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+  if (
+    servers === null || typeof servers !== "object" || Array.isArray(servers)
+  ) {
+    return [];
+  }
+  const args: string[] = [];
+  for (
+    const [name, spec] of Object.entries(servers as Record<string, unknown>)
+  ) {
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
+    if (spec === null || typeof spec !== "object" || Array.isArray(spec)) {
+      continue;
+    }
+    const server = spec as Record<string, unknown>;
+    if (typeof server.command === "string") {
+      args.push(
+        "-c",
+        `mcp_servers.${name}.command=${tomlString(server.command)}`,
+      );
+    }
+    if (
+      Array.isArray(server.args) &&
+      server.args.every((a) => typeof a === "string")
+    ) {
+      args.push(
+        "-c",
+        `mcp_servers.${name}.args=${tomlStringArray(server.args)}`,
+      );
+    }
+    if (
+      server.env !== null &&
+      typeof server.env === "object" &&
+      !Array.isArray(server.env)
+    ) {
+      args.push(
+        "-c",
+        `mcp_servers.${name}.env=${
+          tomlInlineTable(server.env as Record<string, unknown>)
+        }`,
+      );
+    }
+  }
+  return args;
 }
 
 /**
  * Build the Codex CLI argument list for one non-interactive run.
  *
- * Session continuity uses `codex exec resume --last`: Codex names sessions
- * with its own identifiers, so the worker resumes the most recent recorded
- * session — which, within a run, is the previous phase of the same issue —
- * rather than inventing an id Codex would reject.
+ * Session continuity uses `codex exec resume <SESSION_ID>` with the thread
+ * the previous phase of *this* issue reported (Issue #1699). `--last` is
+ * not used: concurrent slots share a working directory and would resume
+ * each other's sessions.
  *
  * @param invocation - Prompt, model/effort selection and resume state.
- * @returns The argument list, prompt last.
+ * @returns The argument list, prompt last (or `-` when stdin carries it).
  */
 export function buildCodexArgs(invocation: CodexInvocation): string[] {
   const args: string[] = [EXEC_SUBCOMMAND];
-  if (invocation.resumeSession) args.push(RESUME_SUBCOMMAND, "--last");
+  if (invocation.resumeSessionId) {
+    args.push(RESUME_SUBCOMMAND, invocation.resumeSessionId);
+  }
 
   args.push(...STANDARD_FLAGS);
 
@@ -246,7 +352,12 @@ export function buildCodexArgs(invocation: CodexInvocation): string[] {
   if (invocation.effort) {
     args.push("-c", `${REASONING_EFFORT_KEY}="${invocation.effort}"`);
   }
+  if (invocation.mcpConfigOverrides) {
+    args.push(...invocation.mcpConfigOverrides);
+  }
 
-  args.push(composeCodexPrompt(invocation));
+  args.push(
+    invocation.promptViaStdin ? "-" : composeCodexPrompt(invocation),
+  );
   return args;
 }

@@ -194,6 +194,11 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
     cacheReadPerMillion: 0.08,
   }],
   ["claude-3-opus", OPUS_PRICING_LEGACY],
+  // Codex / GPT-5 ids are intentionally absent (Issue #1701). ChatGPT
+  // subscription usage is not an API bill: treating OpenAI list prices as
+  // the charge would under- or over-count the daily spend ceiling. An
+  // unpriced `gpt-5-codex` / `gpt-5` / `gpt-5-mini` id is charged at
+  // UNPRICED_UPPER_BOUND_PRICING and named in `unpricedModels`.
 ]);
 
 /**

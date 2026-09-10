@@ -53,6 +53,7 @@ export {
   isSupersededByFleetPush,
 } from "./pr_feedback_supersede.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
+import { listBotPrs } from "./pr_bot_lookup.ts";
 import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import type { IssueCache } from "./issue_cache.ts";
@@ -82,6 +83,17 @@ export interface PrEntry {
    * (Issue #1109).
    */
   author?: { login?: string } | null;
+  /**
+   * True when the head branch lives in a fork (Issue #1846). Set only when
+   * the listing asked for it; unset means "unknown", which a consumer that
+   * pushes to the head branch must treat as "not ours".
+   */
+  isCrossRepository?: boolean;
+  /**
+   * `MERGEABLE` / `CONFLICTING` / `UNKNOWN`, when the listing asked for it —
+   * the maintenance superset (`PR_MAINTENANCE_LIST_FIELDS`) always does.
+   */
+  mergeable?: string;
   /**
    * Merge time, when the listing asked for it — {@link listMergedPrs} does,
    * so the roll-back check can tell a marker posted after the merge from one
@@ -142,6 +154,10 @@ export interface PrScanOptions {
    * {@link PR_MAINTENANCE_LIST_FIELDS} and served to every scan from the
    * cache — the scans used to issue four to six identical listings per
    * repo per cycle.
+   *
+   * Also serves the bot-PR door (Issue #1848): `listBotPrs` reads the
+   * repo's one un-filtered listing (`prs_open_all`), so admitting bot PRs
+   * costs no extra API call on a cycle that already fetched it.
    */
   cache?: IssueCache;
   /** Function to shuffle repos for fairness. */
@@ -397,25 +413,36 @@ export async function listOpenPrs(
 }
 
 /**
- * List every open PR this scan may act on in `repo` (Issue #4077).
+ * List every open PR this scan may act on in `repo` (Issues #4077, #1848).
  *
- * Two sources, in order:
+ * Three sources, in order:
  *
  * 1. the **maintenance set** — PRs authored by accounts the fleet operates
  *    (`resolveFleetMaintenanceAuthorSet`, Issue #4076); plus
  * 2. any human-authored PR whose author has **explicitly invited** the
  *    worker, by applying the invite label or @mentioning the fleet
- *    (`listInvitedHumanPrs`). Each admission is logged with its cause.
+ *    (`listInvitedHumanPrs`). Each admission is logged with its cause; plus
+ * 3. every **bot-authored** PR whose head branch lives in this repository
+ *    (`listBotPrs`, Issue #1846) — a dependency bump from `dependabot[bot]`
+ *    or `renovate[bot]` is nobody's PR to maintain otherwise, so its red
+ *    quality check sat unattended. Fork-headed bot PRs are excluded (the
+ *    worker cannot push a fix to a fork), and there is no per-repo opt-out
+ *    key: `skip_auto_merge` still governs the merge step alone.
  *
- * An uninvited human PR appears in neither, which is the #4074 default.
- * The invitation is re-evaluated on every scan, so dropping the label
- * removes the PR again on the next pass — no sticky state.
+ * An uninvited human PR appears in none of the three, which is the #4074
+ * default. The invitation is re-evaluated on every scan, so dropping the
+ * label removes the PR again on the next pass — no sticky state.
+ *
+ * This is the single admission point: every scan that calls it — PR
+ * feedback, spelling, CI fix and auto-merge — sees the same set, so a
+ * source added here reaches all of them at once.
  *
  * @param repo - Repository in "owner/repo" format
  * @param scanAuthors - The resolved push-capable maintenance author set
  * @param fields - JSON fields the scan needs
  * @param options - The scan options (author configuration + gh runner)
- * @returns Fleet-authored PRs followed by invited human PRs
+ * @returns Fleet-authored PRs, then invited human PRs, then bot PRs,
+ *   de-duplicated by number so a PR in more than one source appears once
  */
 export async function listActionablePrs(
   repo: string,
@@ -442,8 +469,16 @@ export async function listActionablePrs(
     log: (message) => logger.info(message),
     cache: options.cache,
   });
+  const bots = await listBotPrs({
+    repo,
+    githubUser,
+    fleetPrAuthors: prAuthors,
+    ghCommandFn,
+    log: (message) => logger.info(message),
+    cache: options.cache,
+  });
   const seen = new Set(prs.map((pr) => pr.number));
-  for (const pr of invited) {
+  for (const pr of [...invited, ...bots]) {
     if (seen.has(pr.number)) continue;
     seen.add(pr.number);
     prs.push(pr);

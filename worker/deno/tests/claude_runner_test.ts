@@ -32,6 +32,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import type { ClaudeExecutionResult } from "../lib/claude_executor.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
 import type { Result } from "../types.ts";
 import { getDailySummary } from "../lib/credit_tracker.ts";
 import {
@@ -601,6 +602,27 @@ Deno.test("summariseLargeContent - runs with the restricted tool set (Issue #160
   assert(result.ok);
   assert(seen);
   assertEquals(seen.disallowedTools, [...SUMMARISE_DISALLOWED_TOOLS]);
+});
+
+Deno.test("summariseLargeContent - keeps both the restricted tool set and the per-invocation provider (Issue #1754)", async () => {
+  let seen: RunClaudeOptions | undefined;
+  const env: EnvLookup = (name) =>
+    name === "VIBE_TEST_MARKER" ? "1" : undefined;
+  const result = await summariseLargeContent({
+    content: "a large body",
+    agentProvider: "codex",
+    env,
+    runner: stubRunnerOk("ok", (opts) => {
+      seen = opts;
+    }),
+  });
+  assert(result.ok);
+  assert(seen);
+  // The #1607 hardening and the #1701 provider passthrough are independent
+  // changes to the same call: a merge that takes either side alone drops one.
+  assertEquals(seen.disallowedTools, [...SUMMARISE_DISALLOWED_TOOLS]);
+  assertEquals(seen.agentProvider, "codex");
+  assertEquals(seen.env, env);
 });
 
 Deno.test("summariseLargeContent - fences the content it sends to the model (Issue #1607)", async () => {

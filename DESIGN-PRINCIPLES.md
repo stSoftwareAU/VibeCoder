@@ -427,6 +427,18 @@ each, merging and de-duplicating by PR number. Trusted humans
 (`allowed_authors`) are deliberately **not** in that set — see the two-resolver
 split below.
 
+The author set is not the whole scan set. `listActionablePrs()` unions **three**
+sources and de-duplicates by PR number: the fleet-authored maintenance listing,
+the human PRs whose author explicitly invited the worker
+(`listInvitedHumanPrs`), and every **bot-authored** PR whose head branch lives
+in the target repository (`listBotPrs`). The third exists because a
+`dependabot[bot]` or `renovate[bot]` bump belongs to neither author list, so its
+red quality check sat unattended; fork-headed bot PRs stay out, because the
+worker cannot push a fix to a fork it does not own. There is no per-repo opt-out
+key — `skip_auto_merge` still governs the merge step alone. The operator-facing
+statement is
+[`docs/HUMAN-PR-POLICY.md`](docs/HUMAN-PR-POLICY.md) → Bot-authored PRs.
+
 #### One author set, checked every iteration
 
 `fleet_authors.ts` is the **single source of truth** for "the PRs the fleet owns
@@ -630,6 +642,16 @@ values are guarded down to `0` by `getRepoNice()` in
   within a repo, fair rotation across repos when a `randomFn` is injected), so a
   busy repo never starves its peers. With the default `nice: 0` everywhere this
   reduces to the prior oldest-first behaviour.
+- **The weekly Claude quota paces the bottom two tiers (Issue #1885).** Once
+  per scan cycle `selectHighestPriority()` is told whether the seven-day
+  subscription window is projected to run out before it resets
+  (`used ÷ elapsed >= 1.0`, judged once 24 h of the window has elapsed —
+  `claude_week_pace.ts`). While it is, `low-priority` and `idle-task` are
+  dropped from the ladder so the quota left goes to `top-priority` and
+  `work-on` work. Tiers 1, 2 and 2b are never gated, a claimed run always
+  finishes, and an unknown reading leaves every tier eligible: a failed probe
+  never refuses work. See the
+  [issue-processing manual](docs/workflows/issue-processing.md#-weekly-claude-quota-pace-gate-tiers-3-and-4).
 - **New-work selection only.** The tiering gates the Priority 2 new-issue scan
   (`find_oldest_issue.ts`), the label scan (`find_issues_by_label.ts`), and the
   planning scan (`find_planning_issues.ts`). It does **not** reorder Priority

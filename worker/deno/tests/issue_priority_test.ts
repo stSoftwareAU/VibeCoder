@@ -1624,3 +1624,92 @@ Deno.test("issue_priority - orderCandidatesByNiceTier default repoNice keeps old
   const ordered = orderCandidatesByNiceTier(candidates);
   assertEquals(ordered[0]?.number, 2);
 });
+
+// =============================================================================
+// Week-pace gate: tiers 3 and 4 skipped while the weekly quota will not last
+// (Issue #1885)
+// =============================================================================
+
+/** A result whose only claimable work is backlog and busywork. */
+function backlogOnlyResult(): SelectionResult {
+  return {
+    selected: null,
+    labelCandidates: [],
+    workOnCandidates: [],
+    blockedEntries: [],
+    lowPriorityCandidates: [
+      makeCandidate({
+        number: 30,
+        labelIndex: 199,
+        source: "low-priority",
+        createdAt: "2024-01-01T00:00:00Z",
+      }),
+    ],
+    idleTaskCandidates: [
+      makeCandidate({
+        number: 40,
+        labelIndex: 299,
+        source: "idle-task",
+        createdAt: "2024-01-02T00:00:00Z",
+      }),
+    ],
+  };
+}
+
+Deno.test("selectHighestPriority - week pace engaged claims no low-priority issue", () => {
+  const result = backlogOnlyResult();
+  assertEquals(selectHighestPriority(result)?.source, "low-priority");
+  assertEquals(selectHighestPriority(result, { weekPaceEngaged: true }), null);
+});
+
+Deno.test("selectHighestPriority - week pace engaged claims no idle-task issue", () => {
+  const result: SelectionResult = {
+    ...backlogOnlyResult(),
+    lowPriorityCandidates: [],
+  };
+  assertEquals(selectHighestPriority(result)?.source, "idle-task");
+  assertEquals(selectHighestPriority(result, { weekPaceEngaged: true }), null);
+});
+
+Deno.test("selectHighestPriority - week pace engaged leaves top-priority and work-on pickup unchanged", () => {
+  const withLabel: SelectionResult = {
+    ...backlogOnlyResult(),
+    labelCandidates: [makeCandidate({ number: 10 })],
+  };
+  assertEquals(
+    selectHighestPriority(withLabel, { weekPaceEngaged: true })?.number,
+    10,
+  );
+
+  const withWorkOn: SelectionResult = {
+    ...backlogOnlyResult(),
+    workOnCandidates: [
+      makeCandidate({ number: 20, labelIndex: 99, source: "work-on" }),
+    ],
+  };
+  assertEquals(
+    selectHighestPriority(withWorkOn, { weekPaceEngaged: true })?.number,
+    20,
+  );
+});
+
+Deno.test("selectHighestPriority - week pace engaged still claims a self-diagnostic", () => {
+  const result: SelectionResult = {
+    ...backlogOnlyResult(),
+    selfDiagnosticCandidates: [
+      makeCandidate({ number: 25, labelIndex: 150, source: "self-diagnostic" }),
+    ],
+  };
+  assertEquals(
+    selectHighestPriority(result, { weekPaceEngaged: true })?.number,
+    25,
+  );
+});
+
+Deno.test("selectHighestPriority - week pace off keeps every tier eligible", () => {
+  const result = backlogOnlyResult();
+  assertEquals(
+    selectHighestPriority(result, { weekPaceEngaged: false })?.source,
+    "low-priority",
+  );
+});
