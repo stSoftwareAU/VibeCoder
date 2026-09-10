@@ -37,6 +37,7 @@ import {
 } from "./analysis_only_handoff.ts";
 import { isAdminOnlyRepoSettingsIssue } from "./admin_only_finding.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
+import { escalateReapprovalSuperseded } from "./reapproval_superseded_handoff.ts";
 import {
   detectSuspiciousImageFlag,
   handOffSuspiciousImage,
@@ -144,6 +145,25 @@ export async function workOnIssue(
   let outcome: RunOutcome | undefined;
   try {
     const result = await workOnIssueCore(ctx, deps, state);
+    // Issue #1862: the one point that sees both halves of the loop — a
+    // post-merge re-approval the pre-check honoured, and a run that then
+    // ended superseded because the merged PR already satisfies the original
+    // description. Hand it to a human with one deduped comment instead of
+    // letting the next cycle claim it again. Runs before the outcome is
+    // derived so the note lands on the claim-release comment.
+    const handoffNote = await escalateReapprovalSuperseded({
+      repo: ctx.repo,
+      issueNumber: ctx.issueNumber,
+      needsHumanLabel: ctx.config.needsHumanLabel,
+      reapproval: state.postMergeReapproval,
+      outcome: result.outcome,
+      githubUser: ctx.githubUser,
+      ghFn: deps.github.runGhCommand,
+      logger: deps.logger,
+    });
+    if (handoffNote) {
+      state.releaseNotes = [...(state.releaseNotes ?? []), handoffNote];
+    }
     // The run outcome travels to the claim-release comment (Issue #4325):
     // the PR the completion phase raised or recovered, or the diagnosed
     // failure, or a deliberate no-PR. Derived once, here, from the result
