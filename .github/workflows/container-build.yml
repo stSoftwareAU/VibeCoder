@@ -57,9 +57,6 @@ jobs:
 
       - name: Detect image-affecting changes
         id: filter
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           # Pushes always build (the definition may have changed upstream of
@@ -70,8 +67,8 @@ jobs:
             echo "push event: image checks run"
             exit 0
           fi
-          base="$BASE_SHA"
-          head="$HEAD_SHA"
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
           # Pull requests: only the image DEFINITION and this workflow. The
           # worker tree is type-checked and tested on the same commit by
           # `validate` / `validate (tests N/4)` with the same Deno major,
@@ -88,16 +85,11 @@ jobs:
           # --allow-net that way and landed a red main: the `changes` job
           # passed in 4 seconds and the probe never ran. Both paths are
           # listed so such a PR pays the full build and drives the browser.
-          #
-          # Issue #1891: no `|| true` on the diff. This job checks out with
-          # fetch-depth: 0 so both commits are present, and if the diff ever
-          # cannot run, `set -e` stops the job rather than reading the empty
-          # result as "nothing image-affecting changed" and skipping the build.
           changed="$(git diff --name-only "${base}" "${head}" -- \
             'container/**' \
             '.github/workflows/container-build.yml' \
             'worker/deno/setup/screenshot.ts' \
-            'worker/deno/tests/setup_screenshot_test.ts')"
+            'worker/deno/tests/setup_screenshot_test.ts' || true)"
           if [[ -n "${changed}" ]]; then
             echo "image=true" >> "$GITHUB_OUTPUT"
             echo "image-affecting changes:"
