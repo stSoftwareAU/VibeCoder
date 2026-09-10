@@ -108,7 +108,10 @@ Deno.test("status cache converts probe failure to safe unknown without error tex
   assertEquals(status.availability, "unknown");
   assertEquals(status.confidence, "unknown");
   assertEquals(status.reason, "probe-failed");
-  assertEquals(JSON.stringify(status).includes("secret-token-must-not-escape"), false);
+  assertEquals(
+    JSON.stringify(status).includes("secret-token-must-not-escape"),
+    false,
+  );
 });
 
 Deno.test("observed exhaustion immediately replaces cached status", async () => {
