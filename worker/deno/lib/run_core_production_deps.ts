@@ -88,6 +88,7 @@ import {
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
 import { clearCommentCache } from "./comment_cache.ts";
@@ -2149,6 +2150,11 @@ export async function createProductionRunCoreDeps(
         // merge, so this pass and an issue slot never write one tree.
         acquireLease: (conflict) =>
           acquireMaintenanceRepoLease(conflict.repo, conflict.prNumber),
+        // Issue #1774: the queue comes from a listing up to ten minutes old,
+        // so the live state is re-read before the clone, the agent and the
+        // merge push.
+        prLiveState: (conflict) =>
+          readPrLiveState(conflict.repo, conflict.prNumber, runGhCommand),
         resolve: async (conflict, budget) => {
           const repoSetupResult = await setupRepo(conflict.repo, workDir);
           if (!repoSetupResult.success) {
@@ -2212,9 +2218,14 @@ export async function createProductionRunCoreDeps(
             processed: result.value.processed,
             merged: result.value.merged,
             // Issue #1693: a watchdog kill is not the PR's failure, so the
-            // drain must not treat the attempt as one that ran.
+            // drain must not treat the attempt as one that ran. Issue #1772:
+            // `runEnded` is what stops the drain — an uncharged attempt that
+            // reached an answer does not.
             ...(result.value.attemptCharged !== undefined
               ? { attemptCharged: result.value.attemptCharged }
+              : {}),
+            ...(result.value.runEnded !== undefined
+              ? { runEnded: result.value.runEnded }
               : {}),
           };
         },
@@ -2444,6 +2455,10 @@ export async function createProductionRunCoreDeps(
             undefined,
             refreshOpenPrs,
           ),
+        // Issue #1774: a PR closed since the cached listing receives no
+        // merge attempt — and an unreadable state is never assumed open.
+        prLiveState: (repo, pr) =>
+          readPrLiveState(repo, pr.number, runGhCommand),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,
@@ -2486,6 +2501,8 @@ export async function createProductionRunCoreDeps(
       logger.info("Auto-merge sweep complete", {
         repos: sweep.value.reposVisited.length,
         prsAttempted: sweep.value.prsAttempted,
+        // Issue #1774: PRs the live-state re-read stood the sweep down on.
+        prsSkippedNotOpen: sweep.value.prsSkippedNotOpen,
         // Issue #1136: name the repos that offered nothing, and which pass
         // this was, so "swept and found nothing" is legible in the log.
         reposWithNoCandidates: sweep.value.reposWithNoCandidates.join(", ") ||
@@ -2543,7 +2560,14 @@ export async function createProductionRunCoreDeps(
           undefined,
           config.planningLabel,
           issueCache,
-          { watermarkPath: mergedReconcileWatermarkPath(workDir) },
+          {
+            watermarkPath: mergedReconcileWatermarkPath(workDir),
+            // Issue #1770: a child reopened by a milestone roll-back stays
+            // reopened. Only the fleet's own roll-back marker suppresses the
+            // close, so the maintenance author set is what is trusted here.
+            fleetAuthors: maintenanceAuthors,
+            logFn: (message: string) => logger.info(message),
+          },
         );
         const seconds = Math.round((Date.now() - startedAt) / 1000);
         logger.info(
@@ -2581,12 +2605,18 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 1.72: Milestone branch sync (Issue #1238) --
-    async syncMilestoneBranches() {
+    async syncMilestoneBranches(opts?: HandlerExecuteOptions) {
       if (!config.syncMilestoneBranches) {
         return { ok: true, value: undefined };
       }
       try {
-        await syncMilestoneBranchesFn(repos, config, logger, env);
+        await syncMilestoneBranchesFn(
+          repos,
+          config,
+          logger,
+          env,
+          opts?.deadlineEpochMs,
+        );
         return { ok: true, value: undefined };
       } catch (err) {
         return {
@@ -2909,6 +2939,27 @@ export async function createProductionRunCoreDeps(
       // Load the run-local holds once before scanning (synchronous check
       // per issue). Issue #655: the same set the census models.
       const runLocalHold = await loadRunLocalHolds();
+      // Issue #1780: a milestone branch its conflict ledger is pacing cannot
+      // take the default branch down yet, and a child run refuses to cut a
+      // branch off a base that is behind — so claiming one of the milestone's
+      // issues would claim it, defer it and comment on it again every cycle.
+      // The ledger is read once per scan: one local file, no API call.
+      const { loadSyncStreaks, milestoneSyncStreakPath } = await import(
+        "./milestone_sync_streak.ts"
+      );
+      const { milestonePacedUntil, MILESTONE_BEHIND } = await import(
+        "./milestone_presync.ts"
+      );
+      // The same directory the two writers use — the setup phase
+      // (`config.workDir`) and the periodic sweep (`config.workDir` with the
+      // factory's own as its fallback). A reader that resolved it differently
+      // would read a file nobody writes and silently pass every paced
+      // milestone through.
+      const pacingLedger = await loadSyncStreaks(
+        milestoneSyncStreakPath(config.workDir || workDir),
+      );
+      // One line per paced milestone per scan, not one per issue in it.
+      const pacingLogged = new Set<string>();
       const result = await findOldestIssue(config, {
         githubUser,
         ghCommandFn: runGhCommand,
@@ -2927,6 +2978,27 @@ export async function createProductionRunCoreDeps(
         isIssueInCooldown: (repo, num) =>
           runLocalHold(repo, num) ||
           options?.excludeIssues?.has(issueClaimKey(repo, num)) === true,
+        // Issue #1780: beside the scan's `milestone-occupied` gate — that one
+        // refuses a stream a sibling holds, this one refuses a stream whose
+        // branch is behind the default branch and paced by the ledger.
+        milestonePacedUntil: (repo, milestone) => {
+          const until = milestonePacedUntil(
+            pacingLedger,
+            repo,
+            milestone,
+            Date.now(),
+          );
+          if (until === undefined) return undefined;
+          const key = `${repo}|${milestone}`;
+          if (!pacingLogged.has(key)) {
+            pacingLogged.add(key);
+            logger.info(
+              `skipped: ${MILESTONE_BEHIND} (paced until ${until}) — ` +
+                `${repo} milestone '${milestone}'`,
+            );
+          }
+          return until;
+        },
         // Repositories the maintenance lane has leased wholesale (Issues
         // #4176, #213, narrowed by #1091): skipped before any eligibility
         // check, because that pass may touch any branch of the clone.
@@ -4472,35 +4544,37 @@ export async function createProductionRunCoreDeps(
   return { deps, config: coreConfig, cleanup };
 }
 
-/**
- * Persistent sync state for milestone branch sync (Issue #1238).
- *
- * This Map survives across loop cycles within a single worker run,
- * providing the cooldown guard. It is reset when the worker process
- * restarts (planned shutdown / PID refresh).
- */
-const milestoneSyncLastTimes = new Map<string, number>();
-
 /** Helper: sync milestone branches using lib function (Issue #1238). */
 async function syncMilestoneBranchesFn(
   repos: string[],
   config: WorkerConfig,
   logger: Logger,
   env: EnvLookup,
+  /**
+   * The handler's watchdog deadline (Issue #1778). The sweep offers its
+   * single conflict-agent rung only while this covers a whole agent run;
+   * absent, the pass is unbounded and the rung is offered on its own merits.
+   */
+  deadlineEpochMs?: number,
 ): Promise<void> {
   const { syncMilestoneBranches } = await import("./milestone_branch_sync.ts");
   const { milestoneSyncStreakPath } = await import(
     "./milestone_sync_streak.ts"
   );
-  const { milestoneActivityPath } = await import(
-    "./milestone_activity_gate.ts"
-  );
+  const { readLocalDefaultTip } = await import("./milestone_default_tip.ts");
   const { selfHealMilestoneBranches } = await import(
     "./milestone_branch_self_heal.ts"
   );
   const { syncMilestoneBranchWithDefault } = await import("./git_pull.ts");
   const { ensureMilestoneBranchExists } = await import("./git_branch.ts");
   const { ensureDefaultBranchCurrent } = await import("./git_push.ts");
+  // Issue #1777: the sync climbs the same ladder the PR pass does, so it
+  // needs the same agent — bound here because only this layer knows the
+  // repository's instructions and the run's timeouts.
+  const { bindMilestoneConflictAgent } = await import(
+    "./milestone_conflict_agent_binding.ts"
+  );
+  const { runClaudeWithRetry } = await import("./claude_runner.ts");
 
   const workDir = config.workDir || env("HOME") || ".";
 
@@ -4537,7 +4611,22 @@ async function syncMilestoneBranchesFn(
     repos,
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
-    syncBranchFn: async (repo, milestoneBranch, defaultBranch) => {
+    syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
+      // Issue #1778: the cycle grants the agent rung to at most one branch,
+      // and only while the handler's budget covers a whole run. A branch
+      // that was not granted it is handed no agent at all, so the ladder
+      // stops after the deterministic rules rather than starting a run the
+      // watchdog would kill mid-edit (#1693).
+      // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
+      // this sweep and a child run's pre-cut sync hand the ladder exactly the
+      // same rung — including the grant's own timeout.
+      const agentFn = bindMilestoneConflictAgent({
+        repo,
+        grant: syncOptions,
+        config,
+        logger,
+        runAgent: runClaudeWithRetry,
+      });
       return await syncMilestoneBranchWithDefault(
         milestoneBranch,
         defaultBranch,
@@ -4545,21 +4634,33 @@ async function syncMilestoneBranchesFn(
         // Issue #589: named so the sync can raise a PR when a repository
         // rule refuses the direct push.
         repo,
+        // The default gates: the repository's own type check, and the
+        // stricter resolution gate derived from it.
+        undefined,
+        undefined,
+        // Issue #1777: the last rung before a human. It runs in the very
+        // clone the merge conflicted in, against a branch target.
+        agentFn,
+        logger,
       );
     },
     localCloneExistsFn,
     log: (msg: string) => logger.info(msg),
-    cooldownSeconds: config.milestoneSyncCooldownSeconds ?? 3600,
-    lastSyncTimes: milestoneSyncLastTimes,
+    // Issue #1776: the cadence signal — one `git rev-parse` per repo, so a
+    // cycle in which the default tip did not move syncs nothing.
+    defaultTipShaFn: (repo, defaultBranch) =>
+      readLocalDefaultTip(defaultBranch, `${workDir}/${repo.split("/")[1]}`),
     // Issue #4260: every failed sync leaves a forensic self-heal record,
     // and a branch stuck for consecutive cycles escalates once to its
     // tracking issue (proposal 2).
     emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
     streakPath: milestoneSyncStreakPath(workDir),
-    // Issue #1488: gate the closed-issue query on the REST milestone
-    // counts, so a repo whose milestones have not changed spends nothing
-    // on the expensive half.
-    activityPath: milestoneActivityPath(workDir),
+    // Issue #1778: the conflict ledger's pacing and the one-agent-per-cycle
+    // bound both read the handler's own budget. The agent timeout stated
+    // here is the one `runMergeConflictAgent` is bound to above, so a rung
+    // is never started on a promise the watchdog then breaks (#1693).
+    ...(deadlineEpochMs !== undefined ? { deadlineEpochMs } : {}),
+    agentTimeoutMs: config.claudeTimeout * 1000,
   });
 }
 

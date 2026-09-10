@@ -24,6 +24,11 @@
  * carries one comment naming the rule rather than an alternating run of
  * "pushed" and "no changes were needed" replies.
  *
+ * The merge-conflict pass has since gone one step further (Issue #1772): a
+ * `milestone/**` head is the milestone branch sync's to resolve, gated or not,
+ * so that pass calls {@link standDownMilestoneHead} and never reads the rules.
+ * The spelling and CI-fix passes still ask {@link guardGatedHead}.
+ *
  * Scope is deliberately narrow — only `milestone/**` heads are assessed. An
  * ordinary feature head under a repo-wide ruleset is left exactly as it was:
  * `GET /rules/branches/{branch}` does not account for the caller's bypass
@@ -163,6 +168,36 @@ export function buildGatedHeadComment(
   ].join("\n");
 }
 
+/** Hidden marker identifying the milestone-sync stand-down comment on a PR. */
+export function milestoneHeadMarker(branchName: string): string {
+  return `<!-- vibe-milestone-head branch="${branchName}" -->`;
+}
+
+/**
+ * The merge-conflict pass's stand-down: this branch belongs to the sync.
+ *
+ * Same shape as {@link buildGatedHeadComment} — marker, one bold line, the
+ * reason, and the once-per-branch note — but it names the milestone branch
+ * sync rather than a ruleset, because the stand-down holds whether or not a
+ * rule is in force (Issue #1772).
+ */
+export function buildMilestoneHeadComment(branchName: string): string {
+  return [
+    milestoneHeadMarker(branchName),
+    `**Standing down — \`${branchName}\` is resolved by the milestone ` +
+    `branch sync.**`,
+    "",
+    `Merges of the default branch into \`${branchName}\` have a single ` +
+    `owner: the every-cycle milestone branch sync, which already falls back ` +
+    `to a sync PR when a ruleset refuses its direct push (Issue #589). ` +
+    `Running the merge-conflict pass here as well would duplicate that merge ` +
+    `on the same branch and race its push, so no resolution attempt is spent ` +
+    `on this PR.`,
+    "",
+    "This comment is posted once per branch, not once per run.",
+  ].join("\n");
+}
+
 /** First letter upper-cased; an empty string stays empty, never "undefined". */
 function capitalise(text: string): string {
   return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
@@ -172,7 +207,7 @@ function capitalise(text: string): string {
 // Guard
 // ---------------------------------------------------------------------------
 
-/** PRs already reported this run, keyed `repo#pr`. */
+/** Stand-downs already reported this run, keyed `repo#pr#marker`. */
 const reported = new Set<string>();
 
 /** Reset the per-run report registry. Tests only. */
@@ -195,10 +230,8 @@ export interface GatedHeadGuardOptions {
 /**
  * Assess a PR head and, when it is gated, record the stand-down once.
  *
- * The comment is posted at most once per branch: once per process via the
- * registry above, and once across runs via {@link gatedHeadMarker} on the PR.
- * A comment listing that fails posts nothing — a duplicate comment every run
- * is the noise this exists to remove — and says so in the log.
+ * The comment is posted at most once per branch — see
+ * {@link recordStandDownOnce}.
  *
  * @returns The assessment. A `gated: true` answer means the caller must not
  *   check the branch out, run the agent, or spend an attempt on it.
@@ -220,14 +253,87 @@ export async function guardGatedHead(
     { repo, prNumber, branchName, ruleTypes: assessment.ruleTypes.join(",") },
   );
 
-  const key = `${repo}#${prNumber}`;
-  if (reported.has(key)) return assessment;
+  await recordStandDownOnce({
+    repo,
+    prNumber,
+    marker: gatedHeadMarker(branchName),
+    body: buildGatedHeadComment(branchName, assessment),
+    logger,
+    runGhCommand,
+  });
+  return assessment;
+}
+
+/** Options for {@link standDownMilestoneHead}. */
+export interface MilestoneHeadStandDownOptions {
+  repo: string;
+  prNumber: number;
+  branchName: string;
+  logger: Logger;
+  /** `gh` runner, used for the comment listing and the comment. */
+  runGhCommand: (args: string[]) => Promise<string>;
+}
+
+/**
+ * Stand down from a `milestone/**` PR head, gated or not (Issue #1772).
+ *
+ * The every-cycle milestone branch sync is the single owner of
+ * `default → milestone/*` merges, and it already lands its merge through a
+ * sync PR when a ruleset refuses the direct push (Issue #589). Resolving the
+ * same conflict from the PR ladder would duplicate that merge on the same
+ * branch and race its push, so the merge-conflict pass leaves the branch to
+ * the sync — whether or not a rule is in force, which is why this is decided
+ * on the branch name rather than on {@link assessGatedHead}.
+ *
+ * @returns `true` when the head is a milestone branch: the caller must not
+ *   check it out, run the agent, or open an attempt on it.
+ */
+export async function standDownMilestoneHead(
+  options: MilestoneHeadStandDownOptions,
+): Promise<boolean> {
+  const { repo, prNumber, branchName, logger, runGhCommand } = options;
+  if (!isMilestoneHead(branchName)) return false;
+
+  logger.info(
+    "Merge-conflict resolution skipped: milestone head — resolved by the " +
+      "milestone branch sync",
+    { repo, prNumber, branchName },
+  );
+
+  await recordStandDownOnce({
+    repo,
+    prNumber,
+    marker: milestoneHeadMarker(branchName),
+    body: buildMilestoneHeadComment(branchName),
+    logger,
+    runGhCommand,
+  });
+  return true;
+}
+
+/**
+ * Post a stand-down comment at most once per branch and marker.
+ *
+ * Once per process via the registry above, and once across runs via the
+ * marker on the PR. A comment listing that fails posts nothing — a duplicate
+ * comment every run is the noise this exists to remove — and says so in the
+ * log.
+ */
+async function recordStandDownOnce(options: {
+  repo: string;
+  prNumber: number;
+  marker: string;
+  body: string;
+  logger: Logger;
+  runGhCommand: (args: string[]) => Promise<string>;
+}): Promise<void> {
+  const { repo, prNumber, marker, body, logger, runGhCommand } = options;
+  const key = `${repo}#${prNumber}#${marker}`;
+  if (reported.has(key)) return;
   reported.add(key);
 
   try {
-    if (await hasGatedHeadComment(repo, prNumber, branchName, runGhCommand)) {
-      return assessment;
-    }
+    if (await hasStandDownComment(repo, prNumber, marker, runGhCommand)) return;
     await runGhCommand([
       "pr",
       "comment",
@@ -235,31 +341,30 @@ export async function guardGatedHead(
       "--repo",
       repo,
       "--body",
-      buildGatedHeadComment(branchName, assessment),
+      body,
     ]);
   } catch (error) {
-    logger.warn("Could not record the gated-head stand-down on the PR", {
+    logger.warn("Could not record the stand-down on the PR", {
       repo,
       prNumber,
-      branchName,
+      marker,
       error: error instanceof Error ? error.message : String(error),
     });
   }
-  return assessment;
 }
 
 /**
- * Whether the PR already carries this branch's stand-down comment.
+ * Whether the PR already carries the stand-down comment `marker` identifies.
  *
  * Throws when the listing cannot be read or parsed: an unreadable thread is
  * not an empty one, and reading it as empty is how a "posted once" comment
  * becomes a comment per run (the same fail-loud stance as
  * `ghIssueCommentLister`).
  */
-async function hasGatedHeadComment(
+async function hasStandDownComment(
   repo: string,
   prNumber: number,
-  branchName: string,
+  marker: string,
   runGhCommand: (args: string[]) => Promise<string>,
 ): Promise<boolean> {
   const raw = await runGhCommand([
@@ -278,7 +383,6 @@ async function hasGatedHeadComment(
         "stand-down was already recorded",
     );
   }
-  const marker = gatedHeadMarker(branchName);
   return parsed.comments.some((comment) =>
     typeof comment?.body === "string" && comment.body.includes(marker)
   );

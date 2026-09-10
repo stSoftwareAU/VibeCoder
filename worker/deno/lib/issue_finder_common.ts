@@ -93,6 +93,21 @@ export interface FindIssuesOptions {
   /** Optional function to check if issue is in cooldown */
   isIssueInCooldown?: (repo: string, issueNumber: number) => boolean;
   /**
+   * Whether a milestone's branch is paced by its conflict ledger, and until
+   * when (Issue #1780).
+   *
+   * A child run brings the milestone branch level with the default branch
+   * before it cuts its issue branch; a charged conflict failure writes
+   * `deferUntil` and the branch cannot take the default branch down until it
+   * passes. Claiming that milestone's issues meanwhile would claim, defer and
+   * comment on one of them every 30 seconds, so they are skipped here — a
+   * local ledger read, no API call.
+   *
+   * Returns the `deferUntil` still in the future, or undefined when the
+   * milestone is not paced.
+   */
+  milestonePacedUntil?: (repo: string, milestone: string) => string | undefined;
+  /**
    * Optional async function to check cross-worker cooldown via GitHub comments.
    * Issue #1087: Supplementary to local cooldown — catches cases where
    * a different worker on another machine failed on this issue.

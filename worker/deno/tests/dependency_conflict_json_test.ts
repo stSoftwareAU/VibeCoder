@@ -36,7 +36,9 @@ import {
 function resolveWith(rule: ManifestRule, text: string): RuleOutcome {
   const parsed = parseConflictSegments(text);
   if (!parsed.ok) throw new Error(`fixture failed to parse: ${parsed.error}`);
-  return rule.resolve(parsed.value);
+  // These rules decide per dependency key and never read the merge base, so
+  // the context (Issue #1768) carries no base for them.
+  return rule.resolve(parsed.value, { path: "deno.json", base: null });
 }
 
 /** Resolve, asserting the rule succeeded, and return the merged file text. */

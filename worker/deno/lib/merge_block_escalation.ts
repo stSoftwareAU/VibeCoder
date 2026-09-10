@@ -73,6 +73,14 @@ export type MergeAttemptOutcome =
    */
   | { kind: "milestone_route_unreadable" }
   /**
+   * The PR's base is a milestone branch that is behind the default branch
+   * (Issue #1779). A deliberate hold, not a fault: the every-cycle
+   * milestone sync brings the branch level and the next scan merges. No
+   * comment and no label — escalating here would hand a healthy child to a
+   * human for waiting on a sync that is already scheduled.
+   */
+  | { kind: "milestone_base_behind" }
+  /**
    * The PR targets an unprotected default branch and carries no approving
    * review from outside the fleet (Issue #1082). A deliberate hold, not a
    * fault: the review may still arrive, and escalating would hand a healthy
@@ -176,6 +184,10 @@ export function classifyMergeAttempt(
     case "milestone_route_unreadable":
       // The route could not be read (Issue #477). Wait and re-read; a
       // transient GitHub failure must not escalate a healthy PR.
+      return "await_checks";
+    case "milestone_base_behind":
+      // The milestone branch is behind the default branch (Issue #1779).
+      // The sync clears it every cycle; waiting is the whole design.
       return "await_checks";
     case "default_branch_unapproved":
       // The guard is holding the PR for a review (Issue #1082). The

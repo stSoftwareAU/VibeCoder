@@ -58,6 +58,8 @@ Deno.test("isRuleViolationPush - recognises a gate refusing the push, and nothin
     "! [remote rejected] milestone/x (push declined due to repository rule violations)",
     "remote: - 2 of 2 required status checks are expected.",
     "remote: error: GH006: Protected branch update failed",
+    // The code on its own, without the prose (Issue #1772).
+    "remote: error: GH013: refs/heads/milestone/x",
   ];
   for (const stderr of refusals) {
     assertEquals(isRuleViolationPush(stderr), true, stderr);
