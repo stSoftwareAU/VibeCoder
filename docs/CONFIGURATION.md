@@ -692,10 +692,12 @@ flowchart LR
   path is read as-is.
 - **The issue text stays untrusted.** The operator's file is configuration, so
   it is not fenced and its immutability is not checked — it is theirs to edit.
-  The issue title, labels and body it renders around **are** fenced in this
-  run's nonce boundary, with the same boundary-integrity instruction the
-  built-in template gets. (As for `work-on`, issue comments are not part of the
-  implementation prompt at all.)
+  The issue title, labels, body and comments it renders around **are** fenced
+  in this run's nonce boundary, with the same boundary-integrity instruction
+  the built-in template gets. (As for `work-on`, the comments carry per-comment
+  trust headers bearing this run's nonce — Issue #1910 — so a maintainer's
+  reply reaches the agent while an untrusted commenter's forged header stays
+  degraded to data.)
 - **Fail loud at dispatch, never a fallback.** A file that has become missing,
   unreadable, empty or invalid between config load and dispatch fails the run
   with the label and path named. The built-in `issue` template is never

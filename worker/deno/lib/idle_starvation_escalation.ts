@@ -173,6 +173,16 @@ export interface IdleStarvationObservation {
    * slot ledger to hand.
    */
   expectedIdleTasks?: number;
+  /**
+   * Whether the week-pace guard is engaged (Issues #1885, #1915).
+   *
+   * Engaged, the fleet defers idle-task filing deliberately — nothing filed
+   * could be claimed before the weekly window resets — so "no idle task
+   * anywhere" is the policy working, not the starvation this detector exists
+   * to catch. The episode is ended rather than banked, exactly as a supplied
+   * fleet ends it, so the clock restarts from the cycle the guard lifts on.
+   */
+  weekPaceEngaged?: boolean;
   /** What to put in the issue body if this episode escalates. */
   evidence: IdleStarvationEvidence;
 }
@@ -331,7 +341,14 @@ export function formatIdleStarvationTitle(): string {
 export function describeIdleHooksRefusal(opts: {
   inversionDetected: boolean;
   claimableTotal: number;
+  /**
+   * Whether the week-pace guard was engaged (Issues #1885, #1915). It is
+   * checked ahead of the other two because the hooks check it ahead of them:
+   * engaged, filing is deferred whatever the census and the audit saw.
+   */
+  weekPaceEngaged?: boolean;
 }): string {
+  if (opts.weekPaceEngaged === true) return "week_pace_engaged";
   if (opts.inversionDetected) return "unblocked_work_exists";
   if (opts.claimableTotal > 0) return "audit_found_claimable";
   return "none";
@@ -463,6 +480,8 @@ export function formatIdleStarvationBody(
 export type IdleStarvationDecision =
   /** The fleet holds an idle task: no episode, or the episode just ended. */
   | { action: "supplied"; openIdleTasks: number }
+  /** The week-pace guard defers filing, so there is nothing to escalate. */
+  | { action: "pace-deferred" }
   /** An episode is running but has not met both thresholds. */
   | { action: "watching"; hours: number; idleSlotSeconds: number }
   /** Both thresholds met and an issue was filed. */
@@ -584,6 +603,19 @@ export async function recordIdleStarvationObservation(
       `idle-starvation:${opts.statePath}`,
       async () => {
         const stored = await loadIdleStarvationEpisode(opts.statePath);
+
+        // Issue #1915: the fleet files no idle task while the week-pace
+        // guard holds, by design, so an episode measured through it would
+        // escalate the worker's own policy to a human. Ended, not paused:
+        // the guard can hold for the rest of the week, and a paused episode
+        // would file the moment it lifted on hours banked while nothing was
+        // wrong.
+        if (obs.weekPaceEngaged === true) {
+          if (stored !== null) {
+            await saveIdleStarvationEpisode(opts.statePath, null, log);
+          }
+          return { action: "pace-deferred" as const };
+        }
 
         // The fleet is supplying itself only when it has raised as much
         // idle work as its idle slots can take (Issue #1083). One wrapper
