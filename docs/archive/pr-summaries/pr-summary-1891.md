@@ -24,15 +24,20 @@ Findings themselves stay advisory, exactly as before — an array proven
 non-empty by control flow is a legitimate false positive. It is the scan *not
 running* that is now fatal.
 
-The issue also asked for a sweep of the same pattern elsewhere.
-`.github/workflows/container-build.yml` was the only other
-`git diff <base-sha>` under a `|| true`; that job already checks out with
-`fetch-depth: 0`, but the swallow meant a failed diff would have read as
-"nothing image-affecting changed" and skipped the image build. The `|| true`
-is gone and both SHAs now reach the script through `env:` rather than direct
-`${{ }}` interpolation. `.github/workflows/gitleaks.yml` was checked and left
-alone: its `git fetch … || true` is belt-and-braces beside `fetch-depth: 0`,
-and the gitleaks scan that follows fails loud on an unresolvable range.
+The issue also asked for a sweep of the same pattern elsewhere. Every
+workflow was checked for `git diff`/`git log`/`merge-base` against a base SHA:
+`.github/workflows/container-build.yml` is the only other call site, and its
+`changes` job already checks out with `fetch-depth: 0`, so the bad-object
+silent skip this issue reports cannot happen there. That job does still wrap
+its diff in `|| true`, which would read a failed diff as "nothing
+image-affecting changed" and skip the image build — a latent mask of the same
+class, recorded as #1929 rather than fixed here: editing that file pulls the
+repo's own pre-existing `BP-TRIGGER-container-build` finding (a test workflow
+triggering on push to `main`) into an unrelated bug fix, and clearing it means
+changing when the container build runs. `.github/workflows/gitleaks.yml` was
+checked and left alone: its `git fetch … || true` is belt-and-braces beside
+`fetch-depth: 0`, and the gitleaks scan that follows fails loud on an
+unresolvable range.
 
 Closes #1891.
 
@@ -98,15 +103,9 @@ the same placement as its closest sibling `tests/next_release_tag_test.ts`
 (also a `.github/scripts/*.sh` driver); it runs in the per-PR
 `integration tests` job and takes ~2s.
 
-**Existing test modified (documented, per the standards):**
-`worker/deno/tests/container_build_probe_paths_test.ts` parses the pathspec
-list out of the committed workflow by scanning for the literal `|| true)`
-terminator. That swallow no longer exists, so the parser now terminates on the
-closing `)"` of the command substitution. No assertion was weakened or removed
-— both tests still run the real `git diff` with the workflow's pathspecs.
-
-Also run: `./quality.sh` (green), `actionlint` on both changed workflows
-(clean), `shellcheck` and `bash -n` on the new script (clean).
+Also run: `./quality.sh` (green), `actionlint` on the changed workflow
+(clean), `shellcheck` and `bash -n` on the new script (clean). No existing
+test was modified, commented out, or removed.
 
 ## Docs
 
