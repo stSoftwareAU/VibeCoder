@@ -26,6 +26,7 @@ if your worker login is read-only on any monitored repository.**
 
 | Change | Issue |
 | ------ | ----- |
+| A scan cycle that ends in the primary-rate-limit pause now logs the same per-cycle `gh` telemetry (`gh-calls:`, timings, by-priority, GraphQL share, quota) a completed cycle does, before the pause line, so the cycle that exhausted the quota is never the one without a breakdown | #1843 |
 | The issue scan no longer re-views every candidate on every idle re-scan: the scan-time content-integrity check reads title and body from the listing (the claimed issue is still verified live at pickup), and the dependency fetcher serves a referenced issue's state, body and sub-issues from the iteration cache — cutting ~700 `gh issue view` GraphQL calls a cycle that were exhausting the fleet's shared quota | #1818 |
 | The run-ending path waits (bounded by the slot drain grace) for a terminated agent's slot to finish its claim release and callbacks before the exit cleanup's descendant sweep, and the pool drain settles every slot before surfacing a sibling's error, so a run cut short by the mid-cycle quota pause still lands its health record and archive | #1815 |
 | The auto-merge sweep skips draft PRs (announced once per PR, not once per cycle) and a `gh pr merge --auto` refused with "still a draft" is a typed `draft` outcome logged at info, not a failure retried every cycle | #1800 |

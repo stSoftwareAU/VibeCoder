@@ -2159,3 +2159,45 @@ Deno.test("slot pool - a slot abandoned at the shutdown grace still finishes its
   );
   assertEquals(liveSlotRunCount(), 0);
 });
+
+// ============================================================================
+// The cycle that hits the quota still reports what it spent (Issue #1843)
+// ============================================================================
+
+Deno.test("slot pool - a cycle ending in the primary-rate-limit pause still logs its gh-call telemetry before the pause (Issue #1843)", async () => {
+  const logs: string[] = [];
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/r0", 0), issue("o/r1", 1)]),
+    processIssue: async (i) => {
+      await new Promise((r) => setTimeout(r, 5));
+      if (i.issueNumber === 0) {
+        throw new Error("API rate limit exceeded for user ID 1");
+      }
+      return { ok: true, value: { success: false } };
+    },
+    getRateLimitReset: () => Promise.resolve(Math.floor(now / 1000) + 3600),
+  });
+  await runOneCycle(deps, 2);
+
+  const pauseAt = logs.findIndex((l) =>
+    l.startsWith("Primary rate limit hit mid-cycle")
+  );
+  const telemetryAt = logs.findIndex((l) => l.startsWith("gh-calls:"));
+  assert(pauseAt >= 0, `no pause line: ${logs.join(" | ")}`);
+  assert(telemetryAt >= 0, `no gh-calls line: ${logs.join(" | ")}`);
+  assert(
+    telemetryAt < pauseAt,
+    "the cycle's telemetry is logged before the pause is announced",
+  );
+  assert(logs.some((l) => l.startsWith("gh-calls-by-priority:")));
+  assert(logs.some((l) => l.startsWith("graphql-calls:")));
+});
