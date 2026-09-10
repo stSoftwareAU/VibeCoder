@@ -57,6 +57,7 @@ export const REDACTION_ENTRY_POINTS: readonly string[] = [
   "redactSecrets",
   "redactedTail",
   "redactedHead",
+  "redactedHeadTail",
   "redactedLineTail",
   "redactedLogTail",
 ];

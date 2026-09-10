@@ -1,10 +1,10 @@
 # 🔎 Security sweep — the milestone-sync cadence tip (`milestone_default_tip.ts`)
 
 **Issue:** [#1776](https://github.com/stSoftwareAU/VibeCoder/issues/1776)
-(chunk 12q) · **Parent:** #1209
+(chunk 12u) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
-after chunk 12p recorded its coverage:
+after chunk 12t recorded its coverage:
 
 - `worker/deno/lib/milestone_default_tip.ts` — added by #1776.
 
@@ -16,7 +16,7 @@ the claim would otherwise name a file that does not exist.
 
 Appending the module to a slice whose sweep ran before it existed is the
 cheapest way to make `diffCoverage` green and a false record — the failure 12f's
-own record documents. The module is claimed by **12q**, and this file is the
+own record documents. The module is claimed by **12u**, and this file is the
 reading of it.
 
 ## `worker/deno/lib/milestone_default_tip.ts`

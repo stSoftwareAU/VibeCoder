@@ -42,7 +42,11 @@ import { defaultLogger } from "./logger.ts";
 import { hardenStateDir } from "./private_cache_dir.ts";
 import { redactedTail } from "./redacted_text.ts";
 import { containsSecret } from "./secret_redaction.ts";
-import type { DiffableCheck, GenericFinding } from "./baseline_gate.ts";
+import type {
+  DiffableCheck,
+  FailedCheck,
+  GenericFinding,
+} from "./baseline_gate.ts";
 
 /**
  * 24-hour time-to-live. Identical content yields an identical gate result,
@@ -56,6 +60,12 @@ export const MAX_BASELINE_QUALITY_CACHE_ENTRIES = 20;
 
 /** Cap on the stored gate output; the tail carries the failure summary. */
 export const MAX_CACHED_OUTPUT_CHARS = 20_000;
+
+/** Cap on each stored per-check output (Issue #1852). */
+export const MAX_CACHED_CHECK_OUTPUT_CHARS = 8_000;
+
+/** Cap on how many failing checks one entry records (Issue #1852). */
+export const MAX_CACHED_FAILED_CHECKS = 12;
 
 /**
  * Bumped whenever the entry shape or the gate options change. Version 2
@@ -90,6 +100,13 @@ export interface BaselineQualityCacheEntry {
    * caller then treats the entry as unusable for that purpose.
    */
   findings?: GenericFinding[];
+  /**
+   * The checks that failed on this tree, with what each one printed
+   * (Issue #1852). Absent on entries written before the pre-existing
+   * comparison existed; the caller then cannot attribute a failure to the
+   * baseline and falls back to today's behaviour.
+   */
+  failedChecks?: FailedCheck[];
   /** Epoch milliseconds the entry was written. */
   storedAt: number;
   /**
@@ -106,6 +123,8 @@ export interface BaselineQualityOutcome {
   passed: boolean;
   output: string;
   findings?: GenericFinding[];
+  /** The failing checks and their output (Issue #1852). */
+  failedChecks?: readonly FailedCheck[];
 }
 
 /** Minimal git runner — matches `runGitCommand` from `git_timeout.ts`. */
@@ -303,7 +322,28 @@ function validateEntry(value: unknown): BaselineQualityCacheEntry | null {
     if (!findings) return null;
     entry.findings = findings;
   }
+
+  if (record.failedChecks !== undefined) {
+    const failedChecks = validateFailedChecks(record.failedChecks);
+    if (!failedChecks) return null;
+    entry.failedChecks = failedChecks;
+  }
   return entry;
+}
+
+/** Validate the persisted per-check failure list (Issue #1852). */
+function validateFailedChecks(value: unknown): FailedCheck[] | null {
+  if (!Array.isArray(value)) return null;
+  const checks: FailedCheck[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) return null;
+    const record = item as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.output !== "string") {
+      return null;
+    }
+    checks.push({ name: record.name, output: record.output });
+  }
+  return checks;
 }
 
 /** Validate the persisted diffable findings list. */
@@ -406,6 +446,25 @@ function persistableFindings(
 }
 
 /**
+ * The failing checks safe to persist (Issue #1852).
+ *
+ * Each output is redacted over its whole length before it is trimmed, the
+ * same order {@link MAX_CACHED_OUTPUT_CHARS} uses, and the list is bounded so
+ * one pathological gate run cannot bloat the cache file. The live comparison
+ * masks secrets on both sides, so a redacted stored output still matches the
+ * raw output of a later run over identical content.
+ */
+function persistableFailedChecks(
+  checks: readonly FailedCheck[] | undefined,
+): FailedCheck[] | undefined {
+  if (!checks) return undefined;
+  return checks.slice(0, MAX_CACHED_FAILED_CHECKS).map((check) => ({
+    name: check.name,
+    output: redactedTail(check.output, MAX_CACHED_CHECK_OUTPUT_CHARS),
+  }));
+}
+
+/**
  * Record the baseline outcome for `key`, pruning the oldest entries so the
  * file stays bounded. Throws only if the file cannot be written — callers
  * treat a write failure as non-fatal. No resolvable path (no cache
@@ -427,6 +486,7 @@ export async function writeBaselineQualityCache(
   if (!await writableCacheDir(resolved)) return;
   const cache = await loadCache(resolved, roots);
   const findings = persistableFindings(outcome.findings);
+  const failedChecks = persistableFailedChecks(outcome.failedChecks);
   cache.set(key, {
     version: BASELINE_QUALITY_CACHE_VERSION,
     passed: outcome.passed,
@@ -435,6 +495,7 @@ export async function writeBaselineQualityCache(
     // signature rule keys on, so `redactedTail` is the only correct order.
     output: redactedTail(outcome.output, MAX_CACHED_OUTPUT_CHARS),
     ...(findings ? { findings } : {}),
+    ...(failedChecks ? { failedChecks } : {}),
     storedAt: Date.now(),
     seq: nextSequence(cache),
   });
