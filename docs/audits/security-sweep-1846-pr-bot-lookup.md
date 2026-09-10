@@ -32,8 +32,10 @@ Shapes checked (12c, untrusted GitHub-data ingestion):
 | no filesystem, no clock, no network | the only I/O is the caller's `IssueCache`, passed through untouched |
 | untrusted login never reaches a log raw | every login is written through `sanitiseLogField` — control characters and quotes cannot forge a log line |
 | a fork head cannot be acted on | admission requires `isCrossRepository === false`; `true` **and** unset are both excluded, with the reason logged |
-| a failed listing cannot read as "no bot PRs" | the throw from `fetchAllOpenPRs` (Issue #4257) is caught, logged once, and admits nothing; nothing is cached |
+| a fleet account cannot enter by this door | the configured fleet logins (`resolveFleetMaintenanceAuthorSet`) are dropped, so a GitHub App host login ending in `[bot]` is not admitted twice |
+| a failed listing cannot read as "no bot PRs" | the throw from `fetchAllOpenPRs` (Issues #4257, #1846 — including a valid-JSON non-array payload) is caught, logged once, and admits nothing; nothing is cached |
 | a garbled cache entry cannot be iterated | a non-array listing is logged as a failure, not read as an empty repo |
+| the failure is always audible | the log sink is a required option, so a caller cannot silence a fail-closed drop by omission |
 | no duplicate action on one PR | entries are de-duplicated by `number` before admission |
 | an unattributable author cannot be admitted | a missing, non-string or blank `author.login` is dropped before `isBotLogin` runs |
 
