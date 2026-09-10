@@ -29,6 +29,7 @@ import {
 } from "../repo_config.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
 import {
+  adoptProviderSession,
   createSessionResumeState,
   recordPhaseCompletion,
 } from "../session_resume.ts";
@@ -627,7 +628,15 @@ async function executeClaudeBody(
   const saveCheckpointState = () =>
     saveResumeState(config.workDir, repo, issueNumber, {
       ...(state.sessionResumeState
-        ? { sessionId: state.sessionResumeState.sessionId }
+        ? {
+          sessionId: state.sessionResumeState.sessionId,
+          ...(state.sessionResumeState.providerId
+            ? { providerId: state.sessionResumeState.providerId }
+            : {}),
+          ...(state.sessionResumeState.credentialScope
+            ? { credentialScope: state.sessionResumeState.credentialScope }
+            : {}),
+        }
         : {}),
       phaseCount: state.sessionResumeState?.phaseCount ?? 0,
       branch: state.branchName,
@@ -1270,8 +1279,19 @@ async function executeClaudeBody(
     return { status: "failure", reason };
   }
 
-  // Record session phase completion for resume support (Issue #1324)
+  // Record session phase completion for resume support (Issue #1324).
+  // Codex names its own thread (Issue #1699): capture it before advancing
+  // the phase count so the next phase resumes *this* issue, never `--last`.
   if (state.sessionResumeState) {
+    if (claudeResult.value.provider) {
+      state.sessionResumeState = adoptProviderSession(
+        state.sessionResumeState,
+        {
+          sessionId: claudeResult.value.agentOutput?.sessionId,
+          providerId: claudeResult.value.provider,
+        },
+      );
+    }
     state.sessionResumeState = recordPhaseCompletion(state.sessionResumeState);
     // Persist across process death (Issue #4170) so a re-claim can prime
     // `--resume` from the durable transcript.
@@ -1279,6 +1299,12 @@ async function executeClaudeBody(
       sessionId: state.sessionResumeState.sessionId,
       phaseCount: state.sessionResumeState.phaseCount,
       branch: state.branchName,
+      ...(state.sessionResumeState.providerId
+        ? { providerId: state.sessionResumeState.providerId }
+        : {}),
+      ...(state.sessionResumeState.credentialScope
+        ? { credentialScope: state.sessionResumeState.credentialScope }
+        : {}),
     });
   }
 

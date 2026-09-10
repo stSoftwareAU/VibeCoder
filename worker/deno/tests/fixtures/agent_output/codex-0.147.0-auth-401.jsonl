@@ -1,0 +1,2 @@
+{"type":"thread.started","thread_id":"0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e7a"}
+{"type":"error","message":"401 Unauthorized: Incorrect API key provided. Run `codex login` or set OPENAI_API_KEY.","http_status":401}

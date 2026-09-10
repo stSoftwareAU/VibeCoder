@@ -519,6 +519,10 @@ export async function workOnIssueSetupBranch(
       state.sessionResumeState = {
         sessionId: persisted.sessionId,
         phaseCount: Math.max(1, persisted.phaseCount),
+        ...(persisted.providerId ? { providerId: persisted.providerId } : {}),
+        ...(persisted.credentialScope
+          ? { credentialScope: persisted.credentialScope }
+          : {}),
       };
       logger.info("Priming CLI session resume from persisted state", {
         branch: state.branchName,

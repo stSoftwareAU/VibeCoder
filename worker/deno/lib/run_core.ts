@@ -127,7 +127,10 @@ import {
   formatScanOutcome,
 } from "./issue_finder_logger.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
-import { isPrimaryRateLimitMessage } from "./primary_quota_latch.ts";
+import {
+  clearPrimaryQuotaLatch,
+  isPrimaryRateLimitMessage,
+} from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
 import { runWithWatchdog } from "./handler_watchdog.ts";
 import { resolveStartPriority, type ScanCursor } from "./scan_cursor.ts";
@@ -892,6 +895,15 @@ export interface RunCoreDeps {
    * not run.
    */
   describeGraphqlQuota?: () => Promise<string | null>;
+  /**
+   * The account's GraphQL quota as GitHub counts it (Issue #1888): the free
+   * probe's `limit`/`remaining`/`reset`, or null when it cannot be read. The
+   * mid-cycle rate-limit catch asks it before pausing, so a latch set on a
+   * window boundary cannot idle the run for an hour with a full quota.
+   */
+  readGraphqlQuota?: () => Promise<
+    { limit: number; remaining: number; reset: number } | null
+  >;
 
   // Repo failure tracking
   // Issue #2793: these perform read-modify-write file I/O, so they return
@@ -4417,6 +4429,40 @@ function runIdleWorkHooks(
 }
 
 /**
+ * Points the account must still hold for a rate-limit refusal to be read as
+ * a stale latch rather than the hour's quota being gone (Issue #1888).
+ * Mirrors `SECONDARY_LIMIT_MIN_REMAINING` in `github.ts`: below it the
+ * refusal is the real thing and the pause stands.
+ */
+const QUOTA_REOPENED_MIN_REMAINING = 100;
+
+/**
+ * Whether the GraphQL window has (re)opened despite a rate-limit refusal
+ * (Issue #1888). Probes once; a probe that cannot run or reports the quota
+ * spent answers `false`, so the existing pause is the default.
+ */
+async function quotaWindowReopened(deps: RunCoreDeps): Promise<boolean> {
+  if (!deps.readGraphqlQuota) return false;
+  let reading: { limit: number; remaining: number; reset: number } | null;
+  try {
+    reading = await deps.readGraphqlQuota();
+  } catch {
+    return false;
+  }
+  if (reading === null || reading.remaining < QUOTA_REOPENED_MIN_REMAINING) {
+    return false;
+  }
+  clearPrimaryQuotaLatch();
+  deps.log(
+    `Rate limit reported mid-cycle, but the GraphQL window has reopened — ` +
+      `${reading.remaining}/${reading.limit} points available, resets ${
+        formatRateLimitReset(reading.reset, Math.floor(deps.now() / 1000))
+      }. Clearing the stale latch and continuing (Issue #1888).`,
+  );
+  return true;
+}
+
+/**
  * The per-cycle `gh` call telemetry (Issues #1671, #4299, #1845, #1924,
  * #1456): what this process spent, where the wall time went, which priority
  * spent it, the GraphQL share, and the account's quota as GitHub counts it.
@@ -5522,31 +5568,40 @@ export async function runCoreLoop(
         // one that throws here used to skip them — and it is exactly the
         // cycle whose per-priority breakdown names what burnt the budget.
         await logCycleGhTelemetry(deps);
-        let resetEpoch: number;
-        try {
-          resetEpoch = await deps.getRateLimitReset();
-        } catch (resetErr) {
-          const msg = resetErr instanceof Error
-            ? resetErr.message
-            : String(resetErr);
-          deps.log(
-            `Failed to fetch rate-limit reset (${msg}) — falling back to a 1h wait`,
-          );
-          resetEpoch = Math.floor(deps.now() / 1000) + 3600;
-        }
-        deps.log(
-          `Primary rate limit hit mid-cycle — pausing until reset ${
-            formatRateLimitReset(resetEpoch, Math.floor(deps.now() / 1000))
-          }. ${innerMessage}`,
-        );
-        const wait = await pauseUntilRateLimitReset(
-          resetEpoch,
-          "Main loop catch",
-        );
-        if (wait.outcome === "ok" || wait.outcome === "cap") {
-          // Quota cleared (or cap reached — try anyway). Re-enter the
-          // inner while to keep working without a respawn.
+        // Issue #1888: ask GitHub before pausing. A refusal on the window
+        // boundary latched the process to the NEXT window's reset while the
+        // account already held a fresh 5000 points; the pause then idled
+        // the run for an hour on nothing. When the probe says the quota is
+        // there, the latch is stale: clear it and keep working.
+        if (await quotaWindowReopened(deps)) {
           resumeAfterRateLimit = true;
+        } else {
+          let resetEpoch: number;
+          try {
+            resetEpoch = await deps.getRateLimitReset();
+          } catch (resetErr) {
+            const msg = resetErr instanceof Error
+              ? resetErr.message
+              : String(resetErr);
+            deps.log(
+              `Failed to fetch rate-limit reset (${msg}) — falling back to a 1h wait`,
+            );
+            resetEpoch = Math.floor(deps.now() / 1000) + 3600;
+          }
+          deps.log(
+            `Primary rate limit hit mid-cycle — pausing until reset ${
+              formatRateLimitReset(resetEpoch, Math.floor(deps.now() / 1000))
+            }. ${innerMessage}`,
+          );
+          const wait = await pauseUntilRateLimitReset(
+            resetEpoch,
+            "Main loop catch",
+          );
+          if (wait.outcome === "ok" || wait.outcome === "cap") {
+            // Quota cleared (or cap reached — try anyway). Re-enter the
+            // inner while to keep working without a respawn.
+            resumeAfterRateLimit = true;
+          }
         }
         // "shutdown" and "duration" fall through to the planned-shutdown
         // path so the run ends cleanly.

@@ -18,6 +18,7 @@ import {
   shouldSyncMilestone,
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
+import type { RollbackOutcome } from "../lib/milestone_rollback.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import { conflictEscalationKey } from "../lib/milestone_conflict_dedup.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
@@ -1180,6 +1181,8 @@ interface LedgerOptions {
   log?: (message: string) => void;
   /** Records the grant each milestone's sync was given. */
   grants?: Record<string, { allowed: boolean; seconds?: number }>;
+  /** When set, the injected roll-back returns this outcome (Issue #1781). */
+  rollbackOutcome?: RollbackOutcome;
 }
 
 /** Sync deps that charge the ledger, recording every gh argv. */
@@ -1205,6 +1208,11 @@ function ledgerDeps(
       if (key.includes("default_branch")) return Promise.resolve("main");
       if (key.includes("branches/milestone")) {
         return Promise.resolve(args[2]!.split("/").slice(-2).join("/"));
+      }
+      if (key.startsWith("issue view") && key.includes("--json")) {
+        return Promise.resolve(
+          JSON.stringify({ state: "CLOSED", labels: [{ name: "idle-task" }] }),
+        );
       }
       if (key.startsWith("issue view")) return Promise.resolve("OPEN");
       return Promise.resolve("[]");
@@ -1241,13 +1249,14 @@ function ledgerDeps(
     const at = options.nowMs;
     deps.now = () => at;
   }
-  if (options.rollbacks) {
+  if (options.rollbacks || options.rollbackOutcome) {
     const seen = options.rollbacks;
+    const outcome = options.rollbackOutcome;
     deps.rollbackFn = (request) => {
-      seen.push(
+      seen?.push(
         `${request.repo}|${request.milestoneBranch}|${request.attempts}`,
       );
-      return Promise.resolve();
+      return Promise.resolve(outcome);
     };
   }
   return deps;
@@ -1839,6 +1848,138 @@ Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged 
     // Both halves: what the gate said, and the two sides that produced it.
     assertStringIncludes(body, "TS2304");
     assertStringIncludes(body, "worker/deno/lib/scan_content.ts");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a successful roll-back resets the ledger and re-queues the child (Issue #1781)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1781-ok-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${LEDGER_BRANCH}`]: {
+        count: 2,
+        escalated: false,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+      },
+    });
+    const calls: string[][] = [];
+    const events: string[] = [];
+    const deps = ledgerDeps(calls, {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "conflict",
+      }],
+      streakPath,
+      nowMs: 10_000,
+      rollbackOutcome: {
+        merged: true,
+        reverted: [{
+          prNumber: 12,
+          sha: LEDGER_SHA,
+          headRefName: "issue-45-child",
+          title: "Child",
+        }],
+      },
+    });
+    deps.emitSelfHealEvent = (event) => {
+      events.push(event.action);
+      return Promise.resolve(true);
+    };
+    await syncMilestoneBranches(deps);
+
+    const entry = await readLedger(streakPath);
+    assertEquals(entry?.conflictAttempts, 0, "the budget is refilled");
+    assertEquals(entry?.rollbacks, 1);
+    assertEquals(entry?.revertedShas, [LEDGER_SHA]);
+    assertEquals(entry?.revertedPrs, [12]);
+    assert(events.includes("rolled_back"));
+    assert(
+      calls.some((c) =>
+        c[0] === "issue" && c[1] === "reopen" && c.includes("45")
+      ),
+      "the reverted child is reopened",
+    );
+    assert(
+      calls.some((c) =>
+        c[0] === "issue" && c[1] === "comment" &&
+        (c[c.length - 1] ?? "").includes("vibe-milestone-rollback")
+      ),
+      "the marker is posted",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a failed roll-back escalates once and a second cycle posts nothing (Issue #1781)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-1781-fail-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${LEDGER_BRANCH}`]: {
+        count: 2,
+        escalated: false,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+      },
+    });
+    const calls: string[][] = [];
+    const outcome: RollbackOutcome = {
+      merged: false,
+      reverted: [],
+      reason: "nothing left to revert",
+    };
+    const deps = ledgerDeps(calls, {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "conflict",
+      }],
+      streakPath,
+      nowMs: 10_000,
+      rollbackOutcome: outcome,
+    });
+    await syncMilestoneBranches(deps);
+
+    const comments = calls.filter((c) =>
+      c[0] === "issue" && c[1] === "comment"
+    );
+    assertEquals(comments.length, 1, "exactly one comment");
+    assertStringIncludes(
+      comments[0]![comments[0]!.length - 1] ?? "",
+      "needs-human",
+    );
+    assertEquals((await readLedger(streakPath))?.escalated, true);
+    assertEquals(
+      (await readLedger(streakPath))?.conflictAttempts,
+      MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+      "a failed roll-back does not refill the budget",
+    );
+
+    const later: string[][] = [];
+    const again = ledgerDeps(later, {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "conflict",
+      }],
+      streakPath,
+      nowMs: 200_000,
+      defaultSha: MOVED_SHA,
+      rollbackOutcome: outcome,
+    });
+    await syncMilestoneBranches(again);
+    assertEquals(
+      later.filter((c) => c[0] === "issue" && c[1] === "comment").length,
+      0,
+      "the second cycle posts nothing",
+    );
+    assertEquals(
+      later.filter((c) => c[0] === "issue" && c[1] === "create").length,
+      0,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
