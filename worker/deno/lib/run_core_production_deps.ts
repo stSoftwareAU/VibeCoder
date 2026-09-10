@@ -3541,6 +3541,15 @@ export async function createProductionRunCoreDeps(
       });
     },
 
+    // Issue #1888: the same free probe, as numbers, for the pause path's
+    // "has the window reopened?" check.
+    async readGraphqlQuota() {
+      const probe = await probeGraphqlQuota();
+      if (!probe.ok) return null;
+      const { limit, remaining, reset } = probe.value;
+      return { limit, remaining, reset };
+    },
+
     async describeGraphqlQuota() {
       const probe = await probeGraphqlQuota();
       if (!probe.ok) {

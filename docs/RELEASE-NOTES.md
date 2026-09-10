@@ -26,6 +26,7 @@ if your worker login is read-only on any monitored repository.**
 
 | Change | Issue |
 | ------ | ----- |
+| A GraphQL rate-limit refusal that lands on the hourly window boundary no longer latches the whole next window: the latch holds the short cool-down when the probe shows the refused window already closed, and the mid-cycle pause re-probes the quota and continues when points are available instead of idling the run for an hour with `used=0/5000` | #1888 |
 | Cross-repo dependency PRs are authorised for Rust consumers: the manifest check reads `Cargo.toml` (and each literal workspace member's) for `path` and `git` dependencies on a monitored repo, so a NEAT-AI-* fix that belongs in NEAT-AI-core is no longer refused as "no dependency manifest could be read" and discarded | #1864 |
 | A scan cycle that ends in the primary-rate-limit pause now logs the same per-cycle `gh` telemetry (`gh-calls:`, timings, by-priority, GraphQL share, quota) a completed cycle does, before the pause line, so the cycle that exhausted the quota is never the one without a breakdown | #1843 |
 | The issue scan no longer re-views every candidate on every idle re-scan: the scan-time content-integrity check reads title and body from the listing (the claimed issue is still verified live at pickup), and the dependency fetcher serves a referenced issue's state, body and sub-issues from the iteration cache — cutting ~700 `gh issue view` GraphQL calls a cycle that were exhausting the fleet's shared quota | #1818 |
