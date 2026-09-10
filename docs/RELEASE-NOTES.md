@@ -26,6 +26,7 @@ if your worker login is read-only on any monitored repository.**
 
 | Change | Issue |
 | ------ | ----- |
+| The screenshot gate's keyword fallback no longer fires when every changed file is a systems-language, document, configuration or lock file: a Rust-only change is not a UI change because its summary says `color` and `visual`; web source files and unknown file lists keep the fallback | #1909 |
 | Lock regeneration defers a Cargo workspace lock when any member manifest is still unresolved, naming it, instead of running `cargo update --workspace` on a tree with conflict markers and recording the tool's parse error as a regeneration failure | #1903 |
 | A GraphQL rate-limit refusal that lands on the hourly window boundary no longer latches the whole next window: the latch holds the short cool-down when the probe shows the refused window already closed, and the mid-cycle pause re-probes the quota and continues when points are available instead of idling the run for an hour with `used=0/5000` | #1888 |
 | The `milestone_sync_cooldown_seconds` configuration key is retired: a milestone branch is now synced on every cycle in which the default branch's tip moved, and the cadence state (`lastSyncedDefaultSha` in `milestone_sync_failures.json`) survives a worker restart. A `.config.json` still carrying the key loads normally and reports it once as an unknown key | #1776 |
