@@ -15,7 +15,10 @@ import { listBotPrs } from "../lib/pr_bot_lookup.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 
 const REPO = "owner/repo";
-const HOST = "Vibecoderbot-host";
+/** A fleet host login shaped like a GitHub App — `isBotLogin` says "bot". */
+const HOST = "vibecoderbot[bot]";
+/** The log sink is required; cases that assert nothing about it discard. */
+const DISCARD = (_message: string): void => {};
 
 /** One `gh pr list --json …` entry, with sane defaults for the listing. */
 function prJson(overrides: Record<string, unknown>): Record<string, unknown> {
@@ -35,14 +38,25 @@ function prJson(overrides: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-/** A `gh` stub answering `pr list` with `entries`, recording every call. */
+/**
+ * A `gh` stub answering `pr list` with `entries`, recording every call.
+ *
+ * It models the one API rule this lookup depends on: `--limit N` returns at
+ * most the first N entries, so a listing asked for the wrong way round
+ * cannot return a truthful-looking answer.
+ */
 function buildGh(
   entries: unknown,
   calls?: string[][],
 ): (args: string[]) => Promise<string> {
   return (args: string[]) => {
     calls?.push(args);
-    return Promise.resolve(JSON.stringify(entries));
+    const limitAt = args.indexOf("--limit");
+    const limit = limitAt >= 0 ? Number(args[limitAt + 1]) : Number.NaN;
+    const page = Array.isArray(entries) && Number.isFinite(limit)
+      ? entries.slice(0, limit)
+      : entries;
+    return Promise.resolve(JSON.stringify(page));
   };
 }
 
@@ -92,6 +106,7 @@ Deno.test("listBotPrs - carries the maintenance PrEntry fields through", async (
       autoMergeRequest: { mergeMethod: "SQUASH" },
       mergeable: "CONFLICTING",
     })]),
+    log: DISCARD,
   });
 
   assertEquals(admitted.length, 1);
@@ -108,7 +123,9 @@ Deno.test("listBotPrs - carries the maintenance PrEntry fields through", async (
   });
 });
 
-Deno.test("listBotPrs - a human PR and the host's own PR are not admitted", async () => {
+Deno.test("listBotPrs - a human PR and the host's own bot-shaped PR are not admitted", async () => {
+  // The host login here ends in `[bot]`, so `isBotLogin` alone would admit
+  // it. The fleet set is what keeps the maintenance listing's own PR out.
   const admitted = await listBotPrs({
     repo: REPO,
     ghCommandFn: buildGh([
@@ -116,6 +133,8 @@ Deno.test("listBotPrs - a human PR and the host's own PR are not admitted", asyn
       prJson({ number: 11, author: { login: HOST } }),
       prJson({ number: 12 }),
     ]),
+    githubUser: HOST,
+    log: DISCARD,
   });
 
   assertEquals(admitted.map((pr) => pr.number), [12]);
@@ -188,18 +207,37 @@ Deno.test("listBotPrs - a non-array listing admits nothing and logs the failure"
   });
 });
 
-Deno.test("listBotPrs - a non-array gh payload admits nothing and caches nothing", async () => {
+Deno.test("listBotPrs - a non-array gh payload is logged, admits nothing, caches nothing", async () => {
   await withCache(async (cache) => {
+    const lines: string[] = [];
     const admitted = await listBotPrs({
       repo: REPO,
-      // gh answered with an API error object rather than a PR array.
+      // gh answered with an API error object rather than a PR array. It is
+      // valid JSON, so only an explicit array check catches it.
       ghCommandFn: () => Promise.resolve('{"message":"Not Found"}'),
       cache,
+      log: (message) => lines.push(message),
     });
 
     assertEquals(admitted, []);
+    assertEquals(lines.length, 1);
+    assert(lines[0]!.includes("not a JSON array"), lines[0]);
     assertEquals(await cache.read(REPO, "prs_open_all"), null);
   });
+});
+
+Deno.test("listBotPrs - a sibling fleet login's bot PR is not admitted", async () => {
+  const admitted = await listBotPrs({
+    repo: REPO,
+    ghCommandFn: buildGh([
+      prJson({ number: 20, author: { login: "stsvcbot[bot]" } }),
+      prJson({ number: 21 }),
+    ]),
+    fleetPrAuthors: ["stsvcbot[bot]"],
+    log: DISCARD,
+  });
+
+  assertEquals(admitted.map((pr) => pr.number), [21]);
 });
 
 Deno.test("listBotPrs - a second call in the cycle issues no second gh pr list", async () => {
@@ -207,8 +245,9 @@ Deno.test("listBotPrs - a second call in the cycle issues no second gh pr list",
     const calls: string[][] = [];
     const ghCommandFn = buildGh([prJson({ number: 3 })], calls);
 
-    const first = await listBotPrs({ repo: REPO, ghCommandFn, cache });
-    const second = await listBotPrs({ repo: REPO, ghCommandFn, cache });
+    const opts = { repo: REPO, ghCommandFn, cache, log: DISCARD };
+    const first = await listBotPrs(opts);
+    const second = await listBotPrs(opts);
 
     assertEquals(first.map((pr) => pr.number), [3]);
     assertEquals(second.map((pr) => pr.number), [3]);
@@ -224,6 +263,7 @@ Deno.test("listBotPrs - de-duplicates by PR number", async () => {
       prJson({ number: 5, title: "duplicate page entry" }),
       prJson({ number: 6 }),
     ]),
+    log: DISCARD,
   });
 
   assertEquals(admitted.map((pr) => pr.number), [5, 6]);
@@ -237,6 +277,7 @@ Deno.test("listBotPrs - an entry with no author login is not admitted", async ()
       prJson({ number: 9, author: {} }),
       prJson({ number: 10, author: { login: "   " } }),
     ]),
+    log: DISCARD,
   });
 
   assertEquals(admitted, []);
@@ -258,14 +299,19 @@ Deno.test("listBotPrs - sanitises a hostile bot login in the admission log", asy
   assertEquals(lines[0]!.includes('"'), false);
 });
 
-Deno.test("listBotPrs - passes the caller's limit to the listing", async () => {
-  const calls: string[][] = [];
-  await listBotPrs({
+Deno.test("listBotPrs - the caller's limit bounds what the listing returns", async () => {
+  const admitted = await listBotPrs({
     repo: REPO,
-    ghCommandFn: buildGh([], calls),
-    limit: 25,
+    ghCommandFn: buildGh([
+      prJson({ number: 1 }),
+      prJson({ number: 2 }),
+      prJson({ number: 3 }),
+    ]),
+    limit: 2,
+    log: DISCARD,
   });
 
-  const list = calls.find((c) => c[0] === "pr" && c[1] === "list")!;
-  assertEquals(list[list.indexOf("--limit") + 1], "25");
+  // The stub honours `--limit`, so a limit that never reached gh would show
+  // up here as a third admitted PR.
+  assertEquals(admitted.map((pr) => pr.number), [1, 2]);
 });

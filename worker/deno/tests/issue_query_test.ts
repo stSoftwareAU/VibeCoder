@@ -19,7 +19,6 @@ import {
   fetchRecentlyClosedPRsForFleet,
   getBlockingPRForIssue,
   isBlockedByRecentlyClosedPR,
-  OPEN_PR_LIST_FIELDS,
   parseIssueListJson,
   parsePRListJson,
   wasLabelAddedByAllowedAuthor,
@@ -810,7 +809,6 @@ Deno.test("issue_query - fetchAllOpenPRs - requests the bot-lookup fields (Issue
   ) {
     assert(fields.includes(field), `missing ${field}`);
   }
-  assertEquals(fields.join(","), OPEN_PR_LIST_FIELDS);
 });
 
 Deno.test("issue_query - fetchAllOpenPRs - carries author and head ownership (Issue #1846)", async () => {
@@ -850,6 +848,25 @@ Deno.test("issue_query - fetchAllOpenPRs - carries author and head ownership (Is
   assertEquals(prs[1]?.authorLogin, undefined);
   assertEquals(prs[1]?.isCrossRepository, undefined);
   assertEquals(prs[1]?.autoMergeRequest, undefined);
+});
+
+Deno.test("issue_query - fetchAllOpenPRs - rejects a non-array payload (Issue #1846)", async () => {
+  // `{"message":"Not Found"}` is valid JSON, so the #4257 parse guard passes
+  // it. Returning [] would let a failed call read as "this repo has no open
+  // PRs" — the exact masquerade #4257 removed for the other shapes.
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const mockGh = (_args: string[]): Promise<string> =>
+      Promise.resolve('{"message":"Not Found"}');
+    await assertRejects(
+      () => fetchAllOpenPRs("o/r", cache, 50, mockGh),
+      Error,
+      "not a JSON array",
+    );
+    assertEquals(await cache.read("o/r", "prs_open_all"), null);
+  } finally {
+    await cleanup();
+  }
 });
 
 Deno.test("issue_query - fetchAllOpenPRs - works without cache", async () => {

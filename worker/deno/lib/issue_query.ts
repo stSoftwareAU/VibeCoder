@@ -799,10 +799,9 @@ export async function fetchOpenPRsForFleet(
  * One listing per repo per cycle serves every consumer, so the field set is
  * the union of what they need: the branch/body fields the PR-link and
  * branch-cleanup helpers read, plus the author and head-ownership fields
- * the bot-PR lookup (`pr_bot_lookup.ts`) decides admission on. Exported so
- * a test can assert the listing still carries them.
+ * the bot-PR lookup (`pr_bot_lookup.ts`) decides admission on.
  */
-export const OPEN_PR_LIST_FIELDS =
+const OPEN_PR_LIST_FIELDS =
   "number,title,baseRefName,headRefName,body,url,author," +
   "isCrossRepository,headRefOid,autoMergeRequest,mergeable";
 
@@ -845,13 +844,16 @@ export async function fetchAllOpenPRs(
   // masquerade as it.
   assertListOutput(output, `fetchAllOpenPRs(${repo})`);
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output.trim());
-  } catch {
-    return [];
+  const parsed: unknown = JSON.parse(output.trim());
+  if (!Array.isArray(parsed)) {
+    // Same rule as the empty/unparseable output above (Issue #1846): an
+    // object payload is `gh` reporting a failure (`{"message":"Not Found"}`),
+    // not a repo with no open PRs. Throw rather than let it read as one.
+    throw new Error(
+      `fetchAllOpenPRs(${repo}): gh output was not a JSON array — ` +
+        `treating as a failed call, not an empty list (Issue #4257)`,
+    );
   }
-  if (!Array.isArray(parsed)) return [];
 
   const prs: OpenPRWithBody[] = [];
   for (const item of parsed) {

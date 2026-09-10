@@ -15,6 +15,10 @@
  *   admitting one would only produce a failed push every cycle. Unknown
  *   ownership (a listing or cache entry that never carried the field) is
  *   dropped by the same rule: fail closed.
+ * - **Not the fleet's own PRs.** A fleet account is often a GitHub App whose
+ *   login ends in `[bot]`, which `isBotLogin` cannot tell apart from a
+ *   dependency bot. Its PRs already arrive through the maintenance listing,
+ *   so they are dropped here.
  * - **Fail closed on an unreadable listing.** `fetchAllOpenPRs` throws
  *   rather than pass a failed call off as "no open PRs" (Issue #4257); the
  *   failure is logged once and no PR is admitted. Nothing is cached — the
@@ -34,6 +38,10 @@ import { fetchAllOpenPRs, type OpenPRWithBody } from "./issue_query.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { sanitiseLogField } from "./issue_finder_logger.ts";
 import { isBotLogin } from "./trust_exclusions.ts";
+import {
+  isFleetAuthor,
+  resolveFleetMaintenanceAuthorSet,
+} from "./fleet_authors.ts";
 import type { PrEntry } from "./pr_maintenance.ts";
 
 /** Options for {@link listBotPrs}. */
@@ -50,8 +58,23 @@ export interface ListBotPrsOptions {
   cache?: IssueCache;
   /** Optional `--limit` for the listing. */
   limit?: number;
-  /** Optional log sink for admissions and exclusions. */
-  log?: (message: string) => void;
+  /**
+   * Log sink for admissions, exclusions and listing failures. Required, not
+   * optional: this door fails **closed**, and a closed door nobody can hear
+   * is indistinguishable from a repo with no bot PRs. A caller that genuinely
+   * wants silence must ask for it explicitly.
+   */
+  log: (message: string) => void;
+  /**
+   * This host's own GitHub login. Its PRs are the *first* source of
+   * `listActionablePrs` (the maintenance listing), so admitting them here
+   * too would only duplicate work — and a fleet account is often a GitHub
+   * App whose login ends in `[bot]`, which `isBotLogin` cannot tell apart
+   * from a dependency bot.
+   */
+  githubUser?: string;
+  /** Sibling fleet logins (`fleet_pr_authors`), excluded for the same reason. */
+  fleetPrAuthors?: readonly string[];
 }
 
 /** Project one admitted listing entry onto the maintenance scan's shape. */
@@ -84,12 +107,16 @@ export async function listBotPrs(
   options: ListBotPrsOptions,
 ): Promise<PrEntry[]> {
   const { repo, cache, limit, ghCommandFn, log } = options;
+  const fleet = resolveFleetMaintenanceAuthorSet({
+    githubUser: options.githubUser ?? "",
+    fleetPrAuthors: options.fleetPrAuthors,
+  });
 
   let listing: OpenPRWithBody[];
   try {
     listing = await fetchAllOpenPRs(repo, cache, limit, ghCommandFn);
   } catch (err) {
-    log?.(
+    log(
       `[pr-bot] ${repo}: open PR listing failed: ${
         err instanceof Error ? err.message : String(err)
       } — no bot PR admitted`,
@@ -99,7 +126,7 @@ export async function listBotPrs(
   if (!Array.isArray(listing)) {
     // A cached listing is read back untyped, so a garbled entry arrives
     // here as a non-array. That is a failure, not an empty repository.
-    log?.(
+    log(
       `[pr-bot] ${repo}: open PR listing was not an array — ` +
         `no bot PR admitted`,
     );
@@ -115,19 +142,21 @@ export async function listBotPrs(
 
     const login = (pr.authorLogin ?? "").trim();
     if (login === "" || !isBotLogin(login)) continue;
+    // A fleet account's own PR arrives through the maintenance listing.
+    if (isFleetAuthor(login, [...fleet])) continue;
 
     if (pr.isCrossRepository !== false) {
       const reason = pr.isCrossRepository === true
         ? "cross-repository-head"
         : "cross-repository-unknown";
-      log?.(
+      log(
         `[pr-bot] excluded repo=${repo} prNumber=${pr.number} ` +
           `author=${sanitiseLogField(login)} reason=${reason}`,
       );
       continue;
     }
 
-    log?.(
+    log(
       `[pr-bot] admitted repo=${repo} prNumber=${pr.number} ` +
         `author=${sanitiseLogField(login)}`,
     );
