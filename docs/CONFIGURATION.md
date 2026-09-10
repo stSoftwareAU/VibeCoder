@@ -3785,6 +3785,24 @@ escalate perfectly healthy repos. Every other category
 (`code-fix-required`, `history-rewrite-required`, `timing`, `unknown`)
 consumes an attempt.
 
+**`timing` needs a timing statement, not the word "timeout".** A job log
+echoes `timeout-minutes:` for every step that sets one, and a script may wrap
+a command in `timeout 900 …` — neither says the step ran out of time. The
+classifier therefore matches `timing` only on an explicit statement: "timed
+out", a cancelled job, the maximum execution time exceeded, or a budget named
+as overrun on either side of the word ("timeout of 30000ms exceeded",
+"Exceeded timeout of 5000 ms", "npm ERR! network Socket timeout").
+
+**A step's own non-zero exit is the next-best evidence.** With no timing or
+infrastructure statement, "Process completed with exit code 1" makes the
+failure `code-fix-required` rather than `unknown`, so an ordinary script
+failure gets a fix attempt — and, if the agent cannot find one, the honest
+`needs-human` escalation that `code-fix-required` carries — instead of being
+steered to a timing remedy by an incidental mention (Issue #1882). Exit codes
+that report how the step **died** rather than what the code got wrong — 124
+(GNU `timeout`), 137 (SIGKILL/OOM) and 143 (SIGTERM) — are excluded and fall
+through to `unknown`.
+
 **Secret findings are fixed by rebuilding the branch, not by another commit.**
 A failure classified `history-rewrite-required` — gitleaks, trufflehog, or any
 check whose log carries a `Fingerprint: <sha>:<file>:…` line — is a property of
