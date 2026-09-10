@@ -235,8 +235,8 @@ async function withStateDir<T>(
 // ---------------------------------------------------------------------------
 
 Deno.test("listActionablePrs - unions the bot source and de-duplicates by number (Issue #1848)", async () => {
-  // The bot PR is also returned by the maintenance listing, because the
-  // host's own login is bot-shaped — a GitHub App. It must appear once.
+  // The first PR arrives from both the maintenance listing (its author is in
+  // the scan author set) and the bot door. It must appear exactly once.
   const prs = [
     { number: BOT_PR, author: BOT, headRefName: "dependabot/deno/std" },
     { number: BOT_PR_2, author: BOT2, headRefName: "renovate/deno-std" },

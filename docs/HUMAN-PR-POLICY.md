@@ -83,9 +83,11 @@ A dependency bump raised by `dependabot[bot]` or `renovate[bot]` is nobody's PR
 under the two lists above: the bot is not a fleet login and it cannot invite the
 worker. Its red quality check therefore sat unattended for as long as the bot
 kept the PR open. The worker now **maintains bot-authored PRs** as a third
-source, admitted by `listBotPrs`
-(`worker/deno/lib/pr_bot_lookup.ts`) inside the one admission point every scan
-lists through, `listActionablePrs`.
+source, admitted by `listBotPrs` (`worker/deno/lib/pr_bot_lookup.ts`) inside
+`listActionablePrs` — the admission point the four acting scans list through.
+The CI-nudge scan is the exception: it builds its own listing by author
+(`pr_ci_nudge_scan.ts`), so it does not see bot PRs, which is why the table
+above says `No` for that row.
 
 ```mermaid
 flowchart LR
@@ -100,9 +102,19 @@ flowchart LR
 ```
 
 What counts as a bot is the worker's single `[bot]`-detection predicate,
-`isBotLogin` — a login ending in `[bot]`, or one of the known suffix-less bots
-(`dependabot`, `renovate`, `github-actions`, `copilot`, `cursor`, `snyk`,
-`codecov`).
+`isBotLogin` (`worker/deno/lib/trust_exclusions.ts`). It matches three shapes:
+
+- a login **ending** in `[bot]` — `dependabot[bot]`, `renovate[bot]`;
+- one of the three known **suffix-less** bots, matched whole:
+  `dependabot`, `renovate`, `github-actions`;
+- a login **starting** with `github-copilot`, `copilot`, `cursor`,
+  `dependabot`, `renovate`, `snyk` or `codecov`.
+
+The last group is a prefix match, not an exact one, so a human login that
+happens to start with one of those words is read as a bot. That predicate is
+shared with the rest of the worker and is not specific to this door; narrowing
+it for admission is tracked in
+[#1872](https://github.com/stSoftwareAU/VibeCoder/issues/1872).
 
 The boundaries, all of which fail **closed**:
 
