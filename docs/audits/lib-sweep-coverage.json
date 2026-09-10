@@ -1156,6 +1156,30 @@
         "worker/deno/setup/update_mode_setup.ts",
         "worker/deno/setup/workflow_sync.ts"
       ]
+    },
+    {
+      "issue": 1822,
+      "chunk": "12n",
+      "title": "top-up: the file-scoped audit check table",
+      "ledger": "docs/audits/security-sweep-1822-workflow-file-checks.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: workflow_file_checks.ts (#1822)",
+      "status": "swept",
+      "sweptAt": "6c7fc07336ad1b10cdd17c9db32a5b75118f9e3d",
+      "paths": [
+        "worker/deno/lib/workflow_file_checks.ts"
+      ]
+    },
+    {
+      "issue": 1823,
+      "chunk": "12o",
+      "title": "top-up: the action pin resolver",
+      "ledger": "docs/audits/security-sweep-1823-action-pin-resolver.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: action_pin_resolver.ts (#1823)",
+      "status": "swept",
+      "sweptAt": "fe545122ac033ff4304ce6c3b635851e8f3e46d5",
+      "paths": [
+        "worker/deno/lib/action_pin_resolver.ts"
+      ]
     }
   ],
   "roots": [
