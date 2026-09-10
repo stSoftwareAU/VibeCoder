@@ -1235,6 +1235,14 @@ Both halves are now told about the guard:
   deliberately. The observer's disagreement run is therefore cleared rather
   than extended, so the guard's own suppression can no longer drive the
   #2475 bound and force a filer attempt every twenty minutes for a week.
+- The **idle-starvation detector** (Issue #1052, below) watches the outcome —
+  "no idle task anywhere while slot capacity sits idle" — which is precisely
+  what a paced week looks like, so it would escalate the worker's own policy
+  to a human twelve hours in. An observation taken while the guard holds
+  therefore ends the episode (`action=pace-deferred`) instead of banking it,
+  the same way a supplied fleet ends it. Ended rather than paused: the guard
+  can stand for the rest of the week, and a paused episode would file the
+  moment it lifted on hours banked while nothing was wrong.
 
 ```mermaid
 flowchart TD
@@ -1296,6 +1304,9 @@ flowchart TD
   is the healthy steady state, which ends the episode and restarts the clock.
 - **Idle capacity with no idle task** is neither, and is the ten-day state
   nothing watched.
+- **A paced week** is neither either: filing is deferred by design while the
+  week-pace guard holds (Issue #1915, above), so the observation ends the
+  episode rather than banking hours towards an escalation the fleet chose.
 
 The thresholds are 12 hours and 14,400 idle slot-seconds (four slot-hours). The
 incident measured `idle_pct=31.4` on a two-slot host — about 2,250 idle

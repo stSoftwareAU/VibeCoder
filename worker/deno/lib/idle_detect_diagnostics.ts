@@ -782,17 +782,17 @@ export function pickDominantReason(
   // re-labelling the issue, so it is the more actionable answer.
   if (seen.has("merged_pr_blocked")) return "merged_pr_blocked";
   if (seen.has("pr_blocked")) return "pr_blocked";
+  // Issue #1915: below the two PR gates and above the run-local hold. It is
+  // only ever set on an issue nothing else refused, and "the week-pace guard
+  // is spending what is left of the quota on urgency signals" is the answer an
+  // operator asking why the fleet is idle actually needs — a hold clears when
+  // the run ends, the guard stands until the weekly window resets.
   // Issue #655: below the two PR gates, above everything applied before it.
   // Both PR gates describe fleet state that outlives this process and may
   // need a human; a run-local hold clears itself when the run ends or the
   // cooldown expires, so it is the less urgent answer of the three — but it
   // is only ever set on an issue nothing else refused, which makes it more
   // specific than stream occupancy and the filters above that.
-  // Issue #1915: above the run-local hold and everything below it. It is only
-  // ever set on an issue nothing else refused, and "the week-pace guard is
-  // spending what is left of the quota on urgency signals" is the answer an
-  // operator asking why the fleet is idle actually needs — a hold clears when
-  // the run ends, the guard stands until the weekly window resets.
   if (seen.has("pace_suppressed")) return "pace_suppressed";
   if (seen.has("run_local_hold")) return "run_local_hold";
   if (seen.has("stream_occupied")) return "stream_occupied";

@@ -4472,6 +4472,9 @@ export async function createProductionRunCoreDeps(
               runId: resolveRunId(),
               idleSlotSeconds,
               openIdleTasks,
+              // Issue #1915: filing is deferred while the pace guard holds,
+              // so an empty idle-task set is the policy, not starvation.
+              weekPaceEngaged: weekPaceGate.lastEngaged(),
               // Issue #1083: one wrapper is health beside one idle slot and
               // a shortfall beside six.
               expectedIdleTasks: getIdleSlotCapacity(),
