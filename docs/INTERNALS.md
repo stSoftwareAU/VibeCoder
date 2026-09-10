@@ -3157,9 +3157,9 @@ clone the merge conflicted in.
    caller that supplies none stops after the rules rather than pretending the
    conflict was decided.
 
-Only a file **every** rung leaves undecided aborts the merge; since Issue
-#1778 that abortion reaches nobody while the branch's conflict budget still
-has an attempt in it — it is charged to the ledger, named in one log line
+Only a file **every** rung leaves undecided aborts the merge; since
+Issue #1778 that abortion reaches nobody while the branch's conflict budget
+still has an attempt in it — it is charged to the ledger, named in one log line
 `conflict attempt n of 3 failed at rung <rung>`, and the exhausted budget is
 what reaches for the roll-back. An
 agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
