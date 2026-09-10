@@ -102,6 +102,15 @@ export function buildCodexChildEnv(
  * account's secrets and `CODEX_HOME` reach the child. Other Codex
  * accounts, Claude credentials and worker-only secrets stay out.
  *
+ * A selected `CODEX_HOME` means this invocation is deliberately using the
+ * CLI's persisted ChatGPT login. In that mode API-key variables are withheld
+ * even when they are present in the worker environment or the selected
+ * credential context (Issue #1924). This is the billing guard: a stale or
+ * revoked subscription must fail authentication rather than silently turn an
+ * unattended run into metered API spend. The legacy API-key path remains
+ * available only when no `CODEX_HOME` was selected, preserving existing
+ * explicit API-key deployments while subscription-only routing is introduced.
+ *
  * Does not mutate the parent object or process-global HOME / CODEX_HOME.
  */
 export function buildIsolatedCodexChildEnv(
@@ -117,14 +126,20 @@ export function buildIsolatedCodexChildEnv(
   delete stripped.CODEX_API_KEY;
   delete stripped.CODEX_HOME;
   const child = buildCodexChildEnv(stripped);
+
+  const codexHome = selected.codexHome?.trim();
+  if (codexHome) {
+    // Subscription mode is intentionally fail-closed: CODEX_HOME owns
+    // authentication and no metered credential reaches the child as a backup.
+    child.CODEX_HOME = codexHome;
+    return child;
+  }
+
   if (selected.openaiApiKey !== undefined) {
     child.OPENAI_API_KEY = selected.openaiApiKey;
   }
   if (selected.codexApiKey !== undefined) {
     child.CODEX_API_KEY = selected.codexApiKey;
-  }
-  if (selected.codexHome !== undefined) {
-    child.CODEX_HOME = selected.codexHome;
   }
   return child;
 }
