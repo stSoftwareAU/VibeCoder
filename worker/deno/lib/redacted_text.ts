@@ -89,6 +89,36 @@ export function redactedHead(text: string, maxChars: number): RedactedText {
 }
 
 /**
+ * Redact `text` in full, then keep its first `headChars` and last `tailChars`
+ * characters, with an elision marker between them.
+ *
+ * The tail alone is what a failure sink wants for an agent's last words, but
+ * a quality-gate excerpt loses the *name of the failing check* that way: the
+ * gate prints it as it starts a check, so a 500-character tail of a long run
+ * begins mid-sentence and the log cannot say what is red (Issue #1852).
+ *
+ * @param text - The full, untruncated text. Pass it whole.
+ * @param headChars - Characters to keep from the start.
+ * @param tailChars - Characters to keep from the end.
+ * @returns The redacted head, an elision marker, and the redacted tail,
+ *   branded as {@link RedactedText}. Text that already fits is returned whole.
+ */
+export function redactedHeadTail(
+  text: string,
+  headChars: number,
+  tailChars: number,
+): RedactedText {
+  const head = clampBudget(headChars);
+  const tail = clampBudget(tailChars);
+  const masked = redactSecrets(text);
+  if (masked.length <= head + tail) return masked as RedactedText;
+  // `slice(-0)` is `slice(0)` — the whole string — so a zero tail budget has
+  // to be answered before the cut, exactly as `redactedTail` does.
+  const keptTail = tail === 0 ? "" : masked.slice(-tail);
+  return `${masked.slice(0, head)}\n…\n${keptTail}` as RedactedText;
+}
+
+/**
  * Join already-redacted parts, dropping the empty ones.
  *
  * Concatenating two `RedactedText` values yields a plain `string` in
