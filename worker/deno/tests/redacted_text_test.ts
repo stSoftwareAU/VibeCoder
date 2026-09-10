@@ -18,6 +18,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   joinRedacted,
   redactedHead,
+  redactedHeadTail,
   redactedLineTail,
   redactedLogTail,
   redactedTail,
@@ -354,4 +355,47 @@ Deno.test("redactedLogTail - redacts before the byte cap, at every cap size", ()
 
 Deno.test("redactedLogTail - text within the cap is returned whole", () => {
   assertEquals(redactedLogTail("short log", 1000), "short log");
+});
+
+// ---------------------------------------------------------------------------
+// redactedHeadTail (Issue #1852)
+// ---------------------------------------------------------------------------
+
+Deno.test("redactedHeadTail - keeps both ends with an elision between them", () => {
+  const excerpt = redactedHeadTail(
+    `HEAD${"m".repeat(500)}TAIL`,
+    10,
+    10,
+  );
+  assertStringIncludes(excerpt, "HEAD");
+  assertStringIncludes(excerpt, "TAIL");
+  assertStringIncludes(excerpt, "…");
+  assertEquals(excerpt.length, 23, "head + marker + tail, nothing more");
+});
+
+Deno.test("redactedHeadTail - text that already fits is returned whole", () => {
+  assertEquals(redactedHeadTail("short output", 100, 100), "short output");
+});
+
+Deno.test("redactedHeadTail - masks a token straddling either cut", () => {
+  const head = `start ${FAKE_TOKEN} middle`;
+  const excerpt = redactedHeadTail(
+    `${head}${"z".repeat(2000)}${FAKE_TOKEN} end`,
+    20,
+    20,
+  );
+  assertEquals(
+    excerpt.includes(FAKE_TOKEN.slice(0, 12)),
+    false,
+    "a token cut by the head boundary must already be masked",
+  );
+  assertEquals(
+    excerpt.includes(FAKE_TOKEN.slice(-12)),
+    false,
+    "a token cut by the tail boundary must already be masked",
+  );
+});
+
+Deno.test("redactedHeadTail - zero budgets keep nothing but the marker", () => {
+  assertEquals(redactedHeadTail("some output", 0, 0), "\n…\n");
 });

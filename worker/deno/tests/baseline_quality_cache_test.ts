@@ -17,6 +17,8 @@ import {
   computeBaselineQualityCacheKey,
   isBaselineQualityCacheEnabled,
   MAX_BASELINE_QUALITY_CACHE_ENTRIES,
+  MAX_CACHED_CHECK_OUTPUT_CHARS,
+  MAX_CACHED_FAILED_CHECKS,
   MAX_CACHED_OUTPUT_CHARS,
   readBaselineQualityCache,
   writeBaselineQualityCache,
@@ -529,4 +531,91 @@ Deno.test("baseline_quality_cache - default path lives on the work volume, not r
     }),
     "/vol/auto-issue-work/.vibe-cache/baseline-quality-cache.json",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Failing checks (Issue #1852)
+// ---------------------------------------------------------------------------
+
+Deno.test("baseline_quality_cache - failing checks survive the round-trip", async () => {
+  const path = await tempCachePath();
+  const failedChecks = [{ name: "repo quality.sh", output: "version drift" }];
+  await writeBaselineQualityCache(
+    "owner/repo@sha",
+    { passed: false, output: "", failedChecks },
+    path,
+  );
+
+  const entry = await readBaselineQualityCache("owner/repo@sha", path);
+  assertEquals(entry?.failedChecks, failedChecks);
+});
+
+Deno.test("baseline_quality_cache - failing checks stay undefined when not recorded", async () => {
+  const path = await tempCachePath();
+  await writeBaselineQualityCache(
+    "owner/repo@sha",
+    { passed: false, output: "boom" },
+    path,
+  );
+
+  const entry = await readBaselineQualityCache("owner/repo@sha", path);
+  assertEquals(entry?.failedChecks, undefined);
+});
+
+Deno.test("baseline_quality_cache - a stored check output is redacted and bounded", async () => {
+  const path = await tempCachePath();
+  // Assembled at run time so the fixture never exists as a token-shaped
+  // literal in the source a secret scanner reads.
+  const secret = `ghp_${"a".repeat(36)}`;
+  await writeBaselineQualityCache(
+    "owner/repo@sha",
+    {
+      passed: false,
+      output: "",
+      failedChecks: [{
+        name: "repo quality.sh",
+        output: `${"x".repeat(MAX_CACHED_CHECK_OUTPUT_CHARS)} ${secret}`,
+      }],
+    },
+    path,
+  );
+
+  const stored = await readBaselineQualityCache("owner/repo@sha", path);
+  const output = stored?.failedChecks?.[0]?.output ?? "";
+  assertEquals(output.length, MAX_CACHED_CHECK_OUTPUT_CHARS);
+  assertEquals(output.includes(secret), false, "the token must be masked");
+});
+
+Deno.test("baseline_quality_cache - more failing checks than the cap are dropped", async () => {
+  const path = await tempCachePath();
+  const many = Array.from(
+    { length: MAX_CACHED_FAILED_CHECKS + 5 },
+    (_unused, index) => ({ name: `check-${index}`, output: "boom" }),
+  );
+  await writeBaselineQualityCache(
+    "owner/repo@sha",
+    { passed: false, output: "", failedChecks: many },
+    path,
+  );
+
+  const entry = await readBaselineQualityCache("owner/repo@sha", path);
+  assertEquals(entry?.failedChecks?.length, MAX_CACHED_FAILED_CHECKS);
+});
+
+Deno.test("baseline_quality_cache - a malformed failing-check list reads as a miss", async () => {
+  const path = await tempCachePath();
+  await Deno.writeTextFile(
+    path,
+    JSON.stringify({
+      "owner/repo@sha": {
+        version: BASELINE_QUALITY_CACHE_VERSION,
+        passed: false,
+        output: "",
+        failedChecks: [{ name: "repo quality.sh" }],
+        storedAt: Date.now(),
+      },
+    }),
+  );
+
+  assertEquals(await readBaselineQualityCache("owner/repo@sha", path), null);
 });
