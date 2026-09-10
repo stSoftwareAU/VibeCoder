@@ -436,6 +436,14 @@ async function executeClaudeBody(
     issueTitle,
     issueBody,
     issueLabels: ctx.issueLabels.join(","),
+    // The issue's comments (Issue #1910). Selected and trust-annotated where
+    // the context was built, fenced by the builder: a maintainer who narrows
+    // scope in a reply is now visible to the agent without the description
+    // being edited.
+    ...(ctx.issueComments ? { issueComments: ctx.issueComments } : {}),
+    ...(ctx.commentBoundaryId
+      ? { commentBoundaryId: ctx.commentBoundaryId }
+      : {}),
     qualityInstructions,
     customInstructions,
     milestoneBranch: state.milestoneBranch,

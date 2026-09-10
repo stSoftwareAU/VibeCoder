@@ -55,6 +55,13 @@ export const promptBuilderCommand: Command = {
           issueTitle: String(args["issue-title"] ?? ""),
           issueBody: String(args["issue-body"] ?? ""),
           issueLabels: String(args["issue-labels"] ?? ""),
+          // Issue #1910: the implementation prompt carries the issue's
+          // comments, so this entry point can pass them like its siblings.
+          // No boundary id is accepted here — as on the planning and question
+          // operations, a blob arriving through the CLI is scrubbed whole.
+          issueComments: args["issue-comments"]
+            ? String(args["issue-comments"])
+            : undefined,
           qualityInstructions: String(args["quality-instructions"] ?? ""),
           customInstructions: args["custom-instructions"]
             ? String(args["custom-instructions"])

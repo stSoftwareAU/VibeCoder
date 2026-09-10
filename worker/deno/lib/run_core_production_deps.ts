@@ -100,6 +100,7 @@ import { stopAllHeartbeats, stopHeartbeatsExcept } from "./heartbeat.ts";
 import { workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
+import { buildImplementationCommentContext } from "./implementation_comments.ts";
 import { observeUntrustedIssueImages } from "./issue_content_trust_filter.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
 import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
@@ -3397,13 +3398,38 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: routeRunResult(seedRoute) };
       }
 
+      // The issue's comments (Issue #1910). This is the fleet's own
+      // implementation route, and it used to hand the agent an empty blob —
+      // so a maintainer who replied on the issue was invisible unless the
+      // description itself was edited. The comments are already in
+      // `issueData`; selection and trust annotation are shared with the
+      // `work-on-issue` command rather than repeated here.
+      const commentContext = buildImplementationCommentContext(
+        issueData.comments ?? [],
+        {
+          allowedAuthors: config.allowedAuthors ?? [],
+          authorisedCommenters: config.authorisedCommenters ?? [],
+          includeUntrustedComments: config.includeUntrustedComments ?? true,
+          workerLogin: githubUser,
+        },
+      );
+      for (const auditMsg of commentContext.securityAuditMessages) {
+        logger.warn(auditMsg, {
+          repo: issue.repo,
+          issueNumber: issue.issueNumber,
+        });
+      }
+
       const ctx = {
         repo: issue.repo,
         issueNumber: issue.issueNumber,
         issueTitle,
         issueBody: issueData.body ?? "",
         issueLabels: issueData.labels ?? [],
-        issueComments: "",
+        issueComments: commentContext.issueComments,
+        ...(commentContext.commentBoundaryId
+          ? { commentBoundaryId: commentContext.commentBoundaryId }
+          : {}),
         // Issue #1385: the main loop builds its own context, so the
         // untrusted-image observation is made here too — the gate in the
         // no-changes phase is only a control on the routes that observe.
@@ -4050,6 +4076,13 @@ export async function createProductionRunCoreDeps(
     // priority dispatch. Best-effort — any throw is caught here and
     // logged via `logger.warn` so a filer crash never aborts the main
     // loop.
+    // Issue #1915: the idle hooks ask the same gate the scan consulted, so
+    // filing is deferred while the pace guard is engaged — an idle-task the
+    // filer raises could not be picked up before the weekly window resets,
+    // and deciding where to raise it walks every monitored repository.
+    // `lastEngaged` is the recorded verdict: no probe, no request, no line.
+    weekPaceEngaged: () => weekPaceGate.lastEngaged(),
+
     runIdleTaskFiler: async () => {
       try {
         // Issue #2158: rescue any orphan `Run a security scan` wrappers
@@ -4150,6 +4183,13 @@ export async function createProductionRunCoreDeps(
           pushCapableAuthors: maintenanceAuthors,
           tick,
           scanFoundClaimable,
+          // Issue #1915: the scan's own verdict, read without a probe or a
+          // log line (the census reads the same one). A tier the pace gate
+          // dropped is a modelled refusal, not claimable work the scan
+          // mysteriously passed over — counting GRQ-25's 87 pace-suppressed
+          // `low-priority` issues as claimable is what made every cycle a
+          // disagreement and drove the idle-task filer through its bound.
+          weekPaceEngaged: weekPaceGate.lastEngaged(),
           ghCommandFn: auditGh,
           // The audit used to list every repo's open issues itself, uncached,
           // on every idle tick — a full duplicate of the scan's read. Serve it
@@ -4464,6 +4504,9 @@ export async function createProductionRunCoreDeps(
               runId: resolveRunId(),
               idleSlotSeconds,
               openIdleTasks,
+              // Issue #1915: filing is deferred while the pace guard holds,
+              // so an empty idle-task set is the policy, not starvation.
+              weekPaceEngaged: weekPaceGate.lastEngaged(),
               // Issue #1083: one wrapper is health beside one idle slot and
               // a shortfall beside six.
               expectedIdleTasks: getIdleSlotCapacity(),
@@ -4472,6 +4515,10 @@ export async function createProductionRunCoreDeps(
                 refusalReason: describeIdleHooksRefusal({
                   inversionDetected: census.inversionDetected,
                   claimableTotal: lastAuditClaimableTotal,
+                  // Issue #1915: the refusal that outranks both — while the
+                  // pace guard holds, the filer is deferred whatever the
+                  // other two say, so the evidence must name it.
+                  weekPaceEngaged: weekPaceGate.lastEngaged(),
                 }),
                 claimableTotal: lastAuditClaimableTotal,
                 censusLines,

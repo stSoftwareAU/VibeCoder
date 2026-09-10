@@ -38,8 +38,7 @@ import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueData } from "../lib/issue_data.ts";
 import { fetchIssueData } from "../lib/issue_data.ts";
 import { enforceIssueBodyLimit, validateIssueInput } from "../lib/security.ts";
-import { prepareTrustAnnotatedComments } from "../lib/comment_trust_filter.ts";
-import { capFormattedComments } from "../lib/comment_rate_limiter.ts";
+import { buildImplementationCommentContext } from "../lib/implementation_comments.ts";
 import { annotateIssueContentWithTrust } from "../lib/issue_content_trust_filter.ts";
 import {
   handleIdleTaskIssue,
@@ -132,29 +131,6 @@ export function parseWorkOnIssueArgs(
     githubUser,
     milestoneTitle: milestoneTitle || undefined,
   };
-}
-
-/**
- * Format structured issue comments into a single string for the context.
- *
- * Each comment is formatted as "author: body" separated by "---" dividers.
- *
- * Issue #3648: this is the no-trust-configuration path, so the per-author caps
- * in `comment_rate_limiter.ts` never run. Without a cap here an attacker on a
- * public repository could add arbitrarily many large comments and have every
- * byte concatenated into the prompt. `capFormattedComments` bounds the blob
- * unconditionally and announces anything it drops.
- */
-export function formatIssueComments(
-  comments: IssueData["comments"],
-  maxTotalChars?: number,
-): string {
-  return capFormattedComments(
-    comments
-      .map((c) => `${c.author}: ${c.body}`)
-      .join("\n---\n"),
-    maxTotalChars,
-  );
 }
 
 /**
@@ -303,38 +279,27 @@ export async function runWorkOnIssueCommand(
   }
 
   // Build comments string from structured comment data.
-  // Issue #1340: Use trust-annotated comments when trust lists are configured,
-  // otherwise fall back to the plain format for backward compatibility.
-  const hasTrustConfig = (config.allowedAuthors?.length ?? 0) > 0 ||
-    (config.authorisedCommenters?.length ?? 0) > 0;
-
-  let issueComments: string;
-  // Boundary id of the genuine per-comment trust headers, when the trust
-  // formatter produced them (Issue #3638). Left undefined for the raw comment
-  // format so no untrusted text gains an exemption from the full scrub.
-  let commentBoundaryId: string | undefined;
-  if (hasTrustConfig) {
-    const rawJson = JSON.stringify({
-      comments: issueData.comments.map((c) => ({
-        body: c.body,
-        author: { login: c.author },
-      })),
-    });
-    const trustResult = prepareTrustAnnotatedComments(rawJson, {
+  // Issue #1340: trust-annotated when trust lists are configured, otherwise
+  // the plain format. Issue #1910: selected and bounded first, so the worker's
+  // own run-stats and release bookkeeping cannot crowd out a maintainer's
+  // reply in the prompt that now carries them.
+  const commentContext = buildImplementationCommentContext(
+    issueData.comments,
+    {
       allowedAuthors: config.allowedAuthors ?? [],
       authorisedCommenters: config.authorisedCommenters ?? [],
       includeUntrustedComments: config.includeUntrustedComments ?? true,
-    });
-    issueComments = trustResult.formattedComments;
-    commentBoundaryId = trustResult.boundaryId;
+      workerLogin: githubUser,
+    },
+  );
+  const { issueComments, commentBoundaryId } = commentContext;
 
-    // Log security audit events for suspicious untrusted comments
+  // Log security audit events for suspicious untrusted comments
+  if (commentContext.securityAuditMessages.length > 0) {
     const deps = commandDeps.createDeps();
-    for (const auditMsg of trustResult.securityAuditMessages) {
+    for (const auditMsg of commentContext.securityAuditMessages) {
       deps.logger.warn(auditMsg, { repo, issueNumber });
     }
-  } else {
-    issueComments = formatIssueComments(issueData.comments);
   }
 
   // Build the IssueContext

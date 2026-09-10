@@ -15,7 +15,7 @@ import {
   redactSecrets,
 } from "../lib/secret_redaction.ts";
 import { capFormattedComments } from "../lib/comment_rate_limiter.ts";
-import { formatIssueComments } from "../commands/work_on_issue.ts";
+import { formatPlainComments } from "../lib/implementation_comments.ts";
 import { prepareQuestionComments } from "../lib/comment_filter.ts";
 import {
   DEFAULT_MAX_BODY_LENGTH,
@@ -109,12 +109,12 @@ Deno.test("SEC-3edee182987d - capFormattedComments truncates and announces", () 
   assertStringIncludes(out, "400 characters omitted");
 });
 
-Deno.test("SEC-3edee182987d - formatIssueComments caps the total blob", () => {
+Deno.test("SEC-3edee182987d - formatPlainComments caps the total blob", () => {
   const comments = Array.from({ length: 20 }, (_, i) => ({
     author: `attacker${i}`,
     body: "A".repeat(5_000),
   }));
-  const out = formatIssueComments(comments, 1_000);
+  const out = formatPlainComments(comments, 1_000);
   assert(
     out.length < 2_000,
     `expected a bounded blob, got ${out.length} characters`,
@@ -122,12 +122,12 @@ Deno.test("SEC-3edee182987d - formatIssueComments caps the total blob", () => {
   assertStringIncludes(out, "Comment context truncated");
 });
 
-Deno.test("SEC-3edee182987d - formatIssueComments uses the 20k default cap", () => {
+Deno.test("SEC-3edee182987d - formatPlainComments uses the 20k default cap", () => {
   const comments = Array.from({ length: 40 }, (_, i) => ({
     author: `attacker${i}`,
     body: "A".repeat(10_000),
   }));
-  const out = formatIssueComments(comments);
+  const out = formatPlainComments(comments);
   assert(
     out.length < 21_000,
     `expected the default cap to apply, got ${out.length} characters`,

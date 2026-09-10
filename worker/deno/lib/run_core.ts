@@ -1117,6 +1117,24 @@ export interface RunCoreDeps {
   runIdleTaskFiler?: () => Promise<void>;
 
   /**
+   * Whether the weekly-quota pace guard is engaged right now (Issues #1885,
+   * #1915).
+   *
+   * Engaged, the Priority 2 scan drops the `low-priority` and `idle-task`
+   * tiers from its ladder for the rest of the week, so an idle-task the
+   * filer raises cannot be picked up before the window resets — and the
+   * filer walks every monitored repository to decide where to raise it,
+   * which on GRQ-25 cost ~800 of the fleet's shared 5,000 GraphQL points
+   * every cycle and filed nothing. The hooks therefore defer filing while
+   * it is engaged.
+   *
+   * Read without a probe or a log line (`ClaudeWeekPaceGate.lastEngaged`),
+   * so asking costs nothing. Optional; omitted reads as off, which is the
+   * behaviour every caller had before this hook existed.
+   */
+  weekPaceEngaged?: () => boolean;
+
+  /**
    * Idle-detection audit hook (Issue #2106).
    *
    * Invoked at the same gate as `runIdleTaskFiler` — i.e. only when
@@ -4317,6 +4335,27 @@ function runIdleWorkHooks(
     // cannot clear it) and persisted across the worker's roughly
     // hourly restarts. Without all three the bound could never
     // be reached and the fleet filed no idle-task for ten days.
+    // Issue #1915: while the week-pace guard is engaged (Issue #1885) the
+    // scan claims no `low-priority` and no `idle-task` issue until the weekly
+    // window resets, so nothing the filer raises can be picked up this week —
+    // and raising it means walking every monitored repository, which on
+    // GRQ-25 spent ~800 of the fleet's shared 5,000 GraphQL points a cycle to
+    // file nothing at all. Filing is deferred here, above the disagreement
+    // chain, so the cost is not paid at any point in it.
+    //
+    // The observation is *agreement*, not a disagreement: every eligible
+    // issue was refused by a rule the fleet applied deliberately, which is
+    // exactly what the "no disagreement" branch below means, so this
+    // observer's run is cleared rather than extended. Without that, the
+    // guard's own suppression accumulated toward the #2475 bound and forced
+    // the filer through it every twenty minutes for the rest of the week.
+    if (deps.weekPaceEngaged?.() === true) {
+      await state.disagreement.clear(req.observerId);
+      req.log(
+        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=week_pace_engaged — pace guard engaged, idle-task filing deferred`,
+      );
+      return outcome;
+    }
     const nowMs = deps.now();
     const auditDisagrees = auditClaimableTotal !== null &&
       auditClaimableTotal > 0;

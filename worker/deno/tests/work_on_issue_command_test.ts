@@ -9,12 +9,12 @@
 
 import { assertEquals } from "@std/assert";
 import {
-  formatIssueComments,
   parseWorkOnIssueArgs,
   runWorkOnIssueCommand,
   workOnIssueCommand,
   type WorkOnIssueCommandDeps,
 } from "../commands/work_on_issue.ts";
+import { formatPlainComments } from "../lib/implementation_comments.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { LogContext } from "../types.ts";
@@ -256,27 +256,27 @@ Deno.test("parseWorkOnIssueArgs - handles numeric issue-number", () => {
 });
 
 // ============================================================================
-// formatIssueComments
+// formatPlainComments
 // ============================================================================
 
-Deno.test("formatIssueComments - formats multiple comments with dividers", () => {
+Deno.test("formatPlainComments - formats multiple comments with dividers", () => {
   const comments = [
     { author: "alice", body: "First comment" },
     { author: "bob", body: "Second comment" },
   ];
 
-  const result = formatIssueComments(comments);
+  const result = formatPlainComments(comments);
 
   assertEquals(result, "alice: First comment\n---\nbob: Second comment");
 });
 
-Deno.test("formatIssueComments - returns empty string for no comments", () => {
-  assertEquals(formatIssueComments([]), "");
+Deno.test("formatPlainComments - returns empty string for no comments", () => {
+  assertEquals(formatPlainComments([]), "");
 });
 
-Deno.test("formatIssueComments - handles single comment without divider", () => {
+Deno.test("formatPlainComments - handles single comment without divider", () => {
   const comments = [{ author: "alice", body: "Only comment" }];
-  const result = formatIssueComments(comments);
+  const result = formatPlainComments(comments);
 
   assertEquals(result, "alice: Only comment");
 });
