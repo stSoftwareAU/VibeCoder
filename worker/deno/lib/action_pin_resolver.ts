@@ -30,6 +30,7 @@
 
 import type { Result } from "../types.ts";
 import { type ActionPin, PINNED_ACTIONS } from "./pinned_actions.ts";
+import { compareSemver, parseSemver } from "./software_updates.ts";
 import {
   evaluateReleaseAge,
   normaliseQuarantineHours,
@@ -96,24 +97,27 @@ export interface ResolvedActionPins {
   failures: ActionPinFailure[];
 }
 
-/** Compare two stable `MAJOR.MINOR.PATCH` versions numerically. */
-function compareStableVersions(a: string, b: string): number {
-  const left = a.split(".").map(Number);
-  const right = b.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0);
-    if (diff !== 0) return diff;
+/**
+ * The highest-versioned candidate in a list, or null when none parses.
+ *
+ * `parseGhReleaseListing` has already kept only strict `MAJOR.MINOR.PATCH`
+ * versions, so the shared `parseSemver` never has to scrape — the same
+ * validate-then-compare pairing `release_check.ts` uses to pick a newest tag.
+ */
+function highestVersion(
+  candidates: readonly ReleaseCandidate[],
+): ReleaseCandidate | null {
+  let best: ReleaseCandidate | null = null;
+  let bestVersion: [number, number, number] | null = null;
+  for (const candidate of candidates) {
+    const version = parseSemver(candidate.version ?? "");
+    if (!version) continue;
+    if (!bestVersion || compareSemver(version, bestVersion) > 0) {
+      best = candidate;
+      bestVersion = version;
+    }
   }
-  return 0;
-}
-
-/** The highest-versioned candidate in a non-empty list. */
-function highestVersion(candidates: ReleaseCandidate[]): ReleaseCandidate {
-  return candidates.reduce((best, candidate) =>
-    compareStableVersions(candidate.version ?? "", best.version ?? "") > 0
-      ? candidate
-      : best
-  );
+  return best;
 }
 
 /** Shorthand for a failed resolution carrying a human-readable reason. */
@@ -155,7 +159,11 @@ async function resolveOnePin(
     );
   }
 
-  const tag = highestVersion(eligible).ref ?? "";
+  const chosen = highestVersion(eligible);
+  if (!chosen) {
+    return failed("no eligible release carries a parseable semver version");
+  }
+  const tag = chosen.ref ?? "";
   if (!RELEASE_TAG_PATTERN.test(tag)) {
     return failed(`release tag "${tag}" is not a stable release tag`);
   }
@@ -197,11 +205,15 @@ async function resolveOnePin(
 export async function resolveActionPins(
   deps: ActionPinResolverDeps,
 ): Promise<ResolvedActionPins> {
+  const log = deps.log ?? ((message: string) => console.warn(message));
+  // The `warn` sink is passed on purpose: a window that cannot be read falls
+  // back to the 24h default *and says so*, so the embargo can never be
+  // switched off silently.
   const quarantineHours = normaliseQuarantineHours(
     deps.quarantineHours ?? Deno.env.get(QUARANTINE_HOURS_ENV),
+    log,
   );
   const evaluatedAt = (deps.now ?? (() => new Date()))();
-  const log = deps.log ?? ((message: string) => console.warn(message));
 
   const pins: Record<string, ActionPin> = {};
   const failures: ActionPinFailure[] = [];
@@ -211,12 +223,24 @@ export async function resolveActionPins(
       pins[action] = catalogue;
       continue;
     }
-    const resolved = await resolveOnePin(
-      action,
-      deps,
-      quarantineHours,
-      evaluatedAt,
-    );
+    // A runner that *rejects* rather than returning `{ ok: false }` must not
+    // abort the whole catalogue: the same fail-closed contract as every other
+    // failure applies, so it falls back and is logged like the rest.
+    let resolved: Result<ActionPin>;
+    try {
+      resolved = await resolveOnePin(
+        action,
+        deps,
+        quarantineHours,
+        evaluatedAt,
+      );
+    } catch (error) {
+      resolved = failed(
+        `release lookup threw — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
     if (resolved.ok) {
       pins[action] = resolved.value;
       continue;

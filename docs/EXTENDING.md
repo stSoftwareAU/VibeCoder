@@ -1,16 +1,26 @@
 # 🔧 Extending the Worker
 
-The Vibe Coder worker is built on a **Deno TypeScript** architecture with 103 commands, 299 libraries, and 550 test files (counts as of June 2026 — see `worker/deno/` for the current set). All business logic lives in `worker/deno/`. For a quick overview, see the [main README](../README.md).
+The Vibe Coder worker is built on a **Deno TypeScript** architecture with 103
+commands, 299 libraries, and 550 test files (counts as of June 2026 — see
+`worker/deno/` for the current set). All business logic lives in `worker/deno/`.
+For a quick overview, see the [main README](../README.md).
 
-Extending the worker **from outside** — reacting to a finished issue run without adding code here — is the [post-run callback contract](CALLBACKS.md), which ships a conformance fixture an extension can run against its own hooks. Extending it with **prompts you do not publish** — a label mapped to a template on your own host — is [Custom Label Prompts](CUSTOM-PROMPTS.md). Extending the **container image itself** — services and toolchains of no use to the general public, built as a private layer on the standard image — is [Container Extension](CONTAINER-EXTENSION.md).
+Extending the worker **from outside** — reacting to a finished issue run without
+adding code here — is the [post-run callback contract](CALLBACKS.md), which
+ships a conformance fixture an extension can run against its own hooks.
+Extending it with **prompts you do not publish** — a label mapped to a template
+on your own host — is [Custom Label Prompts](CUSTOM-PROMPTS.md). Extending the
+**container image itself** — services and toolchains of no use to the general
+public, built as a private layer on the standard image — is
+[Container Extension](CONTAINER-EXTENSION.md).
 
 ## 📋 Table of Contents
 
 - [Architecture](#architecture)
 - [Adding a New Command](#adding-a-new-command)
 - [Adding a CI Log Provider](#adding-a-ci-log-provider)
-- [Custom Label Prompts](CUSTOM-PROMPTS.md) — the operator-side extension
-  point, on its own page
+- [Custom Label Prompts](CUSTOM-PROMPTS.md) — the operator-side extension point,
+  on its own page
 - [Container Extension](CONTAINER-EXTENSION.md) — the image-side extension
   point, with a worked example
 - [Running Deno Commands](#running-deno-commands)
@@ -56,10 +66,13 @@ graph TD
 
 ### 📐 Key Types
 
-- **`Result<T, E>`** — Discriminated union for consistent error handling: `{ ok: true; value: T } | { ok: false; error: E }`
+- **`Result<T, E>`** — Discriminated union for consistent error handling:
+  `{ ok: true; value: T } | { ok: false; error: E }`
 - **`WorkerConfig`** — Worker configuration loaded from `.config.json`
-- **`CommandResult<T>`** — Return type for all commands: `{ success: boolean; message: string; data?: T }`
-- **`Command`** — Interface for command handlers: `{ name: string; description: string; execute(args, config): Promise<CommandResult> }`
+- **`CommandResult<T>`** — Return type for all commands:
+  `{ success: boolean; message: string; data?: T }`
+- **`Command`** — Interface for command handlers:
+  `{ name: string; description: string; execute(args, config): Promise<CommandResult> }`
 
 ## ➕ Adding a New Command
 
@@ -75,13 +88,13 @@ export const myCommand: Command = {
 
   async execute(
     args: Record<string, unknown>,
-    config: WorkerConfig
+    config: WorkerConfig,
   ): Promise<CommandResult> {
     // Your logic here
     return {
       success: true,
       message: "Result message",
-      data: { /* optional data */ },
+      data: {/* optional data */},
     };
   },
 };
@@ -96,7 +109,7 @@ export function createDefaultRegistry(): CommandRegistry {
   const registry = createCommandRegistry();
   registry.register(versionCommand);
   registry.register(assessClarityCommand);
-  registry.register(myCommand);  // Add your command
+  registry.register(myCommand); // Add your command
   return registry;
 }
 ```
@@ -132,17 +145,17 @@ External CI/CD systems plug in through the `CiLogProvider` extension point in
 
 > **Which repository does your provider belong in?**
 >
-> A provider belongs *here* only when this project itself runs on that CI
-> system — GitHub Actions qualifies, because this repository's own CI is
-> GitHub Actions. A provider for the CI system **one deployment happens to
-> use** is a private extension and belongs in that deployment's own
-> repository, not in the shared tree. Core provides the extension point; it
-> does not learn what is plugged into it.
+> A provider belongs _here_ only when this project itself runs on that CI system
+> — GitHub Actions qualifies, because this repository's own CI is GitHub
+> Actions. A provider for the CI system **one deployment happens to use** is a
+> private extension and belongs in that deployment's own repository, not in the
+> shared tree. Core provides the extension point; it does not learn what is
+> plugged into it.
 >
 > See [Private Extensions](PRIVATE-EXTENSIONS.md) for the configuration-only
 > extension surface, and for the two reasons an out-of-tree provider cannot
-> register itself today. The sibling configuration-only extension point —
-> a label mapped to a prompt template on the operator's own host — is
+> register itself today. The sibling configuration-only extension point — a
+> label mapped to a prompt template on the operator's own host — is
 > [Custom Label Prompts](CUSTOM-PROMPTS.md).
 
 ```mermaid
@@ -185,10 +198,10 @@ To add a provider:
    };
    ```
 
-2. Register it with `registerCiLogProvider(myCiLogProvider)` — the one
-   built-in registers itself at the bottom of `ci_log_provider.ts`. Ids are
-   unique; re-registering one throws so a clash fails loudly. Registering in
-   core is for CI systems this project runs on, and
+2. Register it with `registerCiLogProvider(myCiLogProvider)` — the one built-in
+   registers itself at the bottom of `ci_log_provider.ts`. Ids are unique;
+   re-registering one throws so a clash fails loudly. Registering in core is for
+   CI systems this project runs on, and
    `tests/ci_log_provider_core_only_test.ts` fails if anything else is added
    here; see the note above.
 3. Configure it per repo via `repo_config.<owner/repo>.ciProviders` (see
@@ -197,17 +210,16 @@ To add a provider:
 Contract notes:
 
 - `fetchLog()` **never throws** — return `{ ok: false, error }` instead.
-- `ctx.targetUrl` may be **attacker-influenceable**: in issue mode it comes
-  from an issue body anyone can write. Treat it as a hint, derive what you
-  fetch from your own configured base, and return in `CiLogExcerpt.url` only a
-  URL you built yourself — the renderer puts that URL in the prompt outside
-  the untrusted fence, and core cannot validate a host it knows nothing about
-  (Issue #986).
-- Never return a successful excerpt with empty `logText`: the dispatcher
-  rejects it as an explicit error so degraded fix quality is visible rather
-  than silent.
-- Cap `logText` at the provider's own byte limit; the renderer caps again at
-  16 KiB per excerpt.
+- `ctx.targetUrl` may be **attacker-influenceable**: in issue mode it comes from
+  an issue body anyone can write. Treat it as a hint, derive what you fetch from
+  your own configured base, and return in `CiLogExcerpt.url` only a URL you
+  built yourself — the renderer puts that URL in the prompt outside the
+  untrusted fence, and core cannot validate a host it knows nothing about (Issue
+  #986).
+- Never return a successful excerpt with empty `logText`: the dispatcher rejects
+  it as an explicit error so degraded fix quality is visible rather than silent.
+- Cap `logText` at the provider's own byte limit; the renderer caps again at 16
+  KiB per excerpt.
 - The dispatcher (`pr_failure_actions.ts`) needs **no edit** to gain a new
   provider.
 
@@ -230,104 +242,105 @@ deno run --allow-env worker/deno/mod.ts help
 
 ## 🤖 Standard Workflows Provisioned by `setup workflow-sync`
 
-`setup workflow-sync` audits each monitored repository against the
-canonical workflow specifications in
-`worker/deno/lib/workflow_definitions.ts` and raises an issue for every
-spec whose detection patterns are absent. Each spec ships with a ready-to-paste
-template, so a newly onboarded repo inherits the same CI baseline as
-the rest of the fleet.
+`setup workflow-sync` audits each monitored repository against the canonical
+workflow specifications in `worker/deno/lib/workflow_definitions.ts` and raises
+an issue for every spec whose detection patterns are absent. Each spec ships
+with a ready-to-paste template, so a newly onboarded repo inherits the same CI
+baseline as the rest of the fleet.
 
 Universal specs (applied to every repo regardless of language) include:
 
 - **`gitleaks`** — secret scanning on every PR.
 - **`semgrep`** — SAST scanning on every PR.
-- **`markdown-lint`** — runs `markdownlint-cli2` (pinned to an exact
-  version) against the same `.markdownlint-cli2.jsonc` configuration used
-  locally by `quality.sh`, on every PR. Optionally mirrors the local
-  `check-mermaid` quality gate when the Deno worker module is present in
-  the repo.
+- **`markdown-lint`** — runs `markdownlint-cli2` (pinned to an exact version)
+  against the same `.markdownlint-cli2.jsonc` configuration used locally by
+  `quality.sh`, on every PR. Optionally mirrors the local `check-mermaid`
+  quality gate when the Deno worker module is present in the repo.
 
-Language-specific specs cover Rust, Deno, Node, Java, and Bash projects;
-see `WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.
+Language-specific specs cover Rust, Deno, Node, Java, and Bash projects; see
+`WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.
 
 ### Security specs tell the human how to make the check block merges
 
-Adding a workflow only makes its scan advisory — a red run reports and the
-PR merges anyway. So every issue raised for a `category: "security"` spec
-(missing **and** partial-match) carries a "Make this scan block merges"
-section built by
-`worker/deno/lib/required_status_check_guidance.ts`: the check
-name derived from the spec's own template (`Gitleaks / gitleaks`), where to
-add it (Settings → Rules → Rulesets → Require status checks to pass), and
-that both the **default-branch** ruleset and the `milestone/**` ruleset need
-it — a ruleset covering the default branch alone leaves every milestone PR
-merging unblocked. The section states plainly that a **human** must make the
-change: the worker's token is deliberately denied ruleset permissions, so it
-cannot and must not. Quality and dependency-update specs are unaffected.
-The prose sits above the deduplication tag and does not change it, so no
-existing issue is re-filed.
+Adding a workflow only makes its scan advisory — a red run reports and the PR
+merges anyway. So every issue raised for a `category: "security"` spec (missing
+**and** partial-match) carries a "Make this scan block merges" section built by
+`worker/deno/lib/required_status_check_guidance.ts`: the check name derived from
+the spec's own template (`Gitleaks / gitleaks`), where to add it (Settings →
+Rules → Rulesets → Require status checks to pass), and that both the
+**default-branch** ruleset and the `milestone/**` ruleset need it — a ruleset
+covering the default branch alone leaves every milestone PR merging unblocked.
+The section states plainly that a **human** must make the change: the worker's
+token is deliberately denied ruleset permissions, so it cannot and must not.
+Quality and dependency-update specs are unaffected. The prose sits above the
+deduplication tag and does not change it, so no existing issue is re-filed.
 
 ### Pinning third-party actions in templates
 
-Every emitted template references third-party CI components by immutable
-digest — a 40-character commit SHA for actions, a `@sha256:` digest for
-container images. A mutable `@v4`, `@main`, `@master`, or `@stable` ref
-would let whoever hijacks the upstream tag (or pushes to its default
-branch) run code in every repository that adopted the template, in
-several cases with an org-level PAT or a CI token in scope.
+Every emitted template references third-party CI components by immutable digest
+— a 40-character commit SHA for actions, a `@sha256:` digest for container
+images. A mutable `@v4`, `@main`, `@master`, or `@stable` ref would let whoever
+hijacks the upstream tag (or pushes to its default branch) run code in every
+repository that adopted the template, in several cases with an org-level PAT or
+a CI token in scope.
 
 When you add or bump a template:
 
 - Take the ref from `pinnedAction("owner/repo")` in
-  `worker/deno/lib/pinned_actions.ts` — never hard-code a `uses:` value.
-  Adding a pin there is the only way to reference a new action; the
-  helper throws for an unrecorded one.
+  `worker/deno/lib/pinned_actions.ts` — never hard-code a `uses:` value. Adding
+  a pin there is the only way to reference a new action; the helper throws for
+  an unrecorded one.
 - Bump the SHA and the `version` label together, honouring the 24-hour
   supply-chain quarantine for external dependencies.
-- The catalogue is the **fallback floor**, not the emitted value:
+- The catalogue is the **fallback floor**, not the final emitted value:
   `resolveActionPins()` in `worker/deno/lib/action_pin_resolver.ts` resolves
   each entry to the highest upstream release that has cleared
   `VIBE_BUMP_QUARANTINE_HOURS`, and falls back to the recorded SHA with one
-  `[workflow-sync] pin resolution failed:` line. Mark an entry
-  `resolution: "catalogue"` only when upstream cuts no stable
-  `MAJOR.MINOR.PATCH` release at all, and say why in a source comment.
+  `[workflow-sync] pin resolution failed:` line. `applyResolvedPins()` then
+  rewrites the rendered template's `uses:` lines. The resolver is a library
+  whose intended caller, `workflow-sync`, is wired up separately, so
+  `pinnedAction()` on its own still renders the catalogue SHA.
+- Mark an entry `resolution: "catalogue"` only when there is no stable release
+  series to resolve it against — an entry deliberately pinned to a branch HEAD,
+  or an upstream that cuts no `MAJOR.MINOR.PATCH` release at all — and say
+  which, in a source comment.
 - Actions that read their behaviour from the ref name
-  (`dtolnay/rust-toolchain@stable`, `taiki-e/install-action@<tool>`) need
-  an explicit `toolchain:` / `tool:` input once pinned, because a SHA
-  carries no name.
+  (`dtolnay/rust-toolchain@stable`, `taiki-e/install-action@<tool>`) need an
+  explicit `toolchain:` / `tool:` input once pinned, because a SHA carries no
+  name.
 
 `worker/deno/tests/workflow_definitions_test.ts` iterates the whole
-`WORKFLOW_SPECS` catalogue and fails on any unpinned ref, untagged
-container image, or drift between the emitted Semgrep template and this
-repository's own `.github/workflows/semgrep.yml`.
+`WORKFLOW_SPECS` catalogue and fails on any unpinned ref, untagged container
+image, or drift between the emitted Semgrep template and this repository's own
+`.github/workflows/semgrep.yml`.
 
 ### Templates must pass the fleet's own GitHub Actions audit
 
-The [GitHub Actions audit](GITHUB-ACTIONS-AUDIT-SCAN.md) scans every
-monitored repository — including the ones the fleet has just provisioned.
-A template that does not meet the audit's own bar therefore files findings
-against workflows the fleet itself wrote, which is exactly what happened
-before Issue #1639. Every emitted template now carries:
+The [GitHub Actions audit](GITHUB-ACTIONS-AUDIT-SCAN.md) scans every monitored
+repository — including the ones the fleet has just provisioned. A template that
+does not meet the audit's own bar therefore files findings against workflows the
+fleet itself wrote, which is exactly what happened before Issue #1639. Every
+emitted template now carries:
 
-- an explicit `pull_request` branch list, `[Develop, main, milestone/*]` —
-  a GitHub `*` never matches a `/`, so the old `["*"]` skipped every
+- an explicit `pull_request` branch list, `[Develop, main, milestone/*]` — a
+  GitHub `*` never matches a `/`, so the old `["*"]` skipped every
   `milestone/<slug>` PR;
-- `persist-credentials: false` on every read-only `actions/checkout`, so
-  the job token is not left in `.git/config` for a later step to read.
-  The two dependency-update templates keep the credential and say so in a
-  comment — `peter-evans/create-pull-request` pushes with it;
-- a `concurrency:` group of `${{ github.workflow }}-${{ github.ref }}`
-  with `cancel-in-progress: true`;
+- `persist-credentials: false` on every read-only `actions/checkout`, so the job
+  token is not left in `.git/config` for a later step to read. The two
+  dependency-update templates keep the credential and say so in a comment —
+  `peter-evans/create-pull-request` pushes with it;
+- a `concurrency:` group of `${{ github.workflow }}-${{ github.ref }}` with
+  `cancel-in-progress: true`;
 - `timeout-minutes:` on every job — 10 for scan and quality jobs, 20 for
   dependency-update jobs that open a PR;
-- an exact version pin on every `run:` install the audit's install-pin
-  pre-filer covers — npm, npx and gem (a `run:` install is not a manifest,
-  so no dependency manager applies the 24h quarantine to it);
-- `set -euo pipefail` at the top of every multi-line `run:` block, so a
-  failing command mid-block cannot vanish into a green step;
+- an exact version pin on every `run:` install the audit's install-pin pre-filer
+  covers — npm, npx and gem (a `run:` install is not a manifest, so no
+  dependency manager applies the 24h quarantine to it);
+- `set -euo pipefail` at the top of every multi-line `run:` block, so a failing
+  command mid-block cannot vanish into a green step;
 - a trailing `# <version>` comment on every SHA-pinned `uses:`, rendered by
-  `pinnedAction()` — a bare 40-character SHA tells neither a reviewer nor
-  the audit's stale-pin check which release it names.
+  `pinnedAction()` — a bare 40-character SHA tells neither a reviewer nor the
+  audit's stale-pin check which release it names.
 
 ```mermaid
 flowchart LR
@@ -339,60 +352,57 @@ flowchart LR
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-`worker/deno/tests/workflow_template_audit_conformance_test.ts` renders
-every template and runs `WORKFLOW_FILE_CHECKS`
-(`worker/deno/lib/workflow_file_checks.ts`) over the result, on both
-`Develop` and `main`. That table is the single ordered list of the audit
-checks a **template** can be held to — every check decidable from the
-workflow file alone, without a repository around it: nine native pre-filers
+`worker/deno/tests/workflow_template_audit_conformance_test.ts` renders every
+template and runs `WORKFLOW_FILE_CHECKS`
+(`worker/deno/lib/workflow_file_checks.ts`) over the result, on both `Develop`
+and `main`. That table is the single ordered list of the audit checks a
+**template** can be held to — every check decidable from the workflow file
+alone, without a repository around it: nine native pre-filers
 (`action_pin_scanner`, `workflow_permissions_scanner`,
 `workflow_trigger_scanner`, `checkout_persist_credentials_scanner`,
 `milestone_branch_filter_scanner`, `ci_install_pin_scanner`,
-`run_injection_scanner`, `artifact_upload_scanner`,
-`gitleaks_drift_scanner`) plus the two workflow-hygiene rules `quality.sh`
-applies to this repository's own workflows — multi-line `run:` opens with
-`set -euo pipefail`, and one pinned SHA carries one version comment
-(`workflow_hygiene_check.ts`). Each entry is a thin adapter over the pure
-scanner the audit template already calls, so no scanner logic is
-duplicated, and a table test asserts the exact eleven ids so a check cannot
-be dropped by accident. Any finding fails the test — and `quality.sh` — so
-a scanner change and the templates cannot drift apart unnoticed.
+`run_injection_scanner`, `artifact_upload_scanner`, `gitleaks_drift_scanner`)
+plus the two workflow-hygiene rules `quality.sh` applies to this repository's
+own workflows — multi-line `run:` opens with `set -euo pipefail`, and one pinned
+SHA carries one version comment (`workflow_hygiene_check.ts`). Each entry is a
+thin adapter over the pure scanner the audit template already calls, so no
+scanner logic is duplicated, and a table test asserts the exact eleven ids so a
+check cannot be dropped by accident. Any finding fails the test — and
+`quality.sh` — so a scanner change and the templates cannot drift apart
+unnoticed.
 
 The audit's remaining checks are absent by construction: runner deprecation
-reads recent run logs, gitleaks PR coverage reads recent pull requests,
-action advisories query the GHSA database, and the repository-settings and
+reads recent run logs, gitleaks PR coverage reads recent pull requests, action
+advisories query the GHSA database, and the repository-settings and
 worker-token-privilege scans read repository state. `checkLinterInCI` is the
 near miss — it reads workflow text, but it takes a repo path and answers a
-repository-level question ("does *this repo* run a linter in CI"), which no
+repository-level question ("does _this repo_ run a linter in CI"), which no
 single template can decide.
 
-Two of the pre-filers only act on workflows the classifier rates
-`test`/`high`, which the dependency-review, java-dependency-check and
-shellcheck templates are not, so the branch-filter and push-trigger rules are
-additionally asserted over the whole catalogue, as is the trailing
-`# <version>` comment on every SHA-pinned `uses:` — the text the audit's
-stale-pin check reads.
+Two of the pre-filers only act on workflows the classifier rates `test`/`high`,
+which the dependency-review, java-dependency-check and shellcheck templates are
+not, so the branch-filter and push-trigger rules are additionally asserted over
+the whole catalogue, as is the trailing `# <version>` comment on every
+SHA-pinned `uses:` — the text the audit's stale-pin check reads.
 
-The branch-filter, credential-persistence and
-concurrency/timeout rules are also stated in
-`prompts/workflow_setup/prompt.md` ("CI Hardening Defaults") so
+The branch-filter, credential-persistence and concurrency/timeout rules are also
+stated in `prompts/workflow_setup/prompt.md` ("CI Hardening Defaults") so
 agent-generated workflows match the deterministic templates.
 
 ## 🧹 Maintenance Commands
 
-A small set of commands target one-off operator workflows rather than the
-main scan/issue/PR loop. They are registered alongside the regular
-commands and run via `deno run worker/deno/mod.ts <name>`.
+A small set of commands target one-off operator workflows rather than the main
+scan/issue/PR loop. They are registered alongside the regular commands and run
+via `deno run worker/deno/mod.ts <name>`.
 
 ### `purge-stale-workflow-issues`
 
-Re-audits each configured repo (or a single repo passed via `--repo`)
-and closes any open issue carrying a workflow-sync deduplication tag —
+Re-audits each configured repo (or a single repo passed via `--repo`) and closes
+any open issue carrying a workflow-sync deduplication tag —
 `<!-- vibe-coder:workflow-sync:<specId> -->` or
-`<!-- vibe-coder:workflow-sync:partial:<specId> -->` — whose underlying
-workflow now classifies as **present** under the current detection
-logic. Issues that still classify as `partial` or `missing` are left
-untouched.
+`<!-- vibe-coder:workflow-sync:partial:<specId> -->` — whose underlying workflow
+now classifies as **present** under the current detection logic. Issues that
+still classify as `partial` or `missing` are left untouched.
 
 ```bash
 # Dry run across all configured repos
@@ -404,10 +414,9 @@ deno run --allow-all worker/deno/mod.ts \
   purge-stale-workflow-issues --repo owner/repo
 ```
 
-The command is intended as a one-off cleanup after improvements to the
-workflow auditor — the existing dedup tag prevents
-the regular `workflow-sync` from re-creating the false-positive issues,
-but it does not retroactively close them.
+The command is intended as a one-off cleanup after improvements to the workflow
+auditor — the existing dedup tag prevents the regular `workflow-sync` from
+re-creating the false-positive issues, but it does not retroactively close them.
 
 ### `audit-default-branch-rulesets`
 
@@ -416,7 +425,8 @@ prints what the setup-time sync **would** do — `create` / `update` the worker'
 `Vibe Coder default branch` ruleset, `delete` its own stale one from a
 direct-push branch, or skip (`direct-push-branch`, `opted-out`,
 `existing-ruleset`, `no-reported-checks`) — as a Markdown table. Nothing is
-written. See [MERGE.md → Never lock a direct-push branch](MERGE.md#never-lock-a-direct-push-branch)
+written. See
+[MERGE.md → Never lock a direct-push branch](MERGE.md#never-lock-a-direct-push-branch)
 for the decision.
 
 ```bash
@@ -431,7 +441,13 @@ deno run --allow-all worker/deno/mod.ts \
 
 ## 📝 Prompt Templates
 
-Prompts sent to Claude are stored as markdown templates in the `prompts/` directory. For a short summary of **the goal of each prompt type** (issue, planning, planning_critique, question, PR feedback, spelling fix, CI fix, coding guidelines, grill-me, workflow_setup, and the idle-task scans — security_scan, best_practices, test_audit, github_actions_audit, supply_chain_readiness, supply_chain_detection), see [Prompt goals (summary)](PROMPTS.md). The full prompt text is in the repo only.
+Prompts sent to Claude are stored as markdown templates in the `prompts/`
+directory. For a short summary of **the goal of each prompt type** (issue,
+planning, planning_critique, question, PR feedback, spelling fix, CI fix, coding
+guidelines, grill-me, workflow_setup, and the idle-task scans — security_scan,
+best_practices, test_audit, github_actions_audit, supply_chain_readiness,
+supply_chain_detection), see [Prompt goals (summary)](PROMPTS.md). The full
+prompt text is in the repo only.
 
 Each directory under `prompts/` holds exactly one editable `prompt.md`, which
 the worker loads at runtime. Edit it in place — git history is the record of how
@@ -520,23 +536,23 @@ skips it.
 ### Per-model coding-guidelines overlays
 
 The shared `coding_guidelines` template is model-agnostic, so genuinely
-model-specific working-style guidance lives in an **overlay** prompt type
-(Issue #374). An overlay is an ordinary prompt directory named after
-the agent identity it applies to:
+model-specific working-style guidance lives in an **overlay** prompt type (Issue
+#374). An overlay is an ordinary prompt directory named after the agent identity
+it applies to:
 
-| Directory | Applies to |
-|-----------|------------|
-| `prompts/coding_guidelines_<provider>/` | Every run of that provider (`claude`, `codex`, `gemini`) |
+| Directory                                       | Applies to                                                |
+| ----------------------------------------------- | --------------------------------------------------------- |
+| `prompts/coding_guidelines_<provider>/`         | Every run of that provider (`claude`, `codex`, `gemini`)  |
 | `prompts/coding_guidelines_<provider>_<model>/` | That provider running that model (e.g. `..._claude_opus`) |
 
 `buildCodingGuidelines()` takes an optional identity, resolves the
-model-specific directory first and the provider-wide one second, and appends
-the winning overlay **behind** the agnostic baseline inside the single
+model-specific directory first and the provider-wide one second, and appends the
+winning overlay **behind** the agnostic baseline inside the single
 `<coding_guidelines>` wrapper. Rules:
 
-- **No identity, or no directory for it → the baseline, byte for byte.** That
-  is the default and the common path; an unknown identity never throws and
-  never emits an empty heading.
+- **No identity, or no directory for it → the baseline, byte for byte.** That is
+  the default and the common path; an unknown identity never throws and never
+  emits an empty heading.
 - **A directory that exists but carries no `prompt.md` fails loud** — it was
   authored deliberately, so "no overlay" would mask the mistake.
 - Identity ids are slugged to a single path segment (`[a-z0-9-]`), so a
@@ -566,11 +582,10 @@ flowchart LR
     style W fill:#5c4d7d,stroke:#3c2f5a,color:#fff
 ```
 
-**CI fix enrichment**: The `ci_fix` template carries a
-`{{PR_FAILURE_ACTIONS}}` placeholder. The worker substitutes an authoritative
-CI log excerpt into that placeholder before invoking Claude — from a
-configured provider or, failing that, from the
-built-in GitHub Actions provider. See
+**CI fix enrichment**: The `ci_fix` template carries a `{{PR_FAILURE_ACTIONS}}`
+placeholder. The worker substitutes an authoritative CI log excerpt into that
+placeholder before invoking Claude — from a configured provider or, failing
+that, from the built-in GitHub Actions provider. See
 [Adding a CI Log Provider](#adding-a-ci-log-provider) for the extension point,
 [Private Extensions](PRIVATE-EXTENSIONS.md) for building one outside this
 repository, and the `ciProviders` row in
@@ -586,23 +601,30 @@ non-public file with `custom_label_prompts`
 validated at config load against the placeholders of the phase it replaces, and
 each turn of a two-turn phase (`planning` / `planning_critique`, `quorum` /
 `quorum_judge`) needs its own entry. The same key maps a **new** label to a
-private prompt, which is the operator-side extension point the worked example
-in [Custom Label Prompts](CUSTOM-PROMPTS.md#-worked-example--end-to-end) walks
+private prompt, which is the operator-side extension point the worked example in
+[Custom Label Prompts](CUSTOM-PROMPTS.md#-worked-example--end-to-end) walks
 through end to end.
 
 **Traceability**: the execute phase logs the checkout's short commit hash, which
 pins the exact prompt text a run used, and every phase logs the template file it
 loaded — the operator's path when a mapping overrode it (Issue #849).
 
-**Custom prompts directory**: Set the `PROMPTS_DIR` environment variable to override the default prompts location.
+**Custom prompts directory**: Set the `PROMPTS_DIR` environment variable to
+override the default prompts location.
 
 ## 🔗 Shell Integration (Internal)
 
-`run.sh` and `run.ps1` launch the worker container, which `exec`s Deno on the `run-entrypoint` driver inside it (— no bash on the runtime path). In the opt-in native run mode `run.sh` starts the same `run-entrypoint` driver directly on the host instead. The remaining shell tooling (e.g. `quality.sh`) invokes Deno commands directly (the `deno_bridge.sh` bash bridge was retired in Issue #97 — nothing sourced it):
+`run.sh` and `run.ps1` launch the worker container, which `exec`s Deno on the
+`run-entrypoint` driver inside it (— no bash on the runtime path). In the opt-in
+native run mode `run.sh` starts the same `run-entrypoint` driver directly on the
+host instead. The remaining shell tooling (e.g. `quality.sh`) invokes Deno
+commands directly (the `deno_bridge.sh` bash bridge was retired in Issue #97 —
+nothing sourced it):
 
 - `deno run --allow-X worker/deno/mod.ts <command-name> [--arg value ...]`
 
-> **Note:** All new logic should be added as Deno TypeScript commands — do not add business logic to shell scripts.
+> **Note:** All new logic should be added as Deno TypeScript commands — do not
+> add business logic to shell scripts.
 
 ## 🧪 Running Tests
 
@@ -611,7 +633,8 @@ cd worker/deno
 deno test --allow-read --allow-env --allow-run --allow-write --allow-sys=hostname
 ```
 
-Tests use Deno's built-in test framework with explicit permissions. Each module has a corresponding test file (e.g., `lib/config.ts` → `tests/config_test.ts`).
+Tests use Deno's built-in test framework with explicit permissions. Each module
+has a corresponding test file (e.g., `lib/config.ts` → `tests/config_test.ts`).
 
 Test pattern:
 
@@ -626,21 +649,20 @@ Deno.test("module - behaviour description", async () => {
 
 ### Stubbing the environment (Issue #378)
 
-The suite runs both on a developer host and inside the worker container, and
-the container exports its own runtime configuration — `WORK_DIR`,
-`VIBE_IMAGE_AGENT_PROVIDERS`, `UPDATE_GH_USER_STATUS` — into
-every `deno test` invocation. A test that saves and restores only *some* of the
-variables its code path reads inherits the rest from the machine running it, so
-it passes on a host and fails in the container (or worse, hides a genuine
-regression). Never hand-roll a per-variable save/restore; use
-`tests/support/env.ts`:
+The suite runs both on a developer host and inside the worker container, and the
+container exports its own runtime configuration — `WORK_DIR`,
+`VIBE_IMAGE_AGENT_PROVIDERS`, `UPDATE_GH_USER_STATUS` — into every `deno test`
+invocation. A test that saves and restores only _some_ of the variables its code
+path reads inherits the rest from the machine running it, so it passes on a host
+and fails in the container (or worse, hides a genuine regression). Never
+hand-roll a per-variable save/restore; use `tests/support/env.ts`:
 
 - `withEnv(values, body)` — snapshot, replace and restore the named variables
   (`undefined` deletes one for the duration).
-- `withCleanEnv(values, body)` — the same, plus every *other* variable the
-  process carries is hidden for the duration, so the code path can only see
-  what the test declared. Reach for this whenever the code path reads the
-  environment directly.
+- `withCleanEnv(values, body)` — the same, plus every _other_ variable the
+  process carries is hidden for the duration, so the code path can only see what
+  the test declared. Reach for this whenever the code path reads the environment
+  directly.
 
 ```typescript
 import { withCleanEnv } from "./support/env.ts";

@@ -19,13 +19,17 @@
  *   pin that branch's HEAD so behaviour is preserved while the reference
  *   becomes immutable.
  *
- * **The catalogue is the fallback floor, not the emitted value**
+ * **The catalogue is the fallback floor, not the final emitted value**
  * (Issue #1823). `lib/action_pin_resolver.ts` resolves every `"release"`
- * entry against upstream's own release history at sync time and emits the
- * highest release that has cleared the supply-chain quarantine window; the
- * SHA recorded here is what is emitted when that lookup cannot produce an
- * answer, and every such fallback is logged. Only the `"catalogue"` entries
- * below are emitted verbatim without a lookup.
+ * entry against upstream's own release history and rewrites a rendered
+ * template to the highest release that has cleared the supply-chain
+ * quarantine window; the SHA recorded here is what survives when that lookup
+ * cannot produce an answer, and every such fallback is logged. Only the
+ * `"catalogue"` entries below are never looked up.
+ *
+ * That resolver is a library — `workflow-sync` is its intended caller and is
+ * wired up separately (Issue #1755), so `pinnedAction()` below still renders
+ * the catalogue SHA verbatim on its own.
  *
  * Bumping: change the SHA and the `version` label together, honouring the
  * supply-chain quarantine (Issue #1613) — do not adopt a release younger

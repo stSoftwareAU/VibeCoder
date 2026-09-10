@@ -192,6 +192,49 @@ Deno.test("action_pin_resolver - a runner failure falls back to the catalogue", 
   assertEquals(logsFor(logs, SUBJECT).length, 1);
 });
 
+Deno.test("action_pin_resolver - a rejecting runner falls back rather than throwing", async () => {
+  // A runner that throws instead of returning `{ ok: false }` must not abort
+  // the catalogue: every remaining action is still resolved.
+  const logs: string[] = [];
+  const { pins, failures } = await resolveActionPins({
+    runFn: (cmd: string[]) => {
+      if ((cmd[2] ?? "").includes(SUBJECT)) {
+        return Promise.reject(new Error("spawn EAGAIN"));
+      }
+      return createRunner().runFn(cmd);
+    },
+    quarantineHours: 24,
+    now: () => NOW,
+    log: (message) => logs.push(message),
+  });
+
+  assertEquals(pins[SUBJECT], PINNED_ACTIONS[SUBJECT]);
+  assertStringIncludes(
+    failures.find((f) => f.action === SUBJECT)?.reason ?? "",
+    "spawn EAGAIN",
+  );
+  assertEquals(logsFor(logs, SUBJECT).length, 1);
+  // The rest of the catalogue still resolved.
+  assertEquals(failures.length, 1);
+  assertEquals(pins["actions/setup-node"]?.version, "v9.9.9");
+});
+
+Deno.test("action_pin_resolver - an unusable window is reported, not silently ignored", async () => {
+  const { runFn } = createRunner();
+  const logs: string[] = [];
+  const { failures } = await resolveActionPins({
+    runFn,
+    // Zero would switch the embargo off; it must fall back to 24h loudly.
+    quarantineHours: 0,
+    now: () => NOW,
+    log: (message) => logs.push(message),
+  });
+
+  assertEquals(failures, []);
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0]!, "positive whole number of hours");
+});
+
 Deno.test("action_pin_resolver - a non-zero release lookup falls back", async () => {
   const { pins, failures, logs } = await resolve({
     [SUBJECT]: { releases: { exitCode: 1, output: "HTTP 404" } },
