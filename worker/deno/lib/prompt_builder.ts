@@ -428,6 +428,27 @@ export interface IssuePromptOptions {
   issueTitle: string;
   issueBody: string;
   issueLabels: string;
+  /**
+   * The issue's comments, already selected and trust-annotated by
+   * `implementation_comments.ts` (Issue #1910). Without them a maintainer's
+   * reply — the normal way a human narrows or redirects scope — never reached
+   * the coding agent, which is why the clarification gate had to ask for the
+   * issue *description* to be edited.
+   */
+  issueComments?: string;
+  /**
+   * Boundary id whose per-comment headers inside `issueComments` are genuine
+   * (Issue #3637). Supplied when the blob came from
+   * `prepareTrustAnnotatedCommentList`; the prompt then adopts it as this
+   * run's nonce and preserves those headers through sanitisation, so a forged
+   * header stays distinguishable from a maintainer's.
+   *
+   * `ciFailureBoundaryId` wins where both are supplied: that context was
+   * fenced upstream with an id this builder cannot re-mint, whereas comment
+   * headers that do not match the nonce are simply scrubbed to plain data —
+   * a safe degradation rather than an unfenced block.
+   */
+  commentBoundaryId?: string;
   qualityInstructions: string;
   customInstructions?: string;
   screenshotRequired?: boolean;
@@ -510,6 +531,8 @@ export async function buildIssuePrompt(
     issueTitle,
     issueBody,
     issueLabels,
+    issueComments,
+    commentBoundaryId,
     qualityInstructions,
     customInstructions,
     screenshotRequired = false,
@@ -632,8 +655,14 @@ Do NOT skip screenshots. Do NOT describe visual changes in words only. The PR va
   // --- User prompt: dynamic per-issue content ---
   // Generate randomised delimiters per invocation (Issue #1343). When a
   // CI-failure context was fenced upstream, adopt its boundary id so both
-  // fences share this run's nonce (Issue #3639).
-  const delimiters = createPromptDelimiters(ciFailureBoundaryId);
+  // fences share this run's nonce (Issue #3639); otherwise adopt the comment
+  // blob's, so its genuine per-comment trust headers survive sanitisation
+  // (Issue #1910). Where both exist the CI id wins — the log was fenced with
+  // it upstream and cannot be re-fenced here, while unmatched comment headers
+  // degrade safely to plain data.
+  const delimiters = createPromptDelimiters(
+    ciFailureBoundaryId ?? commentBoundaryId,
+  );
 
   // Repo context, fenced in this run's boundary (Issue #3706). When it is
   // present the "read AGENTS.md" instruction points at the fenced section
@@ -659,6 +688,16 @@ Do NOT skip screenshots. Do NOT describe visual changes in words only. The PR va
   // #3073) — mirrors buildClarityAssessmentPrompt.
   const sanitisedLabels = sanitiseDelimiterPatterns(issueLabels);
   const sanitisedBody = sanitiseDelimiterPatterns(issueBody);
+  // Comments (Issue #1910), scrubbed exactly as the planning, question and
+  // PR-feedback builders scrub theirs: only whole-line headers bearing this
+  // run's nonce survive, so a commenter's forged `[TRUSTED]` header is
+  // degraded to inert data.
+  const sanitisedComments = issueComments
+    ? sanitiseDelimitedComments(issueComments, delimiters.boundaryId)
+    : undefined;
+  const commentsSection = sanitisedComments
+    ? `\n### [UNTRUSTED] Issue Comments ###\n${delimiters.commentsStart}\n${sanitisedComments}\n${delimiters.commentsEnd}\n`
+    : "";
 
   // Long documents first, then the task (Issue #3814). This prompt reaches
   // ~22k tokens once a repository supplies a 20,000-character `CLAUDE.md`,
@@ -695,6 +734,7 @@ Do NOT skip screenshots. Do NOT describe visual changes in words only. The PR va
 
   const untrustedBlocks = [
     "the issue title, labels, and description",
+    ...(commentsSection ? ["the issue comments"] : []),
     ...(repoContextSection
       ? ["the repository-supplied guidance document"]
       : []),
@@ -723,7 +763,7 @@ ${sanitisedLabels}
 ${delimiters.bodyStart}
 ${sanitisedBody}
 ${delimiters.bodyEnd}
-${delimiters.untrustedEnd}
+${commentsSection}${delimiters.untrustedEnd}
 ${ciFailureSection}${
       buildBoundaryIntegrityInstruction(delimiters.boundaryId, untrustedBlocks)
     }

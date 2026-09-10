@@ -1348,6 +1348,18 @@
         "worker/deno/lib/provider_quota_scope.ts"
       ],
       "sweptAt": "adfd4a9fff74efc4eb7eb582b751d885c2aec2c3"
+    },
+    {
+      "issue": 1910,
+      "chunk": "12z",
+      "title": "top-up: the implementation-prompt comment selection",
+      "ledger": "docs/audits/security-sweep-1910-implementation-comments.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12y recorded their coverage: implementation_comments.ts (#1910)",
+      "status": "swept",
+      "sweptAt": "7e3881dd756ecd6b2f39b4977588e92abad05d44",
+      "paths": [
+        "worker/deno/lib/implementation_comments.ts"
+      ]
     }
   ],
   "roots": [

@@ -100,6 +100,7 @@ import { stopAllHeartbeats, stopHeartbeatsExcept } from "./heartbeat.ts";
 import { workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
+import { buildImplementationCommentContext } from "./implementation_comments.ts";
 import { observeUntrustedIssueImages } from "./issue_content_trust_filter.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
 import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
@@ -3391,13 +3392,38 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: routeRunResult(seedRoute) };
       }
 
+      // The issue's comments (Issue #1910). This is the fleet's own
+      // implementation route, and it used to hand the agent an empty blob —
+      // so a maintainer who replied on the issue was invisible unless the
+      // description itself was edited. The comments are already in
+      // `issueData`; selection and trust annotation are shared with the
+      // `work-on-issue` command rather than repeated here.
+      const commentContext = buildImplementationCommentContext(
+        issueData.comments ?? [],
+        {
+          allowedAuthors: config.allowedAuthors ?? [],
+          authorisedCommenters: config.authorisedCommenters ?? [],
+          includeUntrustedComments: config.includeUntrustedComments ?? true,
+          workerLogin: githubUser,
+        },
+      );
+      for (const auditMsg of commentContext.securityAuditMessages) {
+        logger.warn(auditMsg, {
+          repo: issue.repo,
+          issueNumber: issue.issueNumber,
+        });
+      }
+
       const ctx = {
         repo: issue.repo,
         issueNumber: issue.issueNumber,
         issueTitle,
         issueBody: issueData.body ?? "",
         issueLabels: issueData.labels ?? [],
-        issueComments: "",
+        issueComments: commentContext.issueComments,
+        ...(commentContext.commentBoundaryId
+          ? { commentBoundaryId: commentContext.commentBoundaryId }
+          : {}),
         // Issue #1385: the main loop builds its own context, so the
         // untrusted-image observation is made here too — the gate in the
         // no-changes phase is only a control on the routes that observe.
