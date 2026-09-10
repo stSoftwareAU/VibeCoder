@@ -177,6 +177,13 @@ export interface EnableAutoMergeResult {
   result: AutoMergeResult;
   /** Human-readable message */
   message: string;
+  /**
+   * Why a `deferred` outcome deferred, when the caller must treat it as a
+   * deliberate hold rather than a merge error (Issue #1779). A milestone
+   * base behind the default branch gets no comment and no label — the next
+   * cycle's milestone sync clears it.
+   */
+  deferral?: "milestone-behind";
 }
 
 /**
@@ -394,6 +401,9 @@ export async function enableAutoMerge(
       repo,
       prNumber,
       baseRefName: options.baseRefName,
+      // Issue #1779: lets the synced-base check exempt the milestone sync
+      // PR — the one PR whose whole job is to clear "behind".
+      ...(options.headRefName ? { headRefName: options.headRefName } : {}),
       ghCommandFn,
       requireSyncedBase: true,
       ...(options.getDefaultBranchFn
@@ -410,14 +420,14 @@ export async function enableAutoMerge(
   // GitHub auto-merge was armed *before* the branch fell behind still merges
   // when its checks pass — this gate governs arming, not GitHub's merge.
   if (routeGate.decision === "defer") {
-    const behindBy = routeGate.reason === "milestone-behind"
-      ? routeGate.behindBy ?? 0
-      : 0;
     return {
       result: AutoMergeResult.Deferred,
+      ...(routeGate.reason === "milestone-behind"
+        ? { deferral: "milestone-behind" as const }
+        : {}),
       message: routeGate.reason === "milestone-behind"
-        ? `milestone behind default branch (${behindBy} commit${
-          behindBy === 1 ? "" : "s"
+        ? `milestone behind default branch (${routeGate.behindBy} commit${
+          routeGate.behindBy === 1 ? "" : "s"
         }) — PR #${prNumber} left on ${routeGate.milestoneBranch} until the next sync (Issue #1779)`
         : `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — retrying next scan (Issue #477)`,
     };

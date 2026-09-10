@@ -38,6 +38,7 @@ import {
   type MilestoneTrackerVerification,
   partitionMilestoneTrackers,
 } from "./milestone_tracker_identity.ts";
+import { isMilestoneSyncBranch } from "./milestone_sync_pr.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 
@@ -671,11 +672,23 @@ export type MilestoneBaseMergeDecision =
      * behind the default branch (Issue #1779), so a child merged now would
      * land on a stale tip. The next cycle's milestone sync clears it.
      */
-    reason: "lookup-failed" | "milestone-behind";
+    reason: "lookup-failed";
     milestoneBranch: string;
     detail: string;
-    /** Commits the milestone branch is behind, for `milestone-behind`. */
-    behindBy?: number;
+  }
+  | {
+    /**
+     * The route is open, but the milestone branch is behind the default
+     * branch (Issue #1779), so a child merged now would land on a stale
+     * tip. Nothing is done to the PR; the next cycle's milestone sync — or
+     * a roll-back — clears it and the next sweep merges.
+     */
+    decision: "defer";
+    reason: "milestone-behind";
+    milestoneBranch: string;
+    detail: string;
+    /** Commits the milestone branch is behind the default branch. */
+    behindBy: number;
   }
   | {
     decision: "block";
@@ -693,6 +706,12 @@ export interface MilestoneBaseMergeGateOptions {
   prNumber: number;
   /** The PR's base, when the caller already has it (saves a `pr view`). */
   baseRefName?: string;
+  /**
+   * The PR's head, when the caller already has it (saves a `pr view`).
+   * Read only by the synced-base check, to exempt the milestone sync PR
+   * (Issue #1779) — every production caller already passes it.
+   */
+  headRefName?: string;
   ghCommandFn: GhCommandFn;
   /**
    * Also require the milestone branch to be level with the default branch
@@ -770,7 +789,11 @@ async function readMilestoneBehindBy(
       "--jq",
       ".behind_by",
     ]);
-    const behindBy = Number(raw.trim());
+    // `Number("")` is 0, so an empty answer must be rejected BEFORE the
+    // conversion: read as "level with the default branch" it would arm the
+    // very merge this gate exists to refuse.
+    const text = raw.trim();
+    const behindBy = text.length > 0 ? Number(text) : Number.NaN;
     reading = Number.isFinite(behindBy) ? { ok: true, behindBy } : {
       ok: false,
       detail:
@@ -797,7 +820,27 @@ async function deferWhenMilestoneBehind(
   options: MilestoneBaseMergeGateOptions,
   milestoneBranch: string,
 ): Promise<Extract<MilestoneBaseMergeDecision, { decision: "defer" }> | null> {
-  const { repo, ghCommandFn } = options;
+  const { repo, prNumber, ghCommandFn } = options;
+
+  // The milestone sync PR is the thing that *clears* "behind": its base is
+  // the milestone branch and its head is `sync/milestone-*`. Deferring it
+  // for the very state it exists to fix would deadlock the milestone — the
+  // sync could never land, so the branch could never catch up, so no child
+  // could ever merge. It is exempt, and costs no compare call.
+  const headRefName = options.headRefName ??
+    await resolveHeadRef(repo, prNumber, ghCommandFn);
+  if (headRefName === null) {
+    return {
+      decision: "defer",
+      reason: "lookup-failed",
+      milestoneBranch,
+      detail:
+        `could not read the head branch of ${repo}#${prNumber}, so the sync PR ` +
+        `could not be told from a child`,
+    };
+  }
+  if (isMilestoneSyncBranch(headRefName)) return null;
+
   let defaultBranch = options.defaultBranch;
   if (!defaultBranch) {
     const resolved = await (options.getDefaultBranchFn ??

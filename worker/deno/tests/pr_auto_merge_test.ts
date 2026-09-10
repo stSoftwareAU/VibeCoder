@@ -752,3 +752,40 @@ Deno.test("pr_auto_merge - the gate seam still governs: an injected behind decis
   assertStringIncludes(result.message, "(1 commit)");
   assertEquals(calls.length, 0);
 });
+
+Deno.test("pr_auto_merge - the milestone sync PR is still armed while its base is behind (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1782,
+    headRefName: "sync/milestone-1730-sync",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    isBaseProtectedFn: async () => true,
+    ghCommandFn: ghForBehindMilestone(6, calls),
+  });
+
+  assertEquals(
+    result.result,
+    AutoMergeResult.Enabled,
+    "deferring the sync PR for being behind would deadlock the milestone",
+  );
+  assertEquals(calls.some((a) => a.includes("--auto")), true);
+});
+
+Deno.test("pr_auto_merge - a behind deferral names itself so callers do not escalate it (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1783,
+    headRefName: "issue-1783-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    ghCommandFn: ghForBehindMilestone(3, []),
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertEquals(result.deferral, "milestone-behind");
+});
