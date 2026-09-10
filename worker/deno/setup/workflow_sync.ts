@@ -655,6 +655,10 @@ export async function syncWorkflowsForRepo(
 
   if (!options.dryRun) {
     for (const spec of audit.missing) {
+      // Resolved outside the per-spec `catch`: a pin-resolution fault is
+      // fleet-wide, not one spec's, so it must surface rather than be
+      // swallowed into a sync that quietly files nothing (Issue #1824).
+      const resolvedPins = await pins();
       try {
         const exists = await issueExistsByTag(
           repo,
@@ -672,7 +676,7 @@ export async function syncWorkflowsForRepo(
           repo,
           spec,
           runner,
-          await pins(),
+          resolvedPins,
         );
         if (created) {
           issuesRaised++;
@@ -684,6 +688,7 @@ export async function syncWorkflowsForRepo(
 
     // Step 4: Raise issues for partially matching workflows
     for (const partialMatch of audit.partial) {
+      const resolvedPins = await pins();
       try {
         const exists = await issueExistsByTag(
           repo,
@@ -703,7 +708,7 @@ export async function syncWorkflowsForRepo(
           partialMatch.foundIn,
           partialMatch.missingGroups,
           runner,
-          await pins(),
+          resolvedPins,
         );
         if (created) {
           partialIssuesRaised++;
