@@ -21,16 +21,22 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   describeCoverageDiff,
   diffCoverage,
+  driftSince,
   ENUMERATED_SLICE_MAX_PATHS,
   LIB_SWEEP_LEDGER_PATH,
   LIB_SWEEP_ROOT,
   listSweptModules,
+  listSweptModulesForRoots,
   localLedgerRecords,
   parseCoverageLedger,
   type SweepCoverageLedger,
+  type SweepGitRunner,
   SweepLedgerError,
   unnamedSmallSliceModules,
 } from "../lib/lib_sweep_coverage.ts";
+
+/** A valid `sweptAt` used by fixtures (Issue #1609). */
+const FIXTURE_COMMIT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 /** Repository root, two directories above `worker/deno/tests/`. */
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
@@ -45,7 +51,7 @@ function ledgerFixture(
   slices: Array<{ chunk: string; paths: string[] }>,
 ): SweepCoverageLedger {
   return {
-    root: LIB_SWEEP_ROOT,
+    roots: [LIB_SWEEP_ROOT],
     parent: 1209,
     description: "fixture",
     slices: slices.map((s, i) => ({
@@ -55,6 +61,7 @@ function ledgerFixture(
       ledger: "docs/audits/fixture.md",
       definition: "fixture",
       status: "swept" as const,
+      sweptAt: FIXTURE_COMMIT,
       paths: s.paths,
     })),
   };
@@ -62,7 +69,7 @@ function ledgerFixture(
 
 Deno.test("parseCoverageLedger - accepts a well-formed ledger", () => {
   const ledger = parseCoverageLedger(JSON.stringify({
-    root: LIB_SWEEP_ROOT,
+    roots: [LIB_SWEEP_ROOT],
     parent: 1209,
     description: "d",
     slices: [{
@@ -72,12 +79,15 @@ Deno.test("parseCoverageLedger - accepts a well-formed ledger", () => {
       ledger: "docs/audits/x.md",
       definition: "the remainder",
       status: "claimed",
+      sweptAt: FIXTURE_COMMIT,
       paths: ["worker/deno/lib/a.ts"],
     }],
   }));
   assertEquals(ledger.slices.length, 1);
   assertEquals(ledger.slices[0]?.status, "claimed");
   assertEquals(ledger.slices[0]?.paths, ["worker/deno/lib/a.ts"]);
+  assertEquals(ledger.roots, [LIB_SWEEP_ROOT]);
+  assertEquals(ledger.slices[0]?.sweptAt, FIXTURE_COMMIT);
 });
 
 Deno.test("parseCoverageLedger - fails loud on malformed input", () => {
@@ -88,7 +98,7 @@ Deno.test("parseCoverageLedger - fails loud on malformed input", () => {
     () =>
       parseCoverageLedger(
         JSON.stringify({
-          root: "r",
+          roots: ["r"],
           parent: 1209,
           description: "d",
           slices: [],
@@ -99,7 +109,7 @@ Deno.test("parseCoverageLedger - fails loud on malformed input", () => {
   assertThrows(
     () =>
       parseCoverageLedger(JSON.stringify({
-        root: "r",
+        roots: ["r"],
         parent: 1209,
         description: "d",
         slices: [{
@@ -109,11 +119,93 @@ Deno.test("parseCoverageLedger - fails loud on malformed input", () => {
           ledger: "l",
           definition: "d",
           status: "maybe",
+          sweptAt: FIXTURE_COMMIT,
           paths: [],
         }],
       })),
     SweepLedgerError,
   );
+});
+
+function wellFormedLedgerJson(
+  over: Record<string, unknown> = {},
+): string {
+  return JSON.stringify({
+    roots: [LIB_SWEEP_ROOT],
+    parent: 1209,
+    description: "d",
+    slices: [{
+      issue: 1219,
+      chunk: "12e",
+      title: "t",
+      ledger: "l",
+      definition: "d",
+      status: "swept",
+      sweptAt: FIXTURE_COMMIT,
+      paths: ["worker/deno/lib/a.ts"],
+    }],
+    ...over,
+  });
+}
+
+Deno.test("parseCoverageLedger - missing or malformed sweptAt fails naming the field (Issue #1609)", () => {
+  const missing = assertThrows(
+    () =>
+      parseCoverageLedger(wellFormedLedgerJson({
+        slices: [{
+          issue: 1,
+          chunk: "12a",
+          title: "t",
+          ledger: "l",
+          definition: "d",
+          status: "swept",
+          paths: ["worker/deno/lib/a.ts"],
+        }],
+      })),
+    SweepLedgerError,
+  );
+  assert(missing.message.includes("sweptAt"), missing.message);
+
+  const badHex = assertThrows(
+    () =>
+      parseCoverageLedger(wellFormedLedgerJson({
+        slices: [{
+          issue: 1,
+          chunk: "12a",
+          title: "t",
+          ledger: "l",
+          definition: "d",
+          status: "swept",
+          sweptAt: "not-a-commit",
+          paths: ["worker/deno/lib/a.ts"],
+        }],
+      })),
+    SweepLedgerError,
+  );
+  assert(badHex.message.includes("sweptAt"), badHex.message);
+});
+
+Deno.test("parseCoverageLedger - missing roots fails naming the field (Issue #1609)", () => {
+  const err = assertThrows(
+    () =>
+      parseCoverageLedger(JSON.stringify({
+        root: LIB_SWEEP_ROOT,
+        parent: 1209,
+        description: "d",
+        slices: [{
+          issue: 1,
+          chunk: "12a",
+          title: "t",
+          ledger: "l",
+          definition: "d",
+          status: "swept",
+          sweptAt: FIXTURE_COMMIT,
+          paths: ["worker/deno/lib/a.ts"],
+        }],
+      })),
+    SweepLedgerError,
+  );
+  assert(err.message.includes("roots"), err.message);
 });
 
 Deno.test("diffCoverage - a module on disk that no slice claims is unswept", () => {
@@ -198,7 +290,7 @@ Deno.test(
 
 Deno.test("localLedgerRecords - keeps repo paths and drops issue URLs", () => {
   const records = localLedgerRecords({
-    root: LIB_SWEEP_ROOT,
+    roots: [LIB_SWEEP_ROOT],
     parent: 1209,
     description: "fixture",
     slices: [
@@ -209,6 +301,7 @@ Deno.test("localLedgerRecords - keeps repo paths and drops issue URLs", () => {
         ledger: "docs/audits/b.md",
         definition: "fixture",
         status: "swept",
+        sweptAt: FIXTURE_COMMIT,
         paths: [],
       },
       {
@@ -218,6 +311,7 @@ Deno.test("localLedgerRecords - keeps repo paths and drops issue URLs", () => {
         ledger: "https://github.com/stSoftwareAU/VibeCoder/issues/2",
         definition: "fixture",
         status: "claimed",
+        sweptAt: FIXTURE_COMMIT,
         paths: [],
       },
       {
@@ -227,6 +321,7 @@ Deno.test("localLedgerRecords - keeps repo paths and drops issue URLs", () => {
         ledger: "docs/audits/b.md",
         definition: "fixture",
         status: "swept",
+        sweptAt: FIXTURE_COMMIT,
         paths: [],
       },
     ],
@@ -259,14 +354,17 @@ Deno.test("every sweep record the ledger names exists in the tree", async () => 
   );
 });
 
-Deno.test("every worker/deno/lib module is claimed by exactly one sweep slice", async () => {
+Deno.test("every non-test module under the ledger roots is claimed by exactly one sweep slice (Issue #1609)", async () => {
   const ledger = readRealLedger();
-  const diff = diffCoverage(ledger, await listSweptModules(REPO_ROOT));
+  const diff = diffCoverage(
+    ledger,
+    await listSweptModulesForRoots(REPO_ROOT, ledger.roots),
+  );
   const failure = describeCoverageDiff(diff);
   assertEquals(
     failure,
     null,
-    `${LIB_SWEEP_LEDGER_PATH} no longer matches ${LIB_SWEEP_ROOT}:\n\n${failure}`,
+    `${LIB_SWEEP_LEDGER_PATH} no longer matches the ledger roots:\n\n${failure}`,
   );
 });
 
@@ -280,7 +378,7 @@ function recordedLedgerFixture(
   slices: Array<{ chunk: string; ledger: string; paths: string[] }>,
 ): SweepCoverageLedger {
   return {
-    root: LIB_SWEEP_ROOT,
+    roots: [LIB_SWEEP_ROOT],
     parent: 1209,
     description: "fixture",
     slices: slices.map((s, i) => ({
@@ -290,6 +388,7 @@ function recordedLedgerFixture(
       ledger: s.ledger,
       definition: "fixture",
       status: "swept" as const,
+      sweptAt: FIXTURE_COMMIT,
       paths: s.paths,
     })),
   };
@@ -392,4 +491,97 @@ Deno.test("every small sweep slice's record names each module it claims", async 
     `${LIB_SWEEP_LEDGER_PATH} claims module(s) in a small slice whose ` +
       `record never names them — sweep them and record the result`,
   );
+});
+
+function fakeGit(
+  answers: Record<string, { code: number; stdout: string; stderr: string }>,
+): SweepGitRunner {
+  return (args) => {
+    const key = args.join(" ");
+    const hit = Object.entries(answers).find(([pattern]) =>
+      key.includes(pattern)
+    );
+    if (!hit) {
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    }
+    return Promise.resolve(hit[1]);
+  };
+}
+
+Deno.test("driftSince - returns the slice's added and modified modules from an injected runner (Issue #1609)", async () => {
+  const ledger = ledgerFixture([
+    {
+      chunk: "12a",
+      paths: [
+        "worker/deno/lib/kept.ts",
+        "worker/deno/lib/added.ts",
+        "worker/deno/lib/changed.ts",
+      ],
+    },
+  ]);
+  const drift = await driftSince(
+    ledger,
+    ledger.slices[0]!,
+    [
+      "worker/deno/lib/kept.ts",
+      "worker/deno/lib/added.ts",
+      "worker/deno/lib/changed.ts",
+      "worker/deno/lib/orphan.ts",
+    ],
+    fakeGit({
+      "--diff-filter=A": {
+        code: 0,
+        stdout: "worker/deno/lib/added.ts\nworker/deno/lib/other.ts\n",
+        stderr: "",
+      },
+      "--diff-filter=M": {
+        code: 0,
+        stdout: "worker/deno/lib/changed.ts\nworker/deno/lib/changed_test.ts\n",
+        stderr: "",
+      },
+    }),
+  );
+  assertEquals(drift.added, ["worker/deno/lib/added.ts"]);
+  assertEquals(drift.modified, ["worker/deno/lib/changed.ts"]);
+  assertEquals(drift.unowned, ["worker/deno/lib/orphan.ts"]);
+});
+
+Deno.test("driftSince - an empty diff is an empty report (Issue #1609)", async () => {
+  const ledger = ledgerFixture([{
+    chunk: "12a",
+    paths: ["worker/deno/lib/a.ts"],
+  }]);
+  const drift = await driftSince(
+    ledger,
+    ledger.slices[0]!,
+    ["worker/deno/lib/a.ts"],
+    fakeGit({}),
+  );
+  assertEquals(drift, { added: [], modified: [], unowned: [] });
+});
+
+Deno.test("driftSince - a non-zero git exit throws with stderr (Issue #1609)", async () => {
+  const ledger = ledgerFixture([{
+    chunk: "12a",
+    paths: ["worker/deno/lib/a.ts"],
+  }]);
+  let thrown: unknown;
+  try {
+    await driftSince(
+      ledger,
+      ledger.slices[0]!,
+      ["worker/deno/lib/a.ts"],
+      fakeGit({
+        "--diff-filter=A": {
+          code: 128,
+          stdout: "",
+          stderr: "fatal: bad revision",
+        },
+      }),
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assert(thrown instanceof SweepLedgerError, String(thrown));
+  assertEquals((thrown as SweepLedgerError).message, "fatal: bad revision");
 });

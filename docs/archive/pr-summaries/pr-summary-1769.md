@@ -1,5 +1,11 @@
 # Milestone escalations comment on an existing issue only
 
+> **Archive note (Issue #1826).** This is PR #1809's own record, kept verbatim.
+> #1809 merged only into the #1730 milestone branch, so the change was landed
+> on `main` separately by PR for Issue #1826, which resolved a conflict with
+> main's Issue #1786 conflict dedup and re-ran the gate on the merged tree —
+> the evidence for what is on `main` is in `pr-summary-1826.md`.
+
 ## Summary
 
 No milestone-sync outcome files an issue any more. Every escalation —

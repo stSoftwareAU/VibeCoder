@@ -11,6 +11,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildConflictEscalationComment,
   conflictDiagnosticTitle,
+  conflictDiagnosticTitlePrefix,
   describeBranchTips,
   type MilestoneSyncConflict,
   resolveBranchTips,
@@ -194,5 +195,27 @@ Deno.test(
     });
 
     assertStringIncludes(body, "no decision was recorded");
+  },
+);
+
+Deno.test(
+  "conflictDiagnosticTitlePrefix - one branch's prefix never matches a longer branch name (Issue #1769)",
+  () => {
+    const prefix = conflictDiagnosticTitlePrefix(MILESTONE_BRANCH);
+
+    assert(
+      conflictDiagnosticTitle(MILESTONE_BRANCH, DEFAULT_SHA).startsWith(prefix),
+      "the filed title is built from the prefix the close-out searches by",
+    );
+    assert(
+      !conflictDiagnosticTitle(`${MILESTONE_BRANCH}-extra`, DEFAULT_SHA)
+        .startsWith(prefix),
+      "a branch whose name merely starts with this one is a different branch",
+    );
+    assertEquals(
+      conflictDiagnosticTitlePrefix(""),
+      "Milestone sync merged with conflicts:  @ ",
+      "an empty branch yields a stable, still-distinguishable prefix",
+    );
   },
 );

@@ -2362,6 +2362,9 @@ export async function createProductionRunCoreDeps(
             ghCommandFn: runGhCommand,
             gitCommandFn: boundGit,
             log: (m) => logger.info(m),
+            // Issue #1762: the gated-head stand-down logs through the
+            // worker logger, like the other PR passes.
+            logger,
           });
           if (!processed.ok) {
             logger.warn("CI nudge: processing failed", {

@@ -38,6 +38,11 @@ import {
   isConflictEscalation,
 } from "./milestone_conflict_triage.ts";
 import {
+  conflictEscalationKey,
+  conflictEscalationMarker,
+  hasConflictEscalationComment,
+} from "./milestone_conflict_dedup.ts";
+import {
   type MilestoneEscalationTarget,
   resolveMilestoneEscalationTarget,
 } from "./milestone_escalation_target.ts";
@@ -664,7 +669,21 @@ export async function syncMilestoneBranches(
             // report went out, so escalating would repeat every cycle — the
             // loud WARNING log above stands on its own there, as it does for
             // the Issue #974 gate refusal below.
-            const conflictKey = syncResult.error.defaultSha || UNRESOLVED_SHA;
+            // Issue #1786: keyed on the conflict, not on the default
+            // branch's tip. That tip moves every few minutes on a busy
+            // repository, so keying on it made every cycle look like a new
+            // conflict and posted the same analysis again — four copies on
+            // stSoftwareAU/VibeCoder#1653 in 36 minutes.
+            const conflictKey = conflictEscalationKey({
+              milestoneBranch: milestone.milestoneBranch,
+              ...(syncResult.error.milestoneSha
+                ? { milestoneSha: syncResult.error.milestoneSha }
+                : {}),
+              files: [
+                ...syncResult.error.analyses.map((a) => a.path),
+                ...syncResult.error.resolved.map((d) => d.path),
+              ],
+            });
             if (entry && entry.analysisEscalatedSha !== conflictKey) {
               const escalated = await escalateConflictAnalysis(
                 repo,
@@ -672,6 +691,7 @@ export async function syncMilestoneBranches(
                 syncResult.error.analyses,
                 syncResult.error.resolved,
                 syncResult.error.gateFailure,
+                conflictKey,
                 ghCommandFn,
                 log,
               );
@@ -824,6 +844,8 @@ async function escalateConflictAnalysis(
   resolved: FileDecision[],
   /** What the verification said, when it is what refused the resolution. */
   gateFailure: string | undefined,
+  /** The conflict's own identity, carried as a marker for cross-host dedup. */
+  conflictKey: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
 ): Promise<boolean> {
@@ -837,7 +859,8 @@ async function escalateConflictAnalysis(
     log,
   );
 
-  const body = `${
+  const marker = conflictEscalationMarker(conflictKey);
+  const body = `${marker}\n${
     buildConflictAnalysisComment({
       repo,
       milestoneBranch: milestone.milestoneBranch,
@@ -851,6 +874,10 @@ async function escalateConflictAnalysis(
   const what = `a milestone sync conflict only a human can resolve for ` +
     `'${milestone.milestoneBranch}' (Issue #1559)`;
 
+  // Issue #1786: each host keeps its own streak file, so the local record
+  // alone cannot stop a second host reporting a conflict the first already
+  // reported — the marker on the issue is the shared record. It is checked
+  // against whichever existing issue the escalation lands on (Issue #1769).
   return await escalateToExistingIssue(
     repo,
     milestone,
@@ -858,6 +885,7 @@ async function escalateConflictAnalysis(
     what,
     ghCommandFn,
     log,
+    marker,
   );
 }
 
@@ -923,6 +951,11 @@ async function escalateMergeGateFailure(
  * that could not be posted counts as NOT escalated, so it is retried.
  *
  * @param what - Names the escalation in the log lines.
+ * @param dedupMarker - Hidden marker identifying this escalation, when the
+ *   caller has one; a destination that already carries it is not commented on
+ *   again, and is not reopened either (Issue #1786). Another host's streak
+ *   file is invisible here, so the marker on the issue is the shared record.
+ *   Fails open — an unreadable thread is reported again.
  * @returns True when the escalation reached a human, or had nowhere to go.
  */
 async function escalateToExistingIssue(
@@ -932,6 +965,7 @@ async function escalateToExistingIssue(
   what: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
+  dedupMarker?: string,
 ): Promise<boolean> {
   const target: MilestoneEscalationTarget =
     await resolveMilestoneEscalationTarget({
@@ -942,7 +976,27 @@ async function escalateToExistingIssue(
       },
       ghCommandFn,
       log,
+      ...(dedupMarker !== undefined
+        ? {
+          alreadyEscalated: (issueNumber: number) =>
+            hasConflictEscalationComment({
+              repo,
+              issueNumber,
+              marker: dedupMarker,
+              ghCommandFn,
+              log,
+            }),
+        }
+        : {}),
     });
+
+  if (target.kind === "already-escalated") {
+    log(
+      `Skipped escalating ${what} in ${repo}: issue #${target.issue} already ` +
+        `carries this conflict's analysis.`,
+    );
+    return true;
+  }
 
   if (target.kind === "none") {
     log(
