@@ -4634,6 +4634,21 @@ async function syncMilestoneBranchesFn(
     // is never started on a promise the watchdog then breaks (#1693).
     ...(deadlineEpochMs !== undefined ? { deadlineEpochMs } : {}),
     agentTimeoutMs: config.claudeTimeout * 1000,
+    // Issue #1781: the default roll-back runs executeRollback in the
+    // same clone the sync just used.
+    rollbackGitFn: async (repo, args) => {
+      const { runGitCommand } = await import("./git_timeout.ts");
+      const cwd = `${workDir}/${repo.split("/")[1]}`;
+      const result = await runGitCommand(args, { cwd });
+      if (!result.ok) {
+        return { code: 1, stdout: "", stderr: result.error.message };
+      }
+      return {
+        code: result.value.code,
+        stdout: result.value.stdout,
+        stderr: result.value.stderr,
+      };
+    },
   });
 }
 

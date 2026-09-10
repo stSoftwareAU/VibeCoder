@@ -3467,8 +3467,11 @@ label and no issue. The per-conflict analysis escalation Issue #1559 posted on
 the first conflicting commit is gone: it fired before any of the three
 automatic attempts had been spent, which is exactly the "needs-human while a
 rung remains" this budget removes. On the third concluded failure the branch is
-handed to the roll-back (`rollbackFn`); until that wiring lands the default
-logs `budget exhausted: roll-back not yet available` and still posts nothing.
+handed to the roll-back (`executeRollback`, Issue #1781). On `merged: true`
+the ledger is reset, `rollbacks` is incremented and the reverted SHAs are
+recorded; on `merged: false` one `needs-human` comment lands on the existing
+escalation target and a second cycle posts nothing. Without a clone git
+runner the default still logs `budget exhausted: roll-back not yet available`.
 
 **One agent run per cycle, across every repo and milestone.** `grantAgentRun`
 decides it, and it is the merge-conflict drain's rule with **both** halves:
@@ -3543,8 +3546,23 @@ paths.
   cause named. Each would otherwise plan an empty roll-back and report
   `nothing left to revert` with every child still in place.
 
-A `merged: false` result is logged `WARNING` with its reason. The mechanics land
-here as a module; the exhaustion path that calls them is wired separately.
+A `merged: false` result is logged `WARNING` with its reason, then escalated
+once — `needs-human` on the parent planning issue (reopened if closed) else
+the oldest open child, never a new issue (Issue #1781). A destination of
+`none` is one log line and the streak is marked escalated so the line is not
+repeated.
+
+On `merged: true`
+[milestone_rollback_requeue.ts](../worker/deno/lib/milestone_rollback_requeue.ts)
+is the GitHub half: each reverted child's issue is resolved from the branch
+shape (`extractIssueFromBranch`) or the PR body's closing keywords, the
+roll-back marker is posted, a closed issue is reopened, `idle-task` is
+re-applied when that is what it carried, `work-on` is stripped and listed
+for a trusted re-label, every open PR of that issue and any open milestone
+summary PR is closed with a comment naming the revert, and exactly one
+notice — no `needs-human` — names the reverted PRs, the reopened issues, the
+running roll-back count and the checklist. Untouched children stay closed.
+Self-heal events `rolled_back` / `rollback_failed` record each outcome.
 
 ```mermaid
 flowchart TD
@@ -3552,8 +3570,10 @@ flowchart TD
     L --> R{revert next}
     R --> M{merge default clean?}
     M -->|yes| P[commit + push / sync PR]
+    P --> Q["Reopen reverted children,<br/>close their PRs, one notice"]
     M -->|no| R
-    R -->|none left| X[reset to pre-roll-back SHA, report]
+    R -->|none left| X[reset to pre-roll-back SHA]
+    X --> E["Escalate once with needs-human<br/>on an issue that already exists"]
 ```
 
 
@@ -4010,6 +4030,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                |
 |                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                   |
 |                             | [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)                                    | The fleet-authored milestone roll-back marker both merged-PR closers honour, so a reverted child stays reopened (Issue #1770)                                                        |
+|                             | [milestone_rollback_requeue.ts](../worker/deno/lib/milestone_rollback_requeue.ts)                                  | After a successful roll-back, reopen and re-queue each reverted child and close its PRs; after a failed one, escalate once on an issue that already exists (Issue #1781)             |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                             |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                       |
 | **Utilities**               |                                                                                                                   |                                                                                                                                                                                      |
