@@ -264,6 +264,24 @@ Deno.test("comment selection - worker comments do not crowd out a maintainer's r
   );
 });
 
+Deno.test("comment selection - an untrusted flood cannot evict a maintainer's direction (#1910)", () => {
+  const flood = Array.from(
+    { length: 40 },
+    (_, i) => comment(`drive-by-${i}`, `noise ${"n".repeat(1000)}`),
+  );
+  const selection = selectImplementationComments([
+    comment("maintainer", "Scope: only the leap-year branch."),
+    ...flood,
+  ], { workerLogin: "vibe-coder", ...TRUST });
+
+  assert(
+    selection.selected.some((c) =>
+      c.body === "Scope: only the leap-year branch."
+    ),
+    "a trusted author's comment was evicted by newer untrusted comments",
+  );
+});
+
 Deno.test("comment selection - the newest comments win the budget (#1910)", () => {
   const thread = Array.from(
     { length: 60 },

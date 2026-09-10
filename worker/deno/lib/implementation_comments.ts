@@ -12,9 +12,9 @@
  * 1. **Which comments.** A resumed issue carries run-stats and claim-release
  *    comments the worker posted about itself. They say nothing the agent can
  *    act on, so they are dropped outright, and what remains is admitted
- *    newest-first with **non-worker comments taking the budget before
- *    worker-authored ones** — a maintainer's reply can never be crowded out by
- *    the worker's own chatter.
+ *    newest-first in trust order — **trusted humans, then other authors, then
+ *    the worker itself**. Neither the worker's own chatter nor a flood of
+ *    untrusted comments can crowd out a maintainer's direction.
  * 2. **How much.** The prompt prefix is cached and measured against the
  *    context budget (#1262, #3713), so a busy issue's thread is bounded here
  *    before `comment_trust_filter.ts` applies its own per-author caps.
@@ -29,6 +29,7 @@
 
 import type { IssueComment } from "./issue_data.ts";
 import {
+  classifyCommentAuthor,
   type CommentTrustOptions,
   prepareTrustAnnotatedCommentList,
 } from "./comment_trust_filter.ts";
@@ -77,6 +78,10 @@ export interface ImplementationCommentSelectionOptions {
    * every other author has taken what it needs of the budget.
    */
   workerLogin?: string;
+  /** Logins that may direct work — admitted before anyone else. */
+  allowedAuthors?: readonly string[];
+  /** Logins whose input is acted on — admitted alongside `allowedAuthors`. */
+  authorisedCommenters?: readonly string[];
   /** Override the comment count cap (tests, and callers with a tighter budget). */
   maxComments?: number;
   /** Override the total character budget. */
@@ -118,11 +123,17 @@ export function selectImplementationComments(
   const isWorkerAuthored = (c: IssueComment) =>
     workerKey !== "" && normaliseLogin(c.author) === workerKey;
 
+  const isTrusted = (c: IssueComment) =>
+    classifyCommentAuthor(c.author, {
+      allowedAuthors: [...(options.allowedAuthors ?? [])],
+      authorisedCommenters: [...(options.authorisedCommenters ?? [])],
+    }) === "TRUSTED";
+
   const admitted = new Set<number>();
   let chars = 0;
 
   // Newest first, so a maintainer's latest redirect is the comment that is
-  // certain to survive; non-worker authors take the budget first.
+  // certain to survive.
   const admit = (wanted: (c: IssueComment) => boolean) => {
     for (let i = candidates.length - 1; i >= 0; i--) {
       if (admitted.size >= maxComments) return;
@@ -137,6 +148,10 @@ export function selectImplementationComments(
       chars += cost;
     }
   };
+  // Trusted humans take the budget first, so a flood of untrusted comments
+  // cannot evict a maintainer's direction; the worker's own comments take
+  // only what is left over from both.
+  admit((c) => !isWorkerAuthored(c) && isTrusted(c));
   admit((c) => !isWorkerAuthored(c));
   admit(isWorkerAuthored);
 
@@ -165,9 +180,23 @@ export function formatPlainComments(
   );
 }
 
-/** Options for {@link buildImplementationCommentContext}. */
+/**
+ * Options for {@link buildImplementationCommentContext}.
+ *
+ * The trust lists are required here — they are what `classifyCommentAuthor`
+ * decides on — and this shape structurally satisfies
+ * {@link ImplementationCommentSelectionOptions}, so one options object drives
+ * both the selection and the trust annotation.
+ */
 export interface ImplementationCommentContextOptions
-  extends ImplementationCommentSelectionOptions, CommentTrustOptions {}
+  extends CommentTrustOptions {
+  /** The worker's own GitHub login (see the selection options). */
+  workerLogin?: string;
+  /** Override the comment count cap. */
+  maxComments?: number;
+  /** Override the total character budget. */
+  maxTotalChars?: number;
+}
 
 /** The comment fields an {@link IssueContext} carries for the prompt. */
 export interface ImplementationCommentContext {
