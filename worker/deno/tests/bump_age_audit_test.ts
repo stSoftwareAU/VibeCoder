@@ -7,6 +7,13 @@
  * verification that closes that gap — parsing the versions a bump
  * actually introduced, and blocking the ones published inside the window.
  *
+ * stSoftwareAU/NEAT-AI-scorer#627 moved `Cargo.toml`/`Cargo.lock` out of the refused foreign
+ * manifests and into the verified ones: refusing every crates.io bump left
+ * a managed Rust repository on stale dependencies forever, which is the
+ * worse supply-chain outcome. The `Cargo.toml` case was therefore removed
+ * from the foreign-manifest table below and replaced by the `auditBumpDiff`
+ * crates.io cases — the only existing expectation this change inverts.
+ *
  * Issue #3951 closed the second half: the parser recognised only
  * digit-anchored pins, and everything it did not recognise — ranges,
  * lockfiles, every non-JS ecosystem, an unreadable diff — parsed to `[]`
@@ -394,7 +401,6 @@ Deno.test("scanBumpDiff - non-JS ecosystem manifests are refused, not ignored", 
   const cases: ReadonlyArray<readonly [string, string, string]> = [
     ["Gemfile", `gem "nokogiri", "1.99.0"`, "RubyGems"],
     ["go.mod", `\tgithub.com/evil/pkg v1.99.0`, "Go module"],
-    ["Cargo.toml", `serde = "1.99.0"`, "crates.io"],
     ["requirements.txt", `evil==1.99.0`, "PyPI"],
   ];
   for (const [file, line, ecosystem] of cases) {
@@ -404,6 +410,78 @@ Deno.test("scanBumpDiff - non-JS ecosystem manifests are refused, not ignored", 
     assertEquals(scan.unverifiable[0]!.file, file);
     assertStringIncludes(scan.unverifiable[0]!.reason, ecosystem);
   }
+});
+
+Deno.test("auditBumpDiff - a crates.io bump is age-verified, not refused (stSoftwareAU/NEAT-AI-scorer#627)", async () => {
+  // `Cargo.lock` used to be a foreign manifest, so this diff was refused
+  // wholesale as unverifiable and the repository never took a bump at all.
+  const diff = `--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -12,7 +12,7 @@
+ [[package]]
+ name = "anyhow"
+-version = "1.0.98"
++version = "1.0.99"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -40,7 +40,7 @@
+ [[package]]
+ name = "serde"
+-version = "1.0.228"
++version = "1.0.229"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+`;
+  const seen: string[] = [];
+  const deps = makeDeps({
+    "crates:anyhow@1.0.99": hoursAgo(72),
+    "crates:serde@1.0.229": hoursAgo(200),
+  }, (key) => seen.push(key));
+
+  const audit = await auditBumpDiff(diff, 24, deps);
+  assertEquals(audit.unverifiable, []);
+  assertEquals(audit.blocked, []);
+  assertEquals(audit.ok, true);
+  assertEquals(seen, ["crates:anyhow@1.0.99", "crates:serde@1.0.229"]);
+});
+
+Deno.test("auditBumpDiff - a crate published inside the window still blocks (stSoftwareAU/NEAT-AI-scorer#627)", async () => {
+  const diff = `--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -12,7 +12,7 @@
+ [[package]]
+ name = "anyhow"
+-version = "1.0.98"
++version = "1.0.99"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+`;
+  const audit = await auditBumpDiff(
+    diff,
+    24,
+    makeDeps({
+      "crates:anyhow@1.0.99": hoursAgo(2),
+    }),
+  );
+  assertEquals(audit.ok, false);
+  assertEquals(audit.blocked.length, 1);
+  assertStringIncludes(audit.reason, "anyhow@1.0.99");
+  assertStringIncludes(audit.reason, "24h quarantine");
+});
+
+Deno.test("auditBumpDiff - an unresolvable crate is indeterminate, and named (stSoftwareAU/NEAT-AI-scorer#627)", async () => {
+  const diff = `--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -12,7 +12,7 @@
+ [[package]]
+ name = "anyhow"
+-version = "1.0.98"
++version = "1.0.99"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+`;
+  const audit = await auditBumpDiff(diff, 24, makeDeps({}));
+  assertEquals(audit.indeterminate.length, 1);
+  assertStringIncludes(
+    audit.indeterminate[0]!.reason,
+    "Could not resolve a crates.io publish time",
+  );
 });
 
 Deno.test("scanBumpDiff - a foreign manifest line with no version is not a dependency change", () => {

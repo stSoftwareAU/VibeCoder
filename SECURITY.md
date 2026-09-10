@@ -190,10 +190,14 @@ dependency manifests. It applies in **two** places, and both must hold:
    the worker's supply-chain policy applies. That audit is **fail-closed on
    what it cannot read**: it recognises range specifiers
    (`jsr:@std/yaml@^1.9.9`), `deno.lock` / `package-lock.json` / `yarn.lock` /
-   `pnpm-lock.yaml` entries and `package.json` ranges, and it **refuses** every
+   `pnpm-lock.yaml` entries, `package.json` ranges, and `Cargo.lock`
+   `[[package]]` blocks and `Cargo.toml` dependency tables dated against
+   crates.io (`worker/deno/lib/bump_diff_cargo.ts`,
+   `worker/deno/lib/crates_io_age.ts`), and it **refuses** every
    other dependency-shaped added line rather than passing it — an open-ended
    range or tag (`>=1.0.0`, `*`, `latest`) that names no single release, a
-   non-JS ecosystem manifest (`Gemfile`, `go.mod`, `Cargo.toml`,
+   crate from a `git+` or alternate-registry source, a remaining
+   foreign-ecosystem manifest (`Gemfile`, `go.mod`,
    `requirements.txt`, …) whose publish times it cannot resolve, or a bump diff
    it could not read at all. Before each of those parsed to nothing and
    an empty parse was reported as `ok: true`, so a repo-supplied script could

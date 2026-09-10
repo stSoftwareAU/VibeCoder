@@ -21,6 +21,13 @@
  *    every bump into a rejection. Indeterminate verdicts are reported so
  *    the gap is visible rather than silent (Issue #3234).
  *
+ * stSoftwareAU/NEAT-AI-scorer#627 added crates.io to the registries whose publish times can
+ * be resolved. `Cargo.toml`/`Cargo.lock` were classified as a foreign
+ * manifest, so every Rust bump was refused wholesale and a managed Rust
+ * repository could never take a dependency update at all — the worse
+ * supply-chain outcome, since it left the repo on stale crates
+ * indefinitely. A Cargo bump is now **verified** rather than refused.
+ *
  * A third boundary was added by Issue #3951: an **unrecognised**
  * dependency change fails **closed**. A line the scanner cannot pin to a
  * single release — an open-ended range, a tag, a foreign ecosystem's
@@ -41,6 +48,7 @@ import {
   readTextBounded,
   withRequestTimeout,
 } from "./bounded_fetch.ts";
+import { fetchCratesPublishTime } from "./crates_io_age.ts";
 import { fetchNpmTimeData } from "./npm_package_age.ts";
 import { scanBumpDiff } from "./bump_diff_scan.ts";
 import type {
@@ -155,7 +163,8 @@ function label(spec: BumpedSpecifier): string {
 
 /** Human-readable registry name for messages. */
 function registryLabel(registry: BumpedSpecifier["registry"]): string {
-  return registry === "unknown" ? "npm or JSR" : registry;
+  if (registry === "unknown") return "npm or JSR";
+  return registry === "crates" ? "crates.io" : registry;
 }
 
 /**
@@ -335,6 +344,9 @@ async function fetchJsrPublishTime(
 export function defaultBumpAgeDeps(): BumpAgeDeps {
   return {
     fetchPublishTime: async (spec) => {
+      if (spec.registry === "crates") {
+        return await fetchCratesPublishTime(spec.name, spec.version);
+      }
       // A lockfile entry names a package and version but not always the
       // registry (Issue #3951): try JSR first for scoped names, then npm.
       const tryJsr = spec.registry === "jsr" ||

@@ -27,6 +27,20 @@
  * Australian English used throughout (behaviour, organisation, etc.).
  */
 
+import { createCargoScanner } from "./bump_diff_cargo.ts";
+import type {
+  CargoCollector,
+  CargoManifest,
+  CargoScanner,
+} from "./bump_diff_cargo.ts";
+import {
+  pinnedVersion,
+  quoteLine,
+  RANGE_LOOKING_RE,
+} from "./bump_version_pin.ts";
+
+export { pinnedVersion } from "./bump_version_pin.ts";
+
 /**
  * Registry whose publish times the age audit can resolve.
  *
@@ -34,7 +48,7 @@
  * the registry it came from (a bare `"@std/yaml@1.9.9"` key in
  * `deno.lock`); the audit resolves those by trying JSR then npm.
  */
-export type BumpRegistry = "npm" | "jsr" | "unknown";
+export type BumpRegistry = "npm" | "jsr" | "crates" | "unknown";
 
 /** An external `name@version` a bump introduced. */
 export interface BumpedSpecifier {
@@ -94,26 +108,6 @@ const RESOLVED_TARBALL_RE =
   /https?:\/\/registry\.(?:npmjs\.org|yarnpkg\.com)\/((?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+)\/-\/[A-Za-z0-9._-]+-(\d[A-Za-z0-9.+-]*)\.tgz/g;
 
 /**
- * Range prefixes that still pin a concrete floor version whose release
- * age is meaningful. `>`/`>=`/`*`/`x`/`latest` are deliberately absent:
- * they name no release, so they are refused rather than guessed at.
- */
-const PINNING_RANGE_PREFIX_RE = /^[\^~=v]+/;
-
-/** A concrete release version, e.g. `1.9.9`, `18`, `2.0.0-rc.1`. */
-const CONCRETE_VERSION_RE = /^\d+(?:\.\d+)*(?:[-+][A-Za-z0-9.-]+)?$/;
-
-/** A registry alias prefix on a lockfile version (`chalk@npm:5.6.2`). */
-const ALIAS_PREFIX_RE = /^(?:npm|jsr):/;
-
-/**
- * A value that is trying to be a version range — used to decide whether
- * an unpinnable `package.json` value is a dependency worth refusing or
- * ordinary metadata (`"license": "MIT"`) worth ignoring.
- */
-const RANGE_LOOKING_RE = /^[\s~^>=<]*[\dxX*]|^(?:latest|next)$/;
-
-/**
  * `package.json` keys that carry a version but are not a dependency on
  * a published release: the package's own identity and the `engines`
  * runtime floors.
@@ -144,7 +138,6 @@ const FOREIGN_MANIFESTS: ReadonlyArray<readonly [RegExp, string]> = [
   [/^Gemfile(\.lock)?$/, "RubyGems"],
   [/\.gemspec$/, "RubyGems"],
   [/^go\.(mod|sum)$/, "Go module"],
-  [/^Cargo\.(toml|lock)$/, "crates.io"],
   [
     /^(?:requirements[A-Za-z0-9._-]*\.txt|Pipfile(?:\.lock)?|poetry\.lock|pyproject\.toml|setup\.py)$/,
     "PyPI",
@@ -162,9 +155,6 @@ const FOREIGN_MANIFESTS: ReadonlyArray<readonly [RegExp, string]> = [
  */
 const FOREIGN_VERSION_RE = /(?:^|[^A-Za-z0-9_])v?\d+\.\d+|[=<>~^!]=?\s*["']?\d/;
 
-/** Longest added-line excerpt quoted back in a refusal message. */
-const MAX_QUOTED_LINE = 200;
-
 // =============================================================================
 // File classification
 // =============================================================================
@@ -173,6 +163,7 @@ const MAX_QUOTED_LINE = 200;
 export type ScannedFileKind =
   | { kind: "package-json" }
   | { kind: "lock"; registry: BumpRegistry }
+  | { kind: "cargo"; manifest: CargoManifest }
   | { kind: "foreign"; ecosystem: string }
   | { kind: "other" };
 
@@ -180,29 +171,14 @@ export type ScannedFileKind =
 export function classifyBumpFile(path: string): ScannedFileKind {
   const base = path.split("/").pop() ?? path;
   if (base === "package.json") return { kind: "package-json" };
+  if (base === "Cargo.lock") return { kind: "cargo", manifest: "lock" };
+  if (base === "Cargo.toml") return { kind: "cargo", manifest: "toml" };
   const registry = LOCKFILES[base];
   if (registry) return { kind: "lock", registry };
   for (const [pattern, ecosystem] of FOREIGN_MANIFESTS) {
     if (pattern.test(base)) return { kind: "foreign", ecosystem };
   }
   return { kind: "other" };
-}
-
-/**
- * Reduce a version specification to the exact release whose age can be
- * checked, or `null` when it names no single release.
- *
- * `^1.9.9`/`~1.9.9`/`=1.9.9`/`v1.9.9` pin a floor inside a bounded range
- * and normalise to `1.9.9`. `>=1.0.0`, `*`, `1.x` and `latest` are
- * open-ended — they name whatever the registry serves at install time,
- * which is exactly the evasion the embargo exists to stop — so they
- * return `null` and the caller refuses them.
- */
-export function pinnedVersion(raw: string): string | null {
-  const trimmed = raw.trim().replace(ALIAS_PREFIX_RE, "");
-  if (trimmed.length === 0) return null;
-  const stripped = trimmed.replace(PINNING_RANGE_PREFIX_RE, "");
-  return CONCRETE_VERSION_RE.test(stripped) ? stripped : null;
 }
 
 // =============================================================================
@@ -219,14 +195,6 @@ interface Collector {
 function diffPath(header: string): string {
   const raw = header.slice(4).trim().split(/\s+/)[0] ?? "";
   return raw.replace(/^[ab]\//, "");
-}
-
-/** Trim and truncate an added line for quoting in a message. */
-function quoteLine(line: string): string {
-  const trimmed = line.trim();
-  return trimmed.length > MAX_QUOTED_LINE
-    ? `${trimmed.slice(0, MAX_QUOTED_LINE)}…`
-    : trimmed;
 }
 
 /** `npm:`/`jsr:` specifiers — pinned ones collected, the rest refused. */
@@ -340,6 +308,14 @@ function scanAddedLine(
   }
 }
 
+/** Adapt the shared collector to the Cargo scanner's crates.io view. */
+function cargoCollector(out: Collector): CargoCollector {
+  return {
+    addCrate: (name, version) => out.add({ registry: "crates", name, version }),
+    flag: out.flag,
+  };
+}
+
 /**
  * Drop `unknown`-registry lockfile entries already covered by a concrete
  * one, so a `deno.lock` that names both `jsr:@std/yaml@^1.9.9` and
@@ -383,15 +359,53 @@ export function scanBumpDiff(diff: string): BumpDiffScan {
     },
   };
 
+  // Cargo files need their context lines and hunk boundaries, not just the
+  // added ones: a `Cargo.lock` version bump names its crate on a context
+  // line, and a `Cargo.toml` entry takes its meaning from the table header
+  // above it (stSoftwareAU/NEAT-AI-scorer#627).
+  let cargo: CargoScanner | null = null;
+  const closeCargo = (): void => {
+    cargo?.finish();
+    cargo = null;
+  };
+
   for (const raw of diff.split("\n")) {
     if (raw.startsWith("+++ ")) {
+      closeCargo();
       path = diffPath(raw);
       file = classifyBumpFile(path);
+      if (file.kind === "cargo") {
+        cargo = createCargoScanner(file.manifest, path, cargoCollector(out));
+      }
       continue;
     }
-    if (raw.startsWith("--- ") || !raw.startsWith("+")) continue;
+    if (raw.startsWith("--- ")) continue;
+    if (cargo) {
+      // An empty line carries no diff marker at all — it is the trailing
+      // artefact of splitting, not file content. A blank context line
+      // arrives as a single space.
+      if (raw.length === 0) continue;
+      if (raw.startsWith("diff --git ")) {
+        closeCargo();
+        continue;
+      }
+      if (raw.startsWith("@@")) {
+        cargo.breakContext();
+        continue;
+      }
+      // `\` marks "No newline at end of file", never file content.
+      if (raw.startsWith("-") || raw.startsWith("\\")) continue;
+      if (raw.startsWith("+")) {
+        cargo.feed(raw.slice(1), true);
+        continue;
+      }
+      cargo.feed(raw.startsWith(" ") ? raw.slice(1) : raw, false);
+      continue;
+    }
+    if (!raw.startsWith("+")) continue;
     scanAddedLine(raw.slice(1), path, file, out);
   }
+  closeCargo();
 
   return { specifiers: dropRedundantUnknown(specifiers), unverifiable };
 }

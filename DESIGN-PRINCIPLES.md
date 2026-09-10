@@ -2074,8 +2074,8 @@ never overlap:
   policy on the honour system — the managed repo decided whether the worker's
   own embargo applied. `worker/deno/lib/bump_age_audit.ts` now reads the
   versions the script actually wrote (from the bump diff), resolves each
-  publish time from npm/JSR, and reverts the bump as `rejected_by_quarantine`
-  when one landed inside the window. Internal `@stsoftware/*` packages are
+  publish time from npm/JSR/crates.io, and reverts the bump as
+  `rejected_by_quarantine` when one landed inside the window. Internal `@stsoftware/*` packages are
   exempt (0h) and an age that cannot be resolved is logged as unverified
   rather than blocking, so an offline host still bumps.
 
@@ -2084,12 +2084,27 @@ never overlap:
   host must not turn every bump into a rejection. A dependency change the
   scanner cannot recognise at all **fails closed**: an open-ended range or tag
   (`>=1.0.0`, `*`, `latest`) names no single release, a foreign ecosystem's
-  manifest (`Gemfile`, `go.mod`, `Cargo.toml`, `requirements.txt`) has no
+  manifest (`Gemfile`, `go.mod`, `requirements.txt`) has no
   publish time this worker can resolve, and an unreadable diff shows nothing at
   all. The first means the embargo looked and could not see; the second means it
   never got to look, and silence must not read as compliance.
   `worker/deno/lib/bump_diff_scan.ts` draws that line, and covers the shapes the
   first parser missed — range specifiers, `deno.lock` and the npm lockfiles.
+
+  **Refusing a whole ecosystem is the worse answer, so teach the embargo to
+  see it.** `Cargo.toml`/`Cargo.lock` sat on that foreign list, so every
+  crates.io bump in a managed Rust repository was refused and the repo stayed
+  on stale dependencies indefinitely — a permanent hole traded for a 24-hour
+  one. `worker/deno/lib/bump_diff_cargo.ts` reads the `[[package]]` blocks and
+  `[dependencies]` tables a Cargo bump actually changes, and
+  `worker/deno/lib/crates_io_age.ts` dates each release against
+  `crates.io/api/v1/crates/<crate>/<version>`, so a Cargo bump is verified like
+  any other. The fail-closed line itself does not move: a `git+` or
+  alternate-registry source, an open-ended requirement, or a version whose
+  crate the diff never names is still refused, and a `[[package]]` with no
+  `source` is the repo's own workspace or path member rather than a published
+  release. When a foreign ecosystem is worth supporting, the fix is a resolver
+  for it — never a permanent refusal.
 
 The split is described for the worker's own bump behaviour in the
 coding-guidelines prompt (`prompts/coding_guidelines/`) and for the cross-repo
