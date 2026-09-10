@@ -145,6 +145,7 @@ export async function findFleetAuthoredIssuesTitled(
     String(query.limit ?? 10),
   ]);
 
+  const matches = query.titleMatches ?? ((t: string) => t === query.title);
   const candidates: TitleMarkerDedupRow[] = [];
   for (const item of parseGhJsonArray(raw, `find ${query.context}`)) {
     if (item === null || typeof item !== "object") continue;
@@ -152,7 +153,6 @@ export async function findFleetAuthoredIssuesTitled(
     if (typeof row.number !== "number") continue;
     if (typeof row.title !== "string") continue;
     const title = row.title.trim();
-    const matches = query.titleMatches ?? ((t: string) => t === query.title);
     if (!matches(title)) continue;
     candidates.push(row as unknown as TitleMarkerDedupRow);
   }

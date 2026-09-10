@@ -19,6 +19,7 @@ import {
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
+import { conflictEscalationKey } from "../lib/milestone_conflict_dedup.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
 import { stuckSyncDiagnosticTitle } from "../lib/milestone_sync_diagnostic_closeout.ts";
@@ -1821,7 +1822,13 @@ Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged 
     assertEquals(entry?.lastAttempt?.outcome, "not-charged");
     // Its own dedup key — sharing `gateEscalated` would let the Issue #974
     // refusal of the merged tree suppress this report, and the reverse.
-    assertEquals(entry?.analysisEscalatedSha, LEDGER_SHA);
+    assertEquals(
+      entry?.analysisEscalatedSha,
+      conflictEscalationKey({
+        milestoneBranch: LEDGER_BRANCH,
+        files: ["worker/deno/lib/scan_content.ts"],
+      }),
+    );
     assertEquals(entry?.gateEscalated, false);
 
     const comments = calls.filter((c) =>

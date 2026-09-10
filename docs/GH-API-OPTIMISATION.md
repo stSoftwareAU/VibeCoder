@@ -166,6 +166,16 @@ Measured on the three-repo, two-author fixture in
 
 ### One cache key, one limit (Issue #1486)
 
+Two per-issue reads on the scan path are cached too (Issue #1818): the
+dependency fetcher's `issue_state_v1_<n>`, `issue_body_v1_<n>` and
+`issue_sub_issues_v1_<n>` (a referenced issue is viewed once per iteration,
+not once per idle re-scan), and the scan-time content-integrity check reads
+the candidate's title and body from the listing instead of a live
+`gh issue view` — the claimed issue is still re-verified live at pickup
+(Issue #3647). Before this one cycle spent ~735 `issue view` calls on 94
+candidates re-scanned four times, and exhausted the fleet's shared GraphQL
+quota mid-window.
+
 `fetchAllIssues` shares a single `issues_all` entry between callers asking
 for different limits (200 from `find_oldest_issue`, 100 from
 `stuck_recovery` and `find_planning_issues`). Whichever call ran first used
@@ -278,8 +288,9 @@ trade-off.
 | Worker adds/removes a label | The repo's issue/PR list (so the next read sees the change) | `IssueCache.invalidate(repo, "issues_all")` or `IssueCache.invalidateRepo(repo)` |
 | Worker writes a claim comment | Repo's issue list (claim is reflected in the issue body / labels) | `IssueCache.invalidateRepo(repo)` |
 | Worker creates/closes a PR | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`) | `IssueCache.invalidate(repo, key)` |
-| Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}` and `pr_linkage_open_v2_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181) |
+| Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}`, `pr_linkage_open_v2_${number}` and `issue_state_v1_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181, #1818) |
 | Default-branch tip moves | Every milestone branch's "already synced" verdict (Issue #1776) | `git rev-parse origin/<default>` against the ledger's `lastSyncedDefaultSha` |
+| Milestone REST `closed_issues` moves | That milestone's recorded closed-issue verdict (Issue #1488) | `decideMilestoneQuery` in `milestone_activity_gate.ts` |
 | Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
 | Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
 | Worker label change to timeline (planned) | Timeline entry for the affected issue | `IssueCache.invalidate(repo, "${number}#timeline")` (future) |
@@ -296,9 +307,12 @@ closed idle-task wrapper on each of the next three pool entries while
 thirteen open wrappers in the same repo went untouched. Two defences now
 apply, both driven from the single `gh` chokepoint (`spawnGh`):
 
-- **Cache invalidation** — a successful `gh issue close`/`gh issue reopen`
-  drops the repo's close-sensitive entries (the table row above), so the next
-  scan re-reads the list from GitHub.
+- **Cache invalidation** — a successful `gh issue close`/`gh issue reopen`,
+  or its REST form `gh api -X PATCH repos/o/r/issues/N -f state=closed|open`
+  (the idle-task wrapper closure's shape since Issue #1753, read by the same
+  `classifyIssueLifecycle` the agent-side guard uses), drops the repo's
+  close-sensitive entries (the table row above), so the next scan re-reads
+  the list from GitHub.
 - **A per-run registry** — `ProcessedIssueRegistry`
   (`worker/deno/lib/processed_issue_registry.ts`) records the close, and every
   terminal outcome of the scan loop (success, skip, failure) besides.

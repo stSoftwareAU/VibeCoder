@@ -102,7 +102,15 @@ export interface ClaimRoutedIssueDeps {
  * code for a `claimIssue` call that failed outright; every other value is a
  * {@link ClaimFailureReason} passed through unchanged.
  */
-export type RouteClaimRefusal = ClaimFailureReason | "claim_error";
+export type RouteClaimRefusal =
+  | ClaimFailureReason
+  | "claim_error"
+  /**
+   * The route declined to claim because the cycle deadline would bound the
+   * run below the least budget worth starting (Issue #1757). Nothing on
+   * GitHub was touched; the next cycle draws the issue afresh.
+   */
+  | "insufficient_runway";
 
 /** Outcome of a routed claim attempt. */
 export type RoutedIssueClaim =
@@ -156,6 +164,10 @@ const UNAVAILABLE: ReadonlySet<RouteClaimRefusal> = new Set<
   "fleet_pr_exists",
   "blocking_label",
   "already_closed",
+  // Issue #1757: declined by this host on purpose, for this cycle only — the
+  // fleet working as designed, not a fault. A skip, so the failure counters
+  // and the host health record never see a run that was never started.
+  "insufficient_runway",
 ]);
 
 /**
@@ -184,6 +196,8 @@ function describeRefusal(reason: RouteClaimRefusal): string {
       return "an open fleet PR already targets this work stream";
     case "heartbeat_active":
       return "another run's heartbeat is still beating on the issue";
+    case "insufficient_runway":
+      return "the cycle deadline leaves too little runway for a scan";
     default:
       return `the claim was refused (${reason})`;
   }

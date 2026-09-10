@@ -18,8 +18,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import { guardGatedHead as defaultGuardGatedHead } from "./gated_head_guard.ts";
+import { defaultLogger } from "./logger.ts";
 import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
 import { getCiStartStatus } from "./pr_ci_started.ts";
 import { nudgeCi, type NudgeOutcome } from "./pr_ci_nudge.ts";
@@ -90,6 +92,13 @@ export interface FindPrsNeedingCiNudgeOptions {
   nowSeconds?: () => number;
   /** Optional logger. */
   log?: (message: string) => void;
+  /**
+   * Worker logger for the gated-head stand-down (Issue #1762). Production
+   * passes its own; tests may omit it.
+   */
+  logger?: Logger;
+  /** Gated-head guard (Issue #1762). Injected by tests; defaults to the real one. */
+  guardGatedHeadFn?: typeof defaultGuardGatedHead;
 }
 
 /** Minimal subset of `gh pr list` fields used by the scanner. */
@@ -254,6 +263,13 @@ export interface ProcessCiNudgeCandidateDeps {
   dedupAuthors?: AlertDedupAuthorOptions;
   /** Optional logger. */
   log?: (message: string) => void;
+  /**
+   * Worker logger for the gated-head stand-down (Issue #1762). Production
+   * passes its own; tests may omit it.
+   */
+  logger?: Logger;
+  /** Gated-head guard (Issue #1762). Injected by tests; defaults to the real one. */
+  guardGatedHeadFn?: typeof defaultGuardGatedHead;
 }
 
 /** Outcome of {@link processCiNudgeCandidate}. */
@@ -276,6 +292,41 @@ export async function processCiNudgeCandidate(
   deps: ProcessCiNudgeCandidateDeps,
 ): Promise<Result<ProcessCiNudgeOutcome, Error>> {
   const { ghCommandFn, gitCommandFn, log } = deps;
+
+  // Issue #1762: the `none` path checks the head out, adds an empty commit
+  // and pushes to it directly. A milestone head under a ruleset that
+  // refuses direct pushes (Issue #1679) declines that push with GH013 every
+  // cycle the PR stays a candidate, and the nudge never lands. Ask the same
+  // guard the CI-fix, spelling and merge-conflict passes ask, before any
+  // checkout: a gated head is left for the milestone completion path, with
+  // the guard's one comment per branch and one log line per run. The
+  // `queued` path only re-runs a workflow and pushes nothing, so it is not
+  // gated.
+  if (candidate.status === "none") {
+    const guard = deps.guardGatedHeadFn ?? defaultGuardGatedHead;
+    const pushGate = await guard({
+      repo: candidate.repo,
+      prNumber: candidate.prNumber,
+      branchName: candidate.headBranch,
+      pass: "CI nudge",
+      logger: deps.logger ?? defaultLogger,
+      runGhCommand: ghCommandFn,
+    });
+    if (pushGate.gated) {
+      return {
+        ok: true,
+        value: {
+          nudge: {
+            action: "noop",
+            description: `head '${candidate.headBranch}' refuses direct ` +
+              `pushes — ${pushGate.detail}; left for the milestone ` +
+              `completion path (Issue #1762)`,
+          },
+          commentPosted: false,
+        },
+      };
+    }
+  }
 
   // Dedup: check whether the marker comment already exists on this PR.
   // Best-effort — on lookup failure we proceed without posting to avoid

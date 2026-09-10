@@ -252,3 +252,61 @@ Deno.test("resolveMilestoneEscalationTarget - a milestone with no open children 
   assertEquals(target, { kind: "none" });
   assertEquals(createCalls(calls).length, 0);
 });
+
+Deno.test(
+  "resolveMilestoneEscalationTarget - a destination that already carries the escalation is not reopened (Issue #1786)",
+  async () => {
+    const { gh, calls } = ghStub((key) =>
+      key.startsWith("issue view") ? "CLOSED" : ""
+    );
+
+    const target = await resolveMilestoneEscalationTarget({
+      repo: REPO,
+      milestone: { title: "#1730 Resolve merge conflicts", number: 7 },
+      ghCommandFn: gh,
+      log: () => {},
+      alreadyEscalated: () => Promise.resolve(true),
+    });
+
+    assertEquals(target, { kind: "already-escalated", issue: 1730 });
+    assertEquals(
+      calls.filter((c) => c[1] === "reopen"),
+      [],
+      "a human's close is not undone to then post nothing",
+    );
+    assertEquals(
+      calls.filter((c) => c.includes("--add-label")),
+      [],
+      "and no label is added either",
+    );
+    assertEquals(createCalls(calls).length, 0);
+  },
+);
+
+Deno.test(
+  "resolveMilestoneEscalationTarget - an escalation not yet on the destination still reopens it (Issue #1786)",
+  async () => {
+    const asked: number[] = [];
+    const { gh, calls } = ghStub((key) =>
+      key.startsWith("issue view") ? "CLOSED" : ""
+    );
+
+    const target = await resolveMilestoneEscalationTarget({
+      repo: REPO,
+      milestone: { title: "#1730 Resolve merge conflicts", number: 7 },
+      ghCommandFn: gh,
+      log: () => {},
+      alreadyEscalated: (issueNumber) => {
+        asked.push(issueNumber);
+        return Promise.resolve(false);
+      },
+    });
+
+    assertEquals(target, { kind: "parent", issue: 1730, reopened: true });
+    assertEquals(asked, [1730], "the destination is what was checked");
+    assertEquals(
+      calls.filter((c) => c[1] === "reopen").map((c) => c[2]),
+      ["1730"],
+    );
+  },
+);

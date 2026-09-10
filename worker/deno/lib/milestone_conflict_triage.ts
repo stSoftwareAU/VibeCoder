@@ -179,6 +179,14 @@ export class MilestoneConflictEscalation extends Error {
      * own decides nothing.
      */
     readonly gateFailure?: string,
+    /**
+     * The milestone branch's tip at the time of the merge (Issue #1786).
+     * With the conflicted paths it identifies the conflict itself, so an
+     * escalation is deduped on what actually collided rather than on the
+     * default branch's tip — which moves every few minutes on a busy
+     * repository and made the same analysis a comment per cycle.
+     */
+    readonly milestoneSha?: string,
   ) {
     super(message);
   }

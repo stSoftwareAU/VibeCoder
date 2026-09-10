@@ -2097,6 +2097,12 @@ claim at two points, with one decision function:
   the #174/#218 paths that know how to handle it.
 - **`pre-pr`** — immediately before `gh pr create`. The issue state, plus the PR
   that references the issue.
+- **On a diverged HEAD** (Issue #1793) — when the #4286 reconcile guard finds
+  the agent committed on a branch of its own, completion asks the `pre-write`
+  question before calling that a failure. A closed issue means the work landed
+  elsewhere — GRQ-AutoTrader#127 was resolved through the agent's own PR into
+  the milestone branch — and the run takes the stale-claim exit, naming the
+  agent's branch; an open issue keeps the #4286 failure.
 
 Two rules, most decisive first: **the issue closed** during the cycle; and **a
 merged PR already carries this run's branch**, decided by `pr_run_provenance.ts`
@@ -2106,7 +2112,10 @@ that it does not complete this run.
 
 The third hazard #344 names, "do not open a competing PR", is deliberately
 **not** a rule here: `decideCompletionPr` already recovers an open PR that
-references the issue rather than creating a second one. Repeating it as a
+references the issue rather than creating a second one — provided that PR's
+head is this run's branch, or its head could not be read, or the branch has no
+commits of its own to represent (Issue #1799: an open side PR on another head
+no longer swallows a branch with work on it). Repeating it as a
 stale-claim abort would be both the duplicated notion this module avoids and the
 harsher of the two, because `superseding_pr.ts` fails safe to "open" when a PR's
 state cannot be read — an unreadable `gh pr view` would abandon a finished run.
@@ -3247,6 +3256,32 @@ The report is deduped on the default-branch commit that conflicted
 once while a conflict against a **new** commit is reported again. Only a report
 that actually went out is remembered — an escalation that failed to post is
 retried next cycle rather than marked done.
+
+The **escalation** — the abort branch above, where no automatic rule can decide
+— is deduped on the conflict itself instead (Issue #1786). Keying it on the
+default branch's tip meant a busy repository looked like a new conflict every
+few minutes: `stSoftwareAU/VibeCoder#1653` collected four copies of one analysis
+in 36 minutes while its milestone PR stayed conflicting.
+[`milestone_conflict_dedup.ts`](../worker/deno/lib/milestone_conflict_dedup.ts)
+keys it on the milestone branch's tip plus the set of conflicted paths, and
+writes that key into the comment as a
+`<!-- vibe-milestone-sync-conflict key="…" -->` marker so a **second worker
+host** — which has its own streak file and would otherwise repeat the report —
+sees that it has already gone out. The marker is checked on whichever existing
+issue the escalation resolves to above, not on a tracking issue the milestone
+title may not name. A comment thread that cannot be read fails
+open: the escalation is posted and the failure is named in the log, because
+losing a "only a human can settle this" report is worse than a duplicate.
+
+```mermaid
+flowchart LR
+    A[Unresolvable conflict] --> B["key = milestone tip + conflicted paths"]
+    B --> C{Streak file already<br/>reported this key?}
+    C -- yes --> D[Post nothing]
+    C -- no --> E{Issue already carries<br/>the key's marker?}
+    E -- yes --> D
+    E -- no --> F[Comment the analysis,<br/>record the key]
+```
 
 #### 🚦 The merged tree is type-checked before it is pushed
 

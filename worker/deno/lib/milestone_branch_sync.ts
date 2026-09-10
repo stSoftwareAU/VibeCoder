@@ -38,6 +38,11 @@ import {
   isConflictEscalation,
 } from "./milestone_conflict_triage.ts";
 import {
+  conflictEscalationKey,
+  conflictEscalationMarker,
+  hasConflictEscalationComment,
+} from "./milestone_conflict_dedup.ts";
+import {
   DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
   DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
 } from "./merge_conflict_drain.ts";
@@ -1117,12 +1122,19 @@ export async function syncMilestoneBranches(
             // A gate refusal, not a conflict (Issue #1778): the resolution
             // was made and the verification refused it, so it keeps the
             // escalation Issue #1559 gave it — what the gate said AND both
-            // sides prepared — reported once per conflicting default-branch
-            // commit, because a retry does not clear a refused gate.
-            // Its own dedup key, not `gateEscalated`: sharing that flag
-            // would let an Issue #974 refusal suppress this report, and the
-            // reverse — two different refusals, each needing to be seen once.
-            const gateKey = conflictError.defaultSha || UNRESOLVED_SHA;
+            // sides prepared. Keyed on the conflict itself (Issue #1786),
+            // not the default branch's tip: that tip moves every few
+            // minutes and would re-report the same refusal every cycle.
+            const gateKey = conflictEscalationKey({
+              milestoneBranch: milestone.milestoneBranch,
+              ...(conflictError.milestoneSha
+                ? { milestoneSha: conflictError.milestoneSha }
+                : {}),
+              files: [
+                ...conflictError.analyses.map((a) => a.path),
+                ...conflictError.resolved.map((d) => d.path),
+              ],
+            });
             if (entry && entry.analysisEscalatedSha !== gateKey) {
               const escalated = await escalateConflictAnalysis(
                 repo,
@@ -1130,6 +1142,7 @@ export async function syncMilestoneBranches(
                 conflictError.analyses,
                 conflictError.resolved,
                 conflictError.gateFailure,
+                gateKey,
                 ghCommandFn,
                 log,
               );
@@ -1291,6 +1304,8 @@ async function escalateConflictAnalysis(
   resolved: FileDecision[],
   /** What the verification said — the half a reader cannot reconstruct. */
   gateFailure: string,
+  /** The conflict's own identity, carried as a marker for cross-host dedup. */
+  conflictKey: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
 ): Promise<boolean> {
@@ -1304,7 +1319,8 @@ async function escalateConflictAnalysis(
     log,
   );
 
-  const body = `${
+  const marker = conflictEscalationMarker(conflictKey);
+  const body = `${marker}\n${
     buildConflictAnalysisComment({
       repo,
       milestoneBranch: milestone.milestoneBranch,
@@ -1318,6 +1334,10 @@ async function escalateConflictAnalysis(
   const what = `a milestone sync resolution the verification refused for ` +
     `'${milestone.milestoneBranch}' (Issues #1559, #1778)`;
 
+  // Issue #1786: each host keeps its own streak file, so the local record
+  // alone cannot stop a second host reporting a conflict the first already
+  // reported — the marker on the issue is the shared record. It is checked
+  // against whichever existing issue the escalation lands on (Issue #1769).
   return await escalateToExistingIssue(
     repo,
     milestone,
@@ -1325,6 +1345,7 @@ async function escalateConflictAnalysis(
     what,
     ghCommandFn,
     log,
+    marker,
   );
 }
 
@@ -1390,6 +1411,11 @@ async function escalateMergeGateFailure(
  * that could not be posted counts as NOT escalated, so it is retried.
  *
  * @param what - Names the escalation in the log lines.
+ * @param dedupMarker - Hidden marker identifying this escalation, when the
+ *   caller has one; a destination that already carries it is not commented on
+ *   again, and is not reopened either (Issue #1786). Another host's streak
+ *   file is invisible here, so the marker on the issue is the shared record.
+ *   Fails open — an unreadable thread is reported again.
  * @returns True when the escalation reached a human, or had nowhere to go.
  */
 async function escalateToExistingIssue(
@@ -1399,6 +1425,7 @@ async function escalateToExistingIssue(
   what: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
+  dedupMarker?: string,
 ): Promise<boolean> {
   const target: MilestoneEscalationTarget =
     await resolveMilestoneEscalationTarget({
@@ -1409,7 +1436,27 @@ async function escalateToExistingIssue(
       },
       ghCommandFn,
       log,
+      ...(dedupMarker !== undefined
+        ? {
+          alreadyEscalated: (issueNumber: number) =>
+            hasConflictEscalationComment({
+              repo,
+              issueNumber,
+              marker: dedupMarker,
+              ghCommandFn,
+              log,
+            }),
+        }
+        : {}),
     });
+
+  if (target.kind === "already-escalated") {
+    log(
+      `Skipped escalating ${what} in ${repo}: issue #${target.issue} already ` +
+        `carries this conflict's analysis.`,
+    );
+    return true;
+  }
 
   if (target.kind === "none") {
     log(

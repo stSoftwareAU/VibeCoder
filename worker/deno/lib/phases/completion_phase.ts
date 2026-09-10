@@ -12,6 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { HeadDivergedError } from "../git_branch.ts";
 import type {
   IssueContext,
   PhaseResult,
@@ -111,16 +112,23 @@ import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
  */
 const WORK_ON_STATS_PHASE = "issue";
 
+/** What {@link lookupPrState} could read about an existing PR. */
+interface LinkedPrLookup {
+  state: string | null;
+  /** The PR's head branch (Issue #1799), or null when it could not be read. */
+  headRefName: string | null;
+}
+
 /**
- * Look up the state of an existing PR. Returns null when the state cannot be
- * determined (e.g. gh API error) — the caller should treat that as "unknown"
- * and preserve existing non-merged behaviour.
+ * Look up the state and head of an existing PR. Returns nulls when they
+ * cannot be determined (e.g. gh API error) — the caller should treat that
+ * as "unknown" and preserve existing non-merged behaviour.
  */
 async function lookupPrState(
   repo: string,
   prNumber: number,
   deps: WorkerDeps,
-): Promise<string | null> {
+): Promise<LinkedPrLookup | null> {
   if (prNumber <= 0) return null;
   try {
     const output = await deps.github.runGhCommand([
@@ -130,10 +138,19 @@ async function lookupPrState(
       "--repo",
       repo,
       "--json",
-      "state",
+      "state,headRefName",
     ]);
-    const parsed = JSON.parse(output) as { state?: string };
-    return parsed.state ?? null;
+    const parsed = JSON.parse(output) as {
+      state?: string;
+      headRefName?: string;
+    };
+    return {
+      state: parsed.state ?? null,
+      headRefName: typeof parsed.headRefName === "string" &&
+          parsed.headRefName.length > 0
+        ? parsed.headRefName
+        : null,
+    };
   } catch (err) {
     deps.logger.warn("Recovery: PR state lookup errored (non-fatal)", {
       repo,
@@ -394,7 +411,7 @@ export async function recoverAndFinaliseExistingPr(
 
   // Issue #1559: Check PR state up front so we can suppress the redundant
   // "PR created" link comment when the PR is already merged.
-  const prState = await lookupPrState(repo, prNumber, deps);
+  const prState = (await lookupPrState(repo, prNumber, deps))?.state ?? null;
   const prAlreadyMerged = prState === "MERGED";
 
   // Post-recovery finalisation (best-effort)
@@ -804,6 +821,47 @@ async function completionBody(
     cwd: state.repoPath,
   });
   if (!reconcile.ok) {
+    // Issue #1793: a divergence on an issue that has since closed is not a
+    // stranded branch, it is work that landed elsewhere. GRQ-AutoTrader#127
+    // — a milestone-sync conflict a human routed to the worker — could only
+    // be resolved by a PR into the milestone branch, so the agent opened
+    // and merged one from a branch of its own and closed the issue; this
+    // guard then failed the run, and a health failure was recorded for a
+    // run that succeeded. Ask the issue before calling the divergence a
+    // failure: closed means the #344 stale-claim exit, which is the system
+    // working — no failure label, no run-failure issue, no streak.
+    if (reconcile.error instanceof HeadDivergedError) {
+      const freshness = await checkClaimFreshness({
+        repo,
+        issueNumber,
+        runBranch: state.branchName,
+        mode: "pre-write",
+        deps: {
+          findExistingPrForIssue: deps.pr.findExistingPrForIssue,
+          runGhCommand: deps.github.runGhCommand,
+          warn: (m: string) => logger.warn(m),
+        },
+      });
+      if (freshness.kind === "stale") {
+        logger.warn(
+          `HEAD is on '${reconcile.error.head}', diverged from ` +
+            `'${state.branchName}', and the issue is closed — the work ` +
+            `landed elsewhere; not a failure (Issue #1793)`,
+          { repo, issueNumber, head: reconcile.error.head },
+        );
+        return await abortStaleClaim(
+          {
+            ...freshness,
+            detail: `${freshness.detail}; the agent's commits are on ` +
+              `'${reconcile.error.head}', which has diverged from this ` +
+              `run's branch (Issue #1793)`,
+          },
+          ctx,
+          state,
+          deps,
+        );
+      }
+    }
     return {
       status: "failure",
       reason:
@@ -1485,13 +1543,16 @@ async function completionBody(
     const url = prForIssueResult.value;
     const numMatch = url.match(/\/pull\/(\d+)/);
     const num = numMatch ? parseInt(numMatch[1]!, 10) : 0;
-    const rawState = (await lookupPrState(repo, num, deps))?.toUpperCase();
+    const looked = await lookupPrState(repo, num, deps);
+    const rawState = looked?.state?.toUpperCase();
     // An unreadable state is treated as OPEN: that is the pre-#174
     // behaviour (recover it), and the close is guarded separately by
     // provenance, so a `gh` hiccup cannot turn into a lost branch.
     prForIssue = {
       url,
       state: rawState === "MERGED" || rawState === "CLOSED" ? rawState : "OPEN",
+      // Issue #1799: the head decides whether an open linked PR is ours.
+      headRefName: looked?.headRefName ?? null,
     };
   }
 
@@ -1499,6 +1560,7 @@ async function completionBody(
     openPrForBranch: openPrForBranch.ok ? openPrForBranch.value : null,
     branchCommitsAhead,
     prForIssue,
+    runBranch: state.branchName,
   });
 
   if (linkDecision.kind === "recover") {

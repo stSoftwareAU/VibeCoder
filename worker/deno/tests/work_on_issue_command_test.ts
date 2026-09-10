@@ -661,12 +661,15 @@ Deno.test("runWorkOnIssueCommand - idle-task issue is routed to the template run
   // The standard orchestrator was NOT invoked.
   assertEquals(runOrchestratorCalled, false);
 
-  // The issue was closed with the runner summary.
-  assertEquals(ghCalls.length, 1);
-  assertEquals(ghCalls[0]?.[0], "issue");
-  assertEquals(ghCalls[0]?.[1], "close");
-  assertEquals(ghCalls[0]?.[2], "7");
-  assertEquals(ghCalls[0]?.includes("security-scan complete — filed 2"), true);
+  // The issue was closed with the runner summary: a REST comment carrying
+  // the summary, then a REST close (Issue #1753).
+  assertEquals(ghCalls.length, 2);
+  assertEquals(ghCalls[0]?.[2], "POST");
+  assertEquals(ghCalls[0]?.[3], "repos/org/repo/issues/7/comments");
+  assertEquals(ghCalls[0]?.[5], "body=security-scan complete — filed 2");
+  assertEquals(ghCalls[1]?.[2], "PATCH");
+  assertEquals(ghCalls[1]?.[3], "repos/org/repo/issues/7");
+  assertEquals(ghCalls[1]?.[5], "state=closed");
 
   // The CommandResult mirrors the runner outcome.
   assertEquals(result.success, true);
@@ -754,10 +757,11 @@ Deno.test("runWorkOnIssueCommand - idle-task failure surfaces summary, comments 
   assertEquals(result.data?.phase, "idle_task");
   assertEquals(result.data?.reason, "idle-task body could not be parsed");
   assertEquals(ghCalls.length, 1);
-  assertEquals(ghCalls[0]?.[1], "comment");
-  assertEquals(ghCalls[0]?.includes("close"), false);
+  assertEquals(ghCalls[0]?.[2], "POST");
+  assertEquals(ghCalls[0]?.[3], "repos/org/repo/issues/8/comments");
+  assertEquals(ghCalls[0]?.includes("state=closed"), false);
   assertEquals(
-    String(ghCalls[0]?.[6]).includes("idle-task body could not be parsed"),
+    String(ghCalls[0]?.[5]).includes("idle-task body could not be parsed"),
     true,
   );
 });
