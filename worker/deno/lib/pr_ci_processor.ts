@@ -71,6 +71,7 @@ import {
 } from "./auto_fix_attempt_tracker.ts";
 import {
   buildCiNoChangesResponse,
+  formatClassifierTrailer,
   PR_ESCALATION_NEXT_STEP,
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
@@ -1343,6 +1344,15 @@ async function _processCiWithHeartbeat(
       claudeResult.value.output,
     );
     const response = buildCiNoChangesResponse(checkName, classification);
+    // Issue #1876: the CI-fix prompt promises the agent's `.pr_response_message`
+    // is posted verbatim, and on this path it was being discarded for the stock
+    // text — a reviewer read "could not determine a fix" where the agent had
+    // explained the failure sits in the base branch. Prefer the agent's own
+    // words, keeping the classifier trailer so the categorisation is still
+    // visible; fall back to the stock body only when it wrote nothing.
+    const verbatimBody = customMessage === undefined
+      ? undefined
+      : `${customMessage}${formatClassifierTrailer(classification)}`;
     if (response.addNeedsHuman) {
       // Issue #2211: route via the shared escalateToHuman helper so the
       // `needs-human` label and the explanation comment are applied
@@ -1357,7 +1367,11 @@ async function _processCiWithHeartbeat(
         target: { kind: "pr", number: prNumber },
         needsHumanLabel: "needs-human",
         heading: "CI failure needs human attention",
-        reason: response.reason ?? response.body,
+        reason: verbatimBody ?? response.reason ?? response.body,
+        // The nextStep is the worker's own instruction to the reviewer, not
+        // the agent's report — the history-rewrite arm's "rotate the
+        // credential" guidance must survive an agent message replacing the
+        // reason.
         nextStep: response.nextStep ?? PR_ESCALATION_NEXT_STEP,
         ensureLabelColour: "d4c5f9",
         ensureLabelDescription:
@@ -1366,7 +1380,7 @@ async function _processCiWithHeartbeat(
         logger,
       });
     } else {
-      await replyToComment(repo, prNumber, response.body, deps);
+      await replyToComment(repo, prNumber, verbatimBody ?? response.body, deps);
     }
   }
 
