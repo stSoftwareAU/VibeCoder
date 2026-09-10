@@ -4511,6 +4511,11 @@ async function syncMilestoneBranchesFn(
   const { syncMilestoneBranchWithDefault } = await import("./git_pull.ts");
   const { ensureMilestoneBranchExists } = await import("./git_branch.ts");
   const { ensureDefaultBranchCurrent } = await import("./git_push.ts");
+  // Issue #1777: the sync climbs the same ladder the PR pass does, so it
+  // needs the same agent — bound here because only this layer knows the
+  // repository's instructions and the run's timeouts.
+  const { runMergeConflictAgent } = await import("./merge_conflict_agent.ts");
+  const { runClaudeWithRetry } = await import("./claude_runner.ts");
 
   const workDir = config.workDir || env("HOME") || ".";
 
@@ -4555,6 +4560,33 @@ async function syncMilestoneBranchesFn(
         // Issue #589: named so the sync can raise a PR when a repository
         // rule refuses the direct push.
         repo,
+        // The default gates: the repository's own type check, and the
+        // stricter resolution gate derived from it.
+        undefined,
+        undefined,
+        // Issue #1777: the last rung before a human. It runs in the very
+        // clone the merge conflicted in, against a branch target.
+        (request) =>
+          runMergeConflictAgent({
+            repo,
+            target: { kind: "branch", intoBranch: request.milestoneBranch },
+            baseBranch: request.defaultBranch,
+            conflictedFiles: request.conflictedFiles,
+            workDir: request.workDir,
+            qualityInstructions: buildQualityInstructions(
+              config.repoConfig,
+              repo,
+            ),
+            customInstructions: getCustomInstructions(config.repoConfig, repo),
+            timeouts: {
+              claudeTimeout: config.claudeTimeout,
+              claudeNoOutputTimeout: config.claudeNoOutputTimeout,
+              maxRateLimitRetries: config.maxRateLimitRetries,
+            },
+            logger,
+            runAgent: runClaudeWithRetry,
+          }),
+        logger,
       );
     },
     localCloneExistsFn,
