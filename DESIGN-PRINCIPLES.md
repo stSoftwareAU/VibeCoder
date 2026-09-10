@@ -427,6 +427,18 @@ each, merging and de-duplicating by PR number. Trusted humans
 (`allowed_authors`) are deliberately **not** in that set — see the two-resolver
 split below.
 
+The author set is not the whole scan set. `listActionablePrs()` unions **three**
+sources and de-duplicates by PR number: the fleet-authored maintenance listing,
+the human PRs whose author explicitly invited the worker
+(`listInvitedHumanPrs`), and every **bot-authored** PR whose head branch lives
+in the target repository (`listBotPrs`). The third exists because a
+`dependabot[bot]` or `renovate[bot]` bump belongs to neither author list, so its
+red quality check sat unattended; fork-headed bot PRs stay out, because the
+worker cannot push a fix to a fork it does not own. There is no per-repo opt-out
+key — `skip_auto_merge` still governs the merge step alone. The operator-facing
+statement is
+[`docs/HUMAN-PR-POLICY.md`](docs/HUMAN-PR-POLICY.md) → Bot-authored PRs.
+
 #### One author set, checked every iteration
 
 `fleet_authors.ts` is the **single source of truth** for "the PRs the fleet owns
