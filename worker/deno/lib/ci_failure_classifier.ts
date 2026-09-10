@@ -22,7 +22,18 @@
  *   3. code-fix-required  (lint/check tool name match or actionable code-fix
  *                          patterns — semgrep, eslint, ReDoS, type errors, etc.).
  *   4. timing             (often a downstream symptom of #1 or a slow test).
- *   5. unknown            (fallback — caller should attempt a code fix).
+ *                          A timing statement only — "timed out", a cancelled
+ *                          job, or a timeout named as the failure itself. A
+ *                          BARE "timeout" mention no longer qualifies: CI logs
+ *                          routinely echo `timeout-minutes:` or a `timeout 900
+ *                          …` wrapper, and Issue #1882 saw an ordinary exit-1
+ *                          script failure steered to a timing remedy by one.
+ *   5. code-fix-required  (explicit non-zero exit — the failing step's own
+ *                          verdict. Ranked below a genuine timing statement,
+ *                          because a step that timed out also exits non-zero,
+ *                          but above the fallback: an incidental "timeout"
+ *                          mention must never outrank it — Issue #1882).
+ *   6. unknown            (fallback — caller should attempt a code fix).
  */
 
 /** Top-level routing categories. */
@@ -141,15 +152,43 @@ const CODE_FIX_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
   /(^|\s)warning:/i,
 ];
 
+/**
+ * Phrases that state a timing failure outright.
+ *
+ * The bare substring "timeout" is deliberately absent (Issue #1882): a job log
+ * echoes `timeout-minutes: 20` for every step that sets one, and a script may
+ * wrap a command in `timeout 900 …`, neither of which says the step ran out of
+ * time. Those incidental mentions used to outrank the failing step's own
+ * verdict.
+ */
 const TIMING_TEXT_PATTERNS: ReadonlyArray<string> = [
   "timed out",
-  "timeout",
   "exceeded the maximum execution time",
   "the job was cancelled",
   "operation was canceled",
-  "test timed out",
-  "step timed out",
   "deadline exceeded",
+];
+
+/**
+ * "timeout" counts as a timing signal only when the surrounding words on the
+ * same line make it the failure being reported — "timeout exceeded", "timeout
+ * after 30s", "failed: timeout while waiting". Both patterns are bounded and
+ * match literal alternatives only, so neither can backtrack catastrophically.
+ */
+const TIMING_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
+  /\btimeouts?\b[^\n]{0,60}?\b(exceeded|reached|expired|elapsed|after|error|waiting)\b/i,
+  /\b(error|failed|failure|aborted|killed|cancelled|canceled)\b[^\n]{0,20}?\btimeouts?\b/i,
+];
+
+/**
+ * An explicit non-zero exit is the failing step's own verdict — "Process
+ * completed with exit code 1", "exited with code 2", "exit status 1". Checked
+ * after the timing patterns (a step that times out also exits non-zero) but
+ * ahead of the unknown fallback, so an ordinary script failure routes to a
+ * code fix instead of being read as timing or shrugged off (Issue #1882).
+ */
+const EXPLICIT_EXIT_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bexit(?:ed)?\s*(?:with\s*)?(?:code|status)\s*[:=]?\s*[1-9]\d*/i,
 ];
 
 const INFRA_TEXT_PATTERNS: ReadonlyArray<string> = [
@@ -269,11 +308,37 @@ export function classifyCiFailure(
   const matchedTiming = TIMING_TEXT_PATTERNS.filter((p) =>
     haystack.includes(p)
   );
-  if (matchedTiming.length > 0) {
+  const matchedTimingRegex = TIMING_REGEX_PATTERNS.filter((re) =>
+    re.test(haystack)
+  );
+  if (matchedTiming.length > 0 || matchedTimingRegex.length > 0) {
     return {
       category: "timing",
-      reason: `timing failure: ${matchedTiming[0]}`,
-      signals: [`check:${lowerName}`, ...matchedTiming.map((m) => `text:${m}`)],
+      reason: `timing failure: ${
+        matchedTiming[0] ?? "a timeout is named as the failure"
+      }`,
+      signals: [
+        `check:${lowerName}`,
+        ...matchedTiming.map((m) => `text:${m}`),
+        ...matchedTimingRegex.map((re) => `regex:${re.source}`),
+      ],
+    };
+  }
+
+  // ---- Explicit non-zero exit (Issue #1882) ----
+  // No timing or infrastructure signal, but the step reported its own
+  // non-zero exit: an ordinary failure the working tree can fix.
+  const matchedExit = EXPLICIT_EXIT_REGEX_PATTERNS.filter((re) =>
+    re.test(haystack)
+  );
+  if (matchedExit.length > 0) {
+    return {
+      category: "code-fix-required",
+      reason: "the failing step exited non-zero with no timing signal",
+      signals: [
+        `check:${lowerName}`,
+        ...matchedExit.map((re) => `regex:${re.source}`),
+      ],
     };
   }
 
