@@ -79,6 +79,27 @@ export interface OpenPR {
 export interface OpenPRWithBody extends OpenPR {
   body: string;
   url: string;
+  /**
+   * The listing author's login, when `gh` reported one (Issue #1846).
+   *
+   * Named apart from {@link OpenPR.author} deliberately: that field carries
+   * the *fleet login the PR was fetched under* (Issue #4024) and feeds
+   * `getBlockingPRForIssue`, so overloading it with the listing's own author
+   * would silently change which PRs block issue pickup. Unset means the
+   * author could not be established — a consumer that acts on authorship
+   * must treat that as "unknown" and refuse to act.
+   */
+  authorLogin?: string;
+  /** Head commit SHA, when the query asked for it (Issue #1846). */
+  headRefOid?: string;
+  /**
+   * The PR's armed auto-merge request, when the query asked for it
+   * (Issue #1846). `null` means "asked for, not armed"; unset means the
+   * query did not ask.
+   */
+  autoMergeRequest?: { mergeMethod: string } | null;
+  /** `MERGEABLE` / `CONFLICTING` / `UNKNOWN`, when asked for (Issue #1846). */
+  mergeable?: string;
 }
 
 /**
@@ -773,6 +794,19 @@ export async function fetchOpenPRsForFleet(
 }
 
 /**
+ * `--json` fields the un-filtered open-PR listing requests (Issue #1846).
+ *
+ * One listing per repo per cycle serves every consumer, so the field set is
+ * the union of what they need: the branch/body fields the PR-link and
+ * branch-cleanup helpers read, plus the author and head-ownership fields
+ * the bot-PR lookup (`pr_bot_lookup.ts`) decides admission on. Exported so
+ * a test can assert the listing still carries them.
+ */
+export const OPEN_PR_LIST_FIELDS =
+  "number,title,baseRefName,headRefName,body,url,author," +
+  "isCrossRepository,headRefOid,autoMergeRequest,mergeable";
+
+/**
  * Fetch all open PRs for a repo, regardless of author (Issue #1787).
  *
  * Used by helpers that need to look up PRs by head branch or by issue
@@ -801,7 +835,7 @@ export async function fetchAllOpenPRs(
     "--state",
     "open",
     "--json",
-    "number,title,baseRefName,headRefName,body,url",
+    OPEN_PR_LIST_FIELDS,
     "--limit",
     String(limit),
   ]);
@@ -823,14 +857,34 @@ export async function fetchAllOpenPRs(
   for (const item of parsed) {
     if (!isRecord(item)) continue;
     if (typeof item.number !== "number") continue;
-    prs.push({
+    const pr: OpenPRWithBody = {
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
       baseRefName: typeof item.baseRefName === "string" ? item.baseRefName : "",
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
       body: typeof item.body === "string" ? item.body : "",
       url: typeof item.url === "string" ? item.url : "",
-    });
+    };
+    // Issue #1846: carried only when `gh` actually reported them, so an
+    // absent field stays "unknown" rather than becoming a false negative.
+    const author = isRecord(item.author) ? item.author.login : undefined;
+    if (typeof author === "string" && author.trim() !== "") {
+      pr.authorLogin = author.trim();
+    }
+    if (typeof item.isCrossRepository === "boolean") {
+      pr.isCrossRepository = item.isCrossRepository;
+    }
+    if (typeof item.headRefOid === "string") pr.headRefOid = item.headRefOid;
+    if (typeof item.mergeable === "string") pr.mergeable = item.mergeable;
+    if (item.autoMergeRequest === null) {
+      pr.autoMergeRequest = null;
+    } else if (isRecord(item.autoMergeRequest)) {
+      const method = item.autoMergeRequest.mergeMethod;
+      pr.autoMergeRequest = {
+        mergeMethod: typeof method === "string" ? method : "",
+      };
+    }
+    prs.push(pr);
   }
 
   if (cache) await cache.write(repo, cacheKey, prs);

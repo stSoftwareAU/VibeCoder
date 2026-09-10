@@ -2,7 +2,12 @@
  * Tests for issue_query.ts (Issue #910).
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type ClosedPR,
   createMilestoneBranchName,
@@ -14,6 +19,7 @@ import {
   fetchRecentlyClosedPRsForFleet,
   getBlockingPRForIssue,
   isBlockedByRecentlyClosedPR,
+  OPEN_PR_LIST_FIELDS,
   parseIssueListJson,
   parsePRListJson,
   wasLabelAddedByAllowedAuthor,
@@ -767,6 +773,83 @@ Deno.test("issue_query - fetchAllOpenPRs - rejects invalid JSON (Issue #4257)", 
   } finally {
     await cleanup();
   }
+});
+
+Deno.test("issue_query - fetchAllOpenPRs - requests the bot-lookup fields (Issue #1846)", async () => {
+  const calls: string[][] = [];
+  const mockGh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    return Promise.resolve("[]");
+  };
+  await fetchAllOpenPRs("o/r", undefined, 50, mockGh);
+
+  const list = calls[0]!;
+  const fields = list[list.indexOf("--json") + 1]!.split(",");
+  // The pre-#1846 fields the PR-link and branch-cleanup helpers read.
+  for (
+    const field of [
+      "number",
+      "title",
+      "baseRefName",
+      "headRefName",
+      "body",
+      "url",
+    ]
+  ) {
+    assert(fields.includes(field), `missing ${field}`);
+  }
+  // The fields the bot-PR lookup decides admission on.
+  for (
+    const field of [
+      "author",
+      "isCrossRepository",
+      "headRefOid",
+      "autoMergeRequest",
+      "mergeable",
+    ]
+  ) {
+    assert(fields.includes(field), `missing ${field}`);
+  }
+  assertEquals(fields.join(","), OPEN_PR_LIST_FIELDS);
+});
+
+Deno.test("issue_query - fetchAllOpenPRs - carries author and head ownership (Issue #1846)", async () => {
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        number: 9,
+        title: "chore(deps): bump std",
+        baseRefName: "main",
+        headRefName: "dependabot/deno/std",
+        body: "",
+        url: "",
+        author: { login: "dependabot[bot]" },
+        isCrossRepository: false,
+        headRefOid: "abc123",
+        autoMergeRequest: { mergeMethod: "SQUASH" },
+        mergeable: "MERGEABLE",
+      },
+      // A pre-#1846 shape: no author, no ownership — both stay unset so a
+      // consumer reads them as "unknown" rather than as a false negative.
+      {
+        number: 10,
+        title: "T",
+        baseRefName: "main",
+        headRefName: "h",
+        body: "",
+        url: "",
+      },
+    ]));
+
+  const prs = await fetchAllOpenPRs("o/r", undefined, 50, mockGh);
+  assertEquals(prs[0]?.authorLogin, "dependabot[bot]");
+  assertEquals(prs[0]?.isCrossRepository, false);
+  assertEquals(prs[0]?.headRefOid, "abc123");
+  assertEquals(prs[0]?.autoMergeRequest, { mergeMethod: "SQUASH" });
+  assertEquals(prs[0]?.mergeable, "MERGEABLE");
+  assertEquals(prs[1]?.authorLogin, undefined);
+  assertEquals(prs[1]?.isCrossRepository, undefined);
+  assertEquals(prs[1]?.autoMergeRequest, undefined);
 });
 
 Deno.test("issue_query - fetchAllOpenPRs - works without cache", async () => {
