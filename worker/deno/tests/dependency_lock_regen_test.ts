@@ -607,3 +607,72 @@ Deno.test("regenerateLockFiles - returns an empty list for no lock files", async
   assertEquals(outcomes, []);
   assertEquals(harness.calls.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Workspace locks (Issue #1903)
+// ---------------------------------------------------------------------------
+
+Deno.test("regenerateLockFile #1903 - a Cargo workspace lock defers when a member manifest is unresolved, with no command run", async () => {
+  // NEAT-AI-Ockham's shape: the root Cargo.toml merged, ockham/Cargo.toml
+  // left for the AI fallback. `cargo update --workspace` would read the
+  // member's conflict markers and fail with "key with no value".
+  const harness = makeHarness({
+    files: { "Cargo.lock": CONFLICTED_LOCK },
+    scripted: {
+      "cargo update": { writes: REGENERATED_LOCK },
+    },
+  });
+
+  const outcome = await regenerateLockFile("Cargo.lock", {
+    ...harness.options,
+    manifestOutcomes: new Map([
+      ["Cargo.toml", "resolved"],
+      ["ockham/Cargo.toml", "unresolved"],
+    ]),
+  });
+
+  assertEquals(outcome.kind, "unresolved");
+  assertStringIncludes(
+    unresolvedReason(outcome),
+    "workspace manifest ockham/Cargo.toml is unresolved",
+  );
+  assertEquals(regenCalls(harness.calls).length, 0, "no cargo run");
+});
+
+Deno.test("regenerateLockFile #1903 - a resolved workspace regenerates, and another directory's manifest does not block it", async () => {
+  const harness = makeHarness({
+    files: { "Cargo.lock": CONFLICTED_LOCK },
+    scripted: {
+      "cargo update": { writes: REGENERATED_LOCK },
+    },
+  });
+
+  const outcome = await regenerateLockFile("Cargo.lock", {
+    ...harness.options,
+    manifestOutcomes: new Map([
+      ["Cargo.toml", "resolved"],
+      ["ockham/Cargo.toml", "resolved"],
+      // A Deno manifest elsewhere is not this lock's business.
+      ["worker/deno/deno.json", "unresolved"],
+    ]),
+  });
+
+  assertEquals(outcome.kind, "regenerated");
+});
+
+Deno.test("regenerateLockFile #1903 - a non-workspace lock ignores unresolved manifests in other directories", async () => {
+  const harness = makeHarness({
+    files: { "worker/deno/deno.lock": CONFLICTED_LOCK },
+    scripted: { "deno install": { writes: REGENERATED_LOCK } },
+  });
+
+  const outcome = await regenerateLockFile("worker/deno/deno.lock", {
+    ...harness.options,
+    manifestOutcomes: new Map([
+      ["worker/deno/deno.json", "resolved"],
+      ["tools/deno.json", "unresolved"],
+    ]),
+  });
+
+  assertEquals(outcome.kind, "regenerated");
+});
