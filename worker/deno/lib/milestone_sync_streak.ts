@@ -121,6 +121,10 @@ export interface SyncStreakEntry {
   lastSyncedDefaultSha?: string;
   /** Lifetime count of conflict resolutions rolled back on this branch. */
   rollbacks?: number;
+  /** Child PR numbers a roll-back has already reverted (Issue #1781). */
+  revertedPrs?: number[];
+  /** Merge SHAs those roll-backs undid (Issue #1781). */
+  revertedShas?: string[];
 }
 
 /** Streak state keyed by "owner/repo|milestone-branch". */
@@ -253,6 +257,8 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const deferUntil = optionalText(entry.deferUntil);
   const syncedSha = optionalText(entry.lastSyncedDefaultSha);
   const lastAttempt = readLastAttempt(entry.lastAttempt);
+  const revertedPrs = readPositiveInts(entry.revertedPrs);
+  const revertedShas = readShaList(entry.revertedShas);
   return {
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
@@ -264,7 +270,26 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
     ...(deferUntil ? { deferUntil } : {}),
     ...(syncedSha ? { lastSyncedDefaultSha: syncedSha } : {}),
     ...(rollbacks !== undefined ? { rollbacks } : {}),
+    ...(revertedPrs !== undefined ? { revertedPrs } : {}),
+    ...(revertedShas !== undefined ? { revertedShas } : {}),
   };
+}
+
+/** A list of positive integers, or undefined when the field is absent. */
+function readPositiveInts(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const numbers = value.filter((n): n is number =>
+    typeof n === "number" && Number.isInteger(n) && n > 0
+  );
+  return numbers;
+}
+
+/** A list of hex SHAs, or undefined when the field is absent. */
+function readShaList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((s): s is string =>
+    typeof s === "string" && /^[0-9a-f]{7,40}$/i.test(s)
+  );
 }
 
 /**
