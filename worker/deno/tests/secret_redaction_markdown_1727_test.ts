@@ -45,8 +45,21 @@ const MERMAID_BODY = [
   "```",
 ].join("\n");
 
-/** A generic credential with no provider prefix, so only this rule catches it. */
-const SECRET = "aB3dE6gH9jK2mN5p";
+/**
+ * A generic credential with no provider prefix, so only this rule catches it.
+ *
+ * Assembled from halves at run time: written in one piece, this synthetic
+ * fixture is a high-entropy literal beside a `SECRET` identifier, which is
+ * exactly the shape `generic-api-key` flags. The value assembles identically.
+ */
+const SECRET = ["aB3dE6gH", "9jK2mN5p"].join("");
+
+/**
+ * A 40-hex ImgBB-shaped key, assembled from a short half at run time for the
+ * same reason as `SECRET` above. The value assembles identically.
+ */
+const IMGBB_SHAPED_KEY = ["01234567", "89abcdef"].join("").repeat(2) +
+  "01234567";
 
 /** An AWS secret access key: 40 characters, no prefix any signature rule sees. */
 const AWS_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
@@ -151,8 +164,8 @@ Deno.test("Issue #1727 - a fence must not smuggle a secret past an inline assign
       [`TOKEN: \`\`\`\`${AWS_SECRET}\`\`\`\``, AWS_SECRET],
       ["PASSWORD: ```Tr0ub4dor&3```", "Tr0ub4dor&3"],
       [
-        "VIBE_IMGBB_API_KEY: ```0123456789abcdef0123456789abcdef01234567```",
-        "0123456789abcdef0123456789abcdef01234567",
+        `VIBE_IMGBB_API_KEY: \`\`\`${IMGBB_SHAPED_KEY}\`\`\``,
+        IMGBB_SHAPED_KEY,
       ],
     ] as const
   ) {
