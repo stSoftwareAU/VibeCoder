@@ -133,8 +133,15 @@ Boundaries worth stating:
 
 - **Tiers 1, 2 and 2b are never gated.** The point is to redirect what is left
   of the quota, never to stop working. A run that has already **claimed** a
-  `low-priority` or `idle-task` issue finishes it, and the idle-task *filer* is
-  untouched.
+  `low-priority` or `idle-task` issue finishes it.
+- **The idle-task *filer* is deferred while the gate is engaged** (Issue
+  #1915). Nothing it files could be claimed before the window resets, and
+  deciding where to file walks every monitored repository — ~800 GraphQL
+  points a cycle on GRQ-25, out of the fleet's shared 5,000. The idle hooks
+  log one `reason=week_pace_engaged` line instead, and the fleet's
+  idle-starvation detector treats the deferral as by-design rather than as a
+  starved fleet. See
+  [The week-pace guard defers idle-task filing](../IDLE-TASK-FRAMEWORK.md#the-week-pace-guard-defers-idle-task-filing-issue-1915).
 - **A failed probe never refuses work.** `unknown` leaves the gate off — the
   same rule the five-hour selection gate follows.
 - **No hysteresis, and no reserve.** The verdict is re-read from the fresh
@@ -150,7 +157,9 @@ Boundaries worth stating:
 - **The idle-decision census models the refusal.** A tier the gate skipped is
   reported as `low_priority_suppressed`, not as claimable work the scan
   refused, so an engaged week cannot file a false idle-inversion issue about
-  the worker's own pace gate.
+  the worker's own pace gate. The idle-detect audit models it the same way
+  (Issue #1915), reporting `reason=pace_suppressed` rather than counting the
+  skipped tiers in its claimable total.
 - **Only a Claude run is paced.** A run on another coding agent is never
   gated, even if a stale `CLAUDE_CODE_OAUTH_TOKEN` is left in the shared
   environment, and a mid-run token switch discards the previous token's
