@@ -8,9 +8,7 @@ import {
 import {
   subscriptionStatusFromClaudeBudget,
 } from "../lib/claude_pool_budget.ts";
-import {
-  subscriptionStatusFromCodexSnapshot,
-} from "../lib/codex_quota.ts";
+import { subscriptionStatusFromCodexSnapshot } from "../lib/codex_quota.ts";
 import type { CodexBudgetSnapshot } from "../lib/codex_budget.ts";
 
 Deno.test("subscription status preserves multiple windows and resets", () => {
