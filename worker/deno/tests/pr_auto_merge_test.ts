@@ -15,7 +15,11 @@ import {
   isTransientError,
   logAutoMergeOutcome,
 } from "../lib/pr_auto_merge.ts";
-import { OPEN_CHILDREN_BLOCK_MARKER } from "../lib/milestone_children_gate.ts";
+import {
+  _resetMilestoneBehindMemo,
+  OPEN_CHILDREN_BLOCK_MARKER,
+} from "../lib/milestone_children_gate.ts";
+import type { LogContext, Logger } from "../types.ts";
 
 // --- classifyAutoMergeFailure ---
 
@@ -560,6 +564,233 @@ Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (
     calls.some((c) => c[0] === "pr" && c[1] === "edit"),
     "still retargeted",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1779: a child never merges into a milestone branch that is behind
+// the default branch
+// ---------------------------------------------------------------------------
+
+/** gh stub for a healthy, open milestone whose branch is `behindBy` behind. */
+function ghForBehindMilestone(
+  behindBy: number,
+  calls: string[][],
+): (args: string[]) => Promise<string> {
+  return async (args: string[]): Promise<string> => {
+    calls.push(args);
+    const key = args.join(" ");
+    if (key.includes("/compare/")) return `${behindBy}\n`;
+    if (key.includes("pr list") && key.includes("--head")) return "[]";
+    if (key.includes("/milestones?state=all")) {
+      return JSON.stringify([{ number: 9, title: "Sync", state: "open" }]);
+    }
+    return "";
+  };
+}
+
+Deno.test("pr_auto_merge - a milestone base behind the default branch is DEFERRED: no `--auto`, no direct merge, no comment (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  let directMerges = 0;
+  let comments = 0;
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1779,
+    headRefName: "issue-1779-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    ghCommandFn: ghForBehindMilestone(3, calls),
+    commentFn: async () => {
+      comments++;
+    },
+    directMergeFn: async () => {
+      directMerges++;
+      return { ok: true as const, value: { merged: true } };
+    },
+  });
+
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertStringIncludes(result.message, "milestone behind default branch");
+  assertStringIncludes(result.message, "(3 commits)");
+  assertEquals(directMerges, 0, "a behind milestone base must not be merged");
+  assertEquals(comments, 0, "the deferral is silent on the PR");
+  assertEquals(
+    calls.some((a) => a[0] === "pr" && a[1] === "merge"),
+    false,
+    "`gh pr merge` must not run for a behind milestone base",
+  );
+  assertEquals(
+    calls.some((a) => a.includes("--auto")),
+    false,
+    "GitHub auto-merge must not be armed for a behind milestone base",
+  );
+  assertEquals(
+    calls.some((a) => a.includes("--add-label")),
+    false,
+    "the deferral applies no label",
+  );
+});
+
+Deno.test("pr_auto_merge - a milestone base level with the default branch still arms auto-merge (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1780,
+    headRefName: "issue-1780-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    isBaseProtectedFn: async () => true,
+    ghCommandFn: ghForBehindMilestone(0, calls),
+  });
+
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(
+    calls.some((a) => a.includes("--auto")),
+    true,
+    "a synced milestone base is armed exactly as before",
+  );
+});
+
+Deno.test("pr_auto_merge - the behind deferral is recorded by logAutoMergeOutcome (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const lines: Array<{ level: string; message: string }> = [];
+  const unused = () => {};
+  const logger = {
+    info: (message: string, _c?: LogContext) =>
+      void lines.push({ level: "info", message }),
+    warn: (message: string, _c?: LogContext) =>
+      void lines.push({ level: "warn", message }),
+    error: unused,
+    debug: unused,
+    security: unused,
+    skipReason: unused,
+    timing: unused,
+    scanSummary: unused,
+    workerSummary: unused,
+  } as unknown as Logger;
+
+  const outcome = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1781,
+    headRefName: "issue-1781-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    ghCommandFn: ghForBehindMilestone(2, []),
+  });
+  logAutoMergeOutcome(logger, "owner/repo", 1781, outcome);
+
+  assertEquals(lines.length, 1);
+  assertStringIncludes(
+    lines[0]!.message,
+    "deferred: milestone behind default branch (2 commits)",
+  );
+});
+
+Deno.test("pr_auto_merge - two children of one behind milestone cost ONE compare call (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  const gh = ghForBehindMilestone(5, calls);
+  for (const prNumber of [1, 2]) {
+    const result = await enableAutoMerge({
+      repo: "owner/repo",
+      prNumber,
+      headRefName: `issue-${prNumber}-child`,
+      baseRefName: "milestone/1730-sync",
+      getDefaultBranchFn: () =>
+        Promise.resolve({ ok: true as const, value: "Develop" }),
+      ghCommandFn: gh,
+    });
+    assertEquals(result.result, AutoMergeResult.Deferred);
+  }
+  assertEquals(
+    calls.filter((a) => a.join(" ").includes("/compare/")).length,
+    1,
+    "the milestone compare is memoised across the sweep",
+  );
+});
+
+Deno.test("pr_auto_merge - a default-branch base makes no milestone compare call (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 3,
+    headRefName: "issue-3-child",
+    baseRefName: "Develop",
+    isBaseProtectedFn: async () => true,
+    ghCommandFn: ghForBehindMilestone(9, calls),
+  });
+  assertEquals(
+    calls.some((a) => a.join(" ").includes("/compare/")),
+    false,
+    "a non-milestone base costs no extra call",
+  );
+});
+
+Deno.test("pr_auto_merge - the gate seam still governs: an injected behind decision defers without any gh call (Issue #1779)", async () => {
+  const calls: string[][] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 4,
+    headRefName: "issue-4-child",
+    baseRefName: "milestone/1730-sync",
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({
+        decision: "defer" as const,
+        reason: "milestone-behind" as const,
+        milestoneBranch: "milestone/1730-sync",
+        behindBy: 1,
+        detail: "milestone/1730-sync is 1 commit behind Develop",
+      }),
+    ghCommandFn: async (args: string[]) => {
+      calls.push(args);
+      return "";
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertStringIncludes(result.message, "(1 commit)");
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("pr_auto_merge - the milestone sync PR is still armed while its base is behind (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const calls: string[][] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1782,
+    headRefName: "sync/milestone-1730-sync",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    isBaseProtectedFn: async () => true,
+    ghCommandFn: ghForBehindMilestone(6, calls),
+  });
+
+  assertEquals(
+    result.result,
+    AutoMergeResult.Enabled,
+    "deferring the sync PR for being behind would deadlock the milestone",
+  );
+  assertEquals(calls.some((a) => a.includes("--auto")), true);
+});
+
+Deno.test("pr_auto_merge - a behind deferral names itself so callers do not escalate it (Issue #1779)", async () => {
+  _resetMilestoneBehindMemo();
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1783,
+    headRefName: "issue-1783-child",
+    baseRefName: "milestone/1730-sync",
+    getDefaultBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: "Develop" }),
+    ghCommandFn: ghForBehindMilestone(3, []),
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertEquals(result.deferral, "milestone-behind");
 });
 
 // ---------------------------------------------------------------------------

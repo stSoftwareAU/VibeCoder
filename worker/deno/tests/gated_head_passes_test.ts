@@ -24,6 +24,7 @@ import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 import type { ClaudeDeps, GitHubDeps } from "../lib/issue_worker_wiring.ts";
+import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const GATED_HEAD = "milestone/4690-bug-sampler-enospc";
@@ -56,6 +57,7 @@ interface Observed {
 function makeDeps(observed: Observed) {
   const mockGithub: Partial<GitHubDeps> = {
     runGhCommand: (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
       observed.ghCalls.push(args);
       const joined = args.join(" ");
       if (joined.includes("rules/branches")) {
@@ -186,7 +188,11 @@ Deno.test("CI-fix pass - a gated head spends no retry (Issue #1679)", async () =
   }
 });
 
-Deno.test("merge-conflict pass - a gated head opens no attempt (Issue #1679)", async () => {
+Deno.test("merge-conflict pass - a milestone head opens no attempt (Issues #1679, #1772)", async () => {
+  // The merge-conflict pass now stands down on the branch name alone: a
+  // `milestone/**` head belongs to the milestone branch sync, gated or not
+  // (Issue #1772). The stand-down it records names the sync rather than the
+  // rule; the spelling and CI-fix passes above still read the ruleset.
   resetGatedHeadReportsForTest();
   const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-merge-" });
   try {
@@ -233,10 +239,11 @@ Deno.test("merge-conflict pass - a gated head opens no attempt (Issue #1679)", a
     // posted, so the attempt budget is intact for a real conflict.
     const comments = standDownComments(observed);
     assertEquals(comments.length, 1);
+    assertStringIncludes(comments[0]!, "milestone branch sync");
     assertEquals(
       comments.some((body) => body.includes("Attempt")),
       false,
-      "no merge-conflict attempt is opened on a gated head",
+      "no merge-conflict attempt is opened on a milestone head",
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

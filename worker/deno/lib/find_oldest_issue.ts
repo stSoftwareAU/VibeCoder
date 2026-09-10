@@ -365,8 +365,12 @@ export async function findOldestIssue(
   // each issue the census called claimable (Issue #460); these filters wrote
   // nothing, so VibeCoder#655 was filed with an empty "what the claim scan did
   // with them" section — the one fact its reader needed.
-  const noteCooldown = (c: IssueCandidate, reason: SkipReason): void => {
-    diag.logIssueSkipped(c.repo, c.number, reason);
+  const noteCooldown = (
+    c: IssueCandidate,
+    reason: SkipReason,
+    detail?: string,
+  ): void => {
+    diag.logIssueSkipped(c.repo, c.number, reason, detail);
     allBlockedDetails.push({
       repo: c.repo,
       issueNumber: c.number,
@@ -390,13 +394,35 @@ export async function findOldestIssue(
     });
   };
 
-  const localFilteredLabel = applyLocalCooldown(allLabelCandidates);
-  const localFilteredWorkOn = applyLocalCooldown(allWorkOnCandidates);
-  const localFilteredSelfDiagnostic = applyLocalCooldown(
+  // Issue #1780: a milestone whose branch ledger is pacing the next merge
+  // attempt is skipped whole, every tier alike. A child run cannot cut its
+  // branch while the milestone branch is behind the default branch, so
+  // claiming one of the milestone's issues would claim it, defer it and
+  // comment on it again on every 30-second cycle. The pacing is read from the
+  // local ledger — no API call.
+  const applyMilestonePacing = (
+    candidates: IssueCandidate[],
+  ): IssueCandidate[] => {
+    if (!options.milestonePacedUntil) return candidates;
+    return candidates.filter((c) => {
+      const pacedUntil = options.milestonePacedUntil!(c.repo, c.milestone);
+      if (pacedUntil === undefined) return true;
+      noteCooldown(c, "milestone-behind", `paced until ${pacedUntil}`);
+      return false;
+    });
+  };
+
+  /** Every gate this host applies from its own state, in one place. */
+  const applyLocalGates = (candidates: IssueCandidate[]): IssueCandidate[] =>
+    applyMilestonePacing(applyLocalCooldown(candidates));
+
+  const localFilteredLabel = applyLocalGates(allLabelCandidates);
+  const localFilteredWorkOn = applyLocalGates(allWorkOnCandidates);
+  const localFilteredSelfDiagnostic = applyLocalGates(
     allSelfDiagnosticCandidates,
   );
-  const localFilteredLowPriority = applyLocalCooldown(allLowPriorityCandidates);
-  const localFilteredIdleTask = applyLocalCooldown(allIdleTaskCandidates);
+  const localFilteredLowPriority = applyLocalGates(allLowPriorityCandidates);
+  const localFilteredIdleTask = applyLocalGates(allIdleTaskCandidates);
 
   // Issue #1087: Apply cross-worker cooldown filtering (supplementary to local)
   let filteredLabel = localFilteredLabel;

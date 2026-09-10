@@ -337,6 +337,20 @@ bash `worker/run_core.sh` conductor. It sequences:
    trusted-re-label escape hatch all still apply. An issue carrying
    `needs-human` is never closed by it.
 
+   Beside that re-label hatch sits the **roll-back marker** (Issue #1770,
+   [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)).
+   When a milestone roll-back reverts a child's merged PR, the child is
+   reopened and re-queued while its PR stays `merged` for ever — so both
+   merged-PR closers (this sweep and the priority-1.67 "Close Issues for
+   Merged PRs") used to shut it again on the next cycle. A
+   `<!-- vibe-milestone-rollback pr="…" revert="…" branch="…" -->` comment
+   **authored by the fleet** and dated **strictly after** the merge is now
+   honoured the way a trusted re-label is: the issue is skipped with reason
+   `rolled-back` and never closed. The same marker from any other account is
+   ignored — a comment body is text anyone can post — and so is one dated at
+   or before the merge. An unreadable comment thread leaves the issue open,
+   naming the cause, rather than closing on an unproven assumption.
+
    It spends quota the way the rest of the worker does (Issue #1477): one
    rate-limit pre-flight per sweep, a stop at the first primary-quota
    refusal — reported as one skipped sweep that resumes next cycle, never as
@@ -356,7 +370,9 @@ flowchart TD
     D -->|No| Z
     D -->|Yes| E{"Trusted re-label<br/>after the merge?"}
     E -->|Yes| Z
-    E -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
+    E -->|No| R{"Fleet roll-back marker<br/>after the merge? (#1770)"}
+    R -->|Yes| Z
+    R -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
     F -->|No| Z
     F -->|Yes| G["Closed, naming the PR<br/>and the merge commit"]
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -1560,6 +1576,7 @@ Each candidate issue is checked by functions in
 | **Open PR blocking**             | `get_blocking_pr_for_issue()`                   | issue_query        | Milestone-aware: only blocked by PRs targeting the same milestone branch                                |
 | **Ignore-open-prs bypass**       | `has_ignore_open_prs_label_by_allowed_author()` | issue_query        | Bypass open PR blocking when label added by allowed author                                              |
 | **One issue per repo/milestone** | `is_milestone_occupied`                         | issue_filter       | Only one issue per repo/milestone can be in-progress at a time                                          |
+| **Milestone behind default**     | `milestonePacedUntil()`                         | milestone_presync  | Skips every issue of a milestone whose branch ledger is pacing the next merge attempt (Issue #1780)     |
 | **Forward dependencies**         | `has_unmet_dependencies()`                      | dependency_checker | Blocked if any `Depends on` / `Blocked by` issue is open                                                |
 | **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items)                                               |
 | **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed`, `failed-once` from reopened issues (retired the `needs-clarification` cleanup)        |
@@ -1649,6 +1666,38 @@ Every worker sharing the same GitHub account sees the same set of open PRs.
 
 The discovery scan iterates through all configured repositories (shuffled for
 fairness).
+
+### 🔎 Live PR state at the claim point (`pr_live_state.ts`, Issue #1774)
+
+That listing is cached for ten minutes (`issue_cache.ts`), so a PR closed after
+it was taken still looks open to every pass that reads it — the only freshness
+check any of them made was "does the head branch still exist on origin".
+VibeCoder#1732 was closed as superseded and, eight minutes later, the CI-fix
+pass claimed it from the cached listing and started writing to it. All four PR
+passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge**
+— therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
+before the first write: one `gh pr view --json state`, no cache. The two
+processors call it directly through `guardPrStillOpen`; the drain and the sweep
+take it as a **required** injected seam, wired to the same function in
+`run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or
+`MERGED` PR is skipped with `skipped: PR closed` / `skipped: PR merged` naming
+the repo and the number, and no push, comment or label follows. An unreadable
+state is **never** treated as open: it logs `skipped: PR state unknown` at WARN
+and skips the PR for this cycle only — no CI retry is recorded, no conflict
+attempt is opened and no merge is tried, so the next scan gets the PR back with
+its budget intact. The listing cache is unchanged; the cost is one round trip on
+the path that was about to spend an agent run.
+
+```mermaid
+flowchart LR
+    L["🗂️ Cached listing<br/>(≤10 min old)"] --> V{"🔎 gh pr view<br/>--json state"}
+    V -->|OPEN| W["✍️ Claim: lock, comment,<br/>agent, push"]
+    V -->|CLOSED / MERGED| S["⏭️ skipped: PR closed/merged"]
+    V -->|unreadable| U["⚠️ skipped: PR state unknown<br/>(retry next cycle, budget intact)"]
+    style W fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#adb5bd,stroke:#6c757d,color:#000
+    style U fill:#e9c46a,stroke:#b08968,color:#000
+```
 
 ### ⏱️ Timeout wrappers (`worker/deno/lib/gh_wrapper.ts`, `worker/deno/lib/git_timeout.ts`)
 
@@ -3067,36 +3116,59 @@ Milestone branches are now periodically synchronised with the default branch,
 ensuring they stay up-to-date and reducing merge conflicts when the milestone is
 consolidated.
 
-#### 🚪 The closed-issue query is gated on a cheap REST signal
+#### 🚪 Every open milestone, and no closed-issue query at all
 
-The pass spends against two budgets per repo per cycle: a REST milestone
-listing, and the GraphQL `gh issue list --state closed` that answers only
-"has anything been completed in this milestone yet?". The REST payload already
-carries `closed_issues` per milestone, so
-[milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)
-decides from the cheap call whether the expensive one is worth making
-(Issue #1488): a milestone that has closed nothing is skipped outright, and one
-whose count has not moved since the previous cycle reuses the recorded verdict.
-Any movement — up **or** down, since an issue can be reopened or moved out of a
-milestone — re-runs the query, and the observations are keyed by milestone
-number so a rename keeps them. This is invalidation by change, not a TTL: the
-gate derives from the same authority the answer does, so a skipped cycle cannot
-act on a stale view. Observations live in `milestone_activity.json` in the work
-directory; a missing or corrupt file simply costs one query per milestone.
+The pass once asked GitHub "has anything been completed in this milestone
+yet?" — a GraphQL `gh issue list --state closed` per milestone — and swept only
+the milestones that answered yes. Issue #1776 deleted the question. A milestone
+that has completed nothing still drifts against a default branch taking ~27
+commits a day, and it was exactly the branch nobody was watching; so every
+**open** milestone is swept, and the expensive half of the old pass is gone
+rather than merely gated. The one exclusion stays: an idle-task milestone never
+carries a branch (Issue #2125), so it is filtered before the branch probe.
 
-#### ⏱️ The merge-down happens on closure, and a conflict is reported that day
+#### ⏱️ The merge-down happens on the cycle the tip moves, and a conflict is reported that day
 
 Divergence cost grows superlinearly: one day of drift is a fast-forward, three
 days is a merge, a week is an archaeology exercise because by then the two
-sides have solved the same problem twice. Two behaviours keep the window
-narrow (Issue #1558).
+sides have solved the same problem twice. Two behaviours keep the window narrow
+— the cadence below (Issue #1776, which replaced the closure-driven trigger of
+Issue #1558) and the conflict triage after it.
 
-**Cadence.** The sync runs every cycle at priority 1.72 and, ordinarily, honours
-`milestone_sync_cooldown_seconds`. A milestone whose REST `closed_issues` count
-has **moved** since the previous cycle skips that cooldown — something just
-closed, which means a sub-issue PR merged, which is precisely the moment both
-sides have moved. The signal is the same cheap listing the closed-issue gate
-above already fetches, so the extra cadence costs no additional API calls.
+**Cadence.** The sync runs every 30-second cycle at priority 1.72, and syncs
+every open milestone branch on every cycle in which the **default tip moved**
+(Issue #1776). The hourly per-branch cooldown is gone: `main` takes ~27 commits
+a day, so a cooldown left a branch up to an hour behind for no reason other
+than the clock. The signal is one
+`git rev-parse origin/<default>` per repo — read by
+[milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts) after
+the fetch `ensureDefaultBranchCurrent` performs anyway — compared against the
+`lastSyncedDefaultSha` in each branch's ledger entry. It costs nothing against
+either API budget.
+
+The tip reported is the one the **merge** will use — the local `<default>` ref —
+and only when it agrees with `origin/<default>`. `ensureDefaultBranchCurrent`
+moves that local ref with an unchecked `git branch -f`, which git refuses when
+another worktree has the branch checked out (Issue #394) while still reporting
+success; recording the remote tip there would claim a merge-down that never
+happened and park the branch until the next push. The disagreement is therefore
+a loud failure, and a loud failure syncs.
+
+Only a **successful** sync records the tip, so a failure is retried on the next
+cycle rather than waited out (subject to the ledger's own attempt pacing,
+below), and a tip git cannot report is never read as "unchanged" — the pass
+logs the failure and syncs, because silently parking every branch is the
+outcome this sweep exists to prevent.
+
+```mermaid
+flowchart LR
+    A["Cycle (30 s)"] --> B["git rev-parse<br/>origin/default"]
+    B --> C{"tip == ledger's<br/>lastSyncedDefaultSha?"}
+    C -- yes --> D["skipped:<br/>default tip unchanged"]
+    C -- "no, or unknown" --> E["merge default down<br/>into every open<br/>milestone branch"]
+    E -- success --> F["record tip in<br/>milestone_sync_failures.json"]
+    E -- failure --> G["WARNING + self-heal event;<br/>tip NOT recorded → retried"]
+```
 
 **Conflict triage.** A conflicting merge is triaged file by file
 ([milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)
@@ -3105,7 +3177,7 @@ reads the sides and applies the decision), not resolved towards the default
 branch on sight (Issue #1559). Taking one side wholesale is a decision nobody
 made — the branch's version of every conflicting file is replaced — and
 escalating the whole merge asks a person to choose between two changes they did
-not write. Three rules decide what is mechanical:
+not write. Four rules decide what is mechanical:
 
 - **One side subsumes the other** — every line of the smaller side survives in
   the larger, so the larger is taken. Checked first: it needs no evidence about
@@ -3118,11 +3190,49 @@ not write. Three rules decide what is mechanical:
   churn and answers "incomparable" every time. Prose that merely mentions an
   issue number is not read as a claim to have fixed it, or two unrelated
   commits discussing #1216 would look like one fix landing twice.
+- **Both sides only appended** — every line of the merge base survives on both
+  sides, so nothing was deleted and the file is merged as a **union** with the
+  default branch's addition first (Issue #1768). This is the append-only ledger
+  shape — `CHANGELOG.md`, `docs/RELEASE-NOTES.md`, the audit ledgers under
+  `docs/audits/` — measured as the second-largest conflict class on the
+  milestone branches. A base that was not read decides nothing, and a `.json`
+  ledger whose union does not parse escalates rather than being written.
 - **Two designs for the same problem** — `IndirectSpawnRules` (#1378) against
-  `scanContentForVariableBinarySpawn` (#1227) — neither contains the other, so
-  the merge is **aborted** and a human chooses. The escalation carries the
-  preparation, not the compiler output #1542 was a wall of: what each side
-  exports, what each side tests, and which cases exist on one side only.
+  `scanContentForVariableBinarySpawn` (#1227) — neither contains the other and
+  at least one side changed a line the merge base had, so the triage decides
+  nothing and the file climbs to the next rung. Two rival designs that are
+  *both* purely additive are a union by the rule above, and are verified before
+  they land.
+
+**The rest of the ladder** (Issue #1777,
+[milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)).
+What the triage cannot decide is not a human's problem yet: the sync climbs the
+same two rungs the PR pass climbs, over the paths still left, inside the very
+clone the merge conflicted in.
+
+1. **The dependency rules** — the same
+   [dependency_conflict_apply.ts](../worker/deno/lib/dependency_conflict_apply.ts)
+   pass the PR lane runs. A lock file or a manifest bumped on both sides needs
+   no judgement, so it never costs a model run.
+2. **The resolution agent** — [merge_conflict_agent.ts](../worker/deno/lib/merge_conflict_agent.ts)
+   with a *branch* target, asked only about the paths the rules deferred. It is
+   injected (`agentFn`), so a test drives the whole ladder with no model; a
+   caller that supplies none stops after the rules rather than pretending the
+   conflict was decided.
+
+Only a file **every** rung leaves undecided aborts the merge; since
+Issue #1778 that abortion reaches nobody while the branch's conflict budget
+still has an attempt in it — it is charged to the ledger, named in one log line
+`conflict attempt n of 3 failed at rung <rung>`, and the exhausted budget is
+what reaches for the roll-back. An
+agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
+or leaves a conflict marker behind is a failed rung: the merge is aborted and
+the branch stands exactly at its pre-merge SHA. Only the agent's own paths are
+staged (`git add -- <paths>`, never `-A`), so the worker's own state files in
+the shared clone never reach the pre-commit gate (Issue #1654). Each resolved
+file carries the rung that settled it — `triage: <case>`, `rule: <reason>` or
+`agent` — and that per-file list is what the merge commit, the sync's log line
+and the report comment all print.
 
 **No resolution may reduce test coverage.** A conflicted test file is resolved
 by taking a side only when that side already keeps every case *and* every line
@@ -3139,7 +3249,12 @@ the merged tree must pass the repository's own Issue #974 type check — reused,
 fallback and all, rather than reimplemented — its `check:manifests` task and
 its unit suite, inside one 15-minute budget so a sync cannot block the event
 loop. A red tree is reset to the pre-merge commit and escalated with **both**
-halves: what the verification said and both sides prepared. A tree with no type
+halves: what the verification said and both sides prepared — what each side
+exports, what each side tests, and which cases exist on one side only, rather
+than the wall of `TS2304` that made #1542 nearly useless. This is the one
+escalation Issue #1778 kept: a gate refusal is not a conflict the budget can
+retry its way out of, so it is reported once (deduped by `gateEscalated`,
+like the Issue #974 refusal) and charged nothing. A tree with no type
 check or no unit suite verified nothing and is refused the same way — a
 resolution that cannot be verified is not a resolution. What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
@@ -3152,9 +3267,16 @@ flowchart TD
     A[Sub-issue PR merges → closed count moves] --> B[Cooldown skipped: merge default down now]
     B --> C{Conflicts?}
     C -- no --> D[Push, no issue, no comment]
-    C -- yes --> T{"Every file decidable?<br/>superset / duplicate fix /<br/>test-file union"}
-    T -- no --> X["Abort — nothing pushed —<br/>escalate with both sides'<br/>exports, cases and the difference"]
-    T -- yes --> V["Commit the reasoning, then verify:<br/>#974 type check + check:manifests + unit suite"]
+    C -- yes --> T{"Triage: superset /<br/>duplicate fix / union?"}
+    T -- "left over" --> RU{"Dependency rules?"}
+    RU -- "left over" --> AG{"Resolution agent?"}
+    AG -- "fails or aborts" --> X["Abort — nothing pushed —<br/>charge the ledger, log the rung,<br/>post nothing (Issue #1778)"]
+    X --> XB{"Budget exhausted?"}
+    XB -- "no" --> XW["Wait out the cooldown"]
+    XB -- "yes" --> XR["Hand off to the roll-back"]
+    AG -- decided --> V["Commit the per-file rungs, then verify:<br/>#974 type check + check:manifests + unit suite"]
+    T -- decided --> V
+    RU -- decided --> V
     V -- red or unverifiable --> R[Reset to the pre-merge commit and escalate]
     V -- green --> P[Push]
     P --> F["Report the same cycle:<br/>decisions + both sides' commits"]
@@ -3306,6 +3428,270 @@ Three defences, each independent of the others:
   `check-resurrected-files` command exposes it, and the
   `milestone-resurrection` job runs it on PRs into `milestone/*` and on the
   rollup PR.
+
+#### 🎟️ The conflict attempt ledger a milestone branch spends
+
+A milestone branch that conflicts with the default branch gets the same
+**budget of three concluded attempts** a conflicting PR gets:
+[milestone_sync_streak.ts](../worker/deno/lib/milestone_sync_streak.ts) exports
+`MILESTONE_CONFLICT_ATTEMPT_BUDGET` as
+[`DEFAULT_MAX_CONFLICT_ATTEMPTS`](../worker/deno/lib/pr_merge_conflict_scan.ts)
+itself — one constant, two consumers, so the two ladders cannot drift apart
+(Issue #1766).
+
+A PR carries its attempt history in marker comments on the PR; a milestone
+branch has nowhere to write one, so the ledger is persisted per branch in
+`milestone_sync_failures.json` beside the failure streak and survives worker
+restarts. The sync pass writes `lastSyncedDefaultSha` through it for the
+cadence gate (Issue #1776) and charges the conflict *attempts* around every
+merge it makes (Issue #1778). Each entry carries `conflictAttempts` (concluded failures),
+`attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
+(`at`, `outcome`, `reason`, `defaultSha`), `deferUntil`, `lastSyncedDefaultSha`
+and `rollbacks`. Every field is optional and every malformed field is dropped,
+so a file written before the ledger existed loads as a branch with an unspent
+budget rather than failing the whole load.
+
+Four rules decide what the ledger does, and each is a pure helper:
+
+- **Only a concluded failure is charged.** `openConflictAttempt` records that
+  an attempt started and charges nothing; `concludeConflictAttempt` charges
+  one attempt for a `failed` outcome and nothing for `disrupted` or
+  `not-charged`. An attempt left open reads as disrupted on the next cycle —
+  the run died before the conflict was judged, so the conflict was never
+  actually tried (the PR ladder's marker rule from #395 and #1693).
+- **A failure paces the next attempt.** A `failed` conclusion sets `deferUntil`
+  to now + `DEFAULT_CONFLICT_COOLDOWN_HOURS`. Without it a conflict that fails
+  identically against an unmoved default tip is re-attempted on every
+  30-second cycle and the whole budget is gone in 90 seconds.
+- **A moved tip clears the deferral, never the count.** A live `deferUntil`
+  always paces the branch against one tip — the one the failure ran against —
+  so *any* observation of a different tip clears it: `recordDefaultSha` when
+  the sync records the new tip, and `concludeConflictAttempt` when an
+  uncharged attempt concludes against it. `conflictAttempts` is left alone
+  either way: resetting on a tip move would refill the budget faster than a
+  busy default branch could let the ladder spend it, and an unresolvable
+  conflict would retry for ever. `isConflictAttemptDue` reads the pair — due
+  when the tip has moved since the last concluded attempt, or when the
+  deferral has passed. A `deferUntil` that does not parse is refused rather
+  than ignored, at load time as well as in memory: reading corruption as "no
+  cooldown applies" is the permissive direction on a safety bound, and the
+  next tip move clears it anyway.
+- **Only success zeroes it.** `resetConflictLedgerOnSuccess` is the one thing
+  that returns `conflictAttempts` to zero and clears the deferral; the
+  lifetime `rollbacks` count survives, because it describes the branch rather
+  than the conflict that just ended.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Open: openConflictAttempt
+    Open --> Idle: conclude disrupted / not-charged<br/>(budget untouched)
+    Open --> Deferred: conclude failed<br/>(+1 attempt, deferUntil set)
+    Deferred --> Idle: tip moves (recordDefaultSha)<br/>or cooldown passes
+    Idle --> Exhausted: conflictAttempts == budget (3)
+    Open --> Idle: resetConflictLedgerOnSuccess
+    Exhausted --> Idle: resetConflictLedgerOnSuccess
+```
+
+##### What the sync pass charges, cycle by cycle
+
+[milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts) spends
+those helpers around every merge it makes (Issue #1778). Before the merge it
+concludes any attempt a previous run left open as `disrupted`, skips the branch
+outright when `isConflictAttemptDue` is false — `skipped: conflict attempt not
+due until <deferUntil>` — and otherwise opens an attempt and **persists it
+before the merge starts**, so a run killed mid-merge leaves the marker the next
+cycle reads.
+
+The conclusion is decided by `judgeSyncFailure`, and only one shape of failure
+is the branch's to answer for:
+
+| What the merge did                                             | Ledger outcome                             |
+| -------------------------------------------------------------- | ------------------------------------------ |
+| Conflicted and every rung left it undecided                     | `failed` — one attempt charged, cooldown set |
+| Conflicted while the cycle's agent rung was already spent       | `not-charged` — `agent deferred: cycle budget` |
+| Merge gate refused the merged tree, or refused the resolution    | `not-charged` — the gate keeps its own escalation, reported once |
+| A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
+| Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
+| Merged                                                          | `resetConflictLedgerOnSuccess`             |
+
+**Nothing is posted while an attempt remains.** A conflict failure produces one
+log line — `conflict attempt n of 3 failed at rung <rung>` — and no comment, no
+label and no issue. The per-conflict analysis escalation Issue #1559 posted on
+the first conflicting commit is gone: it fired before any of the three
+automatic attempts had been spent, which is exactly the "needs-human while a
+rung remains" this budget removes. On the third concluded failure the branch is
+handed to the roll-back (`rollbackFn`); until that wiring lands the default
+logs `budget exhausted: roll-back not yet available` and still posts nothing.
+
+**One agent run per cycle, across every repo and milestone.** `grantAgentRun`
+decides it, and it is the merge-conflict drain's rule with **both** halves:
+
+- **A floor.** A rung is not started at all unless the handler's remaining
+  budget, less the `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS` a resolution spends
+  outside the agent, still covers `DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT` (20
+  minutes) — the drain's own constants, imported rather than restated.
+- **A clamp.** The grant handed down in `SyncBranchOptions.agentTimeoutSeconds`
+  is never more than that budget, so an agent that runs to its full grant still
+  has room to conclude. Gating on the *configured* `claudeTimeout` instead
+  would refuse the rung on every cycle whose remaining budget is shorter than
+  an hour — almost all of them — and silently disable the ladder's last rung
+  while making every conflict `not-charged`, so the budget would never exhaust
+  and an unresolvable conflict would reach nobody at all.
+
+The grant is spent when it is handed out and refunded only for a merge that had
+no conflict: the bound is "at most one agent run a cycle", so over-spending is
+the safe direction — a merge that failed *after* the agent ran leaves the grant
+spent rather than handing a second branch a second run. Every other conflicting
+branch that cycle climbs the triage and the deterministic rules only, and its
+attempt is concluded `not-charged`. Priority 1.72 is declared `agentBacked`
+(like the drain's own handler) so the handler that spawns that agent gets the
+cycle-deadline watchdog rather than the flat 600-second one.
+
+**A branch past its budget is not merged again.** It is the roll-back's, so the
+pre-merge guard skips it with `the conflict budget is spent` rather than
+charging a fourth attempt and re-entering the hand-off every cooldown.
+
+##### Sync before new work — the child run's own pre-cut sync
+
+The periodic sweep is not the only thing that merges the default branch down. A
+**milestone child run** does it too, before it cuts its issue branch
+([milestone_presync.ts](../worker/deno/lib/milestone_presync.ts), Issue #1780):
+a child cut from a branch that is 5 commits behind carries that drift into its
+PR, and the drift is then resolved once per child instead of once per branch.
+
+The setup phase (`setup_branch_phase.ts`) runs it immediately after
+`ensureMilestoneBranchExists`, and the ordinary path costs one
+`git rev-list --count origin/<milestone>..origin/<default>`: a branch already
+level touches neither git nor the ledger. A branch that **is** behind gets one
+attempt, and it is the ladder's own attempt — the same conflict budget, the same
+`conflictAttemptDue` pacing, the same `judgeSyncFailure` verdict, so a child run
+and the sweep can never disagree about what a branch has spent. Three
+consequences are worth naming:
+
+- **The merge runs in the shared `${WORK_DIR}/<repo>` clone**, the one the sweep
+  uses — never in the lane's worktree. A worktree parked on the milestone branch
+  is a branch git then refuses to every other lane and to the sweep itself. That
+  clone is shared scratch, and the merge opens with `reset --hard` +
+  `clean -fd`, so pre-cut syncs are **serialised per repository inside the
+  process**: since Issue #923 two lanes can hold one repository, and two
+  overlapping merges would reset the tree under each other. The periodic sweep's
+  own merge in that clone stays outside the chain, exactly as it was before.
+- **A landed merge that conflicted is still reported.** The resolution favoured
+  a side nobody chose, so the child run calls the sweep's own
+  `escalateSyncConflict` — once per conflicting default-branch commit, recorded
+  in the ledger's `conflictEscalatedSha` so neither pass repeats it — and names
+  the conflicting files in the log whether or not a reporter is wired.
+- **A landed sync concludes through the sweep's `recordSuccess`**, not a second
+  transition of its own: the budget is refilled, the open marker and the
+  deferral are dropped, and the failure streak ends with its escalation flags,
+  so the sweep cannot later escalate a branch this run already brought level.
+- **The agent rung is granted** (bounded by `grantAgentRun` against the run's own
+  deadline, exactly as the sweep bounds it). Only an attempt that climbed the
+  whole ladder may charge the branch's budget, and charging is what writes the
+  `deferUntil` that paces every other slot off the milestone.
+- **A base nobody could measure is never cut from.** An unreadable behind-count
+  defers rather than proceeding, and an unwritable ledger says so loudly and
+  still merges — what is lost is the pacing, not the branch. The default tip is
+  read **before** the count, because reading it is what fetches it: counting
+  against a stale `origin/<default>` would answer "level" for a branch that is
+  behind, which is the very defect this gate exists to stop.
+- **Only a charged failure paces the milestone.** A conflict every granted rung
+  left undecided writes `deferUntil`; a ruleset-refused push, a merge-gate
+  refusal or any other `not-charged` verdict does not — charging the branch for
+  a fault that is not its own is what Issues #1772 and #1778 removed. Those
+  deferrals are bounded by the per-issue expected-skip cooldown instead: one
+  bounce per issue, then the issue is in cooldown.
+
+When the branch cannot be brought level the run **defers**: it exits before any
+implementation agent is spent, with reason
+`deferred: milestone behind default branch` and `expectedSkip`, so the issue
+keeps its pickup label, nothing is tracked against it, no `needs-human` is
+applied and no `Depends on` line is written. The only comment is the ordinary
+claim-release comment, which states the reason.
+
+The loop guard is the other half. `findNextIssue` reads
+`milestone_sync_failures.json` once per scan — a local file, no API call — and
+`find_oldest_issue.ts` skips **every tier's** candidates in a milestone whose
+`deferUntil` is still in the future, logging
+`skipped: milestone behind default branch (paced until <deferUntil>)` and
+recording the `milestone-behind` skip reason. Without it a paced milestone was
+claimed, deferred and commented on again every 30-second cycle.
+
+```mermaid
+flowchart TD
+    A["child run claims a<br/>milestone issue"] --> B["ensureMilestoneBranchExists"]
+    B --> C{"rev-list --count<br/>milestone..origin/default"}
+    C -- "0" --> D["cut the issue branch<br/>from origin/&lt;milestone&gt;"]
+    C -- "unreadable" --> X
+    C -- "> 0" --> E{"ledger: attempt due?<br/>budget left?"}
+    E -- "no" --> X["early exit<br/>deferred: milestone behind<br/>default branch"]
+    E -- "yes" --> F["open attempt, merge default down<br/>(ladder + agent rung)"]
+    F -- "landed" --> G["reset budget,<br/>record tip"] --> D
+    F -- "conflict unresolved" --> H["charge 1 attempt,<br/>set deferUntil"] --> X
+    X --> Y["selector skips the milestone's<br/>issues until deferUntil passes"]
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style X fill:#9d4e15,stroke:#6b3410,color:#fff
+```
+
+#### 🔙 Rolling a stuck milestone branch back
+
+A branch that has spent that budget is **rolled back**, not escalated and not
+restarted from the default-branch tip — restarting is dramatic, and a human who
+wrote none of the code cannot untangle the merge either.
+[milestone_rollback.ts](../worker/deno/lib/milestone_rollback.ts) reverts the
+merged child PRs that touch the conflicting files, newest first, until
+`git merge origin/<default>` succeeds (Issue #1771). Only those children then
+have to be redone; every other child stays on the branch.
+
+`planRollback` is pure and decides *what* is undone. It keeps the candidates
+touching a conflicting path, orders them newest first — the newest sits closest
+to the tip, so undoing it is the revert least likely to conflict — and never
+plans four kinds of candidate: a `sync/milestone-*` PR (that PR *is* the default
+branch arriving), one already reverted (by a
+`Revert child PR #N` commit on the branch, or the ledger's list), one with no
+merge commit to hand `git revert`, and one touching none of the conflicting
+paths.
+
+`executeRollback` does it, against these two boundaries:
+
+- **History is kept and no push is forced.** Every undo is a `git revert`
+  commit — `-m 1` for a two-parent merge, though a child PR into a milestone
+  squash-merges, so most reverts are single-parent — named
+  `Revert child PR #N "<title>" — milestone roll-back (Issue #1730)` so a later
+  roll-back can see it. The push is an ordinary fast-forward of the milestone
+  branch, and a push a `milestone/**` ruleset refuses lands through the sync PR
+  of Issue #589 instead.
+- **Nothing half-done is published.** The pre-roll-back SHA is recorded first.
+  A revert that conflicts, or a plan that runs out with the merge still
+  conflicting, ends at `git reset --hard <pre-roll-back SHA>` with nothing
+  pushed, and the result says which: `revert conflicted on #N` or
+  `nothing left to revert`. The default branch is never written to.
+- **A merged tree is still only a merged tree.** A conflict-free merge says
+  both sides were internally consistent, not that reverting a child other
+  children call left something that works (Issue #974), so the caller's own
+  `verify` seam decides before the push, and a refused tree is reset away like
+  any other failure. A roll-back run without one logs `UNGATED:` rather than
+  let an unchecked push read like a checked one.
+- **Nothing unreadable is read as nothing.** An unparseable `gh` listing, a
+  `gh` call that failed, an unreadable `diff-tree`, `rev-list` or `log`, and a
+  merge that failed with *no* conflicted files all fail the roll-back with the
+  cause named. Each would otherwise plan an empty roll-back and report
+  `nothing left to revert` with every child still in place.
+
+A `merged: false` result is logged `WARNING` with its reason. The mechanics land
+here as a module; the exhaustion path that calls them is wired separately.
+
+```mermaid
+flowchart TD
+    C[conflicting files] --> L[merged child PRs touching them, newest first]
+    L --> R{revert next}
+    R --> M{merge default clean?}
+    M -->|yes| P[commit + push / sync PR]
+    M -->|no| R
+    R -->|none left| X[reset to pre-roll-back SHA, report]
+```
+
 
 ### 🩹 Milestone branch self-heal
 
@@ -3568,7 +3954,12 @@ links to its issue for the full rationale.
   quarantine via Renovate's `minimumReleaseAge` and `VIBE_BUMP_QUARANTINE_HOURS`
   (numbers unchanged), and GitHub Actions are pinned to commit SHAs. The
   coding-guidelines prompt (`prompts/coding_guidelines/`) documents the bump
-  pattern.
+  pattern. The phase does **not** run on a milestone child run (Issue #1775):
+  when `state.milestoneBranch` is set the script is never invoked,
+  `state.bumpInfo.status` is `skipped_milestone_child`, and the PR body carries
+  the reason — the default branch's own PRs bump and the every-cycle sync
+  carries those bumps down, so bumping again in a child would rewrite the same
+  lockfile lines and conflict with the sync.
 - **Quality gate additions:** `markdownlint-cli2`,
   `mermaid_validator` integration , and the `tail -f | head` foot-gun detector.
 - **Standard workflow templates:** `workflow_setup` v2/v3 provisions Gitleaks,
@@ -3756,6 +4147,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [live_slot_holds.ts](../worker/deno/lib/live_slot_holds.ts)                                                       | Issues live slots own — recovery passes never touch them                                                                                                                             |
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                |
 |                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                   |
+|                             | [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)                                    | The fleet-authored milestone roll-back marker both merged-PR closers honour, so a reverted child stays reopened (Issue #1770)                                                        |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                             |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                       |
 | **Utilities**               |                                                                                                                   |                                                                                                                                                                                      |
@@ -3785,11 +4177,14 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_progress.ts](../worker/deno/lib/milestone_progress.ts)                                                 | Milestone progress notifications                                                                                                                                                     |
 |                             | [milestone_priority.ts](../worker/deno/lib/milestone_priority.ts)                                                 | Configurable issue ordering within milestones                                                                                                                                        |
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |
-|                             | [milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)                                       | Gates the sync's closed-issue query on the cheap REST `closed_issues` count, so an unchanged milestone costs no GraphQL call                                                          |
+|                             | [milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts)                                       | Reads `git rev-parse origin/<default>` for the sync's cadence gate, so a cycle in which the default tip did not move syncs nothing                                                          |
+|                             | [milestone_presync.ts](../worker/deno/lib/milestone_presync.ts)                                                   | Brings a milestone branch level with the default branch before a child issue branch is cut from it, charged to the same conflict ledger, and reports the pacing the claim scan skips on      |
+|                             | [milestone_conflict_agent_binding.ts](../worker/deno/lib/milestone_conflict_agent_binding.ts)                      | The one binding of the ladder's agent rung — same instructions, same branch target and same grant-sized timeout for the periodic sweep and a child run's pre-cut sync alike                  |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
-|                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union — and prepares both sides for a human when no rule can settle it                                    |
+|                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |
 |                             | [milestone_conflict_git.ts](../worker/deno/lib/milestone_conflict_git.ts)                                         | Reads both sides out of the conflicted index, gathers the per-issue test evidence, union-merges a test file and stages what the triage decided                                        |
+|                             | [milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)                                   | Climbs the rungs the triage left: the dependency rules, then the resolution agent, naming the rung that settled each file                                        |
 |                             | [milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)                                   | Verifies a resolution the worker made itself against the repo's own check, manifest check and unit suite before it can be pushed                                                      |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |

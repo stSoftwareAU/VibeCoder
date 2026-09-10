@@ -87,12 +87,14 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     "BOUNDARY_INTEGRITY_INSTRUCTION",
   ],
   ci_fix: ["PR_NUMBER", "QUALITY_INSTRUCTIONS"],
-  // Issue #84: the conflict-resolution pass. The template names the PR, the
-  // base branch being merged in, and the conflicted paths the worker found
+  // Issue #84: the conflict-resolution pass. The template names the target,
+  // the base branch being merged in, and the conflicted paths the worker found
   // after starting the merge — all three are load-bearing, so all three are
   // required.
+  // Issue #1767: the target is a PR *or* a milestone branch, so the opening is
+  // `TARGET_DESCRIPTION` rather than a bare PR number.
   merge_conflict: [
-    "PR_NUMBER",
+    "TARGET_DESCRIPTION",
     "QUALITY_INSTRUCTIONS",
     "BASE_BRANCH",
     "CONFLICTED_FILES",

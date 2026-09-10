@@ -436,7 +436,7 @@ export interface CommitAndPushPendingResult {
 /**
  * Result of {@link unstageWorkerStateFiles}.
  */
-interface UnstageWorkerStateResult {
+export interface UnstageWorkerStateResult {
   /** How many staged paths remain — 0 means there is nothing real to commit. */
   remainingStaged: number;
 }
@@ -465,7 +465,7 @@ interface UnstageWorkerStateResult {
  * A failing `git reset` is returned as an error, never ignored: carrying
  * worker state into the gate is precisely what this exists to prevent.
  */
-async function unstageWorkerStateFiles(
+export async function unstageWorkerStateFiles(
   options: GitCommandOptions,
 ): Promise<Result<UnstageWorkerStateResult>> {
   const inspection = await inspectStagedFiles(options);

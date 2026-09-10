@@ -67,6 +67,7 @@ import {
   recordDeferral,
   shouldAnnounceDeferral,
 } from "./merge_conflict_deferrals.ts";
+import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 
 /**
  * Conflicting PRs one cycle's pass will take.
@@ -122,12 +123,21 @@ export interface ConflictResolutionOutcome {
   merged: boolean;
   /**
    * Explicitly `false` when the resolution opened an attempt and then
-   * withdrew it — the watchdog cut the agent short, so the kill was the
-   * worker's decision and must not spend the PR's budget (Issue #1693). Such
-   * a PR is still waiting, so its deferral streak stands, exactly as it does
-   * for an attempt that never got off the ground.
+   * withdrew it — the watchdog cut the agent short (Issue #1693), or a
+   * repository ruleset refused the push (Issue #1772). Either way the PR's
+   * budget is untouched. Recorded for the summary; what the drain steers on
+   * is {@link ConflictResolutionOutcome.runEnded}.
    */
   attemptCharged?: boolean;
+  /**
+   * Explicitly `true` when the withdrawal happened because the **run** was
+   * ending (Issue #1693). Only that withdrawal stops the pass: the PR is
+   * still waiting, so its deferral streak stands, exactly as it does for an
+   * attempt that never got off the ground. An uncharged attempt that ran to
+   * an answer — a ruleset-refused push — leaves the drain free to take the
+   * next PR (Issue #1772).
+   */
+  runEnded?: boolean;
 }
 
 /** A held repository lease, released when the attempt finishes. */
@@ -168,6 +178,15 @@ export interface ConflictDrainOptions {
   ) => Promise<ConflictingPr | null>;
   /** Lease the shared clone, or null when an issue slot holds it. */
   acquireLease: (pr: ConflictingPr) => RepoLease | null;
+  /**
+   * Re-read the PR's live state at the claim point (Issue #1774).
+   *
+   * The queue is built from a listing up to ten minutes old, so a PR closed
+   * since it was taken still looks conflicting. Required, not optional: a
+   * guard that can be switched off by omission is a guard that is off in
+   * production the day someone adds a wiring site and forgets it.
+   */
+  prLiveState: (pr: ConflictingPr) => Promise<PrLiveStateReading>;
   /**
    * Resolve one conflict. Returns null when the attempt failed loudly.
    *
@@ -271,6 +290,7 @@ export async function drainConflictingPrs(
     agentTimeoutMs,
     attemptOverheadMs = DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
     deferrals,
+    prLiveState,
   } = options;
 
   const handled = new Set<string>();
@@ -426,6 +446,34 @@ export async function drainConflictingPrs(
       // not put the same PR back at the head of the queue.
       handled.add(conflictPrKey(next.repo, next.prNumber));
 
+      // Issue #1774: one live `pr view` before the lease, the clone and the
+      // agent. A PR closed since the listing is skipped without a push, a
+      // comment or a label, and a state that cannot be read is skipped this
+      // cycle too — no attempt is opened, so the PR's budget is untouched and
+      // the next pass retries it.
+      const reading = await prLiveState(next);
+      if (!reading.open) {
+        const decision: ConflictPrDecision = {
+          repo: next.repo,
+          prNumber: next.prNumber,
+          outcome: "skipped",
+          reason: {
+            kind: "pr-not-open",
+            state: reading.unknown ? "UNKNOWN" : reading.state,
+          },
+        };
+        decisions.push(decision);
+        recordConflictDecision(logger, decision);
+        logPrLiveSkip(
+          logger,
+          "Merge-conflict drain",
+          next.repo,
+          next.prNumber,
+          reading,
+        );
+        continue;
+      }
+
       const lease = acquireLease(next);
       if (lease === null) {
         // The deferral is a decision on a labelled PR like any other, so it
@@ -458,23 +506,28 @@ export async function drainConflictingPrs(
 
       try {
         const outcome = await resolve(next, grantFor());
-        if (outcome && outcome.attemptCharged !== false) {
+        if (outcome && outcome.runEnded !== true) {
           // The attempt ran, so the PR is not starved — whatever it then
           // concluded (Issue #1111). A `null` outcome is an attempt that never
           // got off the ground (a clone that would not set up, a branch that
           // is gone), and that PR is still waiting, so its streak stands. So
           // is an attempt the watchdog cut short (Issue #1693): it was
-          // withdrawn, spent nothing, and is still queued.
+          // withdrawn, spent nothing, and is still queued. A ruleset-refused
+          // push is not that (Issue #1772) — the PR got its full turn and
+          // reached an answer, so its streak clears like any other attempt.
           clearDeferral(state, conflictPrKey(next.repo, next.prNumber));
         }
         if (outcome) {
           processed = processed || outcome.processed;
           if (outcome.merged) merged++;
         }
-        if (outcome && outcome.attemptCharged === false) {
+        if (outcome && outcome.runEnded === true) {
           // The run itself ended under this attempt (Issue #1693). Taking the
           // next PR would open an attempt marker and withdraw it again, so
-          // the pass stops here and the queue keeps its place.
+          // the pass stops here and the queue keeps its place. Keyed on
+          // `runEnded`, never on "uncharged": a ruleset refusal is uncharged
+          // too and would otherwise starve every other conflicting PR in the
+          // cycle under a log line naming the wrong cause (Issue #1772).
           cutShort = true;
         }
       } finally {
