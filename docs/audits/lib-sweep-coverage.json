@@ -1360,6 +1360,18 @@
       "paths": [
         "worker/deno/lib/implementation_comments.ts"
       ]
+    },
+    {
+      "issue": 1877,
+      "chunk": "12aa",
+      "title": "top-up: the CI-fix attempt markers",
+      "ledger": "docs/audits/security-sweep-1877-ci-fix-attempt-markers.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: ci_fix_attempt_markers.ts (#1877)",
+      "status": "swept",
+      "sweptAt": "2d294bc3e5e50f7c160bb469e35d07e2af20d1d1",
+      "paths": [
+        "worker/deno/lib/ci_fix_attempt_markers.ts"
+      ]
     }
   ],
   "roots": [
