@@ -311,6 +311,85 @@ export const CONSUMING_MANIFEST_PATHS: readonly string[] = [
   "worker/deno/deno.json",
 ];
 
+/**
+ * The Cargo manifest a Rust consumer declares its dependencies in
+ * (Issue #1864). Read after the Deno/npm manifests above; when it is a
+ * workspace, each literal `members` entry's own `Cargo.toml` is read too.
+ */
+export const CONSUMING_CARGO_MANIFEST = "Cargo.toml";
+
+/** Cargo tables whose entries declare dependencies. */
+const CARGO_DEPENDENCY_TABLE =
+  /^\[(?:workspace\.|target\.[^\]]+\.)?(?:dev-|build-)?dependencies(?:\.[^\]]+)?\]\s*$/;
+
+/**
+ * Literal workspace members from a root `Cargo.toml` (Issue #1864).
+ *
+ * Only plain relative directories are returned; a glob (`crates/*`) would
+ * need a directory listing this bounded, single-read authorisation does not
+ * make, so it is skipped rather than guessed at.
+ */
+export function cargoWorkspaceMembers(rawText: string): string[] {
+  const match = rawText.match(/^\s*members\s*=\s*\[([^\]]*)\]/m);
+  if (!match) return [];
+  const members: string[] = [];
+  for (const quoted of match[1]!.matchAll(/"([^"]+)"/g)) {
+    const member = quoted[1]!.trim().replace(/\/+$/, "");
+    if (member.length === 0) continue;
+    if (/[*?\[\]]/.test(member)) continue;
+    if (member.startsWith("/") || member.split("/").includes("..")) continue;
+    members.push(member);
+  }
+  return members;
+}
+
+/**
+ * The internal repositories a Cargo manifest depends on (Issue #1864).
+ *
+ * A Rust consumer names its dependency by a `path` into a sibling checkout
+ * (`neat-core = { path = "../../NEAT-AI-core/neat-core" }`, the layout the
+ * NEAT-AI repos' `setup-rust-workspace` action produces) or by a `git` URL.
+ * Only lines inside a dependency table count, so a `path` under `[package]`
+ * or `[[bin]]` never authorises anything, and neither does a path inside
+ * this repository's own tree. The repo name is taken from the first segment
+ * after the `..`s of a path that climbs out — the sibling checkout's
+ * directory — and from the `owner/repo` of a github.com URL; anything not
+ * under {@link INTERNAL_OWNER} is ignored, as everywhere else.
+ */
+export function cargoDeclaredInternalRepos(rawText: string): string[] {
+  const repos: string[] = [];
+  let inDependencyTable = false;
+  for (const rawLine of rawText.split("\n")) {
+    const line = rawLine.replace(/#.*$/, "").trim();
+    if (line.length === 0) continue;
+    if (line.startsWith("[")) {
+      inDependencyTable = CARGO_DEPENDENCY_TABLE.test(line);
+      continue;
+    }
+    if (!inDependencyTable) continue;
+    const path = line.match(/\bpath\s*=\s*"([^"]+)"/);
+    // Only a path that climbs OUT of this repository names another one; a
+    // `./vendor/...` path is this repository's own tree.
+    if (path && /^\.\.(\/|$)/.test(path[1]!)) {
+      const segment = path[1]!.split("/").find((part) =>
+        part !== "" && part !== "." && part !== ".."
+      );
+      if (segment !== undefined) {
+        const candidate = `${INTERNAL_OWNER}/${segment}`;
+        if (REPO_SLUG_PATTERN.test(candidate)) repos.push(candidate);
+      }
+    }
+    const git = line.match(
+      /\bgit\s*=\s*"(?:https?:\/\/|git@)github\.com[/:]([^/"]+)\/([^/"]+?)(?:\.git)?\/?"/,
+    );
+    if (git && git[1]!.toLowerCase() === INTERNAL_OWNER.toLowerCase()) {
+      const candidate = `${INTERNAL_OWNER}/${git[2]!}`;
+      if (REPO_SLUG_PATTERN.test(candidate)) repos.push(candidate);
+    }
+  }
+  return repos;
+}
+
 /** Whether a declared cross-repo write target is authorised, and why not. */
 export type CrossRepoAuthorisation =
   | {
@@ -394,6 +473,48 @@ export async function authoriseCrossRepoTarget(
       if (classification.kind !== "internal") continue;
       if (classification.candidateRepo.toLowerCase() === wanted) {
         return { authorised: true, via: "dependency", manifestPath: path };
+      }
+    }
+  }
+
+  // Issue #1864: a Rust consumer declares its dependencies in Cargo — the
+  // root manifest and, for a workspace, each literal member's. Without this
+  // every NEAT-AI-* repo's dependency PR into NEAT-AI-core was refused as
+  // "no dependency manifest could be read" and the agent's fix discarded.
+  const readManifest = async (path: string): Promise<string | null> => {
+    const read = await runner([
+      "gh",
+      "api",
+      `repos/${consumingRepo}/contents/${path}`,
+      "-H",
+      "Accept: application/vnd.github.raw",
+    ]);
+    if (!read.success) return null;
+    const rawText = read.stdout.slice(0, MAX_MANIFEST_SCAN_CHARS);
+    return rawText.trim().length === 0 ? null : rawText;
+  };
+  const cargoRoot = await readManifest(CONSUMING_CARGO_MANIFEST);
+  if (cargoRoot !== null) {
+    manifestsRead++;
+    const cargoManifests: Array<{ path: string; rawText: string }> = [
+      { path: CONSUMING_CARGO_MANIFEST, rawText: cargoRoot },
+    ];
+    for (const member of cargoWorkspaceMembers(cargoRoot)) {
+      const memberPath = `${member}/${CONSUMING_CARGO_MANIFEST}`;
+      const memberText = await readManifest(memberPath);
+      if (memberText !== null) {
+        cargoManifests.push({ path: memberPath, rawText: memberText });
+      }
+    }
+    for (const manifest of cargoManifests) {
+      for (const repo of cargoDeclaredInternalRepos(manifest.rawText)) {
+        if (repo.toLowerCase() === wanted) {
+          return {
+            authorised: true,
+            via: "dependency",
+            manifestPath: manifest.path,
+          };
+        }
       }
     }
   }

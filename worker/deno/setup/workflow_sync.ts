@@ -42,6 +42,13 @@ import {
   type AlertDedupRow,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
+import {
+  type ActionPinResolverDeps,
+  applyResolvedPins,
+  resolveActionPins,
+  type ResolvedActionPins,
+} from "../lib/action_pin_resolver.ts";
+import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -85,7 +92,23 @@ export interface WorkflowSyncOptions extends AlertDedupAuthorOptions {
    * already set.
    */
   workDir?: string;
+  /**
+   * Resolve the action pins every rendered issue body carries (Issue
+   * #1824). Defaults to {@link resolveActionPins} over the same runner the
+   * `gh` calls use, so no new credential path is introduced.
+   *
+   * Called at most once per sync, lazily — immediately before the first body
+   * it renders — so a run that files nothing (a dry run, or a repo whose
+   * issues all exist already) never resolves at all.
+   */
+  resolvePins?: PinResolver;
 }
+
+/** Resolve the whole pin catalogue against upstream. */
+export type PinResolver = () => Promise<ResolvedActionPins>;
+
+/** The pins a rendered issue body is interpolated with. */
+export type ResolvedPins = ResolvedActionPins["pins"];
 
 /** Result of syncing workflows for a single repo. */
 export interface WorkflowSyncResult {
@@ -224,8 +247,47 @@ function requiredCheckGuidance(spec: WorkflowSpec): string {
   return `\n${requiredStatusCheckSection(checkNames)}\n`;
 }
 
+/**
+ * The rule the implementer applies to the YAML the body carries
+ * (Issue #1824).
+ *
+ * The templates mark no value as repository-specific, so the body says so
+ * outright rather than leaving the implementer to guess which strings are
+ * placeholders — a guess that has produced hand-edited workflows the fleet's
+ * own Actions audit then reports.
+ */
+export const COPY_VERBATIM_CLAUSE =
+  "no value in it is repository-specific unless listed here, and nothing is " +
+  "listed for this template";
+
+/**
+ * The rule covering the `uses:` pins, which are resolved when the issue is
+ * filed rather than being the catalogue's frozen SHAs.
+ */
+export const COPY_PINS_AS_GIVEN_RULE =
+  "The action pins above are already resolved to the highest release that has " +
+  "aged past the fleet's supply-chain quarantine window (24 hours by " +
+  "default) — copy them as given, and do not re-resolve, bump or reformat " +
+  "them.";
+
+/**
+ * The file-scoped checks the committed workflow has to survive.
+ *
+ * Rendered from {@link WORKFLOW_FILE_CHECKS} rather than hand-copied, so a
+ * check added to the audit reaches every issue body the next sync files.
+ */
+function workflowCheckSection(): string {
+  const labels = WORKFLOW_FILE_CHECKS.map((check) => `- ${check.label}`)
+    .join("\n");
+  return `### Checks the committed file must pass
+
+The file as committed must yield no finding from any of these checks:
+
+${labels}`;
+}
+
 /** Build the issue body for a missing workflow. */
-export function issueBody(spec: WorkflowSpec): string {
+export function issueBody(spec: WorkflowSpec, pins: ResolvedPins): string {
   const tag = deduplicationTag(spec.id);
 
   return `## ${spec.name}
@@ -246,14 +308,16 @@ This repository is missing the **${spec.name}** GitHub Actions workflow. Adding 
 ### Suggested workflow template
 
 \`\`\`yaml
-${spec.template.trim()}
+${applyResolvedPins(spec.template, pins).trim()}
 \`\`\`
 
 ### How to apply
 
-1. Copy the YAML template above
-2. Save it as \`.github/workflows/${spec.suggestedFilename}\`
-3. Commit and push to the default branch
+1. Copy the YAML above **verbatim** — ${COPY_VERBATIM_CLAUSE}.
+2. ${COPY_PINS_AS_GIVEN_RULE}
+3. Save it as \`.github/workflows/${spec.suggestedFilename}\` and push to the default branch.
+
+${workflowCheckSection()}
 ${requiredCheckGuidance(spec)}
 ---
 *Raised automatically by VibeCoder workflow sync.*
@@ -279,6 +343,7 @@ export function issueBodyPartial(
   spec: WorkflowSpec,
   foundIn: string,
   missingGroups: string[][],
+  pins: ResolvedPins,
 ): string {
   const tag = partialDeduplicationTag(spec.id);
   const missingSet = new Set(missingGroups.map((g) => g.join("|")));
@@ -319,15 +384,17 @@ ${missingList}
 ### Suggested workflow template
 
 \`\`\`yaml
-${spec.template.trim()}
+${applyResolvedPins(spec.template, pins).trim()}
 \`\`\`
 
 ### How to complete
 
 1. Review \`.github/workflows/${foundIn}\` and confirm whether each "not detected" capability above is genuinely missing or implemented via an alternative the auditor does not recognise.
-2. If the capability is genuinely missing, add an implementation for it — copy the relevant step from the suggested template above, or use any equivalent configuration that performs the same capability.
+2. If the capability is genuinely missing, add an implementation for it — copy the relevant step from the suggested template above **verbatim** (${COPY_VERBATIM_CLAUSE}), or use any equivalent configuration that performs the same capability. ${COPY_PINS_AS_GIVEN_RULE}
 3. If every capability is in fact present via alternatives, close this issue as not-applicable. No workflow change is needed.
 4. Otherwise, commit the additions to the default branch.
+
+${workflowCheckSection()}
 ${requiredCheckGuidance(spec)}
 ---
 *Raised automatically by VibeCoder workflow sync.*
@@ -342,10 +409,10 @@ ${tag}`;
 async function createWorkflowIssue(
   repo: string,
   spec: WorkflowSpec,
+  body: string,
   runner: (cmd: string[]) => Promise<CommandOutput>,
 ): Promise<boolean> {
   const title = issueTitle(spec);
-  const body = issueBody(spec);
 
   // Try to create with the "enhancement" label first.
   const withLabel = await runner([
@@ -386,12 +453,10 @@ async function createWorkflowIssue(
 async function createPartialWorkflowIssue(
   repo: string,
   spec: WorkflowSpec,
-  foundIn: string,
-  missingGroups: string[][],
+  body: string,
   runner: (cmd: string[]) => Promise<CommandOutput>,
 ): Promise<boolean> {
   const title = issueTitlePartial(spec);
-  const body = issueBodyPartial(spec, foundIn, missingGroups);
 
   // Try to create with the "enhancement" label first.
   const withLabel = await runner([
@@ -424,6 +489,110 @@ async function createPartialWorkflowIssue(
   return withoutLabel.success;
 }
 
+/**
+ * Adapt the setup runner to the resolver's `runFn` shape.
+ *
+ * Two faults this has to avoid, both of which would be silent:
+ *
+ * - **The lookup must be bounded.** `createSetupRunCommand` sends `gh` to
+ *   `spawnGh` without a signal, and `spawnGh` applies a deadline only when
+ *   one is given — so nothing else on this path times the call out, and a
+ *   wedged `gh api` would hang the whole sync. The resolver's own
+ *   `timeoutSeconds` is honoured here instead, and a call that overruns it
+ *   is reported as a failure so the action falls back with a logged reason.
+ * - **The reason must survive.** A failed process is reported as a runner
+ *   error carrying its `stderr`, not as a zero-output non-zero exit: the
+ *   resolver's non-zero branch rebuilds its message from the exit code alone
+ *   and would throw away "gh: not found" or an HTTP 403, which is exactly
+ *   what the `[workflow-sync] pin resolution failed:` line is read for.
+ */
+export function pinResolverRunFn(
+  runner: (cmd: string[]) => Promise<CommandOutput>,
+): ActionPinResolverDeps["runFn"] {
+  return async (cmd: string[], timeoutSeconds: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<CommandOutput>((resolve) => {
+      timer = setTimeout(
+        () =>
+          resolve({
+            success: false,
+            stdout: "",
+            stderr: `timed out after ${timeoutSeconds}s`,
+          }),
+        timeoutSeconds * 1000,
+      );
+    });
+    try {
+      const result = await Promise.race([runner(cmd), budget]);
+      if (!result.success) {
+        return {
+          ok: false,
+          error: new Error(result.stderr || "the command reported no reason"),
+        };
+      }
+      return { ok: true, value: { exitCode: 0, output: result.stdout } };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+}
+
+/** The runner every `gh` call in a sync goes through. */
+function syncRunner(
+  options: WorkflowSyncOptions,
+): (cmd: string[]) => Promise<CommandOutput> {
+  return options.runCommand ?? createSetupRunCommand(options.ghConfigDir);
+}
+
+/** The diagnostics sink a sync writes its skips and fallbacks to. */
+function syncLog(options: WorkflowSyncOptions): (message: string) => void {
+  return options.log ?? ((message: string) => console.warn(message));
+}
+
+/** The resolver used when the caller injects none. */
+function defaultPinResolver(
+  runner: (cmd: string[]) => Promise<CommandOutput>,
+  log: (message: string) => void,
+): PinResolver {
+  return () => resolveActionPins({ runFn: pinResolverRunFn(runner), log });
+}
+
+/**
+ * Build the once-per-sync pin lookup a body render calls.
+ *
+ * The returned function memoises the resolution — the pins do not vary by
+ * repository, so a fleet-wide sync resolves the catalogue once — and is
+ * **lazy**, so a run that renders no body (a dry run, or a repo whose issues
+ * have all been filed already) issues no `gh` call at all.
+ */
+function createPinLookup(
+  options: WorkflowSyncOptions,
+  runner: (cmd: string[]) => Promise<CommandOutput>,
+  log: (message: string) => void,
+): () => Promise<ResolvedPins> {
+  const resolve = memoisePinResolver(
+    options.resolvePins ?? defaultPinResolver(runner, log),
+  );
+  return async () => (await resolve()).pins;
+}
+
+/** Wrap a resolver so it runs at most once, however many bodies are rendered. */
+function memoisePinResolver(resolve: PinResolver): PinResolver {
+  let inFlight: Promise<ResolvedActionPins> | undefined;
+  return () => (inFlight ??= resolve());
+}
+
+/** One line naming a spec the sync skipped, and why — a skip is never silent. */
+function skipReason(
+  repo: string,
+  specId: string,
+  stage: string,
+  err: unknown,
+): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return `[workflow-sync] ${repo}: skipped ${specId} — ${stage} failed: ${message}`;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -443,9 +612,8 @@ export async function syncWorkflowsForRepo(
   repo: string,
   options: WorkflowSyncOptions = {},
 ): Promise<WorkflowSyncResult> {
-  const runner = options.runCommand ??
-    createSetupRunCommand(options.ghConfigDir);
-  const log = options.log ?? ((message: string) => console.warn(message));
+  const runner = syncRunner(options);
+  const log = syncLog(options);
   const langOpts: LanguageDetectorOptions = {
     runCommand: runner,
     ghConfigDir: options.ghConfigDir,
@@ -455,6 +623,9 @@ export async function syncWorkflowsForRepo(
     ghConfigDir: options.ghConfigDir,
     localRepoPath: options.localRepoPath,
   };
+  // Lazy and memoised: resolved once, immediately before the first body this
+  // sync renders, and never at all when nothing is filed (Issue #1824).
+  const pins = createPinLookup(options, runner, log);
 
   // Step 1: Detect languages
   let languages: RepoLanguages;
@@ -533,57 +704,26 @@ export async function syncWorkflowsForRepo(
   let partialIssuesSkipped = 0;
 
   if (!options.dryRun) {
-    for (const spec of audit.missing) {
-      try {
-        const exists = await issueExistsByTag(
-          repo,
-          deduplicationTag(spec.id),
-          runner,
-          options,
-          log,
-        );
-        if (exists) {
-          issuesSkipped++;
-          continue;
-        }
-
-        const created = await createWorkflowIssue(repo, spec, runner);
-        if (created) {
-          issuesRaised++;
-        }
-      } catch {
-        // Skip this spec on failure — do not block other specs.
-      }
-    }
-
-    // Step 4: Raise issues for partially matching workflows
-    for (const partialMatch of audit.partial) {
-      try {
-        const exists = await issueExistsByTag(
-          repo,
-          partialDeduplicationTag(partialMatch.spec.id),
-          runner,
-          options,
-          log,
-        );
-        if (exists) {
-          partialIssuesSkipped++;
-          continue;
-        }
-
-        const created = await createPartialWorkflowIssue(
-          repo,
-          partialMatch.spec,
-          partialMatch.foundIn,
-          partialMatch.missingGroups,
-          runner,
-        );
-        if (created) {
-          partialIssuesRaised++;
-        }
-      } catch {
-        // Skip this spec on failure — do not block other specs.
-      }
+    try {
+      await fileIssues();
+    } catch (err) {
+      // Only a pin fault reaches here — every per-spec failure is caught and
+      // logged inside. It is fleet-wide and deterministic, so it is reported
+      // as this repo's failure (the CLI prints it and exits non-zero) rather
+      // than filing a stale template or quietly filing nothing.
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        repo,
+        languages: audit.languages,
+        present: audit.present.length,
+        issuesRaised,
+        issuesSkipped,
+        partial: audit.partial.length,
+        partialIssuesRaised,
+        partialIssuesSkipped,
+        error: `Action pin resolution failed: ${message}`,
+      };
     }
   } else {
     // Dry run: count all missing and partial as would-be-raised.
@@ -602,6 +742,80 @@ export async function syncWorkflowsForRepo(
     partialIssuesRaised,
     partialIssuesSkipped,
   };
+
+  /** Raise one issue per missing spec, then one per partial match. */
+  async function fileIssues(): Promise<void> {
+    for (const spec of audit.missing) {
+      let exists: boolean;
+      try {
+        exists = await issueExistsByTag(
+          repo,
+          deduplicationTag(spec.id),
+          runner,
+          options,
+          log,
+        );
+      } catch (err) {
+        // One spec's dedup search must not block the others, but a skip is
+        // never silent (Issue #1824).
+        log(skipReason(repo, spec.id, "dedup search", err));
+        continue;
+      }
+      if (exists) {
+        issuesSkipped++;
+        continue;
+      }
+
+      // Rendered outside the `catch`: a pin fault is fleet-wide, not one
+      // spec's, and `applyResolvedPins` throws on a malformed pin by design
+      // (Issue #1823) — swallowing that would file a stale template or
+      // nothing at all, silently.
+      const body = issueBody(spec, await pins());
+      try {
+        if (await createWorkflowIssue(repo, spec, body, runner)) {
+          issuesRaised++;
+        }
+      } catch (err) {
+        log(skipReason(repo, spec.id, "issue creation", err));
+      }
+    }
+
+    // Step 4: Raise issues for partially matching workflows
+    for (const partialMatch of audit.partial) {
+      const spec = partialMatch.spec;
+      let exists: boolean;
+      try {
+        exists = await issueExistsByTag(
+          repo,
+          partialDeduplicationTag(spec.id),
+          runner,
+          options,
+          log,
+        );
+      } catch (err) {
+        log(skipReason(repo, spec.id, "partial dedup search", err));
+        continue;
+      }
+      if (exists) {
+        partialIssuesSkipped++;
+        continue;
+      }
+
+      const body = issueBodyPartial(
+        spec,
+        partialMatch.foundIn,
+        partialMatch.missingGroups,
+        await pins(),
+      );
+      try {
+        if (await createPartialWorkflowIssue(repo, spec, body, runner)) {
+          partialIssuesRaised++;
+        }
+      } catch (err) {
+        log(skipReason(repo, spec.id, "partial issue creation", err));
+      }
+    }
+  }
 }
 
 /**
@@ -616,18 +830,26 @@ export async function syncWorkflowsForAllRepos(
   options: WorkflowSyncOptions = {},
 ): Promise<WorkflowSyncResult[]> {
   const results: WorkflowSyncResult[] = [];
+  // The pins do not vary by repository, so the whole fleet-wide sync shares
+  // one lazily-resolved catalogue: at most one resolution per call, and none
+  // when no body is rendered (Issue #1824).
+  const sharedResolve = memoisePinResolver(
+    options.resolvePins ??
+      defaultPinResolver(syncRunner(options), syncLog(options)),
+  );
+  const base: WorkflowSyncOptions = { ...options, resolvePins: sharedResolve };
   for (const repo of repos) {
     if (!repo) continue;
     // Derive a per-repo `localRepoPath` from `workDir` when the caller
     // hasn't already set one explicitly (Issue #1811). Each repo lives
     // under `<workDir>/<repoName>` (matches `gitignore_sync.ts`).
     const perRepoOptions: WorkflowSyncOptions =
-      options.localRepoPath !== undefined ? options : (options.workDir
+      options.localRepoPath !== undefined ? base : (options.workDir
         ? {
-          ...options,
+          ...base,
           localRepoPath: `${options.workDir}/${repo.split("/").pop() ?? repo}`,
         }
-        : options);
+        : base);
     const result = await syncWorkflowsForRepo(repo, perRepoOptions);
     results.push(result);
   }
