@@ -19,7 +19,13 @@ import type {
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { isBaselineAwareQualityGateEnabled } from "../baseline_aware_gate.ts";
 import { computeBaselineQualityCacheKey } from "../baseline_quality_cache.ts";
-import type { GenericFinding } from "../baseline_gate.ts";
+import type { FailedCheck, GenericFinding } from "../baseline_gate.ts";
+import {
+  GATE_EXCERPT_HEAD_CHARS,
+  GATE_EXCERPT_TAIL_CHARS,
+} from "../quality_helpers.ts";
+import { failedChecks } from "../baseline_gate.ts";
+import { redactedHeadTail } from "../redacted_text.ts";
 
 /**
  * Run a baseline quality check on the clean repository before Claude starts.
@@ -77,17 +83,33 @@ export async function workOnIssueBaselineQuality(
       Math.round((Date.now() - gateStartedMs) / 1000),
     );
 
+    let baselineFailedChecks: FailedCheck[] | undefined;
     if (qualityResult.value.passed) {
       state.baselineQualityPassed = true;
       state.baselineQualityOutput = "";
+      state.baselineFailedChecks = [];
+      baselineFailedChecks = [];
       logger.info("Baseline quality check passed — clean repository");
     } else {
       state.baselineQualityPassed = false;
       state.baselineQualityOutput = qualityResult.value.output;
+      // What failed, and what each failing check printed (Issue #1852) — the
+      // post-Claude gate compares against this to tell a failure the
+      // repository already had from one this run introduced.
+      baselineFailedChecks = failedChecks(qualityResult.value.checks);
+      state.baselineFailedChecks = baselineFailedChecks;
       logger.warn(
         "Baseline quality check failed — repo has pre-existing failures",
         {
-          output: qualityResult.value.output.slice(-500),
+          checks: baselineFailedChecks.map((check) => check.name).join(", "),
+          // Head as well as tail (Issue #1852): the gate names the check as
+          // it starts it, so a tail-only excerpt begins mid-sentence and the
+          // log cannot say what is red.
+          output: redactedHeadTail(
+            qualityResult.value.output,
+            GATE_EXCERPT_HEAD_CHARS,
+            GATE_EXCERPT_TAIL_CHARS,
+          ),
         },
       );
     }
@@ -122,6 +144,9 @@ export async function workOnIssueBaselineQuality(
           passed: state.baselineQualityPassed,
           output: state.baselineQualityOutput,
           ...(capturedFindings ? { findings: capturedFindings } : {}),
+          ...(baselineFailedChecks
+            ? { failedChecks: baselineFailedChecks }
+            : {}),
         });
       } catch (err) {
         logger.warn("Baseline quality cache write failed (non-fatal)", {
@@ -166,6 +191,14 @@ async function applyCachedBaseline(
 
   state.baselineQualityPassed = cached.passed;
   state.baselineQualityOutput = cached.output;
+  // Absent on an entry written before the pre-existing comparison existed
+  // (Issue #1852) — left unset, so the post-Claude gate cannot attribute a
+  // failure to the baseline and behaves exactly as it did before.
+  if (cached.passed) {
+    state.baselineFailedChecks = [];
+  } else if (cached.failedChecks) {
+    state.baselineFailedChecks = cached.failedChecks;
+  }
   if (wantFindings && cached.findings) {
     state.baselineGateFindings = cached.findings;
   }
