@@ -156,6 +156,34 @@ export const CLAUDE_FIVE_HOUR_GATE_MAX_USED = 1 -
  */
 export const CLAUDE_SEVEN_DAY_LOW_REMAINING = 0.1;
 
+/**
+ * Ratio of used share to elapsed share at or above which the weekly quota
+ * "will not last" and the backlog tiers are skipped (Issue #1885).
+ *
+ * A linear projection: a token that has spent 62% of its week with 42% of the
+ * week elapsed is on course for 149% by reset, so the quota runs out before
+ * the window does. At exactly 1.0 the projection lands on the quota at the
+ * instant it resets — the target — so the gate engages there and the
+ * remaining budget goes to `top-priority` and `work-on` work.
+ *
+ * A fixed constant beside {@link CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING} and
+ * deliberately not a `.config.json` key, for the same reason that one is: the
+ * figure describes how Anthropic's weekly window behaves, not how one host is
+ * configured, so a per-host override would only let a fleet drift apart.
+ */
+export const CLAUDE_WEEK_PACE_THRESHOLD = 1;
+
+/**
+ * Hours of the seven-day window that must have elapsed before the pace
+ * projection is trusted (Issue #1885).
+ *
+ * Early in a window the divisor is tiny, so one heavy run reads as a
+ * catastrophic burn rate: 2% used in the first hour of 168 projects to 336%.
+ * A day in, the projection describes the week rather than the last few
+ * minutes. Below the grace the gate is always off, so the backlog runs.
+ */
+export const CLAUDE_WEEK_PACE_GRACE_HOURS = 24;
+
 /** Nominal length of each window, used when its reset has already passed. */
 const WINDOW_HOURS: Record<ClaudeBudgetWindowName, number> = {
   five_hour: 5,

@@ -1560,3 +1560,37 @@ Deno.test("census - a human's assignment occupies nothing (Issue #1071)", () => 
   assertEquals(entry.unblocked.workOn, 2);
   assert(entry.inversionSignal);
 });
+
+Deno.test("census - the week-pace gate's tier-3 refusal is modelled, not read as an inversion (Issue #1885)", () => {
+  // Fail direction: without `weekPaceEngaged` the same repo reports
+  // `lowPriority: 1` and `inversionSignal: true` on every cycle the gate is
+  // engaged, which after IDLE_INVERSION_THRESHOLD cycles files an
+  // idle-inversion issue about the worker's own pace gate.
+  const repos = [
+    repoInput({
+      repo: "org/a",
+      issues: [issue(1, ["low-priority"]), issue(2, ["idle-task"])],
+    }),
+  ];
+  const workerUser = "vibe-bot";
+
+  const ungated = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser,
+    repos,
+  });
+  assertEquals(ungated.perRepo[0]!.unblocked.lowPriority, 1);
+  assertEquals(ungated.perRepo[0]!.lowPrioritySuppressed, 0);
+  assert(ungated.perRepo[0]!.inversionSignal);
+
+  const gated = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser,
+    repos,
+    weekPaceEngaged: true,
+  });
+  assertEquals(gated.perRepo[0]!.unblocked.lowPriority, 0);
+  assertEquals(gated.perRepo[0]!.lowPrioritySuppressed, 1);
+  assertEquals(gated.perRepo[0]!.inversionSignal, false);
+  assertEquals(gated.inversionRepos, []);
+});

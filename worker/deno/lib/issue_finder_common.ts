@@ -160,6 +160,18 @@ export interface FindIssuesOptions {
    * In production, defaults to `{ randomFn: Math.random, randomPoolSize: 3 }`.
    */
   selectionOptions?: SelectionOptions;
+  /**
+   * True when the weekly Claude quota will not last (Issue #1885).
+   *
+   * Read by `findOldestIssue` only, which passes it to
+   * {@link SelectionOptions.weekPaceEngaged}: the scan collects every tier as
+   * it always has, and selection refuses to claim a `low-priority` or
+   * `idle-task` candidate while the projection says the seven-day window runs
+   * out before it resets. The label and planning scans share this options
+   * type but have no backlog tier to gate, so they ignore it. Absent means
+   * "not gated", which is exactly today's pickup order.
+   */
+  weekPaceEngaged?: boolean;
 }
 
 /**

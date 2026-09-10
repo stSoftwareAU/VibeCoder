@@ -118,6 +118,17 @@ export interface SelectionOptions {
    * unaffected.
    */
   repoNice?: (repo: string) => number;
+
+  /**
+   * True when the weekly Claude quota will not last (Issue #1885).
+   *
+   * While engaged, no `low-priority` (tier 3) or `idle-task` (tier 4)
+   * candidate is claimed, so the quota left in the seven-day window goes to
+   * `top-priority` and `work-on` work. Tiers 1, 2 and 2b are untouched.
+   * Defaults to `false` — an unknown or failed budget reading never refuses
+   * work, so pickup is exactly as it was.
+   */
+  weekPaceEngaged?: boolean;
 }
 
 /**
@@ -459,6 +470,11 @@ function selectAcrossNiceTiers(
  * directly: `idle-task` is the last tier considered, so it is reached only
  * when no real work is selectable anywhere in any `nice` tier.
  *
+ * Issue #1885: when `options.weekPaceEngaged` is set, tiers 3 and 4 are not
+ * considered at all this scan — the weekly Claude quota is projected to run
+ * out before it resets, so what is left of it goes to `top-priority` and
+ * `work-on` work rather than to backlog and busywork.
+ *
  * @param result - Selection result with all candidates and metadata
  * @returns Selected candidate, or null if none eligible
  */
@@ -533,12 +549,19 @@ export function selectHighestPriority(
   //
   //   1  configured-label  →  2  work-on  →  2b self-diagnostic
   //   →  3  low-priority   →  4  idle-task (fleet-global floor, Issue #2812)
+  //
+  // Issue #1885: while the weekly Claude quota is projected to run out before
+  // its window resets, the last two tiers are dropped from the ladder
+  // entirely, so the quota that remains is spent on urgency signals rather
+  // than on backlog and busywork. Tiers 1, 2 and 2b are never gated — the
+  // point is to redirect the remaining quota, never to stop working.
   const tiers: IssueCandidate[][] = [
     labelCandidates,
     eligibleWorkOn,
     selfDiagnosticCandidates,
-    eligibleLowPriority,
-    eligibleIdleTask,
+    ...(options?.weekPaceEngaged
+      ? []
+      : [eligibleLowPriority, eligibleIdleTask]),
   ];
 
   for (const tier of tiers) {

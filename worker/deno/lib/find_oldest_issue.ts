@@ -496,10 +496,17 @@ export async function findOldestIssue(
   // DESIGN-PRINCIPLES.md). A test-supplied `repoNice`
   // wins; otherwise resolve from `config.repoConfig` (defaults to `0`/neutral
   // for every repo when unset, preserving today's behaviour).
+  //
+  // Issue #1885: the weekly Claude quota's pace, read once per scan cycle by
+  // the caller. While it says the week will not last, selection claims no
+  // `low-priority` or `idle-task` candidate, so what is left of the quota
+  // goes to `top-priority` and `work-on` work.
   const selectionOptions: SelectionOptions = {
     ...baseSelectionOptions,
     repoNice: baseSelectionOptions.repoNice ??
       ((repo: string) => getRepoNice(config.repoConfig, repo)),
+    weekPaceEngaged: options.weekPaceEngaged ??
+      baseSelectionOptions.weekPaceEngaged ?? false,
   };
   const selected = selectHighestPriority(selectionResult, selectionOptions);
 
