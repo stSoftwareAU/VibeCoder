@@ -27,7 +27,7 @@
  *                          TIMING_TEXT_PATTERNS.
  *   5. code-fix-required, second rung
  *                         (the failing step's own non-zero exit, see
- *                          EXPLICIT_EXIT_REGEX_PATTERNS — ranked here, below
+ *                          EXIT_CODE_REGEX — ranked here, below
  *                          rung 4, because a step that timed out also exits
  *                          non-zero).
  *   6. unknown            (fallback — caller should attempt a code fix).
@@ -167,14 +167,19 @@ const TIMING_TEXT_PATTERNS: ReadonlyArray<string> = [
 ];
 
 /**
- * "timeout" counts as a timing signal only when the surrounding words on the
- * same line make it the failure being reported — "timeout exceeded", "timeout
- * after 30s", "failed: timeout while waiting". Both patterns are bounded and
- * match literal alternatives only, so neither can backtrack catastrophically.
+ * "timeout" counts as a timing signal only when a nearby word on the same line
+ * makes it the failure being reported: a budget that was overrun ("timeout of
+ * 30000ms exceeded", Jest's "Exceeded timeout of 5000 ms") or a failure that
+ * names it as the cause ("npm ERR! network Socket timeout"). A `--timeout 60`
+ * flag with unrelated prose around it matches none of them.
+ *
+ * Every window is bounded and every alternation is literal, so none of these
+ * can backtrack catastrophically.
  */
 const TIMING_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
-  /\btimeouts?\b[^\n]{0,60}?\b(exceeded|reached|expired|elapsed|after|error|waiting)\b/i,
-  /\b(error|failed|failure|aborted|killed|cancelled|canceled)\b[^\n]{0,20}?\btimeouts?\b/i,
+  /\btimeouts?\b[^\n]{0,30}?\b(exceeded|expired|elapsed|reached)\b/i,
+  /\b(exceeded|exceeds|exceeding|reached|hit|within)\b[^\n]{0,30}?\btimeouts?\b/i,
+  /\b(err|error|errors|failed|failure|aborted|killed|cancelled|canceled)\b[^\n]{0,30}?\btimeouts?\b/i,
 ];
 
 /**
@@ -182,9 +187,16 @@ const TIMING_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
  * "exited with code 2", "exit status 1". An ordinary script failure carrying
  * no other recognised pattern is a code fix, not a shrug (Issue #1882).
  */
-const EXPLICIT_EXIT_REGEX_PATTERNS: ReadonlyArray<RegExp> = [
-  /\bexit(?:ed)?\s*(?:with\s*)?(?:code|status)\s*[:=]?\s*[1-9]\d*/i,
-];
+const EXIT_CODE_REGEX =
+  /\bexit(?:ed)?\s*(?:with\s*)?(?:code|status)\s*[:=]?\s*(\d+)/gi;
+
+/**
+ * Exit codes that report how the step DIED, not what the code got wrong: 124
+ * is GNU `timeout`'s verdict, 137 a SIGKILL (OOM or a cancelled runner) and
+ * 143 a SIGTERM. None of them is evidence a working-tree fix exists, so they
+ * fall through to the unknown fallback rather than claiming a code fix.
+ */
+const NON_CODE_FIX_EXIT_CODES: ReadonlySet<number> = new Set([124, 137, 143]);
 
 const INFRA_TEXT_PATTERNS: ReadonlyArray<string> = [
   "connect etimedout",
@@ -321,17 +333,13 @@ export function classifyCiFailure(
   }
 
   // ---- Explicit non-zero exit ----
-  const matchedExit = EXPLICIT_EXIT_REGEX_PATTERNS.filter((re) =>
-    re.test(haystack)
-  );
-  if (matchedExit.length > 0) {
+  const exitCode = findCodeFixExitCode(haystack);
+  if (exitCode !== undefined) {
     return {
       category: "code-fix-required",
-      reason: "the failing step exited non-zero with no timing signal",
-      signals: [
-        `check:${lowerName}`,
-        ...matchedExit.map((re) => `regex:${re.source}`),
-      ],
+      reason:
+        `the failing step exited non-zero (${exitCode}) with no timing signal`,
+      signals: [`check:${lowerName}`, `exit:${exitCode}`],
     };
   }
 
@@ -359,6 +367,19 @@ function buildHaystack(
   }
   if (logExcerpt) parts.push(logExcerpt);
   return parts.join("\n").toLowerCase();
+}
+
+/**
+ * First exit code in the haystack that evidences a fixable failure — non-zero,
+ * and not one of the "how it died" codes. Returns undefined when there is no
+ * such code, which leaves the caller on the unknown fallback.
+ */
+function findCodeFixExitCode(haystack: string): number | undefined {
+  for (const match of haystack.matchAll(EXIT_CODE_REGEX)) {
+    const code = Number(match[1]);
+    if (code !== 0 && !NON_CODE_FIX_EXIT_CODES.has(code)) return code;
+  }
+  return undefined;
 }
 
 /** Construct a short human-readable reason for a code-fix-required match. */

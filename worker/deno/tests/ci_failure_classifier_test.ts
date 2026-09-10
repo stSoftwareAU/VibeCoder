@@ -315,7 +315,7 @@ Deno.test("ci_failure_classifier - regression for PR 150 (exit-1 script, inciden
   // The routing must be explainable: the step's own exit is the evidence.
   assertEquals(result.reason.includes("exited non-zero"), true);
   assertEquals(result.signals.includes("check:project validation"), true);
-  assertEquals(result.signals.some((s) => s.startsWith("regex:")), true);
+  assertEquals(result.signals.includes("exit:1"), true);
 });
 
 Deno.test("ci_failure_classifier - a bare timeout-minutes echo alone is not a timing failure", () => {
@@ -376,6 +376,62 @@ Deno.test("ci_failure_classifier - an explicit non-zero exit routes to code-fix-
     "##[error]Process completed with exit code 2.",
   );
   assertEquals(result.category, "code-fix-required");
+});
+
+Deno.test("ci_failure_classifier - Jest's 'Exceeded timeout of 5000 ms' stays timing", () => {
+  // The overrun budget can be named either side of the word "timeout".
+  const result = classifyCiFailure(
+    "unit tests",
+    [{ message: "thrown: Exceeded timeout of 5000 ms for a test." }],
+    "##[error]Process completed with exit code 1.",
+  );
+  assertEquals(result.category, "timing");
+});
+
+Deno.test("ci_failure_classifier - a socket timeout named as the failure stays timing", () => {
+  const result = classifyCiFailure(
+    "install",
+    [],
+    [
+      "npm ERR! network Socket timeout",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+  assertEquals(result.category, "timing");
+});
+
+Deno.test("ci_failure_classifier - a --timeout flag beside unrelated prose is not timing", () => {
+  // The incidental-mention failure mode again: a flag on the command line
+  // must not be read as the step running out of time, however the rest of
+  // the line reads.
+  const result = classifyCiFailure(
+    "smoke",
+    [],
+    [
+      "Run ./scripts/wait.sh --timeout 60 --retry after failure",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+  assertEquals(result.category, "code-fix-required");
+});
+
+Deno.test("ci_failure_classifier - exit code 124 claims no code fix", () => {
+  // GNU `timeout`'s own verdict says how the step died, not what to fix.
+  const result = classifyCiFailure(
+    "e2e",
+    [],
+    "##[error]Process completed with exit code 124.",
+  );
+  assertEquals(result.category, "unknown");
+});
+
+Deno.test("ci_failure_classifier - a SIGKILLed step claims no code fix", () => {
+  const result = classifyCiFailure(
+    "build",
+    [],
+    "##[error]Process completed with exit code 137.",
+  );
+  assertEquals(result.category, "unknown");
 });
 
 Deno.test("ci_failure_classifier - exit code 0 is not a failure signal", () => {
