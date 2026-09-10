@@ -172,6 +172,7 @@ Deno.test("Codex ChatGPT snapshot maps to fixed subscription", () => {
       remainingFraction: 0.6,
       windows: [{
         window: "primary",
+        usedPercent: 40,
         remainingFraction: 0.6,
         resetAt: 30_000,
         windowMinutes: 300,
