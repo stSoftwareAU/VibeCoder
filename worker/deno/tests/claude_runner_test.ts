@@ -624,7 +624,6 @@ Deno.test("summariseLargeContent - keeps both the restricted tool set and the pe
   assertEquals(seen.agentProvider, "codex");
   assertEquals(seen.env, env);
 });
-
 Deno.test("summariseLargeContent - fences the content it sends to the model (Issue #1607)", async () => {
   let seen: RunClaudeOptions | undefined;
   const result = await summariseLargeContent({

@@ -40,9 +40,11 @@ import {
   restartMarkerPrNumbers,
   summariseFailedAttempts,
 } from "../lib/conflict_abandon_restart.ts";
+import type { Result } from "../types.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
+  DEFAULT_MAX_CONFLICT_ATTEMPTS,
 } from "../lib/pr_merge_conflict_scan.ts";
 
 // ---------------------------------------------------------------------------
@@ -77,7 +79,8 @@ function failedComments(
     user: { login },
     body: [
       `${CONFLICT_FAILED_MARKER} n="${n}" -->`,
-      `❌ **Merge-conflict resolution — attempt ${n} of 2 failed**`,
+      `❌ **Merge-conflict resolution — attempt ${n} of ` +
+      `${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed**`,
       "",
       "Merging `main` in did not produce a mergeable branch: the same " +
       `constant is set to two different values (attempt ${n}).`,
@@ -409,26 +412,141 @@ Deno.test("abandonAndRestart - an issue with another open PR is left alone", asy
   assertEquals(callsMatching(fake, "pr", "close").length, 0);
 });
 
-Deno.test("abandonAndRestart - an unqueueable issue is refused before the close", async () => {
+Deno.test("abandonAndRestart - an issue the worker cannot re-label is still abandoned, and named (Issue #1773)", async () => {
   // `work-on` on an existing issue is refused by the worker label guard and
-  // stripped by the discovery collectors, so closing here would leave the
-  // issue open, unqueued and invisible — worse than the stall.
+  // stripped by the discovery collectors. Before #1773 that refused the
+  // abandon and nothing was redone; now the PR is closed, the issue reopened
+  // and handed to a human with the label it needs named.
+  const fake = makeFake({ issueLabels: [], issueState: "CLOSED" });
+  const ensured: string[] = [];
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+    // The real `ensureLabelExists` keeps an on-disk label cache; the seam
+    // keeps this a hermetic unit test while still proving the rung ensures
+    // the label exists before applying it.
+    ensureLabelExists: (_repo, label) => {
+      ensured.push(label);
+      return Promise.resolve({ ok: true, value: undefined });
+    },
+  });
+
+  assertEquals(outcome, {
+    outcome: "abandoned-unlabelled",
+    issueNumber: ISSUE_NUMBER,
+    workLabel: "work-on",
+  });
+
+  // The work is redone-able: the PR is closed and the issue is back open.
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+  assertEquals(callsMatching(fake, "issue", "reopen").length, 1);
+
+  // `needs-human` on the issue — and `work-on` is never applied by the worker.
+  const labelAdds = labelAddCalls(fake, ISSUE_NUMBER);
+  assertEquals(labelAdds.length, 1);
+  assert((labelAdds[0] ?? []).includes("labels[]=needs-human"));
+  // Routed through `escalateToHuman`, so the label is created if the repo
+  // has never used it — a failure here would land after the PR was closed.
+  assertEquals(ensured, ["needs-human"]);
+  assert(
+    !fake.calls.some((args) => args.includes("labels[]=work-on")),
+    "the worker must never apply a reserved pickup label",
+  );
+
+  // The issue comment names the label a trusted author must re-apply.
+  const issueBody = bodyOfCall(fake, "issue", "comment");
+  assertStringIncludes(issueBody, CONFLICT_RESTART_MARKER);
+  // Both halves: `needs-human` blocks discovery, so naming only the pickup
+  // label would promise a re-queue that cannot happen.
+  assertStringIncludes(
+    issueBody,
+    "Remove `needs-human` and re-apply `work-on` to re-queue this issue",
+  );
+  // The heading must not claim a re-queue only a human can make.
+  assertStringIncludes(issueBody, "**Reopened:");
+  // …and the PR comment does not promise a re-queue that is not happening.
+  const prBody = bodyOfCall(fake, "pr", "comment");
+  assertStringIncludes(prBody, "`needs-human`");
+  assertStringIncludes(prBody, "`work-on`");
+  assert(!prBody.includes("is being re-queued"));
+});
+
+Deno.test("abandonAndRestart - an unlabelled abandon is still bound to one restart (Issue #1773)", async () => {
+  const fake = makeFake({ issueLabels: [] });
+
+  const escalationDeps = {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+    ensureLabelExists: () =>
+      Promise.resolve<Result<void>>({ ok: true, value: undefined }),
+  };
+
+  const first = await abandonAndRestart(makeRequest(), escalationDeps);
+  assertEquals(first.outcome, "abandoned-unlabelled");
+
+  const second = await abandonAndRestart(
+    makeRequest({ prNumber: 77, branchName: `issue-${ISSUE_NUMBER}-limits-2` }),
+    escalationDeps,
+  );
+
+  assertEquals(second, {
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: ISSUE_NUMBER,
+      samePr: false,
+    },
+  });
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+});
+
+Deno.test("abandonAndRestart - a needs-human that never landed is a named failure, not an abandon (Issue #1773)", async () => {
+  // The label is the only thing that puts the reopened issue in a human's
+  // queue: reporting `abandoned-unlabelled` when it did not land would leave
+  // the work invisible behind a green outcome.
   const fake = makeFake({ issueLabels: [] });
 
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
     trustedAuthors: FLEET_AUTHORS,
+    escalateNeedsHuman: () =>
+      Promise.resolve({ ok: true, value: { labelAdded: false } }),
   });
 
-  assertEquals(outcome, {
-    outcome: "declined",
-    reason: {
-      kind: "requeue-not-permitted",
-      issueNumber: ISSUE_NUMBER,
-      workLabel: "work-on",
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "issue-label");
+  assertEquals(outcome.issueNumber, ISSUE_NUMBER);
+  assertStringIncludes(outcome.message, "nobody's queue");
+});
+
+Deno.test("abandonAndRestart - the escalation honours a renamed needs-human label (Issue #1773)", async () => {
+  const fake = makeFake({ issueLabels: [] });
+  const seen: Array<{ needsHumanLabel: string; workLabel: string }> = [];
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+    needsHumanLabel: "escalate-to-a-person",
+    escalateNeedsHuman: (escalation) => {
+      seen.push({
+        needsHumanLabel: escalation.needsHumanLabel,
+        workLabel: escalation.workLabel,
+      });
+      return Promise.resolve({ ok: true, value: { labelAdded: true } });
     },
   });
-  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+
+  assertEquals(outcome.outcome, "abandoned-unlabelled");
+  assertEquals(seen, [{
+    needsHumanLabel: "escalate-to-a-person",
+    workLabel: "work-on",
+  }]);
+  // …and the comments name the configured label, not the default.
+  assertStringIncludes(
+    bodyOfCall(fake, "issue", "comment"),
+    "Remove `escalate-to-a-person` and re-apply `work-on`",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -975,7 +1093,7 @@ Deno.test("findOtherPrsForIssue - an unanswered listing is not an empty one", as
   );
 });
 
-Deno.test("exhaustedEscalationRoute - the other two declines say what blocked them", () => {
+Deno.test("exhaustedEscalationRoute - the other-PR decline says what blocked it", () => {
   const otherPr = exhaustedEscalationRoute({
     outcome: "declined",
     reason: {
@@ -986,18 +1104,4 @@ Deno.test("exhaustedEscalationRoute - the other two declines say what blocked th
   });
   assertEquals(otherPr.kind, "abandon-declined");
   assertStringIncludes(describeExhaustedRoute(otherPr).join("\n"), "pull/91");
-
-  const unqueueable = exhaustedEscalationRoute({
-    outcome: "declined",
-    reason: {
-      kind: "requeue-not-permitted",
-      issueNumber: ISSUE_NUMBER,
-      workLabel: "work-on",
-    },
-  });
-  assertEquals(unqueueable.kind, "abandon-declined");
-  assertStringIncludes(
-    describeExhaustedRoute(unqueueable).join("\n"),
-    "unqueued",
-  );
 });

@@ -2,6 +2,15 @@
  * Deduplicated, non-fatal baseline-carryover tracking-issue filer
  * (Issue #2605).
  *
+ * Two callers, one dedup mechanism: the diffable bypass files the carried-over
+ * findings ({@link fileBaselineCarryoverTracker}), and the pre-existing gate
+ * failure stop files the names of the checks red on the repository's own
+ * default branch ({@link fileRedCheckTracker}, Issue #1852). They share the
+ * search-then-file machinery but keep **separate titles and markers**: a
+ * shared one would let an open findings tracker suppress the red-check
+ * tracker, and then nothing on the repository would name the check that
+ * stopped every run.
+ *
  * Companion to the generic baseline-aware quality-gate bypass (Issue #2604).
  * When an unrelated PR is correctly waved through because every current
  * diffable finding (shellcheck, mermaid, markdownlint, docs) was already
@@ -41,6 +50,9 @@ import type { GenericFinding } from "./baseline_gate.ts";
 /** Body marker that, with the stable title, identifies an open tracker. */
 export const BASELINE_CARRYOVER_MARKER = "<!-- baseline-carryover-tracker -->";
 
+/** Marker of the red-check tracker (Issue #1852) — its own, never shared. */
+export const PRE_EXISTING_GATE_MARKER = "<!-- pre-existing-gate-tracker -->";
+
 /** The label that lands the tracker in the human-triage queue. */
 const TRACKER_LABEL = "needs-human";
 
@@ -50,6 +62,15 @@ const TRACKER_LABEL = "needs-human";
  */
 export function buildCarryoverTrackerTitle(repo: string): string {
   return `Pre-existing quality-gate failures: ${repo}`;
+}
+
+/**
+ * Build the stable red-check tracker title for a repo (Issue #1852). Distinct
+ * from {@link buildCarryoverTrackerTitle} so the two trackers dedup
+ * independently.
+ */
+export function buildRedCheckTrackerTitle(repo: string): string {
+  return `Quality gate red on the default branch: ${repo}`;
 }
 
 /** Minimal logger surface — satisfied by the worker `Logger` and by `console`. */
@@ -121,19 +142,88 @@ export function formatCarryoverTrackerBody(
  */
 async function hasOpenCarryoverTracker(
   repo: string,
+  title: string,
   ghCommand: (args: string[]) => Promise<string>,
   dedupAuthors: AlertDedupAuthorOptions,
   logger: TrackerLogger,
 ): Promise<boolean> {
   const matches = await findFleetAuthoredIssuesTitled({
     repo,
-    title: buildCarryoverTrackerTitle(repo),
+    title,
     context: `carryover tracker ${repo}`,
     ghCommand,
     log: logger.warn,
     ...dedupAuthors,
   });
   return matches.length > 0;
+}
+
+/**
+ * Render the tracker body for checks that are red on the repository's own
+ * default branch (Issue #1852).
+ *
+ * The findings body above needs structured findings, which only the diffable
+ * checks produce. A repository whose own check fails on the untouched tree
+ * has none — the name of the red check is all there is to say, and it is
+ * exactly what a human needs to fix the gate.
+ */
+export function formatRedCheckTrackerBody(
+  repo: string,
+  checks: readonly string[],
+): string {
+  const lines: string[] = [
+    PRE_EXISTING_GATE_MARKER,
+    "",
+    `## The quality gate is red on \`${repo}\`'s default branch`,
+    "",
+    "The quality gate is red on this repository's own default branch. A " +
+    "worker run reproduced exactly the same failure after its change, so " +
+    "the run was ended as a pre-existing gate failure (Issue #1852): no " +
+    "PR was raised, the issue it was working was released untouched, and " +
+    "the run was not recorded as a worker failure. Every run on this " +
+    "repository will stop the same way until the gate is green again.",
+    "",
+    "### Checks red on the untouched tree",
+    "",
+    ...(checks.length > 0
+      ? checks.map((check) => `- \`${check}\``)
+      : ["- (the failing check could not be named)"]),
+    "",
+    "### What a human should do",
+    "",
+    "Fix the checks above on the default branch (or open targeted issues " +
+    "for them), then close this tracker. While it stays open, the worker " +
+    "will not file a duplicate — one open tracker per repo.",
+  ];
+  return lines.join("\n");
+}
+
+/**
+ * File a deduplicated `needs-human` tracking issue for the checks that are
+ * red on the repository's own default branch (Issue #1852).
+ *
+ * Carries its own title and marker, so an open findings tracker
+ * ({@link fileBaselineCarryoverTracker}) cannot suppress it — the repository
+ * must be able to say which check is red however the gate broke.
+ *
+ * Deduplicated (one open red-check tracker per repo) and non-fatal, exactly
+ * like its sibling. Never throws.
+ *
+ * @param repo - `owner/repo` slug whose gate is red.
+ * @param checks - Names of the checks failing on the untouched tree.
+ * @param deps - Optional injectable `gh` runner and logger.
+ */
+export async function fileRedCheckTracker(
+  repo: string,
+  checks: readonly string[],
+  deps: CarryoverTrackerDeps = {},
+): Promise<void> {
+  await fileTracker(
+    repo,
+    buildRedCheckTrackerTitle(repo),
+    formatRedCheckTrackerBody(repo, checks),
+    deps,
+  );
 }
 
 /**
@@ -152,6 +242,26 @@ export async function fileBaselineCarryoverTracker(
   findings: GenericFinding[],
   deps: CarryoverTrackerDeps = {},
 ): Promise<void> {
+  await fileTracker(
+    repo,
+    buildCarryoverTrackerTitle(repo),
+    formatCarryoverTrackerBody(repo, findings),
+    deps,
+  );
+}
+
+/**
+ * File the one tracker, with whichever body the caller rendered.
+ *
+ * Holds the dedup search, the guarded label and the swallow-and-log contract
+ * both filers share, so the two entry points cannot drift apart.
+ */
+async function fileTracker(
+  repo: string,
+  title: string,
+  body: string,
+  deps: CarryoverTrackerDeps,
+): Promise<void> {
   const ghCommand = deps.ghCommand ?? defaultGhCommand;
   const logger = deps.logger ?? { warn: (m: string) => console.error(m) };
 
@@ -166,6 +276,7 @@ export async function fileBaselineCarryoverTracker(
     if (
       await hasOpenCarryoverTracker(
         repo,
+        title,
         ghCommand,
         deps.dedupAuthors ?? {},
         logger,
@@ -181,10 +292,10 @@ export async function fileBaselineCarryoverTracker(
       "--repo",
       repo,
       "--title",
-      buildCarryoverTrackerTitle(repo),
+      title,
       ...labelArgs,
       "--body",
-      formatCarryoverTrackerBody(repo, findings),
+      body,
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

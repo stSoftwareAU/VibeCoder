@@ -1,10 +1,10 @@
 # 🔎 Security sweep — the Codex budget adapter
 
 **Issue:** [#1697](https://github.com/stSoftwareAU/VibeCoder/issues/1697)
-(chunk 12m) · **Parent:** #1209
+(chunk 12w) · **Parent:** #1209
 
 The written record for the three modules that entered `worker/deno/lib/`
-_after_ the chunk-12 slices (12a–12l) recorded their coverage:
+_after_ the chunk-12 slices (12a–12v) recorded their coverage:
 
 - `worker/deno/lib/codex_budget_source.ts` — the verified Codex telemetry
   shapes and their parsers.
@@ -16,7 +16,7 @@ _after_ the chunk-12 slices (12a–12l) recorded their coverage:
 
 Appending a module to a slice whose sweep ran before it existed is the cheapest
 way to make `diffCoverage` green and a false record — the failure 12f's own
-record documents. These three are claimed by **12m**, and this file is the
+record documents. These three are claimed by **12w**, and this file is the
 reading of them.
 
 ## `worker/deno/lib/codex_budget_source.ts`

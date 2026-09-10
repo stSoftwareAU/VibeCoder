@@ -11,6 +11,7 @@ import {
   KNOWN_CONFIG_KEYS,
   suggestSimilarKey,
 } from "../lib/config_unknown_keys.ts";
+import { validateConfigFileJson } from "../lib/validation.ts";
 
 // --- Known keys completeness ---
 
@@ -98,7 +99,6 @@ Deno.test("config_unknown_keys - KNOWN_CONFIG_KEYS includes operational fields",
     "enable_model_fallback",
     "min_disk_space_mb",
     "sync_milestone_branches",
-    "milestone_sync_cooldown_seconds",
     "health_cache_ttl",
     "quality_check_timeout",
   ];
@@ -250,4 +250,26 @@ Deno.test("config_unknown_keys - warning message for truly unknown key has no su
     true,
     "Warning message should indicate the key is unknown",
   );
+});
+
+// --- Retired keys (Issue #1776) ---
+
+Deno.test("config_unknown_keys - a retired milestone_sync_cooldown_seconds is warned about once, not refused", () => {
+  // Issue #1776: the cooldown is gone — the sync runs on every cycle in which
+  // the default tip moved. An operator's existing config must keep loading.
+  const config = {
+    repos: ["owner/repo"],
+    sync_milestone_branches: true,
+    milestone_sync_cooldown_seconds: 3600,
+  };
+
+  assertEquals(KNOWN_CONFIG_KEYS.has("milestone_sync_cooldown_seconds"), false);
+
+  const warnings = detectUnknownConfigKeys(config);
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]?.field, "milestone_sync_cooldown_seconds");
+
+  // Ignored, never an error: validation still accepts the file.
+  const validated = validateConfigFileJson(config);
+  assertEquals(validated.ok, true);
 });

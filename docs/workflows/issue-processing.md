@@ -870,6 +870,67 @@ flowchart TD
     style X fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+## 🔧 Changed workflow files are checked before the PR
+
+Issue #1755 hardens the provisioning path **by construction**: the workflow
+templates, the pin resolution done at filing time, and the
+`prompts/issue/prompt.md` rule that tells a run how to write a workflow file.
+All three are instructions an LLM run follows; none of them is a gate. A run
+that embellishes what it was given — a bare-digest pin — or writes a workflow no
+template produces still ships a file the
+[`github-actions-audit`](../GITHUB-ACTIONS-AUDIT-SCAN.md) idle task files a
+finding against days later, in a repository the fleet does not own.
+
+**The gate.** [`changed_workflow_gate.ts`](../../worker/deno/lib/changed_workflow_gate.ts)
+runs every entry in
+[`WORKFLOW_FILE_CHECKS`](../../worker/deno/lib/workflow_file_checks.ts) over the
+`.github/workflows/` files the branch **added or changed**, at the same
+PR-creation chokepoint in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
+Those checks are the audit's own file-scoped ones — the nine native pre-filers
+plus the two `quality.sh` hygiene rules — and every one of them decides from the
+file text alone: no network, no run history, no repository settings. On the
+branch diff they cost milliseconds. Any finding blocks the PR, and the failure
+names the check id, the file, the line and the detail, so the next attempt fixes
+the file rather than guessing.
+
+**Only what the run touched is in scope.** A repository whose *pre-existing*
+workflow files already carry findings is the idle-task audit's business, not this
+PR's: an untouched offender must never block an unrelated change. Deletions are
+out of scope too — the diff is collected with `--diff-filter=ACMR`, so a removed
+workflow has no text to check and its absence is never read as an unreadable
+file.
+
+**Not deciding is a failure, not a pass** (see
+[Never fail silently](../../CODING-STANDARDS.md)). A diff that cannot be
+collected, a changed file that cannot be read, and a file whose YAML does not
+parse are each reported as a fault and block the PR. "No findings" is only a
+pass when the checks actually ran over the text.
+
+Like the security-fix gate and unlike the three summary gates above, a finding
+here is a defect in the **change**, not a shortfall in the summary, so it stops
+the run whether or not a PR already exists.
+
+```mermaid
+flowchart TD
+    A["Branch pushed"] --> D["git diff --name-only<br/>--diff-filter=ACMR base...HEAD"]
+    D -->|"diff failed"| X["Blocked: fail loud —<br/>an unknown diff is not a pass"]
+    D --> F{"Any changed<br/>.github/workflows/*.yml?"}
+    F -->|no| PR["PR creation continues"]
+    F -->|yes| R{"Read + parse each<br/>changed file"}
+    R -->|"read or parse failed"| X
+    R --> C{"WORKFLOW_FILE_CHECKS<br/>over the changed files"}
+    C -->|"no findings"| PR
+    C -->|"findings"| B["Blocked: comment names<br/>check id, file, line, detail"]
+    U["Untouched offending workflow"] -.->|"out of scope — audit files it"| PR
+    style F fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style C fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style B fill:#c45858,stroke:#6b2020,color:#fff
+    style X fill:#c45858,stroke:#6b2020,color:#fff
+```
+
 ## 🧾 A summary shortfall after the PR is not a failed run
 
 The three summary gates above — acceptance-criteria closure, independent review,
@@ -901,7 +962,13 @@ point of a pre-PR gate is that the next attempt writes the summary the comment
 asks for. Either way the gate's remediation comment is posted, so the shortfall
 is on the issue thread rather than only in one host's log.
 
-**The security gate is the deliberate exception, and it runs first.** A PR that
+**Two gates are deliberate exceptions, and they run first.** The changed-workflow
+file checks above are the second: a workflow file carrying a finding is a defect
+in the change, so it stops the run PR or no PR, exactly as the security gate
+does.
+
+**The security gate is the deliberate exception among the summary gates, and it
+runs first.** A PR that
 closes a `security`-labelled finding without its vulnerability-fix evidence stops
 the run, PR or no PR: that one is not a documentation shortfall. Order is what
 enforces it — a `security` run whose summary also broke a format rule would
@@ -925,12 +992,15 @@ rendering in [`heartbeat_storage.ts`](../../worker/deno/lib/heartbeat_storage.ts
 flowchart TD
     A["Branch pushed, quality gate passed"] --> SEC{"Security-fix gate<br/>vulnerability-fix evidence?"}
     SEC -->|"missing"| F2["Run fails — PR or no PR"]
-    SEC -->|"satisfied or inactive"| G{"Summary gates<br/>rule satisfied?"}
+    SEC -->|"satisfied or inactive"| WF{"Changed-workflow gate<br/>file checks clean?"}
+    WF -->|"finding or unreadable"| F2
+    WF -->|"clean or nothing in scope"| G{"Summary gates<br/>rule satisfied?"}
     G -->|yes| PR["gh pr create"]
     G -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style WF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a

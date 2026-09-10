@@ -408,8 +408,6 @@ export interface WorkerConfig {
   hostDiskLowFloorPercent?: number;
   /** Whether to periodically sync milestone branches with the default branch (Issue #1238, default: true) */
   syncMilestoneBranches: boolean;
-  /** Cooldown in seconds between sync attempts for the same milestone (Issue #1238, default: 3600) */
-  milestoneSyncCooldownSeconds: number;
   /** Days before posting a diagnostic on stale failed issues (Issue #1240) */
   staleFailedDiagnosticDays: number;
   /** Days before warning about stuck planning issues (Issue #1240) */
@@ -1202,8 +1200,6 @@ export interface ConfigFile {
   host_disk_low_floor_percent?: number;
   /** Whether to periodically sync milestone branches with the default branch (Issue #1238) */
   sync_milestone_branches?: boolean;
-  /** Cooldown in seconds between milestone branch sync attempts (Issue #1238) */
-  milestone_sync_cooldown_seconds?: number;
   /** Stale workflow thresholds (Issue #1240) */
   stale_failed_diagnostic_days?: number;
   stale_planning_warning_days?: number;

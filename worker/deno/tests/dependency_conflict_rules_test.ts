@@ -17,6 +17,11 @@
  */
 
 import { assertEquals, assertThrows } from "@std/assert";
+// Imported for their registration side effect: the shared registry is only
+// populated once every ecosystem's module has been loaded.
+import "../lib/dependency_conflict_json.ts";
+import "../lib/dependency_conflict_native.ts";
+import "../lib/both_inserted_conflict_rule.ts";
 import {
   applyHunkChoices,
   compareDependencySpecifiers,
@@ -24,9 +29,11 @@ import {
   type ConflictSegment,
   createManifestRuleRegistry,
   type ManifestRule,
+  manifestRuleRegistry,
   parseConflictSegments,
   parseDependencySpecifier,
   renderConflictSegments,
+  type RuleContext,
 } from "../lib/dependency_conflict_rules.ts";
 
 // ---------------------------------------------------------------------------
@@ -422,10 +429,58 @@ Deno.test("createManifestRuleRegistry - a duplicate rule name fails loud", () =>
 Deno.test("ManifestRule - a resolved outcome carries the full file text", () => {
   const registry = createManifestRuleRegistry([fakeRule("deno", "deno.json")]);
   const rule = registry.find("worker/deno/deno.json");
-  const outcome = rule?.resolve(parseOk(ONE_CONFLICT));
+  const outcome = rule?.resolve(parseOk(ONE_CONFLICT), {
+    path: "worker/deno/deno.json",
+    base: null,
+  });
   assertEquals(outcome?.kind, "resolved");
   if (outcome?.kind === "resolved") {
     assertEquals(outcome.text.includes("<<<<<<<"), false);
     assertEquals(outcome.text.includes("jsr:@std/fs@^1.2.0"), true);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The rule context, and the registration order the shared registry holds
+// (Issue #1768)
+// ---------------------------------------------------------------------------
+
+Deno.test("ManifestRule - a rule that needs the merge base is handed it", () => {
+  let seen: RuleContext | null = null;
+  const rule: ManifestRule = {
+    name: "needs-base",
+    needsBase: true,
+    matches: () => true,
+    resolve: (_segments, context) => {
+      seen = context;
+      return { kind: "unresolved", reason: "not decided here" };
+    },
+  };
+  const registry = createManifestRuleRegistry([rule]);
+
+  registry.find("CHANGELOG.md")?.resolve(parseOk(ONE_CONFLICT), {
+    path: "CHANGELOG.md",
+    base: "# Changelog\n",
+  });
+
+  assertEquals(seen, { path: "CHANGELOG.md", base: "# Changelog\n" });
+});
+
+Deno.test("manifestRuleRegistry - a manifest matches its own rule before the ledger rule", () => {
+  assertEquals(manifestRuleRegistry.find("deno.json")?.name, "deno.json");
+  assertEquals(
+    manifestRuleRegistry.find("worker/deno/package.json")?.name,
+    "package.json",
+  );
+  assertEquals(manifestRuleRegistry.find("Cargo.toml")?.name, "Cargo.toml");
+  assertEquals(
+    manifestRuleRegistry.find("CHANGELOG.md")?.name,
+    "both-inserted",
+    "an ordinary text file reaches the append-only ledger rule",
+  );
+  assertEquals(
+    manifestRuleRegistry.find("deno.lock")?.name,
+    undefined,
+    "a lock file is regenerated, never text-merged, so no rule claims it",
+  );
 });

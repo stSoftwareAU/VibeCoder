@@ -338,6 +338,18 @@ asks for the review explicitly:
 A **protected** base is untouched: it still goes through native auto-merge,
 which GitHub holds until the required checks are green.
 
+**GitHub's own refusal outranks the rules endpoint** (Issue #1763). "Required
+checks on the base?" is answered by `repos/{repo}/rules/branches/{base}`, which
+lists only the rules the fleet token can see — an organisation-level ruleset
+needs `admin:org` to list. `stSoftwareAU/GRQ-FX` `Develop` answered `[]`, the
+base was judged unprotected, and the gated direct merge was refused with "the
+base branch policy prohibits the merge" on every cycle the PR stayed open. So
+a direct merge refused with that wording (or a `GH013` rule violation) now
+marks the base **protected** for the rest of the cycle, logs one line naming
+the repo and branch as policy-protected with no visible rule, and arms native
+auto-merge — which honours whatever rule exists — instead of retrying. Any
+other direct-merge failure is still reported as the failure it is.
+
 ```mermaid
 flowchart TD
     A[PR targets the default branch] --> B{Required checks on the base?}
@@ -405,6 +417,56 @@ sequenceDiagram
     G->>G: next cycle: CI passed + behindBy == 0 → merge
 ```
 
+#### The milestone base is behind the default branch
+
+The same defer-and-retry shape covers the *base* as well as the head
+(Issue #1779). A child PR whose base is a `milestone/*` branch is **not armed
+and not merged** while that milestone branch is behind the default branch —
+`decideMilestoneBaseMerge` in
+[`worker/deno/lib/milestone_children_gate.ts`](../worker/deno/lib/milestone_children_gate.ts)
+returns `defer` / `milestone-behind`, so the child would otherwise land on a
+stale tip and the milestone rollup would carry work never tested against what
+the default branch already has.
+
+- **What is compared.** `repos/{repo}/compare/{default}...{milestone}`, whose
+  `behind_by` is the milestone branch measured against the default branch. The
+  orientation is the Issue #470 one: in `compare/{base}...{head}` the numbers
+  describe the **head**, so the milestone branch must be the head.
+- **What it costs.** The comparison is memoised per (repo, milestone branch)
+  for 60 seconds, so the N children of one milestone in a single Priority 1.65
+  sweep cost **one** API call, and a PR based on the default branch costs none.
+  The memo expires well inside a cycle, so the next sync is seen rather than a
+  stale reading held for the life of the process.
+- **What the worker does.** Nothing: no `--auto`, no gated direct merge, no
+  comment and no label. `logAutoMergeOutcome` records
+  `deferred: milestone behind default branch (N commits)` and the PR is left
+  exactly as it was. The every-cycle milestone sync (Issue #1776) — or a
+  roll-back — clears it, and the next sweep merges. The deferral names itself
+  (`deferral: "milestone-behind"`), so the PR-maintenance scan classifies it
+  `await_checks` rather than escalating a healthy child to `needs-human`.
+- **The milestone sync PR is exempt.** Its base *is* the milestone branch and
+  its head is `sync/milestone-*` — it is the PR that clears "behind". Deferring
+  it for the state it exists to fix would deadlock the milestone: the sync
+  could never land, the branch could never catch up, and no child could ever
+  merge. `isMilestoneSyncBranch(headRefName)` skips the check, and the exempt
+  PR costs no comparison at all. A head that cannot be read defers as
+  `lookup-failed` rather than guessing which PR this is.
+- **An unreadable comparison defers as `lookup-failed`**, exactly as an
+  unreadable route does (Issue #477). "I could not read it" is never actioned.
+- **Known limit.** The gate governs **arming**, not GitHub's merge. A PR whose
+  GitHub auto-merge was armed *before* the milestone branch fell behind still
+  merges when its checks pass — GitHub owns that merge, and nothing the worker
+  decides afterwards is consulted.
+
+Two callers deliberately do **not** require a synced base. The post-merge
+landing check (`merge_landing.ts`) asks a different question — that PR has
+already merged, and how far the branch has drifted since says nothing about
+whether its work landed. `directMergePr()` is not opted in either: on the
+automated routes it is reached only *after* `enableAutoMerge` has run this gate
+(the fallback fires on `not_allowed`, never on a deferral), and the one route
+that reaches it directly is the explicit operator command
+`merge-if-checks-passed`, which is a human asking for that merge by name.
+
 ## Hands-off landing — precedence and loud failure
 
 The auto-fix loop (fetch → diagnose → fix → merge) is only hands-off if a green
@@ -449,6 +511,14 @@ Two changes close that window:
   was raised. It lists **live**, not from the iteration-scoped `prs_${author}`
   cache the 1.65 sweep filled before those PRs existed. An idle cycle skips it
   and says so — it raised nothing to sweep.
+- **Drafts are skipped, not failed** (Issue #1800). GitHub refuses to arm
+  auto-merge on a draft ("Pull Request is still a draft"), and the sweep used
+  to log that refusal as a failure every cycle for as long as the draft stayed
+  open. The fleet listing now carries `isDraft`; the sweep skips a draft with
+  one line the first time this process sees it, and an arming call that still
+  meets a draft (at creation, or from a listing written before the field
+  existed) returns the typed `draft` outcome, logged at info. A draft is the
+  author asking for eyes — marking it ready is what puts it back in the sweep.
 
 ```mermaid
 sequenceDiagram
@@ -681,20 +751,47 @@ So every pass asks
 flowchart TD
     A[PR pass picks up a PR] --> B{"Head is a milestone branch?"}
     B -- no --> W[Work the PR as before]
-    B -- yes --> C[GET /rules/branches/head]
+    B -- yes --> M{"Which pass?"}
+    M -- merge-conflict --> S["Stand down: left to<br/>the milestone sync"]
+    M -- spelling / CI fix --> C[GET /rules/branches/head]
     C -- unreadable --> W
     C --> D{"required_status_checks<br/>or pull_request rule?"}
     D -- no --> W
     D -- yes --> E[Stand down: no agent run,<br/>no attempt, no retry]
     E --> F[One comment per branch,<br/>naming the rule]
+    S --> F2[One comment per branch,<br/>naming the sync]
 ```
 
+What each pass does with a `milestone/**` head:
+
+| Pass | On a `milestone/**` head | Marker on the comment |
+| --- | --- | --- |
+| Spelling fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head` |
+| CI fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head` |
+| Merge conflict | **Left to the milestone sync**, gated or not (Issue #1772) | `vibe-milestone-head` |
+
+- **The merge-conflict pass is left to the milestone sync.** The every-cycle
+  milestone branch sync is the single owner of `default → milestone/*` merges,
+  and it already lands its merge through a sync PR when a ruleset refuses the
+  direct push (Issue #589). Running the PR ladder on the same head would
+  duplicate that merge and race the sync's push, so the pass stands down on the
+  branch name alone — no rules read, no attempt marker, one log line
+  (`skipped: milestone head — resolved by the milestone branch sync`) and one
+  comment naming the sync. The CI-nudge behaviour (Issue #1762) is unchanged by
+  this.
 - **The agent never runs on a gated head**, so nothing is committed that cannot
   be pushed, and no attempt or retry is spent — the guard runs before
   `recordCiCheckRetry` and before the merge-conflict attempt marker is posted.
+- **The CI-nudge pass asks too** (Issue #1762). Its `none` path adds an empty
+  commit and pushes it to the head, so on VibeCoder#1741's own milestone head
+  it was refused with GH013 every cycle the PR stayed a nudge candidate. The
+  guard now runs before that checkout; a gated head is recorded as a `noop`
+  nudge and left for the milestone completion path. The `queued` path only
+  re-runs a workflow and pushes nothing, so it is not gated.
 - **One comment per branch, not one per run.** The comment carries a hidden
-  `<!-- vibe-gated-head branch="…" -->` marker; a later run that finds the
-  marker stays silent. A comment thread that cannot be read posts nothing and
+  marker — `<!-- vibe-gated-head branch="…" -->`, or
+  `<!-- vibe-milestone-head branch="…" -->` for the merge-conflict stand-down;
+  a later run that finds the marker stays silent. A comment thread that cannot be read posts nothing and
   says so in the log — a duplicate every run is the noise this removes.
 - **Only `milestone/**` heads are assessed.** `GET /rules/branches/{branch}`
   does not account for the caller's bypass permission, so assessing every head
@@ -704,12 +801,70 @@ flowchart TD
 - **Unreadable rules fail open.** The push is attempted exactly as before, and
   a genuine refusal is still loud on stderr. Failing closed would stop every
   milestone PR being worked on a transient API blip.
+- **A push a ruleset refuses anyway spends no merge-conflict attempt**
+  (Issue #1772). Rules only gate `milestone/**` heads here, so an ordinary head
+  under a repo-wide ruleset still reaches the push and is still refused with
+  GH013. That refusal recurs identically every run, so the pass posts no
+  `vibe-coder:merge-conflict-failed` conclusion: it withdraws the attempt
+  marker, logs `not charged: push rejected by ruleset`, and the next scan
+  counts zero attempts. The drain carries on to the next conflicting PR — only
+  a withdrawal made because the **run** was ending (`runEnded`) stops the pass,
+  so one gated PR cannot starve the cycle. Every other push failure — a race, a
+  network fault — is charged exactly as before.
 
 A claim that the fix was pushed is now made against the remote in all three
 passes: the spelling pass adopted `verifyPushLanded()`
 ([`push_claim_verification.ts`](../worker/deno/lib/push_claim_verification.ts),
 Issue #579) and treats a failed commit-and-push as "not pushed" whatever the
 local HEAD did.
+
+## The merge-conflict attempt budget
+
+A PR that conflicts with its base cannot run CI, so the merge-conflict pass
+merges the base branch in for real rather than side-picking. That pass is
+bounded by **three concluded attempts** —
+`DEFAULT_MAX_CONFLICT_ATTEMPTS`
+([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
+the first attempt and two retries against a base that has moved on since
+(Issue #1766). The third judged failure runs the abandon-and-restart rung, and
+only then does a human hear about it.
+
+That rung closes the PR — never force-pushes it — and re-queues its originating
+issue. Where the issue's pickup label is one only a human may apply (`work-on`
+and the rest of `worker_label_guard.ts`'s reserved set), it still closes the PR
+and reopens the issue, but hands it to a human — `needs-human` plus a comment
+saying to remove that label and re-apply the pickup one — rather than
+re-queuing it itself (Issue #1773). Its preconditions,
+its one-restart-per-issue bound and its exits are in
+[the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
+
+**Milestone branches spend the same budget.** `milestone_sync_streak.ts`
+exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
+constant, two consumers — so the PR ladder and the milestone ladder cannot
+drift apart. The sync pass opens and concludes an attempt around every
+conflicting merge, paces the retries and hands an exhausted budget to the
+roll-back (Issue #1778); nothing is posted to a comment, a label or an issue
+while an automatic attempt remains.
+
+What does and does not spend an attempt:
+
+| Attempt outcome                              | Charged? | Why                                                                                       |
+| -------------------------------------------- | -------- | ----------------------------------------------------------------------------------------- |
+| **Failed** — the merge was judged unmergeable | Yes      | The conflict itself was looked at and beat the worker                                     |
+| **Disrupted** — opened, never concluded       | No       | A restart, a swept heartbeat or an exhausted run budget killed it; the conflict was never judged (Issues #395, #1693) |
+| **Not-charged** — a conclusion the branch is not answerable for | No | A merge gate refused the push, or the pass stood down before touching the branch |
+
+A disrupted attempt is re-attempted rather than charged, and is bounded
+separately: `DEFAULT_MAX_DISRUPTED_ATTEMPTS` disruptions on one PR means the
+disruption — not the conflict — is the problem, and a human is told so.
+
+For a **PR**, the ledger is the attempt/conclusion marker comments on the PR
+itself, so the bound holds across hosts and worker restarts. For a **milestone
+branch** it is the persisted per-branch ledger in
+`milestone_sync_failures.json` described in
+[INTERNALS.md → the milestone conflict ledger](INTERNALS.md#-the-conflict-attempt-ledger-a-milestone-branch-spends).
+Either way a **success** is the only thing that refills the budget: a moved
+default tip clears the pacing deferral, never the attempt count.
 
 ## Failure and recovery modes
 
@@ -739,8 +894,10 @@ local HEAD did.
   — `getReportedCheckNames()`, the genuinely-reported check names the candidates
   are intersected with.
 - [`worker/deno/lib/gated_head_guard.ts`](../worker/deno/lib/gated_head_guard.ts)
-  — `assessGatedHead()` / `guardGatedHead()`, the stand-down the spelling,
-  CI-fix and merge-conflict passes make on a head no direct push can reach.
+  — `assessGatedHead()` / `guardGatedHead()`, the stand-down the spelling and
+  CI-fix passes make on a head no direct push can reach, and
+  `standDownMilestoneHead()`, the merge-conflict pass's own stand-down on any
+  `milestone/**` head (Issue #1772).
 - [`worker/deno/lib/branch_push_policy.ts`](../worker/deno/lib/branch_push_policy.ts)
   — `assessBranchPushPolicy()`, the direct-push / opt-out detection that keeps a
   data repo's branch unlocked.

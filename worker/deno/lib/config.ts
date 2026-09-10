@@ -765,8 +765,6 @@ export async function loadConfig(
   // Periodic milestone branch sync (Issue #1238)
   const syncMilestoneBranches = file.sync_milestone_branches ??
     OPERATIONAL_DEFAULTS.syncMilestoneBranches;
-  const milestoneSyncCooldownSeconds = file.milestone_sync_cooldown_seconds ??
-    OPERATIONAL_DEFAULTS.milestoneSyncCooldownSeconds;
 
   // Stale workflow thresholds (Issue #1240, #2031 — needs-clarification retired)
   const staleFailedDiagnosticDays = file.stale_failed_diagnostic_days ??
@@ -997,7 +995,6 @@ export async function loadConfig(
       ? {}
       : { hostDiskLowFloorPercent }),
     syncMilestoneBranches,
-    milestoneSyncCooldownSeconds,
     staleFailedDiagnosticDays,
     stalePlanningWarningDays,
     phaseModelOverrides,

@@ -57,6 +57,10 @@ export interface BumpInfo {
    * - `rejected_by_audit`  — script applied a bump but the post-bump
    *                           quality gate only passed without it. Set
    *                           by the audit gate, not by this library.
+   * - `skipped_milestone_child` — the run's PR targets a milestone branch,
+   *                           so the bump was deliberately not attempted
+   *                           (Issue #1775). Set by the bump phase, not by
+   *                           this library.
    */
   status:
     | "absent"
@@ -64,7 +68,8 @@ export interface BumpInfo {
     | "applied"
     | "rejected_by_script"
     | "rejected_by_quarantine"
-    | "rejected_by_audit";
+    | "rejected_by_audit"
+    | "skipped_milestone_child";
   /** Files modified by the script (porcelain paths, deduplicated). */
   files: string[];
   /** Combined stdout+stderr captured from the script invocation. */
@@ -164,6 +169,18 @@ export interface BumpDepsDeps {
 
 /** Default name of the per-repo bump script. */
 export const DEFAULT_BUMP_SCRIPT_NAME = "bump-deps.sh";
+
+/**
+ * Absolute path to a repo's bump script. One source of truth so a caller
+ * asking "does this repo have a bump script?" looks where `runBumpDeps`
+ * looks (Issue #1775).
+ */
+export function bumpScriptPath(
+  repoPath: string,
+  scriptName: string = DEFAULT_BUMP_SCRIPT_NAME,
+): string {
+  return `${repoPath}/${scriptName}`;
+}
 
 /** Default quarantine window in hours. */
 export const DEFAULT_BUMP_QUARANTINE_HOURS = 24;
@@ -266,6 +283,30 @@ export function buildBumpRejectionComment(info: BumpInfo): string {
   return `### ${heading}${reason}${filesBlock}${tail}`;
 }
 
+/**
+ * The PR-summary line for a bump skipped because the run's PR targets a
+ * milestone branch (Issue #1775).
+ */
+export const MILESTONE_CHILD_BUMP_NOTE =
+  "Dependency bump: skipped — milestone child; the default branch's own PRs " +
+  "bump and the sync carries them down";
+
+/**
+ * Build the PR-body note for a skipped bump (Issue #1775).
+ *
+ * Returns the note as its own paragraph for `skipped_milestone_child` and
+ * an empty string for every other status (including no bump phase at all),
+ * so the caller can append it unconditionally.
+ *
+ * @param info - The bump outcome, or `undefined` when the phase never ran.
+ */
+export function buildBumpSkipNote(info: BumpInfo | undefined): string {
+  if (info?.status !== "skipped_milestone_child") {
+    return "";
+  }
+  return `\n${MILESTONE_CHILD_BUMP_NOTE}\n`;
+}
+
 // =============================================================================
 // Main entry point
 // =============================================================================
@@ -282,7 +323,7 @@ export async function runBumpDeps(
   deps: BumpDepsDeps,
 ): Promise<BumpInfo> {
   const scriptName = params.scriptName ?? DEFAULT_BUMP_SCRIPT_NAME;
-  const scriptPath = `${params.repoPath}/${scriptName}`;
+  const scriptPath = bumpScriptPath(params.repoPath, scriptName);
   const quarantineHours = params.quarantineHours ??
     DEFAULT_BUMP_QUARANTINE_HOURS;
 

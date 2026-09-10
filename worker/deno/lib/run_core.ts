@@ -127,7 +127,10 @@ import {
   formatScanOutcome,
 } from "./issue_finder_logger.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
-import { isPrimaryRateLimitMessage } from "./primary_quota_latch.ts";
+import {
+  clearPrimaryQuotaLatch,
+  isPrimaryRateLimitMessage,
+} from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
 import { runWithWatchdog } from "./handler_watchdog.ts";
 import { resolveStartPriority, type ScanCursor } from "./scan_cursor.ts";
@@ -507,8 +510,16 @@ export interface RunCoreDeps {
   // Priority 1.68: Recover assigned with closed PRs
   recoverAssignedWithClosedPr: () => Promise<Result<void>>;
 
-  // Priority 1.72: Milestone branch sync (Issue #1238)
-  syncMilestoneBranches: () => Promise<Result<void>>;
+  /**
+   * Priority 1.72: Milestone branch sync (Issue #1238).
+   *
+   * Receives the dispatcher's watchdog deadline (Issue #1778) so the cycle's
+   * single conflict-agent rung is only offered while the budget left covers
+   * a whole agent run.
+   */
+  syncMilestoneBranches: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<void>>;
 
   // Priority 1.7: Milestone completions
   checkMilestoneCompletions: () => Promise<Result<void>>;
@@ -884,6 +895,15 @@ export interface RunCoreDeps {
    * not run.
    */
   describeGraphqlQuota?: () => Promise<string | null>;
+  /**
+   * The account's GraphQL quota as GitHub counts it (Issue #1888): the free
+   * probe's `limit`/`remaining`/`reset`, or null when it cannot be read. The
+   * mid-cycle rate-limit catch asks it before pausing, so a latch set on a
+   * window boundary cannot idle the run for an hour with a full quota.
+   */
+  readGraphqlQuota?: () => Promise<
+    { limit: number; remaining: number; reset: number } | null
+  >;
 
   // Repo failure tracking
   // Issue #2793: these perform read-modify-write file I/O, so they return
@@ -1567,8 +1587,14 @@ export function buildPriorityDispatchTable(
     {
       priority: 1.72,
       name: "Milestone Branch Sync",
-      execute: () =>
-        deps.syncMilestoneBranches().then((r) =>
+      // Issue #1777 gave the sync the conflict ladder's agent rung, so the
+      // handler can spawn a coding agent and needs the cycle-deadline
+      // watchdog rather than the flat 600 s one. Issue #1778 spends the
+      // deadline it is handed: the rung is offered at most once a cycle, and
+      // only while the budget left covers a whole run.
+      agentBacked: true,
+      execute: (opts) =>
+        deps.syncMilestoneBranches(opts).then((r) =>
           r.ok
             ? { ok: true as const, value: { processed: false } }
             : { ok: false as const, error: r.error }
@@ -2978,7 +3004,9 @@ async function runIssueScanPool(
 
   const slots: Promise<void>[] = [];
   for (let i = 0; i < slotCount; i++) {
-    slots.push(runSlot(i, config, deps, tracker, endTime, pool));
+    slots.push(
+      trackSlotRun(runSlot(i, config, deps, tracker, endTime, pool)),
+    );
   }
   await drainSlots(slots, deps, pool);
   // Every slot is drained; now surface the primary rate limit one of them
@@ -3010,7 +3038,17 @@ async function drainSlots(
   deps: RunCoreDeps,
   pool: SlotPoolState,
 ): Promise<void> {
-  const all = Promise.all(slots).then(() => "drained" as const);
+  // Issue #1815: settle EVERY slot before surfacing a rejection. With
+  // `Promise.all` a slot that threw rejected the drain at once and the
+  // siblings ran on unawaited — their agents were then terminated at run
+  // end and their scheduled-release tails (claim release, failure and
+  // always callbacks) raced the exit cleanup's descendant sweep, which
+  // killed the callbacks mid-flight and lost the run's record.
+  const all = Promise.allSettled(slots).then((results) => {
+    const rejected = results.find((r) => r.status === "rejected");
+    if (rejected && rejected.status === "rejected") throw rejected.reason;
+    return "drained" as const;
+  });
   const graceMs = Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000;
   // Watch for the shutdown flag on a short REAL timer (not the injected
   // sleep, which tests use as a fake clock) and measure the grace on the
@@ -3091,6 +3129,64 @@ async function drainSlots(
         },
       );
     }
+  }
+}
+
+/**
+ * Slot runs still executing, whatever the pool did with them (Issue #1815).
+ *
+ * A slot the drain abandoned at the shutdown grace (Issue #4182), or that
+ * the pool stopped waiting for, keeps running: its agent is terminated at
+ * run end (Issue #4369) and its handler then runs the scheduled-release
+ * tail — the claim release and the failure/always callbacks. The run-ending
+ * path awaits this set, bounded, before the exit cleanup's descendant sweep
+ * can kill those callbacks; on VibeCoder#1773 the sweep ran one second
+ * after the failure callback started and no archive or health record ever
+ * landed.
+ */
+const liveSlotRuns = new Set<Promise<void>>();
+
+/** Track a slot run until it settles. */
+function trackSlotRun(run: Promise<void>): Promise<void> {
+  liveSlotRuns.add(run);
+  run.finally(() => liveSlotRuns.delete(run)).catch(() => {});
+  return run;
+}
+
+/** Slot runs still executing. Exported for tests. */
+export function liveSlotRunCount(): number {
+  return liveSlotRuns.size;
+}
+
+/**
+ * Wait, bounded, for every still-running slot to finish its tail
+ * (Issue #1815). Called on the run-ending path after the active agents have
+ * been terminated and before the exit cleanup. A tail that outlives the
+ * grace is named, so a missing callback record is never silent.
+ */
+async function settleLiveSlotTails(
+  deps: RunCoreDeps,
+  graceMs: number,
+): Promise<void> {
+  const pending = [...liveSlotRuns];
+  if (pending.length === 0) return;
+  deps.log(
+    `Run ending with ${pending.length} slot run(s) still finishing — ` +
+      `waiting up to ${
+        Math.round(graceMs / 1000)
+      }s for their release and callbacks before the exit cleanup (Issue #1815)`,
+  );
+  // The injected sleep, so a test's fake clock bounds the wait as it bounds
+  // the drain's grace, and production waits real seconds.
+  const grace = deps.sleep(graceMs).then(() => "grace" as const);
+  const settled = Promise.allSettled(pending).then(() => "settled" as const);
+  const outcome = await Promise.race([settled, grace]);
+  if (outcome === "grace" && liveSlotRuns.size > 0) {
+    deps.logError(
+      `${liveSlotRuns.size} slot run(s) still finishing after the ` +
+        `${Math.round(graceMs / 1000)}s grace — the exit cleanup may cut ` +
+        `their callbacks short (Issue #1815)`,
+    );
   }
 }
 
@@ -4333,6 +4429,69 @@ function runIdleWorkHooks(
 }
 
 /**
+ * Points the account must still hold for a rate-limit refusal to be read as
+ * a stale latch rather than the hour's quota being gone (Issue #1888).
+ * Mirrors `SECONDARY_LIMIT_MIN_REMAINING` in `github.ts`: below it the
+ * refusal is the real thing and the pause stands.
+ */
+const QUOTA_REOPENED_MIN_REMAINING = 100;
+
+/**
+ * Whether the GraphQL window has (re)opened despite a rate-limit refusal
+ * (Issue #1888). Probes once; a probe that cannot run or reports the quota
+ * spent answers `false`, so the existing pause is the default.
+ */
+async function quotaWindowReopened(deps: RunCoreDeps): Promise<boolean> {
+  if (!deps.readGraphqlQuota) return false;
+  let reading: { limit: number; remaining: number; reset: number } | null;
+  try {
+    reading = await deps.readGraphqlQuota();
+  } catch {
+    return false;
+  }
+  if (reading === null || reading.remaining < QUOTA_REOPENED_MIN_REMAINING) {
+    return false;
+  }
+  clearPrimaryQuotaLatch();
+  deps.log(
+    `Rate limit reported mid-cycle, but the GraphQL window has reopened — ` +
+      `${reading.remaining}/${reading.limit} points available, resets ${
+        formatRateLimitReset(reading.reset, Math.floor(deps.now() / 1000))
+      }. Clearing the stale latch and continuing (Issue #1888).`,
+  );
+  return true;
+}
+
+/**
+ * The per-cycle `gh` call telemetry (Issues #1671, #4299, #1845, #1924,
+ * #1456): what this process spent, where the wall time went, which priority
+ * spent it, the GraphQL share, and the account's quota as GitHub counts it.
+ *
+ * Emitted at the end of a completed cycle and, since Issue #1843, from the
+ * primary-rate-limit catch too — the cycle that exhausted the quota is the
+ * one whose breakdown an operator most needs, and it was the one skipped.
+ * Best-effort: a failed quota probe costs the last line only.
+ */
+async function logCycleGhTelemetry(deps: RunCoreDeps): Promise<void> {
+  deps.log(formatGhCallSummary());
+  deps.log(formatCycleTimingsSummary(deps.now()));
+  deps.log(formatGhCallsByPrioritySummary());
+  deps.log(formatGraphQLSummary());
+  if (deps.describeGraphqlQuota) {
+    try {
+      const quotaLine = await deps.describeGraphqlQuota();
+      if (quotaLine) deps.log(quotaLine);
+    } catch (err) {
+      deps.log(
+        `graphql-quota: probe failed (${
+          err instanceof Error ? err.message : String(err)
+        })`,
+      );
+    }
+  }
+}
+
+/**
  * Run the main worker event loop.
  *
  * This is the top-level orchestration: PID locking, initialisation, the
@@ -5337,27 +5496,10 @@ export async function runCoreLoop(
           // --- Per-iteration `gh` call telemetry summary (Issue #1671) ---
           // One structured line per loop iteration so we can baseline the
           // reduce-gh-calls work (#1662) and verify subsequent caching
-          // changes actually reduce calls.
-          deps.log(formatGhCallSummary());
-          // Issue #4299: where the cycle's wall time went, longest first.
-          deps.log(formatCycleTimingsSummary(deps.now()));
-          // Issue #1845: per-priority breakdown lets a future regression
-          // surface the responsible priority directly in the worker log.
-          deps.log(formatGhCallsByPrioritySummary());
-          // Issue #1924: GraphQL-specific breakdown — the 5000-point/hour
-          // GraphQL quota is metered separately from REST, and the
-          // worker has been observed exhausting it every cycle. This
-          // line names the hottest GraphQL call site so operators can
-          // see at a glance which path is burning the budget.
-          deps.log(formatGraphQLSummary());
-          // The account's GraphQL quota as GitHub counts it. The lines above
-          // count this process's calls; this one shows the points actually
-          // gone from the shared bucket — sibling hosts included — and when
-          // the window reopens (Issue #1456).
-          if (deps.describeGraphqlQuota) {
-            const quotaLine = await deps.describeGraphqlQuota();
-            if (quotaLine) deps.log(quotaLine);
-          }
+          // changes actually reduce calls. Also emitted from the
+          // rate-limit catch below (Issue #1843), so the cycle that
+          // exhausted the quota is never the one without a breakdown.
+          await logCycleGhTelemetry(deps);
 
           // --- Liveness guard (Issue #2479) ---
           // Best-effort end-of-cycle observation. The combined #2478 guard
@@ -5421,31 +5563,45 @@ export async function runCoreLoop(
         if (!isPrimaryRateLimitMessage(innerMessage)) {
           throw innerErr;
         }
-        let resetEpoch: number;
-        try {
-          resetEpoch = await deps.getRateLimitReset();
-        } catch (resetErr) {
-          const msg = resetErr instanceof Error
-            ? resetErr.message
-            : String(resetErr);
-          deps.log(
-            `Failed to fetch rate-limit reset (${msg}) — falling back to a 1h wait`,
-          );
-          resetEpoch = Math.floor(deps.now() / 1000) + 3600;
-        }
-        deps.log(
-          `Primary rate limit hit mid-cycle — pausing until reset ${
-            formatRateLimitReset(resetEpoch, Math.floor(deps.now() / 1000))
-          }. ${innerMessage}`,
-        );
-        const wait = await pauseUntilRateLimitReset(
-          resetEpoch,
-          "Main loop catch",
-        );
-        if (wait.outcome === "ok" || wait.outcome === "cap") {
-          // Quota cleared (or cap reached — try anyway). Re-enter the
-          // inner while to keep working without a respawn.
+        // Issue #1843: the cycle ended in the quota, so say what it spent
+        // BEFORE the pause. A cycle that completes logs these at its end;
+        // one that throws here used to skip them — and it is exactly the
+        // cycle whose per-priority breakdown names what burnt the budget.
+        await logCycleGhTelemetry(deps);
+        // Issue #1888: ask GitHub before pausing. A refusal on the window
+        // boundary latched the process to the NEXT window's reset while the
+        // account already held a fresh 5000 points; the pause then idled
+        // the run for an hour on nothing. When the probe says the quota is
+        // there, the latch is stale: clear it and keep working.
+        if (await quotaWindowReopened(deps)) {
           resumeAfterRateLimit = true;
+        } else {
+          let resetEpoch: number;
+          try {
+            resetEpoch = await deps.getRateLimitReset();
+          } catch (resetErr) {
+            const msg = resetErr instanceof Error
+              ? resetErr.message
+              : String(resetErr);
+            deps.log(
+              `Failed to fetch rate-limit reset (${msg}) — falling back to a 1h wait`,
+            );
+            resetEpoch = Math.floor(deps.now() / 1000) + 3600;
+          }
+          deps.log(
+            `Primary rate limit hit mid-cycle — pausing until reset ${
+              formatRateLimitReset(resetEpoch, Math.floor(deps.now() / 1000))
+            }. ${innerMessage}`,
+          );
+          const wait = await pauseUntilRateLimitReset(
+            resetEpoch,
+            "Main loop catch",
+          );
+          if (wait.outcome === "ok" || wait.outcome === "cap") {
+            // Quota cleared (or cap reached — try anyway). Re-enter the
+            // inner while to keep working without a respawn.
+            resumeAfterRateLimit = true;
+          }
         }
         // "shutdown" and "duration" fall through to the planned-shutdown
         // path so the run ends cleanly.
@@ -5462,6 +5618,14 @@ export async function runCoreLoop(
         await deps.terminateActiveAgentRuns("run ending");
       } catch { /* best-effort */ }
     }
+    // Issue #1815: a terminated agent's slot is still running its tail —
+    // the scheduled-release classification, the claim release, the
+    // failure and always callbacks. Wait for it, bounded, so the exit
+    // cleanup's descendant sweep cannot kill the callbacks mid-flight.
+    await settleLiveSlotTails(
+      deps,
+      Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000,
+    );
 
     // --- Planned shutdown ---
     if (!exitedOnFailures) {

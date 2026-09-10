@@ -64,3 +64,41 @@ Deno.test("pinned_actions - semgrep image is digest-pinned", () => {
   );
   assert(/^\d+\.\d+\.\d+$/.test(SEMGREP_IMAGE_TAG), "release tag shape");
 });
+
+Deno.test("pinned_actions - resolution is absent or one of the two modes", () => {
+  // Issue #1823: the catalogue is the fallback floor. An absent `resolution`
+  // means "release" — the action is resolved against upstream at sync time.
+  for (const [name, pin] of Object.entries(PINNED_ACTIONS)) {
+    assert(
+      pin.resolution === undefined || pin.resolution === "release" ||
+        pin.resolution === "catalogue",
+      `${name}: unexpected resolution "${pin.resolution}"`,
+    );
+  }
+});
+
+Deno.test("pinned_actions - branch-HEAD pins are never resolved", () => {
+  // These two track an upstream default branch, so there is no release series
+  // to resolve them against — the recorded SHA is emitted verbatim.
+  for (
+    const name of [
+      "dependency-check/Dependency-Check_Action",
+      "ludeeus/action-shellcheck",
+    ]
+  ) {
+    assertEquals(
+      PINNED_ACTIONS[name]?.resolution,
+      "catalogue",
+      `${name}: a branch-HEAD pin must not be resolved against releases`,
+    );
+  }
+});
+
+Deno.test("pinned_actions - most entries resolve against upstream releases", () => {
+  const resolved = Object.entries(PINNED_ACTIONS)
+    .filter(([, pin]) => (pin.resolution ?? "release") === "release");
+  assert(
+    resolved.length > Object.keys(PINNED_ACTIONS).length / 2,
+    "the catalogue must remain a fallback floor, not the emitted value",
+  );
+});

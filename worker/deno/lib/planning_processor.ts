@@ -60,7 +60,10 @@ import {
   type PlanningInvocationStats,
 } from "./planning_run_stats.ts";
 import { applyDegradedModelLabel } from "./planning_degraded_label.ts";
-import { stripReservedLabelsFromIssueRefs } from "./reserved_label_strip.ts";
+import {
+  fleetReservedLabelApplierCheck,
+  stripReservedLabelsFromIssueRefs,
+} from "./reserved_label_strip.ts";
 import { maybeCreateCarrierSubIssue } from "./planning_carrier.ts";
 import { getRepoConfig } from "./repo_config.ts";
 import { releaseClaim } from "./claim_release.ts";
@@ -2337,12 +2340,23 @@ async function closePlanningIssue(
   // Issue #3708: the strip reports what it could not do. Still non-fatal to
   // the planning-run closure, but a failure is logged loudly — a sub-issue that
   // kept a reserved label is exactly the state this guard exists to prevent.
+  //
+  // Issue #1791: a human labelling the fresh sub-issues while the run is
+  // still closing is not the model smuggling a label. Nine `work-on` grants
+  // on VibeCoder#1766–#1774 were removed 40 s after a maintainer applied
+  // them; the strip now reads who applied each label and keeps a human's.
   const subIssueStrip = await stripReservedLabelsFromIssueRefs({
     refs: [...sameRepoRefs, ...crossRepoRefs],
     currentRepo: repo,
     allowedRepos: config.repos,
     ghClient,
     logger,
+    applier: fleetReservedLabelApplierCheck({
+      githubUser,
+      fleetPrAuthors: config.fleetPrAuthors,
+      serviceAccounts: config.serviceAccounts,
+      ghFn: deps.github.runGhCommand,
+    }),
   });
   if (!subIssueStrip.ok) {
     logger.error(

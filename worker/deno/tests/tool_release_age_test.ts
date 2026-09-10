@@ -25,6 +25,7 @@ import {
   parseGhReleaseListing,
   parseNpmLatest,
   parseNpmVersionHistory,
+  resolveGitHubReleaseHistory,
   selectNewestAged,
 } from "../lib/tool_release_age.ts";
 import type { Result } from "../types.ts";
@@ -806,4 +807,79 @@ Deno.test("checkNewestAged - a gh extension has no older ref to fall back to", a
   });
   assertEquals(verdict.eligible, false);
   assertEquals(verdict.version, "1.2.3");
+});
+
+// ---------- resolveGitHubReleaseHistory (exported by Issue #1823) ----------
+
+Deno.test("resolveGitHubReleaseHistory - reads the published listing", async () => {
+  const calls: string[][] = [];
+  const history = await resolveGitHubReleaseHistory(
+    "actions/checkout",
+    fakeRunner({
+      "repos/actions/checkout/releases": {
+        exitCode: 0,
+        output: "v4.2.0 2026-07-01T00:00:00Z\nv4.1.0 2026-06-01T00:00:00Z\n",
+      },
+    }, calls),
+  );
+
+  assertEquals(history.ok, true);
+  assertEquals(
+    history.ok ? history.value.map((c) => c.ref) : [],
+    ["v4.2.0", "v4.1.0"],
+  );
+  // Drafts and pre-releases are filtered by the projection, not by the parser.
+  assertStringIncludes(calls[0]!.join(" "), "select(.prerelease | not)");
+});
+
+Deno.test("resolveGitHubReleaseHistory - an empty listing is ok, not an error", async () => {
+  const history = await resolveGitHubReleaseHistory(
+    "actions/checkout",
+    fakeRunner({
+      "repos/actions/checkout/releases": { exitCode: 0, output: "" },
+    }),
+  );
+
+  // "upstream published nothing recognisable" is a different fault from
+  // "the lookup did not run" — the caller has to tell them apart.
+  assertEquals(history.ok, true);
+  assertEquals(history.ok ? history.value : null, []);
+});
+
+Deno.test("resolveGitHubReleaseHistory - a non-zero exit is an error", async () => {
+  const history = await resolveGitHubReleaseHistory(
+    "actions/checkout",
+    fakeRunner({}),
+  );
+
+  assertEquals(history.ok, false);
+  assertStringIncludes(
+    history.ok ? "" : history.error.message,
+    "repos/actions/checkout/releases exited 1",
+  );
+});
+
+Deno.test("resolveGitHubReleaseHistory - a spawn failure is returned, not thrown", async () => {
+  const history = await resolveGitHubReleaseHistory(
+    "actions/checkout",
+    () => Promise.resolve({ ok: false, error: new Error("spawn failed") }),
+  );
+
+  assertEquals(history.ok, false);
+  assertStringIncludes(history.ok ? "" : history.error.message, "spawn failed");
+});
+
+Deno.test("resolveGitHubReleaseHistory - a malformed repo never reaches the API", async () => {
+  const calls: string[][] = [];
+  const history = await resolveGitHubReleaseHistory(
+    "../../etc/passwd",
+    fakeRunner({}, calls),
+  );
+
+  assertEquals(history.ok, false);
+  assertEquals(calls.length, 0);
+  assertStringIncludes(
+    history.ok ? "" : history.error.message,
+    "is not an owner/repo coordinate",
+  );
 });

@@ -16,7 +16,7 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { BumpInfo } from "../lib/bump_deps.ts";
+import { type BumpInfo, MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
 
 interface RecordedComment {
   repo: string;
@@ -209,6 +209,100 @@ Deno.test(
       bumpComment,
       undefined,
       "must not post a bump comment when no bump phase ran",
+    );
+  },
+);
+
+// =============================================================================
+// skipped_milestone_child — the PR body says why (Issue #1775)
+// =============================================================================
+
+/** Capture the `gh` argv so the created PR's body can be asserted on. */
+function makeArgvRecordingDeps(ghCalls: string[][]) {
+  return createMockDeps({
+    github: {
+      createClient: () => makeStubClient([]),
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        return Promise.resolve("https://github.com/org/repo/pull/42");
+      },
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+    },
+  });
+}
+
+/** The `--body` value of the `gh pr create` call, or `undefined`. */
+function createdPrBody(ghCalls: string[][]): string | undefined {
+  const create = ghCalls.find((args) =>
+    args[0] === "pr" && args[1] === "create"
+  );
+  if (!create) return undefined;
+  const bodyIndex = create.indexOf("--body");
+  return bodyIndex >= 0 ? create[bodyIndex + 1] : undefined;
+}
+
+Deno.test(
+  "completion - PR body carries the skip note on a milestone child run",
+  async () => {
+    const ctx = makeContext({ milestoneTitle: "Merge conflicts" });
+    const state = makeState({
+      milestoneBranch: "milestone/1730-sync",
+      bumpInfo: { status: "skipped_milestone_child", files: [], output: "" },
+    });
+    const ghCalls: string[][] = [];
+
+    const result = await workOnIssueCompletion(
+      ctx,
+      state,
+      makeArgvRecordingDeps(ghCalls),
+    );
+
+    assertEquals(result.status, "continue");
+    const body = createdPrBody(ghCalls);
+    assertEquals(
+      body !== undefined,
+      true,
+      "gh pr create must have been called",
+    );
+    assertStringIncludes(body!, MILESTONE_CHILD_BUMP_NOTE);
+  },
+);
+
+Deno.test(
+  "completion - PR body carries no skip note on a default-branch run",
+  async () => {
+    const ctx = makeContext();
+    const state = makeState({
+      bumpInfo: {
+        status: "applied",
+        files: ["deno.lock"],
+        output: "",
+        sha: "deadbeef",
+        beforeBumpSha: "cafebabe",
+      },
+    });
+    const ghCalls: string[][] = [];
+
+    const result = await workOnIssueCompletion(
+      ctx,
+      state,
+      makeArgvRecordingDeps(ghCalls),
+    );
+
+    assertEquals(result.status, "continue");
+    const body = createdPrBody(ghCalls);
+    assertEquals(
+      body !== undefined,
+      true,
+      "gh pr create must have been called",
+    );
+    assertEquals(
+      body!.includes(MILESTONE_CHILD_BUMP_NOTE),
+      false,
+      "an applied bump must not claim it was skipped",
     );
   },
 );

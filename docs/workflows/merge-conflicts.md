@@ -25,11 +25,14 @@ sides before calling anything a contradiction; a second one at least four
 hours later; then **abandon-and-restart** — the conflicting PR is closed, never
 force-pushed, and its originating issue re-queued so the fleet redoes the work
 off the current base; and only when that is declined or fails does the worker
-escalate with `needs-human` and a conflict summary. One restart per originating
-issue: if the fresh PR conflicts irreconcilably too, that is a human's call
-rather than another lap. A PR whose originating issue cannot be found never
-reaches the third rung at all — closing what the fleet cannot re-raise would
-lose the work — so it falls straight through to a human.
+escalate with `needs-human` and a conflict summary. Where the issue's pickup
+label is one only a human may apply, the PR is still closed and the issue still
+reopened — it rests at `needs-human` naming the label to re-apply, rather than
+re-queued (Issue #1773). One restart per originating issue: if the fresh PR
+conflicts irreconcilably too, that is a human's call rather than another lap. A
+PR whose originating issue cannot be found never reaches the third rung at
+all — closing what the fleet cannot re-raise would lose the work — so it falls
+straight through to a human.
 
 Every attempt ends visibly: merged, failed, or escalated. An attempt that
 opened and then went silent was disrupted, not judged — it does not spend the
@@ -56,7 +59,7 @@ flowchart TD
     Disrupted -->|Yes| Human
     Disrupted -->|No| Lock{"PR lock acquired?"}
     Lock -->|No — another host holds it| Sleep
-    Lock -->|Yes| Record["Comment: attempt N of 2<br/>(names any disruption)"]
+    Lock -->|Yes| Record["Comment: attempt N of 3<br/>(names any disruption)"]
     Record --> Merge["git merge origin/base"]
     Merge --> Clean{"Clean merge?"}
     Clean -->|Yes| Push["Commit and push"]
@@ -74,10 +77,11 @@ flowchart TD
     Abort --> Failed["Failure conclusion comment"]
     Failed --> Budget2{"Attempts spent?"}
     Budget2 -->|No| Sleep
-    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(originating issue known,<br/>not already restarted,<br/>no other PR, re-queueable)"}
+    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(originating issue known,<br/>not already restarted,<br/>no other PR)"}
     Abandon -->|"No originating issue,<br/>or already restarted once"| Human["Label needs-human + summary<br/>naming the route"]
     Abandon -->|"A step failed"| Human
-    Abandon -->|Yes| Restart["Close the PR (never force-push),<br/>re-queue its issue"]
+    Abandon -->|"Yes, and the worker<br/>may apply the pickup label"| Restart["Close the PR (never force-push),<br/>re-queue its issue"]
+    Abandon -->|"Yes, but the pickup label<br/>is a human's to apply"| Unlabelled["Close the PR, reopen the issue,<br/>label it needs-human naming<br/>the label to re-apply"]
     style Scan fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Conflicting fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Label fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
@@ -100,6 +104,7 @@ flowchart TD
     style Abort fill:#707070,stroke:,color:#fff
     style Abandon fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Restart fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style Unlabelled fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
     style Human fill:#c96868,stroke:#7a2020,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
@@ -174,6 +179,17 @@ deterministically **before** the agent is asked anything:
   (`deno.json`/`deno.jsonc`, `package.json`, `Cargo.toml`, `go.mod`). Per
   dependency key the higher published version wins, whichever branch carries it,
   and a key only one side has is kept — an ordinary both-sides-survive merge.
+- A conflict where **both sides only inserted** — an append-only ledger such as
+  `CHANGELOG.md`, `docs/RELEASE-NOTES.md` or an audit ledger — keeps **both**
+  entries, the base branch's first (Issue #1768). The PR merge runs without
+  `diff3` markers, so the merge base is read from index stage 1
+  (`git show :1:<path>`), and the file qualifies only when every line of that
+  base still appears **in order outside the conflict hunks**: a base line one
+  side deleted or edited is inside a hunk instead, and the file defers. A
+  cleanly merged insertion elsewhere in the same file is common text and does
+  not stop the rule. A `.json` result must parse, or the union is not written,
+  and a base git will not give up defers with git's own words rather than being
+  read as an empty base.
 - A lock file (`deno.lock`, `package-lock.json`, `Cargo.lock`, `go.sum`) is
   **never** text-merged. It is regenerated from the already-merged manifest with
   the ecosystem's own tool, and only when that toolchain is on `PATH`.
@@ -303,12 +319,14 @@ settle still reaches no agent and now consults no issue either.
   escalated to a human as its own outcome — a re-initialised or rewritten
   branch, not a conflict the agent failed to resolve — and spends **no**
   attempt.
-- **One attempt per PR per 4 hours**, at most **2 concluded attempts**.
+- **One attempt per PR per 4 hours**, at most **3 concluded attempts**
+  (Issue #1766 — the first attempt and two retries against a base that has
+  moved on since; milestone branches spend the same budget).
 - The attempt is recorded as a marker comment on the PR **before** the merge
   starts. That marker *opens* the attempt; it does not spend it.
 - Every attempt posts a **conclusion**: a resolved marker when the merge lands,
   or a failure comment naming the conflicted files and what went wrong. Only a
-  conclusion spends one of the two attempts.
+  conclusion spends one of the three attempts.
 - History lives on the PR, not in host-local state, so the bounds hold across
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
@@ -337,11 +355,23 @@ originating issue, and the pipeline raises a fresh PR off the current base.
   and linked from the abandon comment. A regenerated branch force-pushed over
   the same PR would destroy its commits and its review history — the same class
   of harm as the side-picking the contract forbids.
-- **Four preconditions run before anything is destroyed**, in this order: the
+- **Three preconditions run before anything is destroyed**, in this order: the
   PR's originating issue is known; that issue has not already been restarted;
-  it has no *other* open PR of its own; and it can actually be re-queued —
-  it carries the work label already, or the worker is permitted to apply one.
-  A failed lookup is never read as an absence.
+  and it has no *other* open PR of its own. A failed lookup is never read as
+  an absence. A fourth check decides *who* re-queues the issue, not whether
+  the abandon happens.
+- **A pickup label the worker may not apply no longer stops the rung**
+  (Issue #1773). `work-on` on an existing issue is refused by
+  `worker_label_guard.ts` and stripped by the discovery collectors, so the
+  worker cannot re-queue that issue itself — but the abandon still runs: the
+  PR is closed, the issue is reopened, and it is handed to a human through
+  `escalateToHuman` (the one sanctioned path to `needs-human`, which creates
+  the label if the repo has never used it). Both comments then say **remove
+  `needs-human` and re-apply `<label>`** — both halves, because `needs-human`
+  blocks discovery on its own, so naming only the pickup label would promise a
+  re-queue that cannot happen. The outcome is `abandoned-unlabelled`, which
+  spends the one restart exactly as a plain abandon does, and no `needs-human`
+  goes on the closed PR. Before #1773 this declined, and nothing was redone.
 - **No originating issue, no abandon.** Closing a PR the fleet cannot re-raise
   loses the work outright, so that PR is left open and goes to a human instead
   — the fall-through the flowchart above shows.
@@ -574,10 +604,11 @@ each carries the operands that make the decision checkable afterwards:
 | `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
 | `needs-human` | `label` | A human already owns the conflict. |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed — the PR is now a human's. |
-| `abandoned-restarted` | `issueNumber`, `attemptsSpent` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. |
+| `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `awaitingLabel`? | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. `awaitingLabel` is present when the worker may not apply that pickup label (Issue #1773): the issue was reopened with `needs-human` and names the label a trusted author must re-apply. |
 | `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
+| `pr-not-open` | `state` | The live `gh pr view` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
 | `repo-leased` | `deferralStreak` | An issue slot holds the repository's shared clone. The streak is the consecutive passes that have now deferred this PR without attempting it. |
 | `deferred-bound` | `bound`, `deferralStreak` | The deadline or the cap left this due PR in the queue before any attempt started. |
 | `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. |
@@ -629,7 +660,7 @@ Three bounds keep the drain from becoming a monopoly:
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
-The per-PR budgets are unchanged: the 4-hour cooldown, the two concluded
+The per-PR budgets are unchanged: the 4-hour cooldown, the three concluded
 attempts, and the abandon rung with `needs-human` behind it are the scan's, and
 the drain only decides how many of the PRs already due get taken now.
 
@@ -642,8 +673,8 @@ because that was all the cycle had left, a 3600-second agent timeout granted out
 of it, and at 11m13s and 83 tool calls the watchdog SIGTERMed an agent that was
 still editing. The pass then read the half-merged tree as *the agent's* verdict
 — `attempt 1 of 2`, "the agent left 6 path(s) unmerged" — and spent one of the
-PR's two attempts on a budget it never had.
-
+PR's attempts on a budget it never had. (The budget was two at the time; it is
+three now, Issue #1766.)
 Two halves now hold, both in `worker/deno/lib/merge_conflict_drain.ts`:
 
 - **The floor is sized for an AI-fallback resolution**, not for a token
@@ -739,7 +770,7 @@ flowchart TD
   twice. Any attempt or conclusion ends the streak the marker belongs to.
 
 **A deferral is not an attempt.** Nothing was started, so it spends neither the
-two concluded attempts nor the three disrupted ones — reusing the disruption
+three concluded attempts nor the three disrupted ones — reusing the disruption
 counter would escalate a PR to a human for a bound it never hit, the opposite
 of what this is for. The `scope=drain` summary carries `maxDeferralStreak`,
 `leftBehind` and `deferralNotices`, so "deferred once, fine" and "deferred nine
@@ -791,6 +822,12 @@ branch at the same time. A host that loses the race returns immediately.
 - [CI fix](ci-fix.md) — the queue that takes over once CI can run again.
 - `worker/deno/lib/pr_merge_conflict_scan.ts` and
   `worker/deno/lib/pr_merge_conflict_processor.ts` — the implementation.
+- `worker/deno/lib/merge_conflict_agent.ts` — the resolution agent itself
+  (`runMergeConflictAgent`), shared by every target (Issue #1767). It takes
+  either a PR or a bare branch pair, builds the `merge_conflict` prompt for
+  that target, runs the agent under the run's bounds, and reports what the run
+  left behind. The reply file is read through the one memoised reader
+  (`createMergeConflictReplyReader`), so both targets get the same reply.
 - `worker/deno/lib/merge_conflict_drain.ts` — the per-cycle drain loop and its
   three bounds.
 - `worker/deno/lib/conflict_issue_context.ts` — the gather that answers *what
@@ -835,6 +872,15 @@ branch at the same time. A host that loses the race returns immediately.
   `optionalDependencies`). Per dependency key the higher semver wins, whichever
   branch carries it; a hunk touching anything else, or one undecidable version,
   defers the whole file.
+- `worker/deno/lib/both_inserted_conflict_rule.ts` — the append-only ledger rule
+  on the same seam: both sides inserted and nothing in the merge base was
+  removed, so both are kept with the base branch's hunk first. It is the one
+  rule that needs the merge base, read from index stage 1 by the pass; a base
+  line that does not survive outside the hunks, a file with no base at all, and
+  a `.json` union that does not parse all defer. The milestone ladder decides
+  the same shape from whole files rather than hunks
+  (`milestone_conflict_triage.ts`), because that rung never sees a conflicted
+  working-tree file — it reads both sides out of the index.
 - `worker/deno/lib/dependency_lock_regen.ts` — lock files are **never**
   text-merged: `deno.lock`, `package-lock.json`, `Cargo.lock` and `go.sum` are
   regenerated from the already-merged manifest with the ecosystem's own tool,

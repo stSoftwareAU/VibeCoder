@@ -2,7 +2,12 @@
  * Tests for issue_query.ts (Issue #910).
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type ClosedPR,
   createMilestoneBranchName,
@@ -769,6 +774,101 @@ Deno.test("issue_query - fetchAllOpenPRs - rejects invalid JSON (Issue #4257)", 
   }
 });
 
+Deno.test("issue_query - fetchAllOpenPRs - requests the bot-lookup fields (Issue #1846)", async () => {
+  const calls: string[][] = [];
+  const mockGh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    return Promise.resolve("[]");
+  };
+  await fetchAllOpenPRs("o/r", undefined, 50, mockGh);
+
+  const list = calls[0]!;
+  const fields = list[list.indexOf("--json") + 1]!.split(",");
+  // The pre-#1846 fields the PR-link and branch-cleanup helpers read.
+  for (
+    const field of [
+      "number",
+      "title",
+      "baseRefName",
+      "headRefName",
+      "body",
+      "url",
+    ]
+  ) {
+    assert(fields.includes(field), `missing ${field}`);
+  }
+  // The fields the bot-PR lookup decides admission on.
+  for (
+    const field of [
+      "author",
+      "isCrossRepository",
+      "headRefOid",
+      "autoMergeRequest",
+      "mergeable",
+    ]
+  ) {
+    assert(fields.includes(field), `missing ${field}`);
+  }
+});
+
+Deno.test("issue_query - fetchAllOpenPRs - carries author and head ownership (Issue #1846)", async () => {
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        number: 9,
+        title: "chore(deps): bump std",
+        baseRefName: "main",
+        headRefName: "dependabot/deno/std",
+        body: "",
+        url: "",
+        author: { login: "dependabot[bot]" },
+        isCrossRepository: false,
+        headRefOid: "abc123",
+        autoMergeRequest: { mergeMethod: "SQUASH" },
+        mergeable: "MERGEABLE",
+      },
+      // A pre-#1846 shape: no author, no ownership — both stay unset so a
+      // consumer reads them as "unknown" rather than as a false negative.
+      {
+        number: 10,
+        title: "T",
+        baseRefName: "main",
+        headRefName: "h",
+        body: "",
+        url: "",
+      },
+    ]));
+
+  const prs = await fetchAllOpenPRs("o/r", undefined, 50, mockGh);
+  assertEquals(prs[0]?.authorLogin, "dependabot[bot]");
+  assertEquals(prs[0]?.isCrossRepository, false);
+  assertEquals(prs[0]?.headRefOid, "abc123");
+  assertEquals(prs[0]?.autoMergeRequest, { mergeMethod: "SQUASH" });
+  assertEquals(prs[0]?.mergeable, "MERGEABLE");
+  assertEquals(prs[1]?.authorLogin, undefined);
+  assertEquals(prs[1]?.isCrossRepository, undefined);
+  assertEquals(prs[1]?.autoMergeRequest, undefined);
+});
+
+Deno.test("issue_query - fetchAllOpenPRs - rejects a non-array payload (Issue #1846)", async () => {
+  // `{"message":"Not Found"}` is valid JSON, so the #4257 parse guard passes
+  // it. Returning [] would let a failed call read as "this repo has no open
+  // PRs" — the exact masquerade #4257 removed for the other shapes.
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const mockGh = (_args: string[]): Promise<string> =>
+      Promise.resolve('{"message":"Not Found"}');
+    await assertRejects(
+      () => fetchAllOpenPRs("o/r", cache, 50, mockGh),
+      Error,
+      "not a JSON array",
+    );
+    assertEquals(await cache.read("o/r", "prs_open_all"), null);
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("issue_query - fetchAllOpenPRs - works without cache", async () => {
   const mockGh = async (_args: string[]): Promise<string> =>
     JSON.stringify([
@@ -1495,4 +1595,30 @@ Deno.test("issue_query - fetchAllClosedIssues returns [] uncached on empty gh ou
   } finally {
     await cleanup();
   }
+});
+
+Deno.test("parsePRListJson - carries isDraft through when the listing asked for it (Issue #1800)", () => {
+  const prs = parsePRListJson(JSON.stringify([
+    {
+      number: 1794,
+      title: "draft",
+      baseRefName: "m",
+      headRefName: "s",
+      isDraft: true,
+    },
+    {
+      number: 1792,
+      title: "ready",
+      baseRefName: "main",
+      headRefName: "i",
+      isDraft: false,
+    },
+    {
+      number: 1700,
+      title: "older cache shape",
+      baseRefName: "main",
+      headRefName: "j",
+    },
+  ]));
+  assertEquals(prs.map((p) => p.isDraft), [true, false, undefined]);
 });

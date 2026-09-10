@@ -97,6 +97,7 @@ const SAMPLES: Record<ConflictSkipReasonKind, ConflictSkipReason> = {
     bound: "cap",
     deferralStreak: 3,
   },
+  "pr-not-open": { kind: "pr-not-open", state: "CLOSED" },
   "queue-empty": { kind: "queue-empty" },
   "deadline": { kind: "deadline", remainingMs: 60_000 },
   "cap": { kind: "cap", maxPerCycle: 5 },
@@ -375,6 +376,7 @@ export function describe(reason: ConflictSkipReason): string {
     case "cooldown":
     case "disrupted-bound":
     case "lock-held":
+    case "pr-not-open":
     case "repo-leased":
     case "deferred-bound":
     case "queue-empty":

@@ -11,6 +11,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createDefaultRunCoreConfig,
   type DiscoveredIssue,
+  liveSlotRunCount,
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
@@ -2084,4 +2085,202 @@ Deno.test("slot pool #245/#425 - a long job is still deferred when the hard cap 
     `expected the skip line, got: ${logs.join(" | ")}`,
   );
   assertStringIncludes(skip!, "hard-cap runway");
+});
+
+// ============================================================================
+// A terminated agent's slot finishes its tail before the run ends (Issue #1815)
+// ============================================================================
+
+Deno.test("slot pool - a slot abandoned at the shutdown grace still finishes its release and callbacks before the run ends (Issue #1815)", async () => {
+  // VibeCoder#1773: the run ended with a slot mid-agent; the agent was
+  // terminated, the slot started its scheduled-release callbacks, and the
+  // exit cleanup's descendant sweep killed them one second later. The
+  // run-ending path must wait for the slot's tail.
+  const events: string[] = [];
+  const logs: string[] = [];
+  const handlers: Record<string, () => void> = {};
+  let now = 0;
+  let clock: ReturnType<typeof setInterval> | undefined;
+  let hangResolve: (() => void) | undefined;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    slotDrainGraceSeconds: 30,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      // The run-ending grace is the one wait that must give the tail a
+      // moment of real time; every other sleep is the fake clock.
+      return (ms ?? 0) >= 30_000
+        ? new Promise<void>((r) => setTimeout(r, 200))
+        : Promise.resolve();
+    },
+    addSignalListener: (signal, handler) => {
+      handlers[signal] = handler;
+    },
+    // The run-ending termination (Issue #4369): here it "kills" the hung
+    // agent, after which the slot runs its tail.
+    terminateActiveAgentRuns: () => {
+      events.push("agents terminated");
+      hangResolve?.();
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/fast", 1), issue("o/hang", 2)]),
+    processIssue: async (i) => {
+      if (i.repo === "o/fast") {
+        await new Promise((r) => setTimeout(r, 5));
+        handlers["SIGTERM"]?.();
+        clock = setInterval(() => {
+          now += 31_000;
+        }, 20);
+        return { ok: true, value: { success: true } };
+      }
+      await new Promise<void>((r) => {
+        hangResolve = r;
+      });
+      // The tail: what the release and the callbacks cost after the agent
+      // is gone.
+      await new Promise((r) => setTimeout(r, 30));
+      events.push("tail done");
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runOneCycle(deps, 2);
+  events.push("run returned");
+  if (clock !== undefined) clearInterval(clock);
+
+  assertEquals(events, ["agents terminated", "tail done", "run returned"]);
+  assert(
+    logs.some((l) =>
+      l.includes("still finishing") && l.includes("Issue #1815")
+    ),
+    logs.filter((l) => l.includes("slot run")).join("\n"),
+  );
+  assertEquals(liveSlotRunCount(), 0);
+});
+
+// ============================================================================
+// The cycle that hits the quota still reports what it spent (Issue #1843)
+// ============================================================================
+
+Deno.test("slot pool - a cycle ending in the primary-rate-limit pause still logs its gh-call telemetry before the pause (Issue #1843)", async () => {
+  const logs: string[] = [];
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/r0", 0), issue("o/r1", 1)]),
+    processIssue: async (i) => {
+      await new Promise((r) => setTimeout(r, 5));
+      if (i.issueNumber === 0) {
+        throw new Error("API rate limit exceeded for user ID 1");
+      }
+      return { ok: true, value: { success: false } };
+    },
+    getRateLimitReset: () => Promise.resolve(Math.floor(now / 1000) + 3600),
+  });
+  await runOneCycle(deps, 2);
+
+  const pauseAt = logs.findIndex((l) =>
+    l.startsWith("Primary rate limit hit mid-cycle")
+  );
+  const telemetryAt = logs.findIndex((l) => l.startsWith("gh-calls:"));
+  assert(pauseAt >= 0, `no pause line: ${logs.join(" | ")}`);
+  assert(telemetryAt >= 0, `no gh-calls line: ${logs.join(" | ")}`);
+  assert(
+    telemetryAt < pauseAt,
+    "the cycle's telemetry is logged before the pause is announced",
+  );
+  assert(logs.some((l) => l.startsWith("gh-calls-by-priority:")));
+  assert(logs.some((l) => l.startsWith("graphql-calls:")));
+});
+
+// ============================================================================
+// A stale latch does not pause a run whose quota has reopened (Issue #1888)
+// ============================================================================
+
+Deno.test("slot pool - a rate-limit refusal with the GraphQL window reopened clears the latch and continues instead of pausing (Issue #1888)", async () => {
+  const logs: string[] = [];
+  let now = 0;
+  let processed = 0;
+  let resetConsulted = false;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([
+      issue("o/r0", 0),
+      issue("o/r1", 1),
+      issue("o/r2", 2),
+    ]),
+    processIssue: async (i) => {
+      processed++;
+      await new Promise((r) => setTimeout(r, 5));
+      if (i.issueNumber === 0) {
+        throw new Error("API rate limit exceeded for user ID 1");
+      }
+      return { ok: true, value: { success: false } };
+    },
+    // The account holds a fresh window: the refusal was a boundary artefact.
+    readGraphqlQuota: () =>
+      Promise.resolve({ limit: 5000, remaining: 5000, reset: 3600 }),
+    getRateLimitReset: () => {
+      resetConsulted = true;
+      return Promise.resolve(Math.floor(now / 1000) + 3600);
+    },
+  });
+  await runOneCycle(deps, 2);
+
+  assert(
+    logs.some((l) => l.includes("GraphQL window has reopened")),
+    `no reopened line: ${logs.join(" | ")}`,
+  );
+  assert(
+    !logs.some((l) => l.startsWith("Primary rate limit hit mid-cycle")),
+    "the run must not announce a pause it did not need",
+  );
+  assertEquals(resetConsulted, false, "no pause, so no reset lookup");
+  // The loop went on to the remaining issues rather than exiting.
+  assert(processed >= 3, `only ${processed} issue(s) processed`);
+});
+
+Deno.test("slot pool - a rate-limit refusal with the quota still spent pauses as before (Issue #1888)", async () => {
+  const logs: string[] = [];
+  let now = 0;
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => {
+      logs.push(m);
+    },
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/r0", 0), issue("o/r1", 1)]),
+    processIssue: async (i) => {
+      await new Promise((r) => setTimeout(r, 5));
+      if (i.issueNumber === 0) {
+        throw new Error("API rate limit exceeded for user ID 1");
+      }
+      return { ok: true, value: { success: false } };
+    },
+    readGraphqlQuota: () =>
+      Promise.resolve({ limit: 5000, remaining: 0, reset: 3600 }),
+    getRateLimitReset: () => Promise.resolve(Math.floor(now / 1000) + 3600),
+  });
+  await runOneCycle(deps, 2);
+  assert(logs.some((l) => l.startsWith("Primary rate limit hit mid-cycle")));
+  assert(!logs.some((l) => l.includes("GraphQL window has reopened")));
 });

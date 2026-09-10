@@ -77,6 +77,17 @@ const OWNED_BRANCH_PREFIXES: ReadonlyArray<string> = [
 ];
 
 /**
+ * The shape the worker actually gives an issue branch: `issue-<number>-<slug>`
+ * (Issue #1850). The prefix list above knew only the slash forms, so every
+ * branch the fleet creates for an issue was refused — a gitleaks
+ * "history rewrite required" fix on VibeCoder#1842 scrubbed the tree, pushed,
+ * and then could not drop the leaked commit from history, so the check
+ * failed again on the next run. Anchored on the digits so an unrelated
+ * `issue-notes` branch is not swept in.
+ */
+const OWNED_ISSUE_BRANCH = /^issue-\d+-/;
+
+/**
  * Branch names that must never be rewritten regardless of prefix.
  *
  * `milestone/**` is an owned prefix above — a milestone branch is created and
@@ -105,6 +116,7 @@ export function isOwnedBranch(
 ): boolean {
   if (branchName === baseBranch) return false;
   if (NEVER_REWRITE.includes(branchName)) return false;
+  if (OWNED_ISSUE_BRANCH.test(branchName)) return true;
   return OWNED_BRANCH_PREFIXES.some((prefix) => branchName.startsWith(prefix));
 }
 

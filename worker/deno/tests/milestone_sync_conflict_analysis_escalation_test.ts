@@ -1,11 +1,14 @@
 /**
- * A conflict only a human can settle escalates with the analysis, not the
- * compiler output (Issue #1559).
+ * A conflict only a human could settle is charged to the branch ledger and
+ * reported to nobody while an automatic attempt remains (Issue #1778).
  *
- * #1542's body was a wall of `TS2304` — true, and nearly useless for deciding
- * anything. What the reader needs is what each side exports, what each side
- * tests, and which cases exist on one side only, and that is what the sync
- * posts on the milestone's tracking issue.
+ * Issue #1559 posted that conflict's analysis on the milestone's tracking
+ * issue the first time it happened — before any of the three automatic
+ * attempts had been spent. That is exactly the "needs-human while a rung
+ * remains" the conflict budget removes, so these tests now assert the
+ * opposite of what they asserted then: the analysis escalation is gone, the
+ * ledger records why the branch is still behind, and the roll-back is what
+ * an exhausted budget reaches for.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -19,17 +22,30 @@ import {
   analyseConflictedFile,
   MilestoneConflictEscalation,
 } from "../lib/milestone_conflict_triage.ts";
-import { milestoneSyncStreakPath } from "../lib/milestone_sync_streak.ts";
+import { createMilestoneBranchName } from "../lib/git_branch.ts";
+import {
+  loadSyncStreaks,
+  MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+  milestoneSyncStreakPath,
+} from "../lib/milestone_sync_streak.ts";
 
-const MILESTONE_BRANCH = "milestone/1559-rivals";
+const MILESTONE_TITLE = "#1559 Rival designs";
+/** The branch the sync derives from {@link MILESTONE_TITLE}. */
+const MILESTONE_BRANCH = createMilestoneBranchName(MILESTONE_TITLE);
 const DEFAULT_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
+/** The milestone branch tip the escalations below conflicted from. */
+const MILESTONE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
 /** The `scanContentForVariableBinarySpawn` versus `IndirectSpawnRules` shape. */
-function escalation(defaultSha = DEFAULT_SHA): MilestoneConflictEscalation {
+function escalation(
+  defaultSha = DEFAULT_SHA,
+  options: { path?: string; milestoneSha?: string } = {},
+): MilestoneConflictEscalation {
   const analyses = [
     analyseConflictedFile(
       {
-        path: "worker/deno/lib/scan_content.ts",
+        path: options.path ?? "worker/deno/lib/scan_content.ts",
         ours:
           'export class IndirectSpawnRules {}\nDeno.test("rules reject an indirect spawn", () => {});\n',
         theirs:
@@ -45,6 +61,29 @@ function escalation(defaultSha = DEFAULT_SHA): MilestoneConflictEscalation {
     analyses,
     [],
     defaultSha,
+    undefined,
+    options.milestoneSha ?? MILESTONE_SHA,
+  );
+}
+
+/**
+ * A resolution the verification then refused. This is the one remaining
+ * comment path after Issue #1778: a gate refusal is not a conflict the
+ * budget can retry, so it still escalates — and Issue #1786's marker is
+ * what stops a second host repeating that comment.
+ */
+function gateRefusal(
+  defaultSha = DEFAULT_SHA,
+  options: { path?: string; milestoneSha?: string } = {},
+): MilestoneConflictEscalation {
+  const base = escalation(defaultSha, options);
+  return new MilestoneConflictEscalation(
+    base.message,
+    base.analyses,
+    base.resolved,
+    base.defaultSha,
+    "quality gate refused the resolved tree",
+    base.milestoneSha,
   );
 }
 
@@ -54,6 +93,8 @@ function deps(
     milestoneTitle: string;
     error: Error;
     streakPath: string;
+    /** The default branch's tip this cycle. */
+    defaultSha: string;
   },
 ): MilestoneBranchSyncDeps {
   return {
@@ -85,9 +126,11 @@ function deps(
       return Promise.resolve("");
     },
     syncBranchFn: () => Promise.resolve({ ok: false, error: options.error }),
+    // The tip the cadence gate and the ledger measure against: without it
+    // the ledger has no tip to compare and paces on the cooldown alone.
+    defaultTipShaFn: () =>
+      Promise.resolve({ ok: true as const, value: options.defaultSha }),
     log: () => undefined,
-    cooldownSeconds: 0,
-    lastSyncTimes: new Map(),
     streakPath: options.streakPath,
   };
 }
@@ -96,31 +139,35 @@ const commentCalls = (calls: string[][]): string[][] =>
   calls.filter((c) => c[0] === "issue" && c[1] === "comment");
 
 Deno.test(
-  "milestone sync - a case-3 conflict escalates on the first cycle with both sides' exports, cases and the difference (Issue #1559)",
+  "milestone sync - a case-3 conflict posts nothing and charges one attempt (Issue #1778)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-1559-escalation-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-1778-analysis-" });
     try {
+      const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
       const result = await syncMilestoneBranches(deps(calls, {
-        milestoneTitle: "#1559 Rival designs",
+        milestoneTitle: MILESTONE_TITLE,
         error: escalation(),
-        streakPath: milestoneSyncStreakPath(dir),
+        streakPath,
+        defaultSha: DEFAULT_SHA,
       }));
 
       assert(result.ok);
       assertEquals(result.value.failed, 1, "nothing was pushed");
+      // The Issue #1559 escalation fired here on the first cycle; it is gone.
+      assertEquals(
+        commentCalls(calls).length,
+        0,
+        `posted while attempts remained: ${
+          JSON.stringify(commentCalls(calls))
+        }`,
+      );
 
-      const comments = commentCalls(calls);
-      assertEquals(comments.length, 1, "escalated on the very first cycle");
-      assertEquals(comments[0]?.[2], "1559", "on the tracking issue");
-      const body = comments[0]?.[comments[0]!.length - 1] ?? "";
-      assertStringIncludes(body, "worker/deno/lib/scan_content.ts");
-      assertStringIncludes(body, "IndirectSpawnRules");
-      assertStringIncludes(body, "scanContentForVariableBinarySpawn");
-      assertStringIncludes(body, "rules reject an indirect spawn");
-      assertStringIncludes(body, "triaged false positive stays quiet");
-      assertStringIncludes(body, "Cases only on");
-      assertStringIncludes(body, "Nothing has been pushed");
+      const entry =
+        (await loadSyncStreaks(streakPath))[`owner/repo|${MILESTONE_BRANCH}`];
+      assertEquals(entry?.conflictAttempts, 1, "the attempt is charged");
+      assertEquals(entry?.lastAttempt?.outcome, "failed");
+      assertEquals(entry?.lastAttempt?.defaultSha, DEFAULT_SHA);
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
@@ -128,34 +175,45 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - the same unresolvable conflict is reported once, a new one again (Issue #1559)",
+  "milestone sync - the budget, not a comment, is what a repeated conflict spends (Issue #1778)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-1559-dedup-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-1778-budget-" });
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
+      const rolledBack: number[] = [];
       const options = {
-        milestoneTitle: "#1559 Rival designs",
+        milestoneTitle: MILESTONE_TITLE,
         error: escalation(),
         streakPath,
+        defaultSha: DEFAULT_SHA,
       };
 
-      await syncMilestoneBranches(deps(calls, options));
-      await syncMilestoneBranches(deps(calls, options));
-      assertEquals(
-        commentCalls(calls).length,
-        1,
-        "the same default-branch commit is reported once",
-      );
+      // Each cycle sees a different default tip, so the cooldown never
+      // stands between the attempts and the budget is what bounds them.
+      for (let cycle = 0; cycle < MILESTONE_CONFLICT_ATTEMPT_BUDGET; cycle++) {
+        const tip = `${cycle}`.repeat(40);
+        const built = deps(calls, {
+          ...options,
+          error: escalation(tip),
+          defaultSha: tip,
+        });
+        built.rollbackFn = (request) => {
+          rolledBack.push(request.attempts);
+          return Promise.resolve();
+        };
+        await syncMilestoneBranches(built);
+      }
 
-      await syncMilestoneBranches(deps(calls, {
-        ...options,
-        error: escalation("c".repeat(40)),
-      }));
       assertEquals(
         commentCalls(calls).length,
-        2,
-        "a conflict against a different commit is reported again",
+        0,
+        "no comment is posted on the way to an exhausted budget",
+      );
+      assertEquals(
+        rolledBack,
+        [MILESTONE_CONFLICT_ATTEMPT_BUDGET],
+        "the roll-back is reached exactly once, on the last attempt",
       );
     } finally {
       await Deno.remove(dir, { recursive: true });
@@ -164,17 +222,19 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - without a streak file the analysis is logged, not repeated every cycle (Issue #1559)",
+  "milestone sync - without a streak file there is no ledger and still no comment (Issue #1778)",
   async () => {
     const dir = await Deno.makeTempDir({ prefix: "issue-1559-nostreak-" });
     try {
       const calls: string[][] = [];
       const built = deps(calls, {
-        milestoneTitle: "#1559 Rival designs",
+        milestoneTitle: MILESTONE_TITLE,
         error: escalation(),
         streakPath: milestoneSyncStreakPath(dir),
+        defaultSha: DEFAULT_SHA,
       });
-      // No streak file: there is nowhere to record that a report went out.
+      // No streak file: there is no ledger to charge, and a conflict still
+      // reaches nobody — the loud WARNING line stands on its own.
       delete built.streakPath;
 
       await syncMilestoneBranches(built);
@@ -183,10 +243,127 @@ Deno.test(
       assertEquals(
         commentCalls(calls).length,
         0,
-        "a report that could not be remembered is not posted every cycle",
+        "a conflict is never reported while an automatic rung remains",
       );
     } finally {
       await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "milestone sync - a second host does not repeat an escalation already on the issue (Issue #1786)",
+  async () => {
+    // Each host keeps its own streak file, so the local record cannot stop
+    // the repeat — `VibeCoderST` and `stservice` both posted the same
+    // analysis on stSoftwareAU/VibeCoder#1653 ten minutes apart. The marker
+    // on the issue is the shared record both hosts read.
+    const first = await Deno.makeTempDir({ prefix: "issue-1786-host-a-" });
+    const second = await Deno.makeTempDir({ prefix: "issue-1786-host-b-" });
+    try {
+      const calls: string[][] = [];
+      const options = {
+        milestoneTitle: "#1559 Rival designs",
+        error: gateRefusal(),
+        streakPath: milestoneSyncStreakPath(first),
+        defaultSha: DEFAULT_SHA,
+      };
+
+      await syncMilestoneBranches(deps(calls, options));
+      const posted = commentCalls(calls);
+      assertEquals(posted.length, 1, "the first host escalates");
+      const body = posted[0]?.[posted[0]!.length - 1] ?? "";
+      assertStringIncludes(body, "<!-- vibe-milestone-sync-conflict key=");
+
+      // The second host has an empty streak file but reads the same issue.
+      const hostB = deps(calls, {
+        ...options,
+        streakPath: milestoneSyncStreakPath(second),
+      });
+      const inner = hostB.ghCommandFn;
+      hostB.ghCommandFn = (args: string[]): Promise<string> => {
+        if (args[0] === "issue" && args[1] === "view") {
+          calls.push(args);
+          return Promise.resolve(JSON.stringify({ comments: [{ body }] }));
+        }
+        return inner(args);
+      };
+
+      await syncMilestoneBranches(hostB);
+      assertEquals(
+        commentCalls(calls).length,
+        1,
+        "the second host sees the marker and posts nothing",
+      );
+    } finally {
+      await Deno.remove(first, { recursive: true });
+      await Deno.remove(second, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "milestone sync - a second host does not reopen a closed issue only to post nothing (Issues #1786, #1826)",
+  async () => {
+    // The escalation destination is resolved before the comment goes out, and
+    // resolving a CLOSED parent planning issue reopens it. Asking the marker
+    // question first is what stops a human's close being undone with no
+    // comment to explain why.
+    const first = await Deno.makeTempDir({ prefix: "issue-1826-host-a-" });
+    const second = await Deno.makeTempDir({ prefix: "issue-1826-host-b-" });
+    try {
+      const calls: string[][] = [];
+      const options = {
+        milestoneTitle: "#1559 Rival designs",
+        error: gateRefusal(),
+        streakPath: milestoneSyncStreakPath(first),
+        defaultSha: DEFAULT_SHA,
+      };
+
+      await syncMilestoneBranches(deps(calls, options));
+      const posted = commentCalls(calls);
+      assertEquals(posted.length, 1, "the first host escalates");
+      const body = posted[0]?.[posted[0]!.length - 1] ?? "";
+
+      // A human read it and closed the issue. The second host has its own
+      // (empty) streak file, so only the marker can stop it repeating.
+      const hostB = deps(calls, {
+        ...options,
+        streakPath: milestoneSyncStreakPath(second),
+      });
+      const inner = hostB.ghCommandFn;
+      hostB.ghCommandFn = (args: string[]): Promise<string> => {
+        if (args[0] === "issue" && args[1] === "view") {
+          calls.push(args);
+          return Promise.resolve(
+            args.includes("state")
+              ? "CLOSED"
+              : JSON.stringify({ comments: [{ body }] }),
+          );
+        }
+        return inner(args);
+      };
+
+      await syncMilestoneBranches(hostB);
+
+      assertEquals(
+        commentCalls(calls).length,
+        1,
+        "the second host posts nothing",
+      );
+      assertEquals(
+        calls.filter((c) => c[0] === "issue" && c[1] === "reopen"),
+        [],
+        "and it does not reopen the issue the human closed",
+      );
+      assertEquals(
+        calls.filter((c) => c.includes("--add-label")),
+        [],
+        "nor label it needs-human again",
+      );
+    } finally {
+      await Deno.remove(first, { recursive: true });
+      await Deno.remove(second, { recursive: true });
     }
   },
 );

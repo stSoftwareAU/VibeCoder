@@ -250,6 +250,64 @@ Universal specs (applied to every repo regardless of language) include:
 Language-specific specs cover Rust, Deno, Node, Java, and Bash projects;
 see `WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.
 
+### Pins are resolved when the issue is filed, and the body says so
+
+The catalogue in `pinned_actions.ts` is the **fallback floor**, not the value
+an issue hands a human. `setup workflow-sync` therefore calls
+`resolveActionPins()` **once per sync run** — the pins do not vary by
+repository — and renders every missing- and partial-workflow body through
+`applyResolvedPins()`, so each `uses:` line carries the highest upstream
+release that has aged past `VIBE_BUMP_QUARANTINE_HOURS` rather than whatever
+SHA the catalogue was last edited with. The resolution is **lazy**: a run
+that renders no body — a `dryRun`, or a repository whose sync issues have all
+been filed already — issues no lookup at all.
+
+An action whose lookup fails keeps its catalogue SHA and emits exactly one
+`[workflow-sync] pin resolution failed: <action> — <reason>` line, so a stale
+pin is loud rather than silent — grep the setup log for that prefix. The
+`<reason>` carries the failure `gh` reported (an HTTP 403, a missing binary),
+and a wedged lookup is bounded by the resolver's own timeout, since nothing
+else on the setup `gh` path applies a deadline.
+
+A pin the resolver could not have produced — a malformed SHA in a
+caller-supplied map — is a different class: `applyResolvedPins` throws, and
+the sync reports that repository as **failed** rather than filing a stale
+template or quietly filing nothing.
+
+Because the YAML the body carries is final, both body variants tell the
+implementer what to do with it:
+
+- **copy it verbatim** — no value in a template is repository-specific, and
+  the body says so rather than leaving the implementer to guess which strings
+  are placeholders;
+- **copy the pins as given** — do not re-resolve, bump or reformat them; and
+- **the checks the committed file must pass**, rendered from the `label` of
+  every `WORKFLOW_FILE_CHECKS` entry in
+  `worker/deno/lib/workflow_file_checks.ts` — the same file-scoped checks the
+  Actions audit and `quality.sh` run, so a check added there reaches every
+  body the next sync files.
+
+The same table is the pre-PR gate a worker run is held to: before `gh pr create`
+[`changed_workflow_gate.ts`](../worker/deno/lib/changed_workflow_gate.ts) runs
+every check over the `.github/workflows/` files the branch added or changed and
+blocks the PR on any finding, so a workflow the run embellished never reaches
+the repository — see
+[Issue processing § Changed workflow files](workflows/issue-processing.md#-changed-workflow-files-are-checked-before-the-pr).
+
+```mermaid
+sequenceDiagram
+    participant S as setup workflow-sync
+    participant R as resolveActionPins
+    participant G as gh api
+    participant T as target repo issue
+    S->>R: once per sync run (lazily, before the first body)
+    R->>G: releases (drafts and pre-releases filtered)
+    R->>G: commits/<tag> → sha
+    R-->>S: pins + failures (one log line each)
+    S->>S: applyResolvedPins(template)
+    S->>T: body: resolved YAML + How to apply (checks, pin rule)
+```
+
 ### Security specs tell the human how to make the check block merges
 
 Adding a workflow only makes its scan advisory — a red run reports and the
@@ -284,6 +342,18 @@ When you add or bump a template:
   helper throws for an unrecorded one.
 - Bump the SHA and the `version` label together, honouring the 24-hour
   supply-chain quarantine for external dependencies.
+- The catalogue is the **fallback floor**, not the final emitted value:
+  `resolveActionPins()` in `worker/deno/lib/action_pin_resolver.ts` resolves
+  each entry to the highest upstream release that has cleared
+  `VIBE_BUMP_QUARANTINE_HOURS`, and falls back to the recorded SHA with one
+  `[workflow-sync] pin resolution failed:` line. `applyResolvedPins()` then
+  rewrites the rendered template's `uses:` lines, and `workflow-sync` calls
+  both when it files an issue (see below), so `pinnedAction()` on its own
+  still renders the catalogue SHA but no issue body carries it unresolved.
+- Mark an entry `resolution: "catalogue"` only when there is no stable
+  release series to resolve it against — an entry deliberately pinned to a
+  branch HEAD, or an upstream that cuts no `MAJOR.MINOR.PATCH` release at
+  all — and say which, in a source comment.
 - Actions that read their behaviour from the ref name
   (`dtolnay/rust-toolchain@stable`, `taiki-e/install-action@<tool>`) need
   an explicit `toolchain:` / `tool:` input once pinned, because a SHA
@@ -315,28 +385,58 @@ before Issue #1639. Every emitted template now carries:
   dependency-update jobs that open a PR;
 - an exact version pin on every `run:` install the audit's install-pin
   pre-filer covers — npm, npx and gem (a `run:` install is not a manifest,
-  so no dependency manager applies the 24h quarantine to it).
+  so no dependency manager applies the 24h quarantine to it);
+- `set -euo pipefail` at the top of every multi-line `run:` block, so a
+  failing command mid-block cannot vanish into a green step;
+- a trailing `# <version>` comment on every SHA-pinned `uses:`, rendered by
+  `pinnedAction()` — a bare 40-character SHA tells neither a reviewer nor
+  the audit's stale-pin check which release it names.
 
 ```mermaid
 flowchart LR
     T["workflow_definitions.ts<br/>templates"] --> R["Provisioned repo<br/>.github/workflows/"]
     R --> A["GitHub Actions audit<br/>native pre-filers"]
     T --> C["workflow_template_audit<br/>_conformance_test.ts"]
-    C -- "same pre-filers" --> A
+    C --> K["WORKFLOW_FILE_CHECKS<br/>(11 file-scoped checks)"]
+    K -. "adapts the same<br/>pure scanners" .-> A
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
 `worker/deno/tests/workflow_template_audit_conformance_test.ts` renders
-every template and runs the audit's own native pre-filers
-(`checkout_persist_credentials_scanner`, `milestone_branch_filter_scanner`,
-`action_pin_scanner`, `ci_install_pin_scanner`,
-`workflow_permissions_scanner`, `workflow_trigger_scanner`) over the
-result. Any finding fails the test — and `quality.sh` — so a scanner change
-and the templates cannot drift apart unnoticed. Two of those pre-filers only
-act on workflows the classifier rates `test`/`high`, which the
-dependency-review, java-dependency-check and shellcheck templates are not, so
-the branch-filter and push-trigger rules are additionally asserted over the
-whole catalogue. The branch-filter, credential-persistence and
+every template and runs `WORKFLOW_FILE_CHECKS`
+(`worker/deno/lib/workflow_file_checks.ts`) over the result, on both
+`Develop` and `main`. That table is the single ordered list of the audit
+checks a **template** can be held to — every check decidable from the
+workflow file alone, without a repository around it: nine native pre-filers
+(`action_pin_scanner`, `workflow_permissions_scanner`,
+`workflow_trigger_scanner`, `checkout_persist_credentials_scanner`,
+`milestone_branch_filter_scanner`, `ci_install_pin_scanner`,
+`run_injection_scanner`, `artifact_upload_scanner`,
+`gitleaks_drift_scanner`) plus the two workflow-hygiene rules `quality.sh`
+applies to this repository's own workflows — multi-line `run:` opens with
+`set -euo pipefail`, and one pinned SHA carries one version comment
+(`workflow_hygiene_check.ts`). Each entry is a thin adapter over the pure
+scanner the audit template already calls, so no scanner logic is
+duplicated, and a table test asserts the exact eleven ids so a check cannot
+be dropped by accident. Any finding fails the test — and `quality.sh` — so
+a scanner change and the templates cannot drift apart unnoticed.
+
+The audit's remaining checks are absent by construction: runner deprecation
+reads recent run logs, gitleaks PR coverage reads recent pull requests,
+action advisories query the GHSA database, and the repository-settings and
+worker-token-privilege scans read repository state. `checkLinterInCI` is the
+near miss — it reads workflow text, but it takes a repo path and answers a
+repository-level question ("does *this repo* run a linter in CI"), which no
+single template can decide.
+
+Two of the pre-filers only act on workflows the classifier rates
+`test`/`high`, which the dependency-review, java-dependency-check and
+shellcheck templates are not, so the branch-filter and push-trigger rules are
+additionally asserted over the whole catalogue, as is the trailing
+`# <version>` comment on every SHA-pinned `uses:` — the text the audit's
+stale-pin check reads.
+
+The branch-filter, credential-persistence and
 concurrency/timeout rules are also stated in
 `prompts/workflow_setup/prompt.md` ("CI Hardening Defaults") so
 agent-generated workflows match the deterministic templates.

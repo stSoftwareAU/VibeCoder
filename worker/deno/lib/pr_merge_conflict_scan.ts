@@ -101,9 +101,15 @@ export const DEFAULT_CONFLICT_COOLDOWN_HOURS = 4;
 
 /**
  * Attempts allowed before the processor stops retrying and escalates.
- * Two: the first attempt, and one retry against a moved base.
+ *
+ * Three (Issue #1766): the first attempt, and two retries against a base that
+ * has moved on since. Two was one retry short — a conflict whose first
+ * attempt raced a base-branch push had a single judged retry, and the
+ * milestone ladder charges against this same constant, so the two ladders
+ * cannot drift apart. Only a **concluded** attempt spends it; a disrupted one
+ * is counted separately by {@link countDisruptedAttempts}.
  */
-export const DEFAULT_MAX_CONFLICT_ATTEMPTS = 2;
+export const DEFAULT_MAX_CONFLICT_ATTEMPTS = 3;
 
 /**
  * Disrupted attempts allowed before the PR is escalated (Issue #395).
@@ -209,6 +215,12 @@ export type ConflictSkipReason =
     kind: "abandoned-restarted";
     issueNumber: number;
     attemptsSpent: number;
+    /**
+     * Present when the worker may not apply the pickup label (Issue #1773):
+     * the PR was closed and the issue reopened with `needs-human`, and this
+     * is the label a trusted author must re-apply to re-queue it.
+     */
+    awaitingLabel?: string;
   }
   /**
    * Still inside the post-attempt cooldown. `msUntilDue` is null when the
@@ -224,6 +236,13 @@ export type ConflictSkipReason =
   }
   /** Another host holds the cross-host PR lock. */
   | { kind: "lock-held"; lockHolder: string }
+  /**
+   * The PR is no longer open, or its live state could not be read at the
+   * claim point (Issue #1774). The queue is built from a listing up to ten
+   * minutes old; `UNKNOWN` skips this cycle rather than guessing "open",
+   * so nothing is written to a PR whose state we could not confirm.
+   */
+  | { kind: "pr-not-open"; state: "CLOSED" | "MERGED" | "UNKNOWN" }
   /**
    * An issue slot holds the repository's shared clone (Issue #213).
    * `deferralStreak` is the consecutive passes that have now deferred this PR
@@ -269,6 +288,7 @@ const CONFLICT_SKIP_REASON_KIND_SET: Record<ConflictSkipReasonKind, true> = {
   "cooldown": true,
   "disrupted-bound": true,
   "lock-held": true,
+  "pr-not-open": true,
   "repo-leased": true,
   "deferred-bound": true,
   "queue-empty": true,
@@ -332,6 +352,7 @@ export function isQueuedConflictReason(kind: ConflictSkipReasonKind): boolean {
     case "cooldown":
     case "disrupted-bound":
     case "lock-held":
+    case "pr-not-open":
     case "repo-leased":
     // Issue #1111: a PR the deadline or the cap left behind is queued and
     // labelled, unlike the pass-level stop of the same name.
@@ -372,6 +393,9 @@ export function conflictReasonOperands(
       return {
         issueNumber: reason.issueNumber,
         attemptsSpent: reason.attemptsSpent,
+        ...(reason.awaitingLabel !== undefined
+          ? { awaitingLabel: reason.awaitingLabel }
+          : {}),
       };
     case "cooldown":
       return {
@@ -387,6 +411,8 @@ export function conflictReasonOperands(
       };
     case "lock-held":
       return { lockHolder: reason.lockHolder };
+    case "pr-not-open":
+      return { state: reason.state };
     case "repo-leased":
       return reason.deferralStreak !== undefined
         ? { deferralStreak: reason.deferralStreak }
@@ -1083,6 +1109,9 @@ export async function findConflictingPr(
         gh: ghCommandFn,
         logger,
         trustedAuthors,
+        // The rung hands an issue it may not re-queue to a human, so it
+        // needs the configured escalation label, not a second literal.
+        needsHumanLabel,
       }));
 
   /**
@@ -1246,16 +1275,31 @@ export async function findConflictingPr(
         prComments,
       });
 
-      if (abandon.outcome === "abandoned") {
+      if (
+        abandon.outcome === "abandoned" ||
+        abandon.outcome === "abandoned-unlabelled"
+      ) {
+        // Issue #1773: where the pickup label is one the worker may not
+        // apply, the PR is still closed and the issue still reopened — it
+        // rests at `needs-human` naming the label instead of re-queued.
+        const awaitingLabel = abandon.outcome === "abandoned-unlabelled"
+          ? abandon.workLabel
+          : undefined;
         logger.warn(
           `PR #${pr.number} spent its ${maxAttempts} merge-conflict ` +
-            `attempts — closed it and re-queued issue #${abandon.issueNumber}`,
+            (awaitingLabel === undefined
+              ? `attempts — closed it and re-queued issue ` +
+                `#${abandon.issueNumber}`
+              : `attempts — closed it and reopened issue ` +
+                `#${abandon.issueNumber}, which needs \`${awaitingLabel}\` ` +
+                "re-applied by a trusted author"),
           {
             repo,
             prNumber: pr.number,
             issueNumber: abandon.issueNumber,
             attempts: history.count,
             maxAttempts,
+            ...(awaitingLabel !== undefined ? { awaitingLabel } : {}),
           },
         );
         return {
@@ -1264,6 +1308,7 @@ export async function findConflictingPr(
             kind: "abandoned-restarted",
             issueNumber: abandon.issueNumber,
             attemptsSpent: history.count,
+            ...(awaitingLabel !== undefined ? { awaitingLabel } : {}),
           },
         };
       }
