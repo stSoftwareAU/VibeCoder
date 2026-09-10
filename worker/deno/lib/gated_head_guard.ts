@@ -7,7 +7,8 @@
  * The spelling, CI-fix and merge-conflict passes did not know that: each
  * checked the milestone head out, let the agent commit on it, and pushed —
  * and every push was refused, once per worker run, for as long as the PR
- * stayed open:
+ * stayed open (and the CI-nudge pass repeated the shape with its empty
+ * commit until Issue #1762 wired it in):
  *
  * ```text
  * remote: error: GH013: Repository rule violations found for
@@ -157,8 +158,9 @@ export function buildGatedHeadComment(
     "",
     `${capitalise(assessment.detail)}.`,
     "",
-    "The automated spelling, CI-fix and merge-conflict passes therefore leave " +
-    "this PR alone rather than retrying a push that can never land. Changes " +
+    "The automated spelling, CI-fix, merge-conflict and CI-nudge passes " +
+    "therefore leave this PR alone rather than retrying a push that can " +
+    "never land. Changes " +
     "for this branch have to arrive through a pull request into it, or an " +
     "operator has to add the fleet account as a bypass actor on the rule.",
     "",

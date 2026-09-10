@@ -181,3 +181,112 @@ Deno.test("close notifier - records a flag-first close (milestone completion sha
 
   assert(registry.wasClosedByWorker("o/r", 34));
 });
+
+// ---------------------------------------------------------------------------
+// The REST form (Issue #1753)
+// ---------------------------------------------------------------------------
+
+Deno.test("close notifier - a REST PATCH state=closed records the issue and drops the cache entries (Issue #1753)", async () => {
+  const repo = "o/r";
+  const { cache, dir } = await seededCache(repo, 21);
+  const registry = new ProcessedIssueRegistry();
+  try {
+    await noteGhIssueClose(
+      ["api", "-X", "PATCH", "repos/o/r/issues/21", "-f", "state=closed"],
+      0,
+      { registry, cache },
+    );
+
+    assert(registry.wasClosedByWorker(repo, 21));
+    for (const key of closeInvalidatedCacheKeys(21)) {
+      assertEquals(
+        await cache.read(repo, key),
+        null,
+        `${key} should have been invalidated`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("close notifier - a REST PATCH state=open clears the entry like gh issue reopen", async () => {
+  const registry = new ProcessedIssueRegistry();
+  registry.record("o/r", 21, "closed");
+
+  await noteGhIssueClose(
+    ["api", "-X", "PATCH", "repos/o/r/issues/21", "-f", "state=open"],
+    0,
+    { registry },
+  );
+
+  assertFalse(registry.has("o/r", 21));
+});
+
+Deno.test("close notifier - a failed REST close records nothing", async () => {
+  const registry = new ProcessedIssueRegistry();
+
+  await noteGhIssueClose(
+    ["api", "-X", "PATCH", "repos/o/r/issues/21", "-f", "state=closed"],
+    1,
+    { registry },
+  );
+
+  assertFalse(registry.has("o/r", 21));
+});
+
+Deno.test("close notifier - REST calls that are not a state change are ignored", async () => {
+  const registry = new ProcessedIssueRegistry();
+  const warnings: string[] = [];
+
+  for (
+    const args of [
+      // The summary comment the wrapper closure posts before it closes.
+      ["api", "-X", "POST", "repos/o/r/issues/21/comments", "-f", "body=done"],
+      // A title edit: a PATCH without `state=`.
+      ["api", "-X", "PATCH", "repos/o/r/issues/21", "-f", "title=renamed"],
+      // Labels and assignees are not lifecycle changes.
+      ["api", "-X", "POST", "repos/o/r/issues/21/labels", "-f", "labels[]=x"],
+      [
+        "api",
+        "-X",
+        "DELETE",
+        "repos/o/r/issues/21/assignees",
+        "-f",
+        "assignees[]=me",
+      ],
+      // A PR close is not an issue close.
+      ["api", "-X", "PATCH", "repos/o/r/pulls/21", "-f", "state=closed"],
+    ]
+  ) {
+    await noteGhIssueClose(args, 0, {
+      registry,
+      warn: (message) => warnings.push(message),
+    });
+  }
+
+  assertEquals(registry.size(), 0);
+  assertEquals(warnings, []);
+});
+
+Deno.test("close notifier - a REST close on gh's {owner}/{repo} placeholder warns instead of guessing", async () => {
+  const warnings: string[] = [];
+  const registry = new ProcessedIssueRegistry();
+
+  await noteGhIssueClose(
+    [
+      "api",
+      "-X",
+      "PATCH",
+      "repos/{owner}/{repo}/issues/21",
+      "-f",
+      "state=closed",
+    ],
+    0,
+    { registry, warn: (message) => warnings.push(message) },
+  );
+
+  assertEquals(registry.size(), 0);
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]!.includes("cannot_note_issue-close"));
+});

@@ -338,6 +338,18 @@ asks for the review explicitly:
 A **protected** base is untouched: it still goes through native auto-merge,
 which GitHub holds until the required checks are green.
 
+**GitHub's own refusal outranks the rules endpoint** (Issue #1763). "Required
+checks on the base?" is answered by `repos/{repo}/rules/branches/{base}`, which
+lists only the rules the fleet token can see — an organisation-level ruleset
+needs `admin:org` to list. `stSoftwareAU/GRQ-FX` `Develop` answered `[]`, the
+base was judged unprotected, and the gated direct merge was refused with "the
+base branch policy prohibits the merge" on every cycle the PR stayed open. So
+a direct merge refused with that wording (or a `GH013` rule violation) now
+marks the base **protected** for the rest of the cycle, logs one line naming
+the repo and branch as policy-protected with no visible rule, and arms native
+auto-merge — which honours whatever rule exists — instead of retrying. Any
+other direct-merge failure is still reported as the failure it is.
+
 ```mermaid
 flowchart TD
     A[PR targets the default branch] --> B{Required checks on the base?}
@@ -499,6 +511,14 @@ Two changes close that window:
   was raised. It lists **live**, not from the iteration-scoped `prs_${author}`
   cache the 1.65 sweep filled before those PRs existed. An idle cycle skips it
   and says so — it raised nothing to sweep.
+- **Drafts are skipped, not failed** (Issue #1800). GitHub refuses to arm
+  auto-merge on a draft ("Pull Request is still a draft"), and the sweep used
+  to log that refusal as a failure every cycle for as long as the draft stayed
+  open. The fleet listing now carries `isDraft`; the sweep skips a draft with
+  one line the first time this process sees it, and an arming call that still
+  meets a draft (at creation, or from a listing written before the field
+  existed) returns the typed `draft` outcome, logged at info. A draft is the
+  author asking for eyes — marking it ready is what puts it back in the sweep.
 
 ```mermaid
 sequenceDiagram
@@ -762,6 +782,12 @@ What each pass does with a `milestone/**` head:
 - **The agent never runs on a gated head**, so nothing is committed that cannot
   be pushed, and no attempt or retry is spent — the guard runs before
   `recordCiCheckRetry` and before the merge-conflict attempt marker is posted.
+- **The CI-nudge pass asks too** (Issue #1762). Its `none` path adds an empty
+  commit and pushes it to the head, so on VibeCoder#1741's own milestone head
+  it was refused with GH013 every cycle the PR stayed a nudge candidate. The
+  guard now runs before that checkout; a gated head is recorded as a `noop`
+  nudge and left for the milestone completion path. The `queued` path only
+  re-runs a workflow and pushes nothing, so it is not gated.
 - **One comment per branch, not one per run.** The comment carries a hidden
   marker — `<!-- vibe-gated-head branch="…" -->`, or
   `<!-- vibe-milestone-head branch="…" -->` for the merge-conflict stand-down;
@@ -815,9 +841,10 @@ its one-restart-per-issue bound and its exits are in
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
 constant, two consumers — so the PR ladder and the milestone ladder cannot
-drift apart. The per-branch ledger that records what a milestone branch has
-spent lands with it; the sync pass is wired to charge that ledger by
-Issue #1778.
+drift apart. The sync pass opens and concludes an attempt around every
+conflicting merge, paces the retries and hands an exhausted budget to the
+roll-back (Issue #1778); nothing is posted to a comment, a label or an issue
+while an automatic attempt remains.
 
 What does and does not spend an attempt:
 

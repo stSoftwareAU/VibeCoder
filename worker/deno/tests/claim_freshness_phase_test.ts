@@ -26,6 +26,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { HeadDivergedError } from "../lib/git_branch.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -106,6 +107,8 @@ interface CompletionRun {
   outcome?: RunOutcome;
   ghCalls: string[][];
   comments: PostedComment[];
+  /** `pushUnpushedCommits` calls (Issue #1793: none on a landed-elsewhere exit). */
+  pushes?: number;
 }
 
 /**
@@ -118,6 +121,11 @@ async function runCompletion(
     commentThrows?: boolean;
     /** An open PR from another author that already references the issue. */
     openPrForIssue?: string;
+    /**
+     * HEAD is on this branch, diverged from the run's branch (Issue #1793):
+     * the reconcile guard refuses with `HeadDivergedError`.
+     */
+    divergedHead?: string;
   },
 ): Promise<CompletionRun> {
   const repoPath = await Deno.makeTempDir();
@@ -134,6 +142,7 @@ async function runCompletion(
 
   const ghCalls: string[][] = [];
   const comments: PostedComment[] = [];
+  let pushes = 0;
   const deps = createMockDeps({
     logger: {
       info: () => undefined,
@@ -160,12 +169,21 @@ async function runCompletion(
     },
     git: {
       reconcileHeadToBranch: () =>
-        Promise.resolve({
-          ok: true as const,
-          value: { action: "already-on-branch" as const, fromRef: BRANCH },
-        }),
-      pushUnpushedCommits: () =>
-        Promise.resolve({ ok: true as const, value: 2 }),
+        Promise.resolve(
+          options.divergedHead
+            ? {
+              ok: false as const,
+              error: new HeadDivergedError(options.divergedHead, BRANCH),
+            }
+            : {
+              ok: true as const,
+              value: { action: "already-on-branch" as const, fromRef: BRANCH },
+            },
+        ),
+      pushUnpushedCommits: () => {
+        pushes++;
+        return Promise.resolve({ ok: true as const, value: 2 });
+      },
       runGitCommand: ((args: string[]) =>
         Promise.resolve({
           ok: true as const,
@@ -200,7 +218,7 @@ async function runCompletion(
     deps,
   ) as CompletionRun;
   await Deno.remove(repoPath, { recursive: true });
-  return { ...result, ghCalls, comments };
+  return { ...result, ghCalls, comments, pushes };
 }
 
 function createdAPr(ghCalls: string[][]): boolean {
@@ -374,4 +392,58 @@ Deno.test("execute #344 - a claim on an open issue runs the agent exactly as bef
       !(run.reason ?? "").startsWith("claim_stale"),
     `an open issue must not abort as stale: ${run.reason}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1793: a divergence on a closed issue is work that landed elsewhere
+// ---------------------------------------------------------------------------
+
+Deno.test("completion #1793 - HEAD diverged on a closed issue is the stale-claim exit, not a failure", async () => {
+  // GRQ-AutoTrader#127: the agent resolved a milestone-sync conflict through
+  // its own PR from `sync/milestone-pwa-127`, merged it and the issue closed;
+  // the #4286 guard then failed the run.
+  const run = await runCompletion({
+    issueState: "CLOSED",
+    divergedHead: "sync/milestone-pwa-127",
+  });
+
+  assertEquals(run.status, "early_exit");
+  assert(run.outcome, "an early exit carries its outcome");
+  assertEquals(run.outcome.kind, "claim_stale");
+  if (run.outcome.kind !== "claim_stale") return;
+  assertEquals(run.outcome.reason, "issue_closed");
+  assertStringIncludes(run.outcome.detail, "sync/milestone-pwa-127");
+  assertStringIncludes(run.outcome.detail, "Issue #1793");
+  // Nothing pushed, no PR raised, and the reason is the stable stale-claim
+  // token — never "Cannot push branch".
+  assertEquals(run.pushes, 0);
+  assertEquals(createdAPr(run.ghCalls), false);
+  assertStringIncludes(String(run.reason), "claim_stale:issue_closed");
+  assert(!String(run.reason).includes("Cannot push branch"));
+  // The hand-off comment still names the run's branch.
+  assertEquals(run.comments.length, 1);
+  assertStringIncludes(run.comments[0]!.body, BRANCH);
+});
+
+Deno.test("completion #1793 - HEAD diverged on an issue still open is the #4286 failure as before", async () => {
+  const run = await runCompletion({
+    issueState: "OPEN",
+    divergedHead: "sync/milestone-pwa-127",
+  });
+
+  assertEquals(run.status, "failure");
+  assertStringIncludes(String(run.reason), "Cannot push branch");
+  assertStringIncludes(String(run.reason), "has diverged");
+  assertEquals(run.pushes, 0);
+  assertEquals(createdAPr(run.ghCalls), false);
+  assertEquals(run.comments.length, 0);
+});
+
+Deno.test("completion #1793 - an unreadable issue state keeps the #4286 failure (fresh by default)", async () => {
+  const run = await runCompletion({
+    issueState: "",
+    divergedHead: "sync/milestone-pwa-127",
+  });
+  assertEquals(run.status, "failure");
+  assertStringIncludes(String(run.reason), "Cannot push branch");
 });

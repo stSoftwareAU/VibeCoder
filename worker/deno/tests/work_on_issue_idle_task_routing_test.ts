@@ -202,12 +202,25 @@ function buildHarness(opts: {
 function assertRoutedAsIdleTask(harness: Harness): void {
   assertEquals(harness.stub.runTaskCallCount, 1);
   assertEquals(harness.runOrchestratorCallCount.value, 0);
-  // The issue was closed with the template summary as the comment.
-  assertEquals(harness.ghCalls.length, 1);
-  const closeArgs = harness.ghCalls[0]!;
-  assertEquals(closeArgs[0], "issue");
-  assertEquals(closeArgs[1], "close");
-  assertEquals(closeArgs[2], "7");
+  // The issue was closed with the template summary as the comment: a REST
+  // comment then a REST close, both on the core quota (Issue #1753).
+  assertEquals(harness.ghCalls.length, 2);
+  const commentArgs = harness.ghCalls[0]!;
+  assertEquals(commentArgs.slice(0, 4), [
+    "api",
+    "-X",
+    "POST",
+    "repos/org/repo/issues/7/comments",
+  ]);
+  const closeArgs = harness.ghCalls[1]!;
+  assertEquals(closeArgs, [
+    "api",
+    "-X",
+    "PATCH",
+    "repos/org/repo/issues/7",
+    "-f",
+    "state=closed",
+  ]);
   // The captured runTask call carried the right repo + workDir.
   const capture = harness.stub.captures[0]!;
   assertEquals(capture.repo, "org/repo");

@@ -749,3 +749,203 @@ Deno.test("commitAndPushPending - a secret is still refused when .pr_response_me
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+/**
+ * End-to-end regression for the PR 58 shape (Issue #1654).
+ *
+ * On a downstream repo's PR 58 the merge-conflict pass resolved every
+ * conflicted file, then lost the whole resolution: `git add -A` at the final
+ * mile staged the worker's own state files sitting in the clone and the
+ * pre-commit safety gate (Issue #1758) refused the commit. Both attempts
+ * ended that way and the PR was closed.
+ *
+ * Everything here is real git — a bare upstream, a feature branch, a base
+ * branch that conflicts with it, a `git merge` that stops on those conflicts,
+ * a resolution staged by path with `MERGE_HEAD` still present, and the
+ * production chokepoint called on top. Disabling the #1661 unstage step in
+ * `commitAndPushPending` turns this test red at the gate refusal, which is
+ * exactly the PR 58 failure.
+ */
+Deno.test("commitAndPushPending - commits a merge-conflict resolution despite worker state files (Issue #1654)", async () => {
+  const branch = "issue-1654-merge-conflict";
+  const { tmp, upstream, downstream } = await makeUpstreamAndDownstream(
+    "commit_push_pending_merge_conflict_",
+    branch,
+  );
+  // Setup git must fail loud: a silently dropped commit or fetch would leave
+  // nothing to conflict over, and the test would then prove nothing.
+  const gitOk = async (args: string[], cwd: string): Promise<GitRunResult> => {
+    const result = await runGit(args, cwd);
+    assertEquals(
+      result.code,
+      0,
+      `git ${args.join(" ")} failed in ${cwd}: ${result.stderr}`,
+    );
+    return result;
+  };
+
+  try {
+    // The base branch moves on: both seeded files change on `main`.
+    const base = `${tmp}/base`;
+    await gitOk(["clone", upstream, base], tmp);
+    await gitOk(["config", "user.email", "t@t"], base);
+    await gitOk(["config", "user.name", "t"], base);
+    await Deno.writeTextFile(`${base}/README.md`, "seed\nbase side\n");
+    await Deno.writeTextFile(
+      `${base}/strategy.ts`,
+      'export const mode = "base";\n',
+    );
+    await gitOk(["add", "-A"], base);
+    await gitOk(["commit", "-m", "base change"], base);
+    await gitOk(["push", "origin", "main"], base);
+
+    // The feature branch changes the same two files differently — one
+    // modify/modify conflict and one add/add conflict.
+    await Deno.writeTextFile(`${downstream}/README.md`, "seed\nfeature side\n");
+    await Deno.writeTextFile(
+      `${downstream}/strategy.ts`,
+      'export const mode = "feature";\n',
+    );
+    await gitOk(["add", "-A"], downstream);
+    await gitOk(["commit", "-m", "feature change"], downstream);
+    await gitOk(["push", "origin", branch], downstream);
+
+    // The merge-conflict pass: fetch, then `git merge origin/<base>
+    // --no-edit`, which stops with both files unmerged.
+    await gitOk(["fetch", "origin"], downstream);
+    const merge = await runGit(
+      ["merge", "origin/main", "--no-edit"],
+      downstream,
+    );
+    assert(
+      merge.code !== 0,
+      `expected the merge to conflict, got code 0:\n${merge.stdout}`,
+    );
+    const unmerged = await runGit(
+      ["diff", "--name-only", "--diff-filter=U"],
+      downstream,
+    );
+    assertEquals(
+      unmerged.stdout.split("\n").filter((p) => p.length > 0).sort(),
+      ["README.md", "strategy.ts"],
+    );
+
+    // The resolution: write each file and stage it by path, exactly as the
+    // pass does (`git add -- <file>`), leaving MERGE_HEAD in place.
+    const resolvedReadme = "seed\nbase side\nfeature side\n";
+    const resolvedStrategy = 'export const mode = "merged";\n';
+    await Deno.writeTextFile(`${downstream}/README.md`, resolvedReadme);
+    await Deno.writeTextFile(`${downstream}/strategy.ts`, resolvedStrategy);
+    for (const file of ["README.md", "strategy.ts"]) {
+      await gitOk(["add", "--", file], downstream);
+    }
+
+    // The worker's own state files are sitting in the clone — the PR 58
+    // shape, and what the gate refused the commit over.
+    await plantWorkerStateFiles(downstream);
+
+    const mergeHeadBefore = await runGit(
+      ["rev-parse", "MERGE_HEAD"],
+      downstream,
+    );
+    assertEquals(
+      mergeHeadBefore.code,
+      0,
+      "MERGE_HEAD must still be present when the chokepoint is called",
+    );
+
+    let result: Awaited<ReturnType<typeof commitAndPush>> | undefined;
+    await capturingWarningsAsync(async () => {
+      result = await commitAndPush(
+        branch,
+        "Resolve merge conflicts with main (Issue #1654)",
+        downstream,
+      );
+    });
+
+    assert(result, "expected the chokepoint to return a result");
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+    if (result.ok) {
+      assertEquals(result.value.committedNewChanges, true);
+      assertEquals(result.value.finalUnpushedCount, 0);
+    }
+
+    // A real merge commit: two parents, and MERGE_HEAD consumed.
+    const parents = await runGit(
+      ["rev-list", "--parents", "-n", "1", "HEAD"],
+      downstream,
+    );
+    assertEquals(
+      parents.stdout.trim().split(/\s+/).length,
+      3,
+      `expected a two-parent merge commit, got: ${parents.stdout.trim()}`,
+    );
+    const mergeHeadAfter = await runGit(
+      ["rev-parse", "MERGE_HEAD"],
+      downstream,
+    );
+    assert(
+      mergeHeadAfter.code !== 0,
+      "MERGE_HEAD must have been consumed by the commit",
+    );
+
+    // The commit carries the resolution and none of the worker state — both
+    // in the combined diff and in the committed tree. Both checks are
+    // load-bearing: `git show --name-only` on a merge commit prints a
+    // *combined* diff, which prunes any path identical to either parent, so
+    // the negative assertion alone could pass on empty output. The positive
+    // check below proves the output is non-empty, and `ls-tree` reads the
+    // committed tree unconditionally.
+    const shown = await runGit(
+      ["show", "--name-only", "--format=", "HEAD"],
+      downstream,
+    );
+    const tree = await runGit(
+      ["ls-tree", "-r", "--name-only", "HEAD"],
+      downstream,
+    );
+    for (const file of ["README.md", "strategy.ts"]) {
+      assert(
+        shown.stdout.includes(file),
+        `expected ${file} in the merge commit, got:\n${shown.stdout}`,
+      );
+    }
+    for (const name of WORKER_STATE_FILES) {
+      assert(
+        !shown.stdout.includes(name),
+        `${name} must not be in the merge commit, got:\n${shown.stdout}`,
+      );
+      assert(
+        !tree.stdout.includes(name),
+        `${name} must not be in the committed tree, got:\n${tree.stdout}`,
+      );
+    }
+
+    // What was staged is what was committed.
+    assertEquals(
+      (await runGit(["show", "HEAD:README.md"], downstream)).stdout,
+      resolvedReadme,
+    );
+    assertEquals(
+      (await runGit(["show", "HEAD:strategy.ts"], downstream)).stdout,
+      resolvedStrategy,
+    );
+
+    // The bare upstream really has the merge commit.
+    const localHead = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    const upstreamHead = await runGit(["rev-parse", branch], upstream);
+    assertEquals(upstreamHead.stdout.trim(), localHead);
+
+    // Unstaged, not deleted — the worker state files are still on disk.
+    for (const name of WORKER_STATE_FILES) {
+      const stat = await Deno.stat(`${downstream}/${name}`);
+      assert(stat.isFile, `${name} must still exist on disk`);
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});

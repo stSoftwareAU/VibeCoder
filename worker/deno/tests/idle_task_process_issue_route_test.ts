@@ -9,8 +9,8 @@
  *
  * These tests pin the wiring shape:
  *   1. Wrappers whose scan SUCCEEDED (claim handler returns
- *      `handled: true, ok: true`) are closed via
- *      `gh issue close --comment <summary>` and the routing reports
+ *      `handled: true, ok: true`) get the summary as a REST comment and a
+ *      REST close (core quota, Issue #1753) and the routing reports
  *      `{ routed: true, success: true }`.
  *   2. Non-wrappers (claim handler returns `handled: false`) report
  *      `{ routed: false }` and are NEVER closed — the caller falls
@@ -35,7 +35,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { routeIdleTaskInProcessIssue } from "../lib/idle_task_process_issue_route.ts";
+import {
+  IDLE_TASK_RUNWAY_DECLINED_MESSAGE,
+  routeIdleTaskInProcessIssue,
+} from "../lib/idle_task_process_issue_route.ts";
 import type { HandleIdleTaskIssueResult } from "../lib/idle_task_claim_handler.ts";
 import { IDLE_TASK_FAILURE_COMMENT_PREFIX } from "../lib/idle_task_wrapper_closure.ts";
 import type { IdleTaskTemplate } from "../lib/idle_task_template.ts";
@@ -135,16 +138,27 @@ Deno.test(
 
     assertEquals(outcome, { routed: true, success: true });
 
-    // Exactly one gh call — closing the wrapper with the summary.
-    assertEquals(ghCalls.length, 1);
-    const closeArgs = ghCalls[0]!;
-    assertEquals(closeArgs[0], "issue");
-    assertEquals(closeArgs[1], "close");
-    assertEquals(closeArgs[2], "2726");
-    assertEquals(closeArgs[3], "--repo");
-    assertEquals(closeArgs[4], "owner/widget");
-    assertEquals(closeArgs[5], "--comment");
-    assertEquals(closeArgs[6], "security-scan complete: filed 3 findings");
+    // Exactly two gh calls — the summary comment, then the close — both
+    // REST on the core quota so they land under the primary-quota latch
+    // (Issue #1753).
+    assertEquals(ghCalls, [
+      [
+        "api",
+        "-X",
+        "POST",
+        "repos/owner/widget/issues/2726/comments",
+        "-f",
+        "body=security-scan complete: filed 3 findings",
+      ],
+      [
+        "api",
+        "-X",
+        "PATCH",
+        "repos/owner/widget/issues/2726",
+        "-f",
+        "state=closed",
+      ],
+    ]);
 
     // No warnings — the close succeeded cleanly.
     assertEquals(records.filter((r) => r.level === "warn").length, 0);
@@ -181,13 +195,18 @@ Deno.test(
     assertEquals(outcome, { routed: true, success: false });
     assertEquals(ghCalls.length, 1);
     const args = ghCalls[0]!;
-    assertEquals(args[1], "comment");
+    assertEquals(args.slice(0, 4), [
+      "api",
+      "-X",
+      "POST",
+      "repos/owner/widget/issues/2726/comments",
+    ]);
     assert(
-      !args.includes("close"),
+      !args.some((a) => a === "PATCH" || a.startsWith("state=")),
       "a failed scan must never close its wrapper",
     );
-    assertStringIncludes(String(args[6]), IDLE_TASK_FAILURE_COMMENT_PREFIX);
-    assertStringIncludes(String(args[6]), "security-scan threw: timeout");
+    assertStringIncludes(String(args[5]), IDLE_TASK_FAILURE_COMMENT_PREFIX);
+    assertStringIncludes(String(args[5]), "security-scan threw: timeout");
   },
 );
 
@@ -246,12 +265,17 @@ Deno.test(
     // close call failed.
     assertEquals(outcome, { routed: true, success: true });
 
-    const warn = records.find((r) => r.level === "warn");
-    assert(warn !== undefined, "expected a warn log for the failed close");
-    assertEquals(warn.message, "Failed to close idle-task issue");
-    const ctx = warn.context as Record<string, unknown>;
+    // Both REST writes were refused: the summary comment and then the
+    // close, each named (Issue #1753).
+    const warns = records.filter((r) => r.level === "warn");
+    assertEquals(warns.map((w) => w.message), [
+      "Failed to post idle-task summary comment",
+      "Failed to close idle-task issue",
+    ]);
+    const ctx = warns[1]!.context as Record<string, unknown>;
     assertEquals(ctx.repo, "owner/widget");
     assertEquals(ctx.issueNumber, 2726);
+    assertEquals(ctx.wrapperStillOpen, true);
     assertStringIncludes(String(ctx.error), "rate limited");
   },
 );
@@ -273,7 +297,7 @@ Deno.test(
       },
     });
 
-    assertEquals(ghCalls[0]?.[6], "idle-task processed");
+    assertEquals(ghCalls[0]?.[5], "body=idle-task processed");
   },
 );
 
@@ -351,8 +375,9 @@ Deno.test(
     assertEquals(handlerCalled, false);
     assertEquals(outcome, { routed: true, success: false });
     assertEquals(ghCalls.length, 1);
-    assertEquals(ghCalls[0]?.[1], "comment");
-    assertStringIncludes(String(ghCalls[0]?.[6]), "network unreachable");
+    assertEquals(ghCalls[0]?.[2], "POST");
+    assertEquals(ghCalls[0]?.[3], "repos/owner/widget/issues/2726/comments");
+    assertStringIncludes(String(ghCalls[0]?.[5]), "network unreachable");
     assert(
       records.some((r) =>
         r.level === "warn" && r.message === "idle-task clone preparation failed"
@@ -410,6 +435,9 @@ Deno.test(
       { ...WRAPPER_INPUT, cycleDeadlineEpochMs: deadline },
       {
         logger,
+        // Issue #1757: judged against a clock 20 min before the deadline, so
+        // the claim-runway floor lets the claim through.
+        nowFn: () => deadline - 20 * 60_000,
         handleIdleTaskFn: (opts) => {
           seenDeadline = opts.cycleDeadlineEpochMs;
           return Promise.resolve({ handled: true, ok: true, summary: "ran" });
@@ -521,5 +549,142 @@ Deno.test(
     assertEquals(cloned, false);
     assertEquals(scanned, false);
     assertEquals(ghCalls, []);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The claim-runway floor (Issue #1757)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - with 60 s of cycle left the claim is declined before any work (Issue #1757)",
+  async () => {
+    const { logger, records } = makeLogger();
+    const ghCalls: string[][] = [];
+    const now = 1_700_000_000_000;
+    let claimAttempted = false;
+    let cloned = false;
+    let scanned = false;
+
+    const outcome = await routeIdleTaskInProcessIssue(
+      { ...WRAPPER_INPUT, cycleDeadlineEpochMs: now + 60_000 },
+      {
+        logger,
+        nowFn: () => now,
+        claimRouteFn: () => {
+          claimAttempted = true;
+          return okClaim();
+        },
+        ensureCloneFn: () => {
+          cloned = true;
+          return okClone();
+        },
+        handleIdleTaskFn: () => {
+          scanned = true;
+          return Promise.resolve({ handled: true, ok: true, summary: "ran" });
+        },
+        ghCommandFn: (args) => {
+          ghCalls.push(args);
+          return Promise.resolve("");
+        },
+      },
+    );
+
+    // Declined as a lost claim of the route's own kind: a skip upstream,
+    // never a failure, and nothing touched on GitHub.
+    assert("claimLost" in outcome && outcome.claimLost === true);
+    assertEquals(outcome.routed, true);
+    assertEquals(outcome.success, false);
+    assertEquals(outcome.claimReason, "insufficient_runway");
+    assertStringIncludes(outcome.claimDetail, "below the 600s floor");
+    assertEquals(claimAttempted, false);
+    assertEquals(cloned, false);
+    assertEquals(scanned, false);
+    assertEquals(ghCalls, []);
+
+    // Exactly one line, naming the shortfall.
+    const declined = records.filter((r) =>
+      r.message === IDLE_TASK_RUNWAY_DECLINED_MESSAGE
+    );
+    assertEquals(declined.length, 1);
+    const ctx = declined[0]!.context as Record<string, unknown>;
+    assertEquals(ctx.repo, "owner/widget");
+    assertEquals(ctx.issueNumber, 2726);
+    assertEquals(ctx.floorSeconds, 600);
+    assert(typeof ctx.budgetSeconds === "number" && ctx.budgetSeconds < 600);
+  },
+);
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - with 20 min of cycle left the wrapper is claimed and the bound applies as today",
+  async () => {
+    const { logger, records } = makeLogger();
+    const now = 1_700_000_000_000;
+    let claimAttempted = false;
+    let deadlineSeen: number | undefined;
+
+    const outcome = await routeIdleTaskInProcessIssue(
+      { ...WRAPPER_INPUT, cycleDeadlineEpochMs: now + 20 * 60_000 },
+      {
+        logger,
+        nowFn: () => now,
+        claimRouteFn: () => {
+          claimAttempted = true;
+          return okClaim();
+        },
+        ensureCloneFn: okClone,
+        handleIdleTaskFn: (input) => {
+          deadlineSeen = input.cycleDeadlineEpochMs;
+          return Promise.resolve({ handled: true, ok: true, summary: "ran" });
+        },
+        ghCommandFn: () => Promise.resolve(""),
+      },
+    );
+
+    assertEquals(outcome, { routed: true, success: true });
+    assertEquals(claimAttempted, true);
+    // The deadline still reaches the claim handler, so Issue #186's bound
+    // is applied to the scan exactly as before.
+    assertEquals(deadlineSeen, now + 20 * 60_000);
+    assertEquals(
+      records.filter((r) => r.message === IDLE_TASK_RUNWAY_DECLINED_MESSAGE)
+        .length,
+      0,
+    );
+  },
+);
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - a non-wrapper is never judged against the floor",
+  async () => {
+    const { logger, records } = makeLogger();
+    const now = 1_700_000_000_000;
+
+    const outcome = await routeIdleTaskInProcessIssue(
+      {
+        ...WRAPPER_INPUT,
+        issueTitle: "Fix the date parser to handle ISO-8601 inputs",
+        issueLabels: ["bug"],
+        issueBody: "The parser drops the timezone offset.",
+        cycleDeadlineEpochMs: now + 60_000,
+      },
+      {
+        logger,
+        nowFn: () => now,
+        handleIdleTaskFn: () => Promise.resolve({ handled: false }),
+        ensureCloneFn: okClone,
+        claimRouteFn: okClaim,
+        ghCommandFn: () => Promise.resolve(""),
+      },
+    );
+
+    // Falls through to the standard pipeline, whose own runway floor
+    // (Issue #397) judges an issue claim against the supervisor hard cap.
+    assertEquals(outcome, { routed: false });
+    assertEquals(
+      records.filter((r) => r.message === IDLE_TASK_RUNWAY_DECLINED_MESSAGE)
+        .length,
+      0,
+    );
   },
 );

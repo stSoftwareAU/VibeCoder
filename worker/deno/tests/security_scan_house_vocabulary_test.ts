@@ -331,3 +331,107 @@ Deno.test("security_scan - cites the attribution footer one way (Issue #837)", a
     "`from the end of this prompt` is the drifted citation",
   );
 });
+
+/**
+ * Issue #1614: a bounded sweep must consult prior sweep records before it
+ * declares a chunk "not reached".
+ *
+ * The #1608 scan re-declared roughly a thousand already-recorded modules as
+ * unswept because nothing in the template reads the records an earlier sweep
+ * left behind. These tests pin the four literals that fix that — the Phase 1
+ * inventory item, the read-only history commands it needs, the stopping
+ * rule's drop order, and the two Phase 4 tracker line shapes — through the
+ * real loader, so an edit that drops one fails here rather than in a filed
+ * tracker.
+ */
+
+/** The Phase 1 prior-sweep-record step, literal by literal. */
+const PRIOR_SWEEP_LITERALS = [
+  "- **Prior sweep records**",
+  "docs/audits/security-sweep-*.md",
+  "sweep coverage ledger",
+  "git log -1 --format=%H -- <record>",
+  "git diff --name-only <commit> HEAD -- <tree>",
+  "previously swept",
+];
+
+/** The two shapes a `## Chunks not reached` line may take. */
+const TRACKER_LINE_SHAPES = [
+  "- <n>. <chunk name> (exposure: <band>) — never recorded",
+  "- <n>. <chunk name> (exposure: <band>) — recorded in <record path> at " +
+  "<commit>; N modules changed since",
+];
+
+Deno.test("security_scan - Phase 1 inventories prior sweep records (Issue #1614)", async () => {
+  const text = await securityScanPrompt();
+  const missing = PRIOR_SWEEP_LITERALS.filter((l) => !text.includes(l));
+  assertEquals(
+    missing,
+    [],
+    "without these the scan cannot tell a swept tree from an unswept one:\n" +
+      missing.join("\n"),
+  );
+
+  // Repo-agnostic: a repository with no records must inventory nothing
+  // rather than treat the absent records as a blocker.
+  assert(
+    /no such records/i.test(text),
+    "the step must say what a repository with no records does",
+  );
+
+  // Fail loud, not silently clean: the worker's clones are shallow, so
+  // both git commands can come back empty or `fatal:`. An unanswerable
+  // history must fall to never-recorded, never to "recorded, unchanged".
+  assert(
+    /cannot\s+answer means never recorded/.test(text),
+    "an unanswerable git history must not book a tree as swept",
+  );
+
+  // The chunk plan's paths are confirmed before the numbering is fixed —
+  // #1608 planned `worker/deno/lib/pr_manager.ts`, which does not exist.
+  assert(
+    text.includes("Confirm every path the plan names with `ls`"),
+    "a chunk naming a file that does not exist reports a phantom module " +
+      "as covered",
+  );
+});
+
+Deno.test("security_scan - permits git log and git diff as read-only inspection (Issue #1614)", async () => {
+  const text = await securityScanPrompt();
+  assert(
+    text.includes("`git log`, `git diff`"),
+    "the No code execution permitted-tool list must name both commands, or " +
+      "the Phase 1 prior-sweep-record step contradicts it",
+  );
+  assert(
+    /`git log` and `git diff` are read-only/.test(text),
+    "the constraint must say why they are permitted — read-only inspection",
+  );
+});
+
+Deno.test("security_scan - the stopping rule drops previously swept chunks first (Issue #1614)", async () => {
+  const text = await securityScanPrompt();
+  assert(
+    text.includes("previously-swept-and-unchanged"),
+    "the stopping rule must name the chunks it drops first",
+  );
+  assert(
+    text.includes("covered by <record> at <commit>"),
+    "a chunk whose every module is previously swept is covered, not unreached",
+  );
+});
+
+Deno.test("security_scan - the overflow tracker separates never-recorded from recorded chunks (Issue #1614)", async () => {
+  const text = await securityScanPrompt();
+  const missing = TRACKER_LINE_SHAPES.filter((l) => !text.includes(l));
+  assertEquals(
+    missing,
+    [],
+    "the `## Chunks not reached` section must offer both line shapes:\n" +
+      missing.join("\n"),
+  );
+  assert(
+    text.includes("counts only the never-recorded chunks"),
+    "the tracker title's N must not count recorded, unchanged chunks",
+  );
+});

@@ -434,6 +434,10 @@ export async function collectWorkOnCandidates(
     // still does — a distinction a bare "blocked" cannot express. It also
     // closes the Issue #460 gap where a content-blocked issue was missing
     // from `blockedDetails` entirely.
+    // Issue #1818: the listing already carries the body (`fetchAllIssues`
+    // asks for it), so the scan-time check reads that instead of a live
+    // `gh issue view` per candidate per re-scan. The claimed issue is still
+    // re-verified live at pickup (#3647).
     const contentCheck = await verifyWorkOnContentIntegrityDetailed(
       repo,
       issue,
@@ -442,6 +446,10 @@ export async function collectWorkOnCandidates(
       diag,
       options.contentApprovalDeps,
       options.timelineCache,
+      undefined,
+      typeof issue.body === "string"
+        ? { title: issue.title, body: issue.body }
+        : undefined,
     );
     if (contentCheck.verdict === "blocked") {
       // The gate has already logged its own skip line; record the reason.

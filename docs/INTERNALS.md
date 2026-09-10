@@ -2097,6 +2097,12 @@ claim at two points, with one decision function:
   the #174/#218 paths that know how to handle it.
 - **`pre-pr`** — immediately before `gh pr create`. The issue state, plus the PR
   that references the issue.
+- **On a diverged HEAD** (Issue #1793) — when the #4286 reconcile guard finds
+  the agent committed on a branch of its own, completion asks the `pre-write`
+  question before calling that a failure. A closed issue means the work landed
+  elsewhere — GRQ-AutoTrader#127 was resolved through the agent's own PR into
+  the milestone branch — and the run takes the stale-claim exit, naming the
+  agent's branch; an open issue keeps the #4286 failure.
 
 Two rules, most decisive first: **the issue closed** during the cycle; and **a
 merged PR already carries this run's branch**, decided by `pr_run_provenance.ts`
@@ -2106,7 +2112,10 @@ that it does not complete this run.
 
 The third hazard #344 names, "do not open a competing PR", is deliberately
 **not** a rule here: `decideCompletionPr` already recovers an open PR that
-references the issue rather than creating a second one. Repeating it as a
+references the issue rather than creating a second one — provided that PR's
+head is this run's branch, or its head could not be read, or the branch has no
+commits of its own to represent (Issue #1799: an open side PR on another head
+no longer swallows a branch with work on it). Repeating it as a
 stale-claim abort would be both the duplicated notion this module avoids and the
 harsher of the two, because `superseding_pr.ts` fails safe to "open" when a PR's
 state cannot be read — an unreadable `gh pr view` would abandon a finished run.
@@ -3157,8 +3166,11 @@ clone the merge conflicted in.
    caller that supplies none stops after the rules rather than pretending the
    conflict was decided.
 
-Only a file **every** rung leaves undecided aborts the merge and reaches a
-human, and the escalation then names the rung that failed (`agent: …`). An
+Only a file **every** rung leaves undecided aborts the merge; since
+Issue #1778 that abortion reaches nobody while the branch's conflict budget
+still has an attempt in it — it is charged to the ledger, named in one log line
+`conflict attempt n of 3 failed at rung <rung>`, and the exhausted budget is
+what reaches for the roll-back. An
 agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
 or leaves a conflict marker behind is a failed rung: the merge is aborted and
 the branch stands exactly at its pre-merge SHA. Only the agent's own paths are
@@ -3166,9 +3178,7 @@ staged (`git add -- <paths>`, never `-A`), so the worker's own state files in
 the shared clone never reach the pre-commit gate (Issue #1654). Each resolved
 file carries the rung that settled it — `triage: <case>`, `rule: <reason>` or
 `agent` — and that per-file list is what the merge commit, the sync's log line
-and the report comment all print. The escalation carries the preparation, not
-the compiler output #1542 was a wall of: what each side exports, what each side
-tests, and which cases exist on one side only.
+and the report comment all print.
 
 **No resolution may reduce test coverage.** A conflicted test file is resolved
 by taking a side only when that side already keeps every case *and* every line
@@ -3185,7 +3195,12 @@ the merged tree must pass the repository's own Issue #974 type check — reused,
 fallback and all, rather than reimplemented — its `check:manifests` task and
 its unit suite, inside one 15-minute budget so a sync cannot block the event
 loop. A red tree is reset to the pre-merge commit and escalated with **both**
-halves: what the verification said and both sides prepared. A tree with no type
+halves: what the verification said and both sides prepared — what each side
+exports, what each side tests, and which cases exist on one side only, rather
+than the wall of `TS2304` that made #1542 nearly useless. This is the one
+escalation Issue #1778 kept: a gate refusal is not a conflict the budget can
+retry its way out of, so it is reported once (deduped by `gateEscalated`,
+like the Issue #974 refusal) and charged nothing. A tree with no type
 check or no unit suite verified nothing and is refused the same way — a
 resolution that cannot be verified is not a resolution. What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
@@ -3201,7 +3216,10 @@ flowchart TD
     C -- yes --> T{"Triage: superset /<br/>duplicate fix / union?"}
     T -- "left over" --> RU{"Dependency rules?"}
     RU -- "left over" --> AG{"Resolution agent?"}
-    AG -- "fails or aborts" --> X["Abort — nothing pushed —<br/>escalate naming the failed rung,<br/>with both sides' exports and cases"]
+    AG -- "fails or aborts" --> X["Abort — nothing pushed —<br/>charge the ledger, log the rung,<br/>post nothing (Issue #1778)"]
+    X --> XB{"Budget exhausted?"}
+    XB -- "no" --> XW["Wait out the cooldown"]
+    XB -- "yes" --> XR["Hand off to the roll-back"]
     AG -- decided --> V["Commit the per-file rungs, then verify:<br/>#974 type check + check:manifests + unit suite"]
     T -- decided --> V
     RU -- decided --> V
@@ -3238,6 +3256,32 @@ The report is deduped on the default-branch commit that conflicted
 once while a conflict against a **new** commit is reported again. Only a report
 that actually went out is remembered — an escalation that failed to post is
 retried next cycle rather than marked done.
+
+The **escalation** — the abort branch above, where no automatic rule can decide
+— is deduped on the conflict itself instead (Issue #1786). Keying it on the
+default branch's tip meant a busy repository looked like a new conflict every
+few minutes: `stSoftwareAU/VibeCoder#1653` collected four copies of one analysis
+in 36 minutes while its milestone PR stayed conflicting.
+[`milestone_conflict_dedup.ts`](../worker/deno/lib/milestone_conflict_dedup.ts)
+keys it on the milestone branch's tip plus the set of conflicted paths, and
+writes that key into the comment as a
+`<!-- vibe-milestone-sync-conflict key="…" -->` marker so a **second worker
+host** — which has its own streak file and would otherwise repeat the report —
+sees that it has already gone out. The marker is checked on whichever existing
+issue the escalation resolves to above, not on a tracking issue the milestone
+title may not name. A comment thread that cannot be read fails
+open: the escalation is posted and the failure is named in the log, because
+losing a "only a human can settle this" report is worse than a duplicate.
+
+```mermaid
+flowchart LR
+    A[Unresolvable conflict] --> B["key = milestone tip + conflicted paths"]
+    B --> C{Streak file already<br/>reported this key?}
+    C -- yes --> D[Post nothing]
+    C -- no --> E{Issue already carries<br/>the key's marker?}
+    E -- yes --> D
+    E -- no --> F[Comment the analysis,<br/>record the key]
+```
 
 #### 🚦 The merged tree is type-checked before it is pushed
 
@@ -3344,9 +3388,9 @@ itself — one constant, two consumers, so the two ladders cannot drift apart
 A PR carries its attempt history in marker comments on the PR; a milestone
 branch has nowhere to write one, so the ledger is persisted per branch in
 `milestone_sync_failures.json` beside the failure streak and survives worker
-restarts. The ledger and the rules below are the **state and the pure helpers**; the sync
-pass already writes `lastSyncedDefaultSha` through it for the cadence gate
-(Issue #1776), and Issue #1778 wires the conflict *attempts* it charges. Each entry carries `conflictAttempts` (concluded failures),
+restarts. The sync pass writes `lastSyncedDefaultSha` through it for the
+cadence gate (Issue #1776) and charges the conflict *attempts* around every
+merge it makes (Issue #1778). Each entry carries `conflictAttempts` (concluded failures),
 `attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
 (`at`, `outcome`, `reason`, `defaultSha`), `deferUntil`, `lastSyncedDefaultSha`
 and `rollbacks`. Every field is optional and every malformed field is dropped,
@@ -3394,6 +3438,65 @@ stateDiagram-v2
     Open --> Idle: resetConflictLedgerOnSuccess
     Exhausted --> Idle: resetConflictLedgerOnSuccess
 ```
+
+##### What the sync pass charges, cycle by cycle
+
+[milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts) spends
+those helpers around every merge it makes (Issue #1778). Before the merge it
+concludes any attempt a previous run left open as `disrupted`, skips the branch
+outright when `isConflictAttemptDue` is false — `skipped: conflict attempt not
+due until <deferUntil>` — and otherwise opens an attempt and **persists it
+before the merge starts**, so a run killed mid-merge leaves the marker the next
+cycle reads.
+
+The conclusion is decided by `judgeSyncFailure`, and only one shape of failure
+is the branch's to answer for:
+
+| What the merge did                                             | Ledger outcome                             |
+| -------------------------------------------------------------- | ------------------------------------------ |
+| Conflicted and every rung left it undecided                     | `failed` — one attempt charged, cooldown set |
+| Conflicted while the cycle's agent rung was already spent       | `not-charged` — `agent deferred: cycle budget` |
+| Merge gate refused the merged tree, or refused the resolution    | `not-charged` — the gate keeps its own escalation, reported once |
+| A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
+| Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
+| Merged                                                          | `resetConflictLedgerOnSuccess`             |
+
+**Nothing is posted while an attempt remains.** A conflict failure produces one
+log line — `conflict attempt n of 3 failed at rung <rung>` — and no comment, no
+label and no issue. The per-conflict analysis escalation Issue #1559 posted on
+the first conflicting commit is gone: it fired before any of the three
+automatic attempts had been spent, which is exactly the "needs-human while a
+rung remains" this budget removes. On the third concluded failure the branch is
+handed to the roll-back (`rollbackFn`); until that wiring lands the default
+logs `budget exhausted: roll-back not yet available` and still posts nothing.
+
+**One agent run per cycle, across every repo and milestone.** `grantAgentRun`
+decides it, and it is the merge-conflict drain's rule with **both** halves:
+
+- **A floor.** A rung is not started at all unless the handler's remaining
+  budget, less the `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS` a resolution spends
+  outside the agent, still covers `DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT` (20
+  minutes) — the drain's own constants, imported rather than restated.
+- **A clamp.** The grant handed down in `SyncBranchOptions.agentTimeoutSeconds`
+  is never more than that budget, so an agent that runs to its full grant still
+  has room to conclude. Gating on the *configured* `claudeTimeout` instead
+  would refuse the rung on every cycle whose remaining budget is shorter than
+  an hour — almost all of them — and silently disable the ladder's last rung
+  while making every conflict `not-charged`, so the budget would never exhaust
+  and an unresolvable conflict would reach nobody at all.
+
+The grant is spent when it is handed out and refunded only for a merge that had
+no conflict: the bound is "at most one agent run a cycle", so over-spending is
+the safe direction — a merge that failed *after* the agent ran leaves the grant
+spent rather than handing a second branch a second run. Every other conflicting
+branch that cycle climbs the triage and the deterministic rules only, and its
+attempt is concluded `not-charged`. Priority 1.72 is declared `agentBacked`
+(like the drain's own handler) so the handler that spawns that agent gets the
+cycle-deadline watchdog rather than the flat 600-second one.
+
+**A branch past its budget is not merged again.** It is the roll-back's, so the
+pre-merge guard skips it with `the conflict budget is spent` rather than
+charging a fourth attempt and re-entering the hand-off every cooldown.
 
 #### 🔙 Rolling a stuck milestone branch back
 
