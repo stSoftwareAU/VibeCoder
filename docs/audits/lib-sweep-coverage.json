@@ -1180,6 +1180,18 @@
       "paths": [
         "worker/deno/lib/action_pin_resolver.ts"
       ]
+    },
+    {
+      "issue": 1859,
+      "chunk": "12p",
+      "title": "top-up: the pre-PR changed-workflow gate",
+      "ledger": "docs/audits/security-sweep-1859-changed-workflow-gate.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: changed_workflow_gate.ts (#1859)",
+      "status": "swept",
+      "sweptAt": "73b80a6f0355917642fb2a8c3249cdc504f519e6",
+      "paths": [
+        "worker/deno/lib/changed_workflow_gate.ts"
+      ]
     }
   ],
   "roots": [
