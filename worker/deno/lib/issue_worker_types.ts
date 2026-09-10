@@ -14,7 +14,7 @@ import type { IssueComment } from "./issue_data.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
 import type { SessionResumeState } from "./session_resume.ts";
-import type { GenericFinding } from "./baseline_gate.ts";
+import type { FailedCheck, GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
@@ -136,6 +136,15 @@ export interface PhaseState {
    * attempted; an empty array when no diffable findings were present.
    */
   baselineGateFindings?: GenericFinding[];
+  /**
+   * The checks that failed on the untouched tree, with what each printed
+   * (Issue #1852). Populated by `workOnIssueBaselineQuality` and read by the
+   * post-Claude gate to tell a failure the repository already had from one
+   * this run introduced. `undefined` when no baseline outcome was captured,
+   * or when it came from a cache entry written before this comparison
+   * existed — the gate then behaves exactly as it did before.
+   */
+  baselineFailedChecks?: FailedCheck[];
   /**
    * Seconds the baseline quality gate took on this repository this run
    * (Issue #1138). The execute phase quotes it in the agent's quality

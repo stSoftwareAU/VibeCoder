@@ -1,10 +1,10 @@
 # 🔎 Security sweep — the milestone roll-back (`milestone_rollback.ts`)
 
 **Issue:** [#1771](https://github.com/stSoftwareAU/VibeCoder/issues/1771)
-(chunk 12n) · **Parent:** #1209
+(chunk 12s) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
-after chunk 12m recorded its coverage:
+after chunk 12r recorded its coverage:
 
 - `worker/deno/lib/milestone_rollback.ts` — added by #1771.
 
@@ -12,7 +12,7 @@ after chunk 12m recorded its coverage:
 
 Appending the module to a slice whose sweep ran before it existed is the
 cheapest way to make `diffCoverage` green and a false record — the failure 12f's
-own record documents. The module is claimed by **12n**, and this file is the
+own record documents. The module is claimed by **12s**, and this file is the
 reading of it.
 
 ## `worker/deno/lib/milestone_rollback.ts`

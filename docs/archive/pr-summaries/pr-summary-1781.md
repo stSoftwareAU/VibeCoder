@@ -73,7 +73,7 @@ flowchart TD
   `issue create`; `work-on` is never applied; the success notice never adds
   `needs-human`; tests drive exported functions with an injected `gh` and
   assert the exact comment/label/close/reopen argv, with no source-grepping;
-  no wall-clock sleeps; the new module is claimed as sweep slice 12r rather
+  no wall-clock sleeps; the new module is claimed as sweep slice 12v rather
   than appended to an older slice; no hidden paths staged; the commit names
   Issue #1781 and carries the `Vibe-Coder-Run-Id` trailer
 

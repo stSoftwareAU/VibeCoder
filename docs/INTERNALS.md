@@ -2780,6 +2780,59 @@ regressions. It formats the baseline output as a markdown note appended to
 failure comments, and formats comprehensive quality failure messages with
 prominent error display and collapsed full output, including baseline context.
 
+#### Pre-existing gate failure (Issue #1852)
+
+The baseline-aware bypass above reasons over *findings*, which only the
+diffable checks produce. A repository whose **own** check is red on its default
+branch has none, so every run failed the gate on breakage it did not create,
+recorded a host health failure, and cooled the issue down — after which the next
+claim repeated the same doomed run. `GRQ-actual-validation#82` burned eight
+minutes that way, and the worker's own log said the failure was pre-existing
+while failing anyway.
+
+`decidePreExistingGateFailure` in
+[baseline_gate.ts](../worker/deno/lib/baseline_gate.ts) is the check-agnostic
+comparison that closes it. The baseline phase records **what each failing check
+printed** (`CheckResult.output`, carried through the cache entry), and the
+post-Claude gate asks whether every failing check was failing then, printing the
+same lines or fewer. Lines are compared after masking secrets, stripping ANSI,
+and normalising the wall-clock durations that differ run to run over identical
+content.
+
+When the answer is yes the run stops as an **expected skip**: no PR, no
+`failed`/`failed-once` label, no failure tracking, no repo failure record and no
+host health failure. The issue keeps its labels and takes the ordinary retry
+cooldown a bounce takes, not the failure path. One deduplicated `needs-human`
+tracker — its own title and marker, so an open carryover tracker cannot suppress
+it — names the check that is red on the default branch so a human fixes the
+gate.
+
+The comparison is fail-closed everywhere else. A check that was green at
+baseline, a red check that has gained a line, a baseline that recorded no
+per-check output (an entry written before this comparison existed), and an
+**infrastructure-class** failure all keep today's failure behaviour. The last of
+those matters most: a host that cannot find `deno` fails the baseline and the
+post-change gate with byte-identical output, so without that guard a broken host
+would read as a broken repository — silencing the health failure an operator
+needs and filing a tracker on an innocent repo. The class comes from
+`detectFailureCategory`, the single diagnosis path.
+
+```mermaid
+flowchart TD
+    A[Post-change gate fails] --> B{Every diffable finding<br/>already at baseline?}
+    B -- yes --> C[Bypass — treat as passed]
+    B -- no --> D{Same red checks,<br/>same output as baseline?}
+    D -- no --> E[Failure: remediation, then<br/>failed-once + health failure]
+    D -- yes --> H{Infrastructure-class<br/>failure?}
+    H -- yes --> E
+    H -- no --> F[Expected skip — no PR, no failure]
+    F --> G[File one needs-human tracker<br/>naming the red check]
+```
+
+Quality-gate excerpts in the log and in the failure comment keep the **head** as
+well as the tail (`redactedHeadTail`): the gate names a check as it starts it,
+so a tail-only excerpt began mid-sentence and could not say what was red.
+
 #### Content-keyed baseline reuse
 
 A single issue used to run the full gate up to three times — the worker's
@@ -3945,14 +3998,16 @@ links to its issue for the full rationale.
   closed the issue and abandons the worker's branch cleanly.
 - **Phase 0 merged-PR pre-flight:** Skips already-resolved issues without
   invoking Claude.
-- **Worker quality-gate baseline-aware push (generalised in ):** Pre-existing
+- **Worker quality-gate baseline-aware push (generalised in Issue #2604):** Pre-existing
   failures captured by the baseline are not blamed on the current change. The
   bypass reasons over every diffable check at once — mermaid, markdownlint
   and workflow hygiene (`baseline_gate.ts`; hygiene joined in Issue #1641) —
   so a pre-existing failure in an untouched artefact, or a `set -euo
   pipefail` / version-comment finding already on the repository's default
   branch, no longer forces a remediation loop, while a genuinely-new failure
-  is never waved through.
+  is never waved through. A failure in a **non-diffable** check that is red on
+  the untouched tree ends the run as an expected skip instead (Issue #1852) —
+  no health failure, no failure cooldown, and one tracker naming the red check.
 - **Pre-flight rate-limit check at startup:** the worker driver aborts cleanly
   when GitHub rate-limit headroom is too low to complete a scan cycle.
 

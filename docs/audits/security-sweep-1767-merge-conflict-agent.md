@@ -1,10 +1,10 @@
 # 🔎 Security sweep — the merge-conflict agent (`merge_conflict_agent.ts`)
 
 **Issue:** [#1767](https://github.com/stSoftwareAU/VibeCoder/issues/1767)
-(chunk 12m) · **Parent:** #1209
+(chunk 12q) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
-_after_ the chunk-12 slices (12a–12l) recorded their coverage:
+_after_ the chunk-12 slices (12a–12p) recorded their coverage:
 
 - `worker/deno/lib/merge_conflict_agent.ts` — added by #1767.
 
@@ -12,7 +12,7 @@ _after_ the chunk-12 slices (12a–12l) recorded their coverage:
 
 Appending the module to a slice whose sweep ran before it existed is the
 cheapest way to make `diffCoverage` green and a false record — the failure
-12f's own record documents. The module is claimed by **12m**, and this file is
+12f's own record documents. The module is claimed by **12q**, and this file is
 the reading of it.
 
 ## `worker/deno/lib/merge_conflict_agent.ts`

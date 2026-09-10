@@ -290,7 +290,6 @@ trade-off.
 | Worker creates/closes a PR | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`) | `IssueCache.invalidate(repo, key)` |
 | Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}`, `pr_linkage_open_v2_${number}` and `issue_state_v1_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181, #1818) |
 | Default-branch tip moves | Every milestone branch's "already synced" verdict (Issue #1776) | `git rev-parse origin/<default>` against the ledger's `lastSyncedDefaultSha` |
-| Milestone REST `closed_issues` moves | That milestone's recorded closed-issue verdict (Issue #1488) | `decideMilestoneQuery` in `milestone_activity_gate.ts` |
 | Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
 | Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
 | Worker label change to timeline (planned) | Timeline entry for the affected issue | `IssueCache.invalidate(repo, "${number}#timeline")` (future) |

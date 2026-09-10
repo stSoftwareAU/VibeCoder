@@ -63,6 +63,46 @@ Deno.test("runQualityGate - returns result with checks and summary", async () =>
   } catch { /* ignore */ }
 });
 
+Deno.test(
+  "runQualityGate - a FAILED check carries the output it printed (Issue #1852)",
+  async () => {
+    // The pre-existing-failure comparison reads `CheckResult.output`, so the
+    // real gate — not just a fake — has to populate it for what failed, and
+    // leave it off everything else.
+    const config = createTestConfig();
+    const result = await runQualityGate(config);
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      const failed = result.value.checks.filter((c) => c.status === "FAILED");
+      assertEquals(
+        failed.length > 0,
+        true,
+        "an empty scriptDir fails at least the completeness checks",
+      );
+      for (const check of failed) {
+        assertEquals(
+          (check.output ?? "").length > 0,
+          true,
+          `FAILED check '${check.name}' recorded no output`,
+        );
+      }
+      for (const check of result.value.checks) {
+        if (check.status === "FAILED") continue;
+        assertEquals(
+          check.output,
+          undefined,
+          `non-failing check '${check.name}' should record no output`,
+        );
+      }
+    }
+
+    try {
+      Deno.removeSync(config.scriptDir, { recursive: true });
+    } catch { /* ignore */ }
+  },
+);
+
 Deno.test("runQualityGate - strict mode fails on skipped checks", async () => {
   const config = createTestConfig({
     options: { strict: true, sequential: true, validatePrompts: false },
