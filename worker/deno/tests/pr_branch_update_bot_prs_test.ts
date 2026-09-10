@@ -187,6 +187,20 @@ Deno.test("branch-update selection - a bot PR with a host commit reaches scanPrB
   assertEquals(prNumbers, [10]);
 });
 
+Deno.test("branch-update selection - a human login sharing a bot prefix is left alone", async () => {
+  // `cursorjoe` matches `isBotLogin`'s `^cursor` prefix (Issue #1872). A
+  // host commit can reach a human's branch — they cherry-pick one — and
+  // selection here means the worker rebases and force-pushes their branch.
+  const harness = makeHarness({ 12: ["cursorjoe", HOST] });
+  const prNumbers = await scanWith(() =>
+    harness.select([makeCandidate({ number: 12, authorLogin: "cursorjoe" })])
+  );
+  assertEquals(prNumbers, []);
+  // The commit lookup is never paid for either: a human PR is screened out
+  // before `gh pr view --json commits` is issued.
+  assertEquals(harness.ghCalls, []);
+});
+
 Deno.test("branch-update selection - a bot PR without a host commit is left alone", async () => {
   const harness = makeHarness({ 11: ["dependabot[bot]"] });
   const prNumbers = await scanWith(() =>

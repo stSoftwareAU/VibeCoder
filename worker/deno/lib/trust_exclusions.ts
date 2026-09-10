@@ -12,13 +12,22 @@
 import { spawnGh } from "./gh_spawn.ts";
 import { normaliseLogin } from "./identity_guard.ts";
 
+/** The only shape GitHub itself guarantees is a bot: the `[bot]` suffix. */
+const BOT_SUFFIX = /\[bot\]$/;
+
 /**
  * Known bot-account patterns. Single source of truth for `[bot]` detection
  * (Issue #251). Previously forked across `security.ts` (`BOT_PATTERNS`) and
  * `config_validator.ts` (`KNOWN_NON_SUFFIX_BOTS`).
+ *
+ * All but the first are **prefix** matches, so `cursorjoe` and `snyked` read
+ * as bots here. That is deliberate for the trust paths this list serves —
+ * over-detecting a bot only withholds trust — but it must never decide
+ * whether the worker takes over a PR. Use
+ * {@link isBotAuthorForMaintenance} for that (Issue #1872).
  */
 const BOT_PATTERNS: readonly RegExp[] = [
-  /\[bot\]$/,
+  BOT_SUFFIX,
   /^github-copilot/,
   /^copilot/,
   /^cursor/,
@@ -88,6 +97,29 @@ export function isBotLogin(login: string): boolean {
   if (!normalised) return false;
   if (KNOWN_NON_SUFFIX_BOTS.has(normalised)) return true;
   return BOT_PATTERNS.some((pattern) => pattern.test(normalised));
+}
+
+/**
+ * The admission-grade bot predicate: may the worker take this PR over?
+ *
+ * Admission is not a trust question, it is an ownership one. A scan that
+ * admits a PR claims it, pushes fix commits to its head branch, answers its
+ * comments and arms auto-merge — so a false positive adopts a human's PR
+ * uninvited, the exact outcome `docs/HUMAN-PR-POLICY.md` exists to prevent.
+ * {@link isBotLogin}'s prefix patterns cannot carry that weight: they read
+ * `cursorjoe` and `snyked` as bots (Issue #1872).
+ *
+ * This predicate therefore matches only what GitHub itself attests — the
+ * `[bot]` suffix — or an exact member of {@link KNOWN_NON_SUFFIX_BOTS}. No
+ * prefix ever matches, so a human login is admitted only if it *is* one of
+ * those three names. Comparison is case-insensitive
+ * ({@link normaliseLogin}).
+ */
+export function isBotAuthorForMaintenance(login: string): boolean {
+  const normalised = normaliseLogin(login);
+  if (!normalised) return false;
+  if (KNOWN_NON_SUFFIX_BOTS.has(normalised)) return true;
+  return BOT_SUFFIX.test(normalised);
 }
 
 /**
