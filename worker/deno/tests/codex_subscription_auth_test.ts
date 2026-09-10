@@ -8,14 +8,14 @@
  * CODEX_HOME is selected.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { resolveAgentProvider } from "../lib/agent_provider.ts";
 import { resolveCodexAuthMode } from "../lib/codex_auth_mode.ts";
 import { buildIsolatedCodexChildEnv } from "../lib/codex_env.ts";
 
-Deno.test("Codex subscription auth - provider recognises CODEX_HOME as credential material", () => {
+Deno.test("Codex subscription auth - CODEX_HOME is separate from provisioned API credentials", () => {
   const codex = resolveAgentProvider("codex");
-  assert(codex.credentials.envVars.includes("CODEX_HOME"));
+  assertEquals(codex.credentials.envVars, ["OPENAI_API_KEY", "CODEX_API_KEY"]);
 });
 
 Deno.test("Codex subscription auth - CODEX_HOME is not misclassified as an API key", async () => {
