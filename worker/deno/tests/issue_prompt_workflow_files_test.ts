@@ -15,7 +15,7 @@
  * cannot drift: a check added to the table that the prompt does not name
  * fails here, and so does a label dropped from the prompt.
  *
- * Uses Australian English throughout (behaviour, colour, organisation).
+ * Uses Australian English throughout (behaviour, catalogue, recognised).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -91,12 +91,14 @@ Deno.test("issue prompt - a workflow-sync template is committed verbatim", async
 Deno.test("issue prompt - resolved pins are copied as given, never re-resolved", async () => {
   const section = workflowFilesSection(await loadIssue());
   const lower = section.toLowerCase();
+  // Whole phrases, not bare words: prose saying the opposite of the rule must
+  // not satisfy the assertion.
   for (
     const phrase of [
       "already resolved",
-      "never re-resolve",
-      "bump",
-      "reformat",
+      "never re-resolve a pin",
+      "never bump one to a newer tag",
+      "never reformat the yaml",
     ]
   ) {
     assertStringIncludes(lower, phrase);

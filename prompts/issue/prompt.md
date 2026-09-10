@@ -581,8 +581,6 @@ reference in someone else's CI. So:
 - Resolve each one in this run with
   `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`, then record the tag in
   a trailing comment next to the pin.
-- A pin the issue already supplied is resolved — reuse it exactly rather than
-  resolving a newer one.
 - If you cannot resolve a SHA (no network, API error), keep the pin you were
   given and state plainly in the pull request body that it needs verification.
   Never invent one to fill the gap.
