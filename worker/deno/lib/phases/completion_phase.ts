@@ -52,6 +52,10 @@ import {
   buildReproductionGateComment,
   validateReproductionStatus,
 } from "../reproduction_status_gate.ts";
+import {
+  buildChangedWorkflowGateMessage,
+  evaluateChangedWorkflowGate,
+} from "../changed_workflow_gate.ts";
 import { decideCompletionPr, type LinkedPr } from "../pr_run_provenance.ts";
 import {
   ensureIssueClosedIfPrMerged,
@@ -1409,6 +1413,78 @@ async function completionBody(
     // Gate satisfied (or inactive) — drop any stale verdict so a later run on
     // this issue is not told to fix something it has already fixed.
     await clearSecurityFixGateBlock(gateStateDir, repo, issueNumber);
+  }
+
+  // ---------------------------------------------------------------------
+  // Changed-workflow file-check gate (Issue #1859, split out of #1755).
+  //
+  // #1755 hardens the provisioning path by construction only — templates,
+  // filing-time pin resolution and a prompt rule, all of them instructions an
+  // LLM run follows rather than a gate. A run that embellishes what it was
+  // given, or writes a workflow no template produces, still ships a file the
+  // `github-actions-audit` idle task files a finding against days later, in a
+  // repository the fleet does not own. `WORKFLOW_FILE_CHECKS` decides entirely
+  // from the file text, so the same checks run here on the branch diff in
+  // milliseconds.
+  //
+  // Only the workflow files this run added or changed are in scope: a
+  // pre-existing offender is the audit's business, not this PR's. Like the
+  // security gate above and unlike the three summary gates below, a finding is
+  // a defect in the change rather than a documentation shortfall, so it stops
+  // the run whether or not a PR already exists.
+  // ---------------------------------------------------------------------
+  {
+    const workflowGate = await evaluateChangedWorkflowGate({
+      // The trigger check decides against the repository's default branch,
+      // whatever this PR's base happens to be.
+      defaultBranch: state.defaultBranch,
+      deps: {
+        listChangedFiles: async () => {
+          // `comparableBase` was resolved above (local branch → origin/<base>).
+          const base = comparableBase.ok ? comparableBase.value : baseBranch;
+          const diff = await deps.git.runGitCommand(
+            // Deletions excluded: a removed workflow has no text to check, and
+            // its absence must not read as an unreadable file.
+            ["diff", "--name-only", "--diff-filter=ACMR", `${base}...HEAD`],
+            { cwd: state.repoPath },
+          );
+          if (!diff.ok) throw diff.error;
+          if (diff.value.code !== 0) {
+            throw new Error(
+              `git diff exited ${diff.value.code}: ${diff.value.stderr.trim()}`,
+            );
+          }
+          return diff.value.stdout.split("\n").map((l) => l.trim()).filter(
+            Boolean,
+          );
+        },
+        readFile: (path) => Deno.readTextFile(`${state.repoPath}/${path}`),
+      },
+    });
+
+    if (!workflowGate.ok) {
+      const message = buildChangedWorkflowGateMessage(workflowGate);
+      logger.warn("Changed-workflow file checks blocked PR creation", {
+        files: workflowGate.scannedFiles,
+        findings: workflowGate.findings.length,
+        errors: workflowGate.errors.length,
+      });
+      try {
+        await deps.github.createClient(logger).postComment(
+          repo,
+          issueNumber,
+          message,
+        );
+      } catch (err) {
+        // The comment is the next run's brief, not the verdict — losing it
+        // must not turn a block into a pass, so it is logged and the failure
+        // stands.
+        logger.warn("Could not post the changed-workflow gate comment", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return { status: "failure", reason: message };
+    }
   }
 
   // ---------------------------------------------------------------------
