@@ -1198,10 +1198,10 @@
     },
     {
       "issue": 1767,
-      "chunk": "12r",
+      "chunk": "12q",
       "title": "the shared merge-conflict agent",
       "ledger": "docs/audits/security-sweep-1767-merge-conflict-agent.md",
-      "definition": "modules added to lib/ after 12a-12l recorded their coverage",
+      "definition": "modules added to lib/ after 12a-12p recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/merge_conflict_agent.ts"
@@ -1210,10 +1210,10 @@
     },
     {
       "issue": 1770,
-      "chunk": "12s",
+      "chunk": "12r",
       "title": "the milestone roll-back marker",
       "ledger": "docs/audits/security-sweep-1770-milestone-rollback-marker.md",
-      "definition": "modules added to lib/ after 12a-12m recorded their coverage",
+      "definition": "modules added to lib/ after 12a-12q recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_rollback_marker.ts"
@@ -1222,10 +1222,10 @@
     },
     {
       "issue": 1771,
-      "chunk": "12t",
+      "chunk": "12s",
       "title": "the milestone roll-back",
       "ledger": "docs/audits/security-sweep-1771-milestone-rollback.md",
-      "definition": "modules added to lib/ after 12a-12n recorded their coverage",
+      "definition": "modules added to lib/ after 12a-12r recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_rollback.ts"
@@ -1234,10 +1234,10 @@
     },
     {
       "issue": 1774,
-      "chunk": "12u",
+      "chunk": "12t",
       "title": "the claim-point PR state read",
       "ledger": "docs/audits/security-sweep-1774-pr-live-state.md",
-      "definition": "modules added to lib/ after 12a-12o recorded their coverage",
+      "definition": "modules added to lib/ after 12a-12s recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/pr_live_state.ts"
@@ -1246,10 +1246,10 @@
     },
     {
       "issue": 1776,
-      "chunk": "12v",
+      "chunk": "12u",
       "title": "the milestone-sync cadence tip",
       "ledger": "docs/audits/security-sweep-1776-milestone-default-tip.md",
-      "definition": "modules added to lib/ after 12a-12p recorded their coverage",
+      "definition": "modules added to lib/ after 12a-12t recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_default_tip.ts"
