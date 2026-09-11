@@ -549,3 +549,117 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shallow clone is healed rath
     await cleanup(tmpDir);
   }
 });
+
+// ============================================================================
+// Issue #2006: the triage's sides are taken BEFORE the ladder climbs, so the
+// agent rung's `git add -A` cannot clobber them.
+// ============================================================================
+
+/** A gate that passes: the resolution's shape is what these tests judge. */
+const passingGate = () =>
+  Promise.resolve({ status: "passed" as const, detail: "", output: "" });
+
+Deno.test("syncMilestoneBranchWithDefault - a triaged side and an agent-resolved file land together in one merge (Issue #2006)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    const { localPath } = await setupTestRepos(tmpDir);
+    const git = (args: string[]) => runGitCommand(args, { cwd: localPath });
+    const write = (rel: string, text: string) =>
+      Deno.writeTextFile(`${localPath}/${rel}`, text);
+
+    // Seed: a source file the triage will decide, and a rival-design file
+    // only the agent can decide.
+    await Deno.mkdir(`${localPath}/lib`, { recursive: true });
+    await write("lib/config.ts", "a\nb\nc\n");
+    await write("lib/rival.ts", "const impl = 'seed';\n");
+    await git(["add", "-A"]);
+    await git(["commit", "-m", "Seed both files"]);
+    await git(["push", "origin", "main"]);
+
+    // The milestone changes line b and its side of the rival design.
+    await git(["checkout", "-b", "milestone/v2"]);
+    await write("lib/config.ts", "a\nB\nc\n");
+    await write("lib/rival.ts", "const impl = 'branch';\n");
+    await git(["commit", "-am", "Milestone's changes"]);
+    await git(["push", "-u", "origin", "milestone/v2"]);
+
+    // Main keeps every line the milestone has and adds one — a superset the
+    // triage takes as `theirs` — and its own rival design.
+    await git(["checkout", "main"]);
+    await write("lib/config.ts", "a\nB\nB2\nc\n");
+    await write("lib/rival.ts", "const impl = 'main';\n");
+    await git(["commit", "-am", "Main's changes"]);
+    await git(["push", "origin", "main"]);
+    await git(["checkout", "milestone/v2"]);
+
+    // Precondition: both files really conflict.
+    const trial = await git(["merge", "--no-commit", "--no-ff", "main"]);
+    assertEquals(
+      trial.ok && trial.value.code !== 0,
+      true,
+      "the merge conflicts",
+    );
+    const conflicted = await git(["diff", "--name-only", "--diff-filter=U"]);
+    assertEquals(
+      conflicted.ok ? conflicted.value.stdout.trim().split("\n").sort() : [],
+      ["lib/config.ts", "lib/rival.ts"],
+    );
+    await git(["merge", "--abort"]);
+
+    let handed: string[] = [];
+    const result = await syncMilestoneBranchWithDefault(
+      "milestone/v2",
+      "main",
+      { cwd: localPath },
+      undefined,
+      passingGate,
+      passingGate,
+      async (request) => {
+        handed = [...request.conflictedFiles];
+        // The agent resolves what it was asked about, and stages only that;
+        // the ladder then stages the whole tree, exactly as in production.
+        await Deno.writeTextFile(
+          `${request.workDir}/lib/rival.ts`,
+          "const impl = both();\n",
+        );
+        await runGitCommand(["add", "--", "lib/rival.ts"], {
+          cwd: request.workDir,
+        });
+        return { ok: true, value: { terminated: false } };
+      },
+    );
+    assertEquals(
+      result.ok,
+      true,
+      `the sync lands: ${result.ok ? "" : result.error.message}`,
+    );
+    assertEquals(
+      handed,
+      ["lib/rival.ts"],
+      "only the escalation reached the agent",
+    );
+
+    const config = await git(["show", "HEAD:lib/config.ts"]);
+    assertEquals(
+      config.ok ? config.value.stdout : "",
+      "a\nB\nB2\nc\n",
+      "the triage's side (main's superset) is what landed",
+    );
+    const rival = await git(["show", "HEAD:lib/rival.ts"]);
+    assertEquals(
+      rival.ok ? rival.value.stdout : "",
+      "const impl = both();\n",
+      "the agent's resolution is what landed",
+    );
+    const parents = await git(["rev-list", "--parents", "-n", "1", "HEAD"]);
+    assertEquals(
+      parents.ok ? parents.value.stdout.trim().split(" ").length : 0,
+      3,
+      "one merge commit with two parents",
+    );
+    const unmerged = await git(["ls-files", "-u"]);
+    assertEquals(unmerged.ok ? unmerged.value.stdout : "x", "");
+  } finally {
+    await cleanup(tmpDir);
+  }
+});

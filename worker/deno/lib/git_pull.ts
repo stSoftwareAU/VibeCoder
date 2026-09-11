@@ -802,6 +802,32 @@ export async function syncMilestoneBranchWithDefault(
   // resolution agent — the same two rungs the PR pass climbs, over the same
   // clone. Only a file every rung leaves undecided reaches a human.
   const triaged = plan.decisions.filter((d) => d.action !== "escalate");
+  // Take the triage's sides NOW, before the ladder climbs (Issue #2006). The
+  // agent rung stages the whole working tree once the agent is done — a
+  // resolution that extracts a helper leaves a new file the merge commit
+  // must carry — and `git add -A` does not stop at the paths the agent was
+  // asked about. A triaged path still unmerged at that point was staged
+  // with git's marker-laden working copy and its merge stages were gone, so
+  // its side could no longer be taken and the whole resolution — eleven
+  // minutes of agent work included — was refused as "the merge stages of
+  // conflicted file 'Cargo.lock' could not be read". With the sides already
+  // staged the agent sees them as decided, and staging the tree changes
+  // nothing about them.
+  const sidesTaken = await applyConflictPlan(
+    {
+      ...plan,
+      resolved: triaged,
+      escalations: plan.decisions.filter((d) => d.action === "escalate"),
+    },
+    sides,
+    defaultBranch,
+    milestoneBranch,
+    options,
+  );
+  if (!sidesTaken.ok) {
+    await runGitCommand(["merge", "--abort"], options);
+    return sidesTaken;
+  }
   const ladder = await climbConflictLadder({
     escalations: plan.decisions.filter((d) => d.action === "escalate"),
     options,
@@ -898,21 +924,9 @@ export async function syncMilestoneBranchWithDefault(
     return await refuseResolution(mergeState.detail, true);
   }
   if (mergeState.kind === "already-committed") {
-    // A rung that committed the merge while the triage still had sides to
-    // take committed a tree the plan does not describe: taking a side needs
-    // the conflicted index, and the commit cleared it.
-    const pending = resolved.filter(
-      (d) => d.action === "ours" || d.action === "theirs",
-    );
-    if (pending.length > 0) {
-      return await refuseResolution(
-        `the merge was committed by another rung while ${pending.length} ` +
-          `file(s) still needed the conflicted index to take a side: ${
-            pending.map((d) => d.path).join(", ")
-          }`,
-        true,
-      );
-    }
+    // Every side the triage chose was staged before any rung ran (Issue
+    // #2006), so a rung that committed the merge committed those sides too;
+    // the adopted commit is judged on its safety alone.
     // The index gate saw nothing to inspect, so the commit's own changes are
     // held to it here rather than adopted unchecked (Issue #1758).
     const safe = await assertAdoptedMergeIsSafe({ preMergeSha, options });
@@ -924,17 +938,8 @@ export async function syncMilestoneBranchWithDefault(
     }
   }
 
-  const applied = await applyConflictPlan(
-    { ...plan, resolved, escalations },
-    sides,
-    defaultBranch,
-    milestoneBranch,
-    options,
-  );
-  if (!applied.ok) {
-    await runGitCommand(["merge", "--abort"], options);
-    return applied;
-  }
+  // The triage's sides were taken before the ladder climbed (Issue #2006);
+  // what remains is to prove no rung left anything unmerged.
 
   // The tree must be fully resolved — by the triage, the rules, the agent or
   // all three (Issue #1777). A path still unmerged, or a file still carrying

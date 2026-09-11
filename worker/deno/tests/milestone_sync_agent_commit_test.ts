@@ -314,12 +314,15 @@ Deno.test(
 );
 
 Deno.test(
-  "syncMilestoneBranchWithDefault - an agent that commits while another file still needs the conflicted index is refused (Issue #1964)",
+  "syncMilestoneBranchWithDefault - an agent that commits after the triage's sides were staged is adopted, sides included (Issues #1964, #2006)",
   async () => {
-    // `notes.md` is a subsumption the triage settles by taking a side, which
-    // needs the merge stages; `docs/development.md` is the rival prose the
-    // agent is asked about. An agent that commits both clears the index the
-    // triage's decision needs, so the tree on the branch is not the plan.
+    // `notes.md` is a subsumption the triage settles by taking a side;
+    // `docs/development.md` is the rival prose the agent is asked about. The
+    // triage's side is staged BEFORE the ladder climbs (Issue #2006), so an
+    // agent that commits the whole tree commits the plan's tree: main's
+    // `notes.md` beside its own resolution. Before #2006 the side was taken
+    // after the ladder, the agent's commit had cleared the merge stages it
+    // needed, and the sync refused the whole resolution.
     const fx = await setup(
       { "docs/development.md": SEED, "notes.md": "one\n" },
       { "docs/development.md": BRANCH, "notes.md": "one\ntwo\n" },
@@ -341,13 +344,34 @@ Deno.test(
         }),
       );
 
-      assert(!result.ok, "a plan that cannot be applied is not a resolution");
-      assertStringIncludes(result.error.message, "conflicted index");
-      assertStringIncludes(result.error.message, "notes.md");
+      assert(
+        result.ok,
+        `the agent's commit carries the plan's tree: ${
+          result.ok ? "" : result.error.message
+        }`,
+      );
+      const head = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+      assert(head !== preMergeSha, "the merge landed on the branch");
       assertEquals(
-        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
-        preMergeSha,
-        "the half-applied commit is not left on the branch",
+        await gitOk(["show", "HEAD:notes.md"], fx.clone),
+        "one\ntwo\nthree\n",
+        "the triage's side (main's superset) is in the adopted commit",
+      );
+      assertEquals(
+        await gitOk(["show", "HEAD:docs/development.md"], fx.clone),
+        RESOLUTION,
+        "beside the agent's resolution",
+      );
+      assertEquals(
+        (await gitOk(["rev-list", "--parents", "-n", "1", "HEAD"], fx.clone))
+          .trim().split(" ").length,
+        3,
+        "one merge commit with two parents",
+      );
+      assertStringIncludes(
+        await gitOk(["log", "-1", "--format=%B"], fx.clone),
+        "notes.md",
+        "the sync's message names the triaged file",
       );
     } finally {
       await fx.cleanup();
