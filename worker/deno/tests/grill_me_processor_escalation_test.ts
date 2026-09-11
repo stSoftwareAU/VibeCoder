@@ -247,8 +247,11 @@ Deno.test(
   "Issue #1933: five answered productive rounds run Round 6 instead of escalating (GRQ#4754)",
   async () => {
     // The reported bug: the developer answered five rounds in 2.5 hours, every
-    // round asked something new, and the fixed cap escalated anyway.
-    const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 20 }) });
+    // round asked something new, and the fixed cap escalated anyway. The
+    // repository default is the ceiling under test, so this run uses it rather
+    // than a test-local override — against the unfixed code (a default cap of
+    // 5) the fifth answered round escalated instead of asking Round 6.
+    const ctx = makeContext({ config: buildDefaultWorkerConfig() });
     const priorComments = productiveGrilling(5);
     const addedLabels: string[] = [];
     const postedBodies: string[] = [];
@@ -317,7 +320,7 @@ Deno.test(
 Deno.test(
   "Issue #1933: a stalled round forces a final round that posts Ready with the trigger line",
   async () => {
-    const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 20 }) });
+    const ctx = makeContext({ config: buildDefaultWorkerConfig() });
     // Round 3 repeats every stem Rounds 1-2 already asked.
     const priorComments: GitHubComment[] = [
       ...productiveGrilling(2),

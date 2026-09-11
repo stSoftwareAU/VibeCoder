@@ -1338,7 +1338,8 @@ network hiccups, and even its own mistakes:
   clean-up path runs unchanged (remove `grill-me`, ensure `needs-human`). The
   stop rule then sees only rounds posted since that Ready comment
   (`collectGrillMeRoundsSince`), so a reopened grilling gets the full budget
-  again while `ROUND_NUMBER` keeps the issue-wide numbering. "A Ready marker was posted" becomes a *count* comparison at the
+  again while `ROUND_NUMBER` keeps the issue-wide numbering. "A Ready marker
+  was posted" becomes a *count* comparison at the
   race guard and the post-Claude convergence check, so the inherited Ready
   comment is not mistaken for a fresh one; and the awaiting-reply gate resumes
   as soon as the reopened grilling has posted its own round, so a re-add buys

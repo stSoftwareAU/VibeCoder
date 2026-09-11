@@ -242,6 +242,20 @@ Deno.test("decideGrillMeStop - the stall guard is reported ahead of the ceiling"
   );
 });
 
+Deno.test("decideGrillMeStop - a ceiling of one forces the very first round", () => {
+  assertEquals(
+    decideGrillMeStop({ roundBodies: [], latestRoundNumber: 0, maxRounds: 1 }),
+    { kind: "ceiling", ceiling: 1 },
+  );
+});
+
+Deno.test("decideGrillMeStop - an empty grilling under a normal ceiling runs an ordinary round", () => {
+  assertEquals(
+    decideGrillMeStop({ roundBodies: [], latestRoundNumber: 0, maxRounds: 20 }),
+    null,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // forcedFinalTriggerLine
 // ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@
  * good. When the developer re-applies `grill-me` after it (clearing
  * `needs-human`, which the discovery filter requires anyway), the worker
  * starts a fresh round instead of stripping the label straight back off,
- * and the safety cap counts only the rounds of that reopened grilling.
+ * and the stop rule sees only the rounds of that reopened grilling.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -339,8 +339,8 @@ function carriesMarkerHeading(body: string, marker: string): boolean {
  * quoted round in a developer's reply is not miscounted. A marker a commenter
  * types deliberately still inflates the count, and that fails safe in both
  * directions it can move: a higher count either continues the numbering or
- * trips the safety cap, and the cap hands the issue to a human rather than
- * acting on the forgery.
+ * brings the runaway ceiling closer, and the ceiling round is a forced final
+ * round that converges — it never acts on the forgery.
  *
  * @param comments - Issue comments (chronological order)
  * @returns The number of prior rounds posted by any worker identity
@@ -620,12 +620,12 @@ export function findLatestReadyMarkerTimestamp(
 /**
  * Count grill-me rounds posted after `sinceTimestamp` (Issue #1634).
  *
- * The safety cap compares against this rather than the issue-wide total once
+ * The stop rule compares against this rather than the issue-wide total once
  * grilling has been reopened: a developer who re-applies `grill-me` to an
- * issue that already burned all `maxGrillMeRounds` rounds would otherwise be
- * escalated to `needs-human` on the very first reopened round. A reopened
- * grilling gets the full cap again; the round *heading* still continues the
- * issue-wide numbering, which is {@link countGrillMeRounds}.
+ * issue that already spent all `maxGrillMeRounds` rounds would otherwise have
+ * its very first reopened round forced to converge. A reopened grilling gets
+ * the full budget again; the round *heading* still continues the issue-wide
+ * numbering, which is {@link countGrillMeRounds}.
  *
  * A comment whose `createdAt` is unparseable counts, so a malformed timestamp
  * can only make the cap stricter — never hand a fresh budget to an issue that
@@ -1532,6 +1532,60 @@ async function _processGrillMeWithHeartbeat(
     );
   }
 
+  if (cappedRounds >= maxRounds) {
+    // The ceiling round was the forced final round and it did not converge.
+    // Escalate without posting another one, so a grilling never exceeds the
+    // ceiling since its latest Ready comment (Issue #1933).
+    logger.warn(
+      "Grill-me round ceiling already spent without convergence — escalating to needs-human",
+      { repo, issueNumber, priorRounds, cappedRounds, maxRounds },
+    );
+    await escalateToHuman({
+      ghClient,
+      repo,
+      target: { kind: "issue", number: issueNumber },
+      needsHumanLabel,
+      reason:
+        `This grilling has posted ${cappedRounds} round${
+          cappedRounds === 1 ? "" : "s"
+        } since its latest ` +
+        `\`${GRILL_ME_READY_MARKER}\` comment, reaching the ceiling of ${maxRounds}, ` +
+        `and the forced final round did not converge.`,
+      nextStep:
+        `Review the prior rounds and either apply \`planning\` (to move on with what is already understood), ` +
+        `apply \`work-on\` (to start implementation directly), or close the issue if it is no longer needed. ` +
+        `Remove \`${needsHumanLabel}\` once you have chosen.`,
+      heading: "Grill-Me Escalation",
+      githubUser,
+      logger,
+      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
+    });
+    const ceilingUnassigned = await releaseAllWorkerClaims(
+      ghClient,
+      repo,
+      issueNumber,
+      githubUser,
+      logger,
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        roundNumber: priorRounds,
+        isFinalRound: true,
+        workerCommentPosted: false,
+        labelsSwapped: false,
+        defenceInDepthApplied: false,
+        escalatedToHuman: true,
+        needsHumanAdded: false,
+        needsHumanRemoved: false,
+        workerUnassigned: ceilingUnassigned,
+        summary:
+          `Escalated to ${needsHumanLabel} — round ceiling of ${maxRounds} reached without a Ready marker`,
+      },
+    };
+  }
+
   /**
    * A forced final round that did not post Ready is the one path that still
    * escalates (Issue #1933). The comment names the trigger that forced the
@@ -1543,7 +1597,7 @@ async function _processGrillMeWithHeartbeat(
     outcome: string,
   ): Promise<boolean> => {
     if (stopTrigger === null) return false;
-    await escalateToHuman({
+    const escalation = await escalateToHuman({
       ghClient,
       repo,
       target: { kind: "issue", number: issueNumber },
@@ -1562,6 +1616,21 @@ async function _processGrillMeWithHeartbeat(
       logger,
       deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
     });
+    if (!escalation.ok) {
+      // Both the label add and the comment post failed — say so rather than
+      // reporting an escalation that never reached the issue.
+      logger.error(
+        "Forced final grill-me round did not post Ready and the escalation failed",
+        {
+          repo,
+          issueNumber,
+          trigger: stopTrigger.kind,
+          outcome,
+          error: escalation.error.message,
+        },
+      );
+      return false;
+    }
     logger.warn(
       "Forced final grill-me round did not post Ready — escalated to needs-human",
       { repo, issueNumber, trigger: stopTrigger.kind, outcome },
