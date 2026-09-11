@@ -160,6 +160,47 @@ Deno.test("gemini_token_usage - non-JSON output decodes to undefined", () => {
   );
 });
 
+Deno.test("gemini_token_usage - one unreadable counter condemns the whole model", () => {
+  // The partial case: three readable counters and one string. Counting the
+  // readable three would put a zero where the fourth belongs, which is the
+  // silent zero this seam exists to prevent.
+  const raw = '{"type":"result","stats":{"models":{"gemini-2.5-pro":' +
+    '{"input_tokens":1000,"output_tokens":"200","cached":400,"input":600}}}}';
+
+  assertEquals(decodeGeminiTokenUsage(raw), undefined);
+});
+
+Deno.test("gemini_token_usage - an unreadable nested counter condemns the model too", () => {
+  const raw = '{"type":"result","stats":{"models":{"gemini-2.5-pro":' +
+    '{"tokens":{"prompt":1000,"candidates":200,"cached":400,' +
+    '"thoughts":"lots"}}}}}';
+
+  assertEquals(decodeGeminiTokenUsage(raw), undefined);
+});
+
+Deno.test("gemini_token_usage - a negative counter is refused, never subtracted", () => {
+  // A garbled or forged count must not reduce the day's totals or the spend
+  // ceiling: it is refused, and the run is recorded UNKNOWN instead.
+  const negativeInput =
+    '{"type":"result","stats":{"models":{"gemini-2.5-pro":' +
+    '{"input_tokens":1000,"output_tokens":10,"cached":0,"input":-50}}}}';
+  const negativeOutput =
+    '{"type":"result","stats":{"models":{"gemini-2.5-pro":' +
+    '{"input_tokens":1000,"output_tokens":-9,"cached":0,"input":1000}}}}';
+
+  assertEquals(decodeGeminiTokenUsage(negativeInput), undefined);
+  assertEquals(decodeGeminiTokenUsage(negativeOutput), undefined);
+});
+
+Deno.test("gemini_token_usage - an entry missing a billable counter is refused", () => {
+  // A prompt count with no candidates count is not a run whose output was
+  // zero — it is a run whose output was never stated.
+  const raw = '{"type":"result","stats":{"models":{"gemini-2.5-pro":' +
+    '{"input_tokens":1000}}}}';
+
+  assertEquals(decodeGeminiTokenUsage(raw), undefined);
+});
+
 Deno.test("gemini_token_usage - a model reporting only unreadable counters is skipped", () => {
   // The readable model still decodes; the unreadable one contributes nothing
   // rather than dragging the total down to a fabricated zero.

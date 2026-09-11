@@ -31,16 +31,23 @@
  * cached prefix** — which is why `inputTokens` below is prompt *less* cached,
  * never the raw prompt.
  *
- * The same run under `--output-format json` reports the unprojected
- * `ModelMetrics` instead, nesting the counters under `tokens`
- * (`{input, prompt, candidates, total, cached, thoughts, tool}`). Both
- * per-model shapes are accepted here, because they are the same CLI's two
- * renderings of the same numbers and telling the worker about only one of them
- * would make the other read as "no usage". The nested shape is also the only
- * one carrying `thoughts`: Gemini 2.5 bills thinking as output, so where it is
- * present it is added to the output count. The stream-json projection does not
- * expose it, and a thought count is not inferred from `total_tokens` — an
- * inferred number is a guess, and this module never guesses.
+ * **That projection omits `thoughts`.** The CLI keeps an unprojected
+ * `ModelMetrics.tokens` internally — `{input, prompt, candidates, total,
+ * cached, thoughts, tool}` — and `convertToStreamStats` drops all but five of
+ * its fields, so a stream-json run's output count is its candidates alone.
+ * Gemini 2.5 bills thinking as output, so that under-counts a thinking-heavy
+ * run; the deficit is **not** inferred from `total_tokens`, because an
+ * inferred number is a guess and this module never guesses. Under-counting is
+ * the conservative direction for a spend guard, and a run whose stats are
+ * absent entirely still takes the fail-loud path below.
+ *
+ * A per-model entry that *does* nest its counters under `tokens` is therefore
+ * read as the unprojected shape, thoughts included. No envelope 0.55.1 emits
+ * on this stream carries it — `--output-format json` renders the unprojected
+ * metrics, but as one pretty-printed document rather than NDJSON, which this
+ * decoder does not read — so the branch is tolerance for a future envelope,
+ * not a second supported input format. It is here so a CLI that stops
+ * projecting decodes rather than silently reading as "no usage".
  *
  * ```mermaid
  * flowchart LR
@@ -49,7 +56,7 @@
  *     M -->|"flat: input_tokens/cached"| U["TokenUsage"]
  *     M -->|"nested: tokens.prompt/thoughts"| U
  *     L -->|"no result / no stats"| N["undefined → usageUnknown"]
- *     M -->|"no readable counter"| N
+ *     M -->|"a counter missing or stated unusably"| N
  * ```
  *
  * Australian English spelling throughout (behaviour, organisation).
@@ -74,40 +81,73 @@ interface ModelCounters {
 }
 
 /**
+ * A counter the CLI never stated, as distinct from one it stated unusably.
+ *
+ * `null` is the second case, and it is not a zero: a field carrying a string,
+ * an object, `NaN` or a **negative** count means this entry cannot be read at
+ * all, so the model is dropped rather than counted at whatever the other
+ * fields happened to say. A negative token count is not a small number — it
+ * would *subtract* from the day's totals and from the spend ceiling, so it is
+ * refused here rather than propagated.
+ *
+ * @param source - The object carrying the counters.
+ * @param key - The counter to read.
+ * @returns The count, `undefined` when the field is absent, `null` when it is
+ *   present but not a non-negative finite number.
+ */
+function readCounter(
+  source: Record<string, unknown>,
+  key: string,
+): number | undefined | null {
+  if (!(key in source)) return undefined;
+  const value = readNumber(source[key]);
+  return value === undefined || value < 0 ? null : value;
+}
+
+/**
  * Read one entry of `stats.models`, under either of the CLI's two renderings.
  *
  * @param model - The per-model stats object from a `result` event.
- * @returns Its counters, or undefined when none of them is a finite number —
- *   an unreadable model contributes nothing rather than a fabricated zero.
+ * @returns Its counters, or undefined when the entry omits either billable
+ *   counter or states any counter unusably — either way it contributes
+ *   nothing rather than a fabricated zero.
  */
 function readModelCounters(
   model: Record<string, unknown>,
 ): ModelCounters | undefined {
-  // `--output-format json` nests the unprojected session metrics; stream-json
-  // flattens them onto the entry itself.
+  // The unprojected metrics nest their counters; stream-json flattens the
+  // five it keeps onto the entry itself.
   const nested = readObject(model.tokens);
-  const prompt = nested
-    ? readNumber(nested.prompt)
-    : readNumber(model.input_tokens);
-  const candidates = nested
-    ? readNumber(nested.candidates)
-    : readNumber(model.output_tokens);
-  const cached = readNumber(nested ? nested.cached : model.cached);
-  const uncached = readNumber(nested ? nested.input : model.input);
-  // Only the nested rendering carries the thinking count.
-  const thoughts = nested ? readNumber(nested.thoughts) : undefined;
+  const source = nested ?? model;
+  const prompt = readCounter(source, nested ? "prompt" : "input_tokens");
+  const candidates = readCounter(
+    source,
+    nested ? "candidates" : "output_tokens",
+  );
+  const cached = readCounter(source, "cached");
+  const uncached = readCounter(source, "input");
+  // Only the unprojected shape carries the thinking count.
+  const thoughts = nested ? readCounter(nested, "thoughts") : undefined;
 
+  // One unusable counter condemns the entry: a partly-read model would put a
+  // zero where a real count belongs, which is the silent failure this whole
+  // seam exists to prevent (Issue #366).
   if (
-    prompt === undefined && candidates === undefined &&
-    cached === undefined && uncached === undefined
+    prompt === null || candidates === null || cached === null ||
+    uncached === null || thoughts === null
   ) {
     return undefined;
   }
+  // The two billable counters are the ones every real entry carries, so an
+  // entry missing either is not a run this decoder can cost. `cached`,
+  // `input` and `thoughts` may legitimately be absent — no cache, no
+  // thinking — and only those default to zero.
+  if (prompt === undefined || candidates === undefined) return undefined;
 
   return {
-    prompt: prompt ?? 0,
+    prompt,
     // Gemini 2.5 bills thinking as output, so thoughts join the candidates.
-    output: (candidates ?? 0) + (thoughts ?? 0),
+    output: candidates + (thoughts ?? 0),
     cached: cached ?? 0,
     ...(uncached !== undefined ? { uncached } : {}),
   };
@@ -145,6 +185,8 @@ export function decodeGeminiTokenUsage(raw: string): TokenUsage | undefined {
     for (const model of Object.values(models)) {
       const object = readObject(model);
       const counters = object ? readModelCounters(object) : undefined;
+      // An entry missing a billable counter, or stating one unusably, is
+      // skipped; when every entry is skipped the run decodes to undefined.
       if (!counters) continue;
       readable = true;
       outputTokens += counters.output;

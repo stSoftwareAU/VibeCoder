@@ -2035,11 +2035,16 @@ which dispatches on the active provider descriptor:
 - **Codex** — `turn.completed` / `token_count` usage is mapped onto the shared
   `TokenUsage` shape. A run that reports none is still `usageUnknown`.
 - **Gemini** — the terminal `result` event's `stats.models` counters are summed
-  onto the same shape: prompt less cached is the input count, candidates (plus
-  thoughts, where the CLI reports them — Gemini 2.5 bills thinking as output)
-  the output count, `cached` the cache-read count, and the cache-write count
-  stays 0 because Gemini reports none. A run that reports no stats is still
-  `usageUnknown`.
+  onto the same shape: prompt less cached is the input count, candidates the
+  output count, `cached` the cache-read count, and the cache-write count stays
+  0 because Gemini reports none. **Thinking tokens are not in that event.** CLI
+  0.55.1 projects five per-model fields onto the stream and `thoughts` is not
+  among them, so a thinking-heavy Gemini run's output count is its candidates
+  alone; the deficit is not inferred from `total_tokens`, because an inferred
+  number is a guess. Under-counting is the safe direction for a spend guard,
+  and the decoder honours a `thoughts` count wherever a CLI does report one.
+  A run that reports no stats, omits a billable counter, or states one
+  unusably — a string, or a count below zero — is still `usageUnknown`.
 - **Any other provider** — the shared extractor is tried first (a CLI whose
   output happens to be Claude-compatible is parsed normally); when nothing is
   parseable the run is warned about once, naming the provider, repo, phase and

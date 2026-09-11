@@ -36,9 +36,9 @@ this module only reads numbers.
 | no unbounded work on attacker input | one pass over the lines, then one pass over the last `result` event's `stats.models`; no regex, so no backtracking surface, and no recursion, so no depth to exhaust |
 | a forged event cannot fabricate spend | the worst an injected `{"type":"result","stats":…}` line can do is misstate this run's own counters. The figures are credit-log bookkeeping for a fixed-price subscription, not a payment instruction, and a too-large count makes the run look *dearer*, tripping the spend ceiling early rather than hiding spend |
 | the last event wins, and that is deliberate | the CLI's terminal `result` is its final totals, so scanning from the end reads the run's own summary. An injected earlier line is superseded, not merged |
-| counters are read, never coerced | `readNumber` accepts only finite numbers, so a string, `null`, `NaN` or an object in a counter field is absent — never `Number("1e400")`, never a silent `0` |
-| an absent count is never a zero | a stream with no `result` event, no `stats`, an empty `stats.models`, or no readable counter in any model returns `undefined`, which `provider_token_usage.ts` turns into the `usageUnknown` warning. The fail-loud path of #366 is preserved, not routed around |
-| a negative input count cannot be produced | the uncached figure is `max(0, prompt - cached)` — the CLI's own formula — so a `cached` larger than `prompt` floors at zero rather than subtracting from the day's totals |
+| counters are read, never coerced | `readCounter` accepts only non-negative finite numbers and distinguishes an *absent* field from one *stated unusably*. A string, `null`, `NaN`, an object or a negative value condemns the whole model entry, so a partly-readable entry can never contribute a zero where a real count belongs |
+| an absent count is never a zero | a stream with no `result` event, no `stats`, an empty `stats.models`, or no usable entry in any model returns `undefined`, which `provider_token_usage.ts` turns into the `usageUnknown` warning. An entry stating a prompt count but no candidates count is refused for the same reason — an unstated output is not a zero output. The fail-loud path of #366 is preserved, not routed around |
+| a negative count cannot reach the totals | a stated counter below zero is refused outright by `readCounter`, so a garbled or forged figure makes the run UNKNOWN rather than *subtracting* from the day's totals and the spend ceiling. Where the CLI omits `input`, the uncached figure is its own `max(0, prompt - cached)`, so a `cached` larger than `prompt` floors at zero |
 | the shape is verified, not assumed | the field names, and the fact that `input_tokens` already includes `cached`, were read out of the pinned `@google/gemini-cli@0.55.1` bundle (`StreamJsonFormatter.convertToStreamStats`, `uiTelemetry.js`), whose sha256 matches `container/tools.json` |
 
 ### Findings
@@ -50,14 +50,20 @@ None.
 - **A run's own counters are self-reported.** Every provider's are; there is no
   second source to reconcile against short of the vendor's billing API, which
   a fixed-price subscription does not expose. The mitigation is the direction
-  of the error: an inflated count spends the ceiling faster, and a deflated one
-  is bounded below by zero.
+  of the error: a plausible-but-inflated count spends the ceiling faster, and a
+  count below zero — the only direction that could *hide* spend — is refused,
+  so the figures are bounded below by zero.
 - **Thought tokens are only counted where the CLI reports them.** The
   stream-json projection omits `thoughts`, so a thinking-heavy run's output
   count is the candidates alone. Deriving it from `total_tokens` would be an
   inferred number, and this module does not guess; the under-count is the
   conservative direction for a spend guard.
-- **Both of the CLI's renderings are accepted.** `--output-format json` nests
-  the counters under `tokens` and `stream-json` flattens them. Accepting only
-  one would make the other read as "no usage", so both are read; neither is
-  more trusted than the other, because both come from the same stream.
+- **The unprojected `tokens` shape is accepted although 0.55.1 never emits it
+  here.** `convertToStreamStats` flattens the counters onto each entry, and the
+  unprojected form is rendered only by `--output-format json` — one
+  pretty-printed document, not NDJSON, which this decoder does not read. The
+  nested branch is therefore unreachable under the pinned CLI: it is tolerance
+  so a version that stops projecting decodes rather than silently reading as
+  "no usage", and it is the one place a `thoughts` count can be honoured. It
+  widens no attack surface — it reads the same counters, through the same
+  `readCounter`, out of the same already-parsed event.
