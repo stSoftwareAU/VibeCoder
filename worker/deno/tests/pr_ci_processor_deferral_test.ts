@@ -369,7 +369,7 @@ Deno.test("processCiFailure - a prior deferral whose blocker has closed falls th
   assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
   assertEquals(
     captured.warnings.some((line) =>
-      line.includes("is closed and the agent named it again")
+      line.includes("is closed and the failure is still here")
     ),
     true,
     `expected the loop-guard warning; got: ${captured.warnings.join(" | ")}`,
@@ -384,4 +384,121 @@ Deno.test("processCiFailure - no Depends on line is never deferred, however red 
   const body = captured.comments.at(-1) ?? "";
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
   assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+});
+
+Deno.test("processCiFailure - a bare #N in the Depends on line resolves to the pull request's own repo (Issue #1880)", async () => {
+  const captured = await runDeferralScenario(
+    [
+      "No change required for semgrep — the finding is in the base branch.",
+      "",
+      "Depends on #149",
+    ].join("\n"),
+  );
+
+  assertEquals(captured.comments.length, 1);
+  const body = captured.comments[0] ?? "";
+  // The marker must carry the full `owner/repo#N` form the dependency gate
+  // and the next host both read.
+  assertStringIncludes(body, 'depends-on="org/repo#149"');
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+});
+
+Deno.test("processCiFailure - a prior deferral whose own blocker has closed falls through even when the agent names a different issue (Issue #1880)", async () => {
+  const first = await runDeferralScenario(AGENT_MESSAGE);
+  const priorBody = first.comments[0] ?? "";
+
+  // The prior deferral names org/upstream#149; this run names a different
+  // issue. The prior blocker is closed, so the deferral did not hold and the
+  // pull request must not be parked again.
+  const captured = await runDeferralScenario(
+    AGENT_MESSAGE.replace(BLOCKER, "org/upstream#900"),
+    {
+      blockerState: "CLOSED",
+      existingComments: [
+        { id: 1, author: FLEET_LOGIN, body: priorBody, createdAt: "" },
+      ] as unknown as GitHubComment[],
+    },
+  );
+
+  assertEquals(captured.comments.length >= 1, true);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(
+    captured.warnings.some((line) =>
+      line.includes("is closed and the failure is still here")
+    ),
+    true,
+    `expected the loop-guard warning; got: ${captured.warnings.join(" | ")}`,
+  );
+});
+
+Deno.test("processCiFailure - a deferral comment that fails to post is never reported as a deferral (Issue #1880)", async () => {
+  // The comment is the deferral's only record; a post that failed leaves the
+  // pull request with no marker, so the run must not claim it deferred.
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${tmpDir}/.pr_response_message`, AGENT_MESSAGE);
+    const captured: Captured = {
+      comments: [],
+      labelsAdded: [],
+      errors: [],
+      warnings: [],
+    };
+    const inner = makeGhRunner(captured, {});
+    const runGh = (args: string[]): Promise<string> => {
+      if (args[0] === "pr" && args[1] === "comment") {
+        return Promise.reject(new Error("HTTP 403: Forbidden"));
+      }
+      return inner(args);
+    };
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: { runGhCommand: runGh },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 0,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const result = await processCiFailure(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeRecordingLogger(captured),
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      ghCommandFn: runGh,
+      fleetLogins: [FLEET_LOGIN],
+    });
+
+    assertEquals(result.ok, true);
+    assertEquals(result.ok && result.value.processed, false);
+    assertEquals(
+      result.ok && result.value.summary.includes("could not be posted"),
+      true,
+    );
+    assertEquals(
+      captured.errors.some((line) =>
+        line.includes("deferral comment could not be posted")
+      ),
+      true,
+      `expected a loud error; got: ${captured.errors.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });

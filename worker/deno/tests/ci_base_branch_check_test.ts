@@ -54,7 +54,9 @@ Deno.test("isCheckRedOnBranch - latest completed run failed is red", async () =>
   assertEquals(result.ok && result.value, true);
   // The branch, not a head SHA, is what was read.
   assertEquals(
-    calls[0]?.includes("repos/org/repo/commits/develop/check-runs"),
+    calls[0]?.some((arg) =>
+      arg.startsWith("repos/org/repo/commits/develop/check-runs")
+    ),
     true,
   );
 });

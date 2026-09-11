@@ -1644,7 +1644,7 @@ async function _processCiWithHeartbeat(
           dependsOn: deferral.ref,
         },
       );
-      await replyToComment(
+      const posted = await replyToComment(
         repo,
         prNumber,
         // The agent's own words, the classifier trailer that keeps the
@@ -1652,6 +1652,29 @@ async function _processCiWithHeartbeat(
         `${verbatimBody ?? response.body}\n\n${deferral.marker}`,
         deps,
       );
+      if (!posted) {
+        // The comment IS the deferral record: without it no marker reaches
+        // the pull request, every later scan re-runs the agent, and claiming
+        // a deferral here would be a success no evidence supports.
+        logger.error(
+          "The CI-fix deferral comment could not be posted, so the deferral " +
+            "was not recorded — reporting the run as unprocessed so the " +
+            "next scan retries (Issue #1880)",
+          { repo, prNumber, checkName, signature, dependsOn: deferral.ref },
+        );
+        return {
+          ok: true,
+          value: {
+            processed: false,
+            changesPushed: false,
+            annotationCount: annotations.length,
+            retryCount: newRetryCount,
+            summary:
+              `PR #${prNumber} (${checkName}) — the base-branch deferral to ` +
+              `${deferral.ref} could not be posted; nothing was recorded`,
+          },
+        };
+      }
       return {
         ok: true,
         value: {
@@ -2318,7 +2341,7 @@ async function replyToComment(
   prNumber: number,
   message: string,
   deps: WorkerDeps,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await deps.github.runGhCommand([
       "pr",
@@ -2329,8 +2352,13 @@ async function replyToComment(
       "--body",
       message,
     ]);
+    return true;
   } catch {
-    // Comment failure is non-critical
+    // Comment failure is non-critical to the fix itself — the code change is
+    // already pushed. A caller whose **record** is the comment (the
+    // base-branch deferral, Issue #1880) must not read this as success, so
+    // the outcome is returned rather than swallowed.
+    return false;
   }
 }
 
@@ -2463,16 +2491,15 @@ async function _resolveBaseBranchDeferral(
 
   const prior = findDeferral(markers, signature);
   if (prior !== undefined) {
-    if (prior.dependsOn.toLowerCase() !== ref.toLowerCase()) {
-      return { kind: "already-deferred", ref: prior.dependsOn };
-    }
     // Loop guard, mirroring `hasPriorDeferral` in `blocked_deferral.ts`: a
-    // deferral holds only while its blocker is open. Back here on the same
-    // blocker after it closed means the deferral did not hold, so deferring
-    // again would park the pull request for ever — the ordinary path runs
-    // instead and the attempt cap eventually escalates it to a human.
+    // deferral holds only while **its own** blocker is open. The question is
+    // therefore asked of `prior.dependsOn`, not of the reference this run
+    // declared — a prior deferral on a closed blocker did not hold, and
+    // deferring again (on the same issue or on a fresh one) would park the
+    // pull request for ever with no comment, no attempt and no human. The
+    // ordinary path runs instead and the attempt cap escalates it.
     const stillOpen = await _blockerStillOpen({
-      ref: dependency,
+      ref: prior.dependsOn,
       ghCommandFn,
       repo,
       prNumber,
@@ -2481,14 +2508,24 @@ async function _resolveBaseBranchDeferral(
     if (stillOpen === false) {
       logger.warn(
         "The blocking issue this failure was already deferred to is closed " +
-          "and the agent named it again — not deferring a second time " +
+          "and the failure is still here — not deferring a second time " +
           "(Issue #1880)",
-        { repo, prNumber, checkName, signature, dependsOn: ref },
+        {
+          repo,
+          prNumber,
+          checkName,
+          signature,
+          priorDependsOn: prior.dependsOn,
+          dependsOn: ref,
+        },
       );
       return { kind: "none" };
     }
+    // An unreadable blocker state is already an error in the log; the
+    // ordinary path is the loud outcome, so take it rather than parking the
+    // pull request on a reading that never arrived.
     if (stillOpen === undefined) return { kind: "none" };
-    return { kind: "already-deferred", ref };
+    return { kind: "already-deferred", ref: prior.dependsOn };
   }
 
   let marker: string;
@@ -2522,17 +2559,34 @@ async function _resolveBaseBranchDeferral(
  *   lookup failed — which is reported as an error and never guessed at.
  */
 async function _blockerStillOpen(opts: {
-  ref: BlockedDependency;
+  /** The blocker, in the `owner/repo#N` form the marker records. */
+  ref: string;
   ghCommandFn: (args: string[]) => Promise<string>;
   repo: string;
   prNumber: number;
   logger: Logger;
 }): Promise<boolean | undefined> {
   const { ref, ghCommandFn, repo, prNumber, logger } = opts;
+  const hash = ref.lastIndexOf("#");
+  const blockerRepo = ref.slice(0, hash);
+  const blockerNumber = Number(ref.slice(hash + 1));
+  if (hash < 0 || !Number.isInteger(blockerNumber) || blockerNumber < 1) {
+    // `parseCiFixDeferralMarkers` validates the shape, so this is a defect
+    // rather than data — it is named, and the caller takes the loud path.
+    logger.error(
+      "A recorded CI-fix deferral names a dependency that is not in " +
+        "`owner/repo#N` form — running the ordinary no-changes path " +
+        "(Issue #1880)",
+      { repo, prNumber, dependsOn: ref },
+    );
+    return undefined;
+  }
   try {
+    // No iteration cache is passed: a blocker that closed moments ago must
+    // read as closed here, not as whatever an earlier scan cached.
     const state = await createIssueFetcher(ghCommandFn).getIssueState(
-      ref.repo ?? repo,
-      ref.number,
+      blockerRepo,
+      blockerNumber,
     );
     return state.state === "OPEN";
   } catch (error: unknown) {
@@ -2542,7 +2596,7 @@ async function _blockerStillOpen(opts: {
       {
         repo,
         prNumber,
-        dependsOn: formatDependencyRef(ref),
+        dependsOn: ref,
         error: error instanceof Error ? error.message : String(error),
       },
     );

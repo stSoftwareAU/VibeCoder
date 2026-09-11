@@ -71,7 +71,11 @@ export async function isCheckRedOnBranch(
   try {
     raw = await ghCommandFn([
       "api",
-      `repos/${repo}/commits/${branch}/check-runs`,
+      // `per_page=100` rather than the default 30: a base head with many
+      // checks would otherwise leave the one being verified off page one and
+      // read as "not red", charging an attempt against a failure this branch
+      // could never fix.
+      `repos/${repo}/commits/${branch}/check-runs?per_page=100`,
       "--jq",
       "{check_runs: [.check_runs[] | {id, name, status, conclusion}]}",
     ]);
