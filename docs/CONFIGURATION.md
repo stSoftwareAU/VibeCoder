@@ -3774,6 +3774,32 @@ near-identical "attempted fix" comments. After `max_auto_fix_attempts`
 `needs-human`, and posts **one** consolidated summary of every attempt —
 never a fourth "I tried again" note.
 
+**The budget is the fleet's, not the host's.** The tally lives on the pull
+request itself, as a fleet-authored marker inside each comment the lane posts
+(`<!-- vibe-ci-fix-attempt signature="…" head="…" attempt="2"
+outcome="pushed" -->`). Every host reads the same record before it acts, so
+three attempts are three *across the fleet*. Until Issue #1879 the counter was
+a `.autofix.json` file under each host's own `.ci_check_state` directory,
+which no other host can see: two accounts working one pull request each spent
+their own three attempts and posted their own copy of the same diagnosis —
+the stock text nine times in 76 minutes.
+
+Two properties follow from reading the record off the pull request:
+
+- **A marker counts only when a fleet account wrote it.** A comment body is
+  text anybody may write on a public pull request and only the *author* is
+  authenticated, so markers from logins outside `github_user` /
+  `fleet_pr_authors` / `service_accounts` are ignored and reported.
+- **An unreadable tally is never "no attempts yet".** A failed comment read,
+  or an unresolved fleet identity, is logged as an error saying the cap is not
+  enforced for that run — it does not quietly hand the host a fresh budget.
+
+**One comment per failure signature.** The same failure diagnosed again on the
+**same head** posts nothing at all and runs no agent: nothing has changed
+since the diagnosis already on the pull request. On a **new** head the failure
+is diagnosed afresh, but a repeat "no change required" answer appends its
+marker to the existing comment rather than posting a second copy of it.
+
 **Why a signature, not a check-run id.** The pre-existing
 `ci_check_max_retries` counter keys on the GitHub check-run id, which is new
 on every push — so each attempted fix reset it to zero and the cap never
@@ -3847,23 +3873,33 @@ with `--force-with-lease`. Guards, all required:
 The PR comment records that the history was rebuilt, so anyone with the branch
 checked out knows to re-fetch rather than pull.
 
-**A green build clears the counter.** When a PR is next observed with no
-failing checks, every signature recorded against it is cleared, so a
-recurring-but-different flake never inherits a spent budget.
+**A green build needs no reset, and the record is not wiped by one.** There is
+no counter to clear — a green pull request has no failing check, so no
+signature is computed. The markers already on the pull request stay there, so
+the budget is per **failure signature for the life of the pull request**: a
+recurring-but-*different* failure fingerprints differently and gets its own
+three attempts, while the *identical* failure returning after a green build
+resumes the tally it left. That is the deliberate consequence of moving the
+record onto the pull request (Issue #1879) — three failed fixes of one failure
+are three failed fixes whether or not the build was briefly green in between —
+and it replaces the old locus-wide sweep, which handed a flapping check a fresh
+budget on every green cycle and so never reached the cap at all.
 
 ```mermaid
 flowchart TD
     A["Failing CI check"] --> B["Normalise log excerpt<br/>(strip timestamps, build numbers, paths)"]
     B --> C["Compute failure signature<br/>repo + locus + check + fingerprint"]
-    C --> D{"attempts ≥<br/>max_auto_fix_attempts?"}
+    C --> M["Read the PR's comments once<br/>fleet-authored markers for this signature"]
+    M --> D{"attempts ≥<br/>max_auto_fix_attempts?"}
     D -->|yes| E["Apply needs-human +<br/>ONE consolidated 3-attempt summary"]
-    D -->|no| F["Run the auto-fix"]
+    D -->|no| N{"no-change marker<br/>on this head?"}
+    N -->|yes| Q["Post nothing,<br/>run no agent"]
+    N -->|no| F["Run the auto-fix"]
     F --> G{"infrastructure<br/>category?"}
-    G -->|yes| H["Attempt NOT charged"]
-    G -->|no| I["Record attempt N against the signature"]
-    J["PR observed green"] --> K["Clear every counter for that PR"]
+    G -->|yes| H["Attempt NOT charged<br/>(no marker written)"]
+    G -->|no| I["Comment carries attempt N's marker<br/>(appended in place on a repeat)"]
     style E fill:#7f1d1d,stroke:#450a0a,color:#fff
-    style K fill:#14532d,stroke:#052e16,color:#fff
+    style Q fill:#14532d,stroke:#052e16,color:#fff
 ```
 
 ### 🚨 Blocking-PR stall watchdog

@@ -133,6 +133,7 @@ export function createGhEscalationClient(
 
   return {
     getIssue: () => notImplemented("getIssue"),
+    updateComment: () => notImplemented("updateComment"),
     async getIssueComments(
       repo: string,
       issueNumber: number,
