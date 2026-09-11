@@ -16,7 +16,15 @@
  */
 
 import { estimateRunCost, type ModelUsageEntry } from "./cost_estimate.ts";
-import type { CallbackRunTelemetry } from "./run_callbacks.ts";
+import type {
+  CallbackRunTelemetry,
+  TelemetryAbsentReason,
+} from "./run_callbacks.ts";
+import {
+  CLAUDE_PROVIDER_ID,
+  CODEX_PROVIDER_ID,
+  GEMINI_PROVIDER_ID,
+} from "./agent_provider.ts";
 
 /** The per-invocation stats this summariser reads. */
 export interface TelemetrySource {
@@ -74,4 +82,35 @@ export function summariseCallbackTelemetry(
       ? {}
       : { estimatedCostUsd: estimate.totalCost }),
   };
+}
+
+/**
+ * Providers whose adapters populate `tokenUsage` when the CLI reports it.
+ *
+ * A missing count from one of these is "the run did not report usage"
+ * (killed before the terminal result line), not "this adapter never fills
+ * the field". Any other provider id is `provider_unsupported` (Issue #1948).
+ */
+const PROVIDERS_WITH_USAGE_ADAPTER: ReadonlySet<string> = new Set([
+  CLAUDE_PROVIDER_ID,
+  CODEX_PROVIDER_ID,
+  GEMINI_PROVIDER_ID,
+]);
+
+/**
+ * Why a run has no callback telemetry (Issue #1948).
+ *
+ * Returns `undefined` when {@link summariseCallbackTelemetry} produced a
+ * value — the caller publishes `telemetry` in that case, never a reason.
+ */
+export function callbackTelemetryAbsenceReason(
+  invocations: readonly TelemetrySource[],
+  provider?: string,
+): TelemetryAbsentReason | undefined {
+  if (summariseCallbackTelemetry(invocations) !== undefined) return undefined;
+  if (invocations.length === 0) return "agent_not_invoked";
+  if (provider !== undefined && !PROVIDERS_WITH_USAGE_ADAPTER.has(provider)) {
+    return "provider_unsupported";
+  }
+  return "usage_not_reported";
 }

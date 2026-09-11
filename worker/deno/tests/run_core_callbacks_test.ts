@@ -477,3 +477,28 @@ Deno.test("run_core callbacks - a throw before the run starts reports nothing", 
 
   assertEquals(runs, []);
 });
+
+Deno.test("run_core callbacks - an idle cycle fires the cycle heartbeat (Issue #1955)", async () => {
+  const cycles: Array<{ endReason: string; claimsTaken: number }> = [];
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    findNextIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: null });
+    },
+    runCycleCallback: (cycle) => {
+      cycles.push({
+        endReason: cycle.endReason,
+        claimsTaken: cycle.claimsTaken,
+      });
+      return Promise.resolve();
+    },
+  });
+
+  await runCycle(deps, 1);
+
+  assert(cycles.length >= 1, `expected a cycle callback, got ${cycles.length}`);
+  assertEquals(cycles[0]!.endReason, "no_eligible_work");
+  assertEquals(cycles[0]!.claimsTaken, 0);
+});

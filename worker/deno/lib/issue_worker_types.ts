@@ -22,7 +22,10 @@ import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
 // Lost in the 1f2c10e merge into this milestone branch, leaving `deno check`
 // red on a type this file still uses (added by Issue #806).
-import type { CallbackRunTelemetry } from "./run_callbacks.ts";
+import type {
+  CallbackRunTelemetry,
+  TelemetryAbsentReason,
+} from "./run_callbacks.ts";
 import type { ImageReference } from "./untrusted_image_signal.ts";
 import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
 import type { PostMergeReapproval } from "./reapproval_superseded_handoff.ts";
@@ -359,6 +362,11 @@ export interface WorkOnIssueResult {
    * invocation reported usage the worker could parse.
    */
   telemetry?: CallbackRunTelemetry;
+  /**
+   * Why telemetry is absent (Issue #1948). Present exactly when `telemetry`
+   * is not, so a callback context never has neither.
+   */
+  telemetryAbsentReason?: TelemetryAbsentReason;
   /**
    * The setup phase was refused the claim (Issue #1193): another host holds
    * the issue, so this run has nothing to release. The main loop passes it
