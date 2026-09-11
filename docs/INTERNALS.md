@@ -3499,10 +3499,13 @@ flowchart TD
 ```
 
 - **The sync landed another way.** A direct push that succeeds leaves the
-  earlier cycle's PR open with an empty diff and auto-merge still armed. An
-  empty diff is what tells it from the PR this cycle raised, which still
-  carries its merge; a file list that cannot be read closes nothing, because
-  "could not tell" is never "empty".
+  earlier cycle's PR open with nothing to merge and auto-merge still armed.
+  "Nothing to merge" is `ahead_by == 0` on the compare endpoint, never the
+  PR's file list: GitHub computes a diff asynchronously, so a PR raised
+  seconds ago reports no files for a moment, and `ahead_by` counts *commits*
+  — so the merge commit a sync exists to contribute (the ancestry of Issue
+  #1048, not the file changes) keeps the PR open. A comparison that cannot be
+  read closes nothing, because "could not tell" is never "empty".
 - **The milestone is finishing.** `milestone_completion.ts` retires the sync PR
   **before** it raises the final PR — the retarget happens in the window
   between that PR merging and GitHub deleting the branch, so the sync PR has to
@@ -3521,6 +3524,13 @@ flowchart TD
   `sync-base-unreadable` rather than arming, because the one PR that must never
   merge into the default branch is the one whose base could not be compared
   with it.
+
+  Two details make that reachable and make it stick. `ensureAutoMergeOnOpenPrs`
+  skips a PR that already has auto-merge armed — except a `sync/milestone-*`
+  head, because carried-over arming is precisely the state a retargeted sync
+  PR is found in. And every close here **disarms first**
+  (`gh pr merge --disable-auto`), so a close GitHub refuses leaves a PR that
+  can no longer land rather than one that still can.
 
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 

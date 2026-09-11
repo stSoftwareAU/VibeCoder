@@ -157,6 +157,30 @@ async function closeSyncPr(
   options: CloseContext & { prNumber: number; body: string },
 ): Promise<boolean> {
   const { repo, prNumber, body, ghCommandFn, log } = options;
+
+  // Disarm first. Closing the PR removes its auto-merge too, but only if the
+  // close succeeds — and the arming is the dangerous half: GitHub merges an
+  // armed PR the moment its checks go green, whoever armed it and whatever
+  // the fleet decides afterwards. Disarming first means a refused close
+  // leaves a PR that cannot land rather than one that still can.
+  try {
+    await ghCommandFn([
+      "pr",
+      "merge",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--disable-auto",
+    ]);
+  } catch (error) {
+    // A PR that was never armed refuses this, which is not a fault.
+    log(
+      `Note: auto-merge was not disarmed on sync PR ${repo}#${prNumber} ` +
+        `before closing it (${describe(error)}) — usually because it was ` +
+        `never armed (Issue #1967)`,
+    );
+  }
+
   try {
     await ghCommandFn([
       "pr",
@@ -241,8 +265,11 @@ export async function retireMilestoneSyncPrs(
  * close and dangerous to leave: an empty PR still carries the arming that a
  * later retarget turns into a merge onto the default branch.
  *
- * A file list that cannot be read closes nothing and says so: "could not
- * tell" is never "empty".
+ * "Nothing to merge" is `ahead_by == 0` on the compare endpoint, never the
+ * PR's file list: GitHub computes a diff asynchronously, so a file list is
+ * empty for a moment on a PR that was raised seconds ago. A comparison that
+ * cannot be read closes nothing and says so — "could not tell" is never
+ * "empty".
  *
  * @param options - Repo, milestone branch, `gh` runner and log sink
  * @returns The PR numbers actually closed
@@ -256,34 +283,41 @@ export async function closeLandedMilestoneSyncPrs(
 
   const closed: number[] = [];
   for (const pr of open) {
-    let files: unknown;
+    const base = typeof pr.baseRefName === "string" && pr.baseRefName
+      ? pr.baseRefName
+      : milestoneBranch;
+    // `ahead_by` from the compare endpoint, not the PR's file list: GitHub
+    // computes a PR's diff asynchronously, so a PR raised seconds ago can
+    // report no files and be closed as "landed" when it has not. The compare
+    // is derived from the refs themselves and answers straight away — and it
+    // counts *commits*, so the merge commit a sync exists to contribute
+    // (Issue #1048: the ancestry, not the file changes) keeps the PR open
+    // even when no file differs.
+    let aheadBy: number;
     try {
       const out = await ghCommandFn([
-        "pr",
-        "view",
-        String(pr.number),
-        "--repo",
-        repo,
-        "--json",
-        "files",
+        "api",
+        `repos/${repo}/compare/${base}...${pr.headRefName}`,
+        "--jq",
+        ".ahead_by",
       ]);
-      files = (JSON.parse(out || "{}") as { files?: unknown }).files;
+      aheadBy = Number(out.trim());
     } catch (error) {
       log(
-        `WARNING: Could not read the file list of sync PR ${repo}#${pr.number}: ` +
-          `${describe(error)} — leaving it open, since an unreadable diff is ` +
-          `not an empty one (Issue #1967)`,
+        `WARNING: Could not compare sync PR ${repo}#${pr.number} with ` +
+          `'${base}': ${describe(error)} — leaving it open, since an ` +
+          `unreadable comparison is not an empty one (Issue #1967)`,
       );
       continue;
     }
-    if (!Array.isArray(files)) {
+    if (!Number.isFinite(aheadBy)) {
       log(
-        `WARNING: Sync PR ${repo}#${pr.number} returned no file list — ` +
-          `leaving it open (Issue #1967)`,
+        `WARNING: Sync PR ${repo}#${pr.number} compared with '${base}' to an ` +
+          `unreadable commit count — leaving it open (Issue #1967)`,
       );
       continue;
     }
-    if (files.length > 0) continue;
+    if (aheadBy > 0) continue;
 
     const body =
       `Closing this milestone sync PR: \`${milestoneBranch}\` already ` +

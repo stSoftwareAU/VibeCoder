@@ -2228,3 +2228,45 @@ Deno.test("findPrCommentsToFix - self-skip guards still ignore the host's own co
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.value, null);
 });
+
+Deno.test("ensureAutoMergeOnOpenPrs - an already-armed sync PR is not skipped: it reaches the close path (Issue #1967)", async () => {
+  // GitHub retargets a sync PR onto the default branch when its milestone
+  // branch is deleted and carries the arming with it, so "already armed" is
+  // exactly the state the dangerous PR is found in. Skipping it here is how
+  // VibeCoder#1957 stayed open long enough to be approved.
+  const reached: number[] = [];
+  const ghFn = (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("pr list")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          number: 1957,
+          headRefName: "sync/milestone-scan",
+          autoMergeRequest: { mergeMethod: "MERGE" },
+        },
+        {
+          number: 1960,
+          headRefName: "issue-1960-fix",
+          autoMergeRequest: { mergeMethod: "SQUASH" },
+        },
+      ]));
+    }
+    return Promise.resolve("[]");
+  };
+
+  const result = await ensureAutoMergeOnOpenPrs({
+    ...makeBaseScanOptions({ ghCommandFn: ghFn }),
+    getRepoConfig: () => "",
+    enableAutoMergeFn: (_repo: string, prNumber: number) => {
+      reached.push(prNumber);
+      return Promise.resolve({
+        result: "closed_retargeted_sync",
+        message: "closed, never merged",
+      });
+    },
+  });
+
+  assertEquals(result.ok, true);
+  // Only the sync-shaped head goes through; the ordinary armed PR is still
+  // skipped exactly as before.
+  assertEquals(reached, [1957]);
+});

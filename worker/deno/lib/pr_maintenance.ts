@@ -66,6 +66,7 @@ import {
 import type { IssueCache } from "./issue_cache.ts";
 import { fetchAllIssues } from "./issue_query.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
+import { isMilestoneSyncBranch } from "./milestone_sync_pr.ts";
 import {
   handleMergeAttempt,
   type HandleMergeAttemptOptions,
@@ -1543,8 +1544,17 @@ export async function ensureAutoMergeOnOpenPrs(
     for (const pr of prs) {
       const { number: prNumber, headRefName: branchName } = pr;
 
-      // Check if auto-merge already enabled
-      if (pr.autoMergeRequest?.mergeMethod) {
+      // Check if auto-merge already enabled.
+      //
+      // Issue #1967: a `sync/milestone-*` head is the exception. GitHub
+      // retargets such a PR onto the default branch when its milestone
+      // branch is deleted and **carries the arming with it**, so "already
+      // armed" is precisely the state the retargeted sync PR is found in.
+      // Skipping it here is how it stayed open long enough to be approved.
+      // It goes through to `enableAutoMergeFn`, which closes it.
+      if (
+        pr.autoMergeRequest?.mergeMethod && !isMilestoneSyncBranch(branchName)
+      ) {
         skippedCount++;
         continue;
       }

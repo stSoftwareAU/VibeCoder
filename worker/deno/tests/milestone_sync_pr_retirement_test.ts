@@ -32,10 +32,11 @@ interface PrRow {
   number: number;
   headRefName: string;
   baseRefName: string;
-  files?: { path: string }[];
+  /** Commits the head adds to its base — `ahead_by` on the compare API. */
+  aheadBy?: number;
 }
 
-/** A `gh` stub answering the head-branch listing, the file read and the close. */
+/** A `gh` stub answering the listing, the compare, the disarm and the close. */
 function ghStub(rows: PrRow[], options: { closeFails?: boolean } = {}): {
   gh: (args: string[]) => Promise<string>;
   calls: string[][];
@@ -52,10 +53,10 @@ function ghStub(rows: PrRow[], options: { closeFails?: boolean } = {}): {
           JSON.stringify(rows.filter((r) => r.headRefName === head)),
         );
       }
-      if (key.startsWith("pr view")) {
-        const number = Number(args[2]);
-        const row = rows.find((r) => r.number === number);
-        return Promise.resolve(JSON.stringify({ files: row?.files ?? [] }));
+      if (key.includes("/compare/")) {
+        const head = key.split("...")[1]?.split(" ")[0] ?? "";
+        const row = rows.find((r) => r.headRefName === head);
+        return Promise.resolve(String(row?.aheadBy ?? 0));
       }
       if (key.startsWith("pr close") && options.closeFails) {
         return Promise.reject(new Error("422 Unprocessable Entity"));
@@ -69,7 +70,7 @@ const openSyncPr: PrRow = {
   number: 1957,
   headRefName: SYNC_BRANCH,
   baseRefName: MILESTONE_BRANCH,
-  files: [{ path: "docs/audits/lib-sweep-coverage.json" }],
+  aheadBy: 6,
 };
 
 // ---------------------------------------------------------------------------
@@ -190,7 +191,7 @@ Deno.test("retireMilestoneSyncPrs - a PR GitHub already retargeted is still reti
 // ---------------------------------------------------------------------------
 
 Deno.test("closeLandedMilestoneSyncPrs - an empty-diff sync PR is closed rather than left armed (Issue #1967)", async () => {
-  const { gh, calls } = ghStub([{ ...openSyncPr, files: [] }]);
+  const { gh, calls } = ghStub([{ ...openSyncPr, aheadBy: 0 }]);
   const closed = await closeLandedMilestoneSyncPrs({
     repo: REPO,
     milestoneBranch: MILESTONE_BRANCH,
@@ -203,7 +204,7 @@ Deno.test("closeLandedMilestoneSyncPrs - an empty-diff sync PR is closed rather 
   assertStringIncludes(comment.join(" "), "nothing left to merge");
 });
 
-Deno.test("closeLandedMilestoneSyncPrs - a sync PR that still carries a diff is left open (Issue #1967)", async () => {
+Deno.test("closeLandedMilestoneSyncPrs - a sync PR that still carries commits is left open (Issue #1967)", async () => {
   const { gh, calls } = ghStub([openSyncPr]);
   const closed = await closeLandedMilestoneSyncPrs({
     repo: REPO,
@@ -215,13 +216,13 @@ Deno.test("closeLandedMilestoneSyncPrs - a sync PR that still carries a diff is 
   assertEquals(calls.filter((c) => c[1] === "close").length, 0);
 });
 
-Deno.test("closeLandedMilestoneSyncPrs - an unreadable file list closes nothing and says so (Issue #1967)", async () => {
+Deno.test("closeLandedMilestoneSyncPrs - an unreadable comparison closes nothing and says so (Issue #1967)", async () => {
   const logs: string[] = [];
   const gh = (args: string[]): Promise<string> => {
     if (args.join(" ").startsWith("pr list")) {
       return Promise.resolve(JSON.stringify([openSyncPr]));
     }
-    if (args.join(" ").startsWith("pr view")) {
+    if (args.join(" ").includes("/compare/")) {
       return Promise.reject(new Error("502 Bad Gateway"));
     }
     return Promise.resolve("");
@@ -429,10 +430,8 @@ Deno.test("syncMilestoneBranches - a sync PR left empty by a direct push is clos
           ]),
         );
       }
-      // The direct push already landed the merge, so the PR merges nothing.
-      if (key.startsWith("pr view")) {
-        return Promise.resolve(JSON.stringify({ files: [] }));
-      }
+      // The direct push already landed the merge, so the PR adds nothing.
+      if (key.includes("/compare/")) return Promise.resolve("0");
       if (key.startsWith("pr close")) {
         closed.push(Number(args[2]));
         return Promise.resolve("");

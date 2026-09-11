@@ -17,6 +17,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  _resetBaseProtectionMemo,
   AutoMergeResult,
   enableAutoMerge,
   type EnableAutoMergeOptions,
@@ -51,7 +52,8 @@ function optionsFor(
       const key = args.join(" ");
       if (key.includes("isCrossRepository")) return Promise.resolve("false");
       if (key.startsWith("pr merge")) {
-        sink.armed.push(Number(args[2]));
+        // The disarm the close path issues first is not an arming.
+        if (!args.includes("--disable-auto")) sink.armed.push(Number(args[2]));
         return Promise.resolve("");
       }
       if (key.startsWith("pr comment")) {
@@ -69,18 +71,28 @@ function optionsFor(
 }
 
 function sink(): Sink {
+  // The base-protection memo is process-global; a stale `org/repo#main`
+  // entry would decide the next suite's arming path.
+  _resetBaseProtectionMemo();
   return { armed: [], closed: [], comments: [] };
 }
 
 Deno.test("enableAutoMerge - a sync PR retargeted onto the default branch is closed, never merged (Issue #1967)", async () => {
   const s = sink();
-  const result = await enableAutoMerge(
-    optionsFor({ headRefName: SYNC_HEAD, baseRefName: "main" }, s),
-  );
+  const disarmed: number[] = [];
+  const base = optionsFor({ headRefName: SYNC_HEAD, baseRefName: "main" }, s);
+  const result = await enableAutoMerge({
+    ...base,
+    ghCommandFn: (args: string[]) => {
+      if (args.includes("--disable-auto")) disarmed.push(Number(args[2]));
+      return base.ghCommandFn!(args);
+    },
+  });
 
   assertEquals(result.result, AutoMergeResult.ClosedRetargetedSync);
   assertEquals(s.closed, [1957]);
   assertEquals(s.armed, []);
+  assert(disarmed.length === 1, "the arming is removed before the close");
   assertEquals(s.comments.length, 1);
   assertStringIncludes(s.comments[0] ?? "", "main");
   assertStringIncludes(s.comments[0] ?? "", "closed and never merged");
@@ -121,7 +133,7 @@ Deno.test("enableAutoMerge - a sync-shaped head on a fork is a claim, not eviden
         const key = args.join(" ");
         if (key.includes("isCrossRepository")) return Promise.resolve("true");
         if (key.startsWith("pr merge")) {
-          s.armed.push(Number(args[2]));
+          if (!args.includes("--disable-auto")) s.armed.push(Number(args[2]));
           return Promise.resolve("");
         }
         if (key.startsWith("pr close")) {
@@ -133,9 +145,11 @@ Deno.test("enableAutoMerge - a sync-shaped head on a fork is a claim, not eviden
     }),
   );
 
-  // Closing a PR is destructive, and a fork names its own branches.
+  // Closing a PR is destructive, and a fork names its own branches — but
+  // the same read fails closed, so it is not armed either.
   assertEquals(s.closed, []);
-  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(s.armed, []);
+  assertEquals(result.result, AutoMergeResult.Deferred);
   assert(warnings.some((w) => w.includes("fork")));
 });
 
@@ -165,7 +179,7 @@ Deno.test("enableAutoMerge - a close that GitHub refuses fails loud rather than 
           return Promise.reject(new Error("422 Unprocessable Entity"));
         }
         if (key.startsWith("pr merge")) {
-          s.armed.push(Number(args[2]));
+          if (!args.includes("--disable-auto")) s.armed.push(Number(args[2]));
           return Promise.resolve("");
         }
         return Promise.resolve("[]");

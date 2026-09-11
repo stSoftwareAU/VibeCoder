@@ -369,3 +369,30 @@ Deno.test("requestBranchUpdate - rejects a non-positive PR number", async () => 
   assertEquals(result.ok, false);
   assertEquals(calls.length, 0);
 });
+
+Deno.test("classifyMergeAttempt - a retired sync PR is neither escalated nor counted as landed (Issue #1967)", () => {
+  // The arming chokepoint already closed it, so there is nothing for a
+  // human to look at and nothing left to merge.
+  assertEquals(
+    classifyMergeAttempt({ kind: "sync_pr_retired" }),
+    "await_checks",
+  );
+});
+
+Deno.test("handleMergeAttempt - a retired sync PR is not escalated to a human (Issue #1967)", async () => {
+  const calls: string[][] = [];
+  const handling = await handleMergeAttempt({
+    repo: "owner/repo",
+    prNumber: 1957,
+    outcome: { kind: "sync_pr_retired" },
+    logger: makeSilentLogger(),
+    ghFn: (args: string[]) => {
+      calls.push(args);
+      return Promise.resolve("");
+    },
+  });
+
+  assertEquals(handling.disposition, "await_checks");
+  assertEquals(handling.escalated, false);
+  assertEquals(calls, []);
+});
