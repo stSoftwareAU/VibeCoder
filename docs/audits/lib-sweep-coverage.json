@@ -184,6 +184,7 @@
         "worker/deno/lib/claim_issue.ts",
         "worker/deno/lib/claim_pr_comment.ts",
         "worker/deno/lib/claude_executor.ts",
+        "worker/deno/lib/coding_failure_ladder.ts",
         "worker/deno/lib/collaborator_permissions.ts",
         "worker/deno/lib/comment_batch.ts",
         "worker/deno/lib/comment_filter.ts",

@@ -460,6 +460,10 @@ Deno.test(
       "handleIssueFailure should be called exactly once after retry still fails",
     );
     assertEquals(state.infraRetryCounts?.quality_gate, 1);
+    // Issue #1949: the phase flags that it stepped the ladder, so the main
+    // loop's own ladder does not step it a second time in the same run —
+    // which would take an unlabelled issue straight to `failed`.
+    assertEquals(state.failureLadderApplied, true);
   },
 );
 

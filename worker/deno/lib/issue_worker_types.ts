@@ -129,6 +129,14 @@ export interface PhaseState {
   baselineQualityPassed: boolean;
   baselineQualityOutput: string;
   /**
+   * A phase has already applied the `failed-once` → `failed` ladder for this
+   * run (Issue #1949). The quality-gate remediation phase does so with the
+   * raw gate output, which is more useful than the phase reason — so the
+   * main loop must not apply the ladder a second time, which would take the
+   * issue from unlabelled to permanently `failed` in a single run.
+   */
+  failureLadderApplied?: boolean;
+  /**
    * Check-agnostic diffable findings captured during the baseline quality
    * check (Issue #2604). Populated by `workOnIssueBaselineQuality` and
    * consumed by the post-Claude quality gate to compute a generic
@@ -359,6 +367,12 @@ export interface WorkOnIssueResult {
    * winner's heartbeat marker, leaving a live run claimable by a third host.
    */
   claimNotHeld?: boolean;
+  /**
+   * A phase already applied the `failed-once` → `failed` ladder for this
+   * failure (Issue #1949), so the main loop records the escalating cooldown
+   * but leaves the labels alone.
+   */
+  ladderApplied?: boolean;
 }
 
 /**

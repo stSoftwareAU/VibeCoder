@@ -193,7 +193,14 @@ export async function workOnIssue(
     // Summed from the same per-invocation stats the run-stats comment
     // renders, and omitted when no invocation reported parseable usage.
     const telemetry = summariseCallbackTelemetry(state.claudeRunStats ?? []);
-    return { ...result, outcome, ...(telemetry ? { telemetry } : {}) };
+    return {
+      ...result,
+      outcome,
+      ...(telemetry ? { telemetry } : {}),
+      // Issue #1949: a phase that already stepped the failure ladder says so,
+      // so the main loop does not step it a second time in the same run.
+      ...(state.failureLadderApplied ? { ladderApplied: true } : {}),
+    };
   } catch (err) {
     outcome = withRunOutcomeNotes(
       deriveRunOutcome({
