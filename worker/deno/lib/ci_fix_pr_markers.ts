@@ -16,9 +16,10 @@
  *
  * **A failed read is never mistaken for "no attempts yet".** A fetch that
  * throws, or a fleet identity that cannot be resolved, means the tally is
- * unknown; the processor is told so loudly (`capEnforced: false`) and the
- * log names the configuration that would restore it, rather than a quiet
- * zero reading as a fresh budget.
+ * unknown; the processor is told so loudly (`capEnforced: false`) and the log
+ * names the configuration that would restore it, rather than a quiet zero
+ * reading as a fresh budget. The two are reported apart (`readFailed`)
+ * because the caller answers them differently — see that field.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -40,11 +41,23 @@ export interface PrCiFixMarkerState {
   markers: FleetCiFixMarkers;
   /**
    * False when the tally could not be established — the comment read failed,
-   * or the fleet login set was empty. The cap cannot bind on an unknown
-   * tally, so the caller proceeds with the fix; it must not read the empty
-   * tally as evidence that no attempt has been made.
+   * or the fleet login set was empty. An empty tally is then "cannot
+   * decide", never "no attempt has been made".
    */
   capEnforced: boolean;
+  /**
+   * True when the comment read itself failed.
+   *
+   * Distinct from an unresolved fleet, because the two deserve opposite
+   * answers. A failed read is **transient**: the caller stands down and the
+   * next scan retries at no cost, which is what
+   * `ci_fix_attempt_markers.ts` means by "treat `false` as cannot decide".
+   * An empty fleet login set is a **configuration** fault that would never
+   * resolve itself, so standing down on it would stop every repair on the
+   * host for ever; the caller proceeds and the error above names the keys
+   * that restore the tally.
+   */
+  readFailed: boolean;
 }
 
 /** Inputs for {@link readPrCiFixMarkers}. */
@@ -77,13 +90,13 @@ export async function readPrCiFixMarkers(
   try {
     comments = [...await getComments(repo, prNumber)];
   } catch (error: unknown) {
-    // Fail open, loudly — the sibling shape `recordAutoFixAttempt` used for
-    // an unwritable state directory (Issue #580). A comment read that failed
-    // must not stall the repair, but it must not pass for a clean zero
-    // either: this run's attempt is uncounted and the operator is told.
+    // Loud, and reported as a read failure rather than an empty tally: the
+    // caller stands this cycle down instead of spending an attempt it could
+    // not count.
     logger.error(
       "Could not read the pull request's CI-fix markers — the fleet-wide " +
-        "attempt cap is not enforced for this run (Issue #1879)",
+        "attempt cap cannot be evaluated, so this cycle stands down " +
+        "(Issue #1879)",
       {
         repo,
         prNumber,
@@ -94,6 +107,7 @@ export async function readPrCiFixMarkers(
       comments: [],
       markers: emptyMarkers(),
       capEnforced: false,
+      readFailed: true,
     };
   }
 
@@ -111,7 +125,12 @@ export async function readPrCiFixMarkers(
       { repo, prNumber },
     );
   }
-  return { comments, markers, capEnforced: markers.fleetResolved };
+  return {
+    comments,
+    markers,
+    capEnforced: markers.fleetResolved,
+    readFailed: false,
+  };
 }
 
 /** An empty tally, used when nothing could be read. */

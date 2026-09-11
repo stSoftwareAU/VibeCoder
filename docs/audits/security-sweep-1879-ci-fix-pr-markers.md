@@ -30,8 +30,8 @@ attempt a fix again?) hanging off them.
 | no filesystem, no network of its own | nothing is read or written; the comment read is the caller's existing `getIssueComments`, so no second API call is made |
 | no environment or secret sinks | no `Deno.env`; every message goes to the injected `Logger`, which is already redaction-wrapped at the entry points |
 | author verification is not re-implemented | the fleet check stays in `collectFleetCiFixMarkers` — this module only passes the fleet login list through, so there is no second, weaker definition of "the fleet wrote it" |
-| a failed read is never an empty budget | a `getComments` that throws returns `capEnforced: false` with empty maps **and** an error log naming the consequence; the caller must not read the zero as "no attempt has been made". The ambiguous zero is the unsafe direction for an attempt cap |
-| an unresolved fleet is reported the same way | `fleetResolved: false` is re-reported as an error naming the configuration keys (`github_user` / `fleet_pr_authors` / `service_accounts`) that restore the tally |
+| a failed read is never an empty budget | a `getComments` that throws returns `capEnforced: false`, `readFailed: true` and empty maps, with an error naming the consequence; the caller stands the cycle down rather than spending an attempt nothing could count. The ambiguous zero is the unsafe direction for an attempt cap |
+| an unresolved fleet is reported apart from a failed read | `fleetResolved: false` is re-reported as an error naming the configuration keys (`github_user` / `fleet_pr_authors` / `service_accounts`) that restore the tally, and is **not** flagged as a read failure — a permanent misconfiguration must not stand every repair on the host down for ever, whereas a transient read failure costs one cycle |
 | the discard warning is not swallowed | the collector's own log sink is wired to `logger.warn`, so markers ignored for being authored outside the fleet stay visible |
 | comment prose is bounded before it is rendered | `diagnosed` is already flattened and capped at 200 characters by 12aa; `buildAutoFixCapSummary` escapes `\|` and flattens newlines for the table cell it lands in, so a hostile diagnosis cannot add a row or break the table |
 | the attempt number cannot be spoofed into the summary | rows fall back to their position (`record.attempt \|\| index + 1`), so a marker claiming attempt 999 still renders in sequence and cannot reorder the table |
@@ -54,8 +54,9 @@ None.
   overwritten. The CI-fix lane already holds the PR-level cross-host lock
   (#3754) for the duration, and the only writer of these comments is the lane
   itself, so the window is the lock's and not a new one.
-- **A failed comment read fails open, loudly.** The repair still runs, and this
-  run's attempt goes uncounted. This is the direction `recordAutoFixAttempt`
-  took for an unwritable state directory (#580): a read outage must not take
-  the lane down, and the operator is told the cap is unenforced rather than
-  left to infer it from a quiet zero.
+- **An unresolved fleet identity fails open, loudly.** With no fleet logins
+  nothing is attributable, so the cap cannot bind and the repair runs anyway.
+  Standing down instead would stop every CI fix on a misconfigured host
+  indefinitely, which is a worse failure than an unenforced cap; the error names
+  the keys that restore it. A *read* failure is treated the other way — it is
+  transient, so the cycle stands down and the next scan retries.

@@ -157,7 +157,9 @@ The check-run retry counter above is **host-local and per check run**. The `max_
 - **Nothing host-local is consulted.** No code path reads or writes `*.autofix.json`; the lane's host-local state is the check-run retry counter alone.
 - **Same head, same failure ⇒ silence.** A fleet `no-change` marker for this signature whose `head` is the checked-out head means nothing has changed since the diagnosis already on the PR: no agent runs and nothing is posted.
 - **New head, same failure ⇒ edit in place.** The failure is diagnosed afresh, but a repeat "no change required" appends its marker to the existing comment (`GitHubClient.updateComment`, `PATCH repos/{repo}/issues/comments/{id}`) rather than posting a second copy. If the edit cannot be applied it is logged as an error and a fresh comment is posted — the record is never silently dropped.
-- **Not every run is charged.** An `infrastructure`-category failure writes no marker, and a failure deferred to a blocking issue records a deferral marker instead. An unreadable comment list or an unresolved fleet identity logs an error saying the cap is not enforced for that run, rather than passing for a fresh budget.
+- **Not every run is charged.** An `infrastructure`-category failure writes no marker, so it is never charged. The tally counts attempt markers only — a deferral marker (`vibe-ci-fix-deferred`, written by the base-branch deferral in #1880) is not an attempt.
+- **An unknown tally is never a fresh budget.** A comment list that cannot be read stands the cycle down with an error rather than spending an attempt nothing could count; the next scan retries. An unresolved fleet identity (no `github_user` / `fleet_pr_authors` / `service_accounts`) is a configuration fault that would never resolve itself, so the repair proceeds and the error names the keys that restore the cap.
+- **The record outlives a green build.** Nothing sweeps the markers, so a signature's budget runs for the life of the pull request: the same failure returning after a green build resumes its tally, while a different failure fingerprints differently and gets its own three attempts.
 
 ```mermaid
 flowchart LR

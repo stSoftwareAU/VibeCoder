@@ -3856,10 +3856,17 @@ with `--force-with-lease`. Guards, all required:
 The PR comment records that the history was rebuilt, so anyone with the branch
 checked out knows to re-fetch rather than pull.
 
-**A green build needs no reset.** There is no counter to clear: a green pull
-request has no failing check, so no signature is computed and nothing is
-counted. A recurring-but-different flake produces a different signature and
-gets its own budget.
+**A green build needs no reset, and the record is not wiped by one.** There is
+no counter to clear — a green pull request has no failing check, so no
+signature is computed. The markers already on the pull request stay there, so
+the budget is per **failure signature for the life of the pull request**: a
+recurring-but-*different* failure fingerprints differently and gets its own
+three attempts, while the *identical* failure returning after a green build
+resumes the tally it left. That is the deliberate consequence of moving the
+record onto the pull request (Issue #1879) — three failed fixes of one failure
+are three failed fixes whether or not the build was briefly green in between —
+and it replaces the old locus-wide sweep, which handed a flapping check a fresh
+budget on every green cycle and so never reached the cap at all.
 
 ```mermaid
 flowchart TD

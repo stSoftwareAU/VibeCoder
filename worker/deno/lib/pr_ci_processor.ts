@@ -954,6 +954,31 @@ async function _processCiWithHeartbeat(
     fleetLogins: processorDeps.fleetLogins ?? [],
     logger,
   });
+  if (markerState.readFailed) {
+    // The tally is unknown, and `ci_fix_attempt_markers.ts` is explicit that
+    // an unknown tally is "cannot decide", not "go ahead": running the agent
+    // here would spend an attempt nothing could count. A read failure is
+    // transient, so standing down costs one cycle and the next scan retries.
+    logger.warn(
+      "CI fix stood down: the pull request's CI-fix markers could not be " +
+        "read, so the fleet-wide attempt cap cannot be evaluated " +
+        "(Issue #1879)",
+      { repo, prNumber, checkName, signature },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount,
+        summary:
+          `PR #${prNumber} (${checkName}) — the CI-fix attempt markers could ` +
+          `not be read; stood down rather than spending an uncounted attempt`,
+      },
+    };
+  }
+
   const priorAttempts = markerState.markers.attempts.get(signature) ?? [];
   const attemptCount = countAttempts(markerState.markers, signature);
   logger.info("Auto-fix failure signature", {
@@ -996,7 +1021,12 @@ async function _processCiWithHeartbeat(
       // "I tried again" note. The comments are already in hand, so the
       // dedup scan costs no second read.
       dedupKey: `auto-fix-cap:${signature}`,
-      prefetchedComments: markerState.comments,
+      // Only a read that actually happened: an empty list handed over as
+      // "the comments" would tell the dedup scan there is no prior
+      // escalation when in truth nothing was read.
+      ...(markerState.readFailed
+        ? {}
+        : { prefetchedComments: markerState.comments }),
       ensureLabelColour: "d4c5f9",
       ensureLabelDescription:
         "Worker could not produce a fix; human review required",
@@ -1306,9 +1336,12 @@ async function _processCiWithHeartbeat(
     // One rebuild per underlying failure. A finding that survives a rebuild
     // is not in this branch, so rebuilding again would be the same wrong
     // answer given twice — escalate with the evidence instead.
-    // Issue #1879: the markers carry no category, but they do not need to —
-    // the signature keys on this same failure, and only a rebuild that
-    // landed can have produced a `pushed` attempt against it.
+    // Issue #1879: a marker records the outcome, not the category, so the
+    // closest available reading of "a rebuild has already been tried" is
+    // "a previous attempt at this same signature pushed something". That is
+    // deliberately broader than the category test it replaces — an ordinary
+    // pushed fix also counts — and the guard errs towards not rebuilding
+    // twice, which is the safe direction for a force-push.
     const alreadyRebuilt = priorAttempts.some(
       (attempt) => attempt.outcome === "pushed",
     );
@@ -1479,24 +1512,6 @@ async function _processCiWithHeartbeat(
     ? ""
     : `\n\n${attemptMarker}`;
 
-  // A repeat diagnosis of the same failure on a new head appends its marker
-  // to the comment already carrying that diagnosis, rather than posting a
-  // second copy of it — one CI-fix comment per failure signature per pull
-  // request, fleet-wide.
-  const editedInPlace = !actuallyPushed && !hasChanges &&
-      attemptMarker !== undefined && priorNoChange !== undefined
-    ? await _appendAttemptInPlace({
-      repo,
-      prNumber,
-      record: priorNoChange,
-      markerState,
-      marker: attemptMarker,
-      attempt: attemptCount + 1,
-      head: beforeSha,
-      processorDeps,
-    })
-    : false;
-
   // Reply with outcome — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded) {
     const base = customMessage ??
@@ -1554,6 +1569,28 @@ async function _processCiWithHeartbeat(
     const verbatimBody = customMessage === undefined
       ? undefined
       : `${customMessage}${formatClassifierTrailer(classification)}`;
+
+    // A repeat "no change required" for the same failure appends **this
+    // run's own words** and its marker to the comment already carrying the
+    // diagnosis, rather than posting a second copy — one CI-fix comment per
+    // failure signature per pull request, fleet-wide. The new head can
+    // genuinely produce a different reading, so the agent's message is
+    // carried over rather than assumed unchanged (Issue #1876).
+    const editedInPlace = attemptMarker !== undefined &&
+        priorNoChange !== undefined
+      ? await _appendAttemptInPlace({
+        repo,
+        prNumber,
+        record: priorNoChange,
+        markerState,
+        marker: attemptMarker,
+        attempt: attemptCount + 1,
+        head: beforeSha,
+        diagnosis: verbatimBody ?? response.reason ?? response.body,
+        processorDeps,
+      })
+      : false;
+
     if (editedInPlace) {
       // The explanation is the comment just edited, so nothing is posted.
       // No label is applied here either: `needs-human` belongs to the
@@ -1706,6 +1743,8 @@ async function _appendAttemptInPlace(opts: {
   marker: string;
   attempt: number;
   head: string | undefined;
+  /** This run's own reading of the failure, carried over verbatim. */
+  diagnosis: string;
   processorDeps: CiProcessorDeps;
 }): Promise<boolean> {
   const { logger, deps } = opts.processorDeps;
@@ -1728,9 +1767,8 @@ async function _appendAttemptInPlace(opts: {
   const where = opts.head === undefined
     ? "a new head"
     : `\`${opts.head.slice(0, 7)}\``;
-  const note =
-    `_Attempt ${opts.attempt}: the same failure is still present on ${where} ` +
-    `— the diagnosis above is unchanged._`;
+  const note = `---\n\n**Attempt ${opts.attempt} — ${where}:** the same ` +
+    `failure, no change pushed.\n\n${opts.diagnosis.trim()}`;
   const client = deps.github.createClient(logger);
   if (typeof client.updateComment !== "function") {
     logger.error(

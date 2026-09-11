@@ -47,6 +47,8 @@ const SIBLING_LOGIN = "VibeCoderST";
 const HEAD_SHA = "0000000000000000000000000000000000000000";
 /** A different head, as a new push would produce. */
 const OTHER_HEAD = "a".repeat(40);
+/** Fixture timestamp — pinned, never the host clock. */
+const FIXTURE_CREATED_AT = "2026-09-01T00:00:00Z";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -145,7 +147,7 @@ function markerComment(opts: {
     body: `${
       opts.diagnosis ?? `Attempt ${opts.attempt} diagnosis`
     }\n\n${marker}`,
-    createdAt: new Date().toISOString(),
+    createdAt: FIXTURE_CREATED_AT,
     reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
   };
 }
@@ -168,6 +170,14 @@ function makeHarness(
   stateDir: string,
   workDir: string,
   prComments: GitHubComment[] = [],
+  faults: {
+    /** Reject every comment read, as a GitHub outage would. */
+    commentReadFails?: boolean;
+    /** Reject every comment edit, as a deleted comment would. */
+    updateFails?: boolean;
+    /** Serve a client with no `updateComment` at all. */
+    noUpdateSupport?: boolean;
+  } = {},
 ): Harness {
   const captured: CapturedGh = { comments: [], labelsAdded: [], edits: [] };
   const harness = { captured, claudeRuns: 0 } as Harness;
@@ -218,20 +228,31 @@ function makeHarness(
     },
     createClient: (logger: Logger) => {
       const base = createMockDeps().github.createClient(logger);
-      return {
+      const client = {
         ...base,
-        getIssueComments: () => Promise.resolve([...prComments]),
+        getIssueComments: () =>
+          faults.commentReadFails
+            ? Promise.reject(new Error("gh: API rate limit exceeded"))
+            : Promise.resolve([...prComments]),
         updateComment: (
           _repo: string,
           commentId: number,
           body: string,
         ): Promise<void> => {
+          if (faults.updateFails) {
+            return Promise.reject(new Error("gh: comment not found"));
+          }
           captured.edits.push([commentId, body]);
           const target = prComments.find((c) => c.id === commentId);
           if (target) target.body = body;
           return Promise.resolve();
         },
       };
+      if (faults.noUpdateSupport) {
+        // A narrow shim client — the interface's `updateComment` is optional.
+        delete (client as { updateComment?: unknown }).updateComment;
+      }
+      return client;
     },
   };
 
@@ -531,6 +552,113 @@ Deno.test("processCiFailure - the same failure on a new head edits the existing 
     await assertNoAutoFixState(stateDir);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a pushed fix records a pushed marker in its own comment", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const stateDir = `${tmpDir}/.ci_check_state`;
+  try {
+    const harness = makeHarness(stateDir, tmpDir, []);
+    // The remote agrees the push landed (Issue #579) — without this the
+    // verification runs against a directory that is not a git repository.
+    harness.processorDeps.verifyPushFn = () =>
+      Promise.resolve({
+        landed: true,
+        remoteSha: "c".repeat(40),
+        reason: "verified",
+      });
+
+    const result = await processCiFailure(
+      makeInput(COMPILE_ANNOTATIONS, "6004"),
+      harness.processorDeps,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.changesPushed, true);
+    const posted = harness.captured.comments.at(-1) ?? "";
+    assertStringIncludes(posted, 'outcome="pushed"');
+    assertStringIncludes(posted, 'attempt="1"');
+    assertEquals(harness.captured.edits, [], "a pushed fix is its own comment");
+    await assertNoAutoFixState(stateDir);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - an unreadable comment list stands the cycle down rather than spending an uncounted attempt", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const stateDir = `${tmpDir}/.ci_check_state`;
+  try {
+    const harness = makeHarness(stateDir, tmpDir, [], {
+      commentReadFails: true,
+    });
+
+    const result = await processCiFailure(
+      makeInput(COMPILE_ANNOTATIONS, "7004"),
+      harness.processorDeps,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, false);
+      assertStringIncludes(result.value.summary, "could not be read");
+    }
+    assertEquals(harness.claudeRuns, 0, "an uncountable attempt is not spent");
+    assertEquals(harness.captured.comments, []);
+    await assertNoAutoFixState(stateDir);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - an edit that cannot be applied posts the diagnosis instead of losing it", async () => {
+  for (const fault of [{ updateFails: true }, { noUpdateSupport: true }]) {
+    const tmpDir = await Deno.makeTempDir();
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    try {
+      const signature = signatureFor(COMPILE_ANNOTATIONS, tmpDir);
+      const harness = makeHarness(stateDir, tmpDir, [
+        markerComment({
+          id: 81,
+          author: SIBLING_LOGIN,
+          signature,
+          attempt: 1,
+          outcome: "no-change",
+          head: OTHER_HEAD,
+          diagnosis: "the failure is in the base branch",
+        }),
+      ], fault);
+      harness.processorDeps.deps.git.commitAndPushPending = (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 0,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"];
+
+      const result = await processCiFailure(
+        makeInput(COMPILE_ANNOTATIONS, "8004"),
+        harness.processorDeps,
+      );
+
+      assertEquals(result.ok, true);
+      assertEquals(harness.captured.edits, [], "the edit did not land");
+      const withMarker = harness.captured.comments.filter((c) =>
+        c.includes(CI_FIX_ATTEMPT_MARKER_NAME)
+      );
+      assertEquals(
+        withMarker.length,
+        1,
+        `the record is posted instead of dropped (${JSON.stringify(fault)})`,
+      );
+      assertStringIncludes(withMarker[0] ?? "", 'attempt="2"');
+      await assertNoAutoFixState(stateDir);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 

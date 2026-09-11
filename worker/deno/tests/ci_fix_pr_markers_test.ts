@@ -97,7 +97,7 @@ Deno.test("readPrCiFixMarkers - collects the fleet's markers and reports the cap
   assertEquals(recorded.errors, []);
 });
 
-Deno.test("readPrCiFixMarkers - a failed comment read is an error, not an empty budget", async () => {
+Deno.test("readPrCiFixMarkers - a failed comment read is reported as a read failure, not an empty budget", async () => {
   const recorded: Recorded = { errors: [], warnings: [] };
   const state = await readPrCiFixMarkers({
     repo: "org/repo",
@@ -108,10 +108,11 @@ Deno.test("readPrCiFixMarkers - a failed comment read is an error, not an empty 
   });
 
   assertEquals(state.capEnforced, false);
+  assertEquals(state.readFailed, true, "the caller must be able to stand down");
   assertEquals(state.comments, []);
   assertEquals(state.markers.attempts.size, 0);
   assertEquals(recorded.errors.length, 1);
-  assertStringIncludes(recorded.errors[0] ?? "", "not enforced");
+  assertStringIncludes(recorded.errors[0] ?? "", "stands down");
 });
 
 Deno.test("readPrCiFixMarkers - an unresolved fleet is reported as unenforceable", async () => {
@@ -126,6 +127,11 @@ Deno.test("readPrCiFixMarkers - an unresolved fleet is reported as unenforceable
   });
 
   assertEquals(state.capEnforced, false);
+  assertEquals(
+    state.readFailed,
+    false,
+    "a misconfigured fleet is not a transient read failure — the repair runs",
+  );
   assertEquals(state.markers.attempts.size, 0);
   assertEquals(recorded.errors.length, 1);
   assertStringIncludes(recorded.errors[0] ?? "", "fleet login set is empty");
