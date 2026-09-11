@@ -33,42 +33,64 @@ export interface CooldownEntry {
   /** Unix timestamp when the cooldown was recorded. */
   timestamp: number;
   /**
-   * Failure class (Issue #4304). "timeout" marks a timeout-class failure
-   * (the run burned its whole budget and produced nothing); such entries
-   * carry an escalating cooldown and are retained for the escalation
-   * history window. Absent (legacy entries, ordinary failures): the flat
-   * base cooldown applies, exactly as before.
+   * Failure kind (Issue #4304, broadened by Issue #1949). A kinded entry
+   * carries the escalating cooldown and is retained for the escalation
+   * history window. Absent (legacy entries, skips, transient
+   * infrastructure): the flat base cooldown applies, exactly as before.
    */
-  kind?: "timeout";
+  kind?: CooldownFailureKind;
 }
 
 /**
- * How long timeout-class entries are retained for escalation counting
- * (Issue #4304). Consecutive timeout failures within this window step the
+ * Failure kinds that step the escalating re-claim cooldown.
+ *
+ * - `timeout` (Issue #4304) — the run burned its whole configured budget and
+ *   produced nothing.
+ * - `non_transient` (Issue #1949) — any other terminal failure that is not
+ *   transient infrastructure. A run that fails in 40 seconds is *stronger*
+ *   evidence of a stuck issue than one that fails slowly, not weaker, so it
+ *   climbs the same ladder rather than earning a flat 600 s retry.
+ */
+export type CooldownFailureKind = "timeout" | "non_transient";
+
+const COOLDOWN_FAILURE_KINDS: ReadonlySet<string> = new Set<
+  CooldownFailureKind
+>(["timeout", "non_transient"]);
+
+/** Whether `value` is a recognised {@link CooldownFailureKind}. */
+export function isCooldownFailureKind(
+  value: unknown,
+): value is CooldownFailureKind {
+  return typeof value === "string" && COOLDOWN_FAILURE_KINDS.has(value);
+}
+
+/**
+ * How long ladder entries are retained for escalation counting
+ * (Issue #4304). Consecutive ladder failures within this window step the
  * issue up the cooldown ladder; entries older than this expire.
  */
 export const ESCALATION_HISTORY_SECONDS = 48 * 60 * 60;
 
 /**
- * Escalating cooldown ladder for timeout-class failures (Issue #4304):
- * first timeout → 2 h (one full cycle plus margin, instead of the 600 s
- * base that let VibeCoder#4281 burn four consecutive hourly cycles);
- * second → 6 h; third and later → 24 h, at which point the caller also
- * escalates to a human.
+ * Escalating cooldown ladder for ladder-class failures (Issue #4304,
+ * broadened to every non-transient failure by Issue #1949): first failure
+ * → 2 h (one full cycle plus margin, instead of the 600 s base that let
+ * VibeCoder#4281 burn four consecutive hourly cycles); second → 6 h; third
+ * and later → 24 h, at which point the caller also escalates to a human.
  */
-export const TIMEOUT_COOLDOWN_LADDER_SECONDS: readonly number[] = [
+export const ESCALATING_COOLDOWN_LADDER_SECONDS: readonly number[] = [
   2 * 60 * 60,
   6 * 60 * 60,
   24 * 60 * 60,
 ];
 
-/** Cooldown seconds for the Nth consecutive timeout (1-based). */
-export function timeoutCooldownSeconds(consecutiveTimeouts: number): number {
+/** Cooldown seconds for the Nth consecutive ladder failure (1-based). */
+export function escalatingCooldownSeconds(consecutiveFailures: number): number {
   const index = Math.min(
-    Math.max(1, consecutiveTimeouts),
-    TIMEOUT_COOLDOWN_LADDER_SECONDS.length,
+    Math.max(1, consecutiveFailures),
+    ESCALATING_COOLDOWN_LADDER_SECONDS.length,
   ) - 1;
-  return TIMEOUT_COOLDOWN_LADDER_SECONDS[index]!;
+  return ESCALATING_COOLDOWN_LADDER_SECONDS[index]!;
 }
 
 /** Persisted cooldown state (JSON). */
@@ -147,21 +169,31 @@ export async function loadState(
 
     // Clean expired entries
     const now = nowSeconds();
-    parsed.entries = parsed.entries.filter((entry) => {
-      if (
-        typeof entry.repo !== "string" ||
-        typeof entry.issueNumber !== "number" ||
-        typeof entry.timestamp !== "number"
-      ) {
-        return false;
-      }
-      // Timeout-class entries persist for the escalation window
-      // (Issue #4304); everything else expires on the base cooldown.
-      const retention = entry.kind === "timeout"
-        ? ESCALATION_HISTORY_SECONDS
-        : issueRetryCooldown;
-      return (now - entry.timestamp) < retention;
-    });
+    parsed.entries = parsed.entries
+      .filter((entry) =>
+        typeof entry.repo === "string" &&
+        typeof entry.issueNumber === "number" &&
+        typeof entry.timestamp === "number"
+      )
+      // An unrecognised `kind` must never earn a 24 h cooldown by accident
+      // (Issue #1949): drop it so the entry reverts to the flat base.
+      .map((entry) =>
+        entry.kind === undefined || isCooldownFailureKind(entry.kind)
+          ? entry
+          : {
+            repo: entry.repo,
+            issueNumber: entry.issueNumber,
+            timestamp: entry.timestamp,
+          }
+      )
+      // Ladder entries persist for the escalation window (Issue #4304,
+      // #1949); everything else expires on the base cooldown.
+      .filter((entry) => {
+        const retention = entry.kind
+          ? ESCALATION_HISTORY_SECONDS
+          : issueRetryCooldown;
+        return (now - entry.timestamp) < retention;
+      });
 
     return parsed;
   } catch (err) {
@@ -170,8 +202,13 @@ export async function loadState(
   }
 }
 
-/** Count this issue's timeout entries inside the escalation window. */
-export function countRecentTimeouts(
+/**
+ * Count this issue's ladder entries inside the escalation window.
+ *
+ * Both kinds count towards the same ladder (Issue #1949): two attempts that
+ * failed for different non-transient reasons are still two attempts.
+ */
+export function countRecentEscalatingFailures(
   state: CooldownState,
   repo: string,
   issueNumber: number,
@@ -179,7 +216,7 @@ export function countRecentTimeouts(
 ): number {
   return state.entries.filter((e) =>
     e.repo === repo && e.issueNumber === issueNumber &&
-    e.kind === "timeout" &&
+    isCooldownFailureKind(e.kind) &&
     (now - e.timestamp) < ESCALATION_HISTORY_SECONDS
   ).length;
 }
@@ -189,25 +226,25 @@ export interface RecordCooldownOutcome {
   /** The persisted state after recording. */
   state: CooldownState;
   /**
-   * Consecutive timeout-class failures for this issue inside the
-   * escalation window, INCLUDING the one just recorded. 0 for
-   * non-timeout failures.
+   * Consecutive ladder-class failures for this issue inside the escalation
+   * window, INCLUDING the one just recorded. 0 for transient failures and
+   * skips, which carry no kind.
    */
-  consecutiveTimeouts: number;
+  consecutiveFailures: number;
 }
 
 /**
  * Record that an issue failed (skip for cooldown period).
  *
- * Timeout-class failures (Issue #4304) step an escalating ladder — the
- * returned `consecutiveTimeouts` lets the caller escalate to a human
+ * Ladder-class failures (Issue #4304, #1949) step an escalating ladder —
+ * the returned `consecutiveFailures` lets the caller escalate to a human
  * once retrying stops being credible.
  */
 export async function recordIssueCooldown(
   config: CooldownConfig,
   repo: string,
   issueNumber: number,
-  kind?: "timeout",
+  kind?: CooldownFailureKind,
 ): Promise<Result<RecordCooldownOutcome>> {
   return await withStateLock(`cooldown:${config.workDir}`, async () => {
     const state = await loadState(config.workDir, config.issueRetryCooldown);
@@ -225,8 +262,8 @@ export async function recordIssueCooldown(
       ok: true,
       value: {
         state,
-        consecutiveTimeouts: kind === "timeout"
-          ? countRecentTimeouts(state, repo, issueNumber)
+        consecutiveFailures: isCooldownFailureKind(kind)
+          ? countRecentEscalatingFailures(state, repo, issueNumber)
           : 0,
       },
     };
@@ -254,13 +291,13 @@ export async function isIssueInCooldown(
   if (matching.length === 0) return false;
 
   const latest = matching[0]!;
-  // Escalating window for timeout-class failures (Issue #4304): the
-  // more consecutive timeouts, the longer the issue stays off the menu.
-  const duration = latest.kind === "timeout"
+  // Escalating window for ladder-class failures (Issue #4304, #1949): the
+  // more consecutive failures, the longer the issue stays off the menu.
+  const duration = isCooldownFailureKind(latest.kind)
     ? Math.max(
       config.issueRetryCooldown,
-      timeoutCooldownSeconds(
-        countRecentTimeouts(state, repo, issueNumber, now),
+      escalatingCooldownSeconds(
+        countRecentEscalatingFailures(state, repo, issueNumber, now),
       ),
     )
     : config.issueRetryCooldown;

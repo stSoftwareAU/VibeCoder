@@ -10,10 +10,10 @@ import {
   cleanExpiredCooldowns,
   COOLDOWN_DEFAULTS,
   type CooldownConfig,
+  escalatingCooldownSeconds,
   isIssueInCooldown,
   loadState,
   recordIssueCooldown,
-  timeoutCooldownSeconds,
 } from "../lib/cooldown_state.ts";
 
 /** Create a temp directory for test state files. */
@@ -301,22 +301,22 @@ Deno.test("cooldown - a timeout failure escalates the ladder and persists across
   try {
     const first = await recordIssueCooldown(config, "o/r", 4281, "timeout");
     assert(first.ok);
-    assertEquals(first.value.consecutiveTimeouts, 1);
+    assertEquals(first.value.consecutiveFailures, 1);
 
     // Still in cooldown well after the 600s base — the first rung is 2h.
     assertEquals(await isIssueInCooldown(config, "o/r", 4281), true);
 
     const second = await recordIssueCooldown(config, "o/r", 4281, "timeout");
     assert(second.ok);
-    assertEquals(second.value.consecutiveTimeouts, 2);
+    assertEquals(second.value.consecutiveFailures, 2);
     const third = await recordIssueCooldown(config, "o/r", 4281, "timeout");
     assert(third.ok);
-    assertEquals(third.value.consecutiveTimeouts, 3);
+    assertEquals(third.value.consecutiveFailures, 3);
 
-    assertEquals(timeoutCooldownSeconds(1), 2 * 60 * 60);
-    assertEquals(timeoutCooldownSeconds(2), 6 * 60 * 60);
-    assertEquals(timeoutCooldownSeconds(3), 24 * 60 * 60);
-    assertEquals(timeoutCooldownSeconds(7), 24 * 60 * 60);
+    assertEquals(escalatingCooldownSeconds(1), 2 * 60 * 60);
+    assertEquals(escalatingCooldownSeconds(2), 6 * 60 * 60);
+    assertEquals(escalatingCooldownSeconds(3), 24 * 60 * 60);
+    assertEquals(escalatingCooldownSeconds(7), 24 * 60 * 60);
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
@@ -356,14 +356,150 @@ Deno.test("cooldown - timeout entries survive the base-cooldown expiry that clea
   }
 });
 
-Deno.test("cooldown - non-timeout failures keep the flat base cooldown (Issue #4304)", async () => {
+Deno.test("cooldown - unkinded failures keep the flat base cooldown (Issue #4304)", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "cooldown_4304_" });
   const config = { workDir, issueRetryCooldown: 600 };
   try {
     const rec = await recordIssueCooldown(config, "o/r", 7);
     assert(rec.ok);
-    assertEquals(rec.value.consecutiveTimeouts, 0);
+    assertEquals(rec.value.consecutiveFailures, 0);
     assertEquals(await isIssueInCooldown(config, "o/r", 7), true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Non-transient failures climb the same ladder (Issue #1949)
+// ---------------------------------------------------------------------------
+
+Deno.test("cooldown - a non-transient failure escalates the ladder, not the flat base (Issue #1949)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "cooldown_1949_" });
+  const config = { workDir, issueRetryCooldown: 600 };
+  try {
+    const first = await recordIssueCooldown(
+      config,
+      "o/r",
+      1949,
+      "non_transient",
+    );
+    assert(first.ok);
+    assertEquals(first.value.consecutiveFailures, 1);
+    // The 600 s base would have expired; the first rung is 2 h.
+    assertEquals(await isIssueInCooldown(config, "o/r", 1949), true);
+
+    const second = await recordIssueCooldown(
+      config,
+      "o/r",
+      1949,
+      "non_transient",
+    );
+    assert(second.ok);
+    assertEquals(second.value.consecutiveFailures, 2);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("cooldown - the reported symptom: a fast failure is no longer re-claimable 30 minutes on (Issue #1949)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "cooldown_1949_" });
+  const config = { workDir, issueRetryCooldown: 600 };
+  const thirtyMinutesAgo = Math.floor(Date.now() / 1000) - 30 * 60;
+  try {
+    // Before the fix an ordinary coding failure was recorded with no kind,
+    // so the flat 600 s cooldown expired and the issue was re-claimed on
+    // the next cycle — three findings in one repository were claimed 82
+    // times in seven days that way.
+    await Deno.writeTextFile(
+      `${workDir}/.cooldown_state.json`,
+      JSON.stringify({
+        entries: [{
+          repo: "o/r",
+          issueNumber: 10,
+          timestamp: thirtyMinutesAgo,
+        }],
+      }),
+    );
+    assertEquals(await isIssueInCooldown(config, "o/r", 10), false);
+
+    // The same failure recorded as non-transient serves the first rung.
+    await Deno.writeTextFile(
+      `${workDir}/.cooldown_state.json`,
+      JSON.stringify({
+        entries: [{
+          repo: "o/r",
+          issueNumber: 11,
+          timestamp: thirtyMinutesAgo,
+          kind: "non_transient",
+        }],
+      }),
+    );
+    assertEquals(await isIssueInCooldown(config, "o/r", 11), true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("cooldown - timeout and non-transient attempts count towards one ladder (Issue #1949)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "cooldown_1949_" });
+  const config = { workDir, issueRetryCooldown: 600 };
+  try {
+    await recordIssueCooldown(config, "o/r", 5, "timeout");
+    const mixed = await recordIssueCooldown(config, "o/r", 5, "non_transient");
+    assert(mixed.ok);
+    // Two failed attempts are two failed attempts, whatever ended them.
+    assertEquals(mixed.value.consecutiveFailures, 2);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("cooldown - non-transient entries survive the base-cooldown expiry (Issue #1949)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "cooldown_1949_" });
+  try {
+    const oneHourAgo = Math.floor(Date.now() / 1000) - 60 * 60;
+    await Deno.writeTextFile(
+      `${workDir}/.cooldown_state.json`,
+      JSON.stringify({
+        entries: [
+          { repo: "o/r", issueNumber: 1, timestamp: oneHourAgo },
+          {
+            repo: "o/r",
+            issueNumber: 2,
+            timestamp: oneHourAgo,
+            kind: "non_transient",
+          },
+        ],
+      }),
+    );
+    const state = await loadState(workDir, 600);
+    assertEquals(state.entries.length, 1);
+    assertEquals(state.entries[0]!.issueNumber, 2);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("cooldown - an unrecognised kind reverts to the flat base cooldown (Issue #1949)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "cooldown_1949_" });
+  try {
+    const oneHourAgo = Math.floor(Date.now() / 1000) - 60 * 60;
+    await Deno.writeTextFile(
+      `${workDir}/.cooldown_state.json`,
+      JSON.stringify({
+        entries: [
+          {
+            repo: "o/r",
+            issueNumber: 3,
+            timestamp: oneHourAgo,
+            kind: "totally-made-up",
+          },
+        ],
+      }),
+    );
+    // A corrupt or future `kind` must never earn a silent 24 h cooldown.
+    const state = await loadState(workDir, 600);
+    assertEquals(state.entries.length, 0);
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }

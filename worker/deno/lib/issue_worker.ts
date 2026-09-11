@@ -205,6 +205,9 @@ export async function workOnIssue(
       outcome,
       ...(telemetry ? { telemetry } : {}),
       ...(telemetryAbsentReason ? { telemetryAbsentReason } : {}),
+      // Issue #1949: a phase that already stepped the failure ladder says so,
+      // so the main loop does not step it a second time in the same run.
+      ...(state.failureLadderApplied ? { ladderApplied: true } : {}),
     };
   } catch (err) {
     outcome = withRunOutcomeNotes(
