@@ -240,7 +240,9 @@ Deno.test("git message redaction - an unreadable message file fails closed", () 
   assertEquals(raised.source, "/tmp/gone.txt");
 });
 
-Deno.test("git message redaction - a message from stdin fails closed", () => {
+Deno.test("git message redaction - stdin with no source supplied fails closed", () => {
+  // The worker's own chokepoint supplies no stdin source — it never pipes a
+  // message — so `-F -` must still refuse there rather than commit unscanned.
   let raised: unknown;
   try {
     redactGitMessageArgs(["commit", "-F", "-"], () => "unused");
@@ -249,6 +251,109 @@ Deno.test("git message redaction - a message from stdin fails closed", () => {
   }
   assert(raised instanceof UnredactableMessageError);
   assertEquals(raised.source, "-");
+});
+
+// ---------------------------------------------------------------------------
+// redactGitMessageArgs — messages piped on stdin (Issue #1953)
+// ---------------------------------------------------------------------------
+
+/** A stdin source that yields `text` and counts how often it was read. */
+function stdinSource(text: string): { read: () => string; reads: number[] } {
+  const reads: number[] = [];
+  return {
+    reads,
+    read: () => {
+      reads.push(1);
+      return text;
+    },
+  };
+}
+
+Deno.test("git message redaction - masks a stdin message and inlines it as -m", () => {
+  const stdin = stdinSource(`subject\n\n${FAKE_TOKEN}\n`);
+  let masked = 0;
+  assertEquals(
+    redactGitMessageArgs(["commit", "-F", "-"], {
+      stdin,
+      onMasked: () => masked++,
+    }),
+    ["commit", "-m", `subject\n\n${MASK}\n`],
+  );
+  assertEquals(stdin.reads.length, 1, "stdin is read exactly once");
+  assertEquals(masked, 1, "the masking is reported to the caller");
+});
+
+Deno.test("git message redaction - a clean stdin message is still inlined intact", () => {
+  // stdin can only be read once, so the message is always moved into argv —
+  // but nothing was masked, so no redaction is reported.
+  let masked = 0;
+  assertEquals(
+    redactGitMessageArgs(["commit", "-F", "-"], {
+      stdin: stdinSource("subject\n\nbody\n"),
+      onMasked: () => masked++,
+    }),
+    ["commit", "-m", "subject\n\nbody\n"],
+  );
+  assertEquals(masked, 0);
+});
+
+Deno.test("git message redaction - every stdin spelling is inlined", () => {
+  const message = `subject\n\n${FAKE_TOKEN}\n`;
+  const expected = `subject\n\n${MASK}\n`;
+  const sources = () => ({ stdin: stdinSource(message) });
+  assertEquals(
+    redactGitMessageArgs(["commit", "--file", "-"], sources()),
+    ["commit", "--message", expected],
+  );
+  assertEquals(
+    redactGitMessageArgs(["commit", "--file=-"], sources()),
+    ["commit", `--message=${expected}`],
+  );
+  assertEquals(
+    redactGitMessageArgs(["commit", "-F-"], sources()),
+    ["commit", `-m${expected}`],
+  );
+  assertEquals(
+    redactGitMessageArgs(["commit", "-aF", "-"], sources()),
+    ["commit", "-am", expected],
+  );
+  assertEquals(
+    redactGitMessageArgs(["tag", "-a", "v1", "-F", "-"], sources()),
+    ["tag", "-a", "v1", "-m", expected],
+  );
+});
+
+Deno.test("git message redaction - an unreadable stdin message fails closed", () => {
+  let raised: unknown;
+  try {
+    redactGitMessageArgs(["commit", "-F", "-"], {
+      stdin: {
+        read: () => {
+          throw new UnredactableMessageError("-", "stdin is a terminal");
+        },
+      },
+    });
+  } catch (err) {
+    raised = err;
+  }
+  assert(raised instanceof UnredactableMessageError);
+  assertEquals(raised.source, "-");
+  assertStringIncludes(raised.message, "terminal");
+});
+
+Deno.test("git message redaction - a pathspec dash is not a stdin message", () => {
+  // `--` ends the options, so everything after it is a path.
+  const args = ["commit", "-m", "subject", "--", "-"];
+  assertEquals(
+    redactGitMessageArgs(args, {
+      stdin: {
+        read: () => {
+          throw new Error("stdin must never be read for a pathspec");
+        },
+      },
+    }),
+    args,
+  );
 });
 
 // ---------------------------------------------------------------------------

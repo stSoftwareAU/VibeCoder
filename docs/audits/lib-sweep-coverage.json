@@ -1387,6 +1387,18 @@
       "paths": [
         "worker/deno/lib/gemini_token_usage.ts"
       ]
+    },
+    {
+      "issue": 1953,
+      "chunk": "12ac",
+      "title": "top-up: the bounded git stdin message reader",
+      "ledger": "docs/audits/security-sweep-1953-git-stdin-message.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: git_stdin_message.ts (#1953)",
+      "status": "swept",
+      "sweptAt": "0000000000000000000000000000000000000000",
+      "paths": [
+        "worker/deno/lib/git_stdin_message.ts"
+      ]
     }
   ],
   "roots": [

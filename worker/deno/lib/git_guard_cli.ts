@@ -16,19 +16,37 @@
  * Exit codes accompany the marker: `0` allowed, `1` refused because the
  * message could not be scanned, `2` malformed invocation.
  *
+ * A message piped on stdin (`git commit -F -`) is consumed here and handed
+ * back inline in the argv (Issue #1953). The shim is told so by a distinct
+ * allow marker, {@link GIT_GUARD_ALLOW_STDIN_MARKER}, because it must then run
+ * the real `git` with stdin closed.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import {
   type MessageFileReader,
+  type MessageSources,
   redactGitMessageArgs,
+  type StdinMessageSource,
   UnredactableMessageError,
 } from "./git_message_redaction.ts";
+import { denoStdinMessageSource } from "./git_stdin_message.ts";
 import { installConsoleRedaction } from "./console_redaction.ts";
 import { encodeNulFields } from "./guard_field_encoding.ts";
 
 /** Printed on stdout when — and only when — the command may proceed. */
 export const GIT_GUARD_ALLOW_MARKER = "VIBE_GIT_GUARD_ALLOW";
+
+/**
+ * Printed instead of {@link GIT_GUARD_ALLOW_MARKER} when the guard consumed a
+ * `-F -` message from stdin (Issue #1953).
+ *
+ * The message is in the returned argv now, so the shim must run the real `git`
+ * with its stdin closed: a stream can be read once, and a second reader would
+ * see an empty — or, worse, a partial — message.
+ */
+export const GIT_GUARD_ALLOW_STDIN_MARKER = "VIBE_GIT_GUARD_ALLOW_STDIN";
 
 /** Printed on stdout when the guard refused the command. */
 export const GIT_GUARD_REFUSE_MARKER = "VIBE_GIT_GUARD_REFUSE";
@@ -68,12 +86,15 @@ export function encodeGitGuardStdout(result: GitGuardCliResult): string {
  *
  * @param argv - The guard's own argv: `--`, then the `git` arguments.
  * @param readMessageFile - Reader for `-F <path>` contents (test seam).
+ * @param stdin - Source for a `-F -` message (test seam); reading it is what
+ *   makes the stdin verdict marker appear.
  * @returns The exit code, the stderr line to emit, and — when allowed — the
  *   arguments the shim must run.
  */
 export function runGitGuardCli(
   argv: readonly string[],
   readMessageFile: MessageFileReader = denoMessageFileReader,
+  stdin: StdinMessageSource = denoStdinMessageSource,
 ): GitGuardCliResult {
   const separator = argv.indexOf("--");
   if (separator < 0) {
@@ -87,9 +108,28 @@ export function runGitGuardCli(
   }
   const gitArgv = argv.slice(separator + 1) as string[];
 
+  // A stdin message is read at most once and reported here rather than
+  // inferred from argv: its two arguments are rewritten whether or not a
+  // secret was found, so an argv comparison would claim a redaction on every
+  // piped commit.
+  let stdinConsumed = false;
+  let redacted = false;
+  const sources: MessageSources = {
+    readMessageFile,
+    stdin: {
+      read: () => {
+        stdinConsumed = true;
+        return stdin.read();
+      },
+    },
+    onMasked: () => {
+      redacted = true;
+    },
+  };
+
   let gitArgs: string[];
   try {
-    gitArgs = redactGitMessageArgs(gitArgv, readMessageFile);
+    gitArgs = redactGitMessageArgs(gitArgv, sources);
   } catch (err) {
     if (!(err instanceof UnredactableMessageError)) throw err;
     return {
@@ -99,10 +139,11 @@ export function runGitGuardCli(
     };
   }
 
-  const redacted = gitArgs.some((arg, i) => arg !== gitArgv[i]);
   return {
     exitCode: 0,
-    stdout: GIT_GUARD_ALLOW_MARKER,
+    stdout: stdinConsumed
+      ? GIT_GUARD_ALLOW_STDIN_MARKER
+      : GIT_GUARD_ALLOW_MARKER,
     stderr: redacted
       ? "[SECURITY] [GIT_MESSAGE_REDACTED] a secret was masked in the " +
         "message of this git command before it reached history."
