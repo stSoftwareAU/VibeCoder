@@ -336,9 +336,9 @@ title — it rewrites the understanding instead of asking.
 
 The check is deliberately cheap: a fixed class list capped at eight
 reported findings, not an open-ended audit, so it runs on every round
-without lengthening it. Only the safety cap
-(`maxGrillMeRounds`) can end grilling with a flag still open, and
-each one is then recorded as a named assumption in the body rather than
+without lengthening it. Only a **forced final round** (stall guard or
+runaway ceiling) can end grilling with a flag still open, and each one
+is then recorded as a named assumption in the body rather than
 dropped.
 
 ### Worked example (mobile app)
@@ -463,9 +463,10 @@ and adds `needs-human` back so the turn signal still reads correctly.
 
 Three details worth knowing:
 
-- **The safety cap resets.** `maxGrillMeRounds` counts only the rounds
-  posted *after* the latest Ready comment, so a reopened grilling gets
-  the full budget again even when the previous grilling used all of it.
+- **The stop rule resets.** Both the stall guard and the runaway ceiling
+  (`maxGrillMeRounds`) see only the rounds posted *after* the latest Ready
+  comment, so a reopened grilling gets the full budget again even when the
+  previous grilling used all of it.
 - **It must be your re-add.** The worker only reopens on a `grill-me`
   label event made by a non-fleet account after the Ready comment. A
   `grill-me` label left behind by a failed removal is cleaned up as
@@ -484,7 +485,7 @@ for whose turn it is. Read it before scrolling through comments:
 | `grill-me` only | Worker — will grill on the next scan |
 | `grill-me` + `needs-human` | You — read the latest `## Grill-Me Round N` comment, reply, then remove `needs-human` |
 | `needs-human` only (after a `## Grill-Me — Ready for Next Phase` comment) | You — apply `planning`, `work-on`, or `top-priority`, then clear `needs-human` (or re-add `grill-me` to reopen grilling) |
-| `needs-human` (no `grill-me`, no Ready comment) | Human triager — workflow has escalated (two failures or safety cap) |
+| `needs-human` (no `grill-me`, no Ready comment) | Human triager — workflow has escalated (two failures, or a forced final round that posted no Ready) |
 
 The `**⏳ Awaiting your reply.**` footer on each round comment carries
 the same meaning, but the label list is faster to scan on a small
@@ -554,21 +555,58 @@ two ways to short-circuit:
 In both cases the developer is the one who applies the next-phase
 label.
 
-## 📊 Round limit and escalation
+## 📊 When grilling stops
+
+A productive grilling is never halted by a round count
+([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)).
+Two things stop it, and both make the **next** round a forced final
+round rather than ending it on the spot:
+
+- **Stall guard.** Before running a round the worker parses the numbered
+  question stems of every round posted since the latest Ready comment. A
+  round is *stalled* when every one of its stems — lower-cased, whitespace
+  collapsed, trailing punctuation and Markdown emphasis stripped — already
+  appeared in an earlier round of the same grilling. One stalled round trips
+  the guard; a round asking anything new never does.
+- **Runaway ceiling.** `maxGrillMeRounds` bounds a grilling that keeps
+  finding new questions forever. The ceiling-th round is itself the forced
+  final round, so a grilling posts at most that many rounds since its latest
+  Ready comment.
+
+```mermaid
+flowchart TD
+    A[Developer replies] --> B{Latest round<br/>repeated every stem?}
+    B -- yes --> F[Forced final round]
+    B -- no --> C{Next round is<br/>the 20th?}
+    C -- yes --> F
+    C -- no --> D[Ordinary round N]
+    D --> A
+    F --> G{Ready comment<br/>posted?}
+    G -- yes --> H[Ready, with the trigger line<br/>and open questions as assumptions]
+    G -- no --> I[Grill-Me Escalation<br/>+ needs-human, naming the trigger]
+```
+
+A forced final round is told so explicitly: it must post
+`## Grill-Me — Ready for Next Phase`, record every still-open question as a
+named assumption in the issue body, and carry one line directly under the
+TL;DR naming what forced it — `Forced final round: stall guard tripped at
+Round N` or `Forced final round: round ceiling (20) reached`. It still runs
+only after the developer replies, so lifting the old cap cannot make the
+worker loop unattended.
 
 | Setting | Default | Source | Behaviour |
 |---------|---------|--------|-----------|
-| `maxGrillMeRounds` | `5` | `worker/deno/lib/config_defaults.ts` | **Safety cap.** If grilling has not converged on a Ready comment after this many rounds, the worker posts a one-time recommendation comment, applies the `needs-human` label, and stops. It does **not** finalise automatically. |
+| `maxGrillMeRounds` | `20` | `worker/deno/lib/config_defaults.ts` | **Runaway ceiling.** The ceiling-th round of a grilling is the forced final round. Reaching it does **not** finalise the issue — the developer always applies the next-phase label. |
 | `grillMeTimeout` | `3600` (1 hour) | `worker/deno/lib/config_defaults.ts` | Per-round Claude timeout. Raised from 600s by — a round reasons at top-tier model and `max` effort, and the old ceiling killed heavy rounds. |
 | `grillMeKillAfter` | `10` | `worker/deno/lib/config_defaults.ts` | Grace period before forced termination after `grillMeTimeout`. |
 
-**The safety cap escalates rather than finalising.** When
-`maxGrillMeRounds` is reached without a Ready comment having been
-posted, the worker posts a comment summarising the current state,
-recommends the developer apply `planning` or `work-on` (or refine the
-issue and re-grill), adds `needs-human`, and stops. A human takes over
-from there. There is no longer any "final round forces finalisation"
-behaviour — the developer always drives the label transition.
+**Only a failed forced round escalates.** If the forced final round posts
+an ordinary `## Grill-Me Round N` comment instead of Ready, posts nothing,
+times out, or errors, the worker posts a `## Grill-Me Escalation` comment
+naming which trigger forced the round and that no Ready comment followed,
+adds `needs-human`, and stops. A human takes over from there. There is no
+"final round forces finalisation" behaviour — the developer always drives
+the label transition.
 
 ## ⚠️ Failure modes
 
@@ -583,7 +621,8 @@ recovers from each common failure as follows:
 | **Two consecutive rounds fail** | The worker adds the `needs-human` label, posts a `## Grill-Me Escalation` comment, and stops. A human takes over. |
 | **User has not replied yet** | The processor adds `needs-human` after each round, and the discovery filter skips any issue carrying `needs-human`. The worker therefore does not even consider the issue until the developer removes `needs-human` after replying. The `**⏳ Awaiting your reply.**` footer plus the `needs-human` label remain the visible cues; the labels stay on the issue indefinitely until either you reply and clear `needs-human`, you remove `grill-me`, or someone else intervenes. |
 | **Ready comment posted (this run or earlier)** | The processor removes `grill-me` and **ensures `needs-human` is present** whenever it sees a `## Grill-Me — Ready for Next Phase` marker — on the run that posts it and on subsequent scans if `grill-me` is still lingering. The developer applies the next-phase label (`planning`, `work-on`, or `top-priority`) and clears `needs-human` when the worker should pick up. |
-| **Safety cap reached** (`maxGrillMeRounds` rounds with no Ready) | Posts a recommendation comment, adds `needs-human`, and stops. The developer takes over. |
+| **Stop rule tripped** (a stalled round, or the ceiling round) | Runs the round as a **forced final round** that must post the Ready comment, with open questions recorded as named assumptions and the trigger named under the TL;DR. |
+| **Forced final round posts no Ready** | Posts a `## Grill-Me Escalation` comment naming the trigger and that Ready was not posted, adds `needs-human`, and stops. The developer takes over. |
 | **Two workers race for the same issue** | The processor claims the issue atomically before doing any work. The loser exits cleanly with a "claimed by another worker" message. |
 
 The `## Grill-Me Failed`, `## Grill-Me Escalation`, and
@@ -611,8 +650,8 @@ separated permissions:
   developer's turn, and on the Ready path removes `grill-me` while
   **ensuring `needs-human` stays applied**. It also
   adds `needs-human` on the escalation paths described above (two
-  consecutive failures, or the safety cap being reached without
-  convergence). The processor never applies `planning`, `work-on`,
+  consecutive failures, or a forced final round that posted no Ready
+  comment). The processor never applies `planning`, `work-on`,
   `top-priority`, or any other next-phase label — that decision
   always belongs to the developer.
 

@@ -104,9 +104,10 @@ requirements with a verb but no observable outcome, terminology drift.
 
 Grill-me converges when the model judges there is nothing meaningful left to ask
 (`docs/workflows/grill-me.md:76,89` — "more meaningful questions?" → "No more
-questions"), bounded only by the five-round safety cap (`:402`). Until #519 the
-only quality guidance on the result was a single line of prose in the grill-me
-template. Named classes turn one round's luck into a repeatable check.
+questions"), bounded only by the stall guard and the runaway round ceiling.
+Until #519 the only quality guidance on the result was a single line of prose
+in the grill-me template. Named classes turn one round's luck into a
+repeatable check.
 
 **Adopted** (#519): `worker/deno/lib/requirements_rubric.ts` runs a
 deterministic pre-pass over the understanding and the grill-me template applies
@@ -225,8 +226,9 @@ is adopted (#518); re-running implement until a model reports "converged" is not
 Every loop in this worker is bounded on purpose — quality remediation is capped
 at two attempts (`worker/deno/lib/phases/quality_gate_remediation_phase.ts:298`),
 CI fixes at three (`maxAutoFixAttempts`, `worker/deno/lib/config_defaults.ts:454`)
-and grill-me at five (`maxGrillMeRounds`,
-`docs/workflows/grill-me.md:402`). An unbounded semantic loop on an unattended
+and grill-me at twenty (`maxGrillMeRounds`,
+`docs/workflows/grill-me.md`), with a stall guard stopping it sooner once a
+round stops asking anything new. An unbounded semantic loop on an unattended
 machine spends the budget without a human able to stop it.
 
 **spec-kit's CLI, templates and extension system.** Out of scope by the issue's
