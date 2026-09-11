@@ -50,8 +50,17 @@ interface Fixture {
   cleanup: () => Promise<void>;
 }
 
-/** A remote whose `main` and `milestone/1964` both reworded the same line. */
-async function setup(): Promise<Fixture> {
+/** The prose both sides reworded — the shape of the conflict that was lost. */
+const SEED = "The workspace has 12 crates.\n";
+const BRANCH = "The workspace holds 13 crates.\n";
+const MAIN = "There are 14 crates in the workspace.\n";
+
+/** A remote whose `main` and `milestone/1964` both changed the same files. */
+async function setup(
+  seedFiles: Record<string, string> = { "docs/development.md": SEED },
+  milestoneFiles: Record<string, string> = { "docs/development.md": BRANCH },
+  mainFiles: Record<string, string> = { "docs/development.md": MAIN },
+): Promise<Fixture> {
   const root = await Deno.makeTempDir({ prefix: "issue-1964-" });
   const remote = `${root}/remote.git`;
   const seed = `${root}/seed`;
@@ -61,23 +70,28 @@ async function setup(): Promise<Fixture> {
   await gitOk(["config", "user.email", "t@example.com"], seed);
   await gitOk(["config", "user.name", "Test"], seed);
 
-  const write = async (content: string) => {
-    await Deno.mkdir(`${seed}/docs`, { recursive: true });
-    await Deno.writeTextFile(`${seed}/docs/development.md`, content);
+  const write = async (files: Record<string, string>) => {
+    for (const [path, content] of Object.entries(files)) {
+      const dir = path.includes("/")
+        ? `${seed}/${path.slice(0, path.lastIndexOf("/"))}`
+        : seed;
+      await Deno.mkdir(dir, { recursive: true });
+      await Deno.writeTextFile(`${seed}/${path}`, content);
+    }
     await gitOk(["add", "-A"], seed);
   };
 
-  await write("The workspace has 12 crates.\n");
+  await write(seedFiles);
   await gitOk(["commit", "-m", "Seed"], seed);
   await gitOk(["push", "origin", "main"], seed);
 
   await gitOk(["checkout", "-b", "milestone/1964"], seed);
-  await write("The workspace holds 13 crates.\n");
+  await write(milestoneFiles);
   await gitOk(["commit", "-m", "Issue #1964: the branch reworded it"], seed);
   await gitOk(["push", "origin", "milestone/1964"], seed);
 
   await gitOk(["checkout", "main"], seed);
-  await write("There are 14 crates in the workspace.\n");
+  await write(mainFiles);
   await gitOk(["commit", "-m", "Issue #1964: main reworded it"], seed);
   await gitOk(["push", "origin", "main"], seed);
 
@@ -250,6 +264,90 @@ Deno.test(
         (await gitOk(["rev-parse", "origin/milestone/1964"], fx.clone)).trim(),
         preMergeSha,
         "nothing reached the remote",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - an agent that commits a hidden path with the merge is refused, and the branch goes back (Issue #1964)",
+  async () => {
+    const fx = await setup();
+    try {
+      const preMergeSha = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1964",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+        undefined,
+        agentThat(async (workDir) => {
+          // The pre-commit safety gate never saw this: `git add -A` on the
+          // ladder's side finds a clean tree once the agent has committed.
+          await Deno.writeTextFile(`${workDir}/.env`, "TOKEN=secret\n");
+          await gitOk(["add", "-A"], workDir);
+          await gitOk(["commit", "--no-edit"], workDir);
+        }),
+      );
+
+      assert(!result.ok, "a commit carrying .env must never be adopted");
+      assertStringIncludes(result.error.message, ".env");
+      assertStringIncludes(result.error.message, "safety gate");
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        preMergeSha,
+        "the branch stands exactly where it did",
+      );
+      assertEquals(
+        (await gitOk(["rev-parse", "origin/milestone/1964"], fx.clone)).trim(),
+        preMergeSha,
+        "nothing reached the remote",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - an agent that commits while another file still needs the conflicted index is refused (Issue #1964)",
+  async () => {
+    // `notes.md` is a subsumption the triage settles by taking a side, which
+    // needs the merge stages; `docs/development.md` is the rival prose the
+    // agent is asked about. An agent that commits both clears the index the
+    // triage's decision needs, so the tree on the branch is not the plan.
+    const fx = await setup(
+      { "docs/development.md": SEED, "notes.md": "one\n" },
+      { "docs/development.md": BRANCH, "notes.md": "one\ntwo\n" },
+      { "docs/development.md": MAIN, "notes.md": "one\ntwo\nthree\n" },
+    );
+    try {
+      const preMergeSha = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1964",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+        undefined,
+        agentThat(async (workDir) => {
+          await gitOk(["add", "-A"], workDir);
+          await gitOk(["commit", "--no-edit"], workDir);
+        }),
+      );
+
+      assert(!result.ok, "a plan that cannot be applied is not a resolution");
+      assertStringIncludes(result.error.message, "conflicted index");
+      assertStringIncludes(result.error.message, "notes.md");
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        preMergeSha,
+        "the half-applied commit is not left on the branch",
       );
     } finally {
       await fx.cleanup();

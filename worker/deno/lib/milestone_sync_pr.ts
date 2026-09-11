@@ -175,8 +175,15 @@ export function squashedSyncWarning(
 
 /** Injected seams so the whole path is testable without git or GitHub. */
 export interface MilestoneSyncPrDeps {
-  /** Runs git in the clone; resolves with the exit code and stderr. */
-  git: (args: string[]) => Promise<{ code: number; stderr: string }>;
+  /**
+   * Runs git in the clone; resolves with the exit code and both streams.
+   * `stdout` is optional so a caller that only captured stderr still
+   * compiles, but a refusal git printed on stdout is reported when it is
+   * there (Issue #1964).
+   */
+  git: (
+    args: string[],
+  ) => Promise<{ code: number; stderr: string; stdout?: string }>;
   /** Runs `gh`, returning stdout; throws on failure. */
   gh: (args: string[]) => Promise<string>;
   log?: (message: string) => void;
@@ -278,7 +285,10 @@ export async function raiseMilestoneSyncPr(
       ok: false,
       error: new Error(
         `Could not push the milestone sync branch '${branch}': ` +
-          `${push.stderr.trim() || "git reported no stderr"}`,
+          `${
+            push.stderr.trim() || push.stdout?.trim() ||
+            `git exited ${push.code} and printed nothing`
+          }`,
       ),
     };
   }

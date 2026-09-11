@@ -16,8 +16,10 @@ import {
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
 import {
+  isRepeatedFailureReason,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   milestoneSyncStreakPath,
+  type SyncStreakEntry,
 } from "../lib/milestone_sync_streak.ts";
 
 const MILESTONE_TITLE = "#168 Emergency stop";
@@ -33,6 +35,7 @@ function failingDeps(
   calls: string[][],
   streakPath: string,
   reason: () => string,
+  succeed = false,
 ): MilestoneBranchSyncDeps {
   return {
     repos: ["owner/repo"],
@@ -61,7 +64,12 @@ function failingDeps(
       return Promise.resolve("");
     },
     syncBranchFn: () =>
-      Promise.resolve({ ok: false as const, error: new Error(reason()) }),
+      succeed
+        ? Promise.resolve({
+          ok: true as const,
+          value: { message: "Synced" },
+        })
+        : Promise.resolve({ ok: false as const, error: new Error(reason()) }),
     log: () => undefined,
   };
 }
@@ -164,5 +172,64 @@ Deno.test(
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
+  },
+);
+
+Deno.test(
+  "milestone sync - a failure, a success, then the same failure is a first failure again (Issue #1964)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1964-repeat-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const same = () => COMMIT_FAILURE;
+
+      await syncMilestoneBranches(failingDeps(calls, streakPath, same));
+      await syncMilestoneBranches(
+        failingDeps(calls, streakPath, same, true),
+      );
+      await syncMilestoneBranches(failingDeps(calls, streakPath, same));
+
+      assertEquals(
+        commentCalls(calls).length,
+        0,
+        "the success broke the streak, so this is the first failure again",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "isRepeatedFailureReason - only an unbroken run of identical reasons counts (Issue #1964)",
+  () => {
+    const entry = (reason: string): SyncStreakEntry => ({
+      count: 2,
+      escalated: false,
+      lastAttempt: { at: "2026-09-11T00:00:00Z", outcome: "failed", reason },
+    });
+
+    assertEquals(isRepeatedFailureReason(entry("same"), "same", 2), true);
+    assertEquals(
+      isRepeatedFailureReason(entry("same"), "different", 2),
+      false,
+      "a changed reason is progress, however small",
+    );
+    assertEquals(
+      isRepeatedFailureReason(entry("same"), "same", 1),
+      false,
+      "one failure is not a repeat, whatever the audit record says",
+    );
+    assertEquals(
+      isRepeatedFailureReason(entry(""), "", 2),
+      false,
+      "an empty reason matches nothing — it says nothing to repeat",
+    );
+    assertEquals(
+      isRepeatedFailureReason({ count: 2, escalated: false }, "same", 2),
+      false,
+      "a branch with no recorded attempt has nothing to compare against",
+    );
   },
 );

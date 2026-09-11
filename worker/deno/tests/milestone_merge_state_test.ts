@@ -11,6 +11,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  assertAdoptedMergeIsSafe,
   describeGitFailure,
   readMergeCommitState,
 } from "../lib/milestone_merge_state.ts";
@@ -198,6 +199,102 @@ Deno.test(
         options: { cwd: dir },
       });
       assertEquals(state.kind, "no-merge");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "readMergeCommitState - a default tip nobody could read is unknown, never a determinate no-merge (Issue #1964)",
+  async () => {
+    const { dir, preMergeSha } = await conflictedRepo();
+    try {
+      await git(["merge", "--abort"], dir);
+      const state = await readMergeCommitState({
+        preMergeSha,
+        defaultSha: "",
+        options: { cwd: dir },
+      });
+      assertEquals(
+        state.kind,
+        "unknown",
+        "the caller resets the branch on `no-merge`, so a failed read must " +
+          "never be reported as one",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "readMergeCommitState - a repository git cannot read at all is unknown (Issue #1964)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1964-state-" });
+    try {
+      const state = await readMergeCommitState({
+        preMergeSha: "a".repeat(40),
+        defaultSha: "b".repeat(40),
+        options: { cwd: dir },
+      });
+      assertEquals(state.kind, "unknown");
+      assert(
+        state.kind === "unknown" && state.detail.length > 0,
+        "the failure says what could not be read",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "assertAdoptedMergeIsSafe - a commit the worker did not write still faces the pre-commit safety gate (Issue #1964)",
+  async () => {
+    const { dir, preMergeSha } = await conflictedRepo();
+    try {
+      await Deno.writeTextFile(`${dir}/f.txt`, "topic and main\n");
+      await Deno.writeTextFile(`${dir}/.env`, "TOKEN=secret\n");
+      await git(["add", "-A"], dir);
+      await git(["commit", "--no-edit"], dir);
+
+      const refused = await assertAdoptedMergeIsSafe({
+        preMergeSha,
+        options: { cwd: dir },
+      });
+      assert(!refused.ok, "a merge commit carrying .env is not adoptable");
+      assertStringIncludes(refused.error.message, ".env");
+      assertStringIncludes(refused.error.message, "safety gate");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "assertAdoptedMergeIsSafe - an ordinary resolution is adoptable, and an unreadable one never is (Issue #1964)",
+  async () => {
+    const { dir, preMergeSha } = await conflictedRepo();
+    try {
+      await Deno.writeTextFile(`${dir}/f.txt`, "topic and main\n");
+      await git(["add", "-A"], dir);
+      await git(["commit", "--no-edit"], dir);
+      const safe = await assertAdoptedMergeIsSafe({
+        preMergeSha,
+        options: { cwd: dir },
+      });
+      assert(safe.ok, `${!safe.ok && safe.error.message}`);
+
+      const unreadable = await assertAdoptedMergeIsSafe({
+        preMergeSha: "c".repeat(40),
+        options: { cwd: dir },
+      });
+      assert(
+        !unreadable.ok,
+        "a check that could not run must never read as a pass",
+      );
+      assertStringIncludes(unreadable.error.message, "could not be listed");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

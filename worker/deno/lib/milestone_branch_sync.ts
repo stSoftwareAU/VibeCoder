@@ -56,6 +56,7 @@ import { closeLandedMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
 import {
   concludeConflictAttempt,
   type ConflictAttemptOutcome,
+  type ConflictAttemptRecord,
   isConflictAttemptDue,
   isConflictBudgetExhausted,
   isRepeatedFailureReason,
@@ -1281,7 +1282,11 @@ export async function syncMilestoneBranches(
           // Conclude the ledger attempt this failure ends (Issue #1778).
           if (streakPath && entry) {
             const verdict = judgeSyncFailure(syncResult.error, agentAllowed);
-            repeatedReason = isRepeatedFailureReason(entry, verdict.reason);
+            repeatedReason = isRepeatedFailureReason(
+              entry,
+              verdict.reason,
+              entry.count,
+            );
             entry = concludeConflictAttempt(
               entry,
               verdict.outcome,
@@ -1418,7 +1423,7 @@ export async function syncMilestoneBranches(
               syncResult.error.message,
               ghCommandFn,
               log,
-              repeatedReason,
+              repeatedReason ? entry.lastAttempt : undefined,
             );
             if (escalated) {
               entry.escalated = true;
@@ -1771,8 +1776,11 @@ async function escalateSyncFailure(
   reason: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
-  /** True when this cycle's reason is identical to the previous cycle's. */
-  repeatedReason = false,
+  /**
+   * The previous cycle's concluded attempt, when this cycle's reason is
+   * identical to it (Issue #1964). Absent on an ordinary streak escalation.
+   */
+  repeatedAttempt?: ConflictAttemptRecord,
 ): Promise<boolean> {
   // Ahead/behind counts, best-effort via one REST compare (only on the rare
   // escalation, not per cycle). base...head reports how far head has diverged.
@@ -1807,10 +1815,16 @@ async function escalateSyncFailure(
     `${aheadBehind}.\n\n` +
     `Latest reason from git:\n\n> ${reason}\n\n` +
     `${
-      repeatedReason
+      repeatedAttempt
         ? `That reason is **identical** to the previous cycle's, so a retry ` +
           `changes nothing — this is escalated on the second occurrence ` +
-          `rather than after four (Issue #1964).\n\n`
+          `rather than after four (Issue #1964). The previous cycle ` +
+          `concluded \`${repeatedAttempt.outcome}\` at ` +
+          `${repeatedAttempt.at}${
+            repeatedAttempt.defaultSha
+              ? `, merging from \`${repeatedAttempt.defaultSha}\``
+              : ""
+          }:\n\n> ${repeatedAttempt.reason}\n\n`
         : ""
     }` +
     `${describeBranchTips(tips)}\n\n` +
