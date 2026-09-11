@@ -1372,6 +1372,18 @@
       "paths": [
         "worker/deno/lib/ci_fix_attempt_markers.ts"
       ]
+    },
+    {
+      "issue": 1878,
+      "chunk": "12ab",
+      "title": "top-up: aggregator recognition from workflow needs:",
+      "ledger": "docs/audits/security-sweep-1878-workflow-job-needs.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12aa recorded their coverage: workflow_job_needs.ts (#1878)",
+      "status": "swept",
+      "sweptAt": "d72345e3a008a54356fba376387984d56ae00a3b",
+      "paths": [
+        "worker/deno/lib/workflow_job_needs.ts"
+      ]
     }
   ],
   "roots": [

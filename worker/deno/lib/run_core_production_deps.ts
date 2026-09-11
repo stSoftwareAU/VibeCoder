@@ -1741,6 +1741,10 @@ export async function createProductionRunCoreDeps(
         // retry cap is actually observed and a green build really does clear
         // the auto-fix budget recorded against that PR.
         stateDir: ciCheckStateDir,
+        // Issue #1878: the parent of the per-repo clones, so the scan can
+        // read `.github/workflows` and drop aggregator checks. Never
+        // clones — a repo with no clone here is simply not filtered.
+        workDir,
         prAuthors: fleetPrAuthorInput.fleetPrAuthors,
         allowedAuthors: fleetPrAuthorInput.allowedAuthors,
       });
@@ -1803,6 +1807,11 @@ export async function createProductionRunCoreDeps(
             checkRunId: check.checkId,
             checkName: check.checkName,
             encodedAnnotations: check.encodedAnnotations,
+            // Issue #1878: so the processor can repeat the scan's
+            // aggregator decision against the branch it checked out.
+            ...(check.siblingFailedCheckNames !== undefined
+              ? { siblingFailedCheckNames: check.siblingFailedCheckNames }
+              : {}),
           },
           {
             logger,
