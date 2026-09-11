@@ -27,6 +27,7 @@ import {
 import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
 import { unstageWorkerStateFiles } from "./git_push.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
+import { describeGitFailure } from "./milestone_merge_state.ts";
 
 /** One agent run asked for by the milestone sync. */
 export interface MilestoneConflictAgentRequest {
@@ -191,13 +192,10 @@ async function stageAgentResolution(
 ): Promise<Result<void>> {
   const added = await runGitCommand(["add", "-A"], options);
   if (!added.ok || added.value.code !== 0) {
-    const detail = (added.ok ? added.value.stderr : added.error.message).trim();
     return {
       ok: false,
       error: new Error(
-        `its resolution could not be staged: ${
-          detail || "git reported no stderr"
-        }`,
+        `its resolution could not be staged: ${describeGitFailure(added)}`,
       ),
     };
   }

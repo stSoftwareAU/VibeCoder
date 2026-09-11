@@ -25,6 +25,37 @@ import {
 export const MILESTONE_SYNC_ESCALATION_THRESHOLD = 3;
 
 /**
+ * Whether this cycle's concluded reason repeats the previous cycle's
+ * (Issue #1964).
+ *
+ * A branch whose failure reason has not changed is not making progress: the
+ * fleet watched `milestone/168-…` spend four cycles, and four agent runs, on
+ * one identical line before anyone was told. An identical repeat is therefore
+ * escalated on its second occurrence rather than at
+ * {@link MILESTONE_SYNC_ESCALATION_THRESHOLD}.
+ *
+ * "The previous cycle" means the previous **failing** cycle in an unbroken
+ * run of them. {@link SyncStreakEntry.lastAttempt} survives a success on
+ * purpose — it is the audit record — so the caller passes `failureCount`,
+ * this cycle's consecutive-failure count, and a branch that failed, synced,
+ * then failed the same way again reads as the first failure it is.
+ *
+ * @param entry - The branch's streak entry, before this cycle concludes
+ * @param reason - The reason this cycle concluded with
+ * @param failureCount - Consecutive failures including this cycle's
+ */
+export function isRepeatedFailureReason(
+  entry: SyncStreakEntry,
+  reason: string,
+  failureCount: number,
+): boolean {
+  if (failureCount < 2) return false;
+  const previous = entry.lastAttempt?.reason;
+  return typeof previous === "string" && previous.length > 0 &&
+    previous === reason;
+}
+
+/**
  * Concluded conflict-resolution failures a milestone branch may spend before
  * the ladder stops trying (Issue #1766).
  *
