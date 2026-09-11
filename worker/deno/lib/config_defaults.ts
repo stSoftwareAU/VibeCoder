@@ -299,10 +299,16 @@ export const OPERATIONAL_DEFAULTS = {
   clarificationTimeout: 120,
   clarificationKillAfter: 10,
   /**
-   * Maximum number of grill-me clarification rounds before the workflow
-   * gives up and hands the issue back (Issue #1616).
+   * Runaway ceiling on grill-me clarification rounds (Issue #1616, #1933).
+   *
+   * Not a productivity budget: a grilling stops when the stall guard sees a
+   * round repeat every question stem it had already asked, so this number only
+   * bounds a grilling that keeps finding new questions forever. The
+   * ceiling-th round is itself the forced final round, so a grilling posts at
+   * most this many rounds since its latest Ready comment. Raised from 5 by
+   * Issue #1933, where a five-round productive grilling was halted mid-flow.
    */
-  maxGrillMeRounds: 5,
+  maxGrillMeRounds: 20,
   /**
    * Timeout in seconds for a single grill-me round (Issue #1616).
    *

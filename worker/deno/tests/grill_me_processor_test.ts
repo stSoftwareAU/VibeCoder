@@ -2226,38 +2226,34 @@ Deno.test(
 );
 
 // ============================================================================
-// processGrillMe — Issue #1648: maxGrillMeRounds is a safety cap that
-// escalates to needs-human rather than forcing finalisation.
+// processGrillMe — Issue #1648, #1933: maxGrillMeRounds is a runaway ceiling.
+// Reaching it runs a forced final round that must post Ready; only a forced
+// round that posts no Ready escalates to needs-human.
 // ============================================================================
 
 Deno.test(
-  "processGrillMe - escalates to needs-human when safety cap is reached without Ready marker",
+  "processGrillMe - the ceiling round runs as a forced final round rather than escalating (Issue #1933)",
   async () => {
     const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 3 }) });
     const priorRounds: GitHubComment[] = [
       makeComment({
         id: 1,
         author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}1`,
+        body: `${GRILL_ME_ROUND_MARKER}1\n\n### Questions\n\n1. First?`,
       }),
       makeComment({ id: 2, author: "user1", body: "reply 1" }),
       makeComment({
         id: 3,
         author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}2`,
+        body: `${GRILL_ME_ROUND_MARKER}2\n\n### Questions\n\n1. Second?`,
       }),
       makeComment({ id: 4, author: "user1", body: "reply 2" }),
-      makeComment({
-        id: 5,
-        author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}3`,
-      }),
-      makeComment({ id: 6, author: "user1", body: "reply 3" }),
     ];
 
     const addedLabels: string[] = [];
     let claudeInvoked = false;
-    let postedComment = "";
+    let capturedPrompt = "";
+    const postedBodies: string[] = [];
 
     const ghClient = stubGhClient({
       getIssueComments: () => Promise.resolve(priorRounds),
@@ -2267,18 +2263,23 @@ Deno.test(
         return Promise.resolve();
       },
       postComment: (_r, _n, body) => {
-        postedComment = body;
+        postedBodies.push(body);
         return Promise.resolve(undefined);
       },
     });
 
     const deps = createMockDeps({
       claude: {
-        runClaudeWithRetry: () => {
+        runClaudeWithRetry: (opts: { prompt: string }) => {
           claudeInvoked = true;
+          capturedPrompt = opts.prompt;
           return Promise.resolve({
             ok: true,
-            value: { output: "ok", exitCode: 0, timedOut: false },
+            value: {
+              output: GRILL_ME_READY_MARKER,
+              exitCode: 0,
+              timedOut: false,
+            },
           });
         },
       },
@@ -2292,19 +2293,99 @@ Deno.test(
     });
     assertEquals(result.ok, true);
     if (!result.ok) return;
-    assertEquals(claudeInvoked, false, "Claude must not run after safety cap");
+    assertEquals(claudeInvoked, true, "the ceiling round still runs Claude");
+    assertEquals(result.value.processed, true);
+    assertEquals(result.value.isFinalRound, true);
+    assertEquals(result.value.escalatedToHuman, false);
+    assertStringIncludes(
+      capturedPrompt,
+      "Forced final round: round ceiling (3) reached",
+    );
+    const escalation = postedBodies.find((b) =>
+      b.includes("## Grill-Me Escalation")
+    );
+    assertEquals(
+      escalation,
+      undefined,
+      `A forced round that posted Ready must not escalate; got: ${
+        postedBodies.join(" | ")
+      }`,
+    );
+    assertNoForbiddenLabel(addedLabels);
+  },
+);
+
+Deno.test(
+  "processGrillMe - a forced final round that posts no Ready escalates with a next-phase recommendation (Issue #1933)",
+  async () => {
+    const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 3 }) });
+    const priorRounds: GitHubComment[] = [
+      makeComment({
+        id: 1,
+        author: "testbot",
+        body: `${GRILL_ME_ROUND_MARKER}1\n\n### Questions\n\n1. First?`,
+      }),
+      makeComment({ id: 2, author: "user1", body: "reply 1" }),
+      makeComment({
+        id: 3,
+        author: "testbot",
+        body: `${GRILL_ME_ROUND_MARKER}2\n\n### Questions\n\n1. Second?`,
+      }),
+      makeComment({ id: 4, author: "user1", body: "reply 2" }),
+    ];
+
+    const addedLabels: string[] = [];
+    const postedBodies: string[] = [];
+
+    const ghClient = stubGhClient({
+      getIssueComments: () => Promise.resolve(priorRounds),
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      addLabel: (_r, _n, label) => {
+        addedLabels.push(label);
+        return Promise.resolve();
+      },
+      postComment: (_r, _n, body) => {
+        postedBodies.push(body);
+        return Promise.resolve(undefined);
+      },
+    });
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}3`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          }),
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
     assertEquals(result.value.escalatedToHuman, true);
-    assertEquals(result.value.processed, false);
-    // Safety-cap escalation flags via escalatedToHuman, not needsHumanAdded.
     assertEquals(result.value.needsHumanAdded, false);
     assertEquals(result.value.needsHumanRemoved, false);
     assert(
       addedLabels.includes("needs-human"),
-      "needs-human label should be added when safety cap is reached",
+      "needs-human is added when a forced final round posts no Ready",
     );
+    const escalation = postedBodies.find((b) =>
+      b.includes("## Grill-Me Escalation")
+    );
+    assert(escalation !== undefined, "expected a Grill-Me Escalation comment");
     // Must recommend a next-phase label without applying one.
-    assertStringIncludes(postedComment, "planning");
-    assertStringIncludes(postedComment, "work-on");
+    assertStringIncludes(escalation, "planning");
+    assertStringIncludes(escalation, "work-on");
     assertNoForbiddenLabel(addedLabels);
   },
 );
@@ -2774,7 +2855,7 @@ Deno.test(
 );
 
 Deno.test(
-  "processGrillMe - safety-cap escalation unassigns the worker (Issue #1830)",
+  "processGrillMe - a failed forced final round unassigns the worker (Issue #1830, #1933)",
   async () => {
     const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 2 }) });
     const unassignedAssignees: string[][] = [];
@@ -2802,7 +2883,21 @@ Deno.test(
       },
     });
 
-    const deps = createMockDeps();
+    // The ceiling makes Round 3 the forced final round; Claude posts another
+    // round comment instead of Ready, which is the escalating path.
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}3`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          }),
+      },
+    });
 
     const result = await processGrillMe(ctx, {
       promptsDir: PROMPTS_DIR,
@@ -4201,7 +4296,8 @@ Deno.test(
     // prefer converging, so the cap it is shown has to be in the same scale:
     // 3 rounds spent before the Ready comment + a cap of 3 = 6.
     assertStringIncludes(capturedPrompt, "Round number: `4`");
-    assertStringIncludes(capturedPrompt, "Round cap (safety net only): `6`");
+    assertStringIncludes(capturedPrompt, "Round ceiling");
+    assertStringIncludes(capturedPrompt, "`6`");
     // The run summary reads in that same scale — never "Round 4/3".
     assertStringIncludes(result.value.summary, "Round 4/6");
   },
