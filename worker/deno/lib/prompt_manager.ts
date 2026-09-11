@@ -268,10 +268,14 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   // Issue #849: the grill-me builder always substitutes the guidelines, the
   // verbosity block and the deterministic requirements rubric, but an
   // operator's override is free to omit any of them.
+  // Issue #1933: `FORCED_FINAL_INSTRUCTION` carries the forced-final signal
+  // the stop rule computes — empty on an ordinary round, so an operator's
+  // override is free to omit it.
   "grill-me": [
     "VERBOSITY_INSTRUCTIONS",
     "CODING_GUIDELINES",
     "RUBRIC_FINDINGS",
+    "FORCED_FINAL_INSTRUCTION",
   ],
   ci_fix: [
     "VERBOSITY_INSTRUCTIONS",

@@ -113,8 +113,10 @@ flowchart TD
   `planning` (sub-issue breakdown) or `work-on` (single-PR implementation), and
   the worker removes **both** `grill-me` and `needs-human` automatically. The
   developer then applies the chosen label themselves; the worker never swaps
-  labels for them. `maxGrillMeRounds` (default 5) is a safety cap — reaching it
-  without convergence escalates to `needs-human` rather than finalising. See
+  labels for them. `maxGrillMeRounds` (default 20) is a runaway ceiling, not a
+  productivity budget — a grilling stops when a round repeats every question
+  stem it already asked (the stall guard), and either trigger makes the next
+  round a forced final round that must post the Ready comment. See
   [grill-me.md](grill-me.md) for the full lifecycle, mobile workflow, failure
   modes, worked example, and the
   [Whose turn is it? (read the labels)](grill-me.md#-whose-turn-is-it-read-the-labels)

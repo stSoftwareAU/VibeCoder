@@ -1659,7 +1659,7 @@ unless explicitly overridden.
 | Max clarification rounds       | `max_clarification_rounds`       | `3`        | Maximum clarification rounds before auto-proceeding                                                                                                                                                  |
 | Grill-me timeout | `grill_me_timeout` | `3600` | Timeout for a single grill-me round (1 hour). Raised from 10 minutes by — grill-me reasons at top-tier model and effort. See [Grill Me](workflows/grill-me.md). |
 | Grill-me kill-after            | `grill_me_kill_after`            | `10`       | Grace period after `grill_me_timeout` before force-kill                                                                                                                                              |
-| Max grill-me rounds | `max_grill_me_rounds` | `5` | Maximum grill-me rounds before the worker escalates with `needs-human` |
+| Max grill-me rounds | `max_grill_me_rounds` | `20` | Runaway ceiling on grill-me rounds since the latest Ready comment ([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)). The stall guard normally stops grilling first; the ceiling-th round is itself the forced final round |
 | Quorum timeout | `quorum_timeout` | `1800` | Wall-clock budget for **one** Quorum agent (30 minutes). The two drafts run concurrently, so a run costs one draft plus one judgement. |
 | Quorum kill-after | `quorum_kill_after` | `10` | Grace period after `quorum_timeout` before the agent is killed |
 | Quorum planners | `quorum_planners` | `["claude", "claude"]` | The **two** drafting providers of a Quorum run. Exactly two ids; a different count is rejected at startup. |
