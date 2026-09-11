@@ -47,6 +47,12 @@ Deno.test("run_callbacks_config - an empty block configures no hooks", () => {
   assertEquals(config.timeoutSeconds, DEFAULT_CALLBACK_TIMEOUT_SECONDS);
 });
 
+Deno.test("run_callbacks_config - accepts a cycle heartbeat path (Issue #1955)", () => {
+  const config = parsed({ cycle: "/opt/hooks/cycle.sh" });
+  assertEquals(config.cycle, "/opt/hooks/cycle.sh");
+  assertEquals(config.success, undefined);
+});
+
 Deno.test("run_callbacks_config - all three hooks are optional and independent", () => {
   const config = parsed({ failure: "/opt/hooks/failure.sh" });
   assertEquals(config.success, undefined);
