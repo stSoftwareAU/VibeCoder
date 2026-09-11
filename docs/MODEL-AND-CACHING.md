@@ -126,10 +126,10 @@ a section without a marker, fails `deno test`.
 | **[Batch API](#batch-api)** | ➖ | ➖ | ➖ | ➖ | Not wired for any provider |
 | [Why it was rejected](#why-it-was-rejected) | ➖ | ➖ | ➖ | ➖ | The async/bounded-run mismatch is the worker's, not a vendor's |
 | [What remains in the code](#what-remains-in-the-code) | ➖ | ➖ | ➖ | ➖ | Offline estimation helpers only; nothing calls them at run time |
-| **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Logged with a `provider` id. Codex usage is measured when the CLI reports it; its model ids are unpriced (ChatGPT subscription ≠ API bill) and charged at the conservative upper bound. Gemini's usage is UNKNOWN; DeepSeek's parses, but every non-Claude model id is unpriced |
+| **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Logged with a `provider` id. Codex usage is measured when the CLI reports it and priced from its own row at the vendor's API-equivalent list price. Gemini's usage is UNKNOWN, so there is nothing to price yet; DeepSeek's parses and prices the same API-equivalent way |
 | [Token Extraction](#token-extraction) | ✅ | ✅ | ❌ | ✅ | Codex usage is decoded from `turn.completed` / `token_count` (#1701). Gemini's output shape does not parse: warned once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads |
-| [Model Pricing](#model-pricing) | ✅ | ❌ | ❌ | ❌ | No Codex/Gemini/DeepSeek pricing rows: ChatGPT subscription usage is not an API bill, so `gpt-5-codex` is charged at the dearest known rate and named in `unpricedModels` rather than costed at a fabricated list price |
-| [Credit Logging](#credit-logging) | ✅ | ⚠️ | ⚠️ | ⚠️ | The entry is written and names the provider; Codex token fields are measured when the CLI reports them, else `usageUnknown`; cost is an upper bound whenever the model id is unpriced |
+| [Model Pricing](#model-pricing) | ✅ | ✅ | ✅ | ✅ | Claude rows are the rate Anthropic bills. The eight routable Codex/Gemini/DeepSeek ids carry **API-equivalent** rows — the vendor's API list price for the same tokens, labelled `(API-equivalent)` wherever the figure is shown and never a bill, because those providers run on a fixed-price subscription. An id outside the table is still charged at the upper bound and named in `unpricedModels` |
+| [Credit Logging](#credit-logging) | ✅ | ⚠️ | ⚠️ | ⚠️ | The entry is written and names the provider; Codex token fields are measured when the CLI reports them, else `usageUnknown`; cost comes from the model id's own row — API-equivalent for a non-Claude id — and is an upper bound only when the id has no row at all |
 | [Context Window Budget Monitoring](#context-window-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex GPT-5 ids use a 400k `MODEL_CONTEXT_WINDOWS` row; Gemini (and unrecognised ids) still fall back to the 200,000-token default ceiling |
 | **[Token Saving Strategies](#token-saving-strategies)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Prompt-level strategies apply to everyone; the session-store ones reach DeepSeek but not Codex or Gemini, and the Anthropic-cache ones are Claude's alone |
 | [1. Prompt Caching (Two-Layer)](#1-prompt-caching-two-layer) | ✅ | ⚠️ | ⚠️ | ⚠️ | Layer 1 only |
@@ -869,13 +869,28 @@ carrying these counts.
 The **estimate-only** cost block prices the recorded tokens
 against the shared `MODEL_PRICING` table (`worker/deno/lib/token_usage.ts`) — the
 single source of truth for rates — via `formatCostEstimateLines()`
-(`worker/deno/lib/cost_estimate.ts`). Currency is USD as billed by Anthropic and
-the figure is always labelled an estimate. A run that mixes models (e.g. a
-Fable→Opus fallback across invocations) is costed **per model**, each on its own
-sub-bullet, and the totals are summed. When a served model has no pricing row its
-sub-bullet reads `_pricing unknown_` and the summary is marked `(partial …)`
-rather than silently costed at zero (fail-loud,). The block is
-omitted entirely when no priced tokens were recorded.
+(`worker/deno/lib/cost_estimate.ts`). Currency is USD: a Claude sub-bullet is
+the rate Anthropic bills, while a non-Claude sub-bullet is the vendor's API
+**list** price for the same tokens — labelled `(API-equivalent)` and never a
+bill, because every non-Claude provider runs on a fixed-price subscription
+(Issue #1923). The figure is always labelled an estimate. A run that mixes
+models (e.g. a Fable→Opus fallback across invocations, or a Claude phase beside
+a Codex one) is costed **per model**, each on its own sub-bullet, and the totals
+are summed:
+
+```markdown
+- **Estimated cost (USD, estimate only):** ~$0.91
+  - `claude-fable-5-20250115`: $0.85 — input $0.48 · output $0.33 · cache write $0.16 · cache read $0.03
+  - `gpt-5-codex`: $0.06 (API-equivalent) — input $0.0400 · output $0.0200 · cache write $0.0000 · cache read $0.0000
+```
+
+The four columns are identical for every provider, so a column the vendor does
+not bill — no vendor charges a per-token cache write — renders `$0.0000` rather
+than being dropped, and the breakdown always reconciles with the total. When a
+served model has no pricing row at all its sub-bullet reads `_pricing unknown_`
+and the summary is marked `(partial …)` rather than silently costed at zero
+(fail-loud,). The block is omitted entirely when no priced tokens were
+recorded.
 
 When the same run is served by a different tier — and the expected tier served
 **none** of it — the verdict line flips and names the reason:
@@ -1981,7 +1996,7 @@ which only *reports* what a hypothetical discount would be. No
 
 ## Token Usage & Cost Tracking
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — every invocation is credit-logged with its provider id. Codex usage is measured when the CLI reports it; its model ids are unpriced (ChatGPT subscription ≠ API bill) and charged at a conservative upper bound. Gemini usage is recorded UNKNOWN (never zero). DeepSeek's counts do parse — same CLI, same `stream-json` — but its model ids are unpriced, so its cost is an upper bound rather than a measured one.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — every invocation is credit-logged with its provider id. Codex usage is measured when the CLI reports it and priced from its API-equivalent row. Gemini usage is recorded UNKNOWN (never zero), so there are no tokens to price yet. DeepSeek's counts do parse — same CLI, same `stream-json` — and price from their own rows the same way.
 
 ### Token Extraction
 
@@ -2024,9 +2039,11 @@ An `usageUnknown` invocation contributes **no** tokens or cost to the daily
 totals and is counted separately, so `credit summary` ends with a line such as
 `WARNING: 2 invocation(s) reported no parseable token usage (provider(s):
 gemini) — their tokens and cost are UNKNOWN, not zero, and are NOT
-counted in the totals above.` Codex model ids remain unpriced: ChatGPT
-subscription usage is not an API bill, so spend-ceiling accounting uses the
-conservative upper bound rather than a fabricated list price.
+counted in the totals above.` Codex model ids are priced: each carries an
+API-equivalent row, so spend-ceiling accounting reads the rate from the row
+rather than over-charging the run at the conservative upper bound. The figure is
+still not a bill — ChatGPT subscription usage never is — which is why it is
+labelled `(API-equivalent)` wherever it is shown.
 
 ```mermaid
 flowchart LR
@@ -2043,7 +2060,7 @@ flowchart LR
 
 ### Model Pricing
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — `MODEL_PRICING` holds Claude rows only. ChatGPT subscription usage is not an API bill, so a `gpt-5-codex` id is charged at the dearest known rate and named in `unpricedModels` rather than costed at a fabricated OpenAI list price. `MODEL_PRICING` has no `deepseek-reasoner` or `deepseek-chat` row either, so a DeepSeek run is charged at the dearest known rate and named in `unpricedModels`.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — `MODEL_PRICING` carries the Claude rows Anthropic bills **and** an **API-equivalent** row for each of the eight routable Codex, Gemini and DeepSeek ids (`gpt-5-codex`, `gpt-5-mini`, `gpt-5`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `deepseek-reasoner`, `deepseek-chat`). An API-equivalent figure is the vendor's API list price for the same tokens, labelled `(API-equivalent)` on its run-stats sub-bullet — never a bill, because each provider runs on a fixed-price subscription. An id outside the table is still charged at the dearest known rate and named in `unpricedModels`.
 
 Approximate list prices (USD per million tokens, as of September 2026):
 
@@ -2057,6 +2074,43 @@ Approximate list prices (USD per million tokens, as of September 2026):
 | Claude Sonnet 5 | $2.00 | $10.00 | $2.50 | $0.20 |
 | Claude Sonnet 4.6 | $3.00 | $15.00 | $3.75 | $0.30 |
 | Claude Haiku 4.5 | $1.00 | $5.00 | $1.25 | $0.10 |
+
+The non-Claude rows below are **API-equivalent list prices** (USD per million
+tokens, read from the vendor pricing pages and **checked on 2026-09-11**), not
+bills — every one of these providers runs on a fixed-price subscription, so the
+figure is what the same tokens would have cost on that vendor's API and the
+run-stats sub-bullet says `(API-equivalent)`:
+
+| Model | Input | Output | Cache Write | Cache Read | Source |
+|-------|------:|-------:|------------:|-----------:|--------|
+| `gpt-5-codex` | $1.25 | $10.00 | $0.00 | $0.1250 | [OpenAI](https://developers.openai.com/api/docs/models/gpt-5-codex) |
+| `gpt-5-mini` | $0.25 | $2.00 | $0.00 | $0.0250 | [OpenAI](https://developers.openai.com/api/docs/pricing) |
+| `gpt-5` | $1.25 | $10.00 | $0.00 | $0.1250 | [OpenAI](https://developers.openai.com/api/docs/pricing) |
+| `gemini-2.5-pro` | $1.25 | $10.00 | $0.00 | $0.1250 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
+| `gemini-2.5-flash` | $0.30 | $2.50 | $0.00 | $0.0300 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
+| `gemini-2.5-flash-lite` | $0.10 | $0.40 | $0.00 | $0.0100 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
+| `deepseek-reasoner` | $0.30 | $1.20 | $0.00 | $0.0060 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing) |
+| `deepseek-chat` | $0.30 | $1.20 | $0.00 | $0.0060 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing) |
+
+Basis for each group, stated because the vendor publishes more than one rate:
+
+- **Codex / GPT-5** — the standard (non-batch) rate; cache read is OpenAI's
+  cached-input rate.
+- **Gemini 2.5 Pro** — the paid tier's **≤200k prompt-token** band. Prompts
+  above 200k tokens bill at $2.50 / $15.00 with a $0.25 cache read, which these
+  rows do not model. Flash and Flash-Lite use the text/image/video input rate,
+  not the dearer audio one. Thinking tokens are billed as **output** ("Output
+  price (including thinking tokens)"), so they need no rate of their own.
+- **DeepSeek** — the **standard-hours** rate with **no off-peak discount**
+  applied (off-peak is half price, so the row never under-states). Both
+  `deepseek-reasoner` and `deepseek-chat` are legacy aliases the vendor no
+  longer lists; while accepted they resolved to the thinking and non-thinking
+  modes of the Flash model and billed at the Flash price, which is what is
+  priced here.
+- **Cache write is $0.00 for every row** — no vendor bills a per-token cache
+  write (Codex reports no cache-write counter at all, and Gemini's
+  explicit-cache *storage* is charged hourly, which is not modelled). The
+  column is still rendered, as `$0.0000`, so the breakdown reconciles.
 
 Opus 5 (model id `claude-opus-5`, alias `opus`) lands at the **same** price point
 as the modern Opus 4.5–4.8 line ($5 / $25 per MTok, cache $6.25 / $0.50) — a
@@ -2271,7 +2325,7 @@ tokens — this is why prompt caching delivers such large savings.
 
 ### Credit Logging
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an entry is written for every invocation and carries the `provider` id. Codex token fields are measured when the CLI reports them; its cost is an upper-bound estimate because the model id is unpriced (ChatGPT subscription ≠ API bill). Gemini token fields read `usageUnknown`. A DeepSeek entry carries real token fields and an upper-bound cost.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an entry is written for every invocation and carries the `provider` id. Codex token fields are measured when the CLI reports them, and the cost is read from the id's API-equivalent row (the vendor's API list price, not a bill). Gemini token fields read `usageUnknown`. A DeepSeek entry carries real token fields, costed the same API-equivalent way.
 
 Every Claude invocation is logged to a daily credit log file (newline-
 delimited JSON):
@@ -2325,12 +2379,15 @@ and reported separately:
 | `unknownUsageProviders` | Providers those runs ran under, sorted |
 | `malformedLogLines` | Log lines that could not be parsed and were skipped |
 
-**Non-Claude ids land here too.** `MODEL_PRICING` holds Claude rows only, so a
-Codex or Gemini model id (`gpt-5-codex`, `gemini-2.5-pro`) has no pricing row
-and its tokens are charged at the same upper bound and named in
-`unpricedModels` — an over-estimate an operator can see, never a `$0`. A run of
-that provider whose usage could not be parsed at all has no tokens to charge,
-so it is counted in `unknownUsageInvocations` instead
+**Any id with no row lands here, whatever its vendor.** The eight routable
+Codex, Gemini and DeepSeek ids now carry
+[API-equivalent rows](#model-pricing), so they are priced from the row and stay
+out of `unpricedModels`. An id outside the table — a Claude release newer than
+the table, or a non-Claude id the worker does not route to such as `gpt-4.1` or
+`gemini-3-pro` — has no pricing row, so its tokens are charged at the upper
+bound and it is named in `unpricedModels`: an over-estimate an operator can
+see, never a `$0`. A run whose usage could not be parsed at all has no tokens
+to charge, so it is counted in `unknownUsageInvocations` instead
 ([above](#non-claude-providers-unknown-never-zero)).
 
 `formatSummary` prints both an `Unpriced models` line and a `WARNING:` line for

@@ -129,20 +129,26 @@ Deno.test("token_usage - estimateCostWithUpperBound charges an unknown id at the
   assertAlmostEquals(bounded.cost.totalCost, expected, 1e-9);
 });
 
-Deno.test("token_usage - Codex GPT-5 ids are unpriced (subscription ≠ API bill, Issue #1701)", () => {
+Deno.test("token_usage - Codex GPT-5 ids are priced at the API-equivalent row, not the bound (Issue #1937)", () => {
+  // Inverts the Issue #1701 case above it: the Codex ids now carry rows, so
+  // the daily ceiling prices them from the row rather than over-charging them
+  // at the unpriced upper bound (Issue #1937).
   for (const id of ["gpt-5-codex", "gpt-5", "gpt-5-mini"]) {
-    assertEquals(lookupModelPricing(id), null);
+    const row = lookupModelPricing(id);
+    assert(row, `${id} must carry a pricing row`);
+    assertEquals(row.apiEquivalent, true);
     const bounded = estimateCostWithUpperBound({
       inputTokens: 1_000_000,
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
     }, id);
-    assertEquals(bounded.priced, false);
-    assertAlmostEquals(
-      bounded.cost.totalCost,
-      UNPRICED_UPPER_BOUND_PRICING.inputPerMillion,
-      1e-9,
+    assertEquals(bounded.priced, true);
+    assertAlmostEquals(bounded.cost.totalCost, row.inputPerMillion, 1e-9);
+    assert(
+      bounded.cost.totalCost <
+        UNPRICED_UPPER_BOUND_PRICING.inputPerMillion,
+      `${id} must cost less than the unpriced bound it used to be charged at`,
     );
   }
 });
@@ -223,6 +229,38 @@ Deno.test("credit_tracker - a known model id is unaffected by the upper bound", 
     assertEquals(summary.unpricedEstimatedCost, 0);
     assertEquals(summary.unpricedTokens.inputTokens, 0);
   });
+});
+
+Deno.test("credit_tracker - a day of only Codex/Gemini/DeepSeek invocations reports no unpriced spend (Issue #1937)", async () => {
+  const tokens = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  };
+  const models = ["gpt-5-codex", "gemini-2.5-pro", "deepseek-chat"];
+
+  await withCreditLog(
+    models.map((model) => ({ model, ...tokens })),
+    async (logDir) => {
+      const result = await getDailySummary({ logDir, date: TODAY });
+      assert(result.ok);
+      if (!result.ok) return;
+      const summary = result.value;
+
+      assertEquals(summary.unpricedModels, []);
+      assertEquals(summary.unpricedEstimatedCost, 0);
+      assertEquals(summary.unpricedTokens.inputTokens, 0);
+
+      // Every row is priced, so the total is the sum of the row rates.
+      const expected = models.reduce((sum, model) => {
+        const row = lookupModelPricing(model);
+        assert(row, `${model} must carry a pricing row`);
+        return sum + row.inputPerMillion + row.outputPerMillion;
+      }, 0);
+      assertAlmostEquals(summary.totalEstimatedCost, expected, 1e-9);
+    },
+  );
 });
 
 Deno.test("credit_tracker - unpriced tokens are added to the per-phase cost too", async () => {
