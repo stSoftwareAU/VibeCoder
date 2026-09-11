@@ -1384,6 +1384,18 @@
       "paths": [
         "worker/deno/lib/workflow_job_needs.ts"
       ]
+    },
+    {
+      "issue": 1879,
+      "chunk": "12ac",
+      "title": "top-up: the CI-fix PR marker reader",
+      "ledger": "docs/audits/security-sweep-1879-ci-fix-pr-markers.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12ab recorded their coverage: ci_fix_pr_markers.ts (#1879)",
+      "status": "swept",
+      "sweptAt": "d0d30d458b6e08116ebb549bcbb817728af204f0",
+      "paths": [
+        "worker/deno/lib/ci_fix_pr_markers.ts"
+      ]
     }
   ],
   "roots": [

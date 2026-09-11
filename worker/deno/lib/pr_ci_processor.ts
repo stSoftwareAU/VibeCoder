@@ -79,7 +79,6 @@ import {
   type PrCiFixMarkerState,
   readPrCiFixMarkers,
 } from "./ci_fix_pr_markers.ts";
-import { addLabelToIssue } from "./label_operations.ts";
 import {
   buildCiNoChangesResponse,
   formatClassifierTrailer,
@@ -1483,8 +1482,8 @@ async function _processCiWithHeartbeat(
   // to the comment already carrying that diagnosis, rather than posting a
   // second copy of it — one CI-fix comment per failure signature per pull
   // request, fleet-wide.
-  const editedInPlace = !actuallyPushed && attemptMarker !== undefined &&
-      priorNoChange !== undefined
+  const editedInPlace = !actuallyPushed && !hasChanges &&
+      attemptMarker !== undefined && priorNoChange !== undefined
     ? await _appendAttemptInPlace({
       repo,
       prNumber,
@@ -1523,14 +1522,15 @@ async function _processCiWithHeartbeat(
     const detail = pushFailureDetail
       ? `\n\nPush recovery detail: ${pushFailureDetail}`
       : "";
-    if (!editedInPlace) {
-      await replyToComment(
-        repo,
-        prNumber,
-        `I fixed the CI failure (**${checkName}**) locally but failed to push the changes. Please check the branch status.${detail}${markerSuffix}`,
-        deps,
-      );
-    }
+    // Always its own comment: a push that failed is news, and folding it
+    // into an unrelated "no change required" comment would bury it. The
+    // marker still says `no-change` — nothing reached the pull request.
+    await replyToComment(
+      repo,
+      prNumber,
+      `I fixed the CI failure (**${checkName}**) locally but failed to push the changes. Please check the branch status.${detail}${markerSuffix}`,
+      deps,
+    );
   } else {
     // Issue #1691: replace dismissive "transient or infrastructure" fallback
     // with a classifier-aware response. For code-fix-required failures, add
@@ -1554,11 +1554,16 @@ async function _processCiWithHeartbeat(
       ? undefined
       : `${customMessage}${formatClassifierTrailer(classification)}`;
     if (editedInPlace) {
-      // The explanation comment is the one just edited, so only the label
-      // still needs applying — never a second copy of the same diagnosis.
-      if (response.addNeedsHuman) {
-        await _ensureNeedsHumanLabel(repo, prNumber, processorDeps);
-      }
+      // The explanation is the comment just edited, so nothing is posted.
+      // No label is applied here either: `needs-human` belongs to the
+      // `escalateToHuman` chokepoint (Issue #2202), which the run that first
+      // posted this diagnosis already went through for the same signature —
+      // and which the cap escalation goes through again at attempt 3.
+      logger.info(
+        "CI-fix reply appended to the existing comment — no second copy, " +
+          "no second escalation (Issue #1879)",
+        { repo, prNumber, checkName, signature },
+      );
     } else if (response.addNeedsHuman) {
       // Issue #2211: route via the shared escalateToHuman helper so the
       // `needs-human` label and the explanation comment are applied
@@ -1762,54 +1767,6 @@ async function _appendAttemptInPlace(opts: {
       },
     );
     return false;
-  }
-}
-
-/**
- * Apply `needs-human` when the explanation comment already exists.
- *
- * The label and an explanation must always appear together (Issue #2211);
- * here the explanation is the comment just edited in place, so only the
- * label is outstanding. Routed through `addLabelToIssue` so the worker
- * label allowlist guard still covers the call.
- */
-async function _ensureNeedsHumanLabel(
-  repo: string,
-  prNumber: number,
-  processorDeps: CiProcessorDeps,
-): Promise<void> {
-  const { logger, deps } = processorDeps;
-  const ghFn = processorDeps.ghCommandFn ?? deps.github.runGhCommand;
-  try {
-    const ensured = await deps.github.ensureLabelExists(
-      repo,
-      "needs-human",
-      "d4c5f9",
-      "Worker could not produce a fix; human review required",
-    );
-    if (!ensured.ok) {
-      logger.warn("Could not ensure the needs-human label exists", {
-        repo,
-        prNumber,
-        error: ensured.error.message,
-      });
-    }
-    const added = await addLabelToIssue(repo, prNumber, "needs-human", {
-      ghCommandFn: ghFn,
-    });
-    if (!added.ok) {
-      logger.warn("Could not apply the needs-human label", {
-        repo,
-        prNumber,
-        error: added.error.message,
-      });
-    }
-  } catch (error: unknown) {
-    logger.warn("Applying the needs-human label threw", {
-      repo,
-      prNumber,
-      error: error instanceof Error ? error.message : String(error),
-    });
   }
 }
 
