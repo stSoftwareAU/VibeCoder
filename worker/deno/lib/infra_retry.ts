@@ -82,6 +82,9 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
  * Returns `true` if:
  *   - `failureReason` classifies as an infrastructure category
  *     (`isInfrastructureFailure(detectFailureCategory(reason))`), AND
+ *   - that category is not `token_scope` — a missing OAuth scope is the
+ *     host's credential, not a transient blip, so no backoff can fix it
+ *     (Issue #1952), AND
  *   - the phase has not already been retried in this workOnIssue invocation
  *     (tracked via `state.infraRetryCounts[phase]`).
  *

@@ -16,7 +16,6 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   isWorkflowScopePushRefusal,
   recordedWorkflowScopeValue,
-  tokenHasWorkflowScope,
   WORKFLOW_SCOPE_ENV,
   workflowScopePushRefusalMessage,
   workflowScopeState,
@@ -111,12 +110,6 @@ Deno.test("workflowScopeState - the launcher's verdict is granted, absent or unk
     workflowScopeState(envOf({ [WORKFLOW_SCOPE_ENV]: "" })),
     "unknown",
   );
-  // The pre-#1952 boolean keeps its fail-open contract.
-  assertEquals(tokenHasWorkflowScope(envOf({})), true);
-  assertEquals(
-    tokenHasWorkflowScope(envOf({ [WORKFLOW_SCOPE_ENV]: "false" })),
-    false,
-  );
 });
 
 Deno.test({
@@ -208,15 +201,15 @@ Deno.test("workflowScopeVerdictFor - every detection outcome records a verdict, 
     }),
     "absent",
   );
-  // A GitHub App installation token has no OAuth scopes to read, and was
-  // fail-open before #1475 — recorded, not left to guesswork.
+  // A GitHub App installation token has no OAuth scopes to read: nothing is
+  // established either way, so nothing is claimed.
   assertEquals(
     workflowScopeVerdictFor({
       ok: true,
       hasWorkflowScope: false,
       isAppAuth: true,
     }),
-    "granted",
+    "unknown",
   );
   // Detection that could not run is not a pass.
   assertEquals(workflowScopeVerdictFor({ ok: false }), "unknown");

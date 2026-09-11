@@ -979,15 +979,7 @@ async function completionBody(
   // handler below, which fails once instead of rebasing five times.
   const scopeState: WorkflowScopeState = deps.infrastructure
     .workflowScopeState();
-  if (scopeState === "unknown") {
-    logger.warn(
-      `Workflow-scope pre-push check skipped: the launcher recorded no ` +
-        `token-scope verdict, so whether this branch may create or update ` +
-        `a workflow file is unknown — GitHub decides at the push ` +
-        `(Issue #1952)`,
-    );
-  }
-  if (scopeState === "absent") {
+  if (scopeState !== "granted") {
     const probe = await probeChangedWorkflowPaths({
       baseRef: `origin/${baseBranch}`,
       cwd: state.repoPath,
@@ -995,14 +987,27 @@ async function completionBody(
       warn: (message: string) => logger.warn(message),
     });
     const workflowPaths = workflowPathsIn(probe.paths);
-    if (workflowPaths.length > 0) {
+    // Named in both messages: a path the commit list supplied is a weaker
+    // answer than one the diff gave, and the reader is told which it was.
+    const provenance = probe.source === "diff"
+      ? "the branch diff"
+      : "the branch's commit list, the diff having failed";
+    if (workflowPaths.length > 0 && scopeState === "absent") {
       return {
         status: "failure",
         reason: `Cannot push: the token lacks the 'workflow' scope and the ` +
-          `branch changes ${workflowPaths.join(", ")} — GitHub rejects such ` +
-          `a push from any OAuth token without it. No push was attempted. ` +
-          `Fix: ${WORKFLOW_SCOPE_REMEDIATION}`,
+          `branch changes ${workflowPaths.join(", ")} (per ${provenance}) — ` +
+          `GitHub rejects such a push from any OAuth token without it. No ` +
+          `push was attempted. Fix: ${WORKFLOW_SCOPE_REMEDIATION}`,
       };
+    }
+    if (workflowPaths.length > 0) {
+      logger.warn(
+        `Workflow-scope pre-push check could not decide: the launcher ` +
+          `recorded no token-scope verdict and this branch changes ` +
+          `${workflowPaths.join(", ")} (per ${provenance}) — GitHub decides ` +
+          `at the push, and a refusal there fails the run once (Issue #1952)`,
+      );
     }
   }
 

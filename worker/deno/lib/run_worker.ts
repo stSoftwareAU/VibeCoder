@@ -436,9 +436,10 @@ export function createDefaultRunWorkerDeps(
         // capability footprint is greppable in every run log.
         logger.info(`[SECURITY] gh token: ${summary}`);
         setEnv("GH_TOKEN_SCOPE_SUMMARY", summary);
-        // Issue #1952: record the verdict for every detection that ran,
-        // App auth included, so the completion phase never has to guess
-        // whether "unset" means "has the scope" or "nobody looked".
+        // Issue #1952: record the verdict whenever detection established
+        // one, so "unset" means only "nobody could look" — a failed
+        // detection, or a GitHub App token whose `workflows` permission
+        // `gh auth status` does not report.
         const recorded = recordedWorkflowScopeValue(
           workflowScopeVerdictFor({ ok: true, hasWorkflowScope, isAppAuth }),
         );

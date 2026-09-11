@@ -35,6 +35,11 @@
  * Australian English throughout (behaviour, organisation).
  */
 
+import { redactedLineTail } from "./redacted_text.ts";
+
+/** Stderr lines kept when quoting GitHub's refusal back to the operator. */
+const REFUSAL_DETAIL_TAIL_LINES = 5;
+
 /** Set by the launcher's scope preflight: `"true"` or `"false"`. */
 export const WORKFLOW_SCOPE_ENV = "GH_TOKEN_HAS_WORKFLOW_SCOPE";
 
@@ -99,11 +104,13 @@ export type WorkflowScopeDetection =
 /**
  * The verdict to record for a detection result (Issue #1952).
  *
- * A GitHub App installation token carries no OAuth scopes at all — its
- * workflow access comes from the app's `workflows` permission — so it is
- * recorded as `"granted"` rather than left unknown, preserving the
- * pre-#1475 behaviour for App auth. Should that permission be missing, the
- * push-time refusal handler stops the run once with the same diagnosis.
+ * A GitHub App installation token carries no OAuth scopes to read — its
+ * workflow access comes from the app's `workflows` permission, which
+ * `gh auth status` does not report — so the honest verdict is `"unknown"`:
+ * nothing was established either way. That keeps the pre-#1475 fail-open
+ * behaviour for App auth (nothing is skipped or failed), and if the
+ * permission turns out to be missing the push-time refusal handler stops the
+ * run once with the same diagnosis.
  *
  * @param detection - What the launcher's scope preflight found
  * @returns The state to record for the rest of the run
@@ -112,7 +119,7 @@ export function workflowScopeVerdictFor(
   detection: WorkflowScopeDetection,
 ): WorkflowScopeState {
   if (!detection.ok) return "unknown";
-  if (detection.isAppAuth) return "granted";
+  if (detection.isAppAuth) return "unknown";
   return detection.hasWorkflowScope ? "granted" : "absent";
 }
 
@@ -154,7 +161,7 @@ const PUSH_REFUSAL_PATTERN =
 export function isWorkflowScopePushRefusal(text: string): boolean {
   // Git wraps the remote's line, so the refusal reaches us split across
   // newlines: flatten the whitespace before matching.
-  return PUSH_REFUSAL_PATTERN.test((text ?? "").replace(/\s+/g, " "));
+  return PUSH_REFUSAL_PATTERN.test(text.replace(/\s+/g, " "));
 }
 
 /**
@@ -168,7 +175,11 @@ export function isWorkflowScopePushRefusal(text: string): boolean {
  * @returns One reason line, with the fix in it
  */
 export function workflowScopePushRefusalMessage(detail: string): string {
-  const quoted = detail.trim();
+  // Redacted before the cut, and capped at the same few lines every other
+  // push failure quotes (Issue #1257): the remote URL in git's stderr can
+  // carry the run's token, and this reason reaches the log and the issue.
+  const quoted = redactedLineTail(detail.trim(), REFUSAL_DETAIL_TAIL_LINES)
+    .split("\n").join(" | ");
   return `Push refused by GitHub: the token lacks the 'workflow' scope, and ` +
     `this branch creates or updates a file under ${WORKFLOWS_DIR}. No ` +
     `recovery was attempted — no rebase can supply a missing scope. Fix: ` +

@@ -33,10 +33,12 @@ export type ChangedPathSource = "diff" | "commit-log" | "unavailable";
 export interface ChangedPathProbe {
   /** Repo-relative paths the branch touched, de-duplicated. */
   paths: string[];
-  /** Which question answered, or `"unavailable"` when neither did. */
+  /**
+   * Which question answered, or `"unavailable"` when neither did. Callers
+   * report it: a path the commit list supplied is a weaker answer than one
+   * the diff gave, and a caller that hard-fails on it should say so.
+   */
   source: ChangedPathSource;
-  /** Git's own words when an attempt failed; empty when all was well. */
-  detail: string;
 }
 
 /** Inputs for {@link probeChangedWorkflowPaths}. */
@@ -74,8 +76,8 @@ function cleanPaths(stdout: string): string[] {
  * The paths this branch changed, asked two ways (Issue #1952).
  *
  * @param request - See {@link ChangedPathProbeRequest}
- * @returns The paths and which question answered; `"unavailable"` with the
- *   reason when neither could, having warned that the check was skipped
+ * @returns The paths and which question answered; `"unavailable"` when
+ *   neither could, having warned that the check was skipped and why
  */
 export async function probeChangedWorkflowPaths(
   request: ChangedPathProbeRequest,
@@ -87,7 +89,7 @@ export async function probeChangedWorkflowPaths(
     { cwd },
   );
   if (diff.ok && diff.value.code === 0) {
-    return { paths: cleanPaths(diff.value.stdout), source: "diff", detail: "" };
+    return { paths: cleanPaths(diff.value.stdout), source: "diff" };
   }
 
   const diffDetail = failureDetail(diff);
@@ -104,11 +106,7 @@ export async function probeChangedWorkflowPaths(
     { cwd },
   );
   if (log.ok && log.value.code === 0) {
-    return {
-      paths: cleanPaths(log.value.stdout),
-      source: "commit-log",
-      detail: diffDetail,
-    };
+    return { paths: cleanPaths(log.value.stdout), source: "commit-log" };
   }
 
   const logDetail = failureDetail(log);
@@ -118,9 +116,5 @@ export async function probeChangedWorkflowPaths(
       `branch touching ${WORKFLOWS_DIR} will be refused by GitHub at the ` +
       `push instead (Issue #1952)`,
   );
-  return {
-    paths: [],
-    source: "unavailable",
-    detail: `diff: ${diffDetail}; log: ${logDetail}`,
-  };
+  return { paths: [], source: "unavailable" };
 }

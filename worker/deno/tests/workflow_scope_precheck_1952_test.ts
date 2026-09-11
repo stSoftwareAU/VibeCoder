@@ -103,5 +103,4 @@ Deno.test("probeChangedWorkflowPaths - when neither can answer it reports the sk
   assertStringIncludes(final, "skipped");
   assertStringIncludes(final, "not a git repository");
   assertStringIncludes(final, ".github/workflows/");
-  assertStringIncludes(result.detail, "not a git repository");
 });
