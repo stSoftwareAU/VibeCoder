@@ -1931,12 +1931,20 @@ Each check run ID has a `.retries` file recording how many times it has been
 attempted. `record_ci_check_retry()` increments the counter before each fix
 attempt.
 
-The **scan** and the **processor** must resolve the same directory. The scan
-reads the retry counters the processor writes, and clears the auto-fix attempt
-budget recorded against a PR once that PR reports green. While the scan kept a
-relative default it addressed a different store: the cap was never observed, a
-spent auto-fix budget was never cleared, and the lane escalated red checks to a
-human rather than fixing them.
+The **scan** and the **processor** must resolve the same directory: the scan
+reads the retry counters the processor writes, and while it kept a relative
+default it addressed a different store, so the cap was never observed and the
+lane escalated red checks to a human rather than fixing them.
+
+**The auto-fix attempt cap is not in that directory** (Issue #1879). It is
+counted from fleet-authored `<!-- vibe-ci-fix-attempt … -->` markers in the
+pull request's own comments
+([ci_fix_attempt_markers.ts](../worker/deno/lib/ci_fix_attempt_markers.ts),
+read by [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)), so
+every host in the fleet shares one budget of three attempts per failure
+signature and posts one comment per signature. Nothing reads or writes
+`*.autofix.json` any more; a repeat "no change required" on a new head is
+appended to the existing comment via `GitHubClient.updateComment`.
 
 **Priority** — runs at priority 1.55 in the main loop, after spelling fixes
 (1.5) but before branch updates (1.6).
