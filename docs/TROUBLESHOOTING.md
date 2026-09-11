@@ -839,6 +839,21 @@ retry:
 - The issue retry cooldown (`issue_retry_cooldown`, default: 600 seconds)
   prevents immediate re-attempts of recently failed issues
 
+Since Issue #1949 this applies to non-transient coding failures too, not just
+planning and question runs: a failed quality gate, a run that produced no
+changes and no useful output, or an unexplained failure all step the ladder, and
+each one also steps an escalating re-claim cooldown (2 h → 6 h → 24 h) instead
+of the flat 600 s base. If an issue you expected to be retried is sitting idle,
+check whether it now carries `failed-once` or `failed`.
+
+Transient infrastructure is deliberately exempt and consumes no attempt. That
+covers account state — a rate or usage limit, an out-of-credit account, a run
+interrupted before it finished, a scheduled release, a timeout bound by the
+cycle deadline — and host state: an out-of-memory kill, a full disk, a worker
+crash, a missing tool, an unexplained external kill. All keep the flat cooldown
+and are retried as before, and the host-state ones are filed against the worker
+rather than the issue.
+
 ## 🤝 Worker stopped looking at an issue and posted a `needs-human` comment
 
 When the worker cannot complete an issue autonomously, it adds the `needs-human`

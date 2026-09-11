@@ -360,6 +360,16 @@ export const OPERATIONAL_DEFAULTS = {
   minDiskSpaceMb: 500,
   syncMilestoneBranches: true,
   repoTimeoutThreshold: 3,
+  /**
+   * Issue #1950: a failed run under a minute never reached the agent's
+   * work — it died claiming or setting up. 60s separates that from a run
+   * the agent genuinely spent on the issue.
+   */
+  fastFailureSeconds: 60,
+  /** Issue #1950: fast failures in the window before a repo is backed off. */
+  repoFastFailureThreshold: 3,
+  /** Issue #1950: the rolling window, and the decay period, in hours. */
+  repoFastFailureWindowHours: 24,
   staleFailedDiagnosticDays: 3,
   stalePlanningWarningDays: 2,
   includeRecentActivity: true,
@@ -1442,6 +1452,9 @@ export function buildDefaultWorkerConfig(
     enableModelFallback: OPERATIONAL_DEFAULTS.enableModelFallback,
     minDiskSpaceMb: OPERATIONAL_DEFAULTS.minDiskSpaceMb,
     syncMilestoneBranches: OPERATIONAL_DEFAULTS.syncMilestoneBranches,
+    fastFailureSeconds: OPERATIONAL_DEFAULTS.fastFailureSeconds,
+    repoFastFailureThreshold: OPERATIONAL_DEFAULTS.repoFastFailureThreshold,
+    repoFastFailureWindowHours: OPERATIONAL_DEFAULTS.repoFastFailureWindowHours,
     staleFailedDiagnosticDays: OPERATIONAL_DEFAULTS.staleFailedDiagnosticDays,
     stalePlanningWarningDays: OPERATIONAL_DEFAULTS.stalePlanningWarningDays,
     phaseModelOverrides: {},

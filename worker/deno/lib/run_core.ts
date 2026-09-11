@@ -18,6 +18,7 @@
  */
 
 import type { Result } from "../types.ts";
+import type { CooldownFailureKind } from "./cooldown_state.ts";
 import {
   advanceLaneRotation,
   readLaneRotation,
@@ -718,11 +719,13 @@ export interface RunCoreDeps {
        */
       claimNotHeld?: boolean;
       /**
-       * Failure class (Issue #4304): "timeout" marks a run that burned its
-       * whole budget and produced nothing, which feeds the escalating
-       * re-claim cooldown. Absent on success/skip and ordinary failures.
+       * Failure kind (Issue #4304, broadened by Issue #1949): "timeout"
+       * marks a run that burned its whole budget and produced nothing,
+       * "non_transient" any other failure that is the issue's own rather
+       * than transient infrastructure. Both feed the escalating re-claim
+       * cooldown. Absent on success, skips and transient failures.
        */
-      failureKind?: "timeout";
+      failureKind?: CooldownFailureKind;
       /**
        * Which phase the run failed at (Issue #855) — `setup`, `execute`,
        * `quality_gate`, … It is the failure class fleet telemetry reports,
@@ -811,7 +814,7 @@ export interface RunCoreDeps {
   recordIssueCooldown: (
     repo: string,
     issueNumber: number,
-    failureKind?: "timeout",
+    failureKind?: CooldownFailureKind,
   ) => Promise<void>;
 
   /**
@@ -957,6 +960,14 @@ export interface RunCoreDeps {
   resetRepoFailures: () => Promise<void>;
   recordRepoFailure: (repo: string, issueNumber?: number) => Promise<void>;
   recordRepoSuccess: (repo: string) => Promise<void>;
+
+  /**
+   * The durable per-repository fast-failure state, for the cycle summary
+   * (Issue #1950) — `repo X: 5 fast failures, backed off until …`. Returns
+   * null when no repository has a live fast failure, so a healthy fleet
+   * adds no line. Optional: test deps omit it.
+   */
+  describeRepoFastFailures?: () => Promise<string | null>;
 
   // Crash handling
   sendCrashNotification: (details: string) => Promise<void>;
@@ -2126,11 +2137,18 @@ function noteIssueProcessed(
 /**
  * The fleet failure class for a finished run (Issue #855): a timeout-class
  * failure first, otherwise the phase it failed at.
+ *
+ * Issue #1949 added the `non_transient` cooldown kind, which describes what
+ * the failure *earns* rather than where the run died — so it is deliberately
+ * not reported here; the phase stays the telemetry label for everything that
+ * is not a timeout.
  */
 function fleetFailureClass(
-  result: { failureKind?: "timeout"; failurePhase?: string } | undefined,
+  result:
+    | { failureKind?: CooldownFailureKind; failurePhase?: string }
+    | undefined,
 ): string | undefined {
-  return result?.failureKind ?? result?.failurePhase;
+  return result?.failureKind === "timeout" ? "timeout" : result?.failurePhase;
 }
 
 /**
@@ -4705,6 +4723,21 @@ async function logCycleGhTelemetry(deps: RunCoreDeps): Promise<void> {
     } catch (err) {
       deps.log(
         `graphql-quota: probe failed (${
+          err instanceof Error ? err.message : String(err)
+        })`,
+      );
+    }
+  }
+  // Issue #1950: which repositories are failing at setup, and how long each
+  // is backed off for. Previously the pattern was only ever visible in a
+  // hand-written weekly report.
+  if (deps.describeRepoFastFailures) {
+    try {
+      const line = await deps.describeRepoFastFailures();
+      if (line) deps.log(line);
+    } catch (err) {
+      deps.log(
+        `repo-fast-failures: state unreadable (${
           err instanceof Error ? err.message : String(err)
         })`,
       );
