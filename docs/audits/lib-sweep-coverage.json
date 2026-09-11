@@ -1395,7 +1395,7 @@
       "ledger": "docs/audits/security-sweep-1953-git-stdin-message.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: git_stdin_message.ts (#1953)",
       "status": "swept",
-      "sweptAt": "0000000000000000000000000000000000000000",
+      "sweptAt": "d3034d431e8a0fa49949ee6b7f423660fd80142e",
       "paths": [
         "worker/deno/lib/git_stdin_message.ts"
       ]
