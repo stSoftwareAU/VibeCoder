@@ -121,7 +121,7 @@ flowchart TD
   subcommand (`worker/deno/commands/pr_maintenance.ts`) — reviewer:
   unrequested — reason: the reviewer flagged it as the same scanner left
   unfiltered in its second caller; without it the CLI path keeps the fault.
-- **unrequested** — `docs/audits/lib-sweep-coverage.json` slice 12aa plus
+- **unrequested** — `docs/audits/lib-sweep-coverage.json` slice 12ab plus
   `docs/audits/security-sweep-1878-workflow-job-needs.md` — reviewer:
   unrequested — reason: a new `worker/deno/lib/` module is claimed by no sweep
   slice until it is recorded, and the gate fails until it is.
@@ -132,7 +132,7 @@ flowchart TD
 
 - **violation** — the new `lib/` module was claimed by no sweep slice, so
   `deno task check:manifests` failed — evidence:
-  `worker/deno/lib/workflow_job_needs.ts:1` — reason: fixed here — slice 12aa
+  `worker/deno/lib/workflow_job_needs.ts:1` — reason: fixed here — slice 12ab
   added to `docs/audits/lib-sweep-coverage.json` with its written record at
   `docs/audits/security-sweep-1878-workflow-job-needs.md`.
 - **violation** — `docs/archive/pr-summaries/pr-summary-1878.md` was absent —

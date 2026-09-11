@@ -1,7 +1,7 @@
 # Security sweep — aggregator recognition (`workflow_job_needs.ts`)
 
 **Issue:** [#1878](https://github.com/stSoftwareAU/VibeCoder/issues/1878)
-(chunk 12aa) · **Parent:** #1209
+(chunk 12ab) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
 after the chunk-12 slices (12a–12z) recorded their coverage:
@@ -12,7 +12,7 @@ after the chunk-12 slices (12a–12z) recorded their coverage:
 
 Appending a module to a slice whose sweep ran before it existed is the cheapest
 way to make `diffCoverage` green and a false record. The module is claimed by
-**12aa**, and this file is the reading of it.
+**12ab**, and this file is the reading of it.
 
 ## `worker/deno/lib/workflow_job_needs.ts`
 
