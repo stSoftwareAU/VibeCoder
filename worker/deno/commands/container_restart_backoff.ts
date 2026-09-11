@@ -37,7 +37,10 @@ import {
   recordContainerRestartOutcome,
 } from "../lib/container_restart_backoff.ts";
 import { poolHasAnotherTokenWithBudget } from "../lib/claude_pool_budget.ts";
-import { activeUsageSignalSpentLabel } from "../lib/provider_quota_scope.ts";
+import {
+  activeUsageSignalSpentLabel,
+  quotaPauseSpentLabel,
+} from "../lib/provider_quota_scope.ts";
 import {
   discoverProviderTokenFiles,
   resolveCredentialDir,
@@ -242,13 +245,16 @@ export const containerRestartBackoffCommand: Command = {
           const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
           const dir = resolveCredentialDir();
           const tokens = await discoverProviderTokenFiles(dir, provider);
-          // Issue #2002: the signal now names the subscription that ran out,
-          // so the question excludes it. Asked with `undefined` the pause
-          // could be shortened for the very token that had just failed.
-          const spentLabel = await activeUsageSignalSpentLabel(
-            workDir,
+          // Issue #2002: exclude the subscription that ran out. Asked with
+          // `undefined` the pause could be shortened for the very token that
+          // just failed. The quota-pause marker is the channel that crosses
+          // the container boundary — the signal file lives on the work volume
+          // this host-side process cannot read — with the signal itself as
+          // the fallback for a native run that shares the directory.
+          const spentLabel = quotaPauseSpentLabel(
+            quotaPause,
             CLAUDE_PROVIDER_ID,
-          );
+          ) ?? await activeUsageSignalSpentLabel(workDir, CLAUDE_PROVIDER_ID);
           return await poolHasAnotherTokenWithBudget(tokens, spentLabel, {
             log: (message) => console.error(message),
           });

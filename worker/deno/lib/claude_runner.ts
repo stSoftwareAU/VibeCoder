@@ -2531,6 +2531,18 @@ async function runRetryLadder(
   let invokedProvider: string | undefined;
 
   /**
+   * The provider a usage signal written from this loop belongs to (Issue
+   * #2002): what the last invocation actually ran, falling back to what this
+   * call resolves to when nothing has run yet.
+   */
+  const signalProviderId = (): string =>
+    invokedProvider ??
+      selectAgentProvider(
+        currentOptions.agentProvider,
+        currentOptions.env ? { env: currentOptions.env } : {},
+      ).id;
+
+  /**
    * Extension telemetry from the last invocation (Issue #4298), stamped onto
    * every result so the honest timeout wording survives the retry wrapper.
    * Absent while the feature is off, and before the first invocation.
@@ -3013,8 +3025,10 @@ async function runRetryLadder(
             "usage",
             // Issue #2002: name the subscription that ran out, not just the
             // vendor — a sibling token with a full window must not be paused
-            // by this one's exhaustion.
-            usageSignalScope(CLAUDE_PROVIDER_ID),
+            // by this one's exhaustion. The provider is the one THIS
+            // invocation ran, so a Codex refusal never names a Claude
+            // credential.
+            usageSignalScope(signalProviderId()),
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(
@@ -3145,7 +3159,7 @@ async function runRetryLadder(
             jitteredWait,
             undefined,
             "usage",
-            usageSignalScope(CLAUDE_PROVIDER_ID),
+            usageSignalScope(signalProviderId()),
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(

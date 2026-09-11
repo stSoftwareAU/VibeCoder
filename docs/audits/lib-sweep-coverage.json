@@ -1457,6 +1457,18 @@
         "worker/deno/lib/pr_creation_retry.ts",
         "worker/deno/lib/secondary_rate_limit.ts"
       ]
+    },
+    {
+      "issue": 2002,
+      "chunk": "12ah",
+      "title": "top-up: the active credential label behind credential-scoped usage signals",
+      "ledger": "docs/audits/security-sweep-2002-active-credential.md",
+      "definition": "the module added to worker/deno/lib/ after 12a-12ag recorded its coverage: active_credential.ts (#2002)",
+      "status": "swept",
+      "sweptAt": "ebf6c555ebc202221f752fc302041df91c674aeb",
+      "paths": [
+        "worker/deno/lib/active_credential.ts"
+      ]
     }
   ],
   "roots": [

@@ -62,7 +62,7 @@ For the rate-limit pre-flight, the flow short-circuits even earlier:
 ```mermaid
 flowchart LR
     start["Worker iteration start"]
-    signal{"Signal file<br/>active?"}
+    signal{"Signal file active<br/>AND kind = github?"}
     halt["Halt — supervisor backs off"]
     pcache{"Preflight cache hit<br/>and remaining ≥ 2× threshold?"}
     healthy["Proceed (no gh call)"]
@@ -71,10 +71,16 @@ flowchart LR
 
     start --> signal
     signal -- yes --> halt
-    signal -- no --> pcache
+    signal -- "no (absent, expired,<br/>or a usage signal)" --> pcache
     pcache -- yes --> healthy
     pcache -- no --> live --> proceed
 ```
+
+An active **usage** signal is logged and ignored here (Issue #2002): a model
+quota belongs to one provider and one of its subscriptions, and is scoped by
+the loop after initialisation. A low GitHub quota found while such a signal is
+live is reported without overwriting it — the single-slot signal file must not
+lose the spent credential's name to a much shorter GitHub block.
 
 ## List-then-filter pattern
 

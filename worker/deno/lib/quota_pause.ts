@@ -64,6 +64,21 @@ export interface QuotaPauseMarker {
   resetEpochMs?: number;
   /** The run's own words for why it paused, carried into the self-heal log. */
   reason: string;
+  /**
+   * Provider whose quota ran out (Issue #2002). Absent on a marker written
+   * before this field existed, which reads as Claude.
+   */
+  provider?: string;
+  /**
+   * That provider's credential that ran out (`provider`, `provider-2`), never
+   * a token value (Issue #2002).
+   *
+   * The signal file naming it lives on the work volume, which the host cannot
+   * read — so the host-side restart question learns which subscription is
+   * spent from here, and stops shortening a pause for the very token that
+   * just failed. Absent when the run held no recorded credential.
+   */
+  credentialLabel?: string;
 }
 
 /** Path of the quota-pause marker inside a log directory. */

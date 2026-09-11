@@ -148,8 +148,12 @@ export interface ClaudeCredentialPoolOptions {
    * #2002). Production reads the shared `.rate_limit_signal`; omitting it
    * keeps the pool's historical behaviour, where nothing told selection that
    * a token had already run out.
+   *
+   * Asked with the id of the provider this pool ranks: a label is a file stem
+   * every vendor reproduces, so another vendor's exhaustion must not exclude
+   * a healthy credential of the same name.
    */
-  spentCredentialLabel?: () => Promise<string | undefined>;
+  spentCredentialLabel?: (providerId: string) => Promise<string | undefined>;
 }
 
 /** The pool's operations. One instance serves a whole worker process. */
@@ -308,8 +312,9 @@ export function createClaudeCredentialPool(
       const pool = await candidates();
       // Nothing to choose between: no probe, no log, no change from today.
       if (pool.length < 2) return null;
+      // The filter removes at most one label from a pool of two or more, so
+      // there is always something left to rank.
       const eligible = await withoutSpentCredential(pool);
-      if (eligible.length === 0) return null;
       const ranking = await rankPool(eligible, now);
       const winner = ranking.winner;
       // The gate is the switch's own question — "is this worth running
@@ -395,9 +400,16 @@ export function createClaudeCredentialPool(
   ): Promise<ProviderTokenFile[]> {
     let spent: string | undefined;
     try {
-      spent = await options.spentCredentialLabel?.();
-    } catch {
-      // An unreadable signal names nobody; it must not narrow the pool.
+      spent = await options.spentCredentialLabel?.(poolProvider().id);
+    } catch (error: unknown) {
+      // An unreadable signal names nobody and must not narrow the pool — but
+      // it is said out loud, because a reader that keeps failing is the
+      // difference between this defence working and quietly not.
+      log(
+        `${LOG_PREFIX}: could not read the active usage signal ` +
+          `(${error instanceof Error ? error.message : String(error)}) — ` +
+          `no candidate is excluded`,
+      );
       spent = undefined;
     }
     const label = spent?.trim();

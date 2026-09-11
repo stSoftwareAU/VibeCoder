@@ -776,9 +776,9 @@ Two different things, handled two different ways:
   ran out (Issue #2002), so a run holding a different credential of the same
   provider is not paused by it, the GitHub pre-flight ignores it, and start-up
   ranking will not re-pick the credential it names. See
-  [Provider parity](PROVIDER-PARITY.md). The issue is **not** blamed: the failure classifies as
-  infrastructure, so it keeps its `failed-once` retry rather than being
-  labelled failed.
+  [Provider parity](PROVIDER-PARITY.md). The issue is **not** blamed: the
+  failure classifies as infrastructure, so it keeps its `failed-once` retry
+  rather than being labelled failed.
 
 Both stderr and stdout are scanned — the CLI writes refusals to stderr, and a
 refused run has no stream-json result on stdout at all.

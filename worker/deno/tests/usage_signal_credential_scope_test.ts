@@ -27,7 +27,10 @@ import {
   usageSignalScope,
 } from "../lib/active_credential.ts";
 import {
+  activeUsageSignalScope,
   activeUsageSignalSpentLabel,
+  isHostRateLimitPauseActive,
+  quotaPauseSpentLabel,
   usageSignalPausesHost,
 } from "../lib/provider_quota_scope.ts";
 import {
@@ -352,4 +355,249 @@ Deno.test("pool start-up - the last candidate is still started on when the signa
     spentCredentialLabel: () => Promise.resolve("provider"),
   });
   assertEquals((await onlyOne.selectToken(single, CLAUDE))?.label, "provider");
+});
+
+Deno.test("pool start-up - the spent label is asked for the provider being ranked", async () => {
+  // A label is a file stem every vendor reproduces, so the pool must name the
+  // provider it is ranking or a Claude exhaustion would exclude a healthy
+  // Codex credential of the same name.
+  const asked: string[] = [];
+  const tokens = [tokenFile("provider"), tokenFile("provider-2")];
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () => Promise.resolve(tokens),
+    fetchFn: () => Promise.resolve(new Response("slow down", { status: 429 })),
+    now: () => Date.now(),
+    spentCredentialLabel: (providerId) => {
+      asked.push(providerId);
+      return Promise.resolve(undefined);
+    },
+  });
+
+  await pool.selectToken(tokens, CLAUDE);
+  assertEquals(asked, [CLAUDE_PROVIDER_ID]);
+});
+
+Deno.test("pool mid-run - a switch never lands on the credential the signal named", async () => {
+  // The same defect one call later: selectEligible chooses what the run
+  // switches to, and switching onto the spent token is exactly the loop the
+  // exclusion exists to stop.
+  const tokens = [tokenFile("provider"), tokenFile("provider-2")];
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () => Promise.resolve(tokens),
+    fetchFn: (_url: string, init: RequestInit) => {
+      const auth = String(
+        (init.headers as Record<string, string>)["authorization"] ?? "",
+      );
+      // Both tokens probe as healthy; only the signal separates them.
+      return Promise.resolve(
+        new Response(auth.length > 0 ? "{}" : "no auth", {
+          status: 200,
+          headers: {
+            "anthropic-ratelimit-unified-5h-utilization": "0.1",
+            "anthropic-ratelimit-unified-5h-reset": String(
+              Math.round((Date.now() + 3_600_000) / 1000),
+            ),
+            "anthropic-ratelimit-unified-7d-utilization": "0.2",
+            "anthropic-ratelimit-unified-7d-reset": String(
+              Math.round((Date.now() + 360_000_000) / 1000),
+            ),
+            "anthropic-ratelimit-unified-representative-claim": "five_hour",
+          },
+        }),
+      );
+    },
+    now: () => Date.now(),
+    spentCredentialLabel: () => Promise.resolve("provider"),
+  });
+
+  assertEquals((await pool.selectEligible())?.label, "provider-2");
+});
+
+// ===========================================================================
+// 6. The host pause, end to end through the signal file
+// ===========================================================================
+
+Deno.test("isHostRateLimitPauseActive - a different held credential keeps the host working", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await writeRateLimitSignal(dir, 289_493, undefined, "usage", {
+      provider: "claude",
+      credentialLabel: "provider",
+    });
+    assertEquals(
+      await isHostRateLimitPauseActive(
+        dir,
+        ["claude"],
+        undefined,
+        () => "provider-3",
+      ),
+      false,
+      "this run holds a subscription the signal says nothing about",
+    );
+    assertEquals(
+      await isHostRateLimitPauseActive(
+        dir,
+        ["claude"],
+        undefined,
+        () => "provider",
+      ),
+      true,
+      "the run holding the spent subscription still pauses",
+    );
+    assertEquals(
+      await isHostRateLimitPauseActive(
+        dir,
+        ["claude"],
+        undefined,
+        () => undefined,
+      ),
+      true,
+      "a run that recorded no credential keeps the host-wide behaviour",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("isHostRateLimitPauseActive - a GitHub block still drains the host", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await writeRateLimitSignal(dir, 600, undefined, "github");
+    assertEquals(
+      await isHostRateLimitPauseActive(
+        dir,
+        ["claude"],
+        undefined,
+        () => "provider-3",
+      ),
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ===========================================================================
+// 7. Across the container boundary, and not destroying the evidence
+// ===========================================================================
+
+Deno.test("quotaPauseSpentLabel - the marker carries the spent credential to the host", () => {
+  // The signal file lives on the work volume the host cannot read, so the
+  // restart question learns the label from the quota-pause marker instead.
+  assertEquals(
+    quotaPauseSpentLabel(
+      { provider: "claude", credentialLabel: "provider" },
+      CLAUDE_PROVIDER_ID,
+    ),
+    "provider",
+  );
+  assertEquals(
+    quotaPauseSpentLabel({ credentialLabel: "provider" }, CLAUDE_PROVIDER_ID),
+    "provider",
+    "a marker with no provider reads as Claude",
+  );
+  assertEquals(
+    quotaPauseSpentLabel(
+      { provider: "codex", credentialLabel: "provider" },
+      CLAUDE_PROVIDER_ID,
+    ),
+    undefined,
+    "another vendor's exhaustion names no Claude credential",
+  );
+  assertEquals(quotaPauseSpentLabel(null, CLAUDE_PROVIDER_ID), undefined);
+});
+
+Deno.test("activeUsageSignalScope - reports the provider and credential for the marker", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await writeRateLimitSignal(dir, 289_493, undefined, "usage", {
+      provider: "claude",
+      credentialLabel: "provider",
+    });
+    assertEquals(await activeUsageSignalScope(dir), {
+      provider: "claude",
+      credentialLabel: "provider",
+    });
+    await writeRateLimitSignal(dir, 600, undefined, "github");
+    assertEquals(await activeUsageSignalScope(dir), null);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("preflight - a GitHub block does not overwrite a live usage signal", async () => {
+  // One signal file, two blocks. Overwriting the 80-hour usage signal with a
+  // one-hour GitHub one would discard the spent credential's name, leaving
+  // nothing on disk to scope the model quota by once the GitHub wait expires.
+  const dir = await Deno.makeTempDir();
+  try {
+    await writeRateLimitSignal(dir, 289_493, undefined, "usage", {
+      provider: "claude",
+      credentialLabel: "provider",
+    });
+    const outcome = await preflightGitHubRateLimit({
+      workDir: dir,
+      nowSeconds: () => Math.floor(Date.now() / 1000),
+      noCache: true,
+      runGhRateLimit: () =>
+        Promise.resolve(
+          JSON.stringify({
+            resources: {
+              graphql: {
+                limit: 5000,
+                used: 4999,
+                remaining: 1,
+                reset: Math.floor(Date.now() / 1000) + 600,
+              },
+            },
+          }),
+        ),
+      log: () => {},
+    });
+
+    assertEquals(outcome.rateLimited, true, "the GitHub block is still real");
+    const signal = JSON.parse(
+      await Deno.readTextFile(`${dir}/.rate_limit_signal`),
+    );
+    assertEquals(signal.kind, "usage");
+    assertEquals(signal.credentialLabel, "provider");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("active credential - an environment-provided credential records no label", async () => {
+  // Nothing was established from the file, so the run may be holding an
+  // operator's env credential; claiming the file's label would scope a signal
+  // to the wrong subscription.
+  clearActiveCredentialLabels();
+  const dir = await Deno.makeTempDir();
+  try {
+    const claudeDir = `${dir}/${CLAUDE.credentials.subdir}`;
+    await Deno.mkdir(claudeDir, { recursive: true });
+    await Deno.writeTextFile(
+      `${claudeDir}/provider.env`,
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-file\n",
+    );
+    const env = new Map<string, string>([[
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "sk-ant-oat-from-the-environment",
+    ]]);
+    const exported = await applyProviderCredentialEnv({
+      dir,
+      env: (name) => env.get(name),
+      setEnv: (name, value) => {
+        env.set(name, value);
+      },
+      providers: [CLAUDE],
+    });
+
+    assertEquals(exported, [], "an existing variable is never clobbered");
+    assertEquals(activeCredentialLabel(CLAUDE_PROVIDER_ID), undefined);
+  } finally {
+    clearActiveCredentialLabels();
+    await Deno.remove(dir, { recursive: true });
+  }
 });

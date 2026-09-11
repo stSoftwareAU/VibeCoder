@@ -63,14 +63,14 @@ import {
   type EnvLookup,
   type ProviderTokenSelector,
 } from "./credential_preflight.ts";
-import {
-  type AgentProviderDescriptor,
-  CLAUDE_PROVIDER_ID,
-} from "./agent_provider.ts";
+import type { AgentProviderDescriptor } from "./agent_provider.ts";
 import { getPromptsDir } from "./prompt_manager.ts";
 import { checkPromptsImmutable } from "./prompt_immutability.ts";
 import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
-import { activeUsageSignalSpentLabel } from "./provider_quota_scope.ts";
+import {
+  activeUsageSignalScope,
+  activeUsageSignalSpentLabel,
+} from "./provider_quota_scope.ts";
 import {
   NETWORK_UNAVAILABLE_MARKER,
   resolveGithubUserWithRetry,
@@ -295,20 +295,6 @@ export async function checkWorkerCredentials(
   return null;
 }
 
-/**
- * Where the shared `.rate_limit_signal` lives for this host.
- *
- * The same `WORK_DIR`-then-`$HOME/auto-issue-work` resolution `config.ts`
- * applies, read at call time: `runWorker` exports `WORK_DIR` well before the
- * credential step, so by the time a selection asks, the resolved work volume
- * is what answers.
- */
-function defaultSignalDir(): string {
-  const workDir = Deno.env.get("WORK_DIR")?.trim();
-  if (workDir) return workDir;
-  return `${Deno.env.get("HOME") ?? "/tmp"}/auto-issue-work`;
-}
-
 /** Establish one variable in this process, tolerating a permission denial. */
 function processSetEnv(name: string, value: string): void {
   try {
@@ -341,8 +327,20 @@ export function createDefaultRunWorkerDeps(
     // Issue #2002: a credential an active usage signal already calls spent is
     // out of the running, so a start whose every budget probe failed cannot
     // fall through to discovery order and re-pick it.
-    spentCredentialLabel: () =>
-      activeUsageSignalSpentLabel(defaultSignalDir(), CLAUDE_PROVIDER_ID),
+    spentCredentialLabel: (providerId) => {
+      // `runWorker` exports the resolved work dir (Issue #4370) well before
+      // the credential step, so the variable is what answers here. Before it
+      // is set there is no signal to read, and the whole pool ranks — which
+      // is the behaviour selection had before this question existed.
+      //
+      // The pool names the provider it is ranking: a label is a file stem
+      // every vendor reproduces, so a Claude signal must never exclude a
+      // Codex credential of the same name.
+      const workDir = Deno.env.get("WORK_DIR")?.trim();
+      return workDir
+        ? activeUsageSignalSpentLabel(workDir, providerId)
+        : Promise.resolve(undefined);
+    },
   });
   return {
     evaluateRunGuard: (pidFile, maxRunSeconds) =>
@@ -794,12 +792,21 @@ ${credentialFailure}`);
     // crash produces — so the supervisor re-probes at its fixed cadence
     // instead of backing off, escalating and rebuilding a healthy container.
     if (loop.quotaPaused) {
+      // Issue #2002: carry WHICH subscription ran out across the container
+      // boundary. The signal file naming it lives on the work volume, which
+      // the host-side supervisor cannot read, so without this the restart
+      // question would go on asking with no spent token to exclude.
+      const spent = await activeUsageSignalScope(workDir);
       await deps.declareQuotaPause(logDir, {
         declaredAtMs: Date.now(),
         ...(loop.quotaResetEpochMs !== undefined
           ? { resetEpochMs: loop.quotaResetEpochMs }
           : {}),
         reason: loop.message,
+        ...(spent ? { provider: spent.provider } : {}),
+        ...(spent?.credentialLabel
+          ? { credentialLabel: spent.credentialLabel }
+          : {}),
       });
       return {
         outcome: "quota-paused",

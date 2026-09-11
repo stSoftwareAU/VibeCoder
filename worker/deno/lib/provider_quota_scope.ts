@@ -85,17 +85,51 @@ export function usageSignalPausesHost(
   return true;
 }
 
+/** Who an active usage signal says ran out (Issue #2002). */
+export interface UsageSignalScope {
+  /** The provider whose quota is spent. */
+  readonly provider: string;
+  /** Its credential that ran out, when the signal named one. */
+  readonly credentialLabel?: string;
+}
+
 /**
- * The credential an active usage signal says ran out, or undefined.
+ * What an active usage signal says ran out, or null when none does.
  *
- * The reader half of Issue #2002: the restart question and the start-up
- * ranking both need to exclude the one credential that just failed, and
- * neither could name it while the signal carried no label. Never throws — an
- * unreadable or expired signal names nobody, which is the behaviour both
- * callers had before.
+ * The reader half of Issue #2002: the restart question, the quota-pause
+ * marker and the start-up ranking all need to name the one credential that
+ * just failed, and none could while the signal carried no label. Never
+ * throws — an unreadable, expired or GitHub signal returns null, which is the
+ * behaviour every caller had before.
  *
  * @param workDir - Directory holding the signal file.
- * @param providerId - The provider whose pool is being asked about.
+ * @param nowFn - Injectable time source, in Unix seconds.
+ * @returns The provider and credential the signal names, or null.
+ */
+export async function activeUsageSignalScope(
+  workDir: string,
+  nowFn?: () => number,
+): Promise<UsageSignalScope | null> {
+  const active = await isRateLimitActive(workDir, nowFn);
+  if (!active.ok || !active.value.active) return null;
+  const read = await readRateLimitSignal(workDir);
+  if (!read.ok) return null;
+  const signal = read.value;
+  if ((signal.kind ?? "github") !== "usage") return null;
+  const label = signal.credentialLabel?.trim();
+  return {
+    provider: signal.provider?.trim() || LEGACY_USAGE_SIGNAL_PROVIDER,
+    ...(label ? { credentialLabel: label } : {}),
+  };
+}
+
+/**
+ * The credential an active usage signal says ran out, for one provider.
+ *
+ * @param workDir - Directory holding the signal file.
+ * @param providerId - The provider whose pool is being asked about. A label
+ *   is a file stem (`provider-2`) every vendor reproduces, so the provider
+ *   must match or one vendor's exhaustion would exclude another's credential.
  * @param nowFn - Injectable time source, in Unix seconds.
  * @returns The spent credential's label, or undefined when the signal is
  *   absent, expired, a GitHub block, another vendor's, or unlabelled.
@@ -105,15 +139,33 @@ export async function activeUsageSignalSpentLabel(
   providerId: string,
   nowFn?: () => number,
 ): Promise<string | undefined> {
-  const active = await isRateLimitActive(workDir, nowFn);
-  if (!active.ok || !active.value.active) return undefined;
-  const read = await readRateLimitSignal(workDir);
-  if (!read.ok) return undefined;
-  const signal = read.value;
-  if ((signal.kind ?? "github") !== "usage") return undefined;
-  const blocked = signal.provider?.trim() || LEGACY_USAGE_SIGNAL_PROVIDER;
-  if (blocked !== providerId.trim()) return undefined;
-  const label = signal.credentialLabel?.trim();
+  const scope = await activeUsageSignalScope(workDir, nowFn);
+  if (scope === null) return undefined;
+  return scope.provider === providerId.trim()
+    ? scope.credentialLabel
+    : undefined;
+}
+
+/**
+ * The Claude credential a quota-pause declaration says ran out.
+ *
+ * The quota-pause marker is the one channel that crosses the container
+ * boundary (`quota_pause.ts`): the work volume the signal file lives on is
+ * unreadable from the host, so the host-side restart question reads the
+ * label from here. A marker naming another vendor names no Claude credential.
+ *
+ * @param marker - The consumed marker, or null when there was none.
+ * @param providerId - The provider being asked about.
+ * @returns The spent label, or undefined.
+ */
+export function quotaPauseSpentLabel(
+  marker: { provider?: string; credentialLabel?: string } | null,
+  providerId: string,
+): string | undefined {
+  if (!marker) return undefined;
+  const provider = marker.provider?.trim() || LEGACY_USAGE_SIGNAL_PROVIDER;
+  if (provider !== providerId.trim()) return undefined;
+  const label = marker.credentialLabel?.trim();
   return label && label.length > 0 ? label : undefined;
 }
 

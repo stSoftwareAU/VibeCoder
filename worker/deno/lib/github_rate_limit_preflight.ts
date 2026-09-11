@@ -190,6 +190,7 @@ export async function preflightGitHubRateLimit(
   // 100% of its five-hour window: 25 restarts, zero issues worked. A signal
   // written before the `kind` field still reads as GitHub, so the historical
   // behaviour is unchanged.
+  let activeUsageSignal = false;
   const existing = await isRateLimitActive(deps.workDir, deps.nowSeconds);
   if (existing.ok && existing.value.active) {
     const kind = await readRateLimitBlockKind(deps.workDir);
@@ -201,6 +202,7 @@ export async function preflightGitHubRateLimit(
           `Rate-limit signal still active (${existing.value.remainingSeconds}s remaining)`,
       };
     }
+    activeUsageSignal = true;
     deps.log(
       `Pre-flight: ignoring an active ${kind} signal ` +
         `(${existing.value.remainingSeconds}s remaining) — a model quota is ` +
@@ -283,16 +285,29 @@ export async function preflightGitHubRateLimit(
   // Rate-limited: record signal for siblings/respawns.
   const now = deps.nowSeconds();
   const waitSeconds = computeWaitSeconds(reset, now);
-  const writeResult = await writeRateLimitSignal(
-    deps.workDir,
-    waitSeconds,
-    undefined,
-    "github",
-  );
-  if (!writeResult.ok) {
+  // One signal file, two possible blocks. Overwriting a live usage signal
+  // with this shorter GitHub one would discard the spent credential's name
+  // and its reset (Issue #2002), leaving nothing on disk to scope the model
+  // quota by once the GitHub wait expires. The GitHub block is still
+  // reported — it just is not persisted over evidence that outlives it.
+  if (activeUsageSignal) {
     deps.log(
-      `Pre-flight detected rate limit but signal write failed: ${writeResult.error.message}`,
+      `Pre-flight: GraphQL quota low (${remaining}/${limit}) but an active ` +
+        `usage signal already holds the signal file — reporting the GitHub ` +
+        `block without overwriting it`,
     );
+  } else {
+    const writeResult = await writeRateLimitSignal(
+      deps.workDir,
+      waitSeconds,
+      undefined,
+      "github",
+    );
+    if (!writeResult.ok) {
+      deps.log(
+        `Pre-flight detected rate limit but signal write failed: ${writeResult.error.message}`,
+      );
+    }
   }
 
   return {
