@@ -120,14 +120,14 @@ a section without a marker, fails `deno test`.
 | [Layer 1: Prompt Compilation Cache (Disk)](#layer-1-prompt-compilation-cache-disk) | ✅ | ✅ | ✅ | ✅ | — |
 | [Layer 2: Claude Built-in Prompt Caching](#layer-2-claude-built-in-prompt-caching) | ✅ | ❌ | ❌ | ⚠️ | Codex and Gemini have no `--system-prompt` channel, so `composeAgentPrompt` folds it in. DeepSeek does carry the channel, but the 70–90% saving is Anthropic's server-side cache, which its endpoint neither promises nor reports |
 | [Stable Prefix Ordering](#stable-prefix-ordering) | ✅ | ⚠️ | ⚠️ | ⚠️ | The prompt is still ordered and volatility is still warned about, but no non-Anthropic prefix cache rewards it |
-| [Cache Hit-Rate Telemetry](#cache-hit-rate-telemetry) | ✅ | ❌ | ❌ | ⚠️ | Codex reports cached input tokens, but they are not Anthropic's prefix cache, so no Anthropic hit rate is logged. Gemini reports no parseable usage. DeepSeek's usage block parses, but the read/write counts are Anthropic-cache fields, so the rate covers only what its endpoint populates |
+| [Cache Hit-Rate Telemetry](#cache-hit-rate-telemetry) | ✅ | ❌ | ❌ | ⚠️ | Codex reports cached input tokens, but they are not Anthropic's prefix cache, so no Anthropic hit rate is logged. Gemini's usage parses since [#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938), but it reports a context-cache read count only — no Anthropic prefix cache and no write counter — so no Anthropic hit rate is logged for it either. DeepSeek's usage block parses, but the read/write counts are Anthropic-cache fields, so the rate covers only what its endpoint populates |
 | [SHA-256 Invalidation](#sha-256-invalidation) | ✅ | ✅ | ✅ | ✅ | — |
 | [Codebase Map](#codebase-map) | ✅ | ✅ | ✅ | ✅ | — |
 | **[Batch API](#batch-api)** | ➖ | ➖ | ➖ | ➖ | Not wired for any provider |
 | [Why it was rejected](#why-it-was-rejected) | ➖ | ➖ | ➖ | ➖ | The async/bounded-run mismatch is the worker's, not a vendor's |
 | [What remains in the code](#what-remains-in-the-code) | ➖ | ➖ | ➖ | ➖ | Offline estimation helpers only; nothing calls them at run time |
-| **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ✅ | ⚠️ | ✅ | Logged with a `provider` id. Codex and DeepSeek usage parses and is priced from the id's own row at the vendor's API-equivalent list price. Gemini stays ⚠️ for one reason only: its usage is still UNKNOWN, so there are no tokens to price |
-| [Token Extraction](#token-extraction) | ✅ | ✅ | ❌ | ✅ | Codex usage is decoded from `turn.completed` / `token_count` (#1701). Gemini's output shape does not parse: warned once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads |
+| **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ✅ | ✅ | ✅ | Logged with a `provider` id. Codex and DeepSeek usage parses and is priced from the id's own row at the vendor's API-equivalent list price. Gemini's usage now decodes too ([#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938)), and its ids carry the same API-equivalent rows |
+| [Token Extraction](#token-extraction) | ✅ | ✅ | ✅ | ✅ | Codex usage is decoded from `turn.completed` / `token_count` (#1701). Gemini usage is decoded from its terminal `result` event's `stats.models` (#1938); a run that reports none is still warned about once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads |
 | [Model Pricing](#model-pricing) | ✅ | ✅ | ✅ | ✅ | Claude rows are the rate Anthropic bills. The eight routable Codex/Gemini/DeepSeek ids carry **API-equivalent** rows — the vendor's API list price for the same tokens — never a bill, because those providers run on a fixed-price subscription — and the run-stats sub-bullet says `(API-equivalent)` so the basis travels with the figure. An id outside the table is still charged at the upper bound and named in `unpricedModels` |
 | [Credit Logging](#credit-logging) | ✅ | ⚠️ | ⚠️ | ⚠️ | The entry is written and names the provider; Codex token fields are measured when the CLI reports them, else `usageUnknown`; cost comes from the model id's own row — API-equivalent for a non-Claude id — and is an upper bound only when the id has no row at all |
 | [Context Window Budget Monitoring](#context-window-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex GPT-5 ids use a 400k `MODEL_CONTEXT_WINDOWS` row; Gemini (and unrecognised ids) still fall back to the 200,000-token default ceiling |
@@ -1828,7 +1828,7 @@ of `-p`, and identical requests produce byte-identical argument lists.
 
 ### Cache Hit-Rate Telemetry
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — the read/write/uncached counts that make an Anthropic hit rate are Claude's. Codex reports `cached_input_tokens`, but they are not Anthropic's prefix cache, so no hit rate is logged for them. A Gemini run reports no parseable usage. DeepSeek's output is the Claude CLI's, so the usage block parses; the read/write counts a hit rate is computed from are Anthropic-cache fields, so a DeepSeek run reports a rate only over whatever its endpoint populates.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — the read/write/uncached counts that make an Anthropic hit rate are Claude's. Codex reports `cached_input_tokens`, but they are not Anthropic's prefix cache, so no hit rate is logged for them. A Gemini run reports a context-cache read count and no write counter, and it is not Anthropic's prefix cache either, so no hit rate is logged for it. DeepSeek's output is the Claude CLI's, so the usage block parses; the read/write counts a hit rate is computed from are Anthropic-cache fields, so a DeepSeek run reports a rate only over whatever its endpoint populates.
 
 The API reports, per invocation, how many prompt tokens were read from the
 cache, written to it, and charged as plain input. The cached share of those
@@ -1998,11 +1998,11 @@ which only *reports* what a hypothetical discount would be. No
 
 ## Token Usage & Cost Tracking
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ⚠️ · `deepseek` ✅ — every invocation is credit-logged with its provider id. Codex usage is measured when the CLI reports it and priced from its API-equivalent row. DeepSeek's counts do parse — same CLI, same `stream-json` — and price the same way. Gemini usage is recorded UNKNOWN (never zero), so there are no tokens to price yet.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — every invocation is credit-logged with its provider id. Codex usage is measured when the CLI reports it and priced from its API-equivalent row. DeepSeek's counts do parse — same CLI, same `stream-json` — and price the same way. Gemini's own `stream-json` stats are decoded since [#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938) and price the same API-equivalent way; a Gemini run that reports no stats is still recorded UNKNOWN, never zero.
 
 ### Token Extraction
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ❌ · `deepseek` ✅ — Codex usage is decoded from `turn.completed` / `token_count` by `CODEX_OUTPUT_ADAPTER`. Gemini's stream events do not parse, so `extractProviderTokenUsage()` warns once and flags the entry `usageUnknown` instead of recording a silent zero. DeepSeek emits the Claude CLI's `stream-json`, so the shared extractor parses it and no `usageUnknown` flag is raised.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — Codex usage is decoded from `turn.completed` / `token_count` by `CODEX_OUTPUT_ADAPTER`, and Gemini's from its terminal `result` event by `decodeGeminiTokenUsage()`. A run of either that reports nothing is warned about once and flagged `usageUnknown` by `extractProviderTokenUsage()` rather than recorded as a silent zero. DeepSeek emits the Claude CLI's `stream-json`, so the shared extractor parses it and no `usageUnknown` flag is raised.
 
 After each Claude CLI invocation, the worker extracts token usage from the
 stream-json output:
@@ -2023,7 +2023,9 @@ Extraction reads the **Claude** `stream-json` shape by default. Codex emits
 its own JSONL under `--json`; that stream is decoded by
 [`worker/deno/lib/codex_output_adapter.ts`](../worker/deno/lib/codex_output_adapter.ts)
 and the counts reach the credit log as measured usage (Issue #1701). Gemini
-has no decoder yet.
+emits its own `--output-format stream-json` events, decoded by
+[`worker/deno/lib/gemini_token_usage.ts`](../worker/deno/lib/gemini_token_usage.ts)
+(Issue #1938).
 
 Every run still goes through
 [`worker/deno/lib/provider_token_usage.ts`](../worker/deno/lib/provider_token_usage.ts),
@@ -2032,6 +2034,17 @@ which dispatches on the active provider descriptor:
 - **Claude** — unchanged, and quiet when a run genuinely reports no usage.
 - **Codex** — `turn.completed` / `token_count` usage is mapped onto the shared
   `TokenUsage` shape. A run that reports none is still `usageUnknown`.
+- **Gemini** — the terminal `result` event's `stats.models` counters are summed
+  onto the same shape: prompt less cached is the input count, candidates the
+  output count, `cached` the cache-read count, and the cache-write count stays
+  0 because Gemini reports none. **Thinking tokens are not in that event.** CLI
+  0.55.1 projects five per-model fields onto the stream and `thoughts` is not
+  among them, so a thinking-heavy Gemini run's output count is its candidates
+  alone; the deficit is not inferred from `total_tokens`, because an inferred
+  number is a guess. Under-counting is the safe direction for a spend guard,
+  and the decoder honours a `thoughts` count wherever a CLI does report one.
+  A run that reports no stats, omits a billable counter, or states one
+  unusably — a string, or a count below zero — is still `usageUnknown`.
 - **Any other provider** — the shared extractor is tried first (a CLI whose
   output happens to be Claude-compatible is parsed normally); when nothing is
   parseable the run is warned about once, naming the provider, repo, phase and
@@ -2054,9 +2067,12 @@ flowchart LR
     R["raw CLI stdout"] --> X["extractProviderTokenUsage()"]
     X -->|claude| C["extractTokenUsage()<br/>(unchanged)"]
     X -->|codex| D["CODEX_OUTPUT_ADAPTER.decode()"]
+    X -->|gemini| G["decodeGeminiTokenUsage()"]
     X -->|other| T["try shared extractor"]
     D -->|usage| U["TokenUsage"]
     D -->|none| W["usageUnknown<br/>+ warning"]
+    G -->|usage| U
+    G -->|none| W
     T -->|parsed| U
     T -->|nothing| W
     C --> U
@@ -2333,7 +2349,7 @@ tokens — this is why prompt caching delivers such large savings.
 
 ### Credit Logging
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an entry is written for every invocation and carries the `provider` id. Codex token fields are measured when the CLI reports them, and the cost is read from the id's API-equivalent row (the vendor's API list price, not a bill). Gemini token fields read `usageUnknown`. A DeepSeek entry carries real token fields, costed the same API-equivalent way.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an entry is written for every invocation and carries the `provider` id. Codex token fields are measured when the CLI reports them, and the cost is read from the id's API-equivalent row (the vendor's API list price, not a bill). Gemini token fields are measured the same way from its own `stream-json` stats, and read `usageUnknown` only when the run reported none. A DeepSeek entry carries real token fields, costed the same API-equivalent way.
 
 Every Claude invocation is logged to a daily credit log file (newline-
 delimited JSON):

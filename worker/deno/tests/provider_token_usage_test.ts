@@ -28,11 +28,23 @@ const CODEX_JSONL = [
   '"cached_input_tokens":900,"output_tokens":300}}',
 ].join("\n");
 
-/** A Gemini `--output-format stream-json` run: its own event shape. */
+/**
+ * A Gemini `--output-format stream-json` run: its own event shape, as CLI
+ * 0.55.1 emits it (Issue #1938).
+ */
 const GEMINI_STREAM = [
   '{"type":"user","content":"go"}',
-  '{"type":"result","stats":{"models":{"gemini-2.5-pro":' +
-  '{"tokens":{"prompt":1000,"candidates":200}}}}}',
+  '{"type":"result","status":"success","stats":{"total_tokens":1500,' +
+  '"input_tokens":1000,"output_tokens":200,"cached":400,"input":600,' +
+  '"duration_ms":1234,"tool_calls":0,"models":{"gemini-2.5-pro":' +
+  '{"total_tokens":1500,"input_tokens":1000,"output_tokens":200,' +
+  '"cached":400,"input":600}}}}',
+].join("\n");
+
+/** A Gemini run that ended without ever reporting a stats block. */
+const GEMINI_NO_STATS = [
+  '{"type":"user","content":"go"}',
+  '{"type":"assistant","content":"done"}',
 ].join("\n");
 
 // =============================================================================
@@ -115,8 +127,29 @@ Deno.test("provider_token_usage - Codex run with unparseable usage warns and is 
   assertStringIncludes(result.warning, "not zero");
 });
 
-Deno.test("provider_token_usage - Gemini run with unparseable usage warns and is unknown", () => {
+Deno.test("provider_token_usage - Gemini run with parseable usage is measured, not unknown (Issue #1938)", () => {
   const result = extractProviderTokenUsage(GEMINI_STREAM, {
+    provider: "gemini",
+    displayName: "Gemini CLI",
+    repo: "org/repo",
+    phase: "planning",
+    model: "gemini-2.5-pro",
+  });
+
+  assertEquals(result.usage, {
+    // `input_tokens` includes the cached prefix, so the uncached figure is
+    // the 600 the CLI itself reports as `input`.
+    inputTokens: 600,
+    outputTokens: 200,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 400,
+  });
+  assertEquals(result.usageUnknown, false);
+  assertEquals(result.warning, undefined);
+});
+
+Deno.test("provider_token_usage - Gemini run with unparseable usage warns and is unknown", () => {
+  const result = extractProviderTokenUsage(GEMINI_NO_STATS, {
     provider: "gemini",
     displayName: "Gemini CLI",
     repo: "org/repo",
@@ -128,6 +161,21 @@ Deno.test("provider_token_usage - Gemini run with unparseable usage warns and is
   assert(result.warning, "a warning must name the unparseable run");
   assertStringIncludes(result.warning, "gemini");
   assertStringIncludes(result.warning, "planning");
+  assertStringIncludes(result.warning, "not zero");
+});
+
+Deno.test("provider_token_usage - empty Gemini output is unknown, not zero", () => {
+  const result = extractProviderTokenUsage("", {
+    provider: "gemini",
+    displayName: "Gemini CLI",
+    repo: "org/repo",
+    phase: "planning",
+  });
+
+  assertEquals(result.usage, undefined);
+  assertEquals(result.usageUnknown, true);
+  assert(result.warning);
+  assertStringIncludes(result.warning, "gemini");
 });
 
 Deno.test("provider_token_usage - empty non-Claude output is unknown, not zero", () => {
