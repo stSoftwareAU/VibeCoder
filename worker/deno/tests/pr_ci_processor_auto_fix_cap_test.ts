@@ -437,6 +437,48 @@ Deno.test("processCiFailure - a no-change marker on this very head runs no agent
   }
 });
 
+Deno.test("processCiFailure - a head answered by a later marker in the same comment still short-circuits", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const stateDir = `${tmpDir}/.ci_check_state`;
+  try {
+    const signature = signatureFor(COMPILE_ANNOTATIONS, tmpDir);
+    // One comment, two attempts: the diagnosis was written against an older
+    // head and the repeat for *this* head was appended to it in place.
+    const comment = markerComment({
+      id: 51,
+      author: SIBLING_LOGIN,
+      signature,
+      attempt: 1,
+      outcome: "no-change",
+      head: OTHER_HEAD,
+      diagnosis: "the failure is in the base branch",
+    });
+    comment.body += `\n\n${
+      buildCiFixAttemptMarker({
+        signature,
+        checkName: "build",
+        head: HEAD_SHA,
+        attempt: 2,
+        outcome: "no-change",
+      })
+    }`;
+    const harness = makeHarness(stateDir, tmpDir, [comment]);
+
+    const result = await processCiFailure(
+      makeInput(COMPILE_ANNOTATIONS, "5104"),
+      harness.processorDeps,
+    );
+
+    assertEquals(result.ok, true);
+    assertEquals(harness.claudeRuns, 0, "this head is already answered");
+    assertEquals(harness.captured.comments, []);
+    assertEquals(harness.captured.edits, []);
+    await assertNoAutoFixState(stateDir);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("processCiFailure - the same failure on a new head edits the existing comment instead of posting again", async () => {
   const tmpDir = await Deno.makeTempDir();
   const stateDir = `${tmpDir}/.ci_check_state`;

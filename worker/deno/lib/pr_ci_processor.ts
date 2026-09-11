@@ -955,29 +955,25 @@ async function _processCiWithHeartbeat(
     logger,
   });
   const priorAttempts = markerState.markers.attempts.get(signature) ?? [];
+  const attemptCount = countAttempts(markerState.markers, signature);
   logger.info("Auto-fix failure signature", {
     repo,
     prNumber,
     checkName,
     signature,
-    priorAttempts: countAttempts(markerState.markers, signature),
+    priorAttempts: attemptCount,
     capEnforced: markerState.capEnforced,
     maxAutoFixAttempts,
     category: failureClassification.category,
   });
 
-  if (
-    hasReachedAutoFixCap(
-      countAttempts(markerState.markers, signature),
-      maxAutoFixAttempts,
-    )
-  ) {
+  if (hasReachedAutoFixCap(attemptCount, maxAutoFixAttempts)) {
     logger.warn("Auto-fix attempt cap reached — escalating to a human", {
       repo,
       prNumber,
       checkName,
       signature,
-      attempts: priorAttempts.length,
+      attempts: attemptCount,
       maxAutoFixAttempts,
     });
 
@@ -1026,11 +1022,16 @@ async function _processCiWithHeartbeat(
   // since, so a second run — on this host or any other — would reach the
   // same conclusion and post a second copy of it. Run no agent and post
   // nothing; a new head re-opens the question below.
+  // The *earliest* no-change comment is the one carrying the diagnosis, so
+  // that is what a repeat is appended to — but the short-circuit asks a
+  // different question, "has any run already answered for **this** head?",
+  // which a later attempt recorded in that same comment can satisfy.
   const priorNoChange = findNoChangeComment(markerState.markers, signature);
-  if (
-    priorNoChange !== undefined && beforeSha !== undefined &&
-    priorNoChange.head === beforeSha
-  ) {
+  const answeredThisHead = beforeSha !== undefined &&
+    priorAttempts.some((record) =>
+      record.outcome === "no-change" && record.head === beforeSha
+    );
+  if (priorNoChange !== undefined && answeredThisHead) {
     logger.info(
       "CI fix skipped: the fleet has already reported no change required " +
         "for this failure on this head (Issue #1879)",
@@ -1054,7 +1055,7 @@ async function _processCiWithHeartbeat(
     processorDeps,
     input,
     `Diagnosing \`${checkName}\` (${failureClassification.category}) — ` +
-      `fix attempt ${priorAttempts.length + 1} of ${maxAutoFixAttempts}`,
+      `fix attempt ${attemptCount + 1} of ${maxAutoFixAttempts}`,
   );
 
   // Build prompt — pass raw annotations so v4+ templates can surface the
@@ -1468,7 +1469,7 @@ async function _processCiWithHeartbeat(
     signature,
     checkName,
     head: beforeSha,
-    attempt: priorAttempts.length + 1,
+    attempt: attemptCount + 1,
     outcome: actuallyPushed ? "pushed" : "no-change",
     repo,
     prNumber,
@@ -1490,7 +1491,7 @@ async function _processCiWithHeartbeat(
       record: priorNoChange,
       markerState,
       marker: attemptMarker,
-      attempt: priorAttempts.length + 1,
+      attempt: attemptCount + 1,
       head: beforeSha,
       processorDeps,
     })
@@ -1604,8 +1605,8 @@ async function _processCiWithHeartbeat(
   // The attempt is recorded by the marker the comment above carries — there
   // is no host-local file to write (Issue #1879).
   const autoFixAttemptCount = attemptMarker === undefined
-    ? priorAttempts.length
-    : priorAttempts.length + 1;
+    ? attemptCount
+    : attemptCount + 1;
 
   logger.info("CI fix processing complete", {
     repo,
