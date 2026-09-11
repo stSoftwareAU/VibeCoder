@@ -451,6 +451,14 @@ the default branch already has.
   merge. `isMilestoneSyncBranch(headRefName)` skips the check, and the exempt
   PR costs no comparison at all. A head that cannot be read defers as
   `lookup-failed` rather than guessing which PR this is.
+- **…but a sync PR whose base is the *default* branch is closed, never
+  merged** (Issue #1967). A sync PR merges the default branch into a milestone
+  branch, so one targeting the default branch has had its base deleted and been
+  retargeted there by GitHub — approval and auto-merge carried over, and a diff
+  that reverts the milestone's own work. `ensureAutoMergeOnOpenPrs` closes any
+  fleet-authored `sync/milestone-*` head on the default branch before it reads
+  the arming, posting the reason on the PR. See
+  [INTERNALS](INTERNALS.md#-a-sync-pr-never-outlives-the-branch-it-targets).
 - **An unreadable comparison defers as `lookup-failed`**, exactly as an
   unreadable route does (Issue #477). "I could not read it" is never actioned.
 - **Known limit.** The gate governs **arming**, not GitHub's merge. A PR whose

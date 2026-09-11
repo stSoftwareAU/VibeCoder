@@ -52,6 +52,7 @@ import {
   resolveMilestoneEscalationTarget,
 } from "./milestone_escalation_target.ts";
 import { closeResolvedSyncDiagnostics } from "./milestone_sync_diagnostic_closeout.ts";
+import { closeLandedMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
 import {
   concludeConflictAttempt,
   type ConflictAttemptOutcome,
@@ -1188,6 +1189,18 @@ export async function syncMilestoneBranches(
             ghCommandFn,
             log,
             ...(deps.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
+          });
+
+          // Issue #1967: a sync that landed by direct push leaves the sync PR
+          // from an earlier cycle open with an empty diff and auto-merge
+          // still armed — which is what GitHub later retargets onto the
+          // default branch. A PR raised by *this* cycle still carries its
+          // merge, so an empty diff is what tells the two apart.
+          await closeLandedMilestoneSyncPrs({
+            repo,
+            milestoneBranch: milestone.milestoneBranch,
+            ghCommandFn,
+            log,
           });
 
           // A merge that conflicted still landed, but the resolution favoured

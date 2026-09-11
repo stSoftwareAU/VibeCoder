@@ -3469,6 +3469,51 @@ Three defences, each independent of the others:
   `milestone-resurrection` job runs it on PRs into `milestone/*` and on the
   rollup PR.
 
+#### ⏳ A sync PR never outlives the branch it targets
+
+A sync PR merges the default branch **into** a milestone branch, so it is the
+one PR the fleet raises that must never target the default branch. GitHub does
+not close the PRs pointing at a branch it deletes on merge — it **retargets**
+them to the default branch (`automatic_base_change_succeeded`), carrying their
+approvals and their auto-merge arming with them. `VibeCoder#1957` reached
+`main` that way fourteen minutes after the milestone's final PR merged: a
+squash remnant whose only diff reverted the milestone's own work, approved a
+minute later by a reviewer working through the day's PRs, and stopped from
+landing only by an unrelated red shard (Issue #1967).
+
+[milestone_sync_pr_retirement.ts](../worker/deno/lib/milestone_sync_pr_retirement.ts)
+closes the sync PR at each of the three moments it stops being useful, and the
+`gh pr close --delete-branch` takes the sync branch with it so nothing can be
+re-raised or retargeted from it:
+
+```mermaid
+flowchart TD
+    S["Sync sweep raises<br/>sync/milestone-x → milestone/x<br/>(auto-merge armed)"]
+    S --> D{What happens next?}
+    D -- "sync lands by direct push" --> E["closeLandedMilestoneSyncPrs:<br/>diff is empty → close"]
+    D -- "milestone completes" --> R["retireMilestoneSyncPrs:<br/>close before the final PR<br/>is raised, and after it merges"]
+    D -- "neither, and the base is deleted" --> G["GitHub retargets the PR<br/>onto the default branch"]
+    G --> M["Auto-merge scan:<br/>closeRetargetedSyncPr —<br/>closed, never merged"]
+    style G fill:#9d0208,stroke:#6a040f,color:#fff
+    style M fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **The sync landed another way.** A direct push that succeeds leaves the
+  earlier cycle's PR open with an empty diff and auto-merge still armed. An
+  empty diff is what tells it from the PR this cycle raised, which still
+  carries its merge; a file list that cannot be read closes nothing, because
+  "could not tell" is never "empty".
+- **The milestone is finishing.** `milestone_completion.ts` retires the sync PR
+  **before** it raises the final PR — the retarget happens in the window
+  between that PR merging and GitHub deleting the branch, so the sync PR has to
+  be gone beforehand — and again once the final PR is confirmed merged.
+- **Defence in depth.** `ensureAutoMergeOnOpenPrs` closes any **fleet-authored**
+  PR whose head is `sync/milestone-*` and whose base is the default branch,
+  posting why, *before* the "auto-merge already armed" skip — the arming is
+  precisely what makes it dangerous. Only the fleet's own sync PRs are retired
+  on the strength of a branch name, and a default branch that cannot be
+  resolved closes nothing.
+
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
 A milestone branch that conflicts with the default branch gets the same
