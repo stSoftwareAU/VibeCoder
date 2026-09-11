@@ -142,6 +142,55 @@ Deno.test("config - loadConfig defaults software_min_versions to claude floor (I
   });
 });
 
+Deno.test("config - loadConfig parses the fast-failure back-off keys (Issue #1950)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    fast_failure_seconds: 90,
+    repo_fast_failure_threshold: 5,
+    repo_fast_failure_window_hours: 12,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.fastFailureSeconds, 90);
+    assertEquals(config.repoFastFailureThreshold, 5);
+    assertEquals(config.repoFastFailureWindowHours, 12);
+  });
+});
+
+Deno.test("config - loadConfig defaults the fast-failure back-off keys (Issue #1950)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.fastFailureSeconds, 60);
+    assertEquals(config.repoFastFailureThreshold, 3);
+    assertEquals(config.repoFastFailureWindowHours, 24);
+  });
+});
+
+Deno.test("config - loadConfig maps fast_failure_diagnostics_here to camelCase (Issue #1950)", async () => {
+  const testConfig = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    repo_config: {
+      "org/repo1": { fast_failure_diagnostics_here: true },
+    },
+  } as unknown as ConfigFile;
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(
+      config.repoConfig?.["org/repo1"]?.fastFailureDiagnosticsHere,
+      true,
+    );
+  });
+});
+
 Deno.test("config - loadConfig parses best_planning_model (Issue #2654)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],

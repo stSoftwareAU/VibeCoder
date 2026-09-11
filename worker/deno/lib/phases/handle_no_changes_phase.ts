@@ -380,10 +380,20 @@ export async function workOnIssueHandleNoChanges(
   // Issue #108 — are handled earlier, before the analysis-only branch, so a
   // truncated run is never misclassified as analysis-only. See above.)
 
-  // No useful output — treat as failure (Issue #1188 — detailed failure messages)
+  // No useful output — treat as failure (Issue #1188 — detailed failure
+  // messages). Issue #1949: an unevidenced "already applied" claim that was
+  // too short for the analysis-only hand-off used to land here as a bare
+  // "no useful output" failure, with no label and nothing said about the
+  // claim — so the issue was re-claimable on the very next cycle. Name the
+  // claim in the reason: the failure ladder publishes this message, so the
+  // `failed-once` comment now states what the agent said and why it was not
+  // taken at face value.
+  const headline = alreadyResolved.status === "unverified"
+    ? `Reported the issue already fixed but cited no evidence — ${alreadyResolved.reason}; no code changes and no useful output`
+    : "No code changes and no useful output from Claude";
   logger.warn("Claude produced no changes and no useful output");
   const reason = formatDetailedFailureMessage(
-    "No code changes and no useful output from Claude",
+    headline,
     {
       elapsedSeconds,
       clarityStatus: state.clarityStatus,
