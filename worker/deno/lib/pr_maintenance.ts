@@ -55,6 +55,7 @@ export {
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
+import { findOpenDeferrals } from "./ci_fix_pr_markers.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import {
@@ -1242,6 +1243,13 @@ async function readJobNeedsFromClone(
  * also red on the same head is downstream of that failure, not a
  * failure of its own. Without a clone nothing is filtered.
  *
+ * Deferred checks are skipped (Issue #1881): a check the fleet has parked
+ * on an issue through a `vibe-ci-fix-deferred` marker (#1880) is left
+ * alone while that issue is open — nothing on the branch can fix it, on
+ * this host or any other. The moment the issue closes the check is
+ * returned as usual. Any failure to read the record leaves the check
+ * *undeferred* and reported, never silently skipped.
+ *
  * @param options - CI check scan options
  * @returns Result containing the highest priority failed check, or null
  */
@@ -1338,8 +1346,36 @@ export async function findFailedCiChecks(
         );
       }
 
+      // Issue #1881: the checks a fleet-authored deferral marker has parked
+      // on an issue that is still open. Read only when a non-aggregator
+      // failure is left to decide, so a green or aggregator-only PR costs
+      // no comment fetch. Every degraded read is logged inside and leaves
+      // the check undeferred — the scan never goes quiet on an error.
+      const deferrals = failedChecks.some((check) =>
+          !aggregators.has(check.name)
+        )
+        ? await findOpenDeferrals({
+          repo,
+          prNumber,
+          ghCommandFn,
+          fleetLogins: scanAuthors,
+          logger,
+        })
+        : [];
+      const deferredNames = new Set(deferrals.map((d) => d.checkName));
+      if (deferrals.length > 0) {
+        logger.skipReason(
+          "ci-fix-deferred",
+          `${repo}#${prNumber}: ${
+            deferrals.map((d) => `${d.checkName} (depends on ${d.dependsOn})`)
+              .join(", ")
+          } deferred until the named issue closes (Issue #1881)`,
+        );
+      }
+
       for (const check of failedChecks) {
         if (aggregators.has(check.name)) continue;
+        if (deferredNames.has(check.name)) continue;
 
         // Skip genuine spelling failures — handled by findFailedPrChecks.
         // The decision reads the failed *step*, so a non-spelling step
