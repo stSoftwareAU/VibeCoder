@@ -1396,6 +1396,18 @@
       "paths": [
         "worker/deno/lib/ci_fix_pr_markers.ts"
       ]
+    },
+    {
+      "issue": 1880,
+      "chunk": "12ad",
+      "title": "top-up: the base-branch check reader",
+      "ledger": "docs/audits/security-sweep-1880-ci-base-branch-check.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12ac recorded their coverage: ci_base_branch_check.ts (#1880)",
+      "status": "swept",
+      "sweptAt": "2a01c53d9429ebcb3db1d18c94fa48e23a66c493",
+      "paths": [
+        "worker/deno/lib/ci_base_branch_check.ts"
+      ]
     }
   ],
   "roots": [

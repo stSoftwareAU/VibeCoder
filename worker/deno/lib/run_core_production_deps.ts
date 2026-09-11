@@ -1806,6 +1806,9 @@ export async function createProductionRunCoreDeps(
             checkRunId: check.checkId,
             checkName: check.checkName,
             encodedAnnotations: check.encodedAnnotations,
+            // Issue #1880: the base branch, so a `Depends on owner/repo#N`
+            // claim that the failure is pre-existing there can be verified.
+            ...(check.baseRef !== undefined ? { baseRef: check.baseRef } : {}),
             // Issue #1878: so the processor can repeat the scan's
             // aggregator decision against the branch it checked out.
             ...(check.siblingFailedCheckNames !== undefined
