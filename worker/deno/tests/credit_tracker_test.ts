@@ -1381,7 +1381,7 @@ Deno.test("credit_tracker - a Claude-only day reports no unknown-usage invocatio
   }
 });
 
-Deno.test("credit_tracker - a Codex model id with real tokens is unpriced, never $0 (Issue #366)", async () => {
+Deno.test("credit_tracker - a Codex model id with real tokens is priced from its row, never $0 (Issue #1937)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     await logInvocation({
@@ -1403,11 +1403,13 @@ Deno.test("credit_tracker - a Codex model id with real tokens is unpriced, never
     assert(result.ok);
     const summary = result.value;
 
-    // The non-Claude id has no pricing row, so it is charged at the upper
-    // bound and named — not folded into the totals as free.
-    assertEquals(summary.unpricedModels, ["gpt-5-codex"]);
-    assert(summary.unpricedEstimatedCost > 0);
-    assert(summary.totalEstimatedCost > 0);
+    // The id now carries an API-equivalent row (Issue #1937), so it is priced
+    // from that row rather than charged at the unpriced upper bound — and it
+    // is still never folded into the totals as free (Issue #366).
+    assertEquals(summary.unpricedModels, []);
+    assertEquals(summary.unpricedEstimatedCost, 0);
+    // 1M input at $1.25 + 100k output at $10.00 = $2.25.
+    assertAlmostEquals(summary.totalEstimatedCost, 2.25, 1e-9);
     assert(formatSummary(summary).includes("gpt-5-codex"));
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

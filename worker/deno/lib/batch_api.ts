@@ -484,15 +484,25 @@ export function getBatchEligiblePhases(): BatchPhaseEligibility[] {
  * Look up pricing for a model identifier.
  *
  * Matches against known model pricing prefixes from token_usage.ts.
+ *
+ * API-equivalent rows are skipped (Issue #1937): the 50% discount this module
+ * models is Anthropic's Batch API, so applying it to an OpenAI, Google or
+ * DeepSeek list price would report a saving no vendor offers. A non-Claude id
+ * therefore finds no row — the same `undefined` it returned before those rows
+ * existed — and `estimateBatchSavings` reports zeros rather than a fabricated
+ * figure.
  */
 function lookupPricing(model: string): ModelPricing | undefined {
-  for (const [prefix, pricing] of MODEL_PRICING) {
+  const anthropicRows = [...MODEL_PRICING].filter(
+    ([, pricing]) => pricing.apiEquivalent !== true,
+  );
+  for (const [prefix, pricing] of anthropicRows) {
     if (model.includes(prefix) || model.startsWith(prefix)) {
       return pricing;
     }
   }
   // Fallback: try matching tier name within model string
-  for (const [prefix, pricing] of MODEL_PRICING) {
+  for (const [prefix, pricing] of anthropicRows) {
     const tier = prefix.replace("claude-", "").split("-")[0];
     if (tier && model.includes(tier)) {
       return pricing;

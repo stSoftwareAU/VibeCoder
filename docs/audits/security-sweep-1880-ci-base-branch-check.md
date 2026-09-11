@@ -1,10 +1,10 @@
 # Security sweep — base-branch check reader (`ci_base_branch_check.ts`)
 
 **Issue:** [#1880](https://github.com/stSoftwareAU/VibeCoder/issues/1880)
-(chunk 12ad) · **Parent:** #1209
+(chunk 12af) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
-after chunk 12ac recorded its coverage:
+after chunk 12ae recorded its coverage:
 
 - `worker/deno/lib/ci_base_branch_check.ts` — added by #1880.
 
@@ -12,7 +12,7 @@ after chunk 12ac recorded its coverage:
 
 Appending a module to a slice whose sweep ran before it existed is the cheapest
 way to make `diffCoverage` green and a false record. The module is claimed by
-**12ad**, and this file is the reading of it.
+**12af**, and this file is the reading of it.
 
 ## `worker/deno/lib/ci_base_branch_check.ts`
 
@@ -54,7 +54,7 @@ None.
 - **The deferral trusts the agent for *which* issue blocks it.** This module
   verifies only that the base is red; the `owner/repo#N` reference comes from
   the agent's message and is validated for shape by
-  `buildCiFixDeferralMarker` (12aa, #1877), not for accuracy. A wrong-but-open
+  `buildCiFixDeferralMarker` (12ac, #1877), not for accuracy. A wrong-but-open
   issue delays the pull request rather than escaping the cap. The loop guard
   in `pr_ci_processor.ts` bounds that delay: it reads the state of the
   **prior deferral's own** blocker, and once that blocker closes it refuses a

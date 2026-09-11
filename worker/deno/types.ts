@@ -1090,6 +1090,11 @@ export interface ConfigFile {
    */
   agent_provider?: string;
   /**
+   * Provider selection strategy (Issue #1926). `pinned` preserves the
+   * historical provider choice; `auto` ranks enabled fixed subscriptions.
+   */
+  agent_provider_mode?: "pinned" | "auto";
+  /**
    * Providers enabled for a run (Issue #4108) — each gets its own credential
    * file, preflight check and read-only mount. Defaults to the active
    * provider alone; `VIBE_AGENT_PROVIDERS` applies when this key is unset

@@ -45,6 +45,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "update_mode",
   "pinned_ref",
   "pinned_tool_versions",
+  "agent_provider_mode",
   "agent_provider",
   "agent_providers",
   "agent_provider_fallback",

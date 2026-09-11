@@ -3,7 +3,8 @@
 **Issues:** [#1696](https://github.com/stSoftwareAU/VibeCoder/issues/1696),
 [#1698](https://github.com/stSoftwareAU/VibeCoder/issues/1698),
 [#1700](https://github.com/stSoftwareAU/VibeCoder/issues/1700),
-[#1703](https://github.com/stSoftwareAU/VibeCoder/issues/1703)
+[#1703](https://github.com/stSoftwareAU/VibeCoder/issues/1703),
+[#1926](https://github.com/stSoftwareAU/VibeCoder/issues/1926)
 · **Parent:** #1694
 
 Claude remains the default. This page is the operator runbook for a
@@ -12,7 +13,8 @@ here automatically enables new routing on the production fleet.
 
 ```mermaid
 flowchart TD
-    P["agent_provider"] --> S["shared quota scheduler"]
+    M["agent_provider_mode"] --> S["shared quota scheduler"]
+    P["agent_provider preference"] --> S
     E["agent_providers"] --> S
     S --> C["Claude pool"]
     S --> X["Codex snapshots"]
@@ -55,14 +57,28 @@ not rewritten.
 | Key | Default | Meaning |
 | --- | ------- | ------- |
 | `agent_provider` | `claude` | Preferred provider |
+| `agent_provider_mode` | `pinned` | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions |
 | `agent_providers` | preferred alone | Enabled set (credentials mounted) |
 | `agent_provider_fallback` | `[]` | Ordered alternatives; empty **pins** the preferred provider |
 
-Fallback fires only on `subscription-exhausted`, `transient-rate-limit`
-or `model-unavailable`, and only when the alternative is already
-enabled. Authentication, configuration and ordinary task failures stay
-on the current provider. At most one switch per issue run. Automatic
-mixed-provider failover is **not** turned on for the production fleet.
+`agent_provider_mode: "auto"` is the quota-aware path from #1926. Before each
+work item it ranks enabled Claude OAuth and Codex ChatGPT subscriptions using
+all known windows, reset timing, status freshness and the configured provider
+preference. API-key accounts, unknown billing and providers without a
+fixed-subscription status adapter are excluded. A real quota or authentication
+failure makes that provider unavailable to subsequent work; quota failures are
+rechecked at the stated reset, or after a five-minute cooldown when no reset was
+reported. If no safe candidate remains, the host waits.
+
+An explicit per-invocation provider bypasses the process default and remains
+absolute. In auto mode, `VIBE_AGENT_PROVIDER` is an emergency per-process pin;
+it must name an enabled provider. Outside auto mode the established
+configuration-file precedence is unchanged.
+
+The older `agent_provider_fallback` path remains independently opt-in. It fires
+only on `subscription-exhausted`, `transient-rate-limit` or
+`model-unavailable`, and only when the alternative is already enabled. Neither
+automatic mechanism is turned on for the production fleet by default.
 
 ## Staged rollout
 
@@ -71,13 +87,14 @@ mixed-provider failover is **not** turned on for the production fleet.
 2. Test a **Codex-only** host (`agent_provider` / `agent_providers`
    both `codex`) with a dedicated test repository.
 3. Opt in **one** non-critical mixed host with
-   `agent_provider_fallback: ["codex"]` after observed success.
+   `agent_provider_mode: "auto"`, `agent_provider: "claude"`, and
+   `agent_providers: ["claude", "codex"]` after observed success.
 4. Expand only after the mixed host has completed a quota-exhaustion
    and recovery cycle with correct provider attribution.
 
-Rollback: remove `agent_provider_fallback`, set `agent_provider` back
-to `claude`, and relaunch. Existing Claude sessions and WIP branches
-are untouched.
+Rollback: remove `agent_provider_mode` (or set it to `pinned`), set
+`agent_provider` back to `claude`, and relaunch. Existing Claude sessions and
+WIP branches are untouched.
 
 ## Diagnostics
 
@@ -97,5 +114,6 @@ are untouched.
   paid turn.
 - Exhaustion prose from the CLI often lacks a parseable reset timezone;
   the reset stays unknown rather than guessed.
-- Cross-provider fallback still requires the operator to list
-  `agent_provider_fallback`. The shipped default is pinned.
+- Automatic selection currently supports Claude OAuth and Codex ChatGPT
+  subscriptions. Gemini, DeepSeek and every unknown or metered billing mode are
+  ineligible. The shipped default remains pinned.

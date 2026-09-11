@@ -1363,8 +1363,34 @@
       ]
     },
     {
-      "issue": 1877,
+      "issue": 1926,
       "chunk": "12aa",
+      "title": "quota-aware automatic provider routing",
+      "ledger": "docs/audits/security-sweep-1926-auto-provider-routing.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: provider auto-routing (#1926)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/provider_auto_runtime.ts",
+        "worker/deno/lib/provider_auto_selection.ts",
+        "worker/deno/lib/provider_auto_state.ts"
+      ],
+      "sweptAt": "acaba2ae8675ed02a00cd2c50875e1f820736faf"
+    },
+    {
+      "issue": 1938,
+      "chunk": "12ab",
+      "title": "top-up: the Gemini CLI token-usage decoder",
+      "ledger": "docs/audits/security-sweep-1938-gemini-token-usage.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: gemini_token_usage.ts (#1938)",
+      "status": "swept",
+      "sweptAt": "bb3b968edd71d8ae8183ecad7dcbaf85e4bb3290",
+      "paths": [
+        "worker/deno/lib/gemini_token_usage.ts"
+      ]
+    },
+    {
+      "issue": 1877,
+      "chunk": "12ac",
       "title": "top-up: the CI-fix attempt markers",
       "ledger": "docs/audits/security-sweep-1877-ci-fix-attempt-markers.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: ci_fix_attempt_markers.ts (#1877)",
@@ -1376,7 +1402,7 @@
     },
     {
       "issue": 1878,
-      "chunk": "12ab",
+      "chunk": "12ad",
       "title": "top-up: aggregator recognition from workflow needs:",
       "ledger": "docs/audits/security-sweep-1878-workflow-job-needs.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12aa recorded their coverage: workflow_job_needs.ts (#1878)",
@@ -1388,7 +1414,7 @@
     },
     {
       "issue": 1879,
-      "chunk": "12ac",
+      "chunk": "12ae",
       "title": "top-up: the CI-fix PR marker reader",
       "ledger": "docs/audits/security-sweep-1879-ci-fix-pr-markers.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12ab recorded their coverage: ci_fix_pr_markers.ts (#1879)",
@@ -1400,7 +1426,7 @@
     },
     {
       "issue": 1880,
-      "chunk": "12ad",
+      "chunk": "12af",
       "title": "top-up: the base-branch check reader",
       "ledger": "docs/audits/security-sweep-1880-ci-base-branch-check.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12ac recorded their coverage: ci_base_branch_check.ts (#1880)",
