@@ -10,6 +10,7 @@ import {
   createGitHubClient,
   filterReservedLabels,
   hasVisibleContent,
+  parseCommentIssueNumber,
   parseCreatedCommentJson,
   parseGhCommentsJson,
   parseGhIssueJson,
@@ -284,6 +285,7 @@ Deno.test("github - createGitHubClient returns client with all methods", () => {
   assertEquals(typeof client.addLabel, "function");
   assertEquals(typeof client.removeLabel, "function");
   assertEquals(typeof client.postComment, "function");
+  assertEquals(typeof client.updateComment, "function");
   assertEquals(typeof client.editIssue, "function");
   assertEquals(typeof client.assignIssue, "function");
   assertEquals(typeof client.unassignIssue, "function");
@@ -732,6 +734,45 @@ Deno.test("github - hasVisibleContent returns true for HTML comment plus visible
 Deno.test("github - hasVisibleContent returns true for visible text between comments", () => {
   const body = "<!-- A -->visible<!-- B -->";
   assertEquals(hasVisibleContent(body), true);
+});
+
+// --- updateComment (Issue #1879) ---
+
+Deno.test("github - updateComment refuses a comment id that is not a positive integer", async () => {
+  const client = createGitHubClient(createMockLogger());
+  for (const id of [0, -3, 1.5, Number.NaN]) {
+    await assertRejects(
+      () => client.updateComment!("org/repo", id, "body"),
+      Error,
+      "positive integer",
+    );
+  }
+});
+
+Deno.test("github - parseCommentIssueNumber reads the issue the comment belongs to", () => {
+  const raw = JSON.stringify({
+    id: 9,
+    issue_url: "https://api.github.com/repos/org/repo/issues/150",
+  });
+  assertEquals(parseCommentIssueNumber(raw), 150);
+});
+
+Deno.test("github - parseCommentIssueNumber returns undefined when the payload names no issue", () => {
+  assertEquals(parseCommentIssueNumber("not json"), undefined);
+  assertEquals(parseCommentIssueNumber("null"), undefined);
+  assertEquals(parseCommentIssueNumber(JSON.stringify({ id: 9 })), undefined);
+  assertEquals(
+    parseCommentIssueNumber(
+      JSON.stringify({ issue_url: "https://api.github.com/repos/org/repo" }),
+    ),
+    undefined,
+  );
+  assertEquals(
+    parseCommentIssueNumber(
+      JSON.stringify({ issue_url: "https://example.test/issues/0" }),
+    ),
+    undefined,
+  );
 });
 
 // --- parseCreatedCommentJson (Issue #1843) ---

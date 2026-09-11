@@ -344,14 +344,20 @@ Deno.test("processCiFailure no-changes - posts the agent's message verbatim with
     true,
     `expected the agent's message first; got: ${body}`,
   );
+  // The classifier trailer still closes the prose. Since Issue #1879 the
+  // fleet-wide attempt marker follows it — an HTML comment, invisible to a
+  // reader — so the trailer is the end of what the reviewer sees rather than
+  // the end of the string.
+  const trailer = `\n\n**Classifier reason:** ${
+    classifyCiFailure("Project Validation", annotations, "").reason
+  }\n**Signals:**\n- \`check:project validation\``;
+  assertStringIncludes(body, trailer);
   assertEquals(
-    body.endsWith(
-      `\n\n**Classifier reason:** ${
-        classifyCiFailure("Project Validation", annotations, "").reason
-      }\n**Signals:**\n- \`check:project validation\``,
+    body.slice(body.indexOf(trailer) + trailer.length).trim().startsWith(
+      "<!-- vibe-ci-fix-attempt ",
     ),
     true,
-    `expected the classifier trailer last; got: ${body}`,
+    `expected the attempt marker after the classifier trailer; got: ${body}`,
   );
   // The stock text the agent's message replaces must be gone entirely.
   assertEquals(body.includes("could not determine a fix"), false);

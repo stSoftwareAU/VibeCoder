@@ -30,11 +30,6 @@ import { INVITATION_PR_FIELDS } from "../lib/pr_invitation_lookup.ts";
 import type { Logger } from "../types.ts";
 import type { FailedCiCheck } from "../lib/pr_ci_checks.ts";
 import type { MergeAttemptOutcome } from "../lib/merge_block_escalation.ts";
-import {
-  computeFailureSignature,
-  getAutoFixAttempts,
-  recordAutoFixAttempt,
-} from "../lib/auto_fix_attempt_tracker.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1599,55 +1594,6 @@ Deno.test("closeIssuesForMergedPrs - skips when no issue number in title", async
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.closedCount, 0);
-  }
-});
-
-// ============================================================================
-// findFailedCiChecks — green build clears the auto-fix budget (Issue #3582)
-// ============================================================================
-
-Deno.test("findFailedCiChecks - a green PR clears its auto-fix attempt counters", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const stateDir = `${tmpDir}/.ci_state`;
-  try {
-    const signature = computeFailureSignature({
-      repo: "org/repo",
-      locus: { kind: "pr", number: 10 },
-      checkName: "CI / test",
-      logExcerpt: "error: cannot find symbol",
-    });
-    await recordAutoFixAttempt(stateDir, signature, {
-      repo: "org/repo",
-      locus: { kind: "pr", number: 10 },
-      checkName: "CI / test",
-      diagnosis: "missing import",
-      change: "added import",
-      outcome: "still red",
-    });
-    assertEquals((await getAutoFixAttempts(stateDir, signature)).length, 1);
-
-    // The PR now has no failing checks — the build is green.
-    const ghFn = (args: string[]): Promise<string> => {
-      const key = args.join(" ");
-      if (key.includes("pr list")) {
-        return Promise.resolve(JSON.stringify([
-          { number: 10, headRefName: "issue-10-fix", baseRefName: "main" },
-        ]));
-      }
-      return Promise.resolve("[]");
-    };
-
-    const options: CiCheckScanOptions = {
-      ...makeBaseScanOptions({ ghCommandFn: ghFn }),
-      stateDir,
-      maxRetries: 3,
-    };
-
-    const result = await findFailedCiChecks(options);
-    assertEquals(result.ok, true);
-    assertEquals(await getAutoFixAttempts(stateDir, signature), []);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
   }
 });
 

@@ -115,6 +115,8 @@ The reporting end of the same discipline is the `## Reproduction` block a `bug`-
 
 Every fleet host scans the same PRs, so the CI-fix path takes a **cross-host lock before it does anything else** — before the heartbeat, before Claude, before any push. Without it two hosts fixed one PR's CI failure concurrently (2026-08-03), burning tokens twice and racing each other's pushes.
 
+The lock stops two hosts working one PR **at the same time**; the fleet-wide attempt markers below stop them repeating each other's work **over time**.
+
 - **Granularity: the whole PR, not a single check.** Two hosts picking *different* failing checks on one branch would still push to that branch at the same time, so the lock claims the PR. It is the same `BRANCH_UPDATE_LOCK` comment used by the [branch-update workflow](pr-feedback.md), so a CI fix and a branch rebase can never run against one branch at once.
 - **Earliest claim wins.** Each host posts a lock comment, pauses for GitHub's eventual consistency, re-reads the comments, and the earliest `created_at` wins. The loser deletes its own comment, logs `pr_ci_lock=lost winner=<id>`, and returns immediately so the next scan can retry.
 - **Held for the whole run.** The lock TTL is 5 minutes but a CI fix may run for `ci_fix_timeout` (30 minutes), so the holder **renews** its lock every ~100 seconds rather than the TTL being raised. Renewal keeps the crash-recovery window at one TTL: a host that dies mid-fix frees the PR within five minutes instead of hours.
@@ -143,9 +145,28 @@ sequenceDiagram
 The worker tracks retries per check run ID using state files in the CI check state directory:
 
 - **State files:** `${CI_CHECK_STATE_DIR}/${safe_repo}_${check_id}.retries`
-- **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to `${WORK_DIR}/.ci_check_state`, **always absolute**, and **shared by the scan and the fix** (Issue #552). The old relative default resolved against the worker's working directory — the read-only checkout in container mode. The scan therefore read retry counters from a store nothing wrote to, so the cap was never enforced, and its green-build sweep cleared auto-fix budgets in a directory the fix never touched, so a spent budget stayed spent and the lane escalated the check to a human instead of repairing it. That is why semgrep failures waited for somebody to ask for a fix by hand.
+- **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to `${WORK_DIR}/.ci_check_state`, **always absolute**, and **shared by the scan and the fix** (Issue #552). The old relative default resolved against the worker's working directory — the read-only checkout in container mode — so the scan read retry counters from a store nothing wrote to and the cap was never enforced. That is why semgrep failures waited for somebody to ask for a fix by hand.
 - **Maximum retries:** 3 (configurable via `CI_CHECK_MAX_RETRIES`)
 - **On max retries exceeded:** The worker posts a PR comment explaining that the CI failure could not be automatically fixed and skips the check on future runs.
+
+### Fleet-wide attempt cap and comment dedup (Issue #1879)
+
+The check-run retry counter above is **host-local and per check run**. The `max_auto_fix_attempts` cap is neither: it is counted from the pull request's own fleet-authored markers, so every host shares one budget of three attempts per failure signature and posts one comment per signature.
+
+- **The record is the marker in the comment.** Each comment the lane posts carries `<!-- vibe-ci-fix-attempt signature="…" check="…" head="…" attempt="N" outcome="pushed|no-change" -->`. The processor fetches the PR's comments once (`getIssueComments`, which pull requests share with issues) and tallies the markers **fleet accounts wrote** — `github_user` plus `fleet_pr_authors` / `service_accounts`. A marker from anyone else is ignored and reported: only a comment's author is authenticated.
+- **Nothing host-local is consulted.** No code path reads or writes `*.autofix.json`; the lane's host-local state is the check-run retry counter alone.
+- **Same head, same failure ⇒ silence.** A fleet `no-change` marker for this signature whose `head` is the checked-out head means nothing has changed since the diagnosis already on the PR: no agent runs and nothing is posted.
+- **New head, same failure ⇒ edit in place.** The failure is diagnosed afresh, but a repeat "no change required" appends its marker to the existing comment (`GitHubClient.updateComment`, `PATCH repos/{repo}/issues/comments/{id}`) rather than posting a second copy. If the edit cannot be applied it is logged as an error and a fresh comment is posted — the record is never silently dropped.
+- **Not every run is charged.** An `infrastructure`-category failure writes no marker, and a failure deferred to a blocking issue records a deferral marker instead. An unreadable comment list or an unresolved fleet identity logs an error saying the cap is not enforced for that run, rather than passing for a fresh budget.
+
+```mermaid
+flowchart LR
+    S["computeFailureSignature"] --> C["getIssueComments(PR) once"]
+    C --> M["fleet-authored markers<br/>for this signature"]
+    M -->|"attempts ≥ max"| E["escalate once<br/>(needs-human)"]
+    M -->|"no-change marker,<br/>same head"| Q["post nothing,<br/>no agent run"]
+    M -->|"else"| R["run agent → reply<br/>+ attempt marker<br/>(edit in place on repeat)"]
+```
 
 ## ⏱️ Timeout handling
 

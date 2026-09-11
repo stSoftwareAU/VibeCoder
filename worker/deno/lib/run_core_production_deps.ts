@@ -756,10 +756,9 @@ export async function createProductionRunCoreDeps(
   //
   // Issue #552: resolved ONCE and shared, because the scanner and the
   // processor must address the same store. While the scanner kept the old
-  // relative default it read retry counters that were never written there and
-  // its green-build sweep cleared auto-fix budgets in a directory the
-  // processor never touched — so a spent budget was never reset and the lane
-  // escalated to a human instead of fixing the check.
+  // relative default it read retry counters that were never written there, so
+  // the cap was never enforced. Issue #1879 moved the auto-fix attempt tally
+  // onto the pull request; this directory is the check-run retry counter now.
   const ciCheckStateDir = resolveCiCheckStateDir(workDir);
 
   // Stable machine identifier used by GitHub heartbeat markers (Issue #1454)
@@ -1837,6 +1836,10 @@ export async function createProductionRunCoreDeps(
             // Issue #3754: cross-host PR lock so two hosts cannot fix the
             // same PR's CI failure concurrently.
             workerId: getWorkerUniqueId(config.workerName),
+            // Issue #1879: the logins whose markers on the PR are the
+            // fleet's own attempt record — the push-capable set, because
+            // those are the accounts that actually run this lane.
+            fleetLogins: resolveFleetMaintenanceAuthorSet(fleetPrAuthorInput),
           },
         );
 

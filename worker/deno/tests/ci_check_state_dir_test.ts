@@ -5,11 +5,12 @@
  * moved the *processor* onto the work volume but left the *scanner*
  * (`findFailedCiChecks`) on the bare relative default `.ci_check_state`,
  * resolved against a cwd that is read-only in container mode. So the scanner
- * read retry counters that were never written there, and its green-build sweep
- * cleared auto-fix budgets in a directory the processor never touched — a
- * signature that reached the auto-fix cap stayed spent forever and the lane
- * escalated to a human instead of fixing the check. Semgrep failures then sat
- * until somebody asked for a fix by hand.
+ * read retry counters that were never written there, so the cap was never
+ * enforced and semgrep failures sat until somebody asked for a fix by hand.
+ *
+ * The directory now holds the **check-run retry counter only**: the auto-fix
+ * attempt tally moved onto the pull request itself (Issue #1879), so nothing
+ * here clears or records it.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -25,11 +26,6 @@ import {
   type CiCheckScanOptions,
   findFailedCiChecks,
 } from "../lib/pr_maintenance.ts";
-import {
-  computeFailureSignature,
-  getAutoFixAttempts,
-  recordAutoFixAttempt,
-} from "../lib/auto_fix_attempt_tracker.ts";
 import type { Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -205,42 +201,6 @@ Deno.test("findFailedCiChecks - observes the retry cap written by the processor'
     // fourth attempt. Against the unfixed code the scanner read
     // `.ci_check_state` under the cwd, saw zero, and returned the check.
     if (result.ok) assertEquals(result.value, null);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("findFailedCiChecks - a green build clears the auto-fix budget the processor recorded", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    const stateDir = resolveCiCheckStateDir(tmpDir);
-    const signature = computeFailureSignature({
-      repo: "org/repo",
-      locus: { kind: "pr", number: 548 },
-      checkName: "semgrep",
-      logExcerpt: "detect-non-literal-regexp",
-    });
-    await recordAutoFixAttempt(stateDir, signature, {
-      repo: "org/repo",
-      locus: { kind: "pr", number: 548 },
-      checkName: "semgrep",
-      diagnosis: "regexp built from a variable",
-      change: "hoisted the pattern to a literal",
-      outcome: "check still failing",
-    });
-    assertEquals((await getAutoFixAttempts(stateDir, signature)).length, 1);
-
-    // PR 548 now reports no failing checks — the build is green.
-    const result = await findFailedCiChecks(
-      scanOptions(ghStubFor(548, []), tmpDir),
-    );
-    assertEquals(result.ok, true);
-
-    // The budget must be back to zero. Against the unfixed code the sweep
-    // ran over `.ci_check_state` in the cwd, cleared nothing, and the
-    // signature stayed spent — so the next real failure was escalated to a
-    // human instead of fixed.
-    assertEquals((await getAutoFixAttempts(stateDir, signature)).length, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

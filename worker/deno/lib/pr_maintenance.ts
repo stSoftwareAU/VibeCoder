@@ -54,7 +54,6 @@ export {
 } from "./pr_feedback_supersede.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
-import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
@@ -1337,24 +1336,6 @@ export async function findFailedCiChecks(
             [...aggregators].join(", ")
           } needs a job that is also failing on this head (Issue #1878)`,
         );
-      }
-
-      // Issue #3582: a PR with no failing checks is green, so every
-      // auto-fix signature recorded against it starts from a fresh budget.
-      // A recurring-but-different flake must not inherit a spent budget.
-      if (failedChecks.length === 0) {
-        const cleared = await clearAutoFixAttemptsForLocus(
-          stateDir,
-          repo,
-          { kind: "pr", number: prNumber },
-        );
-        if (cleared > 0) {
-          logger.info("Cleared auto-fix attempt counters after green build", {
-            repo,
-            prNumber,
-            cleared,
-          });
-        }
       }
 
       for (const check of failedChecks) {
