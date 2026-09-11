@@ -1387,6 +1387,18 @@
       "paths": [
         "worker/deno/lib/gemini_token_usage.ts"
       ]
+    },
+    {
+      "issue": 1947,
+      "chunk": "12ac",
+      "title": "top-up: the structured callback run outcome",
+      "ledger": "docs/audits/security-sweep-1947-callback-run-outcome.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12ab recorded their coverage: callback_run_outcome.ts (#1947)",
+      "status": "swept",
+      "sweptAt": "90e2a17b495966a6358a2eb26d5a12f60ce03520",
+      "paths": [
+        "worker/deno/lib/callback_run_outcome.ts"
+      ]
     }
   ],
   "roots": [
