@@ -20,6 +20,7 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { ISSUE_RUN_STATS_MARKER } from "../lib/issue_run_stats_comment.ts";
 import { findImageReferences } from "../lib/untrusted_image_signal.ts";
+import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 
 // Side-effect import: register the security-scan template so its
 // title and body fingerprint are visible to the suppression check.
@@ -613,6 +614,41 @@ Deno.test(
     assert(!result.reason.includes("no useful output"), result.reason);
     // The issue is not closed or handed off — it is not the issue's fault.
     assertEquals(calls.closeIssue.length, 0);
+  },
+);
+
+// -------------------------------------------------------------------------
+// Issue #1949 — an unevidenced "already applied" claim is never silent
+// -------------------------------------------------------------------------
+
+Deno.test(
+  "handle_no_changes_phase - an unevidenced 'already applied' claim is named in the failure reason (Issue #1949)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    // Short enough (< 100 chars) to miss the analysis-only hand-off, and
+    // cites no commit or PR — the shape that used to become a bare
+    // "no useful output" failure with no label and no exclusion.
+    const state = makeState({
+      claudeOutput: "No code changes are needed - this was already applied.",
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals(result.status, "failure");
+    assert(result.status === "failure");
+    assertStringIncludes(result.reason, "already fixed but cited no evidence");
+    // Not closed: there was no evidence to close on.
+    assertEquals(calls.closeIssue.length, 0);
+    // The reason is non-transient, so the run loop's ladder claims it.
+    assertEquals(classifyCodingFailure(result.reason).disposition, "ladder");
+    assertEquals(
+      classifyCodingFailure(result.reason).cooldownKind,
+      "non_transient",
+    );
   },
 );
 

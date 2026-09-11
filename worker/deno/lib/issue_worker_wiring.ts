@@ -1070,7 +1070,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
       () =>
         Promise.resolve({
           ok: true,
-          value: { state: { entries: [] }, consecutiveTimeouts: 0 },
+          value: { state: { entries: [] }, consecutiveFailures: 0 },
         }),
     ),
     isIssueInCooldown: mockFn<FailureTrackingDeps["isIssueInCooldown"]>(() =>

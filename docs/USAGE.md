@@ -264,6 +264,31 @@ branch deleted, issue unassigned for automatic retry.
 **Second failure**: Comment added, `failed` label replaces `failed-once`, issue
 skipped in future scans.
 
+**Which failures count (Issue #1949)**: every terminal failure that is not
+transient infrastructure enters the ladder — a failed quality gate, a run that
+produced no changes and no useful output, a push refusal, an unexplained
+failure. A run that fails in 40 seconds is *stronger* evidence of a stuck issue
+than one that fails slowly, so it climbs the same ladder. Transient
+infrastructure — a rate or usage limit, an out-of-credit account, a run
+interrupted before it finished, a scheduled release, a timeout bound by the
+cycle deadline — consumes no attempt and keeps the flat retry cooldown.
+
+Each ladder failure also steps an escalating re-claim cooldown (2 h → 6 h →
+24 h) so a doomed issue cannot burn consecutive cycles while its attempts play
+out; a third consecutive ladder failure within 48 hours hands the issue to a
+human with `needs-human`.
+
+```mermaid
+flowchart LR
+    F["🔨 Terminal run failure"] --> C{"Transient<br/>infrastructure?"}
+    C -->|"rate/usage limit,<br/>out of credit,<br/>interrupted,<br/>scheduled release,<br/>deadline-bound timeout"| T["⏳ Flat retry cooldown,<br/>no attempt consumed"]
+    C -->|"anything else"| L["📝 failed-once → failed<br/>+ 2 h / 6 h / 24 h cooldown"]
+
+    style F fill:#3a86ff,stroke:#023e8a,color:#fff
+    style T fill:#8ecae6,stroke:#219ebc,color:#000
+    style L fill:#ef476f,stroke:#c5233c,color:#fff
+```
+
 **To retry a permanently failed issue:**
 
 1. Investigate the failure comments
