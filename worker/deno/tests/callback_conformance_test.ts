@@ -176,7 +176,12 @@ Deno.test({
       assert(text.includes(id), `${id} missing from the report`);
     }
     assert(text.includes("PASS"), text);
-    assert(text.includes("6/6"), text);
+    assert(
+      text.includes(
+        `${CONFORMANCE_CHECK_IDS.length}/${CONFORMANCE_CHECK_IDS.length}`,
+      ),
+      text,
+    );
   },
 });
 

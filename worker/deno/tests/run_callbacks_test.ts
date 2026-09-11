@@ -328,6 +328,93 @@ Deno.test("run_callbacks - absent optional facts are omitted, not emitted empty"
   assert(!("sessionId" in document));
   assert(!("sessionLogPath" in document));
   assert(!("telemetry" in document));
+  assert(!("outcome" in document));
+});
+
+// --- Structured run outcome (Issue #1947) -----------------------------------
+
+Deno.test("run_callbacks - the document carries the structured run outcome", () => {
+  const document = buildCallbackContextDocument(
+    context({
+      result: "failure",
+      exitCode: 1,
+      outcome: {
+        kind: "no_pr",
+        category: "quality_check",
+        phase: "quality_gate",
+        failureClass: "agent-outcome",
+      },
+    }),
+    "failure",
+  );
+  assertEquals(document.outcome, {
+    kind: "no_pr",
+    category: "quality_check",
+    phase: "quality_gate",
+    failureClass: "agent-outcome",
+  });
+  // Unchanged for a hook that reads only the original two fields.
+  assertEquals(document.result, "failure");
+  assertEquals(document.exitCode, 1);
+});
+
+Deno.test("run_callbacks - the outcome scalars name the PR a later step failed after", () => {
+  const env = buildCallbackEnv(
+    context({
+      result: "failure",
+      exitCode: 1,
+      outcome: { kind: "pr", phase: "completion", prNumber: 123 },
+    }),
+    "failure",
+    "/tmp/ctx.json",
+    () => undefined,
+  );
+  assertEquals(env.VIBECODER_OUTCOME_KIND, "pr");
+  assertEquals(env.VIBECODER_OUTCOME_PHASE, "completion");
+  assertEquals(env.VIBECODER_PR_NUMBER, "123");
+  assertEquals(env.VIBECODER_OUTCOME_CATEGORY, undefined);
+  assertEquals(env.VIBECODER_OUTCOME_FAILURE_CLASS, undefined);
+});
+
+Deno.test("run_callbacks - the outcome scalars separate a gate failure from a hand-back", () => {
+  const red = buildCallbackEnv(
+    context({
+      result: "failure",
+      exitCode: 1,
+      outcome: {
+        kind: "no_pr",
+        category: "quality_check",
+        phase: "quality_gate",
+        failureClass: "agent-outcome",
+      },
+    }),
+    "failure",
+    "/tmp/ctx.json",
+    () => undefined,
+  );
+  const handBack = buildCallbackEnv(
+    context({ outcome: { kind: "no_pr_expected", phase: "execute" } }),
+    "success",
+    "/tmp/ctx.json",
+    () => undefined,
+  );
+  assertEquals(red.VIBECODER_OUTCOME_KIND, "no_pr");
+  assertEquals(red.VIBECODER_OUTCOME_CATEGORY, "quality_check");
+  assertEquals(red.VIBECODER_OUTCOME_FAILURE_CLASS, "agent-outcome");
+  assertEquals(handBack.VIBECODER_OUTCOME_KIND, "no_pr_expected");
+  assertEquals(handBack.VIBECODER_OUTCOME_CATEGORY, undefined);
+});
+
+Deno.test("run_callbacks - a run with no structured outcome exports no outcome variable", () => {
+  const env = buildCallbackEnv(
+    context(),
+    "success",
+    "/tmp/ctx.json",
+    () => undefined,
+  );
+  assertEquals(env.VIBECODER_OUTCOME_KIND, undefined);
+  assertEquals(env.VIBECODER_OUTCOME_PHASE, undefined);
+  assertEquals(env.VIBECODER_PR_NUMBER, undefined);
 });
 
 Deno.test("run_callbacks - provider, session, transcript and telemetry are carried when known", () => {
@@ -373,7 +460,7 @@ Deno.test("run_callbacks - the environment carries the documented scalars", () =
     "/tmp/ctx.json",
     () => undefined,
   );
-  assertEquals(env.VIBECODER_CALLBACK_SCHEMA_VERSION, "1");
+  assertEquals(env.VIBECODER_CALLBACK_SCHEMA_VERSION, "2");
   assertEquals(env.VIBECODER_CALLBACK_EVENT, "failure");
   assertEquals(env.VIBECODER_CALLBACK_CONTEXT, "/tmp/ctx.json");
   assertEquals(env.VIBECODER_RUN_ID, "vibe-abc-123456");

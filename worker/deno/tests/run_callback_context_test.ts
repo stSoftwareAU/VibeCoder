@@ -160,3 +160,34 @@ Deno.test("issue_callback_guard - a fresh guard starts empty", () => {
   assertEquals(new IssueCallbackGuard().size, 0);
   assertEquals(new IssueCallbackGuard().tryClaim("o/a", 1), true);
 });
+
+// --- Structured run outcome (Issue #1947) -----------------------------------
+
+Deno.test("run_callback_context - the structured outcome is carried through to the context", () => {
+  const context = buildIssueRunCallbackContext(
+    run({
+      result: "failure",
+      outcome: {
+        kind: "no_pr",
+        category: "evidence_missing",
+        phase: "completion",
+        failureClass: "agent-outcome",
+      },
+    }),
+    IDENTITY,
+  );
+  assertEquals(context.outcome, {
+    kind: "no_pr",
+    category: "evidence_missing",
+    phase: "completion",
+    failureClass: "agent-outcome",
+  });
+  // The pre-existing fields are untouched: a hook keyed on them is unaffected.
+  assertEquals(context.result, "failure");
+  assertEquals(context.exitCode, 1);
+});
+
+Deno.test("run_callback_context - a run with no structured outcome omits the block", () => {
+  const context = buildIssueRunCallbackContext(run(), IDENTITY);
+  assert(!("outcome" in context));
+});

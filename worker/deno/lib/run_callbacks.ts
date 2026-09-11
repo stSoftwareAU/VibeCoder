@@ -41,6 +41,7 @@ import {
   type CallbacksConfig,
   hasAnyCallback,
 } from "./run_callbacks_config.ts";
+import type { CallbackRunOutcome } from "./callback_run_outcome.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
@@ -49,8 +50,13 @@ import { redactSecrets } from "./secret_redaction.ts";
  *
  * Bump when a field's meaning changes or a field is removed, so an extension
  * can refuse a contract it does not understand rather than misreading it.
+ *
+ * - **2** — adds the structured `outcome` block (Issue #1947). Purely
+ *   additive: `result` and `exitCode` are untouched, so a hook written
+ *   against version 1 reads the same values it always did.
+ * - **1** — the original contract (Issue #806).
  */
-export const CALLBACK_SCHEMA_VERSION = 1;
+export const CALLBACK_SCHEMA_VERSION = 2;
 
 /** Longest stdout/stderr excerpt captured and logged per stream. */
 export const MAX_CAPTURED_OUTPUT_CHARS = 4000;
@@ -114,6 +120,17 @@ export interface IssueRunCallbackContext {
   exitCode: number;
   /** Token and cost telemetry, when available. */
   telemetry?: CallbackRunTelemetry;
+  /**
+   * What the run achieved, structured (Issue #1947) — the outcome `kind`, the
+   * diagnosed failure category, the phase that terminated the run, the
+   * classifier's failure class and the PR number, each present only when the
+   * run supplied it.
+   *
+   * Beside `result`/`exitCode`, never instead of them: a consumer can tell
+   * "no PR raised" from "gate red" from "handed back" without reading a
+   * transcript, and a hook that reads only the boolean result is unaffected.
+   */
+  outcome?: CallbackRunOutcome;
 }
 
 /**
@@ -137,6 +154,12 @@ export interface TerminalIssueRun {
   finishedAtEpochMs: number;
   /** Token and cost telemetry, when the run's invocations reported it. */
   telemetry?: CallbackRunTelemetry;
+  /**
+   * The run's structured outcome (Issue #1947), narrowed from its
+   * `RunOutcome` by `summariseRunOutcome`. Absent when the loop could not
+   * compute one.
+   */
+  outcome?: CallbackRunOutcome;
 }
 
 /** What became of one hook invocation. */
@@ -231,6 +254,7 @@ export function buildCallbackContextDocument(
     document.sessionLogPath = context.sessionLogPath;
   }
   if (context.telemetry !== undefined) document.telemetry = context.telemetry;
+  if (context.outcome !== undefined) document.outcome = context.outcome;
   return document;
 }
 
@@ -286,6 +310,14 @@ export function buildCallbackEnv(
   );
   put(env, "VIBECODER_CACHE_READ_TOKENS", context.telemetry?.cacheReadTokens);
   put(env, "VIBECODER_ESTIMATED_COST_USD", context.telemetry?.estimatedCostUsd);
+  // Issue #1947: the structured outcome, one scalar per member. Each is
+  // omitted when the run could not supply it, so `[ -n "$VIBECODER_PR_NUMBER" ]`
+  // is a truthful test of "this run reached a PR".
+  put(env, "VIBECODER_OUTCOME_KIND", context.outcome?.kind);
+  put(env, "VIBECODER_OUTCOME_CATEGORY", context.outcome?.category);
+  put(env, "VIBECODER_OUTCOME_PHASE", context.outcome?.phase);
+  put(env, "VIBECODER_OUTCOME_FAILURE_CLASS", context.outcome?.failureClass);
+  put(env, "VIBECODER_PR_NUMBER", context.outcome?.prNumber);
   return env;
 }
 

@@ -92,6 +92,10 @@ import type {
   CallbackRunTelemetry,
   TerminalIssueRun,
 } from "./run_callbacks.ts";
+import {
+  type CallbackRunOutcome,
+  summariseRunOutcome,
+} from "./callback_run_outcome.ts";
 import { IssueCallbackGuard } from "./issue_callback_guard.ts";
 import {
   formatSlotPrefix,
@@ -1878,11 +1882,44 @@ interface TerminalRun {
   /** Token and cost telemetry the run reported, when it reported any. */
   telemetry?: CallbackRunTelemetry;
   /**
+   * What the run achieved, structured (Issue #1947): the outcome kind, the
+   * diagnosed category, the failing phase, the classifier's failure class and
+   * the PR number. Absent when the loop computed no outcome at all.
+   */
+  outcome?: CallbackRunOutcome;
+  /**
    * The cycle's exactly-once guard. Every dispatch site for a claim shares
    * one, so a run reported by its own release is not reported again by the
    * slot catch or the shutdown drain.
    */
   guard: IssueCallbackGuard;
+}
+
+/**
+ * Narrow one processed issue to the structured outcome the callbacks publish
+ * (Issue #1947).
+ *
+ * Prefers what the run itself computed. When the run faulted before an outcome
+ * existed — a claim rejected, a setup step refused — the error message is
+ * diagnosed instead, so a sub-minute refusal reaches an archive as the `no_pr`
+ * it was rather than as an unexplained `result: "failure"`.
+ */
+function terminalRunOutcome(
+  processResult: {
+    ok: true;
+    value: { outcome?: RunOutcome; failurePhase?: string };
+  } | { ok: false; error: Error },
+  outcome: RunOutcome | undefined,
+  result: "success" | "failure",
+): CallbackRunOutcome | undefined {
+  return summariseRunOutcome({
+    result,
+    ...(outcome ? { outcome } : {}),
+    ...(processResult.ok && processResult.value.failurePhase
+      ? { phase: processResult.value.failurePhase }
+      : {}),
+    ...(processResult.ok ? {} : { message: processResult.error.message }),
+  });
 }
 
 /**
@@ -1920,6 +1957,7 @@ function dispatchIssueCallbacks(
         startedAtEpochMs: ran.startedAtEpochMs,
         finishedAtEpochMs: deps.now(),
         ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
+        ...(ran.outcome ? { outcome: ran.outcome } : {}),
       });
     } catch (error) {
       deps.logError(
@@ -2303,20 +2341,28 @@ async function runIssueScanLoop(
       // (Issue #806). Covered by `run_core_callbacks_test.ts` and
       // `run_core_throw_release_test.ts` — a sync merge has collapsed this
       // `catch` into the `finally` below twice, silently.
+      const thrownOutcome = deriveRunOutcome({
+        success: false,
+        phase: "serial",
+        reason: message,
+        elapsedSeconds: Math.max(0, deps.now() - claimedAtEpochMs) / 1000,
+      });
       await releaseIssueClaim(
         deps,
         issue.repo,
         issue.issueNumber,
-        deriveRunOutcome({
-          success: false,
-          phase: "serial",
-          reason: message,
-          elapsedSeconds: Math.max(0, deps.now() - claimedAtEpochMs) / 1000,
-        }),
+        thrownOutcome,
         {
           result: "failure",
           startedAtEpochMs: claimedAtEpochMs,
           guard: callbackGuard,
+          // Issue #1947: a run that exploded after the claim reaches the hooks
+          // as the `no_pr` it was, not as a bare `result: "failure"`.
+          outcome: summariseRunOutcome({
+            result: "failure",
+            outcome: thrownOutcome,
+            message,
+          }),
         },
       );
       throw thrown;
@@ -2346,6 +2392,10 @@ async function runIssueScanLoop(
       ...(processResult.ok && processResult.value.telemetry
         ? { telemetry: processResult.value.telemetry }
         : {}),
+      // Issue #1947: the structured outcome rides the callback context beside
+      // `result`, so a consumer tells "gate red" from "handed back" without a
+      // transcript.
+      outcome: terminalRunOutcome(processResult, runOutcome, result),
     });
 
     if (processResult.ok && processResult.value.success) {
@@ -3567,18 +3617,17 @@ async function runSlot(
         // still states what happened (Issue #4325).
         const since = pool.registry.holds().find((h) => h.repo === issue.repo)
           ?.sinceMs;
+        const thrownOutcome = deriveRunOutcome({
+          success: false,
+          phase: "slot",
+          reason: message,
+          elapsedSeconds: since === undefined ? 0 : (Date.now() - since) / 1000,
+        });
         await releaseIssueClaim(
           deps,
           issue.repo,
           issue.issueNumber,
-          deriveRunOutcome({
-            success: false,
-            phase: "slot",
-            reason: message,
-            elapsedSeconds: since === undefined
-              ? 0
-              : (Date.now() - since) / 1000,
-          }),
+          thrownOutcome,
           // An exception after a claim takes the failure/always path exactly
           // once (Issue #806). Reported only when the run actually started,
           // and the shared guard refuses a repeat if it already reported.
@@ -3587,6 +3636,13 @@ async function runSlot(
               result: "failure" as const,
               startedAtEpochMs: since ?? deps.now(),
               guard: pool.callbackGuard,
+              // Issue #1947: the hooks see the diagnosed `no_pr`, not a bare
+              // `result: "failure"` a consumer cannot classify.
+              outcome: summariseRunOutcome({
+                result: "failure",
+                outcome: thrownOutcome,
+                message,
+              }),
             }
             : undefined,
         );
@@ -3908,6 +3964,8 @@ async function runSlotIssue(
     ...(processResult.ok && processResult.value.telemetry
       ? { telemetry: processResult.value.telemetry }
       : {}),
+    // Issue #1947: see the serial loop's copy — same facts, same narrowing.
+    outcome: terminalRunOutcome(processResult, runOutcome, result),
   });
 
   if (processResult.ok && processResult.value.success) {

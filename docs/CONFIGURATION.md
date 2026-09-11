@@ -2817,7 +2817,7 @@ invocation and removed after it exits:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "event": "success",
   "runId": "vibe-mtk92vcu-ebcc11",
   "result": "success",
@@ -2838,9 +2838,21 @@ invocation and removed after it exits:
     "cacheCreationTokens": 90,
     "cacheReadTokens": 20,
     "estimatedCostUsd": 0.42
+  },
+  "outcome": {
+    "kind": "pr",
+    "prNumber": 806
   }
 }
 ```
+
+The `outcome` block (schema version 2, Issue #1947) states **what the run
+achieved** beside the boolean `result`: the outcome `kind`, the diagnosed
+failure `category`, the `phase` that terminated the run, the classifier's
+`failureClass` and the `prNumber` when one exists — so an archive tells "no PR
+raised" from "gate red" from "handed back" without reading a transcript. See
+[Callbacks](CALLBACKS.md#what-the-run-achieved--the-outcome-block) for the full
+set. `result` and `exitCode` are unchanged, so hooks keyed on them keep working.
 
 The same facts are exported as scalars, one variable each:
 `VIBECODER_CALLBACK_SCHEMA_VERSION`, `VIBECODER_CALLBACK_EVENT`,
@@ -2850,8 +2862,10 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_SESSION_LOG_PATH`, `VIBECODER_STARTED_AT`,
 `VIBECODER_FINISHED_AT`, `VIBECODER_DURATION_SECONDS`,
 `VIBECODER_EXIT_CODE`, `VIBECODER_INPUT_TOKENS`, `VIBECODER_OUTPUT_TOKENS`,
-`VIBECODER_CACHE_CREATION_TOKENS`, `VIBECODER_CACHE_READ_TOKENS` and
-`VIBECODER_ESTIMATED_COST_USD`.
+`VIBECODER_CACHE_CREATION_TOKENS`, `VIBECODER_CACHE_READ_TOKENS`,
+`VIBECODER_ESTIMATED_COST_USD`, `VIBECODER_OUTCOME_KIND`,
+`VIBECODER_OUTCOME_CATEGORY`, `VIBECODER_OUTCOME_PHASE`,
+`VIBECODER_OUTCOME_FAILURE_CLASS` and `VIBECODER_PR_NUMBER`.
 
 A fact the run could not supply — no provider, no session, no parseable token
 usage — is **omitted** from both the document and the environment rather than

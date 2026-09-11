@@ -135,5 +135,8 @@ export function buildIssueRunCallbackContext(
     // changes it.
     exitCode: run.result === "success" ? 0 : 1,
     ...(run.telemetry ? { telemetry: run.telemetry } : {}),
+    // Issue #1947: what the run achieved, beside — never instead of — the
+    // boolean result the hooks have always keyed on.
+    ...(run.outcome ? { outcome: run.outcome } : {}),
   };
 }

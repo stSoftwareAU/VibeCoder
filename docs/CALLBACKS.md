@@ -187,7 +187,7 @@ invocation (mode `0600`) and removed after it exits:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "event": "success",
   "runId": "vibe-mtk92vcu-ebcc11",
   "result": "success",
@@ -208,6 +208,10 @@ invocation (mode `0600`) and removed after it exits:
     "cacheCreationTokens": 90,
     "cacheReadTokens": 20,
     "estimatedCostUsd": 0.42
+  },
+  "outcome": {
+    "kind": "pr",
+    "prNumber": 807
   }
 }
 ```
@@ -237,6 +241,11 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_CACHE_CREATION_TOKENS`    | `telemetry.cacheCreationTokens` | no            | Cache-creation tokens                                |
 | `VIBECODER_CACHE_READ_TOKENS`        | `telemetry.cacheReadTokens`    | no             | Cache-read tokens                                    |
 | `VIBECODER_ESTIMATED_COST_USD`       | `telemetry.estimatedCostUsd`   | no             | Estimated spend in USD                               |
+| `VIBECODER_OUTCOME_KIND`             | `outcome.kind`                 | no             | What the run achieved — see the outcome block below  |
+| `VIBECODER_OUTCOME_CATEGORY`         | `outcome.category`             | no             | Diagnosed failure category of a `no_pr` run          |
+| `VIBECODER_OUTCOME_PHASE`            | `outcome.phase`                | no             | Phase that terminated the run                        |
+| `VIBECODER_OUTCOME_FAILURE_CLASS`    | `outcome.failureClass`         | no             | Classifier slug for a failure (`usage-limit`, …)     |
+| `VIBECODER_PR_NUMBER`                | `outcome.prNumber`             | no             | PR the run is attached to, when one exists           |
 
 A fact the run could not supply — no provider, no session, no parseable token
 usage, no transcript — is **omitted** from both the document and the
@@ -244,6 +253,63 @@ environment rather than emitted empty, so `[ -n "$VIBECODER_SESSION_ID" ]` is
 a truthful test. Bump-worthy changes to a field's meaning raise
 `schemaVersion`, so a hook that checks it can refuse a contract it does not
 understand instead of misreading it.
+
+## What the run achieved — the `outcome` block
+
+`result` says whether VibeCoder called the run a success. It does **not** say
+what the run did, and an archive built on it alone cannot tell one failure
+from another: a weekly review of ~1,000 archived fleet runs found 19 % recorded
+as `failure`, covering runs that had pushed a branch and lost only the PR
+creation, gate and tooling friction, deliberate hand-backs, and sub-minute
+claim refusals — four different things counted as one (Issue #1947).
+
+Schema version 2 adds the structured `outcome` the worker already computed for
+its own release comment:
+
+```json
+"outcome": {
+  "kind": "no_pr",
+  "category": "evidence_missing",
+  "phase": "completion",
+  "failureClass": "agent-outcome",
+  "prNumber": 123
+}
+```
+
+| Member         | Meaning                                                                 |
+| -------------- | ----------------------------------------------------------------------- |
+| `kind`         | `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale` |
+| `category`     | Diagnosed failure category of a `no_pr` run — `quality_check`, `rate_limit`, `token_scope`, `push_failure`, `no_changes`, `evidence_missing`, `timeout`, … |
+| `phase`        | Phase that terminated the run — `setup`, `execute`, `quality_gate`, `completion`, or `claim` for a refusal before the run started |
+| `failureClass` | The classifier's stable slug for a failure — `usage-limit`, `oom`, `agent-outcome`, … |
+| `prNumber`     | The PR the run is attached to, including a run that raised a PR and then failed a later step |
+
+What each `kind` lets a consumer count separately:
+
+```mermaid
+flowchart TD
+    R["result: success / failure"] --> K{outcome.kind}
+    K -->|pr| P["Work delivered<br/>prNumber, plus the failing phase<br/>when a later step lost"]
+    K -->|no_pr| F["Genuine failure<br/>category + failureClass say which"]
+    K -->|no_pr_expected| H["Deliberate hand-back"]
+    K -->|superseded| S["Another PR resolved it mid-run"]
+    K -->|summary_incomplete| I["PR raised, summary short of a rule"]
+    K -->|claim_stale| C["The world moved before the PR"]
+```
+
+- A **sub-minute claim or setup refusal** carries `kind: "no_pr"` with the
+  phase that refused (`claim`, `setup`), so it is not counted as an agent run
+  that failed.
+- A **deliberate hand-back** (`no_pr_expected`, `superseded`, `claim_stale`) is
+  the system working, and is distinguishable from a red quality gate without
+  reading a transcript.
+- Each member is **omitted when the run could not supply it**, like every other
+  optional fact, and the whole block is omitted when no outcome was computed.
+
+**`result` and `exitCode` are unchanged.** The block is purely additive: a hook
+written against schema version 1 reads exactly the values it always did, and
+`schemaVersion` moves to `2` so a consumer that pins a version knows the
+contract grew.
 
 ## Session logs are sensitive — redaction is the hook author's job
 
@@ -355,6 +421,7 @@ turn that second into a false failure.
 | `result-unchanged-by-callback-fault` | a callback fault leaves the original VibeCoder result unchanged |
 | `concurrent-context-isolation`       | context fields identify the correct concurrent run             |
 | `session-log-belongs-to-run`         | the transcript path, when present, belongs to that run — and its contents are never exported |
+| `outcome-distinguishes-runs`         | the structured outcome tells a PR run, a gate failure and a hand-back apart, with `result` and `exitCode` unchanged |
 
 With no hook paths the fixture uses its own portable `/bin/sh` hooks. With them
 it drives your executables for the two ordering checks and your `always` hook
@@ -366,7 +433,7 @@ report what they saw.
 Sample output:
 
 ```text
-Post-run callback conformance: 6/6 checks passed
+Post-run callback conformance: 7/7 checks passed
 PASS success-then-always — a successful run runs success, then always
      success=ok(exit 0) → always=ok(exit 0), exactly once each
 …

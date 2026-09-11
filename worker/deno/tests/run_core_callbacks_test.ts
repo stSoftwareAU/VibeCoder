@@ -477,3 +477,154 @@ Deno.test("run_core callbacks - a throw before the run starts reports nothing", 
 
   assertEquals(runs, []);
 });
+
+// --- Structured run outcome (Issue #1947) -----------------------------------
+
+Deno.test("run_core callbacks - a run that raised a PR reports the PR number", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({
+        ok: true,
+        value: {
+          success: true,
+          outcome: {
+            kind: "pr" as const,
+            prUrl: "https://github.com/o/a/pull/5",
+            prNumber: 5,
+          },
+        },
+      });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs[0]?.outcome, { kind: "pr", prNumber: 5 });
+});
+
+Deno.test("run_core callbacks - a PR raised before a later step failed keeps the PR and the failing phase", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({
+        ok: true,
+        value: {
+          success: false,
+          failurePhase: "completion",
+          outcome: {
+            kind: "pr" as const,
+            prUrl: "https://github.com/o/a/pull/9",
+            prNumber: 9,
+          },
+        },
+      });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs.map(key), ["o/a#1:failure"]);
+  assertEquals(runs[0]?.outcome, {
+    kind: "pr",
+    phase: "completion",
+    prNumber: 9,
+  });
+});
+
+Deno.test("run_core callbacks - a gate failure and a hand-back are distinguishable", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const outcomes = [
+    {
+      success: false,
+      failurePhase: "quality_gate",
+      outcome: {
+        kind: "no_pr" as const,
+        category: "quality_check" as const,
+        phase: "quality_gate",
+        elapsedSeconds: 700,
+        message: "quality checks failed",
+      },
+    },
+    {
+      success: true,
+      outcome: {
+        kind: "no_pr_expected" as const,
+        phase: "execute",
+        summary: "out of scope; follow-up filed",
+      },
+    },
+  ];
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1), issue("o/b", 2)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: outcomes.shift()! });
+    },
+  });
+
+  await runCycle(deps, 2);
+
+  const byIssue = new Map(runs.map((r) => [r.issueNumber, r.outcome]));
+  assertEquals(byIssue.get(1), {
+    kind: "no_pr",
+    category: "quality_check",
+    phase: "quality_gate",
+    failureClass: "agent-outcome",
+  });
+  assertEquals(byIssue.get(2), { kind: "no_pr_expected", phase: "execute" });
+});
+
+Deno.test("run_core callbacks - a claim that faulted before the run reports a no_pr outcome", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({
+        ok: false,
+        error: new Error("claim refused: the issue is assigned elsewhere"),
+      });
+    },
+  });
+
+  await runCycle(deps, 2);
+
+  assertEquals(runs[0]?.outcome?.kind, "no_pr");
+  assertEquals(runs[0]?.outcome?.phase, "claim");
+});
+
+Deno.test("run_core callbacks - a run that threw after the claim reports its diagnosed outcome", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      throw new Error("the run exploded after the claim");
+    },
+  });
+
+  await runCycle(deps, 2);
+
+  assertEquals(runs[0]?.outcome?.kind, "no_pr");
+  assertEquals(runs[0]?.outcome?.phase, "slot");
+});

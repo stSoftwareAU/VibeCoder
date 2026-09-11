@@ -15,7 +15,7 @@
  *     R --> V["6 verdicts:<br/>PASS / FAIL"]
  * ```
  *
- * Six properties, one check each — the ones an extension's correctness rests
+ * Seven properties, one check each — the ones an extension's correctness rests
  * on:
  *
  * 1. a successful run fires `success`, then `always`;
@@ -24,7 +24,9 @@
  * 4. a callback fault leaves the original VibeCoder result unchanged;
  * 5. context fields identify the correct concurrent run;
  * 6. the session transcript path, when present, belongs to that run — and its
- *    contents are never exported.
+ *    contents are never exported;
+ * 7. the structured outcome (Issue #1947) tells a PR run, a gate failure and a
+ *    deliberate hand-back apart, while `result` and `exitCode` are unchanged.
  *
  * Every check drives the **production** runner over **real** subprocesses, so
  * a pass is a statement about this environment rather than about a mock. One
@@ -42,8 +44,9 @@
  *
  * Checks that need a **deliberate fault** (a hook that exits non-zero or
  * hangs) always inject a fixture hook for the faulting side: an extension's
- * hook cannot be asked to fail on demand. Checks 5 and 6 need to observe what
- * a hook *saw*, so they use fixture hooks that record their environment.
+ * hook cannot be asked to fail on demand. Checks 5, 6 and 7 need to observe
+ * what a hook *saw*, so they use fixture hooks that record their
+ * environment.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -55,6 +58,8 @@ import {
 } from "./run_callbacks.ts";
 import type { CallbacksConfig } from "./run_callbacks_config.ts";
 import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
+import { summariseRunOutcome } from "./callback_run_outcome.ts";
+import { deriveRunOutcome } from "./run_outcome.ts";
 import { agentTranscriptDir, agentTranscriptPath } from "./agent_transcript.ts";
 
 /** The checks the fixture runs, in the order it runs them. */
@@ -65,6 +70,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "result-unchanged-by-callback-fault",
   "concurrent-context-isolation",
   "session-log-belongs-to-run",
+  "outcome-distinguishes-runs",
 ] as const;
 
 /** One of {@link CONFORMANCE_CHECK_IDS}. */
@@ -82,6 +88,8 @@ const CHECK_TITLES: Record<ConformanceCheckId, string> = {
     "context fields identify the correct concurrent run",
   "session-log-belongs-to-run":
     "the session transcript path, when present, belongs to that run",
+  "outcome-distinguishes-runs":
+    "the structured outcome tells a PR run, a gate failure and a hand-back apart",
 };
 
 /** Hook paths an extension wants driven through the contract. */
@@ -674,6 +682,125 @@ async function checkSessionLogBelongsToRun(
 }
 
 /**
+ * Check 7: the structured outcome distinguishes the run shapes a consumer
+ * counts by (Issue #1947), and leaves `result`/`exitCode` exactly as they
+ * were.
+ *
+ * Three runs are driven through the production runner: one that raised a PR,
+ * one whose quality gate went red, and one deliberate hand-back. All three
+ * used to reach a hook as `result` alone — two of them as the same `failure`.
+ */
+async function checkOutcomeDistinguishesRuns(
+  root: string,
+  timeoutSeconds: number,
+): Promise<ConformanceCheck> {
+  const id = "outcome-distinguishes-runs" as const;
+  const faults = new Faults();
+  const dir = await scenarioDir(root, id);
+
+  /** One terminal run, summarised exactly as the scan loop summarises it. */
+  const contextFor = (
+    runId: string,
+    issueNumber: number,
+    result: "success" | "failure",
+    source: Parameters<typeof deriveRunOutcome>[0],
+  ) =>
+    buildIssueRunCallbackContext(
+      {
+        repo: "example/extension",
+        issueNumber,
+        result,
+        startedAtEpochMs: 1_772_000_000_000,
+        finishedAtEpochMs: 1_772_000_030_000,
+        outcome: summariseRunOutcome({
+          result,
+          outcome: deriveRunOutcome(source),
+          ...(result === "failure" ? { phase: source.phase } : {}),
+        }),
+      },
+      { runId, host: "conformance-host" },
+    );
+
+  const raisedPr = contextFor("vibe-conformance-pr", 901, "success", {
+    success: true,
+    phase: "completion",
+    reason: "PR raised",
+    prUrl: "https://github.com/example/extension/pull/901",
+    prNumber: 901,
+  });
+  const gateRed = contextFor("vibe-conformance-gate", 902, "failure", {
+    success: false,
+    phase: "quality_gate",
+    reason: "quality checks failed: deno lint reported 3 problems",
+    elapsedSeconds: 900,
+  });
+  const handBack = contextFor("vibe-conformance-handback", 903, "success", {
+    success: true,
+    phase: "execute",
+    reason: "issue judged out of scope; follow-up filed",
+  });
+
+  // One hook for both events: every run records the scalars it received.
+  const record = [
+    `printf '%s|%s|%s|%s|%s|%s\\n'`,
+    `"$VIBECODER_RESULT" "$VIBECODER_EXIT_CODE" "$VIBECODER_OUTCOME_KIND"`,
+    `"$VIBECODER_OUTCOME_CATEGORY" "$VIBECODER_OUTCOME_PHASE"`,
+    `"$VIBECODER_PR_NUMBER" > "${dir}/$VIBECODER_RUN_ID.txt"`,
+  ].join(" ");
+  const hook = await writeHook(dir, "record.sh", record);
+  const callbacks: CallbacksConfig = {
+    success: hook,
+    failure: hook,
+    timeoutSeconds,
+  };
+  for (const context of [raisedPr, gateRed, handBack]) {
+    await invoke(callbacks, context);
+  }
+
+  const read = async (runId: string) => {
+    try {
+      return (await Deno.readTextFile(`${dir}/${runId}.txt`)).trim();
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return "";
+      throw error;
+    }
+  };
+  const seen: Record<string, string> = {};
+  for (const context of [raisedPr, gateRed, handBack]) {
+    seen[context.runId] = await read(context.runId);
+  }
+
+  const expected: Record<string, string> = {
+    // result|exitCode|kind|category|phase|prNumber
+    [raisedPr.runId]: "success|0|pr|||901",
+    [gateRed.runId]: "failure|1|no_pr|quality_check|quality_gate|",
+    [handBack.runId]: "success|0|no_pr_expected||execute|",
+  };
+  for (const [runId, want] of Object.entries(expected)) {
+    faults.expect(
+      seen[runId] === want,
+      `run ${runId} published "${
+        seen[runId] || "nothing"
+      }" rather than "${want}"`,
+    );
+  }
+  // The whole point of the block is that these three are no longer the same
+  // fact seen three times.
+  faults.expect(
+    new Set(Object.values(seen)).size === 3,
+    `three differently-shaped runs published ${
+      new Set(Object.values(seen)).size
+    } distinct outcomes`,
+  );
+
+  return verdict(
+    id,
+    faults,
+    `pr / no_pr / no_pr_expected published distinctly; result and exitCode unchanged`,
+  );
+}
+
+/**
  * Run the conformance fixture and report a verdict per contract property.
  *
  * Never throws for a failing property — a failure is a `passed: false` check
@@ -704,6 +831,7 @@ export async function runCallbackConformance(
       await checkResultUnchanged(root, timeoutSeconds),
       await checkConcurrentIsolation(root, timeoutSeconds),
       await checkSessionLogBelongsToRun(root, timeoutSeconds),
+      await checkOutcomeDistinguishesRuns(root, timeoutSeconds),
     ];
     return {
       passed: checks.every((one) => one.passed),
