@@ -1375,6 +1375,18 @@
         "worker/deno/lib/provider_auto_state.ts"
       ],
       "sweptAt": "acaba2ae8675ed02a00cd2c50875e1f820736faf"
+    },
+    {
+      "issue": 1938,
+      "chunk": "12ab",
+      "title": "top-up: the Gemini CLI token-usage decoder",
+      "ledger": "docs/audits/security-sweep-1938-gemini-token-usage.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: gemini_token_usage.ts (#1938)",
+      "status": "swept",
+      "sweptAt": "bb3b968edd71d8ae8183ecad7dcbaf85e4bb3290",
+      "paths": [
+        "worker/deno/lib/gemini_token_usage.ts"
+      ]
     }
   ],
   "roots": [
