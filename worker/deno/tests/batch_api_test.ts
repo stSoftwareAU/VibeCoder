@@ -395,6 +395,22 @@ Deno.test("batch_api - estimateBatchSavings returns 50% discount", () => {
   assertAlmostEquals(savings.batchCost, savings.standardCost * 0.5, 0.0001);
 });
 
+Deno.test("batch_api - estimateBatchSavings never applies Anthropic's discount to a non-Claude row (Issue #1937)", () => {
+  // The API-equivalent rows added for Codex/Gemini/DeepSeek must not leak into
+  // this estimate: the 50% discount is Anthropic's Batch API, so a saving on an
+  // OpenAI/Google/DeepSeek list price would be fabricated.
+  for (const model of ["gpt-5-codex", "gemini-2.5-pro", "deepseek-chat"]) {
+    const savings = estimateBatchSavings({
+      model,
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+    assertEquals(savings.standardCost, 0, `${model} must find no batch rate`);
+    assertEquals(savings.batchCost, 0);
+    assertEquals(savings.savings, 0);
+  }
+});
+
 Deno.test("batch_api - estimateBatchSavings handles zero tokens", () => {
   const savings = estimateBatchSavings({
     inputTokens: 0,
