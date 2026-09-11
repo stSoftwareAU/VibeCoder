@@ -286,10 +286,13 @@ import {
   loadResumeState,
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
-import { invokeRunCallbacks } from "./run_callbacks.ts";
+import { invokeCycleCallback, invokeRunCallbacks } from "./run_callbacks.ts";
 import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
-import { hasAnyCallback } from "./run_callbacks_config.ts";
-import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
+import { hasAnyRunCallback, hasCycleCallback } from "./run_callbacks_config.ts";
+import {
+  buildCycleCallbackContext,
+  buildIssueRunCallbackContext,
+} from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
@@ -3510,6 +3513,10 @@ export async function createProductionRunCoreDeps(
           ...(result.telemetry && !isExpectedSkip
             ? { telemetry: result.telemetry }
             : {}),
+          ...(result.telemetryAbsentReason && !isExpectedSkip
+            ? { telemetryAbsentReason: result.telemetryAbsentReason }
+            : {}),
+          ...(result.phase && !isExpectedSkip ? { phase: result.phase } : {}),
         },
       };
     },
@@ -3749,7 +3756,7 @@ export async function createProductionRunCoreDeps(
       // Issue #806: the run's CLI session id is read *before* the resume
       // state is deleted below, so the post-run callbacks can identify the
       // session even on the ordinary path that clears it.
-      if (hasAnyCallback(config.callbacks)) {
+      if (hasAnyRunCallback(config.callbacks)) {
         try {
           const resume = await loadResumeState(workDir, repo, issueNumber);
           const key = `${repo}#${issueNumber}`;
@@ -3838,7 +3845,7 @@ export async function createProductionRunCoreDeps(
      * without ever altering the run's own outcome.
      */
     async runIssueCallbacks(run) {
-      if (!hasAnyCallback(config.callbacks)) return;
+      if (!hasAnyRunCallback(config.callbacks)) return;
       const key = `${run.repo}#${run.issueNumber}`;
       const sessionId = releasedSessionIds.get(key);
       releasedSessionIds.delete(key);
@@ -3869,6 +3876,19 @@ export async function createProductionRunCoreDeps(
           logError: (message) => logger.error(message),
         },
       );
+    },
+    async runCycleCallback(cycle) {
+      if (!hasCycleCallback(config.callbacks)) return;
+      await invokeCycleCallback({
+        callbacks: config.callbacks,
+        context: buildCycleCallbackContext(cycle, {
+          runId: getRunId(),
+          host: Deno.hostname(),
+          ...(config.workerName ? { workerName: config.workerName } : {}),
+        }),
+        log: (message) => logger.info(message),
+        logError: (message) => logger.error(message),
+      });
     },
     async cleanupInProgressIssue() {
       try {

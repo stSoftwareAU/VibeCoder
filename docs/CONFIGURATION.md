@@ -2750,12 +2750,13 @@ archival, spend accounting — so none of that policy has to live in VibeCoder.
     "success": "/opt/vibe-hooks/success.sh",
     "failure": "/opt/vibe-hooks/failure.sh",
     "always": "/opt/vibe-hooks/always.sh",
+    "cycle": "/opt/vibe-hooks/cycle.sh",
     "timeout_seconds": 60
   }
 }
 ```
 
-All four entries are optional, and a configuration without a `callbacks` block
+All five entries are optional, and a configuration without a `callbacks` block
 behaves exactly as before.
 
 ```mermaid
@@ -2776,7 +2777,9 @@ flowchart LR
   when that hook exited non-zero, timed out or could not be spawned.
 - A missing hook is a no-op.
 - A claim that was **skipped** (rejected, or already held by another worker)
-  runs no callbacks: no run happened to report.
+  runs no `success` / `failure` / `always` callbacks: no run happened to
+  report. An idle cycle that claimed nothing still fires `callbacks.cycle`
+  (Issue #1955). A launcher that never reaches the scan loop emits nothing.
 - A shutdown or an exception after a claim takes the failure/`always` path
   exactly once.
 - Concurrent issue slots each receive their own context; hooks never share
@@ -2817,7 +2820,7 @@ invocation and removed after it exits:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "event": "success",
   "runId": "vibe-mtk92vcu-ebcc11",
   "result": "success",
@@ -2838,6 +2841,11 @@ invocation and removed after it exits:
     "cacheCreationTokens": 90,
     "cacheReadTokens": 20,
     "estimatedCostUsd": 0.42
+  },
+  "outcome": {
+    "kind": "pr",
+    "prNumber": 806,
+    "phase": "completion"
   }
 }
 ```
@@ -2847,15 +2855,23 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_CALLBACK_CONTEXT`, `VIBECODER_RUN_ID`, `VIBECODER_RESULT`,
 `VIBECODER_REPOSITORY`, `VIBECODER_ISSUE_NUMBER`, `VIBECODER_HOST`,
 `VIBECODER_WORKER_NAME`, `VIBECODER_PROVIDER`, `VIBECODER_SESSION_ID`,
-`VIBECODER_SESSION_LOG_PATH`, `VIBECODER_STARTED_AT`,
-`VIBECODER_FINISHED_AT`, `VIBECODER_DURATION_SECONDS`,
-`VIBECODER_EXIT_CODE`, `VIBECODER_INPUT_TOKENS`, `VIBECODER_OUTPUT_TOKENS`,
-`VIBECODER_CACHE_CREATION_TOKENS`, `VIBECODER_CACHE_READ_TOKENS` and
-`VIBECODER_ESTIMATED_COST_USD`.
+`VIBECODER_SESSION_LOG_PATH`, `VIBECODER_SESSION_LOG_ABSENT_REASON`,
+`VIBECODER_STARTED_AT`, `VIBECODER_FINISHED_AT`,
+`VIBECODER_DURATION_SECONDS`, `VIBECODER_EXIT_CODE`, `VIBECODER_INPUT_TOKENS`,
+`VIBECODER_OUTPUT_TOKENS`, `VIBECODER_CACHE_CREATION_TOKENS`,
+`VIBECODER_CACHE_READ_TOKENS`, `VIBECODER_ESTIMATED_COST_USD`,
+`VIBECODER_TELEMETRY_ABSENT_REASON`, `VIBECODER_OUTCOME_KIND`,
+`VIBECODER_OUTCOME_CATEGORY`, `VIBECODER_OUTCOME_PHASE`,
+`VIBECODER_OUTCOME_FAILURE_CLASS`, `VIBECODER_PR_NUMBER`. A cycle hook also
+receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
+`VIBECODER_CLAIMS_TAKEN` and `VIBECODER_CYCLE_END_REASON`.
 
-A fact the run could not supply — no provider, no session, no parseable token
-usage — is **omitted** from both the document and the environment rather than
-emitted empty, so a hook can test for presence truthfully.
+Every run context has either `telemetry` or `telemetryAbsentReason`, and
+either `sessionLogPath` or `sessionLogAbsentReason` — never neither. Other
+optional facts the run could not supply — no provider, no session — are
+**omitted** from both the document and the environment rather than emitted
+empty, so a hook can test for presence truthfully. `result` and `exitCode`
+are unchanged.
 
 ## 🔄 Session Resume
 
