@@ -52,7 +52,7 @@ function check(
 
 Deno.test({
   name:
-    "callback_conformance - the fixture proves all six contract properties in this environment",
+    "callback_conformance - the fixture proves all seven contract properties in this environment",
   ignore: notPosix,
   fn: async () => {
     const report = await runCallbackConformance();
@@ -176,7 +176,7 @@ Deno.test({
       assert(text.includes(id), `${id} missing from the report`);
     }
     assert(text.includes("PASS"), text);
-    assert(text.includes("6/6"), text);
+    assert(text.includes("7/7"), text);
   },
 });
 
@@ -228,6 +228,7 @@ Deno.test("callback_conformance command - argument paths are judged by the produ
     [{ success: "hooks/success.sh" }, "absolute"],
     [{ failure: "~/hooks/failure.sh" }, "absolute"],
     [{ always: "/opt/hooks/a\u0000.sh" }, "NUL"],
+    [{ cycle: "hooks/cycle.sh" }, "absolute"],
     [{ success: "   " }, "--success"],
     [{ always: true }, "--always"],
   ];

@@ -8,6 +8,7 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   buildCiNoChangesResponse,
   buildFeedbackNoChangesResponse,
+  formatClassifierTrailer,
 } from "../lib/pr_no_changes_response.ts";
 import type {
   CiFailureCategory,
@@ -124,5 +125,54 @@ Deno.test("buildCiNoChangesResponse - a surviving secret finding points at the b
   assertStringIncludes(
     response.nextStep ?? "",
     "Rotate the exposed credential",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1876 — the trailer is shared with the verbatim path
+// ---------------------------------------------------------------------------
+
+Deno.test("formatClassifierTrailer - renders the reason and bulleted signals", () => {
+  const trailer = formatClassifierTrailer(
+    classification("timing", "timing failure: timed out", [
+      "check:test",
+      "text:timed out",
+    ]),
+  );
+  assertEquals(trailer.startsWith("\n\n**Classifier reason:**"), true);
+  assertStringIncludes(trailer, "timing failure: timed out");
+  assertStringIncludes(trailer, "- `check:test`");
+  assertStringIncludes(trailer, "- `text:timed out`");
+});
+
+Deno.test("formatClassifierTrailer - empty signals say so rather than rendering nothing", () => {
+  const trailer = formatClassifierTrailer(
+    classification("unknown", "no recognised pattern", []),
+  );
+  assertStringIncludes(trailer, "**Signals:**");
+  assertStringIncludes(trailer, "_(no specific signals)_");
+});
+
+Deno.test("formatClassifierTrailer - more than six signals are truncated with a count", () => {
+  const signals = Array.from({ length: 9 }, (_, i) => `text:signal-${i}`);
+  const trailer = formatClassifierTrailer(
+    classification("code-fix-required", "many signals", signals),
+  );
+  assertStringIncludes(trailer, "- `text:signal-5`");
+  assertEquals(trailer.includes("text:signal-6"), false);
+  assertStringIncludes(trailer, "_(+3 more)_");
+});
+
+Deno.test("formatClassifierTrailer - the stock body ends with exactly this trailer", () => {
+  // The literal text, not `formatClassifierTrailer(c)` — an expectation
+  // derived from the function under test would stay green even if the
+  // trailer rendered nonsense.
+  const expected =
+    "\n\n**Classifier reason:** no recognised pattern\n**Signals:**\n- `check:x`";
+  const c = classification("unknown", "no recognised pattern", ["check:x"]);
+  assertEquals(formatClassifierTrailer(c), expected);
+  assertEquals(
+    buildCiNoChangesResponse("custom", c).body.endsWith(expected),
+    true,
   );
 });

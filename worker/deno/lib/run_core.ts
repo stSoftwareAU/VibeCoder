@@ -51,7 +51,9 @@ import {
   beginBusy,
   endBusy,
   type FleetIdleReason,
+  type FleetTelemetrySnapshot,
   formatFleetSummary,
+  getFleetTelemetry,
   recordBlockedSeconds,
   recordClaim as recordFleetClaim,
   recordCycleIdle,
@@ -90,7 +92,11 @@ import {
 } from "./run_outcome.ts";
 import type {
   CallbackRunTelemetry,
+  CycleEndReason,
+  CycleFleetSummary,
+  TelemetryAbsentReason,
   TerminalIssueRun,
+  TerminalScanCycle,
 } from "./run_callbacks.ts";
 import { IssueCallbackGuard } from "./issue_callback_guard.ts";
 import {
@@ -369,10 +375,24 @@ export interface WorkProgressTracker {
    * later fails is still not a refusal.
    */
   claimedRepos: Set<string>;
+  /**
+   * Issues the scan returned this cycle (Issue #1955). Distinct from
+   * {@link WorkProgressTracker.claimedRepos}: a skip still scanned.
+   */
+  issuesScanned: number;
+  /**
+   * `processIssue` calls this cycle (Issue #1955) — claims the worker
+   * attempted, whether or not they were taken.
+   */
+  claimsAttempted: number;
   /** Record a successful issue processing. */
   recordSuccess: () => void;
   /** Record that the scan claimed an issue from `repo` this cycle (#460). */
   recordClaim: (repo: string) => void;
+  /** Record that the scan returned an issue this cycle (Issue #1955). */
+  recordIssueSeen: () => void;
+  /** Record that `processIssue` was invoked this cycle (Issue #1955). */
+  recordClaimAttempt: () => void;
   /** Reset scan-level progress tracking for a new cycle. */
   resetScanProgress: () => void;
 }
@@ -704,6 +724,15 @@ export interface RunCoreDeps {
        * usage.
        */
       telemetry?: CallbackRunTelemetry;
+      /**
+       * Why telemetry is absent (Issue #1948). Present exactly when
+       * `telemetry` is not, on a run that actually ran.
+       */
+      telemetryAbsentReason?: TelemetryAbsentReason;
+      /**
+       * Terminating phase name, when the run ran (Issue #1947).
+       */
+      phase?: string;
     }>
   >;
 
@@ -949,6 +978,18 @@ export interface RunCoreDeps {
    * which is the behaviour of every configuration that predates the contract.
    */
   runIssueCallbacks?: (run: TerminalIssueRun) => Promise<void>;
+
+  /**
+   * Run the operator's per-cycle heartbeat callback (Issue #1955).
+   *
+   * Called once at the end of every scan cycle that reached the loop,
+   * including cycles that claimed nothing. A launcher that never enters
+   * the loop never calls this, so an archive can tell idle from dead.
+   * Must never throw.
+   *
+   * Optional: absent — or configured without `callbacks.cycle` — is a no-op.
+   */
+  runCycleCallback?: (cycle: TerminalScanCycle) => Promise<void>;
 
   // Status
   setStatusIdle: () => Promise<void>;
@@ -1416,10 +1457,18 @@ export function createWorkProgressTracker(): WorkProgressTracker {
     scanHadSuccess: false,
     foundClaimableIssue: false,
     claimedRepos: new Set<string>(),
+    issuesScanned: 0,
+    claimsAttempted: 0,
     recordClaim(repo: string) {
       // Issue #460: the claim, not its outcome. A repo the scan served is
       // not a repo the scan refused, however the run ended.
       tracker.claimedRepos.add(repo);
+    },
+    recordIssueSeen() {
+      tracker.issuesScanned++;
+    },
+    recordClaimAttempt() {
+      tracker.claimsAttempted++;
     },
     recordSuccess() {
       tracker.issuesProcessed++;
@@ -1432,6 +1481,8 @@ export function createWorkProgressTracker(): WorkProgressTracker {
       tracker.scanHadSuccess = false;
       tracker.foundClaimableIssue = false;
       tracker.claimedRepos.clear();
+      tracker.issuesScanned = 0;
+      tracker.claimsAttempted = 0;
     },
   };
   return tracker;
@@ -1877,12 +1928,51 @@ interface TerminalRun {
   startedAtEpochMs: number;
   /** Token and cost telemetry the run reported, when it reported any. */
   telemetry?: CallbackRunTelemetry;
+  /** What the run achieved, when the worker computed a RunOutcome. */
+  outcome?: RunOutcome;
+  /** Terminating phase, when known. */
+  phase?: string;
+  /** Why telemetry is absent, when it is (Issue #1948). */
+  telemetryAbsentReason?: TelemetryAbsentReason;
   /**
    * The cycle's exactly-once guard. Every dispatch site for a claim shares
    * one, so a run reported by its own release is not reported again by the
    * slot catch or the shutdown drain.
    */
   guard: IssueCallbackGuard;
+}
+
+/** Copy outcome / telemetry / phase from a processIssue result onto a TerminalRun. */
+function withProcessCallbackFacts(
+  ran: TerminalRun,
+  processResult: {
+    ok: boolean;
+    value?: {
+      telemetry?: CallbackRunTelemetry;
+      outcome?: RunOutcome;
+      phase?: string;
+      telemetryAbsentReason?: TelemetryAbsentReason;
+    };
+  },
+): TerminalRun {
+  if (!processResult.ok || processResult.value === undefined) {
+    return {
+      ...ran,
+      telemetryAbsentReason: ran.telemetryAbsentReason ?? "agent_not_invoked",
+    };
+  }
+  const value = processResult.value;
+  return {
+    ...ran,
+    ...(value.telemetry ? { telemetry: value.telemetry } : {}),
+    ...(value.outcome ? { outcome: value.outcome } : {}),
+    ...(value.phase ? { phase: value.phase } : {}),
+    ...(value.telemetryAbsentReason
+      ? { telemetryAbsentReason: value.telemetryAbsentReason }
+      : value.telemetry
+      ? {}
+      : { telemetryAbsentReason: "agent_not_invoked" }),
+  };
 }
 
 /**
@@ -1920,12 +2010,63 @@ function dispatchIssueCallbacks(
         startedAtEpochMs: ran.startedAtEpochMs,
         finishedAtEpochMs: deps.now(),
         ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
+        ...(ran.outcome ? { outcome: ran.outcome } : {}),
+        ...(ran.phase ? { phase: ran.phase } : {}),
+        ...(ran.telemetryAbsentReason
+          ? { telemetryAbsentReason: ran.telemetryAbsentReason }
+          : {}),
       });
     } catch (error) {
       deps.logError(
         `Post-run callbacks for ${repo}#${issueNumber} faulted: ${
           error instanceof Error ? error.message : String(error)
         }. The original VibeCoder result (${ran.result}) is unchanged.`,
+      );
+    }
+  });
+}
+
+/** Per-cycle deltas of the process-wide fleet accumulators (Issue #1955). */
+function fleetSummaryDelta(
+  start: FleetTelemetrySnapshot,
+  end: FleetTelemetrySnapshot,
+): CycleFleetSummary {
+  const delta = (from: number, to: number) => Math.max(0, to - from);
+  return {
+    claims: delta(start.claims, end.claims),
+    successes: delta(start.successes, end.successes),
+    failures: delta(start.failures, end.failures),
+    skips: delta(start.skips, end.skips),
+    idleSeconds: delta(start.idleSeconds, end.idleSeconds),
+    occupiedSeconds: delta(start.occupiedSeconds, end.occupiedSeconds),
+    rateLimitedSeconds: delta(start.rateLimitedSeconds, end.rateLimitedSeconds),
+    tokenBlockedSeconds: delta(
+      start.tokenBlockedSeconds,
+      end.tokenBlockedSeconds,
+    ),
+  };
+}
+
+/**
+ * Fire the operator's per-cycle heartbeat (Issue #1955).
+ *
+ * Never throws: a hook fault is one more thing to report, not a reason to
+ * abort the loop. A launcher that never reaches the scan loop never calls
+ * this, so an archive can tell idle from dead.
+ */
+function dispatchCycleCallback(
+  deps: RunCoreDeps,
+  cycle: TerminalScanCycle,
+): Promise<void> {
+  return withPriorityContext("Cycle Callback", async () => {
+    if (!deps.runCycleCallback) return;
+    try {
+      await deps.runCycleCallback(cycle);
+    } catch (error) {
+      deps.logError(
+        `Cycle callback faulted: ${
+          error instanceof Error ? error.message : String(error)
+        }. The scan cycle's own outcome is unchanged.`,
       );
     }
   });
@@ -2218,6 +2359,7 @@ async function runIssueScanLoop(
       eligibilityScanCompleted = true;
       break;
     }
+    tracker.recordIssueSeen();
 
     // Adaptive claim floor (Issue #245): an issue already known to be a long
     // job is left for a cycle that can host a real execute, and the scan
@@ -2283,6 +2425,7 @@ async function runIssueScanLoop(
     noteSlotActivity("serial", "claim", deps.now());
     let processResult;
     try {
+      tracker.recordClaimAttempt();
       processResult = await deps.processIssue(issue, endTime, "serial");
     } catch (thrown) {
       // Issue #1222: a throw is a terminal run, so it releases its claim —
@@ -2303,20 +2446,24 @@ async function runIssueScanLoop(
       // (Issue #806). Covered by `run_core_callbacks_test.ts` and
       // `run_core_throw_release_test.ts` — a sync merge has collapsed this
       // `catch` into the `finally` below twice, silently.
+      const thrownOutcome = deriveRunOutcome({
+        success: false,
+        phase: "serial",
+        reason: message,
+        elapsedSeconds: Math.max(0, deps.now() - claimedAtEpochMs) / 1000,
+      });
       await releaseIssueClaim(
         deps,
         issue.repo,
         issue.issueNumber,
-        deriveRunOutcome({
-          success: false,
-          phase: "serial",
-          reason: message,
-          elapsedSeconds: Math.max(0, deps.now() - claimedAtEpochMs) / 1000,
-        }),
+        thrownOutcome,
         {
           result: "failure",
           startedAtEpochMs: claimedAtEpochMs,
           guard: callbackGuard,
+          outcome: thrownOutcome,
+          phase: "serial",
+          telemetryAbsentReason: "agent_not_invoked",
         },
       );
       throw thrown;
@@ -2339,14 +2486,12 @@ async function runIssueScanLoop(
     const claimNotHeld = processResult.ok &&
       processResult.value.claimNotHeld === true;
     /** What this run reports to the post-run callbacks (Issue #806). */
-    const ran = (result: "success" | "failure"): TerminalRun => ({
-      result,
-      startedAtEpochMs: claimedAtEpochMs,
-      guard: callbackGuard,
-      ...(processResult.ok && processResult.value.telemetry
-        ? { telemetry: processResult.value.telemetry }
-        : {}),
-    });
+    const ran = (result: "success" | "failure"): TerminalRun =>
+      withProcessCallbackFacts({
+        result,
+        startedAtEpochMs: claimedAtEpochMs,
+        guard: callbackGuard,
+      }, processResult);
 
     if (processResult.ok && processResult.value.success) {
       // Success path
@@ -3124,18 +3269,19 @@ async function drainSlots(
     );
     for (const hold of abandoned) {
       // The abandoned run's release states why (Issue #4330).
+      const abandonedOutcome = deriveRunOutcome({
+        success: false,
+        phase: "shutdown",
+        reason: `Run abandoned: shutdown grace (${
+          graceMs / 1000
+        }s) elapsed while the slot was still running`,
+        elapsedSeconds: (Date.now() - hold.sinceMs) / 1000,
+      });
       await releaseIssueClaim(
         deps,
         hold.repo,
         hold.issueNumber,
-        deriveRunOutcome({
-          success: false,
-          phase: "shutdown",
-          reason: `Run abandoned: shutdown grace (${
-            graceMs / 1000
-          }s) elapsed while the slot was still running`,
-          elapsedSeconds: (Date.now() - hold.sinceMs) / 1000,
-        }),
+        abandonedOutcome,
         // A shutdown after a claim is a terminal failure for that run, so it
         // takes the failure/always path exactly once (Issue #806). The
         // abandoned slot keeps running and may still reach its own release,
@@ -3144,6 +3290,9 @@ async function drainSlots(
           result: "failure",
           startedAtEpochMs: hold.sinceMs,
           guard: pool.callbackGuard,
+          outcome: abandonedOutcome,
+          phase: "shutdown",
+          telemetryAbsentReason: "agent_not_invoked",
         },
       );
     }
@@ -3412,6 +3561,8 @@ async function runSlot(
         continue;
       }
 
+      tracker.recordIssueSeen();
+
       // Adaptive claim floor (Issue #245): an issue with evidence that it is
       // not a short job needs a runway that can host a real execute. Deferred
       // rather than claimed, the slot looks for another candidate (#219).
@@ -3567,18 +3718,17 @@ async function runSlot(
         // still states what happened (Issue #4325).
         const since = pool.registry.holds().find((h) => h.repo === issue.repo)
           ?.sinceMs;
+        const thrownOutcome = deriveRunOutcome({
+          success: false,
+          phase: "slot",
+          reason: message,
+          elapsedSeconds: since === undefined ? 0 : (Date.now() - since) / 1000,
+        });
         await releaseIssueClaim(
           deps,
           issue.repo,
           issue.issueNumber,
-          deriveRunOutcome({
-            success: false,
-            phase: "slot",
-            reason: message,
-            elapsedSeconds: since === undefined
-              ? 0
-              : (Date.now() - since) / 1000,
-          }),
+          thrownOutcome,
           // An exception after a claim takes the failure/always path exactly
           // once (Issue #806). Reported only when the run actually started,
           // and the shared guard refuses a repeat if it already reported.
@@ -3587,6 +3737,9 @@ async function runSlot(
               result: "failure" as const,
               startedAtEpochMs: since ?? deps.now(),
               guard: pool.callbackGuard,
+              outcome: thrownOutcome,
+              phase: "slot",
+              telemetryAbsentReason: "agent_not_invoked",
             }
             : undefined,
         );
@@ -3888,6 +4041,7 @@ async function runSlotIssue(
   pool.idleHooks?.filerLatch.release();
   let processResult;
   try {
+    tracker.recordClaimAttempt();
     processResult = await deps.processIssue(issue, endTime, slotId);
   } finally {
     endBusy(slotId, deps.now());
@@ -3901,14 +4055,12 @@ async function runSlotIssue(
   const claimNotHeld = processResult.ok &&
     processResult.value.claimNotHeld === true;
   /** What this slot's run reports to the post-run callbacks (Issue #806). */
-  const ran = (result: "success" | "failure"): TerminalRun => ({
-    result,
-    startedAtEpochMs: claimedAtEpochMs,
-    guard: pool.callbackGuard,
-    ...(processResult.ok && processResult.value.telemetry
-      ? { telemetry: processResult.value.telemetry }
-      : {}),
-  });
+  const ran = (result: "success" | "failure"): TerminalRun =>
+    withProcessCallbackFacts({
+      result,
+      startedAtEpochMs: claimedAtEpochMs,
+      guard: pool.callbackGuard,
+    }, processResult);
 
   if (processResult.ok && processResult.value.success) {
     noteIssueProcessed(deps, issue, "success");
@@ -4632,6 +4784,25 @@ export async function runCoreLoop(
   let fleetIdleReason: FleetIdleReason = "unknown";
   /** Set once the fleet summary has been emitted, so `finally` is a no-op. */
   let fleetSummaryEmitted = false;
+  /** Wall-clock the current scan cycle opened (Issue #1955). */
+  let cycleStartedAtMs = startTime;
+  let cycleFleetStart = getFleetTelemetry(startTime);
+
+  const fireCycleCallback = (reason: CycleEndReason): Promise<void> => {
+    const finishedAt = deps.now();
+    return dispatchCycleCallback(deps, {
+      startedAtEpochMs: cycleStartedAtMs,
+      finishedAtEpochMs: finishedAt,
+      issuesScanned: tracker.issuesScanned,
+      claimsAttempted: tracker.claimsAttempted,
+      claimsTaken: tracker.claimedRepos.size,
+      endReason: reason,
+      fleetSummary: fleetSummaryDelta(
+        cycleFleetStart,
+        getFleetTelemetry(finishedAt),
+      ),
+    });
+  };
 
   // Issue #855: open the fleet accumulation window. Everything from here
   // is either occupied, blocked, or idle for a recorded reason.
@@ -4902,6 +5073,8 @@ export async function runCoreLoop(
           // map. Production wiring sets this; test deps may omit it.
           deps.resetIterationCaches?.();
           tracker.resetScanProgress();
+          cycleStartedAtMs = deps.now();
+          cycleFleetStart = getFleetTelemetry(cycleStartedAtMs);
 
           // Touch PID file for proof of life
           await deps.touchPidFile();
@@ -4938,6 +5111,7 @@ export async function runCoreLoop(
               deps.logError(
                 `[TRUST_REFRESH] ${refresh.reason} — skipping all trust-dependent processing this cycle (Issue #253).`,
               );
+              await fireCycleCallback("error");
               await deps.sleep(config.sleepInterval * 1000);
               continue;
             }
@@ -4985,6 +5159,7 @@ export async function runCoreLoop(
                 } — stopping this cycle before claiming further work.`,
               );
               spendCeilingReached = true;
+              await fireCycleCallback("quota_paused");
               break;
             }
           }
@@ -5082,6 +5257,9 @@ export async function runCoreLoop(
                 blockKind,
               );
               if (wait.outcome === "shutdown" || wait.outcome === "duration") {
+                await fireCycleCallback(
+                  wait.outcome === "shutdown" ? "shutdown" : "quota_paused",
+                );
                 break;
               }
             } else {
@@ -5091,6 +5269,9 @@ export async function runCoreLoop(
               // Issue #925: the backoff is blocked capacity, not idle.
               recordBlockedSlotSeconds(blockKind, config.rateLimitBackoff);
             }
+            await fireCycleCallback(
+              blockKind === "usage_blocked" ? "quota_paused" : "rate_limited",
+            );
             continue;
           }
 
@@ -5119,8 +5300,12 @@ export async function runCoreLoop(
               "Per-pass pre-flight",
             );
             if (wait.outcome === "shutdown" || wait.outcome === "duration") {
+              await fireCycleCallback(
+                wait.outcome === "shutdown" ? "shutdown" : "quota_paused",
+              );
               break;
             }
+            await fireCycleCallback("rate_limited");
             continue;
           }
 
@@ -5441,12 +5626,14 @@ export async function runCoreLoop(
 
           if (scanResult.exitOuterLoop) {
             exitedOnFailures = true;
+            await fireCycleCallback("error");
             break;
           }
           if (scanResult.spendCeilingReached) {
             // A slot's pre-claim gate found the ceiling reached (Issue
             // #4180): end the cycle the way the serial gate above does.
             spendCeilingReached = true;
+            await fireCycleCallback("quota_paused");
             break;
           }
           if (scanResult.hostDiskLow) {
@@ -5568,6 +5755,7 @@ export async function runCoreLoop(
           }
 
           // --- End-of-cycle sleep ---
+          await fireCycleCallback("no_eligible_work");
           if (tracker.scanHadSuccess) {
             await deps.circuitBreakerReset();
             const jitteredSleep = sleepWithJitter(config.sleepInterval);
@@ -5607,6 +5795,7 @@ export async function runCoreLoop(
         // one that throws here used to skip them — and it is exactly the
         // cycle whose per-priority breakdown names what burnt the budget.
         await logCycleGhTelemetry(deps);
+        await fireCycleCallback("rate_limited");
         // Issue #1888: ask GitHub before pausing. A refusal on the window
         // boundary latched the process to the NEXT window's reset while the
         // account already held a fresh 5000 points; the pause then idled

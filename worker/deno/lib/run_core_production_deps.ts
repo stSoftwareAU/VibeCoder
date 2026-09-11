@@ -286,10 +286,13 @@ import {
   loadResumeState,
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
-import { invokeRunCallbacks } from "./run_callbacks.ts";
+import { invokeCycleCallback, invokeRunCallbacks } from "./run_callbacks.ts";
 import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
-import { hasAnyCallback } from "./run_callbacks_config.ts";
-import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
+import { hasAnyRunCallback, hasCycleCallback } from "./run_callbacks_config.ts";
+import {
+  buildCycleCallbackContext,
+  buildIssueRunCallbackContext,
+} from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
@@ -756,10 +759,9 @@ export async function createProductionRunCoreDeps(
   //
   // Issue #552: resolved ONCE and shared, because the scanner and the
   // processor must address the same store. While the scanner kept the old
-  // relative default it read retry counters that were never written there and
-  // its green-build sweep cleared auto-fix budgets in a directory the
-  // processor never touched — so a spent budget was never reset and the lane
-  // escalated to a human instead of fixing the check.
+  // relative default it read retry counters that were never written there, so
+  // the cap was never enforced. Issue #1879 moved the auto-fix attempt tally
+  // onto the pull request; this directory is the check-run retry counter now.
   const ciCheckStateDir = resolveCiCheckStateDir(workDir);
 
   // Stable machine identifier used by GitHub heartbeat markers (Issue #1454)
@@ -1741,6 +1743,10 @@ export async function createProductionRunCoreDeps(
         // retry cap is actually observed and a green build really does clear
         // the auto-fix budget recorded against that PR.
         stateDir: ciCheckStateDir,
+        // Issue #1878: the parent of the per-repo clones, so the scan can
+        // read `.github/workflows` and drop aggregator checks. Never
+        // clones — a repo with no clone here is simply not filtered.
+        workDir,
         prAuthors: fleetPrAuthorInput.fleetPrAuthors,
         allowedAuthors: fleetPrAuthorInput.allowedAuthors,
       });
@@ -1803,6 +1809,14 @@ export async function createProductionRunCoreDeps(
             checkRunId: check.checkId,
             checkName: check.checkName,
             encodedAnnotations: check.encodedAnnotations,
+            // Issue #1880: the base branch, so a `Depends on owner/repo#N`
+            // claim that the failure is pre-existing there can be verified.
+            ...(check.baseRef !== undefined ? { baseRef: check.baseRef } : {}),
+            // Issue #1878: so the processor can repeat the scan's
+            // aggregator decision against the branch it checked out.
+            ...(check.siblingFailedCheckNames !== undefined
+              ? { siblingFailedCheckNames: check.siblingFailedCheckNames }
+              : {}),
           },
           {
             logger,
@@ -1828,6 +1842,10 @@ export async function createProductionRunCoreDeps(
             // Issue #3754: cross-host PR lock so two hosts cannot fix the
             // same PR's CI failure concurrently.
             workerId: getWorkerUniqueId(config.workerName),
+            // Issue #1879: the logins whose markers on the PR are the
+            // fleet's own attempt record — the push-capable set, because
+            // those are the accounts that actually run this lane.
+            fleetLogins: resolveFleetMaintenanceAuthorSet(fleetPrAuthorInput),
           },
         );
 
@@ -3510,6 +3528,10 @@ export async function createProductionRunCoreDeps(
           ...(result.telemetry && !isExpectedSkip
             ? { telemetry: result.telemetry }
             : {}),
+          ...(result.telemetryAbsentReason && !isExpectedSkip
+            ? { telemetryAbsentReason: result.telemetryAbsentReason }
+            : {}),
+          ...(result.phase && !isExpectedSkip ? { phase: result.phase } : {}),
         },
       };
     },
@@ -3749,7 +3771,7 @@ export async function createProductionRunCoreDeps(
       // Issue #806: the run's CLI session id is read *before* the resume
       // state is deleted below, so the post-run callbacks can identify the
       // session even on the ordinary path that clears it.
-      if (hasAnyCallback(config.callbacks)) {
+      if (hasAnyRunCallback(config.callbacks)) {
         try {
           const resume = await loadResumeState(workDir, repo, issueNumber);
           const key = `${repo}#${issueNumber}`;
@@ -3838,7 +3860,7 @@ export async function createProductionRunCoreDeps(
      * without ever altering the run's own outcome.
      */
     async runIssueCallbacks(run) {
-      if (!hasAnyCallback(config.callbacks)) return;
+      if (!hasAnyRunCallback(config.callbacks)) return;
       const key = `${run.repo}#${run.issueNumber}`;
       const sessionId = releasedSessionIds.get(key);
       releasedSessionIds.delete(key);
@@ -3869,6 +3891,19 @@ export async function createProductionRunCoreDeps(
           logError: (message) => logger.error(message),
         },
       );
+    },
+    async runCycleCallback(cycle) {
+      if (!hasCycleCallback(config.callbacks)) return;
+      await invokeCycleCallback({
+        callbacks: config.callbacks,
+        context: buildCycleCallbackContext(cycle, {
+          runId: getRunId(),
+          host: Deno.hostname(),
+          ...(config.workerName ? { workerName: config.workerName } : {}),
+        }),
+        log: (message) => logger.info(message),
+        logError: (message) => logger.error(message),
+      });
     },
     async cleanupInProgressIssue() {
       try {
