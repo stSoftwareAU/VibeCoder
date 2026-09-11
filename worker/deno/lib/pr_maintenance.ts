@@ -54,8 +54,15 @@ export {
 } from "./pr_feedback_supersede.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
-import { clearAutoFixAttemptsForLocus } from "./auto_fix_attempt_tracker.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
+import { findOpenDeferrals } from "./ci_fix_pr_markers.ts";
+import { repoCheckoutPath } from "./repo_checkout_path.ts";
+import { readWorkflowFiles } from "./workflow_scan_common.ts";
+import {
+  buildJobNeedsMap,
+  isDownstreamOfRedJob,
+  type JobNeedsMap,
+} from "./workflow_job_needs.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { fetchAllIssues } from "./issue_query.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
@@ -302,9 +309,13 @@ export interface CiCheckScanOptions extends PrScanOptions {
   maxRetries?: number;
   /**
    * Work-volume root the default {@link stateDir} is resolved inside
-   * (Issue #966). Omitted in production, where `resolveCiCheckStateDir`
-   * falls back to `WORK_DIR` then `$HOME/auto-issue-work` as it always
-   * has. Ignored when `stateDir` is given.
+   * (Issue #966), and the parent of the per-repo clones the scan reads
+   * workflow YAML from for aggregator detection (Issue #1878).
+   *
+   * When `stateDir` is given it decides only the latter; omitted
+   * entirely, `resolveCiCheckStateDir` falls back to `WORK_DIR` then
+   * `$HOME/auto-issue-work` as it always has, and no aggregator
+   * filtering happens.
    */
   workDir?: string;
   /**
@@ -1168,11 +1179,76 @@ export async function findFailedPrChecks(
 // ---------------------------------------------------------------------------
 
 /**
+ * Read a repo's job dependency graph from the host's existing clone
+ * (Issue #1878).
+ *
+ * The scanner **never clones**: it reads `.github/workflows` out of the
+ * checkout `setupRepo` already made at
+ * {@link repoCheckoutPath}. No work directory, no clone directory, or a
+ * clone with no workflows all yield `null` — the caller then filters
+ * nothing and every failing check is scanned exactly as before.
+ *
+ * The clone sits on the repo's default branch, not the PR head, so the
+ * topology is an approximation; the processor re-checks it against the
+ * branch it actually checked out.
+ */
+async function readJobNeedsFromClone(
+  workDir: string | undefined,
+  repo: string,
+  logger: Logger,
+): Promise<JobNeedsMap | null> {
+  if (workDir === undefined || workDir.length === 0) return null;
+
+  const checkout = repoCheckoutPath(workDir, repo);
+  try {
+    const stat = await Deno.stat(checkout);
+    if (!stat.isDirectory) return null;
+  } catch (error: unknown) {
+    // No clone on this host is the ordinary case and stays quiet; anything
+    // else (permissions, I/O) loses aggregator filtering, so it is named.
+    if (!(error instanceof Deno.errors.NotFound)) {
+      logger.warn("Could not stat the clone for aggregator detection", {
+        repo,
+        checkout,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return null;
+  }
+
+  try {
+    const map = buildJobNeedsMap(await readWorkflowFiles(checkout));
+    return map.size > 0 ? map : null;
+  } catch (error: unknown) {
+    // A clone we cannot read is not a reason to stop scanning CI
+    // failures — but it is not silent either.
+    logger.warn("Could not read workflow YAML for aggregator detection", {
+      repo,
+      checkout,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
  * Scan open PRs for failed CI checks (excluding genuine spelling failures
  * — see {@link findFailedPrChecks} and `resolveCheckFixRoute`).
  *
  * Prioritises failures on PRs targeting the default branch.
  * Respects retry limits — checks that exceeded max retries are skipped.
+ *
+ * Aggregator checks are dropped (Issue #1878): a job whose `needs:` —
+ * read from the host's existing clone — includes another job that is
+ * also red on the same head is downstream of that failure, not a
+ * failure of its own. Without a clone nothing is filtered.
+ *
+ * Deferred checks are skipped (Issue #1881): a check the fleet has parked
+ * on an issue through a `vibe-ci-fix-deferred` marker (#1880) is left
+ * alone while that issue is open — nothing on the branch can fix it, on
+ * this host or any other. The moment the issue closes the check is
+ * returned as usual. Any failure to read the record leaves the check
+ * *undeferred* and reported, never silently skipped.
  *
  * @param options - CI check scan options
  * @returns Result containing the highest priority failed check, or null
@@ -1235,6 +1311,12 @@ export async function findFailedCiChecks(
       ghCommandFn,
     );
 
+    // Issue #1878: the `needs:` topology from the host's existing clone,
+    // read once per repo. `null` when there is no clone to read.
+    const jobNeeds = prs.length > 0
+      ? await readJobNeedsFromClone(workDir, repo, logger)
+      : null;
+
     for (const pr of prs) {
       const {
         number: prNumber,
@@ -1243,26 +1325,58 @@ export async function findFailedCiChecks(
       } = pr;
 
       const failedChecks = await getFailedChecks(pr);
+      const failedCheckNames = failedChecks.map((check) => check.name);
 
-      // Issue #3582: a PR with no failing checks is green, so every
-      // auto-fix signature recorded against it starts from a fresh budget.
-      // A recurring-but-different flake must not inherit a spent budget.
-      if (failedChecks.length === 0) {
-        const cleared = await clearAutoFixAttemptsForLocus(
-          stateDir,
-          repo,
-          { kind: "pr", number: prNumber },
+      // Issue #1878: an aggregator such as `CI Required Checks` is red
+      // only because a job it needs is red. Diagnosing it earns a failure
+      // signature and a stock comment for a job that ran none of the
+      // repo's code, so it is dropped while its needed job is still here
+      // to be fixed. Logged once per PR, listing every name dropped.
+      const aggregators = jobNeeds === null ? new Set<string>() : new Set(
+        failedCheckNames.filter((name) =>
+          isDownstreamOfRedJob(name, failedCheckNames, jobNeeds)
+        ),
+      );
+      if (aggregators.size > 0) {
+        logger.skipReason(
+          "aggregator-check",
+          `${repo}#${prNumber}: ${
+            [...aggregators].join(", ")
+          } needs a job that is also failing on this head (Issue #1878)`,
         );
-        if (cleared > 0) {
-          logger.info("Cleared auto-fix attempt counters after green build", {
-            repo,
-            prNumber,
-            cleared,
-          });
-        }
+      }
+
+      // Issue #1881: the checks a fleet-authored deferral marker has parked
+      // on an issue that is still open. Read only when a non-aggregator
+      // failure is left to decide, so a green or aggregator-only PR costs
+      // no comment fetch. Every degraded read is logged inside and leaves
+      // the check undeferred — the scan never goes quiet on an error.
+      const deferrals = failedChecks.some((check) =>
+          !aggregators.has(check.name)
+        )
+        ? await findOpenDeferrals({
+          repo,
+          prNumber,
+          ghCommandFn,
+          fleetLogins: scanAuthors,
+          logger,
+        })
+        : [];
+      const deferredNames = new Set(deferrals.map((d) => d.checkName));
+      if (deferrals.length > 0) {
+        logger.skipReason(
+          "ci-fix-deferred",
+          `${repo}#${prNumber}: ${
+            deferrals.map((d) => `${d.checkName} (depends on ${d.dependsOn})`)
+              .join(", ")
+          } deferred until the named issue closes (Issue #1881)`,
+        );
       }
 
       for (const check of failedChecks) {
+        if (aggregators.has(check.name)) continue;
+        if (deferredNames.has(check.name)) continue;
+
         // Skip genuine spelling failures — handled by findFailedPrChecks.
         // The decision reads the failed *step*, so a non-spelling step
         // inside a spelling-named job stays on this route (Issue #1579).
@@ -1313,6 +1427,12 @@ export async function findFailedCiChecks(
           checkId: String(check.id),
           checkName: check.name,
           encodedAnnotations,
+          // Issue #1880: the base branch, so the processor can verify an
+          // agent's claim that the failure is pre-existing on it.
+          baseRef,
+          // Issue #1878: the processor repeats the aggregator decision
+          // against the branch it actually checks out.
+          siblingFailedCheckNames: failedCheckNames,
         };
 
         // Prioritise failures on PRs targeting the default branch

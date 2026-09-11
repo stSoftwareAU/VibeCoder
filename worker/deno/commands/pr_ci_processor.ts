@@ -36,6 +36,8 @@ import {
   runPreSetupCommand,
 } from "../lib/repo_config.ts";
 import { getWorkerUniqueId } from "../lib/worker_identity.ts";
+import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 
 // Re-export library functions for external use
 export { formatCiAnnotations };
@@ -186,6 +188,13 @@ export const prCiProcessorCommand: Command = {
           // Issue #3754: cross-host PR lock so two hosts cannot fix the
           // same PR's CI failure concurrently.
           workerId: getWorkerUniqueId(config.workerName),
+          // Issue #1879: the fleet logins whose CI-fix markers on the PR
+          // count, so a single-shot run shares the same fleet-wide attempt
+          // budget the run loop uses.
+          fleetLogins: resolveFleetMaintenanceAuthorSet({
+            githubUser: resolveActingGithubUser(args),
+            fleetPrAuthors: config.fleetPrAuthors ?? [],
+          }),
         };
 
         const result = await processCiFailure(input, processorDeps);
