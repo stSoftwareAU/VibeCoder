@@ -82,6 +82,9 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
  * Returns `true` if:
  *   - `failureReason` classifies as an infrastructure category
  *     (`isInfrastructureFailure(detectFailureCategory(reason))`), AND
+ *   - that category is not `token_scope` — a missing OAuth scope is the
+ *     host's credential, not a transient blip, so no backoff can fix it
+ *     (Issue #1952), AND
  *   - the phase has not already been retried in this workOnIssue invocation
  *     (tracked via `state.infraRetryCounts[phase]`).
  *
@@ -104,6 +107,19 @@ export async function shouldRetryInfrastructureFailure(
 ): Promise<boolean> {
   const category = detectFailureCategory(failureReason);
   if (!isInfrastructureFailure(category)) {
+    return false;
+  }
+
+  // Issue #1952: a token without the `workflow` scope is infrastructure — the
+  // issue is released for a host whose token can push it — but it is not
+  // transient. Re-running the phase re-pushes the same branch with the same
+  // credential and meets the same refusal, so the failure stands after one
+  // attempt, with the operator fix already in its message.
+  if (category === "token_scope") {
+    logger.warn("Not retrying: a missing OAuth scope is not transient", {
+      phase,
+      category,
+    });
     return false;
   }
 

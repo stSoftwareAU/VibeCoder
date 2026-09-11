@@ -866,6 +866,7 @@
         "worker/deno/lib/workflow_labels.ts",
         "worker/deno/lib/workflow_permissions_scanner.ts",
         "worker/deno/lib/workflow_scan_common.ts",
+        "worker/deno/lib/workflow_scope_precheck.ts",
         "worker/deno/lib/workflow_trigger_scanner.ts",
         "worker/deno/lib/worktree_cleanup.ts",
         "worker/deno/lib/worktree_progress.ts",
@@ -1439,6 +1440,22 @@
       "sweptAt": "2a01c53d9429ebcb3db1d18c94fa48e23a66c493",
       "paths": [
         "worker/deno/lib/ci_base_branch_check.ts"
+      ]
+    },
+    {
+      "issue": 1951,
+      "chunk": "12ag",
+      "title": "top-up: deferred PR creation after a GitHub secondary rate limit",
+      "ledger": "docs/audits/security-sweep-1951-deferred-pr.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: secondary_rate_limit.ts, pr_creation_retry.ts, deferred_pr_store.ts, deferred_pr_drain.ts and phases/pr_deferral.ts (#1951)",
+      "status": "swept",
+      "sweptAt": "0fc56ced62f912f3434d314ac0f72ea576978a6e",
+      "paths": [
+        "worker/deno/lib/deferred_pr_drain.ts",
+        "worker/deno/lib/deferred_pr_store.ts",
+        "worker/deno/lib/phases/pr_deferral.ts",
+        "worker/deno/lib/pr_creation_retry.ts",
+        "worker/deno/lib/secondary_rate_limit.ts"
       ]
     }
   ],

@@ -28,6 +28,10 @@ import { resolveRebaseConflicts } from "./git_conflict_resolution.ts";
 import { buildForceWithLeaseArgs } from "./git_push_lease_args.ts";
 import { redactedLineTail } from "./redacted_text.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import {
+  isWorkflowScopePushRefusal,
+  workflowScopePushRefusalMessage,
+} from "./workflow_scope.ts";
 
 /** Matches a git object id (SHA-1 or SHA-256, in full or abbreviated form). */
 const OBJECT_ID_PATTERN = /^[0-9a-f]{7,64}$/;
@@ -98,12 +102,24 @@ async function captureRemoteTrackingSha(
  *
  * @param branchName - The branch to recover
  * @param options - Git command options (cwd, etc.)
+ * @param pushFailureDetail - Why the push failed, when the caller knows.
+ *   A refusal for want of the `workflow` scope stops here (Issue #1952):
+ *   no fetch, no rebase and no retry can supply a scope the token lacks,
+ *   and five attempts against it only delay the one actionable diagnosis.
  * @returns Result indicating whether recovery succeeded
  */
 export async function recoverFromPushRejection(
   branchName: string,
   options: GitCommandOptions = {},
+  pushFailureDetail?: string,
 ): Promise<Result<string>> {
+  if (pushFailureDetail && isWorkflowScopePushRefusal(pushFailureDetail)) {
+    return {
+      ok: false,
+      error: new Error(workflowScopePushRefusalMessage(pushFailureDetail)),
+    };
+  }
+
   // Refuse an empty or option-injecting ref before any git runs (Issue #12).
   try {
     assertSafeGitRef(branchName, "PR head branch name");

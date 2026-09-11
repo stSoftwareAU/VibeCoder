@@ -74,6 +74,11 @@ import {
 import { formatRunModeRecord, resolveRunHostId } from "./run_mode_record.ts";
 import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
+import {
+  recordedWorkflowScopeValue,
+  WORKFLOW_SCOPE_ENV,
+  workflowScopeVerdictFor,
+} from "./workflow_scope.ts";
 import { runCoreCommand } from "../commands/run_core.ts";
 import { AGENT_TRANSCRIPT_ENV } from "./agent_transcript.ts";
 import { applyOptionalFeatureEnv } from "./optional_feature_env.ts";
@@ -409,8 +414,14 @@ export function createDefaultRunWorkerDeps(
       try {
         const result = await getGhTokenScopes();
         if (!result.ok) {
-          logger.info(
-            `[SECURITY] gh token scope detection failed: ${result.error.message}`,
+          // Issue #1952: an unrecorded verdict is not a pass. Say at WARN
+          // that nothing was recorded and what the run loses by it, rather
+          // than leaving an INFO line nobody reads.
+          logger.warn(
+            `[SECURITY] gh token scope detection failed: ` +
+              `${result.error.message} — no ${WORKFLOW_SCOPE_ENV} verdict ` +
+              `recorded, so the pre-push workflow-scope check cannot run ` +
+              `and GitHub decides at the push (Issue #1952)`,
           );
           return;
         }
@@ -425,11 +436,17 @@ export function createDefaultRunWorkerDeps(
         // capability footprint is greppable in every run log.
         logger.info(`[SECURITY] gh token: ${summary}`);
         setEnv("GH_TOKEN_SCOPE_SUMMARY", summary);
+        // Issue #1952: record the verdict whenever detection established
+        // one, so "unset" means only "nobody could look" — a failed
+        // detection, or a GitHub App token whose `workflows` permission
+        // `gh auth status` does not report.
+        const recorded = recordedWorkflowScopeValue(
+          workflowScopeVerdictFor({ ok: true, hasWorkflowScope, isAppAuth }),
+        );
+        if (recorded !== undefined) {
+          setEnv(WORKFLOW_SCOPE_ENV, recorded);
+        }
         if (!isAppAuth) {
-          setEnv(
-            "GH_TOKEN_HAS_WORKFLOW_SCOPE",
-            hasWorkflowScope ? "true" : "false",
-          );
           if (!hasWorkflowScope) {
             // Issue #1475: this used to be an INFO line the operator never
             // saw, and the worker then claimed two workflow issues and lost
@@ -445,10 +462,12 @@ export function createDefaultRunWorkerDeps(
           }
         }
       } catch (err) {
-        logger.info(
+        // Issue #1952: as above — nothing recorded, said out loud.
+        logger.warn(
           `[SECURITY] gh token scope detection threw (continuing): ${
             err instanceof Error ? err.message : String(err)
-          }`,
+          } — no ${WORKFLOW_SCOPE_ENV} verdict recorded, so the pre-push ` +
+            `workflow-scope check cannot run (Issue #1952)`,
         );
       }
     },

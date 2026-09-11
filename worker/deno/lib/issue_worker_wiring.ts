@@ -10,7 +10,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { tokenHasWorkflowScope } from "./workflow_scope.ts";
+import {
+  type WorkflowScopeState,
+  workflowScopeState,
+} from "./workflow_scope.ts";
 import type { GitHubClient, Logger, Result, WorkerConfig } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -346,11 +349,15 @@ export interface InfrastructureDeps {
   shuffleArray: typeof shuffleArray;
   evaluateRunGuard: typeof evaluateRunGuard;
   /**
-   * Whether the worker's token can push `.github/workflows/` (Issue #1475).
-   * Production reads the launcher's preflight verdict; tests inject it, so
-   * no test has to mutate the process environment.
+   * What the launcher's preflight recorded about the `workflow` OAuth scope
+   * (Issue #1475), as three states (Issue #1952): a token that has the scope
+   * is not the same thing as a launcher that never looked, and only the
+   * three-state reading lets the completion phase say which it is.
+   *
+   * Production reads the launcher's verdict; tests inject it, so no test has
+   * to mutate the process environment.
    */
-  tokenHasWorkflowScope: () => boolean;
+  workflowScopeState: () => WorkflowScopeState;
 }
 
 /** Quality — quality gate, helpers. */
@@ -611,7 +618,7 @@ export function createDefaultDeps(
       loadPrompt,
       shuffleArray,
       evaluateRunGuard,
-      tokenHasWorkflowScope: () => tokenHasWorkflowScope(),
+      workflowScopeState: () => workflowScopeState(),
     },
 
     quality: {
@@ -1171,7 +1178,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
       items: readonly T[],
     ) => [...items]),
     // Issue #1475: a mocked host can push workflows unless a test says otherwise.
-    tokenHasWorkflowScope: () => true,
+    workflowScopeState: () => "granted",
     evaluateRunGuard: mockFn<InfrastructureDeps["evaluateRunGuard"]>(() =>
       Promise.resolve({ action: "proceed", reason: "mock proceed" })
     ),

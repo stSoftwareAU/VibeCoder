@@ -32,6 +32,7 @@
 
 import { assertNever } from "./assert_never.ts";
 import type { FailureCategory } from "./failure_diagnosis.ts";
+import { isSecondaryRateLimitMessage } from "./secondary_rate_limit.ts";
 
 /** Whether a code change could stop the failure recurring. */
 export type RunFailureFixability =
@@ -55,6 +56,7 @@ export interface RunFailureClassification {
 /** Every slug the classifier can emit, for tests and the auto-filer. */
 export const RUN_FAILURE_CLASSES = [
   "usage-limit",
+  "github-abuse-limit",
   "interrupted",
   "scheduled-release",
   "out-of-credit",
@@ -214,6 +216,25 @@ export function classifyRunFailure(
   // 1. Account limits: usage / rate limit and out-of-credit are never a
   //    worker fault. Checked before anything else so a stack trace or a
   //    "timed out" clause in the same message cannot outrank them.
+  //
+  //    GitHub's *secondary* (content-creation) limit is separated out first
+  //    (Issue #1951): it is a self-clearing throttle on one host's burst of
+  //    writes, not an account or subscription cap, and counting the two
+  //    together made an exhausted model subscription indistinguishable in
+  //    the record from a throttle that cleared itself in minutes.
+  //
+  //    Read from the worker's own words only (Issue #249): the agent's
+  //    quoted stdout reaches this message too, and an agent *writing about*
+  //    this very throttle must not make its run a GitHub throttle.
+  if (isSecondaryRateLimitMessage(splitAgentNarration(message).worker)) {
+    return {
+      fixability: "not_code_fixable",
+      failureClass: "github-abuse-limit",
+      rationale:
+        "GitHub's secondary (content-creation) rate limit refused a write — " +
+        "a self-clearing throttle, not an account usage limit.",
+    };
+  }
   if (category === "rate_limit") {
     return {
       fixability: "not_code_fixable",
