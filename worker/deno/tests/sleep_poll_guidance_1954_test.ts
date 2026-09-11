@@ -46,9 +46,18 @@ const SHELL_SLEEP_RE = /\bsleep(?:\s+[\d$]|\s*`)/i;
 /** The sentence is about waiting on something that has not finished yet. */
 const POLL_CUE_RE = /\b(?:poll\w*|spin-wait|wait|waits|watch\w*|background)\b/i;
 
-/** The sentence forbids the pattern rather than offering it. */
+/**
+ * The clause carrying the `sleep` forbids it rather than offering it.
+ *
+ * Read per clause, not per sentence: "the harness blocks background jobs, so
+ * poll with `sleep 30`" is a recommendation wearing a prohibition's clothes,
+ * and a sentence-wide test would excuse it on the strength of "blocks".
+ */
 const PROHIBITION_RE =
   /\b(?:do\s+not|don't|never|refus\w+|block\w+|unavailable|not\s+available|forbidden|banned?|cannot|must\s+not|no\s+longer)\b/i;
+
+/** Clause boundaries within one sentence. */
+const CLAUSE_SPLIT_RE = /[,;]|\s+—\s+/;
 
 /** One sentence of a template, with the source line it started on. */
 interface Sentence {
@@ -77,8 +86,27 @@ function sentences(text: string): Sentence[] {
     out.push({ line: lineAt(start), text: flat.slice(start, end) });
     start = end;
   }
-  if (start < flat.length) out.push({ line: lineAt(start), text: flat.slice(start) });
+  if (start < flat.length) {
+    out.push({ line: lineAt(start), text: flat.slice(start) });
+  }
   return out;
+}
+
+/**
+ * Whether a sentence offers a `sleep` poll as the way to wait.
+ *
+ * The subject is read from the whole sentence — "if you must poll" can sit
+ * one clause away from the `sleep` it introduces — while the prohibition must
+ * govern the clause the `sleep` command is actually in.
+ *
+ * @param sentence - One sentence of a template
+ * @returns True when the sentence recommends a sleep poll
+ */
+function recommendsSleepPoll(sentence: string): boolean {
+  if (!POLL_CUE_RE.test(sentence)) return false;
+  return sentence.split(CLAUSE_SPLIT_RE).some((clause) =>
+    SHELL_SLEEP_RE.test(clause) && !PROHIBITION_RE.test(clause)
+  );
 }
 
 /**
@@ -89,10 +117,7 @@ function sentences(text: string): Sentence[] {
  */
 export function findSleepPollRecommendations(text: string): string[] {
   return sentences(text)
-    .filter((s) =>
-      SHELL_SLEEP_RE.test(s.text) && POLL_CUE_RE.test(s.text) &&
-      !PROHIBITION_RE.test(s.text)
-    )
+    .filter((s) => recommendsSleepPoll(s.text))
     .map((s) => `line ${s.line}: ${s.text.replace(/\s+/g, " ").trim()}`);
 }
 
@@ -110,8 +135,6 @@ async function promptTemplates(): Promise<string[]> {
   return found.sort();
 }
 
-const read = (path: string) => Deno.readTextFile(path);
-
 // ---------------------------------------------------------------------------
 // The detector itself
 // ---------------------------------------------------------------------------
@@ -121,7 +144,11 @@ Deno.test("findSleepPollRecommendations - flags a bounded sleep poll loop", () =
     "If you genuinely must poll, bound it: a fixed maximum number of\n" +
       "iterations, each with a `sleep`, and report that you gave up.\n",
   );
-  assertEquals(hits.length, 1, `expected the recommendation to be flagged: ${hits}`);
+  assertEquals(
+    hits.length,
+    1,
+    `expected the recommendation to be flagged: ${hits}`,
+  );
 });
 
 Deno.test("findSleepPollRecommendations - accepts a prohibition", () => {
@@ -140,6 +167,16 @@ Deno.test("findSleepPollRecommendations - ignores sleep in code under test", () 
   assertEquals(hits, []);
 });
 
+Deno.test("findSleepPollRecommendations - flags a poll dressed as a prohibition", () => {
+  // The prohibition must govern the clause the `sleep` is in: a sentence that
+  // merely mentions a block elsewhere is still recommending the poll.
+  const hits = findSleepPollRecommendations(
+    "The harness blocks background jobs, so poll with `sleep 30` in a\n" +
+      "bounded loop.\n",
+  );
+  assertEquals(hits.length, 1, `expected the poll to be flagged: ${hits}`);
+});
+
 Deno.test("findSleepPollRecommendations - ignores a watch command", () => {
   const hits = findSleepPollRecommendations(
     "Wait with `gh run watch <id> --exit-status`, which blocks inside `gh`.\n",
@@ -154,7 +191,7 @@ Deno.test("findSleepPollRecommendations - ignores a watch command", () => {
 Deno.test("prompts - none recommends sleep as a polling primitive", async () => {
   const offenders: string[] = [];
   for (const path of await promptTemplates()) {
-    const hits = findSleepPollRecommendations(await read(path));
+    const hits = findSleepPollRecommendations(await Deno.readTextFile(path));
     for (const hit of hits) {
       offenders.push(`${path.slice(REPO_ROOT.length)} ${hit}`);
     }
@@ -173,14 +210,25 @@ Deno.test("prompts - none recommends sleep as a polling primitive", async () => 
 /** The wait commands both templates must name, and what bounds them. */
 const WAIT_CONTRACT: readonly { what: string; pattern: RegExp }[] = [
   { what: "gh pr checks --watch", pattern: /gh\s+pr\s+checks[^\n]*--watch/ },
-  { what: "gh run watch --exit-status", pattern: /gh\s+run\s+watch[^\n]*--exit-status/ },
-  { what: "the foreground sleep refusal", pattern: /foreground\s+`?sleep`?/i },
-  { what: "the bounding timeout", pattern: /timeout/i },
+  {
+    what: "gh run watch --exit-status",
+    pattern: /gh\s+run\s+watch[^\n]*--exit-status/,
+  },
+  {
+    what: "the foreground `sleep` refusal",
+    pattern: /foreground\s+`?sleep`?[^.]*block/i,
+  },
+  {
+    what: "the bound the wait runs under",
+    pattern: /bounded\s+by\s+the\s+Bash\s+tool's[^.]*timeout/i,
+  },
 ];
 
 for (const template of ["coding_guidelines", "ci_fix"]) {
   Deno.test(`${template} - names a wait command that works in the container`, async () => {
-    const text = await read(`${PROMPTS_DIR}/${template}/prompt.md`);
+    const text = await Deno.readTextFile(
+      `${PROMPTS_DIR}/${template}/prompt.md`,
+    );
     for (const { what, pattern } of WAIT_CONTRACT) {
       assert(
         pattern.test(text),

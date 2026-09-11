@@ -82,8 +82,7 @@ progress survives.
 
   Both are read-only, so the `gh` guard passes them through, and both are
   bounded by the Bash tool's own timeout — the call fails loudly at the cap
-  instead of hanging the host. Wrap one in `$TIMEOUT_CMD <seconds>` when you
-  want a shorter, explicit bound.
+  instead of hanging the host.
 
   When neither fits, **stop and report what is still pending** — which run,
   which check, and the command that resumes the wait — rather than loop.
