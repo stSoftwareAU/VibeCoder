@@ -284,6 +284,37 @@ pass climbs, in the very clone the merge conflicted in:
 2. **The resolution agent** — asked only about the paths the rules deferred,
    and required to resolve *and stage* them, exactly as the PR pass requires.
 
+**One writer of the merge commit (Issue #1964).** The agent stages; the
+worker's final-mile commit writes the merge, so the commit message always
+carries the rung that settled each file. An agent that commits the merge
+anyway is **tolerated, not punished**: before the plan is applied, the sync
+reads the merge state, and a HEAD that is already the merge of the branch's
+pre-merge commit and the default branch's tip keeps its commit and has its
+message rewritten. Three guards bound that tolerance, and each resets the
+branch to its pre-merge commit rather than pushing:
+
+- **The safety gate still runs.** The index gate saw nothing to inspect, so
+  the adopted commit's own changed paths are classified instead — a `.env`, a
+  credential file or a stray `.heartbeat_*` refuses the adoption.
+- **A plan that can no longer be applied is refused.** Taking a side needs the
+  conflicted index, so a commit made while the triage still had sides to take
+  is not the resolution the plan describes.
+- **A state that could not be read resets nothing.** "No merge in progress" is
+  only believed when git says so determinately; a timeout or a broken
+  repository fails loudly with the branch untouched.
+
+A merge that is determinately neither in progress nor committed — an agent
+that aborted it, or committed something else — fails **by name**, rather than
+as an unexplained `git commit` exit 1.
+
+Every git failure on the sync path quotes git's **stdout as well as its
+stderr**, because `git commit` explains "nothing to commit, working tree
+clean" on stdout, and a push that fails for anything but a repository rule is
+now a **failed sync** rather than a note on a success. A sync whose reason is
+identical to the previous cycle's escalates on that **second** occurrence,
+carrying the previous conclusion, instead of spending four cycles and four
+agent runs repeating it.
+
 Only a file every rung leaves undecided aborts the merge and reaches a human,
 and the escalation then names the rung that failed (`agent: …`). An agent that
 fails, is ended by the worker, leaves a path unmerged or leaves a conflict
