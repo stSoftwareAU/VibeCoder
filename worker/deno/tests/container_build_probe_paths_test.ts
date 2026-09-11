@@ -3,8 +3,8 @@
  *
  * `.github/workflows/container-build.yml` decides on a pull request whether to
  * build the image — and so whether to run the "Drive the Playwright MCP server
- * from the generated config" probe — from a `git diff --name-only` pathspec
- * list. Issue #1386 narrowed the MCP server's `--allow-net` in
+ * from the generated config" probe — from the `git diff --name-only` pathspec
+ * list in `.github/scripts/detect-image-changes.sh` (Issue #1929). Issue #1386 narrowed the MCP server's `--allow-net` in
  * `worker/deno/setup/screenshot.ts`, matched no pathspec, passed the `changes`
  * job in four seconds, and landed a `main` where every `browser_navigate`
  * failed with `NotCapable`.
@@ -15,13 +15,14 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { parse } from "@std/yaml/parse";
 
 const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(
   /\/$/,
   "",
 );
-const CONTAINER_WORKFLOW = `${REPO_ROOT}/.github/workflows/container-build.yml`;
+// Issue #1929 moved the filter out of the workflow into a committed script,
+// so the pathspecs the pull-request build turns on live here now.
+const CHANGE_FILTER = `${REPO_ROOT}/.github/scripts/detect-image-changes.sh`;
 
 /** The paths whose change must trigger the image build and the MCP probe. */
 const PROBE_PATHS = [
@@ -30,30 +31,22 @@ const PROBE_PATHS = [
 ];
 
 /**
- * The pathspecs the workflow hands `git diff --name-only` on a pull request.
+ * The pathspecs the filter hands `git diff --name-only` on a pull request.
  *
- * The workflow is parsed as YAML down to the detection step's script, and the
- * pathspecs are read from the `git diff` command inside it. Every step fails
- * loudly rather than returning an empty list, which would make the assertions
- * below vacuously true.
+ * They are read from the `IMAGE_PATHS` array in the committed
+ * `.github/scripts/detect-image-changes.sh` — the single source of truth the
+ * `changes` job runs (Issue #1929). Every step fails loudly rather than
+ * returning an empty list, which would make the assertions below vacuously
+ * true.
  */
-function pullRequestPathspecs(workflowYaml: string): string[] {
-  const workflow = parse(workflowYaml) as {
-    jobs?: Record<string, { steps?: { id?: string; run?: string }[] }>;
-  };
-  const steps = workflow.jobs?.changes?.steps ?? [];
-  const script = steps.find((step) => step.id === "filter")?.run;
-  assert(
-    script,
-    "the `changes` job has no `filter` step to read pathspecs from",
-  );
-  const start = script.indexOf("git diff --name-only");
-  assert(start >= 0, "the filter step no longer runs `git diff --name-only`");
-  const end = script.indexOf("|| true)", start);
-  assert(end > start, "the `git diff` pathspec list is unterminated");
-  const specs = [...script.slice(start, end).matchAll(/'([^']+)'/g)]
+function pullRequestPathspecs(scriptSource: string): string[] {
+  const start = scriptSource.indexOf("readonly IMAGE_PATHS=(");
+  assert(start >= 0, "the filter script no longer declares IMAGE_PATHS");
+  const end = scriptSource.indexOf(")", start);
+  assert(end > start, "the IMAGE_PATHS array is unterminated");
+  const specs = [...scriptSource.slice(start, end).matchAll(/'([^']+)'/g)]
     .map((match) => match[1] ?? "");
-  assert(specs.length > 0, "no pathspecs found in the filter step");
+  assert(specs.length > 0, "no pathspecs found in the filter script");
   return specs;
 }
 
@@ -116,7 +109,7 @@ async function changedUnderPathspecs(
 
 Deno.test("container-build PR filter builds on an MCP-config change (Issue #1584)", async () => {
   const pathspecs = pullRequestPathspecs(
-    await Deno.readTextFile(CONTAINER_WORKFLOW),
+    await Deno.readTextFile(CHANGE_FILTER),
   );
   for (const probePath of PROBE_PATHS) {
     // A pathspec naming a file that no longer exists matches nothing in the
@@ -140,7 +133,7 @@ Deno.test("container-build PR filter builds on an MCP-config change (Issue #1584
 
 Deno.test("container-build PR filter still skips an unrelated change (Issue #1584)", async () => {
   const pathspecs = pullRequestPathspecs(
-    await Deno.readTextFile(CONTAINER_WORKFLOW),
+    await Deno.readTextFile(CHANGE_FILTER),
   );
   const dir = await repoWithChange(["docs/CONFIGURATION.md"]);
   try {

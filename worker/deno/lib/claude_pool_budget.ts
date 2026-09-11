@@ -32,6 +32,11 @@ import {
   providerPoolCandidates,
   type ProviderTokenFile,
 } from "./credential_preflight.ts";
+import {
+  type ProviderSubscriptionStatus,
+  type QuotaCandidate,
+  subscriptionStatusFromQuotaCandidate,
+} from "./provider_quota.ts";
 
 /**
  * At or below this share of a window, a token is not worth restarting for:
@@ -175,4 +180,35 @@ export async function poolHasAnotherTokenWithBudget(
     }
   }
   return false;
+}
+
+/** Translate an existing Claude budget result into the shared status shape. */
+export function subscriptionStatusFromClaudeBudget(
+  budget: ClaudeTokenBudget,
+  observedAt: number,
+): ProviderSubscriptionStatus {
+  const candidate: QuotaCandidate = budget.known
+    ? {
+      providerId: "claude",
+      credentialLabel: budget.label,
+      budget: {
+        known: true,
+        windows: budget.windows.map((window) => ({
+          name: window.window,
+          remainingFraction: window.remainingFraction,
+          resetAt: window.resetAt,
+        })),
+      },
+    }
+    : {
+      providerId: "claude",
+      credentialLabel: budget.label,
+      budget: { known: false, reason: budget.reason },
+    };
+
+  return subscriptionStatusFromQuotaCandidate(candidate, observedAt, {
+    billingMode: "fixed-subscription",
+    confidence: budget.known ? "authoritative" : "unknown",
+    ...(budget.known ? {} : { reason: budget.reason }),
+  });
 }

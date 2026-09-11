@@ -51,6 +51,10 @@
  * from.
  */
 export const INTEGRATION_TEST_FILES: readonly string[] = [
+  // Issue #1929: drives .github/scripts/detect-image-changes.sh against
+  // throwaway git repositories, the same shape as
+  // empty_array_expansion_check_test.ts below.
+  "tests/container_image_change_filter_test.ts",
   "tests/container_provider_deepseek_test.ts",
   "tests/container_provider_set_test.ts",
   "tests/container_restart_backoff_test.ts",
@@ -199,6 +203,12 @@ export const SCRIPT_READING_UNIT_TESTS: ReadonlyMap<string, string> = new Map([
     "reads loop.sh and loop.ps1 with Deno.readTextFile to assert both " +
     "supervisors ask `mod.ts log-dir` where their launch logs go (Issue " +
     "#1402); it never spawns either one, and runs in milliseconds",
+  ],
+  [
+    "tests/container_build_probe_paths_test.ts",
+    "reads .github/scripts/detect-image-changes.sh with Deno.readTextFile " +
+    "to take the pull-request pathspecs the image build turns on (Issue " +
+    "#1929); it never spawns the script, and runs in about a second",
   ],
   [
     "tests/workflow_definitions_test.ts",
