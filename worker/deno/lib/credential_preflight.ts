@@ -431,6 +431,51 @@ export function providerPoolCandidates(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Which credential the run environment holds
+// ---------------------------------------------------------------------------
+
+/**
+ * Credential label (file stem — `provider`, `provider-2`) whose material each
+ * provider's run environment currently carries (Issue #2002).
+ *
+ * Recorded when start-up exports a selected token file and again when the
+ * credential pool switches the run to another one. It exists so a usage-limit
+ * signal can name the subscription that ran out, and so a later reader can
+ * tell "this subscription is spent" from "this provider is spent on this
+ * host" — the difference between pausing a run that holds the spent token and
+ * pausing a restart that deliberately picked a fresh one. Process-wide, like
+ * the environment it describes. Never a secret value: labels are file stems.
+ */
+const heldProviderCredentials = new Map<string, string>();
+
+/** Record which credential file a provider's run environment now carries. */
+export function recordHeldProviderCredential(
+  providerId: string,
+  label: string,
+): void {
+  const key = providerId.trim();
+  const value = label.trim();
+  if (key.length === 0 || value.length === 0) return;
+  heldProviderCredentials.set(key, value);
+}
+
+/**
+ * The credential label a provider's run environment carries, or `undefined`
+ * when this process never exported one (a single-credential host whose
+ * variable was already in the environment, or a provider not enabled here).
+ */
+export function heldProviderCredentialLabel(
+  providerId: string,
+): string | undefined {
+  return heldProviderCredentials.get(providerId.trim());
+}
+
+/** Forget every held label. For tests, which share one module instance. */
+export function resetHeldProviderCredentials(): void {
+  heldProviderCredentials.clear();
+}
+
 /**
  * Export each enabled provider's directory credential into the process
  * environment — the runtime half of Issue #4064.
@@ -476,10 +521,18 @@ export async function applyProviderCredentialEnv(options: {
     // Absent files are the preflight's business, not this function's.
     const selected = await selectToken(tokens, provider);
     if (!selected) continue;
+    let exportedFromSelected = false;
     for (const entry of selected.entries) {
       if (env(entry.name)) continue;
       setEnv(entry.name, entry.value);
       exported.push(entry.name);
+      exportedFromSelected = true;
+    }
+    // Issue #2002: the run environment now carries this file's credential.
+    // A variable that was already in the environment came from elsewhere, so
+    // its label is unknown and nothing is recorded for it.
+    if (exportedFromSelected) {
+      recordHeldProviderCredential(provider.id, selected.label);
     }
   }
   return exported;

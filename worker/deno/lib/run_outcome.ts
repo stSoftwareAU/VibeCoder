@@ -123,6 +123,30 @@ export type RunOutcome =
       prUrl?: string;
       prNumber?: number;
     }
+    /**
+     * The work is finished and pushed, and GitHub's **secondary**
+     * (content-creation) rate limit refused the pull request for longer than
+     * the run had left (Issue #1951).
+     *
+     * Not a failure, and emphatically not a `no_pr`: nothing about the run
+     * went wrong, the branch carries the whole change, and the PR is parked
+     * in `deferred_pr_store.ts` for the next cycle's drain to raise with no
+     * agent run at all. Recording it as a failure is what orphaned the branch
+     * and charged a completed run to the host's failure streak — while the
+     * classifier called a self-clearing GitHub throttle an account usage
+     * limit.
+     */
+    | {
+      kind: "pr_deferred";
+      /** Phase that parked the PR. */
+      phase: string;
+      /** Head branch the finished work is on. */
+      branch: string;
+      /** Base branch the pending PR targets. */
+      base: string;
+      /** The refusal, in one line. */
+      reason: string;
+    }
   )
   & RunOutcomeNotes;
 
@@ -230,6 +254,8 @@ export function describeRunOutcome(outcome: RunOutcome | undefined): string {
       return `claim_stale:${outcome.reason}`;
     case "summary_incomplete":
       return `summary_incomplete:pr#${outcome.prNumber}`;
+    case "pr_deferred":
+      return `pr_deferred:${outcome.branch}`;
   }
 }
 
@@ -276,6 +302,31 @@ export function summaryIncompleteOutcome(options: {
     prUrl: options.prUrl,
     prNumber: options.prNumber,
     problem: options.problem,
+  };
+}
+
+/**
+ * Outcome for a run whose finished work could not be turned into a PR because
+ * GitHub's secondary (content-creation) rate limit held for longer than the
+ * run had left (Issue #1951).
+ *
+ * Like {@link summaryIncompleteOutcome} this is not a failure: no category,
+ * no `unknown` class, nothing filed, and no contribution to the failure
+ * streak. The branch named here is where the work lives until the deferred-PR
+ * drain raises the parked PR.
+ */
+export function prDeferredOutcome(options: {
+  phase: string;
+  branch: string;
+  base: string;
+  reason: string;
+}): RunOutcome {
+  return {
+    kind: "pr_deferred",
+    phase: options.phase,
+    branch: options.branch,
+    base: options.base,
+    reason: options.reason,
   };
 }
 

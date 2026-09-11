@@ -68,6 +68,19 @@ const CASES: { name: string; outcome: RunOutcome | undefined }[] = [
         "WIP preserved: committed and pushed to 'issue-185-forgeable' (Issue #47)",
     },
   },
+  {
+    // Issue #1951 — finished work whose PR a content-creation throttle
+    // refused; the PR is parked, not lost.
+    name: "pr_deferred",
+    outcome: {
+      kind: "pr_deferred",
+      phase: "completion",
+      branch: "issue-1951-secondary-limit",
+      base: "milestone/completed-work-is-not-a-failure",
+      reason:
+        "HTTP 403: You have exceeded a secondary rate limit and have been temporarily blocked from content creation.",
+    },
+  },
 ];
 
 function render(outcome: RunOutcome | undefined): string {
@@ -265,4 +278,19 @@ Deno.test("outcome render - an outcome with no notes renders exactly as before (
       `${c.name}: a blank note must change nothing`,
     );
   }
+});
+
+Deno.test("outcome render - pr_deferred: the release says the PR is pending and names the branch (Issue #1951)", () => {
+  const deferred = CASES.find((c) => c.name === "pr_deferred")!.outcome!;
+  const body = render(deferred);
+  // Never the ⚠️ no-PR shape: nothing about this run failed.
+  assertStringIncludes(body, "✅ **Vibe Coder released this claim**");
+  assertStringIncludes(body, "PR pending");
+  assertStringIncludes(body, "issue-1951-secondary-limit");
+  assertStringIncludes(body, "milestone/completed-work-is-not-a-failure");
+  assertStringIncludes(body, "secondary");
+  assertEquals(
+    describeAttemptOutcome(deferred),
+    "PR pending on `issue-1951-secondary-limit`",
+  );
 });

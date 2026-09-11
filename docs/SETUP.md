@@ -871,6 +871,36 @@ must not make a configured subscription disappear. When **every** budget is
 unknown, discovery order decides and the run starts on `provider.env`, which is
 exactly what a host with no network path to the endpoint does today.
 
+One exception to "unknown ranks last" (Issue #2002). A usage-limit signal left
+by the previous run — the health check or the runner met `You've hit your
+weekly limit` — names the **provider and the credential file** that ran out
+(`.rate_limit_signal` carries `provider: "claude"` and
+`credentialLabel: "provider-2"`, never a token value). The next start reads it
+before ranking and records that token as spent until the signal's reset, so it
+is **left out of the start-up ranking while another candidate exists** — even
+when every probe fails. Without that, a recorded exhaustion is a *measured*
+budget and would rank ahead of the unmeasured fresh tokens, which is how a
+start once re-exported a weekly-spent subscription and re-armed an 80-hour
+pause. The exclusion is logged:
+
+```text
+[SECURITY] claude token pool: the active usage-limit signal names provider as the spent subscription — recording it before the start-up ranking
+[SECURITY] claude token pool: provider is recorded as spent until 2026-09-15T01:00:00.000Z — left out of the start-up ranking
+```
+
+The same label scopes the pause. A run that holds a *different* credential of
+the same provider than the one the signal names — a restart that picked a fresh
+subscription — is **not** paused by that signal; the GitHub pre-flight ignores
+usage signals altogether (they are not a GitHub quota fact), and the work loop
+says once why it is not pausing:
+
+```text
+[quota] the usage-limit signal names claude/provider as spent; this run holds claude/provider-3 — not pausing (Issue #2002)
+```
+
+A signal written by an older worker carries no label and keeps pausing the
+whole host, exactly as before.
+
 **What the operator sees.** The decision is logged at `INFO`, one line per
 candidate, best first, then the winner:
 
@@ -1169,6 +1199,38 @@ The worker reads the scope at start-up and, without it (Issue #1475):
 - **fails a run before the push** when the branch's diff touches
   `.github/workflows/`, naming the files and the fix, and classifies it as
   the host's credential (`token-scope`), never the issue's fault.
+
+Neither check is allowed to pass by silence (Issue #1952):
+
+- the start-up verdict is recorded whenever detection established one, and a
+  detection that could not — `gh auth status` failed, or the token is a
+  GitHub App installation token whose `workflows` permission it cannot read —
+  says so at WARN, so "nothing recorded" is never read as "has the scope";
+- the pre-push check asks `git diff`, falls back to the branch's commit list
+  when the diff cannot answer, logs that it was skipped when neither can, and
+  names which of the two supplied the paths it acted on;
+- with no verdict recorded, a branch that touches `.github/workflows/` is
+  logged at WARN rather than failed — GitHub decides at the push;
+- a push that still reaches GitHub's refusal fails **once**, with the fix in
+  the message and the run recorded as `token-scope` — no rebase recovery and
+  no in-process retry, because neither can supply a missing scope.
+
+```mermaid
+flowchart TD
+    S["Launcher: read token scopes"] -->|scope present / absent| R["Record verdict"]
+    S -->|detection could not answer| U["Nothing recorded = unknown"]
+    R --> C{"Verdict"}
+    U --> D
+    C -->|granted| P["Push"]
+    C -->|absent| D["Changed paths: diff → commit list"]
+    D -->|touches .github/workflows/, verdict absent| F["Fail before push — name the fix"]
+    D -->|touches them, verdict unknown| WARN["WARN, then push"] --> P
+    D -->|touches none, or cannot answer| P
+    P -->|GitHub refuses: no workflow scope| F2["Fail once — token_scope"]
+    P -->|other rejection| RC["Rebase recovery, retry"]
+    style F fill:#9d0208,stroke:#6a040f,color:#fff
+    style F2 fill:#9d0208,stroke:#6a040f,color:#fff
+```
 
 `setup.sh` warns when the provisioned token lacks the scope. The fix, for the
 worker account:
