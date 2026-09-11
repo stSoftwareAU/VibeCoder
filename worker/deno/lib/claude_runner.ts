@@ -150,6 +150,10 @@ import {
   CLAUDE_PROVIDER_ID,
   selectAgentProvider,
 } from "./agent_provider.ts";
+import {
+  clearAutomaticProviderOutage,
+  recordAutomaticProviderOutage,
+} from "./provider_auto_state.ts";
 
 // Re-export for convenience
 export {
@@ -2284,8 +2288,25 @@ export async function runClaudeWithTimeout(
         exitCode: timedOut ? TIMEOUT_EXIT_CODE : status.code,
         timedOut,
         cancelled: terminated || scheduledRelease !== undefined,
+        nowMs: clock.now(),
       }, agentOutput)
       : undefined;
+    if (
+      normalisedFailure?.category === "authentication" ||
+      normalisedFailure?.category === "quota-exhausted"
+    ) {
+      recordAutomaticProviderOutage(provider.id, normalisedFailure.category, {
+        observedAt: clock.now(),
+        ...(normalisedFailure.quota?.resetEpochMs === undefined
+          ? {}
+          : { retryAt: normalisedFailure.quota.resetEpochMs }),
+      });
+    } else if (
+      status.code === 0 && !timedOut && !terminated &&
+      scheduledRelease === undefined
+    ) {
+      clearAutomaticProviderOutage(provider.id);
+    }
     const externalSigterm = gotSigterm && !ourShutdown;
     // The child died from outside, or our kill never settled: collect the
     // descendants it left behind before anything else starts (Issue #4382).

@@ -33,6 +33,18 @@ export interface ModelPricing {
   cacheWritePerMillion: number;
   /** Cost per million cache-read tokens (USD). */
   cacheReadPerMillion: number;
+  /**
+   * Present (and always `true`) when the row is the vendor's **API-equivalent
+   * list price** rather than a rate the fleet is billed (Issue #1937).
+   *
+   * Every non-Claude provider runs on a fixed-price subscription (Issue
+   * #1923), so its per-token figure is what the same tokens would have cost
+   * on that vendor's API — never a bill. Renderers read this marker off the
+   * row rather than sniffing the model id: `formatCostEstimateLines` receives
+   * only `{model, usage}` and never sees a provider id. Claude rows carry no
+   * marker.
+   */
+  apiEquivalent?: true;
 }
 
 /** Cost breakdown for a set of token counts. */
@@ -130,6 +142,164 @@ const HAIKU_PRICING: ModelPricing = {
   cacheReadPerMillion: 0.10,
 };
 
+// ---------------------------------------------------------------------------
+// Non-Claude API-equivalent list prices (Issue #1937)
+// ---------------------------------------------------------------------------
+//
+// The worker routes to Codex, Gemini and DeepSeek on a fixed-price
+// subscription, so none of these rows is a bill (Issue #1923). Each is the
+// vendor's published API list price for the same tokens, so a run on one of
+// these ids renders a USD figure — labelled `(API-equivalent)` on its
+// run-stats sub-bullet — instead of falling through to
+// UNPRICED_UPPER_BOUND_PRICING. This replaces the Issue #1701 decision to
+// leave the Codex ids unpriced.
+//
+// `cacheWritePerMillion` is 0 for every row below: none of these three
+// vendors bills a per-token cache write the way Anthropic does (Codex reports
+// no cache-write counter at all, and Gemini's explicit-cache storage is
+// charged hourly, which is not modelled). `cacheReadPerMillion` is the
+// vendor's cached-input rate.
+//
+// Each id keeps its own row even where two currently share a rate, so a
+// divergence at the vendor is a one-row edit and the ordered prefix walk in
+// `lookupModelPricing` is provably reaching the specific row (pinned by
+// `token_usage_test.ts`).
+
+/**
+ * OpenAI `gpt-5-codex` — the Codex top tier.
+ *
+ * Source: https://developers.openai.com/api/docs/models/gpt-5-codex
+ * ($1.25 input / $0.125 cached input / $10.00 output per MTok), checked on
+ * 2026-09-11. The model is current, not deprecated; its snapshot is updated
+ * in place by OpenAI.
+ */
+const GPT_5_CODEX_PRICING: ModelPricing = {
+  inputPerMillion: 1.25,
+  outputPerMillion: 10,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0.125,
+  apiEquivalent: true,
+};
+
+/**
+ * OpenAI `gpt-5-mini` — the Codex cheap tier.
+ *
+ * Source: https://developers.openai.com/api/docs/pricing ($0.25 input /
+ * $0.025 cached input / $2.00 output per MTok), checked on 2026-09-11.
+ */
+const GPT_5_MINI_PRICING: ModelPricing = {
+  inputPerMillion: 0.25,
+  outputPerMillion: 2,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0.025,
+  apiEquivalent: true,
+};
+
+/**
+ * OpenAI `gpt-5` — the Codex base tier.
+ *
+ * Source: https://developers.openai.com/api/docs/pricing ($1.25 input /
+ * $0.125 cached input / $10.00 output per MTok), checked on 2026-09-11.
+ */
+const GPT_5_PRICING: ModelPricing = {
+  inputPerMillion: 1.25,
+  outputPerMillion: 10,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0.125,
+  apiEquivalent: true,
+};
+
+/**
+ * Google `gemini-2.5-pro` — the Gemini top tier.
+ *
+ * Source: https://ai.google.dev/gemini-api/docs/pricing, checked on
+ * 2026-09-11. Basis: the paid tier's **≤200k prompt-token** band ($1.25
+ * input / $0.125 context-cache read / $10.00 output per MTok); prompts above
+ * 200k tokens bill at $2.50 / $0.25 / $15.00, which this row does not model.
+ * Thinking tokens are billed as output ("Output price (including thinking
+ * tokens)"), so they need no separate rate.
+ */
+const GEMINI_2_5_PRO_PRICING: ModelPricing = {
+  inputPerMillion: 1.25,
+  outputPerMillion: 10,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0.125,
+  apiEquivalent: true,
+};
+
+/**
+ * Google `gemini-2.5-flash-lite` — the Gemini cheap tier.
+ *
+ * Source: https://ai.google.dev/gemini-api/docs/pricing, checked on
+ * 2026-09-11. Basis: the text/image/video rate ($0.10 input / $0.01
+ * context-cache read / $0.40 output per MTok); the dearer audio input rate
+ * ($0.30) is not modelled. Thinking tokens are billed as output.
+ */
+const GEMINI_2_5_FLASH_LITE_PRICING: ModelPricing = {
+  inputPerMillion: 0.10,
+  outputPerMillion: 0.40,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0.01,
+  apiEquivalent: true,
+};
+
+/**
+ * Google `gemini-2.5-flash` — the Gemini base tier.
+ *
+ * Source: https://ai.google.dev/gemini-api/docs/pricing, checked on
+ * 2026-09-11. Basis: the text/image/video rate ($0.30 input / $0.03
+ * context-cache read / $2.50 output per MTok); the dearer audio input rate
+ * ($1.00) is not modelled. Thinking tokens are billed as output.
+ */
+const GEMINI_2_5_FLASH_PRICING: ModelPricing = {
+  inputPerMillion: 0.30,
+  outputPerMillion: 2.50,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0.03,
+  apiEquivalent: true,
+};
+
+/**
+ * DeepSeek `deepseek-reasoner` — the DeepSeek top tier.
+ *
+ * Source: https://api-docs.deepseek.com/quick_start/pricing, checked on
+ * 2026-09-11. Basis: the **standard-hours (peak)** `deepseek-flash` rate
+ * ($0.30 cache-miss input / $0.006 cache-hit input / $1.20 output per MTok),
+ * with **no off-peak discount** applied — off-peak is half price, so this row
+ * never under-states.
+ *
+ * That page lists only `deepseek-flash` and `deepseek-v4-pro`; it does not
+ * name `deepseek-reasoner` at all, and it says a legacy model name it still
+ * accepts is served by the Flash model and billed at the Flash price. The
+ * Flash rate is therefore the only rate the source supports for this id.
+ * Whether the vendor still accepts the id the worker routes to is Issue
+ * #1941; this row prices the id as configured today.
+ */
+const DEEPSEEK_REASONER_PRICING: ModelPricing = {
+  inputPerMillion: 0.30,
+  outputPerMillion: 1.20,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0.006,
+  apiEquivalent: true,
+};
+
+/**
+ * DeepSeek `deepseek-chat` — the DeepSeek base tier.
+ *
+ * Source: https://api-docs.deepseek.com/quick_start/pricing, checked on
+ * 2026-09-11. Basis: the **standard-hours (peak)** `deepseek-flash` rate
+ * ($0.30 cache-miss input / $0.006 cache-hit input / $1.20 output per MTok),
+ * with **no off-peak discount** applied — the same basis, and the same
+ * source-supported reasoning, as the `deepseek-reasoner` row above.
+ */
+const DEEPSEEK_CHAT_PRICING: ModelPricing = {
+  inputPerMillion: 0.30,
+  outputPerMillion: 1.20,
+  cacheWritePerMillion: 0,
+  cacheReadPerMillion: 0.006,
+  apiEquivalent: true,
+};
+
 /**
  * Current (latest-tier) pricing per model tier (Issue #2389).
  *
@@ -194,11 +364,35 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
     cacheReadPerMillion: 0.08,
   }],
   ["claude-3-opus", OPUS_PRICING_LEGACY],
-  // Codex / GPT-5 ids are intentionally absent (Issue #1701). ChatGPT
-  // subscription usage is not an API bill: treating OpenAI list prices as
-  // the charge would under- or over-count the daily spend ceiling. An
-  // unpriced `gpt-5-codex` / `gpt-5` / `gpt-5-mini` id is charged at
-  // UNPRICED_UPPER_BOUND_PRICING and named in `unpricedModels`.
+  // Non-Claude ids are priced at the vendor's **API-equivalent list price**
+  // (Issue #1937, #1923, #1930) — every one of these providers runs on a
+  // fixed-price subscription, so the figure is what the tokens would have
+  // cost on that vendor's API and never a bill. `formatCostEstimateLines`
+  // says so on the run-stats sub-bullet it renders, reading
+  // `apiEquivalent` off the row. This replaces the Issue #1701 decision to
+  // leave the Codex ids unpriced and charged at
+  // UNPRICED_UPPER_BOUND_PRICING.
+  //
+  // Order matters: `lookupModelPricing` walks these rows with `startsWith`
+  // and takes the first match, so each id's own row must precede any broader
+  // prefix (`gpt-5-codex` and `gpt-5-mini` before `gpt-5`,
+  // `gemini-2.5-flash-lite` before `gemini-2.5-flash`). Pinned by
+  // `token_usage_test.ts`.
+  //
+  // The `gpt-5` key also captures a dotted future id (`gpt-5.2`,
+  // `gpt-5.3-codex`), which OpenAI prices dearer than `gpt-5` — such an id
+  // costs at the `gpt-5` rate rather than at its own, so a run on one would
+  // be under-stated until it gets a row of its own. The worker routes only
+  // to the three ids priced here (`config_defaults.ts`), so add the row with
+  // the routing change rather than ahead of it.
+  ["gpt-5-codex", GPT_5_CODEX_PRICING],
+  ["gpt-5-mini", GPT_5_MINI_PRICING],
+  ["gpt-5", GPT_5_PRICING],
+  ["gemini-2.5-pro", GEMINI_2_5_PRO_PRICING],
+  ["gemini-2.5-flash-lite", GEMINI_2_5_FLASH_LITE_PRICING],
+  ["gemini-2.5-flash", GEMINI_2_5_FLASH_PRICING],
+  ["deepseek-reasoner", DEEPSEEK_REASONER_PRICING],
+  ["deepseek-chat", DEEPSEEK_CHAT_PRICING],
 ]);
 
 /**

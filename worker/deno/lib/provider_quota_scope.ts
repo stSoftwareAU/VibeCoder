@@ -7,6 +7,11 @@
  * host-wide. A usage signal that predates the `provider` field is treated
  * as Claude, which is what every historical writer meant.
  *
+ * Since Issue #1926 this host-level gate is also the refresh point for the
+ * opt-in automatic provider router. It runs before another claim is made, so a
+ * provider that exhausted its subscription on the previous work item is never
+ * hammered again while another fixed-price provider can serve.
+ *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
@@ -16,6 +21,7 @@ import {
   type RateLimitSignalData,
   readRateLimitSignal,
 } from "./rate_limit_signal.ts";
+import { refreshAutomaticProviderRouting } from "./provider_auto_runtime.ts";
 
 /** Default vendor for a usage signal that never named one. */
 export const LEGACY_USAGE_SIGNAL_PROVIDER = "claude";
@@ -62,8 +68,10 @@ export function usageSignalPausesHost(
 }
 
 /**
- * Host-loop pause: the signal is still inside its wait window **and**
- * {@link usageSignalPausesHost} says every enabled provider is blocked.
+ * Host-loop pause: honour a shared GitHub block, otherwise refresh the
+ * automatic provider router (when opted in) before deciding whether another
+ * item of work may be claimed. Pinned configurations keep the exact historical
+ * signal-only behaviour.
  */
 export async function isHostRateLimitPauseActive(
   workDir: string,
@@ -71,8 +79,35 @@ export async function isHostRateLimitPauseActive(
   nowFn?: () => number,
 ): Promise<boolean> {
   const active = await isRateLimitActive(workDir, nowFn);
-  if (!active.ok || !active.value.active) return false;
-  const signal = await readRateLimitSignal(workDir);
-  if (!signal.ok) return false;
-  return usageSignalPausesHost(signal.value, enabledProviderIds);
+  let signal: RateLimitSignalData | undefined;
+  if (active.ok && active.value.active) {
+    const read = await readRateLimitSignal(workDir);
+    if (read.ok) signal = read.value;
+  }
+
+  // GitHub is shared infrastructure, not a provider choice. No coding-agent
+  // selection can route around it.
+  if (signal && (signal.kind ?? "github") === "github") return true;
+
+  try {
+    const automatic = await refreshAutomaticProviderRouting({
+      workDir,
+      enabledProviderIds,
+      ...(signal ? { signal } : {}),
+      ...(nowFn ? { now: nowFn() * 1000 } : {}),
+    });
+    if (automatic.automatic) return automatic.shouldPause;
+  } catch (error) {
+    // Fail closed. A malformed/unreadable auto-mode declaration must never
+    // fall through to a spawn that could select a metered credential.
+    console.error(
+      `[quota] automatic provider routing failed closed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return true;
+  }
+
+  if (!signal) return false;
+  return usageSignalPausesHost(signal, enabledProviderIds);
 }
