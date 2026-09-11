@@ -1457,6 +1457,18 @@
         "worker/deno/lib/pr_creation_retry.ts",
         "worker/deno/lib/secondary_rate_limit.ts"
       ]
+    },
+    {
+      "issue": 1968,
+      "chunk": "top-up-1968",
+      "title": "top-up: the structured JSON union for append-only ledgers",
+      "ledger": "docs/audits/security-sweep-1968-json-insertion-union.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12ag recorded their coverage: json_insertion_union.ts (#1968)",
+      "status": "swept",
+      "sweptAt": "e2f50c4837bd6b7c1a363c51748dc621b8dcfc71",
+      "paths": [
+        "worker/deno/lib/json_insertion_union.ts"
+      ]
     }
   ],
   "roots": [
