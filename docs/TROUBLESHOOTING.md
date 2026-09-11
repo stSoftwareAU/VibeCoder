@@ -772,7 +772,11 @@ Two different things, handled two different ways:
   writes the durable `.rate_limit_signal` in `WORK_DIR` for that long (an
   hour when no time is given), and the main loop pauses agent work until the
   window resets. Every other worker on the same volume sees the signal and
-  waits too. The issue is **not** blamed: the failure classifies as
+  waits too — but the signal names the **provider and the subscription** that
+  ran out (Issue #2002), so a run holding a different credential of the same
+  provider is not paused by it, the GitHub pre-flight ignores it, and start-up
+  ranking will not re-pick the credential it names. See
+  [Provider parity](PROVIDER-PARITY.md). The issue is **not** blamed: the failure classifies as
   infrastructure, so it keeps its `failed-once` retry rather than being
   labelled failed.
 

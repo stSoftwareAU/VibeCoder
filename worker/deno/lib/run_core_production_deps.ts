@@ -260,6 +260,8 @@ import {
   writeRateLimitSignal,
 } from "./rate_limit_signal.ts";
 import { isHostRateLimitPauseActive } from "./provider_quota_scope.ts";
+import { usageSignalScope } from "./active_credential.ts";
+import { activeAgentProvider } from "./agent_provider.ts";
 import { fallbackPolicyFromWorkerConfig } from "./provider_fallback_policy.ts";
 import { deriveIdleReason } from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
@@ -1535,11 +1537,15 @@ export async function createProductionRunCoreDeps(
         // re-running this billed probe every sleepInterval for the whole
         // window — and every other worker on the volume waits too.
         if (result.exitCode === 3 && result.pauseSeconds) {
+          // Issue #2002: say which provider AND which of its subscriptions
+          // ran out. An unscoped signal was read as a host-wide fact and
+          // paused restarts that had selected a different, healthy token.
           const signal = await writeRateLimitSignal(
             workDir,
             result.pauseSeconds,
             undefined,
             "usage",
+            usageSignalScope(activeAgentProvider().id),
           );
           if (!signal.ok) {
             logger.warn(

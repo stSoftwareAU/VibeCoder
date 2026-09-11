@@ -43,6 +43,39 @@ signal. The host loop pauses only when every **enabled** provider is
 that blocked vendor, or when GitHub (shared infrastructure) is the
 blocker. Codex work continues on a mixed host.
 
+### Credential scope — whose subscription ran out (Issue #2002)
+
+A usage signal also carries `credentialLabel`: the label (`provider`,
+`provider-2`) of the subscription that ran out, never a token value. It is
+recorded when the run exports a credential, so every usage-signal writer can
+name it. Four consequences:
+
+- The **GitHub pre-flight ignores usage signals** entirely. A model quota is
+  not a GitHub quota; only a `github` signal (and a legacy signal with no
+  `kind`) stops a run before initialisation.
+- The **host pause skips a run holding a different credential** of the same
+  provider. A signal with no label keeps the host-wide behaviour.
+- The **restart question excludes the named credential**, so a pause is never
+  shortened for the token that just failed.
+- **Start-up ranking excludes it** while another candidate exists, so a start
+  whose budget probes all failed cannot fall back to discovery order and
+  re-pick the spent subscription.
+
+```mermaid
+sequenceDiagram
+    participant H as health check
+    participant S as .rate_limit_signal
+    participant G as GitHub pre-flight
+    participant P as token pool (start-up)
+    H->>S: usage, provider=claude, credentialLabel=provider
+    G->>S: kind?
+    S-->>G: usage — not a GitHub quota
+    G-->>G: proceed to init
+    P->>S: which credential is spent?
+    S-->>P: provider
+    P->>P: rank provider-2, provider-3 — never provider
+```
+
 ## Multiple Codex credentials
 
 `codex/provider.env`, `codex/provider-2.env`, … are ranked by the

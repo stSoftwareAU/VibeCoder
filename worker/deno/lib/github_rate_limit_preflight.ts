@@ -20,6 +20,7 @@
 import type { Result } from "../types.ts";
 import {
   isRateLimitActive,
+  readRateLimitBlockKind,
   writeRateLimitSignal,
 } from "./rate_limit_signal.ts";
 import {
@@ -150,8 +151,11 @@ function computeWaitSeconds(resetEpoch: number, nowEpoch: number): number {
  * Check GitHub's primary GraphQL rate limit before the worker proceeds.
  *
  * Behaviour:
- *   1. If the shared signal file is already active, return rateLimited=true
- *      immediately (no gh call — the previous worker already told us).
+ *   1. If the shared signal file is already active AND names a GitHub block,
+ *      return rateLimited=true immediately (no gh call — the previous worker
+ *      already told us). An active *usage* signal is logged and ignored here
+ *      (Issue #2002): a model quota is the loop's provider- and
+ *      credential-scoped business, not GitHub's.
  *   2. Otherwise consult the file-backed cache (Issue #1675):
  *      - Cache hit and remaining ≥ 2× threshold → return cached result
  *        without a network call.
@@ -174,16 +178,35 @@ export async function preflightGitHubRateLimit(
   const threshold = deps.threshold ?? DEFAULT_PREFLIGHT_THRESHOLD;
   const cacheTtl = deps.cacheTtlSeconds ?? DEFAULT_PREFLIGHT_CACHE_TTL_SECONDS;
 
-  // Step 1: existing signal short-circuit. Always bypass cache here —
-  // an active signal means a previous worker already detected exhaustion.
+  // Step 1: existing GitHub signal short-circuit. Always bypass cache here —
+  // an active GitHub signal means a previous worker already detected
+  // exhaustion.
+  //
+  // Only a GitHub signal, though (Issue #2002). A model usage limit belongs
+  // to one provider — and one of its subscriptions — and is the loop's
+  // business after initialisation, where it can be scoped. Honoured here it
+  // stopped the run before init on GRQ-25 for the 80 hours of one spent
+  // subscription's window, while the token the run had just selected sat at
+  // 100% of its five-hour window: 25 restarts, zero issues worked. A signal
+  // written before the `kind` field still reads as GitHub, so the historical
+  // behaviour is unchanged.
   const existing = await isRateLimitActive(deps.workDir, deps.nowSeconds);
   if (existing.ok && existing.value.active) {
-    return {
-      rateLimited: true,
-      remainingSeconds: existing.value.remainingSeconds,
-      message:
-        `Rate-limit signal still active (${existing.value.remainingSeconds}s remaining)`,
-    };
+    const kind = await readRateLimitBlockKind(deps.workDir);
+    if (kind === "github") {
+      return {
+        rateLimited: true,
+        remainingSeconds: existing.value.remainingSeconds,
+        message:
+          `Rate-limit signal still active (${existing.value.remainingSeconds}s remaining)`,
+      };
+    }
+    deps.log(
+      `Pre-flight: ignoring an active ${kind} signal ` +
+        `(${existing.value.remainingSeconds}s remaining) — a model quota is ` +
+        `not a GitHub quota; the loop scopes it to the provider and ` +
+        `credential that ran out`,
+    );
   }
 
   // Step 2: try the cache when the caller has not explicitly disabled it.

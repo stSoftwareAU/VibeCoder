@@ -28,6 +28,11 @@
  *   a question for whatever gates a spawn, and a worker that would not start
  *   because every token is low is strictly worse than one that starts on the
  *   token which refills first.
+ * - A credential the **active usage signal** names as spent is out of the
+ *   running while another candidate exists (Issue #2002), at start-up and on
+ *   a mid-run switch alike. Without it, a start whose every budget probe
+ *   failed fell through to discovery order and re-picked the very
+ *   subscription whose signal was pausing the host.
  * - {@link ClaudeCredentialPool.applySelection} sets exactly the selected
  *   file's subscription OAuth variable, **replacing** the previous value.
  *   `applyProviderCredentialEnv` deliberately never clobbers — right for
@@ -62,6 +67,7 @@ import {
   activeAgentProvider,
   type AgentProviderDescriptor,
 } from "./agent_provider.ts";
+import { recordActiveCredentialLabel } from "./active_credential.ts";
 import {
   type ClaudeBudgetFetch,
   type ClaudeBudgetWindowName,
@@ -137,6 +143,13 @@ export interface ClaudeCredentialPoolOptions {
   discover?: () => Promise<readonly ProviderTokenFile[]>;
   /** Selector used at start-up when there is nothing to choose between. */
   fallback?: ProviderTokenSelector;
+  /**
+   * The credential an active usage signal says is spent, if any (Issue
+   * #2002). Production reads the shared `.rate_limit_signal`; omitting it
+   * keeps the pool's historical behaviour, where nothing told selection that
+   * a token had already run out.
+   */
+  spentCredentialLabel?: () => Promise<string | undefined>;
 }
 
 /** The pool's operations. One instance serves a whole worker process. */
@@ -295,12 +308,14 @@ export function createClaudeCredentialPool(
       const pool = await candidates();
       // Nothing to choose between: no probe, no log, no change from today.
       if (pool.length < 2) return null;
-      const ranking = await rankPool(pool, now);
+      const eligible = await withoutSpentCredential(pool);
+      if (eligible.length === 0) return null;
+      const ranking = await rankPool(eligible, now);
       const winner = ranking.winner;
       // The gate is the switch's own question — "is this worth running
       // against?" — so a winner that fails it is no selection at all.
       if (winner === null || !winner.passesFiveHourGate) return null;
-      return pool[winner.index] ?? null;
+      return eligible[winner.index] ?? null;
     },
 
     selectToken: async (tokens, provider) => {
@@ -317,13 +332,19 @@ export function createClaudeCredentialPool(
       // the credential directory a second time.
       discovered ??= Promise.resolve(pool);
       const now = clock();
-      const ranking = await rankPool(pool, now);
+      // Issue #2002: a token the active usage signal already calls spent is
+      // out of the running while another candidate exists. Without this, a
+      // start whose every probe failed fell through to discovery order and
+      // re-picked the very subscription whose signal was pausing the host.
+      const eligible = await withoutSpentCredential(pool);
+      const ranked = eligible.length > 0 ? eligible : pool;
+      const ranking = await rankPool(ranked, now);
       // A start never refuses: the gate is logged as the reason, not applied
       // as a filter. Ranking drops nothing, so a pool of two always has a
       // winner.
       return ranking.winner === null
         ? null
-        : pool[ranking.winner.index] ?? null;
+        : ranked[ranking.winner.index] ?? null;
     },
 
     applySelection(token, setEnv) {
@@ -351,12 +372,45 @@ export function createClaudeCredentialPool(
       // Replacing, not adding: exactly one Claude token variable is left in
       // the environment, carrying the newly selected file's value.
       setEnv(name, value);
+      // Issue #2002: the run is now holding this credential, so a usage
+      // signal written after the switch names this one, not the one it
+      // replaced.
+      recordActiveCredentialLabel(poolProvider().id, token.label);
       log(
         `${LOG_PREFIX}: run environment switched to ${token.label} (${name})`,
       );
       return name;
     },
   };
+
+  /**
+   * The candidates minus the one an active usage signal calls spent.
+   *
+   * Never throws and never narrows on a signal that names nobody: a reader
+   * that failed leaves the whole pool in the running, which is exactly the
+   * behaviour the pool had before Issue #2002.
+   */
+  async function withoutSpentCredential(
+    pool: readonly ProviderTokenFile[],
+  ): Promise<ProviderTokenFile[]> {
+    let spent: string | undefined;
+    try {
+      spent = await options.spentCredentialLabel?.();
+    } catch {
+      // An unreadable signal names nobody; it must not narrow the pool.
+      spent = undefined;
+    }
+    const label = spent?.trim();
+    if (!label) return [...pool];
+    const kept = pool.filter((token) => token.label !== label);
+    if (kept.length !== pool.length) {
+      log(
+        `${LOG_PREFIX}: ${label} is spent per the active usage signal — ` +
+          `excluded from this selection`,
+      );
+    }
+    return kept;
+  }
 
   /** The pool candidates for this host, discovered at most once. */
   function candidates(): Promise<ProviderTokenFile[]> {

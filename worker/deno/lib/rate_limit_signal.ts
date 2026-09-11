@@ -59,6 +59,12 @@ export interface RateLimitSignalData {
   /**
    * Credential label that ran out (`provider`, `provider-2`), never a
    * secret value (Issue #1696 / #1698).
+   *
+   * Written by every usage-signal writer since Issue #2002, from the label
+   * the run recorded when it exported its credential (`active_credential.ts`).
+   * Absent on GitHub signals, on signals written before that, and on a run
+   * that exported no credential file — readers then treat the signal as
+   * host-wide, which is the behaviour they have always had.
    */
   credentialLabel?: string;
 }

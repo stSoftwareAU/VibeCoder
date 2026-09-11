@@ -22,6 +22,10 @@ import {
   USAGE_LIMIT_MAX_WAIT_SECONDS,
 } from "../lib/claude_runner.ts";
 import { rateLimitSignalPath } from "../lib/rate_limit_signal.ts";
+import {
+  clearActiveCredentialLabels,
+  recordActiveCredentialLabel,
+} from "../lib/active_credential.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
@@ -155,6 +159,48 @@ Deno.test({
       assertEquals(result.value.usageLimit?.resetEpochMs, undefined);
       assertStringIncludes(result.value.stderr ?? "", "usage limit");
     } finally {
+      await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - the usage signal names the subscription that ran out (Issue #2002)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // Without the label the signal read as a host-wide fact: on GRQ-25 it
+    // paused 25 restarts that had each selected a different subscription.
+    const workDir = await Deno.makeTempDir({ prefix: "ul_workdir_" });
+    recordActiveCredentialLabel("claude", "provider-2");
+    try {
+      const { result } = await withUsageLimitStub(
+        "You have hit your usage limit for this 5-hour window",
+        async (stub) => ({
+          result: await runClaudeWithRetry(
+            {
+              clock: fakeClock(),
+              prompt: "t",
+              model: "opus",
+              timeoutSeconds: 30,
+              killAfterSeconds: 2,
+              agentBinaryPath: stub.path,
+              workDir,
+            },
+            { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
+          ),
+        }),
+      );
+      assert(result.ok);
+      const signal = JSON.parse(
+        await Deno.readTextFile(rateLimitSignalPath(workDir)),
+      );
+      assertEquals(signal.kind, "usage");
+      assertEquals(signal.provider, "claude");
+      assertEquals(signal.credentialLabel, "provider-2");
+    } finally {
+      clearActiveCredentialLabels();
       await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
     }
   },

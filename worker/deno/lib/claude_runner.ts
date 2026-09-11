@@ -87,6 +87,7 @@ import {
 } from "./orphan_collector.ts";
 import { applyJitter } from "./rate_limit_jitter.ts";
 import { writeRateLimitSignal } from "./rate_limit_signal.ts";
+import { usageSignalScope } from "./active_credential.ts";
 import { recordInRunBlockedSeconds } from "./fleet_telemetry.ts";
 import { logInvocation } from "./credit_tracker.ts";
 import { extractProviderTokenUsage } from "./provider_token_usage.ts";
@@ -3010,7 +3011,10 @@ async function runRetryLadder(
             waitSeconds,
             resetMs ?? undefined,
             "usage",
-            { provider: "claude" },
+            // Issue #2002: name the subscription that ran out, not just the
+            // vendor — a sibling token with a full window must not be paused
+            // by this one's exhaustion.
+            usageSignalScope(CLAUDE_PROVIDER_ID),
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(
@@ -3141,7 +3145,7 @@ async function runRetryLadder(
             jitteredWait,
             undefined,
             "usage",
-            { provider: "claude" },
+            usageSignalScope(CLAUDE_PROVIDER_ID),
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(

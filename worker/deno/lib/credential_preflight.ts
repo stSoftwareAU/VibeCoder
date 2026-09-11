@@ -37,6 +37,7 @@
  */
 
 import type { EnvLookup } from "./env_lookup.ts";
+import { recordActiveCredentialLabel } from "./active_credential.ts";
 import {
   activeAgentProvider,
   type AgentProviderDescriptor,
@@ -476,10 +477,20 @@ export async function applyProviderCredentialEnv(options: {
     // Absent files are the preflight's business, not this function's.
     const selected = await selectToken(tokens, provider);
     if (!selected) continue;
+    let establishedAny = false;
     for (const entry of selected.entries) {
       if (env(entry.name)) continue;
       setEnv(entry.name, entry.value);
       exported.push(entry.name);
+      establishedAny = true;
+    }
+    // Issue #2002: a usage signal must be able to name the credential that
+    // ran out, and only this step knows which file the run is holding.
+    // Recorded ONLY when a variable was actually established from it — an
+    // environment-provisioned credential that was left alone is not this
+    // file, and claiming otherwise would scope a signal to the wrong label.
+    if (establishedAny) {
+      recordActiveCredentialLabel(provider.id, selected.label);
     }
   }
   return exported;
