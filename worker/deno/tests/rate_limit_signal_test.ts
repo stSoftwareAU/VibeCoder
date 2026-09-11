@@ -244,3 +244,27 @@ Deno.test("formatRateLimitReset - non-finite reset returns sentinel", () => {
   const result = formatRateLimitReset(Number.NaN, 1_700_000_000);
   assertStringIncludes(result, "unknown");
 });
+
+Deno.test("writeRateLimitSignal - a usage signal carries the provider and the credential label it names (Issue #2002)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const written = await writeRateLimitSignal(
+      tmpDir,
+      289_493,
+      1_789_000_000_000,
+      "usage",
+      { provider: "claude", credentialLabel: "provider-2" },
+    );
+    assertEquals(written.ok, true);
+    const read = await readRateLimitSignal(tmpDir);
+    assertEquals(read.ok, true);
+    if (read.ok) {
+      assertEquals(read.value.kind, "usage");
+      assertEquals(read.value.provider, "claude");
+      assertEquals(read.value.credentialLabel, "provider-2");
+      assertEquals(read.value.resetEpochMs, 1_789_000_000_000);
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

@@ -66,7 +66,10 @@ import {
 import type { AgentProviderDescriptor } from "./agent_provider.ts";
 import { getPromptsDir } from "./prompt_manager.ts";
 import { checkPromptsImmutable } from "./prompt_immutability.ts";
-import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
+import {
+  createClaudeCredentialPool,
+  primeClaudePoolFromUsageSignal,
+} from "./claude_credential_pool.ts";
 import {
   NETWORK_UNAVAILABLE_MARKER,
   resolveGithubUserWithRetry,
@@ -342,12 +345,22 @@ export function createDefaultRunWorkerDeps(
     recordRunMode: ({ logDir, mode, host, runId }) =>
       appendRunCoreLogLine(logDir, formatRunModeRecord({ mode, host, runId })),
     validateConfig: (config) => validateWorkerConfig(config),
-    checkCredentials: () =>
-      checkWorkerCredentials({
+    checkCredentials: async () => {
+      // Issue #2002: a usage-limit signal left by the previous run names the
+      // subscription that ran out. Record it as spent before start-up ranks
+      // the pool, so a start whose probes fail cannot export it again while
+      // another candidate exists. WORK_DIR was established above, at step 2.
+      await primeClaudePoolFromUsageSignal(
+        claudePool,
+        Deno.env.get("WORK_DIR"),
+        { log: (message) => logger.info(message) },
+      );
+      return await checkWorkerCredentials({
         log: (message) => logger.info(message),
         selectToken: claudePool.selectToken,
         setEnv,
-      }),
+      });
+    },
     resolveGithubUser: async () => {
       // Issue #949: retry a network-class failure before giving up. This is
       // the first GitHub call of the run, made seconds after the container

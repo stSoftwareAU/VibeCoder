@@ -20,6 +20,7 @@
 import type { Result } from "../types.ts";
 import {
   isRateLimitActive,
+  readRateLimitSignal,
   writeRateLimitSignal,
 } from "./rate_limit_signal.ts";
 import {
@@ -176,14 +177,30 @@ export async function preflightGitHubRateLimit(
 
   // Step 1: existing signal short-circuit. Always bypass cache here —
   // an active signal means a previous worker already detected exhaustion.
+  //
+  // Only a GitHub signal counts (Issue #2002). The same file also carries
+  // model usage-limit signals, and those are not a GitHub quota fact: the
+  // work loop honours them through its provider- and credential-scoped gate
+  // after initialisation, which is where a restart onto a fresh subscription
+  // is told apart from a run still holding the spent one. Honouring them
+  // here paused every such restart before it could tell the difference.
   const existing = await isRateLimitActive(deps.workDir, deps.nowSeconds);
   if (existing.ok && existing.value.active) {
-    return {
-      rateLimited: true,
-      remainingSeconds: existing.value.remainingSeconds,
-      message:
-        `Rate-limit signal still active (${existing.value.remainingSeconds}s remaining)`,
-    };
+    const signal = await readRateLimitSignal(deps.workDir);
+    const kind = signal.ok ? signal.value.kind ?? "github" : "github";
+    if (kind === "github") {
+      return {
+        rateLimited: true,
+        remainingSeconds: existing.value.remainingSeconds,
+        message:
+          `Rate-limit signal still active (${existing.value.remainingSeconds}s remaining)`,
+      };
+    }
+    deps.log(
+      `Pre-flight: the active rate-limit signal is a ${kind} (model quota) ` +
+        `signal, not a GitHub one — left to the work loop's provider-scoped ` +
+        `gate; checking the GitHub quota on its own (Issue #2002)`,
+    );
   }
 
   // Step 2: try the cache when the caller has not explicitly disabled it.

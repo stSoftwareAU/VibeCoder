@@ -22,6 +22,7 @@ import {
   readRateLimitSignal,
 } from "./rate_limit_signal.ts";
 import { refreshAutomaticProviderRouting } from "./provider_auto_runtime.ts";
+import { heldProviderCredentialLabel } from "./credential_preflight.ts";
 
 /** Default vendor for a usage signal that never named one. */
 export const LEGACY_USAGE_SIGNAL_PROVIDER = "claude";
@@ -53,6 +54,7 @@ export function usageSignalBlocksProvider(
 export function usageSignalPausesHost(
   signal: RateLimitSignalData,
   enabledProviderIds: readonly string[],
+  heldCredentialLabel?: string,
 ): boolean {
   const kind: RateLimitBlockKind = signal.kind === "usage" ||
       signal.kind === "github"
@@ -60,6 +62,14 @@ export function usageSignalPausesHost(
     : "github";
   if (kind === "github") return true;
   const blocked = signal.provider?.trim() || LEGACY_USAGE_SIGNAL_PROVIDER;
+  // Issue #2002: a usage signal that names the credential which ran out is a
+  // fact about that subscription, not about the provider. A run holding a
+  // different credential of the same provider — a restart that deliberately
+  // picked a fresh subscription — is not paused by it. A signal naming no
+  // credential (written by an older worker) keeps pausing the whole host.
+  if (usageSignalIsForAnotherCredential(signal, heldCredentialLabel)) {
+    return false;
+  }
   const enabled = enabledProviderIds
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
@@ -77,6 +87,12 @@ export async function isHostRateLimitPauseActive(
   workDir: string,
   enabledProviderIds: readonly string[],
   nowFn?: () => number,
+  options: {
+    /** Which credential label this run holds for a provider (Issue #2002). */
+    heldCredentialLabel?: (providerId: string) => string | undefined;
+    /** Where the one-line "not pausing" explanation goes. */
+    log?: (message: string) => void;
+  } = {},
 ): Promise<boolean> {
   const active = await isRateLimitActive(workDir, nowFn);
   let signal: RateLimitSignalData | undefined;
@@ -109,5 +125,39 @@ export async function isHostRateLimitPauseActive(
   }
 
   if (!signal) return false;
-  return usageSignalPausesHost(signal, enabledProviderIds);
+  const blocked = signal.provider?.trim() || LEGACY_USAGE_SIGNAL_PROVIDER;
+  const held = (options.heldCredentialLabel ?? heldProviderCredentialLabel)(
+    blocked,
+  );
+  const pauses = usageSignalPausesHost(signal, enabledProviderIds, held);
+  if (!pauses && usageSignalIsForAnotherCredential(signal, held)) {
+    // Said once per (spent, held) pair rather than on every slot of every
+    // cycle: the reader polls this several times a minute.
+    const key = `${blocked}/${signal.credentialLabel}->${held}`;
+    if (lastDiscountedSignal !== key) {
+      lastDiscountedSignal = key;
+      (options.log ?? ((message: string) => console.error(message)))(
+        `[quota] the usage-limit signal names ${blocked}/${signal.credentialLabel} ` +
+          `as spent; this run holds ${blocked}/${held} — not pausing (Issue #2002)`,
+      );
+    }
+  }
+  return pauses;
+}
+
+/** The last (spent → held) pair the reader explained, so it is said once. */
+let lastDiscountedSignal: string | null = null;
+
+/**
+ * Whether a usage signal names a credential other than the one this run holds
+ * (Issue #2002). False when either side is unknown: an unlabelled signal and
+ * an unrecorded run both keep the historical host-wide pause.
+ */
+export function usageSignalIsForAnotherCredential(
+  signal: RateLimitSignalData,
+  heldCredentialLabel: string | undefined,
+): boolean {
+  const spent = signal.credentialLabel?.trim() ?? "";
+  const held = heldCredentialLabel?.trim() ?? "";
+  return spent.length > 0 && held.length > 0 && spent !== held;
 }
