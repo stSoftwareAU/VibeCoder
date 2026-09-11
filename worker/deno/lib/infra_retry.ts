@@ -107,6 +107,19 @@ export async function shouldRetryInfrastructureFailure(
     return false;
   }
 
+  // Issue #1952: a token without the `workflow` scope is infrastructure — the
+  // issue is released for a host whose token can push it — but it is not
+  // transient. Re-running the phase re-pushes the same branch with the same
+  // credential and meets the same refusal, so the failure stands after one
+  // attempt, with the operator fix already in its message.
+  if (category === "token_scope") {
+    logger.warn("Not retrying: a missing OAuth scope is not transient", {
+      phase,
+      category,
+    });
+    return false;
+  }
+
   if (!state.infraRetryCounts) {
     state.infraRetryCounts = {};
   }

@@ -1170,6 +1170,33 @@ The worker reads the scope at start-up and, without it (Issue #1475):
   `.github/workflows/`, naming the files and the fix, and classifies it as
   the host's credential (`token-scope`), never the issue's fault.
 
+Neither check is allowed to pass by silence (Issue #1952):
+
+- the start-up verdict is recorded for **every** detection that ran — a
+  GitHub App installation token included — and a detection that failed says
+  so at WARN, so "nothing recorded" is never read as "has the scope";
+- the pre-push check asks `git diff`, falls back to the branch's commit list
+  when the diff cannot answer, and logs that it was skipped when neither can;
+- a push that still reaches GitHub's refusal fails **once**, with the fix in
+  the message and the run recorded as `token-scope` — no rebase recovery and
+  no in-process retry, because neither can supply a missing scope.
+
+```mermaid
+flowchart TD
+    S["Launcher: read token scopes"] -->|granted / absent| R["Record verdict"]
+    S -->|detection failed| W["WARN: no verdict recorded"]
+    R --> C{"Verdict absent?"}
+    W --> P
+    C -->|no| P["Push"]
+    C -->|yes| D["Changed paths: diff → commit log"]
+    D -->|touches .github/workflows/| F["Fail before push — name the fix"]
+    D -->|does not, or cannot answer| P
+    P -->|GitHub refuses: no workflow scope| F2["Fail once — token_scope"]
+    P -->|other rejection| RC["Rebase recovery, retry"]
+    style F fill:#9d0208,stroke:#6a040f,color:#fff
+    style F2 fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
 `setup.sh` warns when the provisioned token lacks the scope. The fix, for the
 worker account:
 

@@ -82,10 +82,13 @@ import {
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
 import {
-  tokenHasWorkflowScope,
+  isWorkflowScopePushRefusal,
   WORKFLOW_SCOPE_REMEDIATION,
   workflowPathsIn,
+  workflowScopePushRefusalMessage,
+  type WorkflowScopeState,
 } from "../workflow_scope.ts";
+import { probeChangedWorkflowPaths } from "../workflow_scope_precheck.ts";
 import { buildUncommittedWorkWipCommitMessage } from "../wip_checkpoint.ts";
 import {
   classifyExistingPrForIssue,
@@ -967,20 +970,31 @@ async function completionBody(
   // or update anything under .github/workflows/ — GitHub rejects the push,
   // and only says so at the push, after five recovery attempts. Ask git
   // what this branch changes and stop here, with the fix, when the answer
-  // needs a scope the token does not have. A `git diff` that cannot answer
-  // is left to the push: a wrong guess here would block a legitimate PR.
-  const hasWorkflowScope = deps.infrastructure.tokenHasWorkflowScope
-    ? deps.infrastructure.tokenHasWorkflowScope()
-    : tokenHasWorkflowScope();
-  if (!hasWorkflowScope) {
-    const changed = await deps.git.runGitCommand(
-      ["diff", "--name-only", `origin/${baseBranch}...HEAD`],
-      { cwd: state.repoPath },
+  // needs a scope the token does not have.
+  //
+  // Issue #1952: neither half of this may fail open in silence. When the
+  // launcher recorded no verdict the check cannot run at all, and says so;
+  // when the diff cannot answer, the probe asks the commit list before
+  // giving up. A branch that still reaches the push meets the refusal
+  // handler below, which fails once instead of rebasing five times.
+  const scopeState: WorkflowScopeState = deps.infrastructure
+    .workflowScopeState();
+  if (scopeState === "unknown") {
+    logger.warn(
+      `Workflow-scope pre-push check skipped: the launcher recorded no ` +
+        `token-scope verdict, so whether this branch may create or update ` +
+        `a workflow file is unknown — GitHub decides at the push ` +
+        `(Issue #1952)`,
     );
-    const changedPaths = changed.ok && changed.value.code === 0
-      ? changed.value.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
-      : [];
-    const workflowPaths = workflowPathsIn(changedPaths);
+  }
+  if (scopeState === "absent") {
+    const probe = await probeChangedWorkflowPaths({
+      baseRef: `origin/${baseBranch}`,
+      cwd: state.repoPath,
+      runGit: deps.git.runGitCommand,
+      warn: (message: string) => logger.warn(message),
+    });
+    const workflowPaths = workflowPathsIn(probe.paths);
     if (workflowPaths.length > 0) {
       return {
         status: "failure",
@@ -997,6 +1011,15 @@ async function completionBody(
     cwd: state.repoPath,
   });
   if (!pushResult.ok) {
+    // Issue #1952: GitHub refusing a workflow file for want of the scope is
+    // not a stale branch. Fetch, rebase and retry cannot supply a missing
+    // scope, so stop on the first refusal with the fix named — and with the
+    // phrase that classifies the run as `token_scope`, not `push_failure`.
+    if (isWorkflowScopePushRefusal(pushResult.error.message)) {
+      const reason = workflowScopePushRefusalMessage(pushResult.error.message);
+      logger.error(reason);
+      return { status: "failure", reason };
+    }
     // Attempt push rejection recovery (Issue #423)
     logger.warn("Push failed, attempting recovery");
     const recoveryResult = await deps.git.recoverFromPushRejection(
@@ -1004,6 +1027,7 @@ async function completionBody(
       {
         cwd: state.repoPath,
       },
+      pushResult.error.message,
     );
     if (!recoveryResult.ok) {
       return {
