@@ -104,9 +104,18 @@ flowchart TD
   already escalates on its *first* occurrence, so neither lane can reach four
   identical cycles either — but neither compares reasons, and rewiring #1778's
   budget was out of scope here
-- **met** — `./quality.sh` passes — evidence: full gate run after the final
-  edit, every check green — reviewer: missing — reason: the reviewer was asked
-  not to run the suite; the gate was run here
+- **partial** — `./quality.sh` passes — evidence: full gate run after the final
+  edit; every check green (`completeness checks`, `semgrep`, `markdownlint`,
+  `mermaid`, `deno lint`, `deno type check`, `deno fmt` and the chokepoint
+  scans) except `deno tests`, which reports
+  `21150 passed | 2 failed` — reviewer: missing — reason: the two failures are
+  `tests/provider_auto_runtime_test.ts`, which refuses because this container
+  image installs only the `claude` provider and the test needs `codex`. They
+  are environmental and pre-existing: the same two fail on the base commit
+  `9deb97b` in a clean worktree, with nothing from this diff in their import
+  graph. Every test this change touches passes (1317 across the
+  `milestone*`, `git_pull*`, `*conflict*`, `rollback` and `pre_commit`
+  suites)
 - **unrequested** — a push that fails for anything other than a repository
   rule now fails the sync instead of returning an empty note
   (`git_pull.ts`, `pushSyncedMilestoneBranch`) — reviewer: unrequested —
@@ -188,4 +197,6 @@ flowchart TD
   the ordinary threshold; one comment across four identical cycles; a success
   breaking the streak; `isRepeatedFailureReason`'s own edge cases.
 - Regression: the full `milestone*`, `git_pull*`, `*conflict*`, `rollback` and
-  `pre_commit` suites, then the full `./quality.sh` gate.
+  `pre_commit` suites (1317 tests, green), then `./quality.sh` — green but for
+  two pre-existing `provider_auto_runtime_test.ts` failures this container
+  image causes, which also fail on the base commit.
