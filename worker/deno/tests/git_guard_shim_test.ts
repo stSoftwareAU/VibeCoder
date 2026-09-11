@@ -71,20 +71,72 @@ async function runShim(
   shimPath: string,
   env: Record<string, string>,
   args: string[],
+  options: { stdin?: string; cwd?: string } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const command = new Deno.Command(shimPath, {
     args,
     env,
     clearEnv: true,
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+    stdin: options.stdin === undefined ? "null" : "piped",
     stdout: "piped",
     stderr: "piped",
   });
-  const { code, stdout, stderr } = await command.output();
+  const child = command.spawn();
+  if (options.stdin !== undefined) {
+    const writer = child.stdin.getWriter();
+    await writer.write(new TextEncoder().encode(options.stdin));
+    await writer.close();
+  }
+  const { code, stdout, stderr } = await child.output();
   return {
     code,
     stdout: new TextDecoder().decode(stdout),
     stderr: new TextDecoder().decode(stderr),
   };
+}
+
+/**
+ * Re-render the installed wrapper against the guard module in THIS checkout.
+ *
+ * `defaultGitGuardModulePath` prefers the read-only checkout named by
+ * `VIBE_BASE_DIR` (Issue #1444), which in the container is the mount rather
+ * than the working tree — so without this the test would exercise whatever
+ * guard that mount happens to carry instead of the code under test.
+ *
+ * @param shim - The installed shim to repoint.
+ * @param realGitPath - The binary the wrapper must finally exec.
+ */
+async function pinGuardToThisCheckout(
+  shim: GhGuardShim,
+  realGitPath: string,
+): Promise<void> {
+  await Deno.writeTextFile(
+    shim.gitShimPath!,
+    renderGitShimScript({
+      denoPath: Deno.execPath(),
+      guardModulePath: new URL("../lib/git_guard_cli.ts", import.meta.url)
+        .pathname,
+      realGitPath,
+      verdictDir: shim.dir,
+      denoDir: shim.denoDir.path,
+    }),
+  );
+  await Deno.chmod(shim.gitShimPath!, 0o755);
+}
+
+/** Absolute path of the real `git`, found the way a shell would. */
+function resolveRealGit(): string | undefined {
+  for (const dir of (Deno.env.get("PATH") ?? "").split(":")) {
+    if (!dir) continue;
+    const candidate = `${dir}/git`;
+    try {
+      if (Deno.statSync(candidate).isFile) return candidate;
+    } catch {
+      // Not on this PATH entry; keep looking.
+    }
+  }
+  return undefined;
 }
 
 /** Read the stub's call log (empty string when it never ran). */
@@ -296,6 +348,150 @@ Deno.test({
       await shim.cleanup();
     } finally {
       await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "git-guard-shim - a token in a message piped on stdin never reaches git (Issue #1953)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const stub = await makeStubGit();
+    try {
+      const shim = expectInstalled(await installOver(stub));
+      await pinGuardToThisCheckout(shim, `${stub.dir}/git`);
+
+      const result = await runShim(
+        shim.gitShimPath!,
+        shim.env,
+        ["commit", "-F", "-"],
+        { stdin: `chore: piped\n\n${FAKE_TOKEN}\n` },
+      );
+      assertEquals(result.code, 0, result.stderr);
+
+      const logged = await readLog(stub.log);
+      assertEquals(logged.includes(FAKE_TOKEN), false);
+      assertStringIncludes(logged, MASK);
+      // The message moved into argv, so git has nothing left to read.
+      assertStringIncludes(logged, "-m");
+      assertEquals(logged.includes("-F"), false);
+      assertStringIncludes(result.stderr, "GIT_MESSAGE_REDACTED");
+
+      await shim.cleanup();
+    } finally {
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "git-guard-shim - a clean message piped on stdin reaches git byte-for-byte",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const stub = await makeStubGit();
+    try {
+      const shim = expectInstalled(await installOver(stub));
+      await pinGuardToThisCheckout(shim, `${stub.dir}/git`);
+
+      const result = await runShim(
+        shim.gitShimPath!,
+        shim.env,
+        ["commit", "-F", "-"],
+        { stdin: "subject line\n\nbody paragraph\n" },
+      );
+      assertEquals(result.code, 0, result.stderr);
+      assertEquals(
+        await readLog(stub.log),
+        "commit\n-m\nsubject line\n\nbody paragraph\n\n",
+      );
+      assertEquals(
+        result.stderr,
+        "",
+        "nothing was masked, so no redaction is announced",
+      );
+
+      await shim.cleanup();
+    } finally {
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "git-guard-shim - `git commit -F -` commits the piped message for real (Issue #1953)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const realGit = resolveRealGit();
+    assert(realGit !== undefined, "these tests need a real git on PATH");
+
+    // A PATH holding the real git plus the stub gh the install requires.
+    const dir = await Deno.makeTempDir({ prefix: "git_guard_real_" });
+    const repo = await Deno.makeTempDir({ prefix: "git_guard_repo_" });
+    try {
+      await Deno.writeTextFile(
+        `${dir}/git`,
+        `#!/bin/bash\nexec ${realGit} "$@"\n`,
+      );
+      await Deno.writeTextFile(`${dir}/gh`, "#!/bin/bash\nexit 0\n");
+      await Deno.chmod(`${dir}/git`, 0o755);
+      await Deno.chmod(`${dir}/gh`, 0o755);
+
+      const git = async (...args: string[]) => {
+        const out = await new Deno.Command(realGit, { args, cwd: repo })
+          .output();
+        assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+      };
+      await git("init", "--quiet", "--initial-branch", "main");
+      await git("config", "user.email", "vibe@example.com");
+      await git("config", "user.name", "Vibe Coder");
+      // Never inherit the host's signing or hook configuration: the commit
+      // runs with stdin closed, so a signer prompt would wedge it.
+      await git("config", "commit.gpgsign", "false");
+      await git("config", "core.hooksPath", "/dev/null");
+      await Deno.writeTextFile(`${repo}/file.txt`, "content\n");
+      await git("add", "file.txt");
+
+      const shim = expectInstalled(
+        await installGhGuardShim({
+          baseEnv: { ...Deno.env.toObject(), PATH: dir },
+          active: true,
+          allowedRepos: ["owner/repo"],
+        }),
+      );
+      await pinGuardToThisCheckout(shim, `${dir}/git`);
+      const message =
+        `subject from a heredoc\n\nbody line with ${FAKE_TOKEN}\n`;
+      const result = await runShim(
+        shim.gitShimPath!,
+        shim.env,
+        ["commit", "-F", "-"],
+        { stdin: message, cwd: repo },
+      );
+      assertEquals(result.code, 0, result.stderr);
+
+      const logged = await new Deno.Command(realGit, {
+        args: ["log", "-1", "--format=%B"],
+        cwd: repo,
+      }).output();
+      const committed = new TextDecoder().decode(logged.stdout);
+      assertStringIncludes(committed, "subject from a heredoc");
+      assertStringIncludes(committed, `body line with ${MASK}`);
+      assertEquals(
+        committed.includes(FAKE_TOKEN),
+        false,
+        "the token must never reach history",
+      );
+
+      await shim.cleanup();
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+      await Deno.remove(repo, { recursive: true });
     }
   },
 });
