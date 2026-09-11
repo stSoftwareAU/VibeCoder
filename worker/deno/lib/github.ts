@@ -60,6 +60,36 @@ export function parseGhIssueJson(json: GhIssueJson): GitHubIssue {
 }
 
 /**
+ * Read the issue number out of a comment REST payload's `issue_url`
+ * (Issue #1879).
+ *
+ * `PATCH /repos/{owner}/{repo}/issues/comments/{id}` is addressed by comment
+ * id alone, so the caller never has to know which issue the comment belongs
+ * to — but the per-iteration comment cache is keyed by issue, and a stale
+ * entry would hand the next reader the body before the edit. The response
+ * names the issue, so the invalidation costs no extra call.
+ *
+ * @param raw - Raw JSON string from the gh REST call.
+ * @returns The issue number, or `undefined` when the payload does not name
+ *   one — the cache is then simply left alone.
+ */
+export function parseCommentIssueNumber(raw: string): number | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const issueUrl = (parsed as Record<string, unknown>).issue_url;
+  if (typeof issueUrl !== "string") return undefined;
+  const match = issueUrl.match(/\/issues\/(\d+)$/);
+  if (!match?.[1]) return undefined;
+  const value = Number(match[1]);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
  * Parse the JSON returned by `POST /repos/{owner}/{repo}/issues/{n}/comments`
  * into a `GitHubComment`. The REST API returns a single comment object with
  * `id`, `body`, `user.login`, `created_at`, and (optionally) `reactions`.
@@ -803,6 +833,35 @@ export function createGitHubClient(logger: Logger): GitHubClient {
       // sees the freshly-posted comment without a stale-cache hit.
       invalidateComments(repo, issueNumber);
       return created;
+    },
+
+    async updateComment(
+      repo: string,
+      commentId: number,
+      body: string,
+    ): Promise<void> {
+      // The id is interpolated into the REST path, so a non-numeric one is
+      // refused outright rather than escaped — there is nothing legitimate
+      // it could be (Issue #1879).
+      if (!Number.isInteger(commentId) || commentId <= 0) {
+        throw new Error(
+          `updateComment: comment id must be a positive integer, got "${commentId}"`,
+        );
+      }
+      logger.debug(`Editing comment ${commentId} in ${repo}`);
+      const output = await runGhCommand([
+        "api",
+        "-X",
+        "PATCH",
+        `repos/${repo}/issues/comments/${commentId}`,
+        "-f",
+        `body=${body}`,
+      ]);
+      // The PATCH response names the issue the comment belongs to, so the
+      // per-iteration comment cache can be dropped without the caller having
+      // to know the issue number (Issue #1841's cache, Issue #1879's edit).
+      const issueNumber = parseCommentIssueNumber(output);
+      if (issueNumber !== undefined) invalidateComments(repo, issueNumber);
     },
 
     async editIssue(

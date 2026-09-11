@@ -67,6 +67,7 @@ export function ghClientFromCommandFn(
       if (!result.ok) throw result.error;
     },
     removeLabel: () => Promise.resolve(),
+    updateComment: notSupported("updateComment"),
     async postComment(repo, issueNumber, body) {
       await ghCommandFn([
         "issue",

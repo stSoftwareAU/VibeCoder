@@ -36,10 +36,13 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import type { FailureCategory } from "./failure_diagnosis.ts";
+import type { RunOutcome } from "./run_outcome.ts";
 import {
   type CallbackEvent,
   type CallbacksConfig,
-  hasAnyCallback,
+  hasAnyRunCallback,
+  hasCycleCallback,
 } from "./run_callbacks_config.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { redactSecrets } from "./secret_redaction.ts";
@@ -50,7 +53,7 @@ import { redactSecrets } from "./secret_redaction.ts";
  * Bump when a field's meaning changes or a field is removed, so an extension
  * can refuse a contract it does not understand rather than misreading it.
  */
-export const CALLBACK_SCHEMA_VERSION = 1;
+export const CALLBACK_SCHEMA_VERSION = 2;
 
 /** Longest stdout/stderr excerpt captured and logged per stream. */
 export const MAX_CAPTURED_OUTPUT_CHARS = 4000;
@@ -114,6 +117,110 @@ export interface IssueRunCallbackContext {
   exitCode: number;
   /** Token and cost telemetry, when available. */
   telemetry?: CallbackRunTelemetry;
+  /**
+   * Structured run outcome (Issue #1947). Present when the worker computed
+   * one; omitted members stay omitted, same as the rest of the context.
+   */
+  outcome?: CallbackRunOutcome;
+  /**
+   * Why `telemetry` is absent (Issue #1948). Present exactly when
+   * `telemetry` is not.
+   */
+  telemetryAbsentReason?: TelemetryAbsentReason;
+  /**
+   * Why `sessionLogPath` is absent (Issue #1948). Present exactly when
+   * `sessionLogPath` is not.
+   */
+  sessionLogAbsentReason?: SessionLogAbsentReason;
+}
+
+/**
+ * The structured outcome a fleet archive can count without reading a
+ * transcript (Issue #1947).
+ */
+export interface CallbackRunOutcome {
+  kind: RunOutcome["kind"];
+  /** {@link FailureCategory} when `kind` is `no_pr`. */
+  category?: FailureCategory;
+  /** Phase that terminated the run. */
+  phase?: string;
+  /** Classifier slug when one was computed for a no-PR run. */
+  failureClass?: string;
+  /** PR number when a PR exists, including a later-step failure. */
+  prNumber?: number;
+}
+
+/** Why the callback context carries no token/cost telemetry (Issue #1948). */
+export type TelemetryAbsentReason =
+  | "agent_not_invoked"
+  | "usage_not_reported"
+  | "provider_unsupported";
+
+/** Why the callback context carries no session transcript path (Issue #1948). */
+export type SessionLogAbsentReason =
+  | "tee_disabled"
+  | "log_dir_unavailable"
+  | "size_cap_exceeded"
+  | "write_failed"
+  | "file_missing";
+
+/** Why a scan cycle ended, for the per-cycle heartbeat (Issue #1955). */
+export type CycleEndReason =
+  | "no_eligible_work"
+  | "quota_paused"
+  | "rate_limited"
+  | "shutdown"
+  | "error";
+
+/**
+ * Fleet-summary counters for one scan cycle (Issue #1955).
+ *
+ * Deltas against the process-wide accumulators, so a quiet cycle reads as
+ * zeros rather than as the run's lifetime totals.
+ */
+export interface CycleFleetSummary {
+  claims: number;
+  successes: number;
+  failures: number;
+  skips: number;
+  idleSeconds: number;
+  occupiedSeconds: number;
+  rateLimitedSeconds: number;
+  tokenBlockedSeconds: number;
+}
+
+/**
+ * Facts about one finished scan cycle, handed to `callbacks.cycle`.
+ *
+ * A launcher that never reaches the scan loop emits nothing — silence from
+ * this hook means the host never entered the loop, not that it was idle.
+ */
+export interface CycleCallbackContext {
+  runId: string;
+  host: string;
+  workerName?: string;
+  startedAt: string;
+  finishedAt: string;
+  durationSeconds: number;
+  issuesScanned: number;
+  claimsAttempted: number;
+  claimsTaken: number;
+  endReason: CycleEndReason;
+  fleetSummary: CycleFleetSummary;
+}
+
+/**
+ * Cycle-local facts the scan loop reports to the callback layer
+ * (Issue #1955). Production wiring adds host / run-id identity.
+ */
+export interface TerminalScanCycle {
+  startedAtEpochMs: number;
+  finishedAtEpochMs: number;
+  issuesScanned: number;
+  claimsAttempted: number;
+  claimsTaken: number;
+  endReason: CycleEndReason;
+  fleetSummary: CycleFleetSummary;
 }
 
 /**
@@ -137,6 +244,15 @@ export interface TerminalIssueRun {
   finishedAtEpochMs: number;
   /** Token and cost telemetry, when the run's invocations reported it. */
   telemetry?: CallbackRunTelemetry;
+  /** What the run achieved, when the worker computed a {@link RunOutcome}. */
+  outcome?: RunOutcome;
+  /** Terminating phase name, when known (setup, execute, completion, …). */
+  phase?: string;
+  /**
+   * Why telemetry is absent, when the run invoked no agent or the
+   * provider reported no usage (Issue #1948).
+   */
+  telemetryAbsentReason?: TelemetryAbsentReason;
 }
 
 /** What became of one hook invocation. */
@@ -164,27 +280,27 @@ export interface CallbackInvocation {
   durationMs: number;
 }
 
-/** Injectable seams so the runner is testable without real processes. */
-export interface InvokeRunCallbacksOptions {
+/** Shared seams for spawning a hook. */
+export interface InvokeCallbackSeams {
   callbacks: CallbacksConfig;
-  context: IssueRunCallbackContext;
-  /** Informational sink (invocation start and successful completion). */
   log: (message: string) => void;
-  /** Fault sink — a hook that failed, timed out or could not be spawned. */
   logError: (message: string) => void;
-  /** Subprocess runner. Defaults to {@link runWithTimeout}. */
   run?: typeof runWithTimeout;
-  /** Environment reader. Defaults to a permission-tolerant `Deno.env.get`. */
   readEnv?: (name: string) => string | undefined;
-  /** Monotonic clock for durations. Defaults to `Date.now`. */
   now?: () => number;
-  /**
-   * Context-file writer. Returns the absolute path written and a disposer.
-   * Defaults to a 0600 temp file removed after the hook exits.
-   */
   writeContextFile?: (
     document: Record<string, unknown>,
   ) => Promise<{ path: string; cleanup: (warn: Warn) => Promise<void> }>;
+}
+
+/** Injectable seams so the runner is testable without real processes. */
+export interface InvokeRunCallbacksOptions extends InvokeCallbackSeams {
+  context: IssueRunCallbackContext;
+}
+
+/** Injectable seams for the per-cycle heartbeat (Issue #1955). */
+export interface InvokeCycleCallbackOptions extends InvokeCallbackSeams {
+  context: CycleCallbackContext;
 }
 
 /** Sink for a fault that is worth saying out loud but must not stop a hook. */
@@ -230,7 +346,38 @@ export function buildCallbackContextDocument(
   if (context.sessionLogPath !== undefined) {
     document.sessionLogPath = context.sessionLogPath;
   }
+  if (context.sessionLogAbsentReason !== undefined) {
+    document.sessionLogAbsentReason = context.sessionLogAbsentReason;
+  }
   if (context.telemetry !== undefined) document.telemetry = context.telemetry;
+  if (context.telemetryAbsentReason !== undefined) {
+    document.telemetryAbsentReason = context.telemetryAbsentReason;
+  }
+  if (context.outcome !== undefined) document.outcome = context.outcome;
+  return document;
+}
+
+/** The versioned JSON document handed to a cycle hook (Issue #1955). */
+export function buildCycleCallbackDocument(
+  context: CycleCallbackContext,
+): Record<string, unknown> {
+  const document: Record<string, unknown> = {
+    schemaVersion: CALLBACK_SCHEMA_VERSION,
+    event: "cycle",
+    runId: context.runId,
+    host: context.host,
+    startedAt: context.startedAt,
+    finishedAt: context.finishedAt,
+    durationSeconds: context.durationSeconds,
+    issuesScanned: context.issuesScanned,
+    claimsAttempted: context.claimsAttempted,
+    claimsTaken: context.claimsTaken,
+    endReason: context.endReason,
+    fleetSummary: context.fleetSummary,
+  };
+  if (context.workerName !== undefined) {
+    document.workerName = context.workerName;
+  }
   return document;
 }
 
@@ -273,6 +420,11 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_PROVIDER", context.provider);
   put(env, "VIBECODER_SESSION_ID", context.sessionId);
   put(env, "VIBECODER_SESSION_LOG_PATH", context.sessionLogPath);
+  put(
+    env,
+    "VIBECODER_SESSION_LOG_ABSENT_REASON",
+    context.sessionLogAbsentReason,
+  );
   put(env, "VIBECODER_STARTED_AT", context.startedAt);
   put(env, "VIBECODER_FINISHED_AT", context.finishedAt);
   put(env, "VIBECODER_DURATION_SECONDS", context.durationSeconds);
@@ -286,6 +438,48 @@ export function buildCallbackEnv(
   );
   put(env, "VIBECODER_CACHE_READ_TOKENS", context.telemetry?.cacheReadTokens);
   put(env, "VIBECODER_ESTIMATED_COST_USD", context.telemetry?.estimatedCostUsd);
+  put(
+    env,
+    "VIBECODER_TELEMETRY_ABSENT_REASON",
+    context.telemetryAbsentReason,
+  );
+  put(env, "VIBECODER_OUTCOME_KIND", context.outcome?.kind);
+  put(env, "VIBECODER_OUTCOME_CATEGORY", context.outcome?.category);
+  put(env, "VIBECODER_OUTCOME_PHASE", context.outcome?.phase);
+  put(env, "VIBECODER_OUTCOME_FAILURE_CLASS", context.outcome?.failureClass);
+  put(env, "VIBECODER_PR_NUMBER", context.outcome?.prNumber);
+  return env;
+}
+
+/**
+ * The `VIBECODER_*` environment a cycle hook receives (Issue #1955).
+ *
+ * Run-only scalars (`RESULT`, `REPOSITORY`, `ISSUE_NUMBER`, …) are omitted
+ * so a cycle hook cannot be mistaken for a run hook.
+ */
+export function buildCycleCallbackEnv(
+  context: CycleCallbackContext,
+  contextFilePath: string,
+  readEnv: (name: string) => string | undefined = readEnvSafe,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of INHERITED_ENV_VARS) {
+    const value = readEnv(name);
+    if (value !== undefined) env[name] = value;
+  }
+  put(env, "VIBECODER_CALLBACK_SCHEMA_VERSION", CALLBACK_SCHEMA_VERSION);
+  put(env, "VIBECODER_CALLBACK_EVENT", "cycle");
+  put(env, "VIBECODER_CALLBACK_CONTEXT", contextFilePath);
+  put(env, "VIBECODER_RUN_ID", context.runId);
+  put(env, "VIBECODER_HOST", context.host);
+  put(env, "VIBECODER_WORKER_NAME", context.workerName);
+  put(env, "VIBECODER_STARTED_AT", context.startedAt);
+  put(env, "VIBECODER_FINISHED_AT", context.finishedAt);
+  put(env, "VIBECODER_DURATION_SECONDS", context.durationSeconds);
+  put(env, "VIBECODER_ISSUES_SCANNED", context.issuesScanned);
+  put(env, "VIBECODER_CLAIMS_ATTEMPTED", context.claimsAttempted);
+  put(env, "VIBECODER_CLAIMS_TAKEN", context.claimsTaken);
+  put(env, "VIBECODER_CYCLE_END_REASON", context.endReason);
   return env;
 }
 
@@ -337,7 +531,9 @@ export function describeInvocation(invocation: CallbackInvocation): string {
 async function invokeOne(
   event: CallbackEvent,
   path: string,
-  options: InvokeRunCallbacksOptions,
+  document: Record<string, unknown>,
+  env: Record<string, string>,
+  options: InvokeCallbackSeams,
 ): Promise<CallbackInvocation> {
   const run = options.run ?? runWithTimeout;
   const now = options.now ?? Date.now;
@@ -346,23 +542,13 @@ async function invokeOne(
 
   let cleanup: ((warn: Warn) => Promise<void>) | undefined;
   try {
-    const file = await writeContextFile(
-      buildCallbackContextDocument(options.context, event),
-    );
+    const file = await writeContextFile(document);
     cleanup = file.cleanup;
-    // No shell, no arguments: the executable is spawned directly, so no
-    // untrusted issue or repository text can be parsed as a command.
+    env.VIBECODER_CALLBACK_CONTEXT = file.path;
     const result = await run(path, [], {
       timeoutMs: options.callbacks.timeoutSeconds * 1000,
-      // A hook that hung is exactly the one whose output matters, so what it
-      // printed before the kill is captured rather than discarded.
       captureOutputOnTimeout: true,
-      env: buildCallbackEnv(
-        options.context,
-        event,
-        file.path,
-        options.readEnv ?? readEnvSafe,
-      ),
+      env,
       clearEnv: true,
     });
     const durationMs = now() - startedMs;
@@ -389,8 +575,6 @@ async function invokeOne(
       durationMs,
     };
   } catch (error) {
-    // Writing the context file, or the runner itself, faulted. Reported as a
-    // hook fault — never propagated, so the run's own outcome is unaffected.
     return {
       event,
       path,
@@ -407,10 +591,11 @@ async function invokeOne(
   }
 }
 
-/** Log an invocation at the level its status deserves. */
 function reportInvocation(
   invocation: CallbackInvocation,
-  options: InvokeRunCallbacksOptions,
+  log: (message: string) => void,
+  logError: (message: string) => void,
+  unchangedNote: string,
 ): void {
   const detail = describeInvocation(invocation);
   const streams = [
@@ -419,12 +604,9 @@ function reportInvocation(
   ].filter((part) => part !== "").join("\n");
   const full = streams ? `${detail}\n${streams}` : detail;
   if (invocation.status === "ok") {
-    options.log(full);
+    log(full);
   } else {
-    // Loud, and explicitly non-masking: the run's own result is untouched.
-    options.logError(
-      `${full}\nThe original VibeCoder result (${options.context.result}) is unchanged.`,
-    );
+    logError(`${full}\n${unchangedNote}`);
   }
 }
 
@@ -443,7 +625,7 @@ export async function invokeRunCallbacks(
   options: InvokeRunCallbacksOptions,
 ): Promise<CallbackInvocation[]> {
   const { callbacks, context } = options;
-  if (!hasAnyCallback(callbacks)) return [];
+  if (!hasAnyRunCallback(callbacks)) return [];
 
   const invocations: CallbackInvocation[] = [];
   for (const event of [context.result, "always"] as const) {
@@ -452,9 +634,53 @@ export async function invokeRunCallbacks(
     options.log(
       `Running ${event} callback for ${context.repository}#${context.issueNumber}: ${path}`,
     );
-    const invocation = await invokeOne(event, path, options);
+    const invocation = await invokeOne(
+      event,
+      path,
+      buildCallbackContextDocument(context, event),
+      buildCallbackEnv(context, event, "", options.readEnv ?? readEnvSafe),
+      options,
+    );
     invocations.push(invocation);
-    reportInvocation(invocation, options);
+    reportInvocation(
+      invocation,
+      options.log,
+      options.logError,
+      `The original VibeCoder result (${context.result}) is unchanged.`,
+    );
   }
   return invocations;
+}
+
+/**
+ * Run the per-cycle heartbeat hook once (Issue #1955).
+ *
+ * Never throws: a hook fault is reported, never propagated. A configuration
+ * without `callbacks.cycle` is a no-op. Run hooks are not invoked.
+ */
+export async function invokeCycleCallback(
+  options: InvokeCycleCallbackOptions,
+): Promise<CallbackInvocation[]> {
+  const { callbacks, context } = options;
+  if (!hasCycleCallback(callbacks) || callbacks.cycle === undefined) {
+    return [];
+  }
+  const path = callbacks.cycle;
+  options.log(
+    `Running cycle callback (${context.endReason}) on ${context.host}: ${path}`,
+  );
+  const invocation = await invokeOne(
+    "cycle",
+    path,
+    buildCycleCallbackDocument(context),
+    buildCycleCallbackEnv(context, "", options.readEnv ?? readEnvSafe),
+    options,
+  );
+  reportInvocation(
+    invocation,
+    options.log,
+    options.logError,
+    "The scan cycle's own outcome is unchanged.",
+  );
+  return [invocation];
 }
