@@ -163,4 +163,22 @@ No change required for <failing check> — <one-line reason>.
 
 For any category other than `infrastructure`, the message must not call the failure "transient" or "infrastructure" — investigate further or document the analysis honestly instead. If you deviated from the classification, name the category you deviated to and the direct evidence for it.
 
+### Base-branch failures
+
+When the same check fails on the **base branch** — the failure is already there before this PR's diff, so nothing on this branch can fix it — say so in the "no change" skeleton above and end the message with a line of its own:
+
+```
+Depends on owner/repo#N
+```
+
+Name the issue that tracks that base-branch failure. **Search before you file** — one issue per root cause, never a duplicate:
+
+```bash
+gh issue list --repo <owner>/<repo> --search "<root cause> in:title,body" --state open
+```
+
+Reference the open issue that search finds. Only when none exists, file one (`gh issue create --repo <owner>/<repo> --title "..." --body "..."`) with **descriptive labels only** — no reserved workflow label — and name that new issue in the `Depends on` line.
+
+The worker verifies the claim before acting on it: it reads the base branch's own latest run of the same check, and only a red one defers the failure. A verified deferral posts your message once, records the blocker, applies no `needs-human` and charges no fix attempt. If the base branch is green, the ordinary reply is posted and the attempt is charged — so make the claim only when the base branch really is failing the same check.
+
 Start by reading the files named in `<ci_log_excerpt>` and `<failure_classification>` above — those reads are independent, so issue them together as one parallel batch.

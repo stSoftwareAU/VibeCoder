@@ -5,7 +5,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { summariseCallbackTelemetry } from "../lib/run_callback_telemetry.ts";
+import {
+  callbackTelemetryAbsenceReason,
+  summariseCallbackTelemetry,
+} from "../lib/run_callback_telemetry.ts";
 
 function usage(input: number, output: number, create = 0, read = 0) {
   return {
@@ -96,5 +99,52 @@ Deno.test("run_callback_telemetry - usage falls back to the requested model when
   assert(
     (telemetry?.estimatedCostUsd ?? 0) > 0,
     "the requested model is priced when the API reported no served model",
+  );
+});
+
+Deno.test("run_callback_telemetry - no invocations is agent_not_invoked (Issue #1948)", () => {
+  assertEquals(callbackTelemetryAbsenceReason([]), "agent_not_invoked");
+});
+
+Deno.test("run_callback_telemetry - invocations without usage is usage_not_reported (Issue #1948)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason([
+      {
+        runStats: {
+          servedModels: ["claude-sonnet-4-6"],
+          requestedModel: "claude-sonnet-4-6",
+        },
+      },
+    ], "claude"),
+    "usage_not_reported",
+  );
+});
+
+Deno.test("run_callback_telemetry - an adapter-less provider is provider_unsupported (Issue #1948)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason([
+      {
+        runStats: {
+          servedModels: ["deepseek-chat"],
+          requestedModel: "deepseek-chat",
+        },
+      },
+    ], "deepseek"),
+    "provider_unsupported",
+  );
+});
+
+Deno.test("run_callback_telemetry - reported usage has no absence reason (Issue #1948)", () => {
+  assertEquals(
+    callbackTelemetryAbsenceReason([
+      {
+        runStats: {
+          servedModels: ["claude-sonnet-4-6"],
+          requestedModel: "claude-sonnet-4-6",
+          tokenUsage: usage(10, 1),
+        },
+      },
+    ], "claude"),
+    undefined,
   );
 });

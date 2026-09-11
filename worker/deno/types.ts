@@ -730,6 +730,27 @@ export interface GitHubClient {
     issueNumber: number,
     body: string,
   ): Promise<GitHubComment | undefined>;
+  /**
+   * Edit an existing issue or pull-request comment in place (Issue #1879).
+   *
+   * The CI-fix lane keeps **one** comment per failure signature per pull
+   * request fleet-wide: a repeat diagnosis on a new head appends its attempt
+   * marker to the comment already there rather than posting a second copy.
+   * Pull requests share the issue-comments endpoint, so one method covers
+   * both.
+   *
+   * Optional: the interface is implemented by a dozen narrow shims that
+   * exist only to reach one endpoint, and a client that cannot edit is not
+   * a defect. A caller that finds it absent says so and posts a fresh
+   * comment rather than losing the record.
+   *
+   * @param repo - Repository in "owner/repo" format.
+   * @param commentId - Numeric comment id (REST, not a GraphQL node id).
+   * @param body - The replacement body.
+   * @throws When the edit cannot be applied — a silent failure would lose
+   *   the fleet-wide attempt record the body carries.
+   */
+  updateComment?(repo: string, commentId: number, body: string): Promise<void>;
   /** Edit issue title and/or body */
   editIssue(
     repo: string,

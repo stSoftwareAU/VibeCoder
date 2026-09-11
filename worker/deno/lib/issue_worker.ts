@@ -23,7 +23,10 @@ import { stopHeartbeat } from "./heartbeat.ts";
 import { detachLaneWorktreeHead } from "./lane_worktree.ts";
 import { startPhaseProgress } from "./phase_progress.ts";
 import { recordStepDuration } from "./cycle_timings.ts";
-import { summariseCallbackTelemetry } from "./run_callback_telemetry.ts";
+import {
+  callbackTelemetryAbsenceReason,
+  summariseCallbackTelemetry,
+} from "./run_callback_telemetry.ts";
 import {
   deriveRunOutcome,
   expectedNoPrOutcome,
@@ -193,10 +196,15 @@ export async function workOnIssue(
     // Summed from the same per-invocation stats the run-stats comment
     // renders, and omitted when no invocation reported parseable usage.
     const telemetry = summariseCallbackTelemetry(state.claudeRunStats ?? []);
+    const telemetryAbsentReason = callbackTelemetryAbsenceReason(
+      state.claudeRunStats ?? [],
+      ctx.config.agentProvider,
+    );
     return {
       ...result,
       outcome,
       ...(telemetry ? { telemetry } : {}),
+      ...(telemetryAbsentReason ? { telemetryAbsentReason } : {}),
       // Issue #1949: a phase that already stepped the failure ladder says so,
       // so the main loop does not step it a second time in the same run.
       ...(state.failureLadderApplied ? { ladderApplied: true } : {}),

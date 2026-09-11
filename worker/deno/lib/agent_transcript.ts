@@ -42,6 +42,7 @@
 
 import { redactSecrets } from "./secret_redaction.ts";
 import { getRunId } from "./run_id.ts";
+import type { SessionLogAbsentReason } from "./run_callbacks.ts";
 
 /**
  * The variable the worker driver settles from `.config.json` at start, and
@@ -106,6 +107,34 @@ export function agentTranscriptPath(
   return `${logDir}/agent-${runId}${issue}.jsonl`;
 }
 
+const transcriptAbsence = new Map<string, SessionLogAbsentReason>();
+
+function absenceKey(runId: string, issueNumber: number): string {
+  return `${runId}#${issueNumber}`;
+}
+
+/** Record why this issue's transcript will not be on disk. */
+export function recordTranscriptAbsence(
+  runId: string,
+  issueNumber: number,
+  reason: SessionLogAbsentReason,
+): void {
+  transcriptAbsence.set(absenceKey(runId, issueNumber), reason);
+}
+
+/** The last recorded absence reason for this issue, if any. */
+export function peekTranscriptAbsence(
+  runId: string,
+  issueNumber: number,
+): SessionLogAbsentReason | undefined {
+  return transcriptAbsence.get(absenceKey(runId, issueNumber));
+}
+
+/** Test seam: drop recorded reasons so cases cannot leak into each other. */
+export function resetTranscriptAbsenceForTests(): void {
+  transcriptAbsence.clear();
+}
+
 /** Options for {@link AgentTranscriptWriter}. */
 export interface AgentTranscriptWriterOptions {
   /** Destination file; appended to, created if missing. */
@@ -116,6 +145,10 @@ export interface AgentTranscriptWriterOptions {
   warn?: (message: string) => void;
   /** Byte ceiling. Defaults to {@link DEFAULT_MAX_TRANSCRIPT_BYTES}. */
   maxBytes?: number;
+  /** Run id, so a disable reason can reach the callback context. */
+  runId?: string;
+  /** Issue number, so a disable reason can reach the callback context. */
+  issueNumber?: number;
 }
 
 /**
@@ -130,20 +163,38 @@ export class AgentTranscriptWriter {
   readonly #redact: (text: string) => string;
   readonly #warn: ((message: string) => void) | undefined;
   readonly #maxBytes: number;
+  readonly #runId: string | undefined;
+  readonly #issueNumber: number | undefined;
   #carry = "";
   #bytesWritten = 0;
   #disabled = false;
+  #disableReason: SessionLogAbsentReason | undefined;
 
   constructor(options: AgentTranscriptWriterOptions) {
     this.#filePath = options.filePath;
     this.#redact = options.redact ?? redactSecrets;
     this.#warn = options.warn;
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_TRANSCRIPT_BYTES;
+    this.#runId = options.runId;
+    this.#issueNumber = options.issueNumber;
   }
 
   /** Where the transcript is being written. */
   get filePath(): string {
     return this.#filePath;
+  }
+
+  /** Why the tee stopped, when it has. */
+  get disableReason(): SessionLogAbsentReason | undefined {
+    return this.#disableReason;
+  }
+
+  #recordDisable(reason: SessionLogAbsentReason): void {
+    this.#disabled = true;
+    this.#disableReason = reason;
+    if (this.#runId !== undefined && this.#issueNumber !== undefined) {
+      recordTranscriptAbsence(this.#runId, this.#issueNumber, reason);
+    }
   }
 
   /**
@@ -169,7 +220,7 @@ export class AgentTranscriptWriter {
 
   #append(text: string): void {
     if (this.#bytesWritten + text.length > this.#maxBytes) {
-      this.#disabled = true;
+      this.#recordDisable("size_cap_exceeded");
       this.#warn?.(
         `Agent transcript ${this.#filePath} reached its ${
           Math.round(this.#maxBytes / (1024 * 1024))
@@ -181,7 +232,7 @@ export class AgentTranscriptWriter {
       Deno.writeTextFileSync(this.#filePath, text, { append: true });
       this.#bytesWritten += text.length;
     } catch (err) {
-      this.#disabled = true;
+      this.#recordDisable("write_failed");
       this.#warn?.(
         `Agent transcript write to ${this.#filePath} failed (${
           err instanceof Error ? err.message : String(err)
@@ -217,14 +268,24 @@ export function maybeCreateAgentTranscriptWriter(
   options: MaybeCreateAgentTranscriptOptions = {},
 ): AgentTranscriptWriter | undefined {
   const env = options.env ?? readEnvSafe;
+  const runId = env("VIBE_RUN_ID")?.trim() || getRunId();
   let filePath = options.explicitPath;
   if (filePath === undefined) {
     if (!agentTranscriptEnabled(env)) return undefined;
     const home = env("HOME") ?? env("USERPROFILE") ?? "";
-    if (!home) return undefined;
+    if (!home) {
+      if (options.issueNumber !== undefined) {
+        recordTranscriptAbsence(
+          runId,
+          options.issueNumber,
+          "log_dir_unavailable",
+        );
+      }
+      return undefined;
+    }
     filePath = agentTranscriptPath(
       agentTranscriptDir(home),
-      env("VIBE_RUN_ID")?.trim() || getRunId(),
+      runId,
       options.issueNumber,
     );
   }
@@ -233,6 +294,13 @@ export function maybeCreateAgentTranscriptWriter(
     try {
       Deno.mkdirSync(dir, { recursive: true });
     } catch (err) {
+      if (options.issueNumber !== undefined) {
+        recordTranscriptAbsence(
+          runId,
+          options.issueNumber,
+          "log_dir_unavailable",
+        );
+      }
       options.warn?.(
         `Agent transcript directory ${dir} could not be created (${
           err instanceof Error ? err.message : String(err)
@@ -244,5 +312,9 @@ export function maybeCreateAgentTranscriptWriter(
   return new AgentTranscriptWriter({
     filePath,
     ...(options.warn ? { warn: options.warn } : {}),
+    runId,
+    ...(options.issueNumber !== undefined
+      ? { issueNumber: options.issueNumber }
+      : {}),
   });
 }
