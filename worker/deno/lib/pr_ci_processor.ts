@@ -82,10 +82,11 @@ import {
   detectBlockedOutcome,
   formatDependencyRef,
 } from "./blocked_outcome.ts";
-import { createIssueFetcher } from "./issue_finder_common.ts";
 import {
   appendAttemptToComment,
   buildCapAttemptRows,
+  isBlockerOpen,
+  parseBlockerRef,
   type PrCiFixMarkerState,
   readPrCiFixMarkers,
 } from "./ci_fix_pr_markers.ts";
@@ -2567,10 +2568,8 @@ async function _blockerStillOpen(opts: {
   logger: Logger;
 }): Promise<boolean | undefined> {
   const { ref, ghCommandFn, repo, prNumber, logger } = opts;
-  const hash = ref.lastIndexOf("#");
-  const blockerRepo = ref.slice(0, hash);
-  const blockerNumber = Number(ref.slice(hash + 1));
-  if (hash < 0 || !Number.isInteger(blockerNumber) || blockerNumber < 1) {
+  const blocker = parseBlockerRef(ref);
+  if (blocker === null) {
     // `parseCiFixDeferralMarkers` validates the shape, so this is a defect
     // rather than data — it is named, and the caller takes the loud path.
     logger.error(
@@ -2582,13 +2581,10 @@ async function _blockerStillOpen(opts: {
     return undefined;
   }
   try {
-    // No iteration cache is passed: a blocker that closed moments ago must
-    // read as closed here, not as whatever an earlier scan cached.
-    const state = await createIssueFetcher(ghCommandFn).getIssueState(
-      blockerRepo,
-      blockerNumber,
-    );
-    return state.state === "OPEN";
+    // No iteration cache is consulted (see `isBlockerOpen`): a blocker that
+    // closed moments ago must read as closed here, not as whatever an
+    // earlier scan cached. The same read serves the scanner (Issue #1881).
+    return await isBlockerOpen(blocker, ghCommandFn);
   } catch (error: unknown) {
     logger.error(
       "Could not read the state of the issue a prior CI-fix deferral names " +

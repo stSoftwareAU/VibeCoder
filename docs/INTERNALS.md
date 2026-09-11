@@ -1931,7 +1931,18 @@ route is never taken on a guess.
    `skipReason` line per PR names what was dropped; no clone means no
    filtering, and the surviving check carries `siblingFailedCheckNames` so
    the processor can repeat the decision against the real checkout.
-5. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
+5. Skips checks **deferred on an open issue** (Issue #1881): when a
+   fleet-authored `vibe-ci-fix-deferred` marker on the PR names the check
+   and the `depends-on` issue it records is still open, that check is not
+   returned — nothing on the branch can fix a failure the base branch
+   already has (see [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)
+   `findOpenDeferrals`). Other failing checks on the same PR are still
+   returned, and one `skipReason` line per PR names what was deferred and
+   on which issue. Once the issue closes the check is returned as usual.
+   A comment thread or issue state that cannot be read, a marker from
+   outside the fleet, or a malformed reference all leave the check
+   undeferred and are logged — an error never suppresses a real failure.
+6. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
    over-retried failures.
 6. Prioritises PRs targeting the default branch (where integration tests run).
 7. Fetches check annotations and returns the highest-priority failure.
