@@ -136,6 +136,8 @@ export interface ConfigFileJson {
   pinned_tool_versions?: Record<string, unknown>;
   /** Active coding-agent provider id (Issue #4067). */
   agent_provider?: string;
+  /** Provider selection strategy (Issue #1926). */
+  agent_provider_mode?: string;
   /** Providers enabled for a run (Issue #4108). */
   agent_providers?: string[];
   /** Opt-in ordered fallback providers (Issue #1700). */
@@ -573,6 +575,7 @@ export function validateConfigFileJson(
     // here only the JSON type is checked.
     "update_mode",
     "pinned_ref",
+    "agent_provider_mode",
     "agent_provider",
     "claude_model",
     "best_planning_model",
@@ -612,6 +615,19 @@ export function validateConfigFileJson(
     return fail(
       RUN_MODE_CONFIG_KEY,
       `Expected one of ${RUN_MODES.join(", ")}, got ${JSON.stringify(raw)}`,
+    );
+  }
+
+  if (
+    data.agent_provider_mode !== undefined &&
+    data.agent_provider_mode !== "pinned" &&
+    data.agent_provider_mode !== "auto"
+  ) {
+    return fail(
+      "agent_provider_mode",
+      `Expected one of pinned, auto, got ${
+        JSON.stringify(data.agent_provider_mode)
+      }`,
     );
   }
 

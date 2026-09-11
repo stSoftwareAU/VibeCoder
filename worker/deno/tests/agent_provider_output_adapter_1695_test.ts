@@ -13,6 +13,11 @@
 import { assert, assertEquals } from "@std/assert";
 import { resolveAgentProvider } from "../lib/agent_provider.ts";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
+import {
+  automaticProviderOutage,
+  resetAutomaticProviderState,
+  setAutomaticProviderRoutingActive,
+} from "../lib/provider_auto_state.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
@@ -31,34 +36,44 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
+    resetAutomaticProviderState();
+    setAutomaticProviderRoutingActive(true);
     const raw = Deno.readTextFileSync(
       new URL("claude-2.1.261-auth-failure.jsonl", FIXTURE_DIR),
     );
     // The stub replays the recorded stream on stdout and exits like the CLI.
     const body = `cat <<'AGENT_FIXTURE_EOF'\n${raw}AGENT_FIXTURE_EOF\nexit 1\n`;
 
-    const result = await withAgentStub(
-      body,
-      (stub) =>
-        runClaudeWithRetry(
-          {
-            clock: fakeClock(),
-            prompt: "test",
-            timeoutSeconds: 30,
-            killAfterSeconds: 2,
-            agentBinaryPath: stub.path,
-          },
-          { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 1 },
-        ),
-      { prefix: "agent_output_stub_" },
-    );
+    try {
+      const result = await withAgentStub(
+        body,
+        (stub) =>
+          runClaudeWithRetry(
+            {
+              clock: fakeClock(),
+              prompt: "test",
+              timeoutSeconds: 30,
+              killAfterSeconds: 2,
+              agentBinaryPath: stub.path,
+            },
+            { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 1 },
+          ),
+        { prefix: "agent_output_stub_" },
+      );
 
-    assert(result.ok, "the runner returned an error");
-    if (!result.ok) return;
-    assertEquals(result.value.agentOutput?.status, "failed");
-    assertEquals(result.value.agentOutput?.textSource, "final");
-    assertEquals(result.value.agentFailure?.category, "authentication");
-    // The existing contract is untouched: the extracted text is still there.
-    assertEquals(result.value.output, "Not logged in · Please run /login");
+      assert(result.ok, "the runner returned an error");
+      if (!result.ok) return;
+      assertEquals(result.value.agentOutput?.status, "failed");
+      assertEquals(result.value.agentOutput?.textSource, "final");
+      assertEquals(result.value.agentFailure?.category, "authentication");
+      // The existing contract is untouched: the extracted text is still there.
+      assertEquals(result.value.output, "Not logged in · Please run /login");
+      assertEquals(
+        automaticProviderOutage("claude")?.category,
+        "authentication",
+      );
+    } finally {
+      resetAutomaticProviderState();
+    }
   },
 });
