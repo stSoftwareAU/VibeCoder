@@ -1170,6 +1170,38 @@ The worker reads the scope at start-up and, without it (Issue #1475):
   `.github/workflows/`, naming the files and the fix, and classifies it as
   the host's credential (`token-scope`), never the issue's fault.
 
+Neither check is allowed to pass by silence (Issue #1952):
+
+- the start-up verdict is recorded whenever detection established one, and a
+  detection that could not — `gh auth status` failed, or the token is a
+  GitHub App installation token whose `workflows` permission it cannot read —
+  says so at WARN, so "nothing recorded" is never read as "has the scope";
+- the pre-push check asks `git diff`, falls back to the branch's commit list
+  when the diff cannot answer, logs that it was skipped when neither can, and
+  names which of the two supplied the paths it acted on;
+- with no verdict recorded, a branch that touches `.github/workflows/` is
+  logged at WARN rather than failed — GitHub decides at the push;
+- a push that still reaches GitHub's refusal fails **once**, with the fix in
+  the message and the run recorded as `token-scope` — no rebase recovery and
+  no in-process retry, because neither can supply a missing scope.
+
+```mermaid
+flowchart TD
+    S["Launcher: read token scopes"] -->|scope present / absent| R["Record verdict"]
+    S -->|detection could not answer| U["Nothing recorded = unknown"]
+    R --> C{"Verdict"}
+    U --> D
+    C -->|granted| P["Push"]
+    C -->|absent| D["Changed paths: diff → commit list"]
+    D -->|touches .github/workflows/, verdict absent| F["Fail before push — name the fix"]
+    D -->|touches them, verdict unknown| WARN["WARN, then push"] --> P
+    D -->|touches none, or cannot answer| P
+    P -->|GitHub refuses: no workflow scope| F2["Fail once — token_scope"]
+    P -->|other rejection| RC["Rebase recovery, retry"]
+    style F fill:#9d0208,stroke:#6a040f,color:#fff
+    style F2 fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
 `setup.sh` warns when the provisioned token lacks the scope. The fix, for the
 worker account:
 

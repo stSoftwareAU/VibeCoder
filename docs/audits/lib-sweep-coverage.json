@@ -865,6 +865,7 @@
         "worker/deno/lib/workflow_labels.ts",
         "worker/deno/lib/workflow_permissions_scanner.ts",
         "worker/deno/lib/workflow_scan_common.ts",
+        "worker/deno/lib/workflow_scope_precheck.ts",
         "worker/deno/lib/workflow_trigger_scanner.ts",
         "worker/deno/lib/worktree_cleanup.ts",
         "worker/deno/lib/worktree_progress.ts",
