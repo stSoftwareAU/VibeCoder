@@ -72,12 +72,6 @@ import {
   type MergeAttemptHandling,
   type MergeAttemptOutcome,
 } from "./merge_block_escalation.ts";
-import { isMilestoneSyncBranch } from "./milestone_sync_pr.ts";
-import {
-  closeRetargetedSyncPr,
-  isRetargetedSyncPr,
-} from "./milestone_sync_pr_retirement.ts";
-import { getRepoDefaultBranch } from "./shell_helpers.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -254,13 +248,6 @@ export interface AutoMergeOptions extends PrScanOptions {
   handleMergeAttemptFn?: (
     options: HandleMergeAttemptOptions,
   ) => Promise<MergeAttemptHandling>;
-  /**
-   * Resolve a repository's default branch (Issue #1967). Defaults to the
-   * cached {@link getRepoDefaultBranch}, and is consulted only when the scan
-   * meets a sync-shaped head — so the ordinary PR costs nothing. Injected in
-   * tests.
-   */
-  getDefaultBranchFn?: (repo: string) => Promise<Result<string>>;
   /** Label applied when a merge is escalated. Defaults to `needs-human`. */
   needsHumanLabel?: string;
   /** Needs-screenshot label name. */
@@ -1511,8 +1498,6 @@ export async function ensureAutoMergeOnOpenPrs(
     needsScreenshotLabel = "needs-screenshot",
     needsHumanLabel = "needs-human",
     handleMergeAttemptFn = handleMergeAttempt,
-    getDefaultBranchFn = (repo: string) =>
-      getRepoDefaultBranch(repo, ghCommandFn),
     cache,
     prAuthors,
     allowedAuthors,
@@ -1537,12 +1522,10 @@ export async function ensureAutoMergeOnOpenPrs(
       continue;
     }
 
-    // `baseRefName` and `author` are read by the retargeted-sync refusal
-    // below (Issue #1967); the cached listing already fetches the superset.
     const prs = await listActionablePrs(
       repo,
       scanAuthors,
-      "number,headRefName,baseRefName,author,autoMergeRequest",
+      "number,headRefName,autoMergeRequest",
       options,
     );
 
@@ -1559,38 +1542,6 @@ export async function ensureAutoMergeOnOpenPrs(
 
     for (const pr of prs) {
       const { number: prNumber, headRefName: branchName } = pr;
-
-      // Issue #1967: a milestone sync PR merges the default branch *into* a
-      // milestone branch, so one whose base is the default branch has had
-      // its base deleted and been retargeted by GitHub — approval and
-      // auto-merge carried over. Against the default branch its diff reverts
-      // the milestone's own work, so it is closed, never merged. Checked
-      // before the "already armed" skip below: the arming is precisely what
-      // makes it dangerous.
-      if (
-        isMilestoneSyncBranch(branchName) &&
-        isFleetAuthor(pr.author?.login, scanAuthors)
-      ) {
-        const resolved = await getDefaultBranchFn(repo);
-        if (!resolved.ok) {
-          logger.warn(
-            "Could not resolve the default branch to check a sync PR's base",
-            { repo, prNumber, reason: resolved.error.message },
-          );
-        } else if (isRetargetedSyncPr(pr, resolved.value)) {
-          const closed = await closeRetargetedSyncPr({
-            repo,
-            prNumber,
-            headRefName: branchName,
-            defaultBranch: resolved.value,
-            ghCommandFn,
-            log: (message) => logger.warn(message, { repo, prNumber }),
-          });
-          if (closed) skippedCount++;
-          else failedCount++;
-          continue;
-        }
-      }
 
       // Check if auto-merge already enabled
       if (pr.autoMergeRequest?.mergeMethod) {
@@ -1704,6 +1655,17 @@ async function attemptMerge(
     // milestone sync clears it, so this is a deferral, never an escalation.
     if (result.deferral === "milestone-behind") {
       return { kind: "milestone_base_behind" };
+    }
+
+    // Issue #1967: the arming chokepoint closed a milestone sync PR GitHub
+    // had retargeted onto the default branch. The PR is gone, so there is
+    // nothing to escalate — and a base it could not compare is a hold, the
+    // same shape as an unreadable milestone route.
+    if (result.result === "closed_retargeted_sync") {
+      return { kind: "sync_pr_retired" };
+    }
+    if (result.deferral === "sync-base-unreadable") {
+      return { kind: "milestone_route_unreadable" };
     }
 
     if (result.result === "not_allowed" && directMergeFn) {

@@ -342,6 +342,42 @@ function completionGh(sink: {
   };
 }
 
+Deno.test("checkAndHandleMilestoneCompletions - an unmerged final PR from an earlier cycle leaves the sync PR alone (Issue #1967)", async () => {
+  const sink = {
+    order: [] as string[],
+    closedPrs: [] as number[],
+    deleteBranch: false,
+  };
+  const base = completionGh(sink);
+  const result = await checkAndHandleMilestoneCompletions({
+    repos: ["owner/repo"],
+    ghCommandFn: (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      // The summary PR was raised on an earlier cycle and has not merged.
+      if (key.startsWith("pr list") && key.includes("milestone/scan")) {
+        return Promise.resolve(
+          JSON.stringify([{
+            number: 1959,
+            title: "Milestone: scan",
+            headRefName: "milestone/scan",
+          }]),
+        );
+      }
+      if (key.startsWith("pr view") && key.includes("state")) {
+        return Promise.resolve(JSON.stringify({ state: "OPEN" }));
+      }
+      return base(args);
+    },
+    log: () => {},
+    authorOptions: { fleetAuthors: ["stservice"] },
+  });
+
+  assertEquals(result.ok, true);
+  // Closing and re-raising the sync every cycle while the final PR waits on
+  // a red check would starve the milestone branch of the default branch.
+  assertEquals(sink.closedPrs, []);
+});
+
 Deno.test("checkAndHandleMilestoneCompletions - the open sync PR is closed before the final milestone PR is raised (Issue #1967)", async () => {
   const sink = {
     order: [] as string[],

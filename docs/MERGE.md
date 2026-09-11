@@ -455,9 +455,11 @@ the default branch already has.
   merged** (Issue #1967). A sync PR merges the default branch into a milestone
   branch, so one targeting the default branch has had its base deleted and been
   retargeted there by GitHub — approval and auto-merge carried over, and a diff
-  that reverts the milestone's own work. `ensureAutoMergeOnOpenPrs` closes any
-  fleet-authored `sync/milestone-*` head on the default branch before it reads
-  the arming, posting the reason on the PR. See
+  that reverts the milestone's own work. `enableAutoMerge` — the door every
+  arming path goes through — closes a same-repository `sync/milestone-*` head
+  on the default branch before either GitHub's `--auto` or the gated direct
+  merge is reached, posting the reason on the PR. A default branch it cannot
+  read defers as `sync-base-unreadable` rather than arming. See
   [INTERNALS](INTERNALS.md#-a-sync-pr-never-outlives-the-branch-it-targets).
 - **An unreadable comparison defers as `lookup-failed`**, exactly as an
   unreadable route does (Issue #477). "I could not read it" is never actioned.

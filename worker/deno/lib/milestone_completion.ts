@@ -1282,6 +1282,17 @@ async function processRepoMilestones(
           cache,
         );
       }
+      // Issue #1967: this milestone is finishing without a final PR, so its
+      // branch is now branch cleanup's to delete — and an open sync PR would
+      // be retargeted onto the default branch when it goes.
+      await retireMilestoneSyncPrs({
+        repo,
+        milestoneBranch,
+        ghCommandFn,
+        log,
+        reason: `milestone '${milestone.title}' is complete with nothing to ` +
+          `merge, so '${milestoneBranch}' is being retired`,
+      });
       await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
       log(
         `Milestone '${milestone.title}' in ${repo} is complete with nothing to merge (branch missing or 0 commits ahead) — closed directly, no tracker or summary PR (Issue #3214)`,
@@ -1306,16 +1317,31 @@ async function processRepoMilestones(
     // exists. GitHub does not close the PRs targeting a branch it deletes on
     // merge — it retargets them to the default branch, approvals and
     // auto-merge intact — so the sync PR has to be gone before the final PR
-    // can merge, not after. The sync has no further purpose either way: the
-    // milestone is complete, and its branch is on its way out.
-    await retireMilestoneSyncPrs({
+    // can merge, not after.
+    //
+    // Only on the cycle that actually raises the final PR. A summary PR that
+    // already exists may sit unmerged for days behind a red check, and
+    // retiring the sync every one of those cycles would close and re-raise
+    // it endlessly while leaving the milestone branch unable to take the
+    // default branch through a PR. The post-merge retirement below is what
+    // covers a sync raised after this point.
+    const existingSummary = await hasExistingMilestoneSummaryPr(
       repo,
+      milestone.title,
       milestoneBranch,
       ghCommandFn,
-      log,
-      reason: `milestone '${milestone.title}' is complete and its final PR ` +
-        `into '${defaultBranch}' is being raised`,
-    });
+      cache,
+    );
+    if (existingSummary.ok && existingSummary.value === null) {
+      await retireMilestoneSyncPrs({
+        repo,
+        milestoneBranch,
+        ghCommandFn,
+        log,
+        reason: `milestone '${milestone.title}' is complete and its final PR ` +
+          `into '${defaultBranch}' is being raised`,
+      });
+    }
 
     // Create summary PR (idempotent)
     log(`Milestone '${milestone.title}' is complete — creating summary PR`);

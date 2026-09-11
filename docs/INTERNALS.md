@@ -3493,7 +3493,7 @@ flowchart TD
     D -- "sync lands by direct push" --> E["closeLandedMilestoneSyncPrs:<br/>diff is empty → close"]
     D -- "milestone completes" --> R["retireMilestoneSyncPrs:<br/>close before the final PR<br/>is raised, and after it merges"]
     D -- "neither, and the base is deleted" --> G["GitHub retargets the PR<br/>onto the default branch"]
-    G --> M["Auto-merge scan:<br/>closeRetargetedSyncPr —<br/>closed, never merged"]
+    G --> M["enableAutoMerge:<br/>closeRetargetedSyncPr —<br/>closed, never merged"]
     style G fill:#9d0208,stroke:#6a040f,color:#fff
     style M fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
@@ -3507,12 +3507,20 @@ flowchart TD
   **before** it raises the final PR — the retarget happens in the window
   between that PR merging and GitHub deleting the branch, so the sync PR has to
   be gone beforehand — and again once the final PR is confirmed merged.
-- **Defence in depth.** `ensureAutoMergeOnOpenPrs` closes any **fleet-authored**
-  PR whose head is `sync/milestone-*` and whose base is the default branch,
-  posting why, *before* the "auto-merge already armed" skip — the arming is
-  precisely what makes it dangerous. Only the fleet's own sync PRs are retired
-  on the strength of a branch name, and a default branch that cannot be
-  resolved closes nothing.
+- **Defence in depth.** The refusal sits in
+  [`enableAutoMerge`](../worker/deno/lib/pr_auto_merge.ts), the one door every
+  arming path goes through — the priority 1.65 sweep, the PR-maintenance scan,
+  the CI-fix re-arm and `pr_manager` — and *before* the unprotected-base direct
+  merge, which would otherwise land the PR without GitHub's arming at all. A
+  `sync/milestone-*` head on the default branch is closed with the reason
+  posted on the PR, and the attempt returns `closed_retargeted_sync`, which the
+  maintenance scan classifies as `sync_pr_retired`: nothing to wait for,
+  nothing to escalate. Two conditions keep the destructive verb honest — the
+  head must live in **this repository** (a fork names its own branches, Issue
+  #1249), and a default branch that cannot be read defers as
+  `sync-base-unreadable` rather than arming, because the one PR that must never
+  merge into the default branch is the one whose base could not be compared
+  with it.
 
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
