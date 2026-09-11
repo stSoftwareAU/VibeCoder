@@ -412,6 +412,15 @@ export interface WorkerConfig {
   staleFailedDiagnosticDays: number;
   /** Days before warning about stuck planning issues (Issue #1240) */
   stalePlanningWarningDays: number;
+  /**
+   * A failed run this short is a claim/setup fault, not the issue
+   * (Issue #1950). Default 60.
+   */
+  fastFailureSeconds: number;
+  /** Fast failures in the window before a repository is backed off (Issue #1950). */
+  repoFastFailureThreshold: number;
+  /** Rolling window, in hours, the fast-failure threshold is counted over (Issue #1950). */
+  repoFastFailureWindowHours: number;
   /** Per-phase model tier overrides from .config.json (Issue #1265) */
   phaseModelOverrides: Record<string, string>;
   /** Per-phase effort level overrides from .config.json (Issue #1403) */
@@ -812,6 +821,16 @@ export interface RepoConfig {
   skipReviewerRequest?: boolean;
   /** When true, skips screenshot validation in PR completion (Issue #1185) */
   skipScreenshotCheck?: boolean;
+  /**
+   * File this repository's fast-failure diagnostic here rather than in the
+   * worker repository (Issue #1950).
+   *
+   * A repository whose runs keep dying in their first minute is normally a
+   * worker-side environment fault, so `repo_fast_failure_issue.ts` files
+   * the diagnostic in `stSoftwareAU/VibeCoder` by default. Set this when
+   * the report belongs beside the code instead.
+   */
+  fastFailureDiagnosticsHere?: boolean;
   /**
    * When true, skips the security-fix patch-verification gate on PRs that
    * close a `security`-labelled finding (Issue #3540).
@@ -1224,6 +1243,12 @@ export interface ConfigFile {
   host_disk_low_floor_gb?: number;
   /** Percentage term of the claiming floor (Issue #732) */
   host_disk_low_floor_percent?: number;
+  /** Seconds under which a failed run counts as a fast failure (Issue #1950) */
+  fast_failure_seconds?: number;
+  /** Fast failures in the window before a repository is backed off (Issue #1950) */
+  repo_fast_failure_threshold?: number;
+  /** Rolling window in hours for the fast-failure threshold (Issue #1950) */
+  repo_fast_failure_window_hours?: number;
   /** Whether to periodically sync milestone branches with the default branch (Issue #1238) */
   sync_milestone_branches?: boolean;
   /** Stale workflow thresholds (Issue #1240) */

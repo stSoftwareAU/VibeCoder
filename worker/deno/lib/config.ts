@@ -184,6 +184,7 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   skip_auto_merge: "skipAutoMerge",
   skip_reviewer_request: "skipReviewerRequest",
   skip_screenshot_check: "skipScreenshotCheck",
+  fast_failure_diagnostics_here: "fastFailureDiagnosticsHere",
   skip_security_fix_check: "skipSecurityFixCheck",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
@@ -772,6 +773,14 @@ export async function loadConfig(
   const stalePlanningWarningDays = file.stale_planning_warning_days ??
     OPERATIONAL_DEFAULTS.stalePlanningWarningDays;
 
+  // Per-repository fast-failure back-off (Issue #1950)
+  const fastFailureSeconds = file.fast_failure_seconds ??
+    OPERATIONAL_DEFAULTS.fastFailureSeconds;
+  const repoFastFailureThreshold = file.repo_fast_failure_threshold ??
+    OPERATIONAL_DEFAULTS.repoFastFailureThreshold;
+  const repoFastFailureWindowHours = file.repo_fast_failure_window_hours ??
+    OPERATIONAL_DEFAULTS.repoFastFailureWindowHours;
+
   // Phase-specific model overrides (Issue #1265)
   const phaseModelOverrides: Record<string, string> =
     file.phase_model_overrides ?? {};
@@ -997,6 +1006,9 @@ export async function loadConfig(
     syncMilestoneBranches,
     staleFailedDiagnosticDays,
     stalePlanningWarningDays,
+    fastFailureSeconds,
+    repoFastFailureThreshold,
+    repoFastFailureWindowHours,
     phaseModelOverrides,
     phaseEffortOverrides,
     codexPhaseModelOverrides,

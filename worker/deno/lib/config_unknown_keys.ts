@@ -162,6 +162,11 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "stale_failed_diagnostic_days",
   "stale_planning_warning_days",
 
+  // Per-repository fast-failure back-off (Issue #1950)
+  "fast_failure_seconds",
+  "repo_fast_failure_threshold",
+  "repo_fast_failure_window_hours",
+
   // Recent activity settings (Issue #1326)
   "include_recent_activity",
   "recent_activity_merged_pr_limit",
