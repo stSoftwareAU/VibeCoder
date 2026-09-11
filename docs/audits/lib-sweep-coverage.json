@@ -1363,8 +1363,22 @@
       ]
     },
     {
-      "issue": 1938,
+      "issue": 1926,
       "chunk": "12aa",
+      "title": "quota-aware automatic provider routing",
+      "ledger": "docs/audits/security-sweep-1926-auto-provider-routing.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: provider auto-routing (#1926)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/provider_auto_runtime.ts",
+        "worker/deno/lib/provider_auto_selection.ts",
+        "worker/deno/lib/provider_auto_state.ts"
+      ],
+      "sweptAt": "acaba2ae8675ed02a00cd2c50875e1f820736faf"
+    },
+    {
+      "issue": 1938,
+      "chunk": "12ab",
       "title": "top-up: the Gemini CLI token-usage decoder",
       "ledger": "docs/audits/security-sweep-1938-gemini-token-usage.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: gemini_token_usage.ts (#1938)",
