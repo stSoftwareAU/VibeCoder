@@ -181,10 +181,23 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last 1
 - **No CI failures found:** Skip; no side effects.
 - **Spelling failure detected:** Excluded — handled at priority 1.5 by the spelling fix workflow. The test is the failing *step*, not the job name (Issue #1579).
 - **Aggregator checks:** A job that exists only to gate on other jobs — the NEAT-AI-Backpropagation `ci-required` job (`name: CI Required Checks`, `needs: [validation, quality, …]`, `if: always()`) is the canonical shape — is red whenever a job it needs is red, so it has no failure of its own. The `needs:` topology is read from the checked-out workflow YAML ([`workflow_job_needs.ts`](../../worker/deno/lib/workflow_job_needs.ts)), and a failing check whose needed job is **also red on the same head** is skipped rather than diagnosed (Issue #1878). Job matching uses the job's `name:`, else its id, because that is what the check run is called; a check matching no job — a matrix leg such as `Build (ubuntu-latest)`, or a check from outside Actions — is never treated as an aggregator. The scan filters against the host's existing clone and never clones to do it, so a repo with no clone is not filtered; the processor repeats the decision against the branch it actually checked out, and on a skip it records the check-run retry, posts nothing and runs no agent.
+- **Base-branch failure (deferral):** When the agent finds the same check already failing on the PR's **base branch**, it ends its `.pr_response_message` with a line of its own — `Depends on owner/repo#N` — naming the issue that tracks it (searching that repository first with `gh issue list --search "<root cause> in:title,body" --state open`, and filing one issue per root cause only when none exists). The worker does not take that on trust: [`ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts) reads the base branch's own `check-runs` and the **latest completed run of the same check** must have concluded `failure`. When it has, the agent's diagnosis is posted **once** with a `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied and **no attempt is charged** — nothing on this branch could have fixed it (Issue #1880). A base branch that is green, a check the base never ran, a missing base ref, or a lookup that errored all fall through to the ordinary no-changes reply with one attempt charged. A failure already carrying a fleet-authored deferral marker posts nothing at all; if that marker's blocker has since **closed** and the agent names it again, the deferral is refused and the ordinary path runs, so the loop fails loud through the attempt cap rather than parking the PR for ever.
 - **Max retries exceeded:** Post a comment on the PR and skip the check on future runs. The operator should investigate manually.
 - **Rate limit exhaustion:** After `MAX_RATE_LIMIT_RETRIES` (default: 2) with exponential backoff, the worker exits with code 2 and posts a comment.
 - **Claude makes no changes:** The worker posts a classifier-aware comment explaining the most likely failure category (test, build, lint, infrastructure, transient) and recommended next step rather than a generic "transient or infrastructure" message.
 - **Quality check fails after fix:** Claude is retried once. If it fails again, the fix is not pushed.
+
+The base-branch deferral, end to end (Issue #1880):
+
+```mermaid
+flowchart TD
+    A["agent: no change,<br/>message ends<br/>'Depends on o/r#N'"] --> B{"base branch's latest<br/>run of the check red?"}
+    B -->|"no / lookup errored /<br/>no base ref"| D["ordinary no-changes reply<br/>+ attempt marker"]
+    B -->|yes| P{"prior deferral<br/>for this signature?"}
+    P -->|none| C["post the diagnosis once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
+    P -->|"same blocker, now closed"| D
+    P -->|otherwise| N["post nothing"]
+```
 
 ## 🛠️ Common CI failure patterns
 
@@ -210,6 +223,7 @@ If the worker cannot fix a CI failure after the maximum retries:
 - **CI fix prompt:** the latest template in [`prompts/ci_fix/`](../../prompts/ci_fix/) — used to instruct Claude (failure classification introduced in).
 - **CI failure classifier:** [`worker/deno/lib/ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts) — categorises failures as test, build, lint, infrastructure, or transient.
 - **CI failure detection:** [`worker/deno/lib/pr_ci_checks.ts`](../../worker/deno/lib/pr_ci_checks.ts) — CI check detection and retry tracking.
+- **Base-branch verification:** [`worker/deno/lib/ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts) — `isCheckRedOnBranch()`, the read behind the base-branch deferral.
 - **Cross-host PR lock:** [`worker/deno/lib/pr_branch_lock.ts`](../../worker/deno/lib/pr_branch_lock.ts) — acquire, renew and release the `BRANCH_UPDATE_LOCK`.
 - **CI fix handler:** [`worker/deno/lib/ci_failure_issue.ts`](../../worker/deno/lib/ci_failure_issue.ts) and the CI-fix processor wired in [`run_core.ts`](../../worker/deno/lib/run_core.ts).
 - **Prompt building:** [`worker/deno/lib/prompt_builder.ts`](../../worker/deno/lib/prompt_builder.ts) — CI fix prompt construction.

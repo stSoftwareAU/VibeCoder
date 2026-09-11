@@ -68,11 +68,21 @@ import {
 } from "./auto_fix_attempt_tracker.ts";
 import {
   buildCiFixAttemptMarker,
+  buildCiFixDeferralMarker,
   type CiFixAttemptOutcome,
   type CiFixAttemptRecord,
   countAttempts,
+  findDeferral,
   findNoChangeComment,
+  type FleetCiFixMarkers,
 } from "./ci_fix_attempt_markers.ts";
+import { isCheckRedOnBranch } from "./ci_base_branch_check.ts";
+import {
+  type BlockedDependency,
+  detectBlockedOutcome,
+  formatDependencyRef,
+} from "./blocked_outcome.ts";
+import { createIssueFetcher } from "./issue_finder_common.ts";
 import {
   appendAttemptToComment,
   buildCapAttemptRows,
@@ -135,6 +145,16 @@ export interface CiFixInput {
   checkName: string;
   /** Base64-encoded annotations JSON. */
   encodedAnnotations: string;
+  /**
+   * The pull request's base branch (Issue #1880).
+   *
+   * The agent may report the failure as pre-existing on the base by ending
+   * its `.pr_response_message` with a `Depends on owner/repo#N` line. That
+   * claim is only honoured when this branch's own latest run of the same
+   * check is red, so an absent base ref means the claim cannot be verified
+   * and the ordinary no-changes path runs.
+   */
+  baseRef?: string;
   /**
    * Optional check `target_url` / `details_url` (Issue #1893). Handed to
    * the CI log provider so it can locate the build it describes. Optional
@@ -1570,6 +1590,80 @@ async function _processCiWithHeartbeat(
       ? undefined
       : `${customMessage}${formatClassifierTrailer(classification)}`;
 
+    // Issue #1880: the agent may report the failure as pre-existing on the
+    // base branch, ending its message with a `Depends on owner/repo#N` line.
+    // Verified against the base branch's own latest run of the same check,
+    // that is a deferral rather than a failed repair: the diagnosis is posted
+    // once, no `needs-human` is applied and no attempt is charged, because
+    // nothing on this pull request could have fixed it. An unverified claim
+    // falls through to the ordinary path below and costs an attempt.
+    const deferral = await _resolveBaseBranchDeferral({
+      customMessage,
+      repo,
+      prNumber,
+      baseRef: input.baseRef,
+      checkName,
+      signature,
+      markers: markerState.markers,
+      ghCommandFn: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+      logger,
+    });
+
+    if (deferral.kind === "already-deferred") {
+      // The scanner should have skipped this pull request while the blocker
+      // is open (Issue #1849 refreshes it once the blocker lands), so being
+      // here at all is worth saying out loud — but a second copy of the same
+      // diagnosis is not.
+      logger.warn(
+        "CI fix already deferred to a blocking issue for this failure — " +
+          "posting nothing (Issue #1880)",
+        { repo, prNumber, checkName, signature, dependsOn: deferral.ref },
+      );
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          changesPushed: false,
+          annotationCount: annotations.length,
+          retryCount: newRetryCount,
+          summary: `deferred: depends on ${deferral.ref}`,
+        },
+      };
+    }
+
+    if (deferral.kind === "defer") {
+      logger.info(
+        "CI fix deferred: the same check is red on the base branch " +
+          "(Issue #1880)",
+        {
+          repo,
+          prNumber,
+          checkName,
+          signature,
+          baseRef: input.baseRef,
+          dependsOn: deferral.ref,
+        },
+      );
+      await replyToComment(
+        repo,
+        prNumber,
+        // The agent's own words, the classifier trailer that keeps the
+        // categorisation visible, and the marker the next host reads.
+        `${verbatimBody ?? response.body}\n\n${deferral.marker}`,
+        deps,
+      );
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          changesPushed: false,
+          annotationCount: annotations.length,
+          retryCount: newRetryCount,
+          summary: `deferred: depends on ${deferral.ref}`,
+        },
+      };
+    }
+
     // A repeat "no change required" for the same failure appends **this
     // run's own words** and its marker to the comment already carrying the
     // diagnosis, rather than posting a second copy — one CI-fix comment per
@@ -2237,5 +2331,221 @@ async function replyToComment(
     ]);
   } catch {
     // Comment failure is non-critical
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Base-branch deferral (Issue #1880)
+// ---------------------------------------------------------------------------
+
+/** What {@link _resolveBaseBranchDeferral} decided. */
+type BaseBranchDeferral =
+  /** Not a verified base-branch failure — run the ordinary no-changes path. */
+  | { kind: "none" }
+  /** Defer: post the diagnosis once with `marker`, charge no attempt. */
+  | { kind: "defer"; ref: string; marker: string }
+  /** The fleet already deferred this failure — post nothing. */
+  | { kind: "already-deferred"; ref: string };
+
+/** Inputs for {@link _resolveBaseBranchDeferral}. */
+interface BaseBranchDeferralOptions {
+  /** The agent's `.pr_response_message`, or `undefined` when it wrote none. */
+  customMessage: string | undefined;
+  /** Repository in `owner/repo` form. */
+  repo: string;
+  /** Pull request number. */
+  prNumber: number;
+  /** The pull request's base branch, when the scan carried one. */
+  baseRef: string | undefined;
+  /** Name of the failing check. */
+  checkName: string;
+  /** Failure signature the markers are keyed by. */
+  signature: string;
+  /** Fleet-authored markers already on the pull request. */
+  markers: FleetCiFixMarkers;
+  /** Runs a `gh` command. */
+  ghCommandFn: (args: string[]) => Promise<string>;
+  /** Logger — every refusal to defer names its reason. */
+  logger: Logger;
+}
+
+/**
+ * Decide whether this no-changes run is a verified base-branch deferral.
+ *
+ * A deferral costs the fleet nothing — no attempt, no `needs-human` — so it
+ * is granted only when **both** halves hold: the agent declared a dependency
+ * on a `Depends on owner/repo#N` line, and the base branch's own latest run
+ * of the same check is red. Every other reading (no declaration, no base ref,
+ * a green base, a lookup that errored, a marker that would not build) returns
+ * `none`, and the caller then posts the ordinary reply and charges an
+ * attempt — so an unverifiable claim fails loud through the cap rather than
+ * parking the pull request.
+ *
+ * @param options - The agent's message, the failure, and the `gh` runner.
+ * @returns What the caller should do.
+ */
+async function _resolveBaseBranchDeferral(
+  options: BaseBranchDeferralOptions,
+): Promise<BaseBranchDeferral> {
+  const {
+    customMessage,
+    repo,
+    prNumber,
+    baseRef,
+    checkName,
+    signature,
+    markers,
+    ghCommandFn,
+    logger,
+  } = options;
+
+  if (customMessage === undefined) return { kind: "none" };
+
+  // The pull request is the "self" here, so a `Depends on #<this PR>` line
+  // cannot make the pull request its own blocker.
+  const blocked = detectBlockedOutcome(customMessage, {
+    repo,
+    issueNumber: prNumber,
+  });
+  if (blocked === undefined) return { kind: "none" };
+
+  // A bare `#N` names an issue in the pull request's own repo; the marker and
+  // the dependency gate both want the full `owner/repo#N` form.
+  const dependency: BlockedDependency = {
+    repo: blocked.dependency.repo ?? repo,
+    number: blocked.dependency.number,
+  };
+  const ref = formatDependencyRef(dependency);
+
+  if (baseRef === undefined || baseRef.trim().length === 0) {
+    logger.warn(
+      "CI-fix agent declared a base-branch dependency but the scan carried " +
+        "no base branch, so the claim could not be verified — running the " +
+        "ordinary no-changes path (Issue #1880)",
+      { repo, prNumber, checkName, dependsOn: ref },
+    );
+    return { kind: "none" };
+  }
+
+  const red = await isCheckRedOnBranch({
+    repo,
+    branch: baseRef,
+    checkName,
+    ghCommandFn,
+  });
+  if (!red.ok) {
+    // Never read as "the base is green": the lookup failed, which is a fault
+    // to surface rather than a verdict to act on.
+    logger.error(
+      "Could not read the base branch's checks, so a declared base-branch " +
+        "failure could not be verified — running the ordinary no-changes " +
+        "path (Issue #1880)",
+      {
+        repo,
+        prNumber,
+        checkName,
+        baseRef,
+        dependsOn: ref,
+        error: red.error.message,
+      },
+    );
+    return { kind: "none" };
+  }
+  if (!red.value) {
+    logger.info(
+      "CI-fix agent declared a base-branch failure but the base branch's " +
+        "latest run of this check is not red — running the ordinary " +
+        "no-changes path (Issue #1880)",
+      { repo, prNumber, checkName, baseRef, dependsOn: ref },
+    );
+    return { kind: "none" };
+  }
+
+  const prior = findDeferral(markers, signature);
+  if (prior !== undefined) {
+    if (prior.dependsOn.toLowerCase() !== ref.toLowerCase()) {
+      return { kind: "already-deferred", ref: prior.dependsOn };
+    }
+    // Loop guard, mirroring `hasPriorDeferral` in `blocked_deferral.ts`: a
+    // deferral holds only while its blocker is open. Back here on the same
+    // blocker after it closed means the deferral did not hold, so deferring
+    // again would park the pull request for ever — the ordinary path runs
+    // instead and the attempt cap eventually escalates it to a human.
+    const stillOpen = await _blockerStillOpen({
+      ref: dependency,
+      ghCommandFn,
+      repo,
+      prNumber,
+      logger,
+    });
+    if (stillOpen === false) {
+      logger.warn(
+        "The blocking issue this failure was already deferred to is closed " +
+          "and the agent named it again — not deferring a second time " +
+          "(Issue #1880)",
+        { repo, prNumber, checkName, signature, dependsOn: ref },
+      );
+      return { kind: "none" };
+    }
+    if (stillOpen === undefined) return { kind: "none" };
+    return { kind: "already-deferred", ref };
+  }
+
+  let marker: string;
+  try {
+    marker = buildCiFixDeferralMarker({ signature, checkName, dependsOn: ref });
+  } catch (error: unknown) {
+    // The marker is what the next host reads; without it a deferral would be
+    // invisible and repeated on every scan, so an unbuildable marker refuses
+    // the deferral rather than posting an unrecorded one.
+    logger.error(
+      "Could not build the CI-fix deferral marker — running the ordinary " +
+        "no-changes path (Issue #1880)",
+      {
+        repo,
+        prNumber,
+        checkName,
+        dependsOn: ref,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return { kind: "none" };
+  }
+
+  return { kind: "defer", ref, marker };
+}
+
+/**
+ * Is the blocking issue still open?
+ *
+ * @returns `true` when open, `false` when closed, and `undefined` when the
+ *   lookup failed — which is reported as an error and never guessed at.
+ */
+async function _blockerStillOpen(opts: {
+  ref: BlockedDependency;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  repo: string;
+  prNumber: number;
+  logger: Logger;
+}): Promise<boolean | undefined> {
+  const { ref, ghCommandFn, repo, prNumber, logger } = opts;
+  try {
+    const state = await createIssueFetcher(ghCommandFn).getIssueState(
+      ref.repo ?? repo,
+      ref.number,
+    );
+    return state.state === "OPEN";
+  } catch (error: unknown) {
+    logger.error(
+      "Could not read the state of the issue a prior CI-fix deferral names " +
+        "— running the ordinary no-changes path (Issue #1880)",
+      {
+        repo,
+        prNumber,
+        dependsOn: formatDependencyRef(ref),
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return undefined;
   }
 }

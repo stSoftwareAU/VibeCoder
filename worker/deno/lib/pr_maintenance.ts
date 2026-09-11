@@ -1391,6 +1391,9 @@ export async function findFailedCiChecks(
           checkId: String(check.id),
           checkName: check.name,
           encodedAnnotations,
+          // Issue #1880: the base branch, so the processor can verify an
+          // agent's claim that the failure is pre-existing on it.
+          baseRef,
           // Issue #1878: the processor repeats the aggregator decision
           // against the branch it actually checks out.
           siblingFailedCheckNames: failedCheckNames,

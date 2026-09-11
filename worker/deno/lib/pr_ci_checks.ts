@@ -26,6 +26,17 @@ export interface FailedCiCheck {
   /** Base64-encoded annotations JSON */
   encodedAnnotations: string;
   /**
+   * The pull request's base branch (Issue #1880).
+   *
+   * Carried so the CI-fix processor can verify a `Depends on owner/repo#N`
+   * claim that the failure is pre-existing on the base: the base branch's
+   * latest run of the same check must itself be red before the failure is
+   * deferred. Optional because the spelling route and the failure-action
+   * synthesiser build this shape without one; absent means the claim cannot
+   * be verified and the ordinary path runs.
+   */
+  baseRef?: string;
+  /**
    * Optional check `target_url` / `details_url` (Issue #1892).
    * Used by the PR failure action dispatcher to locate the external
    * build (e.g. extract a build number from a URL like
