@@ -11,7 +11,12 @@
 
 import type { CodexBudget, CodexBudgetWindow } from "./codex_budget_source.ts";
 import type { CodexBudgetSnapshot } from "./codex_budget.ts";
-import type { QuotaCandidate, QuotaWindow } from "./provider_quota.ts";
+import {
+  type ProviderSubscriptionStatus,
+  type QuotaCandidate,
+  type QuotaWindow,
+  subscriptionStatusFromQuotaCandidate,
+} from "./provider_quota.ts";
 
 export const CODEX_PROVIDER_ID = "codex";
 
@@ -51,4 +56,38 @@ export function quotaCandidateFromCodexSnapshot(
   snapshot: CodexBudgetSnapshot,
 ): QuotaCandidate {
   return quotaCandidateFromCodexBudget(label, snapshot.budget);
+}
+
+/**
+ * Translate one cached/read-only Codex budget snapshot into the generic
+ * fixed-price subscription status contract. API-key auth is explicitly
+ * metered and therefore unavailable to subscription-only routing.
+ */
+export function subscriptionStatusFromCodexSnapshot(
+  credentialLabel: string,
+  snapshot: CodexBudgetSnapshot,
+): ProviderSubscriptionStatus {
+  const candidate = quotaCandidateFromCodexSnapshot(credentialLabel, snapshot);
+
+  if (snapshot.authMode === "api-key") {
+    return subscriptionStatusFromQuotaCandidate(candidate, snapshot.readAt, {
+      billingMode: "metered",
+      confidence: "authoritative",
+      reason: "api-key-account",
+    });
+  }
+
+  const billingMode = snapshot.authMode === "chatgpt"
+    ? "fixed-subscription" as const
+    : "unknown" as const;
+  const confidence = snapshot.source === "exhaustion-event" ||
+      snapshot.source === "rollout-token-count"
+    ? "authoritative" as const
+    : "inferred" as const;
+
+  return subscriptionStatusFromQuotaCandidate(candidate, snapshot.readAt, {
+    billingMode,
+    confidence,
+    ...(snapshot.budget.known ? {} : { reason: snapshot.budget.reason }),
+  });
 }
