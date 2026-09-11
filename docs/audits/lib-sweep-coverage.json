@@ -1404,7 +1404,7 @@
       "ledger": "docs/audits/security-sweep-1880-ci-base-branch-check.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12ac recorded their coverage: ci_base_branch_check.ts (#1880)",
       "status": "swept",
-      "sweptAt": "57bf155f326114e39407b52607fbf9673fa420bc",
+      "sweptAt": "2a01c53d9429ebcb3db1d18c94fa48e23a66c493",
       "paths": [
         "worker/deno/lib/ci_base_branch_check.ts"
       ]
