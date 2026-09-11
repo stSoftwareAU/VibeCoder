@@ -67,9 +67,26 @@ progress survives.
   whole core; one with a `sleep` and no bound still never ends.
 
   Run the command in the **foreground** and let it take as long as it takes —
-  the run has a budget and the harness reports progress. If you genuinely must
-  poll, bound it: a fixed maximum number of iterations, each with a `sleep`,
-  and on exhaustion **report that you gave up** rather than looping again.
+  the run has a budget and the harness reports progress. A foreground `sleep`
+  is **blocked by the agent harness** — its own Bash tool documents the
+  refusal — so a "bounded poll" loop is not merely discouraged: where that
+  block is in force the call is refused and the turn is spent on the refusal.
+  Never build a wait on it.
+
+  When you genuinely must wait for something that has not finished, wait
+  **inside a command that blocks on its own** rather than in the shell:
+
+  - `gh pr checks <pr> --watch --fail-fast` — returns once the checks settle,
+    or at the first failure, and exits non-zero when one failed.
+  - `gh run watch <run-id> --exit-status` — returns once that run finishes,
+    and exits non-zero when it failed.
+
+  Both are read-only, so the `gh` guard passes them through, and both are
+  bounded by the Bash tool's own timeout — the call fails loudly at the cap
+  instead of hanging the host.
+
+  When neither fits, **stop and report what is still pending** — which run,
+  which check, and the command that resumes the wait — rather than loop.
   Something that never finishes must fail loudly, not quietly consume the
   host.
 
