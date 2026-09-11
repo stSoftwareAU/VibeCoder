@@ -294,6 +294,10 @@ export async function workOnIssueQualityGate(
         questionLabel: ctx.config.questionLabel,
       },
     });
+    // Issue #1949: the main loop now applies the same ladder to every
+    // non-transient coding failure. Tell it this one is already done, so a
+    // single run cannot step the issue twice and land it on `failed`.
+    state.failureLadderApplied = true;
   }
 
   return phaseResult;
