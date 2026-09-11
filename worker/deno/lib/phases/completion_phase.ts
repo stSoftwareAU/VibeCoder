@@ -97,6 +97,14 @@ import {
   summaryIncompleteOutcome,
   supersededOutcome,
 } from "../run_outcome.ts";
+import { createPrWithSecondaryLimitBackoff } from "../pr_creation_retry.ts";
+import {
+  deferPrCreation,
+  prCreationDeadlineMs,
+  recordPrCreationRefusal,
+  resetPrCreationBreaker,
+} from "./pr_deferral.ts";
+import { isSecondaryRateLimitMessage } from "../secondary_rate_limit.ts";
 import { healStaleBranchLineage } from "../stale_branch_lineage.ts";
 import {
   checkClaimFreshness,
@@ -1718,10 +1726,33 @@ async function completionBody(
     }
   }
 
+  // Issue #1951: GitHub's *secondary* (content-creation) rate limit refuses
+  // the create for minutes, and `runGhCommand`'s generic 2s/4s/8s retry is
+  // spent long before it clears. Wait it out in minutes instead — and when it
+  // outlasts the run's own budget, park the PR rather than throwing finished,
+  // pushed work away as a failure.
+  const prDeadlineMs = prCreationDeadlineMs(ctx);
+  const attempt = await createPrWithSecondaryLimitBackoff({
+    createPr: () => deps.github.runGhCommand(createPrArgs),
+    ...(prDeadlineMs !== undefined ? { deadlineMs: prDeadlineMs } : {}),
+    onRefusal: (n, message) =>
+      recordPrCreationRefusal(config.workDir, n, message, logger),
+    onSuccess: () => resetPrCreationBreaker(config.workDir, logger),
+    log: (message, fields) => logger.warn(message, fields),
+  });
+  if (attempt.kind === "deferred") {
+    return await deferPrCreation(attempt, ctx, state, deps, {
+      title: prTitle,
+      body: prBody,
+      base: baseBranch,
+      reviewers: config.prReviewers,
+    });
+  }
+
   let prUrl: string;
   try {
-    const output = await deps.github.runGhCommand(createPrArgs);
-    prUrl = output.trim();
+    if (attempt.kind === "failed") throw attempt.error;
+    prUrl = attempt.prUrl;
     // Issue #3138: stamp the worker build on the PR-open line so a duplicate
     // PR can be traced back to the exact build that raised it.
     logger.info("PR created", {
@@ -1763,6 +1794,29 @@ async function completionBody(
           state,
           prBody,
           deps,
+        );
+      } else if (isSecondaryRateLimitMessage(errorMsg)) {
+        // The latch's own cool-down names both limits (Issue #1456), so it
+        // takes the REST fallback above rather than the minute-scale wait.
+        // Reaching here means REST could not open it either, and the throttle
+        // is still the reason — so the PR is parked, not the run failed
+        // (Issue #1951).
+        return await deferPrCreation(
+          {
+            attempts: attempt.attempts,
+            waitedMs: 0,
+            message: errorMsg,
+            why: "the REST fallback could not open it either",
+          },
+          ctx,
+          state,
+          deps,
+          {
+            title: prTitle,
+            body: prBody,
+            base: baseBranch,
+            reviewers: config.prReviewers,
+          },
         );
       } else {
         return { status: "failure", reason: `PR creation failed: ${errorMsg}` };

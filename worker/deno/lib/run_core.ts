@@ -482,6 +482,22 @@ export interface RunCoreDeps {
   nudgeStalledCi: () => Promise<Result<void>>;
 
   /**
+   * Priority 0.9: raise the PRs GitHub's secondary (content-creation) rate
+   * limit refused mid-run (Issue #1951).
+   *
+   * The work behind each one is finished, quality-gated and pushed; only the
+   * create was refused. Running it ahead of every other pass is deliberate — a
+   * PR that does not exist yet cannot have its feedback answered, its branch
+   * updated, its CI nudged or its merge enabled — and it costs one REST call,
+   * never an agent. Never claims an issue, so it always reports
+   * `processed: false`.
+   *
+   * Optional — when absent the priority is a no-op, so a host wired without
+   * the drain runs every other priority unchanged.
+   */
+  drainDeferredPrs?: () => Promise<Result<void>>;
+
+  /**
    * Priority 1.63: escalate PRs that block `work-on` issues while red or
    * carrying an unanswered authorised comment (Issue #4025).
    *
@@ -1487,6 +1503,20 @@ export function buildPriorityDispatchTable(
       agentBacked: true,
       maintenanceLane: true,
       execute: deps.findAndProcessPrFeedback,
+    },
+    {
+      // Issue #1951: finished work whose PR a content-creation throttle
+      // refused. Raised before the rest of the PR upkeep, which all assumes
+      // the PR exists.
+      priority: 0.9,
+      name: "Deferred PR Raise",
+      execute: () =>
+        (deps.drainDeferredPrs?.() ??
+          Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
+            r.ok
+              ? { ok: true as const, value: { processed: false } }
+              : { ok: false as const, error: r.error }
+          ),
     },
     {
       priority: 1.5,

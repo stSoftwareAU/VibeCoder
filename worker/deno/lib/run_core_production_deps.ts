@@ -343,6 +343,7 @@ import { shuffleArray } from "./array_utils.ts";
 import { isRepoAllowed } from "./config_validator.ts";
 import { isAuthorisedCommenter } from "./security.ts";
 import { createGitHubClient, runGhCommand } from "./github.ts";
+import { drainDeferredPrs as libDrainDeferredPrs } from "./deferred_pr_drain.ts";
 import { InFlightRepoRegistry } from "./in_flight_repos.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import { setLiveSlotHolds } from "./live_slot_holds.ts";
@@ -2287,6 +2288,31 @@ export async function createProductionRunCoreDeps(
       return { ok: true, value: { processed: drain.processed } };
     },
 
+    // -- Priority 1.05: raise PRs a secondary rate limit refused (#1951) --
+    async drainDeferredPrs() {
+      const drained = await libDrainDeferredPrs({
+        workDir,
+        comment: async (repo, issueNumber, body) => {
+          // Only for repos this host still monitors: a record can outlive a
+          // repo leaving the roster, and commenting there is not our place.
+          if (!isRepoAllowed(repos, repo)) return;
+          await createGitHubClient(logger).postComment(repo, issueNumber, body);
+        },
+        log: (m, fields) => logger.info(m, fields),
+        warn: (m, fields) => logger.warn(m, fields),
+        error: (m, fields) => logger.error(m, fields),
+      });
+      if (!drained.ok) return { ok: false, error: drained.error };
+      const { raised, abandoned, pending } = drained.value;
+      if (raised > 0 || abandoned > 0 || pending > 0) {
+        logger.info(
+          `Deferred PR drain: ${raised} raised, ${pending} still parked, ` +
+            `${abandoned} abandoned`,
+        );
+      }
+      return { ok: true, value: undefined };
+    },
+
     // -- Priority 1.62: Nudge stalled CI on Vibe Coder PRs (Issue #2100) --
     async nudgeStalledCi() {
       try {
@@ -3819,9 +3845,13 @@ export async function createProductionRunCoreDeps(
       // deleting it would leave the work stranded on the branch.
       if (resumeStateSurvivesRelease(outcome)) {
         logger.info(
-          `Keeping the resume state for ${repo}#${issueNumber} — the run ` +
-            `preserved WIP on its issue branch, so the next claim resumes ` +
-            `from it (Issue #148)`,
+          outcome?.kind === "pr_deferred"
+            ? `Keeping the resume state for ${repo}#${issueNumber} — the PR ` +
+              `is parked for the deferred-PR drain, and the next claim ` +
+              `resumes the branch if that never raises it (Issue #1951)`
+            : `Keeping the resume state for ${repo}#${issueNumber} — the run ` +
+              `preserved WIP on its issue branch, so the next claim resumes ` +
+              `from it (Issue #148)`,
         );
       } else {
         await deleteResumeState(workDir, repo, issueNumber);
