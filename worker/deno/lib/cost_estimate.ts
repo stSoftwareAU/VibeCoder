@@ -18,6 +18,7 @@
 import {
   type CostBreakdown,
   estimateCost,
+  lookupModelPricing,
   type TokenUsage,
 } from "./token_usage.ts";
 
@@ -41,6 +42,12 @@ export interface ModelCostEstimate {
   usage: TokenUsage;
   /** Cost breakdown, or null when the model has no pricing row. */
   breakdown: CostBreakdown | null;
+  /**
+   * True when the matched row is the vendor's API-equivalent list price rather
+   * than a billed rate (Issue #1937) — read off `ModelPricing.apiEquivalent`,
+   * never sniffed from the model id.
+   */
+  apiEquivalent: boolean;
 }
 
 /** Aggregate estimate for a (possibly mixed-model) run. */
@@ -111,13 +118,19 @@ export function estimateRunCost(entries: ModelUsageEntry[]): RunCostEstimate {
   let hasUnknownPricing = false;
 
   for (const { model, usage } of merged) {
+    const pricing = lookupModelPricing(model);
     const breakdown = estimateCost(usage, model);
     if (breakdown) {
       totalCost += breakdown.totalCost;
     } else if (!usageIsZero(usage)) {
       hasUnknownPricing = true;
     }
-    perModel.push({ model, usage, breakdown });
+    perModel.push({
+      model,
+      usage,
+      breakdown,
+      apiEquivalent: pricing?.apiEquivalent === true,
+    });
   }
 
   return { perModel, totalCost, hasUnknownPricing };
@@ -143,6 +156,14 @@ export function formatUsd(n: number): string {
  * Layout (compact, phone-friendly):
  *   - **Estimated cost (USD, estimate only):** ~$0.1234
  *     - `claude-opus-4-8`: $0.1234 — input $0.05 · output $0.06 · cache write $0.01 · cache read $0.00
+ *     - `gpt-5-codex`: $0.0021 (API-equivalent) — input $0.0013 · output $0.0008 · cache write $0.0000 · cache read $0.0000
+ *
+ * A row priced at the vendor's API-equivalent list price rather than a billed
+ * rate carries an `(API-equivalent)` label after its per-model total (Issue
+ * #1937); Claude sub-bullets, the heading line and the `(partial — see below)`
+ * suffix are unchanged. The four columns are identical for every provider — a
+ * column the vendor does not bill renders `$0.0000` through {@link formatUsd}
+ * rather than being dropped, so the breakdown always reconciles.
  *
  * Returns an empty array when there is nothing worth reporting: no entries, or
  * every entry has zero tokens. When a model's pricing is unknown its sub-bullet
@@ -164,13 +185,14 @@ export function formatCostEstimateLines(entries: ModelUsageEntry[]): string[] {
     }${suffix}`,
   ];
 
-  for (const { model, breakdown } of priced) {
+  for (const { model, breakdown, apiEquivalent } of priced) {
     if (!breakdown) {
       lines.push(`  - \`${model}\`: _pricing unknown_`);
       continue;
     }
+    const basis = apiEquivalent ? " (API-equivalent)" : "";
     lines.push(
-      `  - \`${model}\`: ${formatUsd(breakdown.totalCost)} — input ${
+      `  - \`${model}\`: ${formatUsd(breakdown.totalCost)}${basis} — input ${
         formatUsd(breakdown.inputCost)
       } · output ${formatUsd(breakdown.outputCost)} · cache write ${
         formatUsd(breakdown.cacheWriteCost)
