@@ -19,6 +19,10 @@ import {
 } from "../lib/run_worker.ts";
 import { createClaudeBudgetTokenSelector } from "../lib/claude_token_selection.ts";
 import {
+  heldProviderCredentialLabel,
+  resetHeldProviderCredentials,
+} from "../lib/credential_preflight.ts";
+import {
   CLAUDE_PROVIDER_ID,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
@@ -936,4 +940,63 @@ Deno.test("no Claude token value reaches worker-start logs (Issue #919)", async 
       );
     }
   });
+});
+
+Deno.test("worker start records which credential file the run environment holds (Issue #2002)", async () => {
+  resetHeldProviderCredentials();
+  try {
+    await withClaudeTokenPool({
+      "provider.env": oauthFile("tok-primary"),
+      "provider-2.env": oauthFile("tok-second"),
+    }, async (dir) => {
+      const fetcher = poolFetch({ "tok-primary": 0.9, "tok-second": 0.2 });
+      const exported: Record<string, string> = {};
+      const failure = await checkWorkerCredentials({
+        dir,
+        env: () => undefined,
+        setEnv: (name, value) => {
+          exported[name] = value;
+        },
+        providers: [resolveAgentProvider(CLAUDE_PROVIDER_ID)],
+        selectToken: createClaudeBudgetTokenSelector({
+          fetchFn: fetcher.fetchFn,
+          now: () => Date.UTC(2026, 8, 4),
+        }),
+      });
+      assertEquals(failure, null);
+      assertEquals(exported["CLAUDE_CODE_OAUTH_TOKEN"], "tok-second");
+      assertEquals(
+        heldProviderCredentialLabel(CLAUDE_PROVIDER_ID),
+        "provider-2",
+        "the label of the exported file, never its value",
+      );
+    });
+  } finally {
+    resetHeldProviderCredentials();
+  }
+});
+
+Deno.test("worker start records no credential label when the variable was already in the environment (Issue #2002)", async () => {
+  resetHeldProviderCredentials();
+  try {
+    await withClaudeTokenPool({
+      "provider.env": oauthFile("tok-primary"),
+    }, async (dir) => {
+      const failure = await checkWorkerCredentials({
+        dir,
+        env: (name) =>
+          name === "CLAUDE_CODE_OAUTH_TOKEN" ? "operator-supplied" : undefined,
+        setEnv: () => {},
+        providers: [resolveAgentProvider(CLAUDE_PROVIDER_ID)],
+      });
+      assertEquals(failure, null);
+      assertEquals(
+        heldProviderCredentialLabel(CLAUDE_PROVIDER_ID),
+        undefined,
+        "whose file that credential came from is not known",
+      );
+    });
+  } finally {
+    resetHeldProviderCredentials();
+  }
 });

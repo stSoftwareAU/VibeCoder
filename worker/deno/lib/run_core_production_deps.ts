@@ -264,6 +264,7 @@ import { fallbackPolicyFromWorkerConfig } from "./provider_fallback_policy.ts";
 import { deriveIdleReason } from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
+import { heldProviderCredentialLabel } from "./credential_preflight.ts";
 import { runGhCommandRaw } from "./github.ts";
 import {
   formatGraphqlQuotaLine,
@@ -1535,11 +1536,18 @@ export async function createProductionRunCoreDeps(
         // re-running this billed probe every sleepInterval for the whole
         // window — and every other worker on the volume waits too.
         if (result.exitCode === 3 && result.pauseSeconds) {
+          // Issue #2002: name the provider and the credential that ran out,
+          // so a restart holding a different subscription is not paused by
+          // this signal and the next start ranks the spent one last.
           const signal = await writeRateLimitSignal(
             workDir,
             result.pauseSeconds,
             undefined,
             "usage",
+            {
+              provider: "claude",
+              credentialLabel: heldProviderCredentialLabel("claude"),
+            },
           );
           if (!signal.ok) {
             logger.warn(

@@ -871,6 +871,36 @@ must not make a configured subscription disappear. When **every** budget is
 unknown, discovery order decides and the run starts on `provider.env`, which is
 exactly what a host with no network path to the endpoint does today.
 
+One exception to "unknown ranks last" (Issue #2002). A usage-limit signal left
+by the previous run — the health check or the runner met `You've hit your
+weekly limit` — names the **provider and the credential file** that ran out
+(`.rate_limit_signal` carries `provider: "claude"` and
+`credentialLabel: "provider-2"`, never a token value). The next start reads it
+before ranking and records that token as spent until the signal's reset, so it
+is **left out of the start-up ranking while another candidate exists** — even
+when every probe fails. Without that, a recorded exhaustion is a *measured*
+budget and would rank ahead of the unmeasured fresh tokens, which is how a
+start once re-exported a weekly-spent subscription and re-armed an 80-hour
+pause. The exclusion is logged:
+
+```text
+[SECURITY] claude token pool: the active usage-limit signal names provider as the spent subscription — recording it before the start-up ranking
+[SECURITY] claude token pool: provider is recorded as spent until 2026-09-15T01:00:00.000Z — left out of the start-up ranking
+```
+
+The same label scopes the pause. A run that holds a *different* credential of
+the same provider than the one the signal names — a restart that picked a fresh
+subscription — is **not** paused by that signal; the GitHub pre-flight ignores
+usage signals altogether (they are not a GitHub quota fact), and the work loop
+says once why it is not pausing:
+
+```text
+[quota] the usage-limit signal names claude/provider as spent; this run holds claude/provider-3 — not pausing (Issue #2002)
+```
+
+A signal written by an older worker carries no label and keeps pausing the
+whole host, exactly as before.
+
 **What the operator sees.** The decision is logged at `INFO`, one line per
 candidate, best first, then the winner:
 

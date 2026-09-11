@@ -87,6 +87,7 @@ import {
 } from "./orphan_collector.ts";
 import { applyJitter } from "./rate_limit_jitter.ts";
 import { writeRateLimitSignal } from "./rate_limit_signal.ts";
+import { heldProviderCredentialLabel } from "./credential_preflight.ts";
 import { recordInRunBlockedSeconds } from "./fleet_telemetry.ts";
 import { logInvocation } from "./credit_tracker.ts";
 import { extractProviderTokenUsage } from "./provider_token_usage.ts";
@@ -3010,7 +3011,11 @@ async function runRetryLadder(
             waitSeconds,
             resetMs ?? undefined,
             "usage",
-            { provider: "claude" },
+            // Issue #2002: the credential that ran out, never its value.
+            {
+              provider: "claude",
+              credentialLabel: heldProviderCredentialLabel("claude"),
+            },
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(
@@ -3141,7 +3146,11 @@ async function runRetryLadder(
             jitteredWait,
             undefined,
             "usage",
-            { provider: "claude" },
+            // Issue #2002: the credential that ran out, never its value.
+            {
+              provider: "claude",
+              credentialLabel: heldProviderCredentialLabel("claude"),
+            },
           );
           if (!signalResult.ok) {
             currentOptions.logger?.warn(
