@@ -11,7 +11,6 @@
  */
 
 import type { GitHubClient, Logger, WorkerConfig } from "../types.ts";
-import { isTimeoutClassFailureReason } from "./failure_diagnosis.ts";
 import {
   isExpectedSkipResult,
   type IssueContext,
@@ -207,9 +206,18 @@ import {
 } from "./failure_tracker.ts";
 import {
   type CooldownConfig,
+  type CooldownFailureKind,
   loadState as loadCooldownState,
   recordIssueCooldown as cooldownRecordFn,
 } from "./cooldown_state.ts";
+// Issue #1949: every non-transient terminal coding failure enters the same
+// `failed-once` -> `failed` ladder the planning and question routes use.
+import {
+  applyCodingFailureLadder,
+  buildRepeatedFailureEscalation,
+  planCodingFailure,
+} from "./coding_failure_ladder.ts";
+import { handleIssueFailure as handleIssueFailureFn } from "./label_failure.ts";
 // Adaptive claim floor (Issue #245): the evidence lookup and the key the
 // per-cycle deferral set is written with.
 import { fetchIssueClaimEvidence } from "./claim_evidence_lookup.ts";
@@ -233,6 +241,19 @@ import {
   type RepoFailureTrackerConfig,
   resetRepoFailures as repoTrackerReset,
 } from "./repo_failure_tracker.ts";
+import {
+  backedOffRepos,
+  clearRepoFastFailures,
+  formatRepoFastFailureSummary,
+  isFastFailure,
+  loadRepoFastFailureStates,
+  recordRepoFastFailure,
+  recordRepoFastFailureDiagnostic,
+  refreshRepoFastFailureBackOffs,
+  type RepoFastFailureOptions,
+  resolveRepoFastFailurePolicy,
+} from "./repo_fast_failure_tracker.ts";
+import { fileRepoFastFailureIssue } from "./repo_fast_failure_issue.ts";
 import {
   isRateLimitActive as rateLimitSignalIsActive,
   readRateLimitBlockKind,
@@ -752,6 +773,119 @@ export async function createProductionRunCoreDeps(
     failureFile: repoFailureFile,
     threshold: 3,
   };
+
+  // Issue #1950: the counters above are per-cycle and PID-scoped, so a
+  // repository whose runs die at setup was retried every cycle for a week.
+  // The fast-failure tracker is the durable half: it lives on the work
+  // volume, keyed by hostname rather than PID, and decays on its own.
+  const fastFailurePolicyInput = {
+    fastFailureSeconds: config.fastFailureSeconds,
+    threshold: config.repoFastFailureThreshold,
+    windowHours: config.repoFastFailureWindowHours,
+  };
+  const fastFailurePolicy = resolveRepoFastFailurePolicy(
+    fastFailurePolicyInput,
+  );
+  const fastFailureOptions: RepoFastFailureOptions = {
+    workDir,
+    policy: fastFailurePolicyInput,
+    warn: (message: string) => logger.warn(message),
+  };
+
+  /**
+   * Record one fast failure for `repo` and, when it tips the repository
+   * over the threshold, file the single deduplicated diagnostic issue that
+   * names the failing phase and the last error line (Issue #1950).
+   *
+   * Every failure path is reported rather than swallowed: a tracker that
+   * quietly stops counting is the fault this module exists to remove.
+   */
+  async function recordFastFailureAndMaybeFile(
+    repo: string,
+    issueNumber: number,
+    outcome: Extract<RunOutcome, { kind: "no_pr" }>,
+  ): Promise<void> {
+    const recorded = await recordRepoFastFailure({
+      ...fastFailureOptions,
+      repo,
+      failure: {
+        phase: outcome.phase,
+        message: outcome.message,
+        issueNumber,
+        elapsedSeconds: outcome.elapsedSeconds,
+      },
+    });
+    if (!recorded.ok) {
+      logger.warn(
+        `Could not record a fast failure for ${repo}: ${recorded.error.message}`,
+      );
+      return;
+    }
+    const state = recorded.value;
+    const windowHours = Math.round(fastFailurePolicy.windowSeconds / 3600);
+    logger.info(
+      `repo-fast-failures: ${repo} ${state.count} in the last ${windowHours}h ` +
+        `(phase ${outcome.phase}, ${outcome.elapsedSeconds}s)` +
+        (state.backedOff ? " — backed off" : ""),
+    );
+    // One diagnostic per repository: a back-off that already carries one
+    // never files again.
+    if (!state.backedOff || state.diagnosticIssue !== undefined) return;
+    const decision = await fileRepoFastFailureIssue({
+      state,
+      policy: fastFailurePolicy,
+      machineId,
+      ghFn: runGhCommandRaw,
+      ...(config.repoConfig ? { repoConfigs: config.repoConfig } : {}),
+      log: (message: string) => logger.info(message),
+    });
+    if (decision.action === "suppressed") {
+      logger.warn(
+        `repo-fast-failures: ${repo} is backed off but no diagnostic could ` +
+          `be filed (${decision.reason})`,
+      );
+      return;
+    }
+    const attached = await recordRepoFastFailureDiagnostic({
+      ...fastFailureOptions,
+      repo,
+      diagnosticRepo: decision.targetRepo,
+      diagnosticIssue: decision.issueNumber,
+    });
+    if (!attached.ok) {
+      logger.warn(
+        `Could not attach diagnostic ${decision.targetRepo}#${decision.issueNumber} ` +
+          `to ${repo}: ${attached.error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Whether a repository's fast-failure diagnostic issue has been closed
+   * (Issue #1950). `undefined` means the state could not be read, which the
+   * tracker treats as "still open" — an unreadable issue never releases a
+   * back-off.
+   */
+  async function isDiagnosticIssueClosed(
+    diagnosticRepo: string,
+    diagnosticIssue: number,
+  ): Promise<boolean | undefined> {
+    const raw = await runGhCommand([
+      "issue",
+      "view",
+      String(diagnosticIssue),
+      "--repo",
+      diagnosticRepo,
+      "--json",
+      "state",
+      "--jq",
+      ".state",
+    ]);
+    const issueState = raw.trim().toUpperCase();
+    if (issueState === "CLOSED") return true;
+    if (issueState === "OPEN") return false;
+    return undefined;
+  }
 
   // Issue #580: the CI-check state lives on the work volume, not on a relative
   // path under the read-only checkout. The volume root rather than a repo
@@ -3014,6 +3148,20 @@ export async function createProductionRunCoreDeps(
       // `idle-task` issue and the quota left goes to `top-priority` and
       // `work-on` work. An unknown reading never refuses work.
       const weekPaceEngaged = await weekPaceGate.isEngaged();
+      // Issue #1950: repositories whose runs keep dying at setup are not
+      // claimed again until the window lapses or their diagnostic issue is
+      // closed. The probe runs first so a repaired repository is released
+      // promptly, and it only touches repositories that are actually backed
+      // off and carry a diagnostic — bounded by how many are broken.
+      await refreshRepoFastFailureBackOffs({
+        ...fastFailureOptions,
+        isIssueClosed: isDiagnosticIssueClosed,
+        log: (message: string) => logger.info(message),
+      });
+      const fastFailureBackOff = await backedOffRepos(fastFailureOptions);
+      const excludedRepos = fastFailureBackOff.size > 0
+        ? new Set([...(options?.excludeRepos ?? []), ...fastFailureBackOff])
+        : options?.excludeRepos;
       const result = await findOldestIssue(config, {
         githubUser,
         weekPaceEngaged,
@@ -3055,11 +3203,10 @@ export async function createProductionRunCoreDeps(
           return until;
         },
         // Repositories the maintenance lane has leased wholesale (Issues
-        // #4176, #213, narrowed by #1091): skipped before any eligibility
+        // #4176, #213, narrowed by #1091), unioned with the ones backed off
+        // for fast failures (Issue #1950): skipped before any eligibility
         // check, because that pass may touch any branch of the clone.
-        ...(options?.excludeRepos
-          ? { excludeRepos: options.excludeRepos }
-          : {}),
+        ...(excludedRepos ? { excludeRepos: excludedRepos } : {}),
         // Issue #1091: the streams sibling slots hold, carried as the claims
         // that occupy them, so `isMilestoneOccupied` refuses those streams
         // and the rest of the repository stays claimable.
@@ -3493,15 +3640,60 @@ export async function createProductionRunCoreDeps(
         config,
       );
 
-      // Timeout-class classification (Issue #4304): a run that burned its
-      // whole budget and produced nothing feeds the escalating re-claim
-      // cooldown; every other failure keeps the flat base cooldown.
-      // A deadline-bound timeout is exempt (VibeCoder#174): the cycle ended
-      // with WIP preserved, so the next cycle should resume it, not wait 2 h.
-      const failureKind = !result.success && !isExpectedSkip &&
-          isTimeoutClassFailureReason(result.reason)
-        ? "timeout" as const
-        : undefined;
+      // Terminal coding-run failure disposition (Issue #4304, broadened by
+      // Issue #1949). Every failure that is not transient infrastructure
+      // now enters the same `failed-once` → `failed` ladder the planning
+      // and question processors use, AND feeds the escalating re-claim
+      // cooldown — a fast failure is stronger evidence of a stuck issue
+      // than a slow one, not weaker. Transient infrastructure (rate limit,
+      // interruption, scheduled release, deadline-bound timeout) keeps the
+      // flat base cooldown and consumes no attempt.
+      // A phase that already stepped the ladder (today: the quality gate,
+      // with the raw gate output) is not stepped again here — that would
+      // take an unlabelled issue straight to `failed` in one run — but its
+      // attempt is still counted by the cooldown.
+      const plan = planCodingFailure({
+        success: result.success,
+        expectedSkip: isExpectedSkip,
+        reason: result.reason,
+        ...(result.ladderApplied ? { ladderApplied: true } : {}),
+      });
+      const failureKind: CooldownFailureKind | undefined = plan.cooldownKind;
+      if (plan.applyLadder) {
+        const ladderOutcome = await applyCodingFailureLadder({
+          repo: issue.repo,
+          issueNumber: issue.issueNumber,
+          githubUser,
+          failureReason: result.reason,
+          ...(result.phase ? { failurePhase: result.phase } : {}),
+          labels: {
+            failedLabel: config.failedLabel,
+            failedOnceLabel: config.failedOnceLabel,
+            needsHumanLabel: config.needsHumanLabel,
+            planningLabel: config.planningLabel,
+            questionLabel: config.questionLabel,
+          },
+        }, { handleIssueFailure: handleIssueFailureFn });
+        if (ladderOutcome.error) {
+          // Never swallowed: the run already failed and its claim still has
+          // to be released, so this is reported rather than thrown.
+          logger.warn("Failure ladder could not be applied (non-fatal)", {
+            repo: issue.repo,
+            issueNumber: issue.issueNumber,
+            error: ladderOutcome.error.message,
+          });
+        } else {
+          logger.info("Coding-run failure disposition", {
+            repo: issue.repo,
+            issueNumber: issue.issueNumber,
+            disposition: ladderOutcome.decision.disposition,
+            failureClass: ladderOutcome.decision.failureClass,
+            markedAsFailedOnce: ladderOutcome.ladder?.markedAsFailedOnce ??
+              false,
+            markedAsFailed: ladderOutcome.ladder?.markedAsFailed ?? false,
+          });
+        }
+      }
 
       return {
         ok: true,
@@ -3549,7 +3741,7 @@ export async function createProductionRunCoreDeps(
     async recordIssueCooldown(
       repo: string,
       issueNumber: number,
-      failureKind?: "timeout",
+      failureKind?: CooldownFailureKind,
     ) {
       const recorded = await cooldownRecordFn(
         cooldownConfig,
@@ -3557,15 +3749,19 @@ export async function createProductionRunCoreDeps(
         issueNumber,
         failureKind,
       );
-      // Third consecutive timeout inside the escalation window
-      // (Issue #4304): retrying stops being credible — hand the issue to
-      // a human with the attempt evidence instead of burning a fourth
-      // cycle. Best-effort: the cooldown itself already blocks re-claims
-      // for 24 h even if the escalation cannot be posted.
+      // Third consecutive ladder failure inside the escalation window
+      // (Issue #4304, broadened by Issue #1949): retrying stops being
+      // credible — hand the issue to a human with the attempt evidence
+      // instead of burning a fourth cycle. Best-effort: the cooldown
+      // itself already blocks re-claims for 24 h even if the escalation
+      // cannot be posted.
       if (
-        failureKind === "timeout" && recorded.ok &&
-        recorded.value.consecutiveTimeouts >= 3
+        failureKind && recorded.ok && recorded.value.consecutiveFailures >= 3
       ) {
+        const escalation = buildRepeatedFailureEscalation(
+          failureKind,
+          recorded.value.consecutiveFailures,
+        );
         try {
           const ghClient = createGitHubClient(logger);
           await escalateToHuman({
@@ -3573,27 +3769,27 @@ export async function createProductionRunCoreDeps(
             repo,
             target: { kind: "issue", number: issueNumber },
             needsHumanLabel: config.needsHumanLabel,
-            heading: "Repeated execute timeouts",
-            reason:
-              `This issue has now timed out ${recorded.value.consecutiveTimeouts} ` +
-              `times in a row within 48 h — each attempt burned a full agent ` +
-              `run and produced no changes. The worker has stopped retrying ` +
-              `(24 h escalating cooldown, Issue #4304).`,
-            nextStep:
-              "Split the issue into smaller pieces, raise its timeout budget, " +
-              "or investigate why the agent cannot finish it (see the worker " +
-              "logs for the per-attempt progress lines).",
+            heading: escalation.heading,
+            reason: escalation.reason,
+            nextStep: escalation.nextStep,
+            // The key keeps its historical name on purpose: one hand-off per
+            // issue is the behaviour wanted, and renaming it would post a
+            // second comment on an issue a timeout escalation already
+            // covered (Issue #1949).
             dedupKey: `timeout-escalation-${issueNumber}`,
             githubUser,
             deps: { github: { ensureLabelExists: ensureLabelExistsFn } },
             logger,
           });
         } catch (err) {
-          logger.warn("Timeout-escalation handoff failed (non-fatal)", {
-            repo,
-            issueNumber,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          logger.warn(
+            "Repeated-failure escalation handoff failed (non-fatal)",
+            {
+              repo,
+              issueNumber,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
         }
       }
     },
@@ -3737,6 +3933,27 @@ export async function createProductionRunCoreDeps(
     },
     async recordRepoSuccess(repo: string) {
       await repoTrackerRecordSuccess(repoFailureConfig, repo);
+      // Issue #1950: a run that got somewhere proves the repository's
+      // environment works, so its fast-failure history goes with it.
+      const cleared = await clearRepoFastFailures({
+        ...fastFailureOptions,
+        repo,
+      });
+      if (!cleared.ok) {
+        logger.warn(
+          `Could not clear the fast-failure history for ${repo}: ${cleared.error.message}`,
+        );
+      } else if (cleared.value) {
+        logger.info(`repo-fast-failures: ${repo} cleared after a success`);
+      }
+    },
+
+    // Issue #1950: the cycle-summary line naming every repository with a
+    // live fast failure and how long each is backed off for.
+    async describeRepoFastFailures() {
+      return formatRepoFastFailureSummary(
+        await loadRepoFastFailureStates(fastFailureOptions),
+      );
     },
 
     // -- Crash handling --
@@ -3832,6 +4049,32 @@ export async function createProductionRunCoreDeps(
             );
           }
         } catch { /* best-effort — never blocks the release */ }
+      }
+      // Issue #1950: a run that died before the agent produced output, or
+      // inside `fast_failure_seconds`, failed at claim or setup — the
+      // repository's environment, not the issue. Counted durably so three
+      // of them in a day back the repository off and file one diagnostic,
+      // instead of the whole week of retries the fleet used to spend.
+      if (
+        outcome?.kind === "no_pr" &&
+        isFastFailure(
+          {
+            category: outcome.category,
+            elapsedSeconds: outcome.elapsedSeconds,
+          },
+          fastFailurePolicy,
+        )
+      ) {
+        try {
+          await recordFastFailureAndMaybeFile(repo, issueNumber, outcome);
+        } catch (err) {
+          // Best-effort — never blocks the release, but never silent either.
+          logger.warn(
+            `Fast-failure tracking failed for ${repo}#${issueNumber}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
       }
       // Issue #4170: a released claim ends the attempt deliberately, so the
       // durable resume state must not make the next attempt "resume" it.

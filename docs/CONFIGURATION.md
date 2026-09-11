@@ -1689,6 +1689,9 @@ unless explicitly overridden.
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
 | Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
+| Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure counts however long it took. |
+| Fast failures before back-off | `repo_fast_failure_threshold` | `3` | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed. |
+| Fast-failure window (hours) | `repo_fast_failure_window_hours` | `24` | The rolling window the threshold is counted over, and the decay period — a repaired repository recovers on its own once its failures age out. |
 
 > **`MIN_CLAIM_RUNWAY_SECONDS` is a fallback for a native run only.**
 > `container_launch.ts` forwards only the
@@ -1850,6 +1853,63 @@ as
 and the streak resets as soon as the floor accepts the issue, so an issue that
 genuinely fits a later cycle is never claimed on a doomed slice. Entries expire
 after seven days.
+
+### 🐢 Fast-failure repository back-off
+
+A repository whose runs die in their first minute is not failing at the
+issues — it is failing at claim or setup: a missing toolchain, a broken
+quality-gate bootstrap, a credential or branch problem. Until Issue #1950
+nothing noticed. The per-cycle repo failure tracker is cleared at the top of
+every cycle and keyed on a PID-scoped file, so a repository with 12 failures
+in 14 runs was retried every cycle for a week, filed nothing, and the pattern
+only surfaced in a hand-written weekly report.
+
+The fast-failure tracker is the durable half. It lives on the work volume as
+`repo_fast_failures_<host>.json` — the hostname rides in the filename, never
+the PID — so the counters survive a worker restart.
+
+```mermaid
+flowchart TD
+    R["Run released with no PR"] --> F{"Fast failure?<br/>zero_output, or<br/>under fast_failure_seconds"}
+    F -- "no" --> K["Nothing recorded"]
+    F -- "yes" --> C["Record the event:<br/>phase + last error line"]
+    C --> T{"repo_fast_failure_threshold<br/>reached inside the window?"}
+    T -- "no" --> K
+    T -- "yes" --> B["Repository backed off —<br/>excluded from the claim scan"]
+    B --> D["One deduplicated diagnostic issue<br/>(body marker, never the title)"]
+    D --> W{"Released?"}
+    W -- "diagnostic closed" --> G["Claimable again"]
+    W -- "window lapses" --> G
+    W -- "a run succeeds" --> G
+    style B fill:#9d0208,stroke:#6a040f,color:#fff
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **What counts as fast.** A run whose agent produced no output
+  (`zero_output`) at all, or one released inside `fast_failure_seconds`.
+  Host-wide causes never count — a rate-limited run dies in seconds on every
+  repository at once, and a scheduled release is a deliberate handover.
+- **What the back-off stops.** The repository is excluded from the
+  implementation claim scan (`findNextIssue` → `findOldestIssue`), which is
+  where the retries Issue #1950 measured were spent. The label-driven lanes
+  (refinement, grill-me, planning, question) are not filtered — each removes
+  its own label and so stops itself.
+- **The back-off decays on its own.** It is the count of events still inside
+  `repo_fast_failure_window_hours`, not a stored expiry, so a repaired
+  repository recovers with no operator action. A single fast failure followed
+  by a success clears the history outright.
+- **Exactly one diagnostic per repository.** Deduplicated on the body marker
+  `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`, and only when a fleet
+  account authored the match — a marker in a body is text anyone can write.
+  It carries the failing phase and the last error line. Closing it releases
+  the back-off on the next scan.
+- **Where it is filed.** `stSoftwareAU/VibeCoder` by default, matching the
+  run-failure filing policy: a repository failing in its first minute is a
+  worker-side environment fault. Set `fast_failure_diagnostics_here` in that
+  repository's `repo_config` to file it beside the code instead.
+- **What an operator sees.** One cycle-summary line naming every tracked
+  repository:
+  `repo-fast-failures: owner/repo: 5 fast failures, backed off until 2026-09-12T04:05Z (stSoftwareAU/VibeCoder#8123)`.
 
 ### 🕰️ The cycle-deadline model
 
@@ -3653,6 +3713,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `ci_failure_job_path`   | string  | Fallback target handed to the CI log provider when a CI-failure issue body carries a build number but no `Build URL`. Used only when the repo's `ciProviders` entry names no `jobPath` of its own; opaque to core. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
 | `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+| `fast_failure_diagnostics_here` | boolean | When `true`, this repository's fast-failure diagnostic issue is filed **here** rather than in the worker repository (Issue #1950). See [Fast-failure repository back-off](#-fast-failure-repository-back-off). |
 | `claude_model`          | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                          |
 | `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
 | `phase_model_overrides` | object  | Per-repo per-phase model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                           |
