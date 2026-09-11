@@ -20,6 +20,7 @@
  *     S -->|no message flag| R["real git binary"]
  *     S -->|message flag| G["git_guard_cli.ts<br/>redactGitMessageArgs"]
  *     G -- "allowed (redacted argv)" --> R
+ *     G -- "stdin message consumed<br/>(argv carries it; git runs with stdin closed)" --> R
  *     G -- unscannable --> X["exit 1 + SECURITY log line"]
  * ```
  *
@@ -56,6 +57,7 @@
 
 import {
   GIT_GUARD_ALLOW_MARKER,
+  GIT_GUARD_ALLOW_STDIN_MARKER,
   GIT_GUARD_REFUSE_MARKER,
 } from "./git_guard_cli.ts";
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
@@ -89,6 +91,10 @@ export function renderGitShimScript(opts: {
    */
   denoDir: string;
 }): string {
+  // Quoted once: the wrapper names the real binary three times, and an inline
+  // call in the template would be wrapped mid-command by the formatter.
+  const realGit = shellQuote(opts.realGitPath);
+
   // bash 3.2 (macOS) under `set -u` treats an empty array expansion as an
   // unbound variable, hence the ${arr[@]+"${arr[@]}"} guard.
   // `#!/bin/bash` rather than `/usr/bin/env bash`: a security wrapper must not
@@ -118,7 +124,7 @@ for arg in "$@"; do
   esac
 done
 if [ "$needs_guard" -eq 0 ]; then
-  exec ${shellQuote(opts.realGitPath)} "$@"
+  exec ${realGit} "$@"
 fi
 
 # The guard returns the argv to run as NUL-terminated fields. A NUL cannot
@@ -143,9 +149,16 @@ done < "$GUARD_OUT"
 
 verdict="\${fields[0]-}"
 
-# Positive marker only: a missing/garbled verdict means the guard did not run,
-# which is refused rather than waved through.
-if [ "$status" -eq 0 ] && [ "$verdict" = "${GIT_GUARD_ALLOW_MARKER}" ]; then
+# Positive markers only: a missing/garbled verdict means the guard did not run,
+# which is refused rather than waved through. The second marker (Issue #1953)
+# says the guard consumed a stdin message (git commit -F -) and put it in the
+# argv, so the real git is run with its stdin closed: a stream reads once, and
+# a second reader would see an empty or partial message.
+allowed=0
+case "$verdict" in
+  ${GIT_GUARD_ALLOW_MARKER}|${GIT_GUARD_ALLOW_STDIN_MARKER}) allowed=1 ;;
+esac
+if [ "$status" -eq 0 ] && [ "$allowed" -eq 1 ]; then
   GIT_ARGS=()
   seen_verdict=0
   for field in \${fields[@]+"\${fields[@]}"}; do
@@ -155,7 +168,10 @@ if [ "$status" -eq 0 ] && [ "$verdict" = "${GIT_GUARD_ALLOW_MARKER}" ]; then
   # Redaction never adds or drops an argument, so a different count means the
   # rewrite is not the command the guard judged.
   if [ "\${#GIT_ARGS[@]}" -eq "$#" ]; then
-    exec ${shellQuote(opts.realGitPath)} \${GIT_ARGS[@]+"\${GIT_ARGS[@]}"}
+    if [ "$verdict" = "${GIT_GUARD_ALLOW_STDIN_MARKER}" ]; then
+      exec ${realGit} \${GIT_ARGS[@]+"\${GIT_ARGS[@]}"} </dev/null
+    fi
+    exec ${realGit} \${GIT_ARGS[@]+"\${GIT_ARGS[@]}"}
   fi
   printf '%s\\n' "[SECURITY] [GIT_GUARD_ERROR] the guard returned \${#GIT_ARGS[@]} arguments for a $# argument command — refusing to run it." >&2
   exit 126

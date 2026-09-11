@@ -711,6 +711,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "marker",
     note: "verdict marker written by the git guard shim (Issue #1284)",
   },
+  VIBE_GIT_GUARD_ALLOW_STDIN: {
+    role: "marker",
+    note:
+      "verdict marker for a git command whose stdin message the guard consumed (Issue #1953)",
+  },
   VIBE_GIT_GUARD_REFUSE: {
     role: "marker",
     note: "verdict marker written by the git guard shim (Issue #1284)",
