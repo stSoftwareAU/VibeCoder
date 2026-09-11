@@ -122,6 +122,19 @@ Deno.test("git guard cli - a stdin message that cannot be read still refuses", (
   assertEquals(result.gitArgs, undefined);
 });
 
+Deno.test("git guard cli - refuses a command naming stdin twice", () => {
+  // The real `git` reads the stream once and finds the second message empty;
+  // replaying the same text twice would commit something it never saw.
+  const result = runGitGuardCli(
+    ["--", "commit", "-F", "-", "-F", "-"],
+    undefined,
+    pipedStdin("subject\n"),
+  );
+  assertEquals(result.exitCode, 1);
+  assertEquals(result.stdout, GIT_GUARD_REFUSE_MARKER);
+  assertStringIncludes(result.stderr, "more than once");
+});
+
 Deno.test("git guard cli - a command with no stdin message never reads stdin", () => {
   // `git am` reads its mbox from stdin and has no message flag of its own:
   // the guard must leave that stream alone and give the plain allow marker.

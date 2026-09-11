@@ -855,8 +855,8 @@ Vibe-Coder-Run-Id: <value of $VIBE_RUN_ID>
 - Any spelling works: `-m` (repeatable), `-F <file>`, or a message piped
   on stdin with `-F -`. The `git` guard consumes a piped message, scans it
   for secrets and hands it to `git` in the argv, so a heredoc into
-  `git commit -F -` commits normally — a message over 64 KiB is the one
-  case it refuses, and it says to use `-F <file>` instead.
+  `git commit -F -` commits normally. It refuses a piped message over
+  64 KiB, telling you to use `-F <file>` instead — that file has no bound.
 
 The worker's own auto-commit path (`commitAndPushPending`) stamps this trailer
 automatically, and a pre-commit run-id gate (`assertRunIdTrailer`) rejects any

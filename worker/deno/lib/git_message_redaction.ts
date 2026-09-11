@@ -262,6 +262,32 @@ export function redactGitMessageArgs(
 }
 
 /**
+ * Whether this argv would take its message from stdin (`-F -`).
+ *
+ * Answered by running the redaction itself against a probe source rather than
+ * by parsing the argv a second way: two parsers that disagree is exactly the
+ * bug this module's subcommand scoping exists to avoid. The guard uses it to
+ * decide whether to read stdin at all — `git am --message-id` reaches the
+ * guard on the wrapper's deliberately over-matching fast path and must be
+ * handed its own mbox untouched.
+ *
+ * @param args - Arguments about to be passed to the `git` binary.
+ * @returns True when a message source of `-` is present and would be used.
+ */
+export function usesStdinMessage(args: readonly string[]): boolean {
+  let needed = false;
+  redactGitMessageArgs(args, {
+    stdin: {
+      read: () => {
+        needed = true;
+        return "";
+      },
+    },
+  });
+  return needed;
+}
+
+/**
  * Whether `name` is an abbreviation `git` would expand to `full`.
  *
  * `git` accepts any unambiguous prefix of a long option, so `git commit --mess

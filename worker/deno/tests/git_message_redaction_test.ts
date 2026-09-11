@@ -14,6 +14,7 @@ import {
   gitSubcommandIndex,
   redactGitMessageArgs,
   UnredactableMessageError,
+  usesStdinMessage,
 } from "../lib/git_message_redaction.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 
@@ -339,6 +340,37 @@ Deno.test("git message redaction - an unreadable stdin message fails closed", ()
   assert(raised instanceof UnredactableMessageError);
   assertEquals(raised.source, "-");
   assertStringIncludes(raised.message, "terminal");
+});
+
+Deno.test("git message redaction - usesStdinMessage answers for every spelling", () => {
+  for (
+    const args of [
+      ["commit", "-F", "-"],
+      ["commit", "--file", "-"],
+      ["commit", "--file=-"],
+      ["commit", "-F-"],
+      ["commit", "-aF", "-"],
+      ["-C", "/repo", "commit", "-F", "-"],
+      ["tag", "-a", "v1", "-F", "-"],
+    ]
+  ) {
+    assertEquals(usesStdinMessage(args), true, args.join(" "));
+  }
+  for (
+    const args of [
+      // `git am` takes its mbox on stdin and has no message flag of its own.
+      ["am", "--message-id"],
+      ["commit", "-m", "subject"],
+      ["commit", "-F", "/tmp/msg.txt"],
+      // A pathspec, not a message.
+      ["commit", "-m", "subject", "--", "-"],
+      // `stash` has no -F at all, so this `-` is not a message source.
+      ["stash", "push", "-F", "-"],
+      ["status", "--short"],
+    ]
+  ) {
+    assertEquals(usesStdinMessage(args), false, args.join(" "));
+  }
 });
 
 Deno.test("git message redaction - a pathspec dash is not a stdin message", () => {

@@ -450,6 +450,10 @@ Deno.test({
       await git("init", "--quiet", "--initial-branch", "main");
       await git("config", "user.email", "vibe@example.com");
       await git("config", "user.name", "Vibe Coder");
+      // Never inherit the host's signing or hook configuration: the commit
+      // runs with stdin closed, so a signer prompt would wedge it.
+      await git("config", "commit.gpgsign", "false");
+      await git("config", "core.hooksPath", "/dev/null");
       await Deno.writeTextFile(`${repo}/file.txt`, "content\n");
       await git("add", "file.txt");
 
