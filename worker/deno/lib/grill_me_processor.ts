@@ -21,11 +21,17 @@
  * `needs-human` is the correct signal that the ball is back in the
  * user's court — it is no longer removed on convergence.
  *
+ * Stop rule (Issue #1933): a productive grilling is never halted by a round
+ * count. `maxGrillMeRounds` is a runaway ceiling, and the stall guard in
+ * `grill_me_stall_guard.ts` stops a grilling that has begun repeating itself.
+ * Either trip makes the next round a forced final round that must post the
+ * Ready comment; only a forced round that fails to do so escalates.
+ *
  * Reopening (Issue #1634): a Ready comment no longer ends grilling for
  * good. When the developer re-applies `grill-me` after it (clearing
  * `needs-human`, which the discovery filter requires anyway), the worker
  * starts a fresh round instead of stripping the label straight back off,
- * and the safety cap counts only the rounds of that reopened grilling.
+ * and the stop rule sees only the rounds of that reopened grilling.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -82,6 +88,11 @@ import { escalateToHuman } from "./needs_human_escalation.ts";
 import { reportGrillMeDegradation } from "./grill_me_run_stats.ts";
 import { releaseAllWorkerClaims } from "./claim_release.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import {
+  decideGrillMeStop,
+  forcedFinalTriggerLine,
+  type GrillMeStopTrigger,
+} from "./grill_me_stall_guard.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -118,10 +129,11 @@ export interface GrillMeResult {
   /** The round number processed (1-indexed). 0 when not processed. */
   roundNumber: number;
   /**
-   * True when the safety-cap round was reached without convergence
-   * (Issue #1648). The previous "isFinalRound" semantics are gone — the
-   * processor never forces finalisation, so this flag now indicates only
-   * that the safety cap was hit.
+   * True when the round that ran was the **forced final round** (Issue
+   * #1933): the stall guard tripped or the runaway ceiling was reached, so
+   * the prompt was told it must post the Ready comment. The processor still
+   * never finalises on the developer's behalf — it forces the round, not the
+   * label.
    */
   isFinalRound: boolean;
   /** True when Claude posted at least one comment in this round. */
@@ -139,10 +151,10 @@ export interface GrillMeResult {
    */
   defenceInDepthApplied: boolean;
   /**
-   * True when the processor escalated to `needs-human` — either
-   * because of two consecutive failures, or because the
-   * `maxGrillMeRounds` safety cap was reached without convergence
-   * (Issue #1648).
+   * True when the processor escalated to `needs-human` — either because of
+   * two consecutive failures, or because a forced final round failed to post
+   * the Ready marker (Issue #1933). Reaching the round count alone never
+   * escalates any more.
    */
   escalatedToHuman: boolean;
   /**
@@ -248,6 +260,38 @@ export interface BuildGrillMePromptOptions {
    * entry overriding the `grill-me` phase replaces this template.
    */
   promptOverrides?: readonly CustomLabelPromptMapping[];
+  /**
+   * Why this round is a forced final round, or `undefined` for an ordinary
+   * round (Issue #1933). When set, the prompt is told it must post the Ready
+   * comment, record each still-open question as a named assumption, and carry
+   * {@link forcedFinalTriggerLine} directly under the TL;DR.
+   */
+  forcedFinal?: GrillMeStopTrigger;
+}
+
+/**
+ * The forced-final block substituted into `{{FORCED_FINAL_INSTRUCTION}}`
+ * (Issue #1933). Worker-authored text, not user content — the only variable
+ * part is the trigger line the worker computed.
+ *
+ * Empty for an ordinary round, so the template reads exactly as it did before
+ * the stop rule existed.
+ */
+export function buildForcedFinalInstruction(
+  trigger: GrillMeStopTrigger | undefined,
+): string {
+  if (trigger === undefined) return "";
+  return [
+    "- **This round is a forced final round.** The grilling has stopped being",
+    "  productive or has reached its round ceiling, so Step 5b is the only",
+    "  permitted outcome: post the `## Grill-Me — Ready for Next Phase`",
+    "  comment, not another `## Grill-Me Round` comment. Record every",
+    "  still-open question as a named assumption in the issue body's",
+    "  `Assumptions` list so nothing is dropped silently, and put this exact",
+    "  line directly under the Ready comment's TL;DR:",
+    "",
+    `  \`${forcedFinalTriggerLine(trigger)}\``,
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -295,8 +339,8 @@ function carriesMarkerHeading(body: string, marker: string): boolean {
  * quoted round in a developer's reply is not miscounted. A marker a commenter
  * types deliberately still inflates the count, and that fails safe in both
  * directions it can move: a higher count either continues the numbering or
- * trips the safety cap, and the cap hands the issue to a human rather than
- * acting on the forgery.
+ * brings the runaway ceiling closer, and the ceiling round is a forced final
+ * round that converges — it never acts on the forgery.
  *
  * @param comments - Issue comments (chronological order)
  * @returns The number of prior rounds posted by any worker identity
@@ -576,12 +620,12 @@ export function findLatestReadyMarkerTimestamp(
 /**
  * Count grill-me rounds posted after `sinceTimestamp` (Issue #1634).
  *
- * The safety cap compares against this rather than the issue-wide total once
+ * The stop rule compares against this rather than the issue-wide total once
  * grilling has been reopened: a developer who re-applies `grill-me` to an
- * issue that already burned all `maxGrillMeRounds` rounds would otherwise be
- * escalated to `needs-human` on the very first reopened round. A reopened
- * grilling gets the full cap again; the round *heading* still continues the
- * issue-wide numbering, which is {@link countGrillMeRounds}.
+ * issue that already spent all `maxGrillMeRounds` rounds would otherwise have
+ * its very first reopened round forced to converge. A reopened grilling gets
+ * the full budget again; the round *heading* still continues the issue-wide
+ * numbering, which is {@link countGrillMeRounds}.
  *
  * A comment whose `createdAt` is unparseable counts, so a malformed timestamp
  * can only make the cap stricter — never hand a fresh budget to an issue that
@@ -595,16 +639,36 @@ export function countGrillMeRoundsSince(
   comments: readonly GitHubComment[],
   sinceTimestamp: string | null,
 ): number {
-  if (sinceTimestamp === null) return countGrillMeRounds(comments);
+  return collectGrillMeRoundsSince(comments, sinceTimestamp).length;
+}
+
+/**
+ * The round comments of the *current* grilling — those posted after
+ * `sinceTimestamp` — in chronological order (Issue #1933).
+ *
+ * The stall guard reads the question stems of these rounds, and
+ * {@link countGrillMeRoundsSince} counts them, so both see exactly the same
+ * window: a reopened grilling is judged on its own rounds, never on the ones
+ * the previous convergence spent.
+ *
+ * @param comments - Issue comments (chronological order)
+ * @param sinceTimestamp - ISO timestamp to collect after; `null` collects all
+ */
+export function collectGrillMeRoundsSince(
+  comments: readonly GitHubComment[],
+  sinceTimestamp: string | null,
+): GitHubComment[] {
+  const rounds = comments.filter((c) => carriesRoundMarker(c.body));
+  if (sinceTimestamp === null) return rounds;
   const sinceMs = Date.parse(sinceTimestamp);
-  if (Number.isNaN(sinceMs)) return countGrillMeRounds(comments);
-  let count = 0;
-  for (const c of comments) {
-    if (!carriesRoundMarker(c.body)) continue;
+  if (Number.isNaN(sinceMs)) return rounds;
+  // A comment whose `createdAt` is unparseable counts, so a malformed
+  // timestamp can only make the window larger — never hand a fresh budget to
+  // a grilling that has not earned one.
+  return rounds.filter((c) => {
     const createdMs = Date.parse(c.createdAt);
-    if (Number.isNaN(createdMs) || createdMs > sinceMs) count++;
-  }
-  return count;
+    return Number.isNaN(createdMs) || createdMs > sinceMs;
+  });
 }
 
 /**
@@ -856,6 +920,9 @@ export async function buildGrillMePrompt(
   const replacements: Record<string, string> = {
     ROUND_NUMBER: String(opts.roundNumber),
     MAX_ROUNDS: String(opts.maxRounds),
+    // Trusted worker output: the forced-final signal (Issue #1933), empty on
+    // an ordinary round.
+    FORCED_FINAL_INSTRUCTION: buildForcedFinalInstruction(opts.forcedFinal),
     REPO: opts.repo,
     ISSUE_NUMBER: String(opts.issueNumber),
     ISSUE_TITLE: wrappedTitle,
@@ -912,12 +979,15 @@ export async function buildGrillMePrompt(
  *      completion turn signal (Issue #2064). Unless a non-fleet actor
  *      re-applied `grill-me` after that Ready comment, which reopens
  *      grilling for a fresh round (Issue #1634).
- *   6. If the safety cap `maxGrillMeRounds` has been reached without
- *      convergence → escalate to needs-human with a recommendation.
- *      After a reopen the cap counts only the rounds posted since the
- *      Ready comment, so a reopened grilling gets the full budget
- *      again (Issue #1634).
- *   7. Build the grill-me prompt and invoke Claude.
+ *   6. Apply the stop rule (Issue #1933): when the latest round repeated
+ *      every question stem it had already asked, or the next round would be
+ *      the `maxGrillMeRounds`-th of this grilling, the round about to run is
+ *      a forced final round that must post the Ready comment. After a reopen
+ *      the stop rule sees only the rounds posted since the Ready comment, so
+ *      a reopened grilling gets the full budget again (Issue #1634).
+ *   7. Build the grill-me prompt (carrying the forced-final signal when the
+ *      stop rule tripped) and invoke Claude. A forced final round that does
+ *      not post Ready escalates to needs-human, naming the trigger.
  *   8. If Claude posted the Ready marker, remove `grill-me` and ensure
  *      `needs-human` is applied (defence in depth — Issue #2064).
  *      Never add `planning`, `work-on`, or any other operational
@@ -1426,17 +1496,48 @@ async function _processGrillMeWithHeartbeat(
     // is their "proceed" signal even without a separate reply comment.
   }
 
-  // 4) Compute the current round number. maxGrillMeRounds is now a
-  //    safety cap (Issue #1648) — when the next round would exceed it,
-  //    escalate to needs-human instead of forcing finalisation.
+  // 4) Compute the current round number and the stop rule (Issue #1933).
+  //    A productive grilling is never halted by a round count: the stop rule
+  //    is a stall guard (the latest round repeated every stem it had already
+  //    asked) plus the runaway ceiling `maxGrillMeRounds`. When either trips,
+  //    the round about to run is a *forced final* round that must post the
+  //    Ready comment — Claude still runs, and only a forced round that fails
+  //    to post Ready escalates to `needs-human`.
   const priorRounds = countGrillMeRounds(comments);
-  // The cap counts only the rounds of the *current* grilling (Issue #1634):
-  // after a reopen the rounds that preceded the Ready comment are spent
-  // budget, not this grilling's. With no Ready comment the two are identical.
-  const cappedRounds = countGrillMeRoundsSince(comments, latestReadyTimestamp);
+  // The stop rule sees only the rounds of the *current* grilling (Issue
+  // #1634): after a reopen the rounds that preceded the Ready comment are
+  // spent budget, not this grilling's. With no Ready comment the two are
+  // identical.
+  const roundsSinceReady = collectGrillMeRoundsSince(
+    comments,
+    latestReadyTimestamp,
+  );
+  const cappedRounds = roundsSinceReady.length;
+  const stopTrigger = decideGrillMeStop({
+    roundBodies: roundsSinceReady.map((c) => c.body),
+    latestRoundNumber: priorRounds,
+    maxRounds,
+  });
+  if (stopTrigger !== null) {
+    logger.info(
+      "Grill-me stop rule tripped — the next round is a forced final round",
+      {
+        repo,
+        issueNumber,
+        trigger: stopTrigger.kind,
+        roundNumber: priorRounds + 1,
+        cappedRounds,
+        maxRounds,
+      },
+    );
+  }
+
   if (cappedRounds >= maxRounds) {
+    // The ceiling round was the forced final round and it did not converge.
+    // Escalate without posting another one, so a grilling never exceeds the
+    // ceiling since its latest Ready comment (Issue #1933).
     logger.warn(
-      "Grill-me safety cap reached without convergence — escalating to needs-human",
+      "Grill-me round ceiling already spent without convergence — escalating to needs-human",
       { repo, issueNumber, priorRounds, cappedRounds, maxRounds },
     );
     await escalateToHuman({
@@ -1445,10 +1546,11 @@ async function _processGrillMeWithHeartbeat(
       target: { kind: "issue", number: issueNumber },
       needsHumanLabel,
       reason:
-        `The grill-me workflow reached its safety cap of ${maxRounds} round${
-          maxRounds === 1 ? "" : "s"
-        } ` +
-        `without Claude posting a \`${GRILL_ME_READY_MARKER}\` comment.`,
+        `This grilling has posted ${cappedRounds} round${
+          cappedRounds === 1 ? "" : "s"
+        } since its latest ` +
+        `\`${GRILL_ME_READY_MARKER}\` comment, reaching the ceiling of ${maxRounds}, ` +
+        `and the forced final round did not converge.`,
       nextStep:
         `Review the prior rounds and either apply \`planning\` (to move on with what is already understood), ` +
         `apply \`work-on\` (to start implementation directly), or close the issue if it is no longer needed. ` +
@@ -1458,7 +1560,7 @@ async function _processGrillMeWithHeartbeat(
       logger,
       deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
     });
-    const capUnassigned = await releaseAllWorkerClaims(
+    const ceilingUnassigned = await releaseAllWorkerClaims(
       ghClient,
       repo,
       issueNumber,
@@ -1477,12 +1579,64 @@ async function _processGrillMeWithHeartbeat(
         escalatedToHuman: true,
         needsHumanAdded: false,
         needsHumanRemoved: false,
-        workerUnassigned: capUnassigned,
+        workerUnassigned: ceilingUnassigned,
         summary:
-          `Escalated to ${needsHumanLabel} — safety cap of ${maxRounds} reached without Ready marker`,
+          `Escalated to ${needsHumanLabel} — round ceiling of ${maxRounds} reached without a Ready marker`,
       },
     };
   }
+
+  /**
+   * A forced final round that did not post Ready is the one path that still
+   * escalates (Issue #1933). The comment names the trigger that forced the
+   * round and what happened instead, so the developer reading it knows the
+   * grilling stopped on purpose and why no Ready comment followed. A no-op on
+   * an ordinary round.
+   */
+  const escalateForcedFinalNotReady = async (
+    outcome: string,
+  ): Promise<boolean> => {
+    if (stopTrigger === null) return false;
+    const escalation = await escalateToHuman({
+      ghClient,
+      repo,
+      target: { kind: "issue", number: issueNumber },
+      needsHumanLabel,
+      reason:
+        `${forcedFinalTriggerLine(stopTrigger)} — but Round ${
+          priorRounds + 1
+        } ` +
+        `did not post a \`${GRILL_ME_READY_MARKER}\` comment: ${outcome}.`,
+      nextStep:
+        `Review the prior rounds and either apply \`planning\` (to move on with what is already understood), ` +
+        `apply \`work-on\` (to start implementation directly), or close the issue if it is no longer needed. ` +
+        `Remove \`${needsHumanLabel}\` once you have chosen.`,
+      heading: "Grill-Me Escalation",
+      githubUser,
+      logger,
+      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
+    });
+    if (!escalation.ok) {
+      // Both the label add and the comment post failed — say so rather than
+      // reporting an escalation that never reached the issue.
+      logger.error(
+        "Forced final grill-me round did not post Ready and the escalation failed",
+        {
+          repo,
+          issueNumber,
+          trigger: stopTrigger.kind,
+          outcome,
+          error: escalation.error.message,
+        },
+      );
+      return false;
+    }
+    logger.warn(
+      "Forced final grill-me round did not post Ready — escalated to needs-human",
+      { repo, issueNumber, trigger: stopTrigger.kind, outcome },
+    );
+    return true;
+  };
 
   // 4a) Pre-Claude race guard (Issue #1876): another Vibe Coder running on
   //     a different machine may have already posted a Round N or Ready
@@ -1570,11 +1724,12 @@ async function _processGrillMeWithHeartbeat(
 
   const roundNumber = priorRounds + 1;
 
-  // The prompt compares `ROUND_NUMBER >= MAX_ROUNDS` to decide when to prefer
-  // converging. `roundNumber` is the issue-wide heading number, so on a reopen
-  // the cap has to be expressed in that same scale — otherwise the first
-  // reopened round already reads as "out of budget" and converges immediately
-  // (Issue #1634). With no reopen the two are identical.
+  // The round ceiling is shown to the prompt as context, and the release
+  // comment reads `Round N/<ceiling>`. `roundNumber` is the issue-wide heading
+  // number, so on a reopen the ceiling has to be expressed in that same scale
+  // — otherwise a reopened grilling reads the impossible "Round 4/3"
+  // (Issue #1634). With no reopen the two are identical. What actually stops
+  // a grilling is the stop rule above, never this number (Issue #1933).
   const spentBeforeReopen = priorRounds - cappedRounds;
   const effectiveMaxRounds = maxRounds + spentBeforeReopen;
 
@@ -1584,6 +1739,7 @@ async function _processGrillMeWithHeartbeat(
     roundNumber,
     maxRounds,
     effectiveMaxRounds,
+    forcedFinal: stopTrigger?.kind ?? null,
   });
 
   // 5) Build the prompt.
@@ -1610,6 +1766,9 @@ async function _processGrillMeWithHeartbeat(
   const promptResult = await buildGrillMePrompt({
     roundNumber,
     maxRounds: effectiveMaxRounds,
+    // Issue #1933: a forced final round is told so explicitly, rather than an
+    // ordinary round being nudged to converge once it nears the cap.
+    forcedFinal: stopTrigger ?? undefined,
     issueBody,
     commentHistory: history.formattedComments,
     commentBoundaryId: history.boundaryId,
@@ -1627,6 +1786,7 @@ async function _processGrillMeWithHeartbeat(
     logger.warn("Failed to build grill-me prompt", {
       error: promptResult.error.message,
     });
+    await escalateForcedFinalNotReady("the round's prompt could not be built");
     return await postFailureAndUnassign(
       ghClient,
       repo,
@@ -1665,6 +1825,7 @@ async function _processGrillMeWithHeartbeat(
       issueNumber,
       error: errorMsg,
     });
+    await escalateForcedFinalNotReady("the run errored");
     return await postFailureAndUnassign(
       ghClient,
       repo,
@@ -1677,6 +1838,7 @@ async function _processGrillMeWithHeartbeat(
 
   if (claudeResult.value.timedOut) {
     logger.warn("Claude timed out during grill-me", { repo, issueNumber });
+    await escalateForcedFinalNotReady("the run timed out");
     return await postFailureAndUnassign(
       ghClient,
       repo,
@@ -1808,6 +1970,7 @@ async function _processGrillMeWithHeartbeat(
       priorRounds,
       newRoundCount,
     });
+    await escalateForcedFinalNotReady("no comment was posted");
     return await postFailureAndUnassign(
       ghClient,
       repo,
@@ -1829,6 +1992,8 @@ async function _processGrillMeWithHeartbeat(
   let defenceInDepthApplied = false;
   let needsHumanAdded = false;
   const needsHumanRemoved = false;
+  // Set only when a forced final round failed to post Ready (Issue #1933).
+  let escalatedToHuman = false;
 
   if (readyPostedNow) {
     let issueLabels: string[] = [];
@@ -1902,6 +2067,14 @@ async function _processGrillMeWithHeartbeat(
         defenceInDepthApplied = true;
       }
     }
+  } else if (stopTrigger !== null) {
+    // 8a) Forced final round that posted an ordinary round comment instead of
+    //     Ready (Issue #1933). Escalate with the trigger named, rather than
+    //     asking the developer for yet another reply the worker has already
+    //     decided not to act on.
+    escalatedToHuman = await escalateForcedFinalNotReady(
+      `Round ${roundNumber} was posted instead`,
+    );
   } else {
     // 9) Round N path: add `needs-human` so the label list reflects
     //    that it is the developer's turn. The developer removes the
@@ -1976,11 +2149,12 @@ async function _processGrillMeWithHeartbeat(
     value: {
       processed: true,
       roundNumber,
-      isFinalRound: false,
+      // The round that ran was the forced final one (Issue #1933).
+      isFinalRound: stopTrigger !== null,
       workerCommentPosted,
       labelsSwapped,
       defenceInDepthApplied,
-      escalatedToHuman: false,
+      escalatedToHuman,
       needsHumanAdded,
       needsHumanRemoved,
       workerUnassigned,
@@ -1992,6 +2166,8 @@ async function _processGrillMeWithHeartbeat(
         ? `Round ${roundNumber}/${effectiveMaxRounds} posted Ready marker — awaiting developer label change${
           defenceInDepthApplied ? " (grill-me removed defence-in-depth)" : ""
         }`
+        : escalatedToHuman
+        ? `Round ${roundNumber}/${effectiveMaxRounds} was the forced final round but posted no Ready marker — escalated to ${needsHumanLabel}`
         : `Round ${roundNumber}/${effectiveMaxRounds} posted`,
     },
   };

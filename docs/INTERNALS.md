@@ -1336,14 +1336,26 @@ network hiccups, and even its own mistakes:
   after the latest Ready comment, grilling reopens and the next round is
   posted. Without such an event — or when the timeline cannot be read — the
   clean-up path runs unchanged (remove `grill-me`, ensure `needs-human`). The
-  safety cap then counts only rounds posted since that Ready comment
-  (`countGrillMeRoundsSince`), so a reopened grilling gets the full
-  `maxGrillMeRounds` again while `ROUND_NUMBER` keeps the issue-wide
-  numbering. "A Ready marker was posted" becomes a *count* comparison at the
+  stop rule then sees only rounds posted since that Ready comment
+  (`collectGrillMeRoundsSince`), so a reopened grilling gets the full budget
+  again while `ROUND_NUMBER` keeps the issue-wide numbering. "A Ready marker
+  was posted" becomes a *count* comparison at the
   race guard and the post-Claude convergence check, so the inherited Ready
   comment is not mistaken for a fresh one; and the awaiting-reply gate resumes
   as soon as the reopened grilling has posted its own round, so a re-add buys
   one round rather than an unanswered run to the cap.
+- **Stop rule: stall guard + runaway ceiling (Issue #1933)** — a round count
+  no longer halts a productive grilling. Before each round the processor reads
+  the numbered question stems of every round posted since the latest Ready
+  comment (`grill_me_stall_guard.ts`): the grilling is *stalled* when every
+  stem of the latest round, normalised, already appeared in an earlier one,
+  and `maxGrillMeRounds` (default `20`) is the runaway ceiling whose
+  ceiling-th round is itself the forced final round. Either trigger renders
+  `{{FORCED_FINAL_INSTRUCTION}}` into the prompt, which must then post
+  `## Grill-Me — Ready for Next Phase` with the trigger line under its TL;DR
+  and each open question recorded as a named assumption. Only a forced final
+  round that posts no Ready escalates — `## Grill-Me Escalation` plus
+  `needs-human`, naming the trigger.
 - **Crash cleanup** — trap handler (Deno `crash-cleanup` command) cleans up
   heartbeat files and unassigns the worker from claimed issues on unexpected
   exit, closing the crash window between claim and heartbeat recording.
