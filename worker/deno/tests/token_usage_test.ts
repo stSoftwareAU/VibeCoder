@@ -4,13 +4,21 @@
  * Uses Australian English throughout.
  */
 
-import { assertAlmostEquals, assertEquals } from "@std/assert";
+import {
+  assert,
+  assertAlmostEquals,
+  assertEquals,
+  assertNotStrictEquals,
+} from "@std/assert";
 import {
   estimateCost,
   estimateCostWithUpperBound,
   extractTokenUsage,
   lookupModelPricing,
+  MODEL_PRICING,
+  type ModelPricing,
   type TokenUsage,
+  UNPRICED_UPPER_BOUND_PRICING,
 } from "../lib/token_usage.ts";
 
 // =============================================================================
@@ -422,15 +430,196 @@ Deno.test("token_usage - budget fallback does not trip prematurely for Opus 4.8 
 });
 
 // =============================================================================
-// Non-Claude model ids are unpriced, not free (Issue #366)
+// Non-Claude model ids are priced at the vendor's API-equivalent list price
+// (Issue #1937, replacing the unpriced treatment of Issue #366 / #1701)
 // =============================================================================
 
-Deno.test("token_usage - non-Claude model ids have no pricing row", () => {
-  assertEquals(lookupModelPricing("gpt-5-codex"), null);
-  assertEquals(lookupModelPricing("gemini-2.5-pro"), null);
+/**
+ * The eight routable non-Claude ids (`config_defaults.ts`) with the vendor
+ * rates read from the pricing pages on 2026-09-11 — the figures the rows
+ * themselves cite. Restated here so a silent edit to a row fails the suite.
+ */
+const API_EQUIVALENT_ROWS: ReadonlyArray<[string, ModelPricing]> = [
+  ["gpt-5-codex", {
+    inputPerMillion: 1.25,
+    outputPerMillion: 10,
+    cacheWritePerMillion: 0,
+    cacheReadPerMillion: 0.125,
+    apiEquivalent: true,
+  }],
+  ["gpt-5-mini", {
+    inputPerMillion: 0.25,
+    outputPerMillion: 2,
+    cacheWritePerMillion: 0,
+    cacheReadPerMillion: 0.025,
+    apiEquivalent: true,
+  }],
+  ["gpt-5", {
+    inputPerMillion: 1.25,
+    outputPerMillion: 10,
+    cacheWritePerMillion: 0,
+    cacheReadPerMillion: 0.125,
+    apiEquivalent: true,
+  }],
+  ["gemini-2.5-pro", {
+    inputPerMillion: 1.25,
+    outputPerMillion: 10,
+    cacheWritePerMillion: 0,
+    cacheReadPerMillion: 0.125,
+    apiEquivalent: true,
+  }],
+  ["gemini-2.5-flash-lite", {
+    inputPerMillion: 0.10,
+    outputPerMillion: 0.40,
+    cacheWritePerMillion: 0,
+    cacheReadPerMillion: 0.01,
+    apiEquivalent: true,
+  }],
+  ["gemini-2.5-flash", {
+    inputPerMillion: 0.30,
+    outputPerMillion: 2.50,
+    cacheWritePerMillion: 0,
+    cacheReadPerMillion: 0.03,
+    apiEquivalent: true,
+  }],
+  ["deepseek-reasoner", {
+    inputPerMillion: 0.30,
+    outputPerMillion: 1.20,
+    cacheWritePerMillion: 0,
+    cacheReadPerMillion: 0.006,
+    apiEquivalent: true,
+  }],
+  ["deepseek-chat", {
+    inputPerMillion: 0.30,
+    outputPerMillion: 1.20,
+    cacheWritePerMillion: 0,
+    cacheReadPerMillion: 0.006,
+    apiEquivalent: true,
+  }],
+];
+
+Deno.test("token_usage - each routable non-Claude id resolves to its own priced row (Issue #1937)", () => {
+  const seen: ModelPricing[] = [];
+  for (const [id, expected] of API_EQUIVALENT_ROWS) {
+    const row = lookupModelPricing(id);
+    assert(row, `${id} must resolve to a pricing row`);
+    assertEquals(row, expected, `${id} must carry its vendor rates`);
+    // Distinct row objects, so an id is never served by another id's row —
+    // two ids that share a rate today can diverge with a one-row edit.
+    for (const other of seen) assertNotStrictEquals(row, other);
+    seen.push(row);
+  }
+  assertEquals(seen.length, 8);
 });
 
-Deno.test("token_usage - non-Claude ids are charged at the unpriced upper bound", () => {
+Deno.test("token_usage - the ordered prefix walk reaches the specific row, not a broader one (Issue #1937)", () => {
+  const gpt5 = lookupModelPricing("gpt-5");
+  // `gpt-5-codex` currently shares gpt-5's rate, so only identity proves the
+  // codex row is reached rather than shadowed by the broader `gpt-5` prefix.
+  assertNotStrictEquals(lookupModelPricing("gpt-5-codex"), gpt5);
+  assertNotStrictEquals(lookupModelPricing("gpt-5-mini"), gpt5);
+  assertEquals(lookupModelPricing("gpt-5-mini")?.outputPerMillion, 2);
+
+  const flash = lookupModelPricing("gemini-2.5-flash");
+  assertNotStrictEquals(lookupModelPricing("gemini-2.5-flash-lite"), flash);
+  assertEquals(
+    lookupModelPricing("gemini-2.5-flash-lite")?.inputPerMillion,
+    0.10,
+  );
+  assertEquals(flash?.inputPerMillion, 0.30);
+
+  assertNotStrictEquals(
+    lookupModelPricing("deepseek-reasoner"),
+    lookupModelPricing("deepseek-chat"),
+  );
+});
+
+Deno.test("token_usage - a dated/suffixed non-Claude id still prices from its row (Issue #1937)", () => {
+  // The walk is a prefix match, so a vendor snapshot suffix resolves too.
+  assertEquals(
+    lookupModelPricing("gpt-5-codex-2026-09-01")?.outputPerMillion,
+    10,
+  );
+  assertEquals(
+    lookupModelPricing("GEMINI-2.5-PRO")?.inputPerMillion,
+    1.25,
+  );
+});
+
+Deno.test("token_usage - the API-equivalent marker sits on every non-Claude row and no Claude row (Issue #1937)", () => {
+  let nonClaude = 0;
+  for (const [key, row] of MODEL_PRICING) {
+    if (key.startsWith("claude")) {
+      assertEquals(
+        row.apiEquivalent,
+        undefined,
+        `${key} is a billed Claude rate and must carry no marker`,
+      );
+      continue;
+    }
+    nonClaude++;
+    assertEquals(
+      row.apiEquivalent,
+      true,
+      `${key} is an API-equivalent list price and must be marked`,
+    );
+  }
+  assertEquals(nonClaude, 8);
+});
+
+Deno.test("token_usage - the unpriced upper bound is unchanged by the new rows (Issue #1937)", () => {
+  // The four values as they stood before the non-Claude rows were added —
+  // the dearest Claude row (legacy Opus). Pinned so a vendor rate that would
+  // raise the derived bound is caught rather than landing silently.
+  assertEquals(UNPRICED_UPPER_BOUND_PRICING, {
+    inputPerMillion: 15,
+    outputPerMillion: 75,
+    cacheWritePerMillion: 18.75,
+    cacheReadPerMillion: 1.50,
+  });
+
+  for (const [id, row] of API_EQUIVALENT_ROWS) {
+    assert(
+      row.inputPerMillion <= UNPRICED_UPPER_BOUND_PRICING.inputPerMillion,
+      `${id} input rate must stay under the bound`,
+    );
+    assert(
+      row.outputPerMillion <= UNPRICED_UPPER_BOUND_PRICING.outputPerMillion,
+      `${id} output rate must stay under the bound`,
+    );
+    assert(
+      row.cacheWritePerMillion <=
+        UNPRICED_UPPER_BOUND_PRICING.cacheWritePerMillion,
+      `${id} cache-write rate must stay under the bound`,
+    );
+    assert(
+      row.cacheReadPerMillion <=
+        UNPRICED_UPPER_BOUND_PRICING.cacheReadPerMillion,
+      `${id} cache-read rate must stay under the bound`,
+    );
+  }
+});
+
+Deno.test("token_usage - a priced non-Claude id costs its row rate, not the bound (Issue #1937)", () => {
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 500_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  for (const [id, expected] of API_EQUIVALENT_ROWS) {
+    const estimate = estimateCostWithUpperBound(usage, id);
+    assertEquals(estimate.priced, true, `${id} must read as priced`);
+    const rowTotal = expected.inputPerMillion + expected.outputPerMillion +
+      0.5 * expected.cacheWritePerMillion + expected.cacheReadPerMillion;
+    assertAlmostEquals(estimate.cost.totalCost, rowTotal, 1e-9);
+    // Cache writes are not billed by any of these vendors.
+    assertEquals(estimate.cost.cacheWriteCost, 0);
+  }
+});
+
+Deno.test("token_usage - a non-Claude id outside the table is still unpriced and bounded (Issue #1937)", () => {
   const usage: TokenUsage = {
     inputTokens: 1_000_000,
     outputTokens: 1_000_000,
@@ -438,10 +627,32 @@ Deno.test("token_usage - non-Claude ids are charged at the unpriced upper bound"
     cacheReadTokens: 0,
   };
 
-  for (const model of ["gpt-5-codex", "gemini-2.5-pro"]) {
+  for (const model of ["gpt-4.1", "gemini-3-pro", "deepseek-v5"]) {
+    assertEquals(lookupModelPricing(model), null, `${model} must be unpriced`);
     const estimate = estimateCostWithUpperBound(usage, model);
     assertEquals(estimate.priced, false, `${model} must read as unpriced`);
     // The tokens carry a visible upper-bound cost rather than a silent $0.
-    assertEquals(estimate.cost.totalCost > 0, true);
+    assertAlmostEquals(
+      estimate.cost.totalCost,
+      UNPRICED_UPPER_BOUND_PRICING.inputPerMillion +
+        UNPRICED_UPPER_BOUND_PRICING.outputPerMillion,
+      1e-9,
+    );
   }
+});
+
+Deno.test("token_usage - estimateCost prices a Codex run from its row (Issue #1937)", () => {
+  // 200k input + 50k output on gpt-5-codex: 0.2 * 1.25 + 0.05 * 10.
+  const cost = estimateCost({
+    inputTokens: 200_000,
+    outputTokens: 50_000,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 400_000,
+  }, "gpt-5-codex");
+  assert(cost);
+  assertAlmostEquals(cost.inputCost, 0.25, 1e-9);
+  assertAlmostEquals(cost.outputCost, 0.5, 1e-9);
+  assertAlmostEquals(cost.cacheWriteCost, 0, 1e-9);
+  assertAlmostEquals(cost.cacheReadCost, 0.05, 1e-9);
+  assertAlmostEquals(cost.totalCost, 0.8, 1e-9);
 });

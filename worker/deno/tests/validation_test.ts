@@ -454,6 +454,21 @@ Deno.test("validation - validateConfigFileJson accepts empty object", () => {
   }
 });
 
+Deno.test("validation - provider routing mode accepts only pinned or auto", () => {
+  for (const agent_provider_mode of ["pinned", "auto"]) {
+    const accepted = validateConfigFileJson({ agent_provider_mode });
+    assertEquals(accepted.ok, true);
+  }
+
+  for (const agent_provider_mode of ["cheapest", 7]) {
+    const rejected = validateConfigFileJson({ agent_provider_mode });
+    assertEquals(rejected.ok, false);
+    if (!rejected.ok) {
+      assertEquals(rejected.error.field, "agent_provider_mode");
+    }
+  }
+});
+
 Deno.test("validation - validateConfigFileJson rejects non-object", () => {
   const result = validateConfigFileJson("not an object");
   assertEquals(result.ok, false);

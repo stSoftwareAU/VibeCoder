@@ -1,7 +1,7 @@
 # Security sweep — CI-fix attempt markers (`ci_fix_attempt_markers.ts`)
 
 **Issue:** [#1877](https://github.com/stSoftwareAU/VibeCoder/issues/1877)
-(chunk 12aa) · **Parent:** #1209
+(chunk 12ac) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
 after chunk 12z recorded its coverage:
@@ -12,7 +12,7 @@ after chunk 12z recorded its coverage:
 
 Appending a module to a slice whose sweep ran before it existed is the cheapest
 way to make `diffCoverage` green and a false record. The module is claimed by
-**12aa**, and this file is the reading of it.
+**12ac**, and this file is the reading of it.
 
 ## `worker/deno/lib/ci_fix_attempt_markers.ts`
 
