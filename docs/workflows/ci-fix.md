@@ -115,6 +115,8 @@ The reporting end of the same discipline is the `## Reproduction` block a `bug`-
 
 Every fleet host scans the same PRs, so the CI-fix path takes a **cross-host lock before it does anything else** — before the heartbeat, before Claude, before any push. Without it two hosts fixed one PR's CI failure concurrently (2026-08-03), burning tokens twice and racing each other's pushes.
 
+The lock stops two hosts working one PR **at the same time**; the fleet-wide attempt markers below stop them repeating each other's work **over time**.
+
 - **Granularity: the whole PR, not a single check.** Two hosts picking *different* failing checks on one branch would still push to that branch at the same time, so the lock claims the PR. It is the same `BRANCH_UPDATE_LOCK` comment used by the [branch-update workflow](pr-feedback.md), so a CI fix and a branch rebase can never run against one branch at once.
 - **Earliest claim wins.** Each host posts a lock comment, pauses for GitHub's eventual consistency, re-reads the comments, and the earliest `created_at` wins. The loser deletes its own comment, logs `pr_ci_lock=lost winner=<id>`, and returns immediately so the next scan can retry.
 - **Held for the whole run.** The lock TTL is 5 minutes but a CI fix may run for `ci_fix_timeout` (30 minutes), so the holder **renews** its lock every ~100 seconds rather than the TTL being raised. Renewal keeps the crash-recovery window at one TTL: a host that dies mid-fix frees the PR within five minutes instead of hours.
@@ -143,9 +145,34 @@ sequenceDiagram
 The worker tracks retries per check run ID using state files in the CI check state directory:
 
 - **State files:** `${CI_CHECK_STATE_DIR}/${safe_repo}_${check_id}.retries`
-- **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to `${WORK_DIR}/.ci_check_state`, **always absolute**, and **shared by the scan and the fix** (Issue #552). The old relative default resolved against the worker's working directory — the read-only checkout in container mode. The scan therefore read retry counters from a store nothing wrote to, so the cap was never enforced, and its green-build sweep cleared auto-fix budgets in a directory the fix never touched, so a spent budget stayed spent and the lane escalated the check to a human instead of repairing it. That is why semgrep failures waited for somebody to ask for a fix by hand.
+- **State directory:** resolved by `worker/deno/lib/ci_check_state_dir.ts` to `${WORK_DIR}/.ci_check_state`, **always absolute**, and **shared by the scan and the fix** (Issue #552). The old relative default resolved against the worker's working directory — the read-only checkout in container mode — so the scan read retry counters from a store nothing wrote to and the cap was never enforced. That is why semgrep failures waited for somebody to ask for a fix by hand.
 - **Maximum retries:** 3 (configurable via `CI_CHECK_MAX_RETRIES`)
 - **On max retries exceeded:** The worker posts a PR comment explaining that the CI failure could not be automatically fixed and skips the check on future runs.
+
+### Fleet-wide attempt cap and comment dedup (Issue #1879)
+
+The check-run retry counter above is **host-local and per check run**. The `max_auto_fix_attempts` cap is neither: it is counted from the pull request's own fleet-authored markers, so every host shares one budget of three attempts per failure signature and posts one comment per signature.
+
+- **The record is the marker in the comment.** Each comment the lane posts carries `<!-- vibe-ci-fix-attempt signature="…" check="…" head="…" attempt="N" outcome="pushed|no-change" -->`. The processor fetches the PR's comments once (`getIssueComments`, which pull requests share with issues) and tallies the markers **fleet accounts wrote** — `github_user` plus `fleet_pr_authors` / `service_accounts`. A marker from anyone else is ignored and reported: only a comment's author is authenticated.
+- **Nothing host-local is consulted.** No code path reads or writes `*.autofix.json`; the lane's host-local state is the check-run retry counter alone.
+- **Same head, same failure ⇒ silence.** A fleet `no-change` marker for this signature whose `head` is the checked-out head means nothing has changed since the diagnosis already on the PR: no agent runs and nothing is posted.
+- **New head, same failure ⇒ edit in place.** The failure is diagnosed afresh, but a repeat "no change required" appends its marker to the existing comment (`GitHubClient.updateComment`, `PATCH repos/{repo}/issues/comments/{id}`) rather than posting a second copy. If the edit cannot be applied it is logged as an error and a fresh comment is posted — the record is never silently dropped.
+- **Not every run is charged.** An `infrastructure`-category failure writes no marker, so it is never charged. The tally counts attempt markers only — a deferral marker (`vibe-ci-fix-deferred`, written by the base-branch deferral in #1880) is not an attempt.
+- **An unknown tally is never a fresh budget.** A comment list that cannot be read stands the cycle down with an error rather than spending an attempt nothing could count; the next scan retries. An unresolved fleet identity (no `github_user` / `fleet_pr_authors` / `service_accounts`) is a configuration fault that would never resolve itself, so the repair proceeds and the error names the keys that restore the cap.
+- **The record outlives a green build.** Nothing sweeps the markers, so a signature's budget runs for the life of the pull request: the same failure returning after a green build resumes its tally, while a different failure fingerprints differently and gets its own three attempts.
+
+### Deferred checks are not rescanned (Issue #1881)
+
+A check the base-branch deferral (#1880) parked on an issue stays parked **on every host** until that issue closes. `findFailedCiChecks` reads the pull request's comments once per PR that has a non-aggregator failure, collects the fleet-authored `vibe-ci-fix-deferred` markers, and asks GitHub whether each marker's `depends-on` issue is still open — a bare `#N` was already resolved to `owner/repo#N` when the marker was written, so a blocker in another repository is read with `--repo`. While it is open, the check the marker names is skipped (`skipReason` `ci-fix-deferred`, once per PR per cycle) and no agent runs; other failing checks on the same PR are scanned as usual. A **new push with the same failure posts nothing**, because the scan never returns the check. Once the issue closes the check comes back on the next cycle, and #1880's loop guard refuses a second deferral on the same closed issue, so the loop fails loud through the attempt cap instead of parking the PR again. Refreshing the deferred PR against its base once the blocker lands is the branch-update scan's job (#1849). The fail direction is towards scanning: a comment fetch that errors, an issue state that cannot be read, a marker authored outside the fleet, or a malformed reference each leave the check undeferred and are logged as errors.
+
+```mermaid
+flowchart LR
+    S["computeFailureSignature"] --> C["getIssueComments(PR) once"]
+    C --> M["fleet-authored markers<br/>for this signature"]
+    M -->|"attempts ≥ max"| E["escalate once<br/>(needs-human)"]
+    M -->|"no-change marker,<br/>same head"| Q["post nothing,<br/>no agent run"]
+    M -->|"else"| R["run agent → reply<br/>+ attempt marker<br/>(edit in place on repeat)"]
+```
 
 ## ⏱️ Timeout handling
 
@@ -157,10 +184,24 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last 1
 
 - **No CI failures found:** Skip; no side effects.
 - **Spelling failure detected:** Excluded — handled at priority 1.5 by the spelling fix workflow. The test is the failing *step*, not the job name (Issue #1579).
+- **Aggregator checks:** A job that exists only to gate on other jobs — the NEAT-AI-Backpropagation `ci-required` job (`name: CI Required Checks`, `needs: [validation, quality, …]`, `if: always()`) is the canonical shape — is red whenever a job it needs is red, so it has no failure of its own. The `needs:` topology is read from the checked-out workflow YAML ([`workflow_job_needs.ts`](../../worker/deno/lib/workflow_job_needs.ts)), and a failing check whose needed job is **also red on the same head** is skipped rather than diagnosed (Issue #1878). Job matching uses the job's `name:`, else its id, because that is what the check run is called; a check matching no job — a matrix leg such as `Build (ubuntu-latest)`, or a check from outside Actions — is never treated as an aggregator. The scan filters against the host's existing clone and never clones to do it, so a repo with no clone is not filtered; the processor repeats the decision against the branch it actually checked out, and on a skip it records the check-run retry, posts nothing and runs no agent.
+- **Base-branch failure (deferral):** When the agent finds the same check already failing on the PR's **base branch**, it ends its `.pr_response_message` with a line of its own — `Depends on owner/repo#N` — naming the issue that tracks it (searching that repository first with `gh issue list --search "<root cause> in:title,body" --state open`, and filing one issue per root cause only when none exists). The worker does not take that on trust: [`ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts) reads the base branch's own `check-runs` and the **latest completed run of the same check** must have concluded `failure`. When it has, the agent's diagnosis is posted **once** with a `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied and **no attempt is charged** — nothing on this branch could have fixed it (Issue #1880). A base branch that is green, a check the base never ran, a missing base ref, or a lookup that errored all fall through to the ordinary no-changes reply with one attempt charged. A failure already carrying a fleet-authored deferral marker posts nothing at all; if that marker's blocker has since **closed** and the agent names it again, the deferral is refused and the ordinary path runs, so the loop fails loud through the attempt cap rather than parking the PR for ever.
 - **Max retries exceeded:** Post a comment on the PR and skip the check on future runs. The operator should investigate manually.
 - **Rate limit exhaustion:** After `MAX_RATE_LIMIT_RETRIES` (default: 2) with exponential backoff, the worker exits with code 2 and posts a comment.
 - **Claude makes no changes:** The worker posts a classifier-aware comment explaining the most likely failure category (test, build, lint, infrastructure, transient) and recommended next step rather than a generic "transient or infrastructure" message.
 - **Quality check fails after fix:** Claude is retried once. If it fails again, the fix is not pushed.
+
+The base-branch deferral, end to end (Issue #1880):
+
+```mermaid
+flowchart TD
+    A["agent: no change,<br/>message ends<br/>'Depends on o/r#N'"] --> B{"base branch's latest<br/>run of the check red?"}
+    B -->|"no / lookup errored /<br/>no base ref"| D["ordinary no-changes reply<br/>+ attempt marker"]
+    B -->|yes| P{"prior deferral<br/>for this signature?"}
+    P -->|none| C["post the diagnosis once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
+    P -->|"same blocker, now closed"| D
+    P -->|otherwise| N["post nothing"]
+```
 
 ## 🛠️ Common CI failure patterns
 
@@ -176,7 +217,7 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last 1
 
 If the worker cannot fix a CI failure after the maximum retries:
 
-1. **Check the PR comment** — The worker posts a comment with details about what was attempted.
+1. **Check the PR comment** — The worker posts the agent's own `.pr_response_message` verbatim, followed by a `**Classifier reason:**` / `**Signals:**` line recording how the failure was categorised (Issue #1876). When the agent wrote no message, a stock category-specific explanation is posted instead. For a `code-fix-required` or `history-rewrite-required` failure the same text becomes the `**Why:**` of the `needs-human` escalation comment.
 2. **Review the annotations** — The CI check annotations show the exact file, line, and error.
 3. **Fix manually** — Push a fix to the PR branch; the worker will not retry the same check run.
 4. **Transient failures** — If the failure was caused by a flaky test or infrastructure issue, re-running the CI check may resolve it without code changes.
@@ -186,6 +227,7 @@ If the worker cannot fix a CI failure after the maximum retries:
 - **CI fix prompt:** the latest template in [`prompts/ci_fix/`](../../prompts/ci_fix/) — used to instruct Claude (failure classification introduced in).
 - **CI failure classifier:** [`worker/deno/lib/ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts) — categorises failures as test, build, lint, infrastructure, or transient.
 - **CI failure detection:** [`worker/deno/lib/pr_ci_checks.ts`](../../worker/deno/lib/pr_ci_checks.ts) — CI check detection and retry tracking.
+- **Base-branch verification:** [`worker/deno/lib/ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts) — `isCheckRedOnBranch()`, the read behind the base-branch deferral.
 - **Cross-host PR lock:** [`worker/deno/lib/pr_branch_lock.ts`](../../worker/deno/lib/pr_branch_lock.ts) — acquire, renew and release the `BRANCH_UPDATE_LOCK`.
 - **CI fix handler:** [`worker/deno/lib/ci_failure_issue.ts`](../../worker/deno/lib/ci_failure_issue.ts) and the CI-fix processor wired in [`run_core.ts`](../../worker/deno/lib/run_core.ts).
 - **Prompt building:** [`worker/deno/lib/prompt_builder.ts`](../../worker/deno/lib/prompt_builder.ts) — CI fix prompt construction.

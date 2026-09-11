@@ -1922,10 +1922,30 @@ route is never taken on a guess.
    claims — a check is excluded only when its failing *step* is a spelling
    tool (see [Routing by failed step](#routing-by-failed-step-issue-1579)),
    not merely because its name mentions spelling.
-4. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
+4. Drops **aggregator** checks, first thing in the per-check loop and so
+   ahead of the spelling-route lookup — a job whose `needs:` (read from the host's
+   existing clone at `repoCheckoutPath`, never cloned by the scan) includes
+   another job that is also red on the same head is downstream of that
+   failure, not a failure of its own (Issue #1878, see
+   [workflow_job_needs.ts](../worker/deno/lib/workflow_job_needs.ts)). One
+   `skipReason` line per PR names what was dropped; no clone means no
+   filtering, and the surviving check carries `siblingFailedCheckNames` so
+   the processor can repeat the decision against the real checkout.
+5. Skips checks **deferred on an open issue** (Issue #1881): when a
+   fleet-authored `vibe-ci-fix-deferred` marker on the PR names the check
+   and the `depends-on` issue it records is still open, that check is not
+   returned — nothing on the branch can fix a failure the base branch
+   already has (see [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)
+   `findOpenDeferrals`). Other failing checks on the same PR are still
+   returned, and one `skipReason` line per PR names what was deferred and
+   on which issue. Once the issue closes the check is returned as usual.
+   A comment thread or issue state that cannot be read, a marker from
+   outside the fleet, or a malformed reference all leave the check
+   undeferred and are logged — an error never suppresses a real failure.
+6. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
    over-retried failures.
-5. Prioritises PRs targeting the default branch (where integration tests run).
-6. Fetches check annotations and returns the highest-priority failure.
+6. Prioritises PRs targeting the default branch (where integration tests run).
+7. Fetches check annotations and returns the highest-priority failure.
 
 **Retry tracking** — uses local state files in `$CI_CHECK_STATE_DIR` (default
 `$WORK_DIR/.ci_check_state`, resolved to an **always absolute** path by
@@ -1934,12 +1954,20 @@ Each check run ID has a `.retries` file recording how many times it has been
 attempted. `record_ci_check_retry()` increments the counter before each fix
 attempt.
 
-The **scan** and the **processor** must resolve the same directory. The scan
-reads the retry counters the processor writes, and clears the auto-fix attempt
-budget recorded against a PR once that PR reports green. While the scan kept a
-relative default it addressed a different store: the cap was never observed, a
-spent auto-fix budget was never cleared, and the lane escalated red checks to a
-human rather than fixing them.
+The **scan** and the **processor** must resolve the same directory: the scan
+reads the retry counters the processor writes, and while it kept a relative
+default it addressed a different store, so the cap was never observed and the
+lane escalated red checks to a human rather than fixing them.
+
+**The auto-fix attempt cap is not in that directory** (Issue #1879). It is
+counted from fleet-authored `<!-- vibe-ci-fix-attempt … -->` markers in the
+pull request's own comments
+([ci_fix_attempt_markers.ts](../worker/deno/lib/ci_fix_attempt_markers.ts),
+read by [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)), so
+every host in the fleet shares one budget of three attempts per failure
+signature and posts one comment per signature. Nothing reads or writes
+`*.autofix.json` any more; a repeat "no change required" on a new head is
+appended to the existing comment via `GitHubClient.updateComment`.
 
 **Priority** — runs at priority 1.55 in the main loop, after spelling fixes
 (1.5) but before branch updates (1.6).
@@ -4124,6 +4152,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)                                                     | PR branch update operations                                                                                                                                                          |
 |                             | [pr_branch_update_failure_streak.ts](../worker/deno/lib/pr_branch_update_failure_streak.ts)                       | Consecutive branch-update failures per `(repo, branch)` — escalate once, then skip                                                                                                   |
 |                             | [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts)                                                       | CI failure processing workflow                                                                                                                                                       |
+|                             | [ci_fix_attempt_markers.ts](../worker/deno/lib/ci_fix_attempt_markers.ts)                                         | CI-fix attempt/deferral PR comment markers, parsed with fleet-author verification                                                                                                    |
 |                             | [pr_feedback_processor.ts](../worker/deno/lib/pr_feedback_processor.ts)                                           | PR feedback processing workflow                                                                                                                                                      |
 |                             | [pr_maintenance.ts](../worker/deno/lib/pr_maintenance.ts)                                                         | PR maintenance operations (branch updates, auto-merge, cleanup)                                                                                                                      |
 |                             | [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts)                                           | Spelling failure processing workflow                                                                                                                                                 |

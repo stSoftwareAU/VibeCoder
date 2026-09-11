@@ -708,6 +708,7 @@ export function mockGitHubClient(): GitHubClient {
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
     postComment: () => Promise.resolve(undefined),
+    updateComment: () => Promise.resolve(),
     editIssue: () => Promise.resolve(),
     assignIssue: () => Promise.resolve(),
     unassignIssue: () => Promise.resolve(),
