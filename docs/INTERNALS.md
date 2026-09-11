@@ -938,7 +938,10 @@ flowchart LR
   `tokenBlocked*` names so prior accumulated state still loads.
 - **`rate_limited` vs `usage_blocked`** are separated by the shared
   `.rate_limit_signal` file, which now records whether a GitHub API limit or a
-  model usage limit wrote it. Each carries a wait count alongside the total
+  model usage limit wrote it — and, for a usage limit, which provider and
+  which credential file ran out (Issue #2002), so a run holding another
+  subscription of the same provider is not paused by it and the next start
+  ranks the spent one last. Each carries a wait count alongside the total
   backoff.
 - **Failure classes** are the phase a run died at (`setup`, `execute`,
   `quality_gate`, …), with `timeout` taking precedence — so "13 failures" says

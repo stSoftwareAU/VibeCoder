@@ -124,7 +124,16 @@ async function runCompletion(
         Promise.resolve({ ok: false, error: new Error("none") }),
     },
     // `undefined` models a launcher that recorded no verdict: fail open.
-    infrastructure: { tokenHasWorkflowScope: () => scope !== "false" },
+    // Issue #1952 replaced the boolean seam with the three-state verdict, so
+    // "detection never ran" is now its own answer rather than a silent true.
+    infrastructure: {
+      workflowScopeState: () =>
+        scope === undefined
+          ? "unknown"
+          : scope === "false"
+          ? "absent"
+          : "granted",
+    },
   });
   try {
     const result = await workOnIssueCompletion(ctx, state, deps);

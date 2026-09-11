@@ -9,6 +9,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   deriveRunOutcome,
   describeRunOutcome,
+  prDeferredOutcome,
   prNumberFromUrl,
   summaryIncompleteOutcome,
 } from "../lib/run_outcome.ts";
@@ -267,5 +268,31 @@ Deno.test("run outcome - the attempt tally distinguishes a delivered run from a 
       message: "Git push failed",
     }),
     "no PR (`infrastructure-error`, phase `completion`)",
+  );
+});
+
+Deno.test("run outcome - a deferred PR is its own kind, never a failure (Issue #1951)", () => {
+  const outcome = prDeferredOutcome({
+    phase: "completion",
+    branch: "issue-1951-secondary-limit",
+    base: "main",
+    reason: "secondary rate limit",
+  });
+  assertEquals(outcome.kind, "pr_deferred");
+  assertEquals(
+    describeRunOutcome(outcome),
+    "pr_deferred:issue-1951-secondary-limit",
+  );
+});
+
+Deno.test("run outcome - a deferred PR keeps its resume state for the next claim (Issue #1951)", () => {
+  assertEquals(
+    resumeStateSurvivesRelease(prDeferredOutcome({
+      phase: "completion",
+      branch: "issue-1951-secondary-limit",
+      base: "main",
+      reason: "secondary rate limit",
+    })),
+    true,
   );
 });

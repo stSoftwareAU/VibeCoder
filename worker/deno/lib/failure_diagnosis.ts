@@ -10,6 +10,7 @@
  */
 
 import { assertNever } from "./assert_never.ts";
+import { isWorkflowScopePushRefusal } from "./workflow_scope.ts";
 import {
   type ExtensionTelemetry,
   formatTimeoutExtensionSummary,
@@ -234,7 +235,15 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
 
   // Issue #1475: checked before the push-failure phrases, and before the
   // push itself — the message names the scope and the workflow paths.
-  if (failureMessage.includes("lacks the 'workflow' scope")) {
+  //
+  // Issue #1952: GitHub's own refusal counts too. When the pre-push check
+  // could not answer, the raw remote text is all the record has, and it
+  // otherwise matched the generic "Git push failed" rule below — losing the
+  // one diagnosis an operator can act on.
+  if (
+    failureMessage.includes("lacks the 'workflow' scope") ||
+    isWorkflowScopePushRefusal(failureMessage)
+  ) {
     return "token_scope";
   }
 

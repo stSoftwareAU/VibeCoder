@@ -11,6 +11,7 @@
  */
 
 import type { RunOutcome } from "./run_outcome.ts";
+import { PR_PENDING_MARKER } from "./deferred_pr_store.ts";
 import {
   getFailureCategoryDisplay,
   getFailureDiagnosisOneliner,
@@ -292,6 +293,8 @@ export function describeAttemptOutcome(
       return `claim went stale (\`${outcome.reason}\`)`;
     case "summary_incomplete":
       return `raised #${outcome.prNumber}, summary incomplete`;
+    case "pr_deferred":
+      return `PR pending on \`${normaliseMilestoneText(outcome.branch)}\``;
   }
 }
 
@@ -571,6 +574,22 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
       );
       return ` Raised #${outcome.prNumber} — ${url}. The PR summary is` +
         ` incomplete: ${problem}`;
+    }
+    case "pr_deferred": {
+      // Issue #1951 — the work is finished and pushed; GitHub's
+      // content-creation throttle refused the PR for longer than the run had
+      // left. Name the branch and say the PR is pending, so a reader knows
+      // nothing was lost and no one needs to redo it.
+      const reason = boundOutcomeText(
+        outcome.reason,
+        OUTCOME_DETAIL_MAX_LENGTH,
+      );
+      const branch = boundOutcomeText(outcome.branch, 200);
+      const base = boundOutcomeText(outcome.base, 200);
+      return ` ${PR_PENDING_MARKER} PR pending — the work is on` +
+        ` \`${branch}\` and the pull request (\`${branch}\` → \`${base}\`)` +
+        ` is queued for the next cycle. GitHub's secondary` +
+        ` (content-creation) rate limit refused it: ${reason}`;
     }
     case "claim_stale": {
       // Issue #344 — the claim was fine when it was taken and stale by the

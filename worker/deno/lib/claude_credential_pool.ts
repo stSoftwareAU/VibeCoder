@@ -61,7 +61,13 @@
 import {
   activeAgentProvider,
   type AgentProviderDescriptor,
+  CLAUDE_PROVIDER_ID,
 } from "./agent_provider.ts";
+import {
+  isRateLimitActive,
+  type RateLimitSignalData,
+  readRateLimitSignal,
+} from "./rate_limit_signal.ts";
 import {
   type ClaudeBudgetFetch,
   type ClaudeBudgetWindowName,
@@ -79,6 +85,7 @@ import {
   providerPoolCandidates,
   type ProviderTokenFile,
   type ProviderTokenSelector,
+  recordHeldProviderCredential,
   resolveCredentialDir,
   selectFirstProviderToken,
 } from "./credential_preflight.ts";
@@ -317,13 +324,21 @@ export function createClaudeCredentialPool(
       // the credential directory a second time.
       discovered ??= Promise.resolve(pool);
       const now = clock();
-      const ranking = await rankPool(pool, now);
+      // Issue #2002: a token this process already knows to be spent — a
+      // usage-limit signal left by the previous run named it — is left out
+      // of the start-up ranking while another candidate exists. Ranking
+      // would otherwise place it FIRST when every probe fails, because a
+      // recorded exhaustion is a measured budget and "measured beats
+      // unmeasured"; that is how a start re-exported a weekly-spent
+      // subscription and re-armed an 80-hour pause.
+      const startable = withoutRecordedSpent(pool, now);
+      const ranking = await rankPool(startable, now);
       // A start never refuses: the gate is logged as the reason, not applied
       // as a filter. Ranking drops nothing, so a pool of two always has a
       // winner.
       return ranking.winner === null
         ? null
-        : pool[ranking.winner.index] ?? null;
+        : startable[ranking.winner.index] ?? null;
     },
 
     applySelection(token, setEnv) {
@@ -351,12 +366,42 @@ export function createClaudeCredentialPool(
       // Replacing, not adding: exactly one Claude token variable is left in
       // the environment, carrying the newly selected file's value.
       setEnv(name, value);
+      recordHeldProviderCredential(poolProvider().id, token.label);
       log(
         `${LOG_PREFIX}: run environment switched to ${token.label} (${name})`,
       );
       return name;
     },
   };
+  /**
+   * The pool minus every token recorded as spent with a reset still ahead.
+   * Answers the whole pool when nothing is recorded spent, or when everything
+   * is — a start never refuses, so with nothing better on offer the ranking
+   * falls back to the soonest reset as it always has.
+   */
+  function withoutRecordedSpent(
+    pool: readonly ProviderTokenFile[],
+    now: number,
+  ): ProviderTokenFile[] {
+    const spent = pool.filter((token) => {
+      const snapshot = snapshots.get(token.label);
+      return snapshot !== undefined && snapshot.budget.known &&
+        snapshot.budget.remainingFraction <= 0 &&
+        snapshot.budget.resetAt > now;
+    });
+    if (spent.length === 0 || spent.length === pool.length) return [...pool];
+    for (const token of spent) {
+      const snapshot = snapshots.get(token.label);
+      const resetAt = snapshot?.budget.known
+        ? new Date(snapshot.budget.resetAt).toISOString()
+        : "unknown";
+      log(
+        `${LOG_PREFIX}: ${token.label} is recorded as spent until ${resetAt} ` +
+          `— left out of the start-up ranking`,
+      );
+    }
+    return pool.filter((token) => !spent.includes(token));
+  }
 
   /** The pool candidates for this host, discovered at most once. */
   function candidates(): Promise<ProviderTokenFile[]> {
@@ -449,5 +494,102 @@ export function createClaudeCredentialPool(
     }
     snapshots.set(token.label, { budget, observedAtMs });
     return budget;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// What a usage-limit signal tells the pool (Issue #2002)
+// ---------------------------------------------------------------------------
+
+/** Five hours in milliseconds: the length of Anthropic's short window. */
+const FIVE_HOURS_MS = 5 * 3_600_000;
+
+/**
+ * The exhaustion a usage-limit signal records, when it names a credential.
+ *
+ * A signal written by the health check or the runner says which provider and
+ * which credential file ran out and when the window reopens. Read back at the
+ * next worker start it is the same fact `recordExhaustion` takes from a
+ * usage-limit result: which window is inferred from how far off the reset is,
+ * since a five-hour window cannot reopen more than five hours away.
+ *
+ * @returns The label and window to record, or `null` when the signal is a
+ *   GitHub one, belongs to another provider, names no credential, or has
+ *   already reset.
+ */
+export function exhaustionFromUsageSignal(
+  signal: RateLimitSignalData,
+  nowMs: number,
+  providerId: string = CLAUDE_PROVIDER_ID,
+): { label: string; windows: ClaudeExhaustedWindow[] } | null {
+  if ((signal.kind ?? "github") !== "usage") return null;
+  const provider = signal.provider?.trim() || CLAUDE_PROVIDER_ID;
+  if (provider !== providerId) return null;
+  const label = signal.credentialLabel?.trim() ?? "";
+  if (label.length === 0) return null;
+  const resetAt = signal.resetEpochMs ??
+    (signal.timestamp + signal.waitSeconds) * 1000;
+  if (!Number.isFinite(resetAt) || resetAt <= nowMs) return null;
+  const window: ClaudeBudgetWindowName = resetAt - nowMs > FIVE_HOURS_MS
+    ? "seven_day"
+    : "five_hour";
+  return { label, windows: [{ window, resetAt }] };
+}
+
+/**
+ * Record in the pool the credential an active usage-limit signal names as
+ * spent, before start-up ranks the candidates (Issue #2002).
+ *
+ * Never throws: an unreadable or absent signal, or one that names nothing,
+ * leaves the pool exactly as it was and answers `false`. A single-credential
+ * host is untouched either way — the pool ranks nothing with fewer than two
+ * candidates.
+ *
+ * @param pool - The process's credential pool.
+ * @param workDir - Directory holding `.rate_limit_signal`; `undefined` when
+ *   the driver has not resolved one, which records nothing.
+ * @returns Whether an exhaustion was recorded.
+ */
+export async function primeClaudePoolFromUsageSignal(
+  pool: Pick<ClaudeCredentialPool, "recordExhaustion">,
+  workDir: string | undefined,
+  options: {
+    now?: () => number;
+    log?: (message: string) => void;
+    providerId?: string;
+  } = {},
+): Promise<boolean> {
+  if (!workDir) return false;
+  const log = options.log ?? (() => {});
+  const now = options.now ?? (() => Date.now());
+  try {
+    const active = await isRateLimitActive(
+      workDir,
+      () => Math.floor(now() / 1000),
+    );
+    if (!active.ok || !active.value.active) return false;
+    const signal = await readRateLimitSignal(workDir);
+    if (!signal.ok) return false;
+    const exhaustion = exhaustionFromUsageSignal(
+      signal.value,
+      now(),
+      options.providerId,
+    );
+    if (exhaustion === null) return false;
+    log(
+      `${LOG_PREFIX}: the active usage-limit signal names ` +
+        `${exhaustion.label} as the spent subscription — recording it ` +
+        `before the start-up ranking`,
+    );
+    pool.recordExhaustion(exhaustion.label, exhaustion.windows);
+    return true;
+  } catch (error: unknown) {
+    log(
+      `${LOG_PREFIX}: could not read the usage-limit signal before ` +
+        `start-up ranking (continuing without it): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+    );
+    return false;
   }
 }

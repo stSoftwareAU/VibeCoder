@@ -594,3 +594,43 @@ Deno.test("classify #1658 - a trigger token inside a branch-name slug is not out
   );
   assert(crash.failureClass !== "worker-crash", crash.failureClass);
 });
+
+Deno.test("classify - GitHub's secondary rate limit is its own class, not a usage limit (Issue #1951)", () => {
+  const got = classifyRunFailure(
+    "rate_limit",
+    "PR creation failed: HTTP 403: You have exceeded a secondary rate limit " +
+      "and have been temporarily blocked from content creation.",
+  );
+  assertEquals(got.failureClass, "github-abuse-limit");
+  assertEquals(got.fixability, "not_code_fixable");
+  assert(RUN_FAILURE_CLASSES.includes("github-abuse-limit"));
+});
+
+Deno.test("classify - an account usage limit is still usage-limit (Issue #1951)", () => {
+  // The separation must not steal the class it was split out of.
+  const got = classifyRunFailure(
+    "rate_limit",
+    "Claude usage limit reached — resets at 04:00.",
+  );
+  assertEquals(got.failureClass, "usage-limit");
+});
+
+Deno.test("classify - an abuse-detection refusal in any phase reads as the GitHub throttle (Issue #1951)", () => {
+  const got = classifyRunFailure(
+    "internal_error",
+    "gh command failed: You have triggered an abuse detection mechanism. " +
+      "Please wait a few minutes before you try again.",
+  );
+  assertEquals(got.failureClass, "github-abuse-limit");
+});
+
+Deno.test("classify - an agent WRITING about the secondary limit is not a GitHub throttle (Issue #1951)", () => {
+  // Issue #249's shape: the agent's quoted stdout reaches the message, and an
+  // agent working on this very issue says the words constantly.
+  const message = "Claude timed out after 3492s of a 3600s budget\n" +
+    "<details>\n<summary>Last output from Claude (tail)</summary>\n\n" +
+    "I added isSecondaryRateLimitMessage so a secondary rate limit defers " +
+    "the PR instead of failing the run.\n</details>";
+  const got = classifyRunFailure("timeout", message);
+  assertEquals(got.failureClass, "timeout");
+});

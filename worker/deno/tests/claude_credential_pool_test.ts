@@ -35,7 +35,17 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS,
   createClaudeCredentialPool,
+  exhaustionFromUsageSignal,
+  primeClaudePoolFromUsageSignal,
 } from "../lib/claude_credential_pool.ts";
+import {
+  heldProviderCredentialLabel,
+  resetHeldProviderCredentials,
+} from "../lib/credential_preflight.ts";
+import {
+  type RateLimitSignalData,
+  writeRateLimitSignal,
+} from "../lib/rate_limit_signal.ts";
 import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "../lib/claude_token_selection.ts";
 import type { ProviderTokenFile } from "../lib/credential_preflight.ts";
 import {
@@ -455,4 +465,259 @@ Deno.test("claude credential pool - a single-token host makes no request and log
   assertEquals(started?.label, "provider");
   assertEquals(probe.calls(), 0);
   assertEquals(lines.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// A start does not re-export a subscription it knows to be spent (Issue #2002)
+// ---------------------------------------------------------------------------
+
+Deno.test("claude credential pool - a start leaves a recorded-spent token out of the ranking, even when every probe fails (Issue #2002)", async () => {
+  // Every probe answers 429 — the shape of the 16:29Z start on GRQ-25 — so
+  // every budget is unknown and, without the exclusion, the spent token
+  // would rank FIRST: its recorded exhaustion is a measured budget.
+  const probe = fetchWith({});
+  const lines: string[] = [];
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([
+        tokenFile("provider"),
+        tokenFile("provider-2"),
+        tokenFile("provider-3"),
+      ]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+    log: (line) => lines.push(line),
+  });
+  pool.recordExhaustion("provider", [
+    { window: "seven_day", resetAt: NOW + 80 * HOUR },
+  ]);
+
+  const chosen = await pool.selectToken(
+    [tokenFile("provider"), tokenFile("provider-2"), tokenFile("provider-3")],
+    CLAUDE,
+  );
+  assert(
+    chosen !== null && chosen.label !== "provider",
+    `chose ${chosen?.label}`,
+  );
+  assertEquals(probe.calls(), 2, "the spent token is not even probed");
+  assert(
+    lines.some((line) =>
+      line.includes("provider is recorded as spent until") &&
+      line.includes("left out of the start-up ranking")
+    ),
+    lines.join("\n"),
+  );
+  assertEquals(
+    lines.some((line) => line.includes("candidate provider (")),
+    false,
+    "and is not on the candidate list",
+  );
+});
+
+Deno.test("claude credential pool - a recorded exhaustion whose reset has passed is ranked normally (Issue #2002)", async () => {
+  const probe = fetchWith({
+    "token-provider": healthy(),
+    "token-provider-2": healthy(),
+  });
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+  pool.recordExhaustion("provider", [
+    { window: "five_hour", resetAt: NOW - HOUR },
+  ]);
+  // Fresh snapshot, so the recorded (elapsed) window stands in for a probe
+  // and counts as full; nothing is excluded and both are ranked.
+  const chosen = await pool.selectToken(
+    [tokenFile("provider"), tokenFile("provider-2")],
+    CLAUDE,
+  );
+  assert(chosen !== null);
+  assertEquals(probe.calls(), 1, "only the unrecorded token is probed");
+});
+
+Deno.test("claude credential pool - when every token is recorded spent the start still ranks them all (Issue #2002)", async () => {
+  const probe = fetchWith({});
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([tokenFile("provider"), tokenFile("provider-2")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+  pool.recordExhaustion("provider", [
+    { window: "five_hour", resetAt: NOW + 3 * HOUR },
+  ]);
+  pool.recordExhaustion("provider-2", [
+    { window: "five_hour", resetAt: NOW + 1 * HOUR },
+  ]);
+  const chosen = await pool.selectToken(
+    [tokenFile("provider"), tokenFile("provider-2")],
+    CLAUDE,
+  );
+  // A start never refuses: with nothing better, the soonest reset wins.
+  assertEquals(chosen?.label, "provider-2");
+  assertEquals(probe.calls(), 0);
+});
+
+Deno.test("claude credential pool - applySelection records the credential the run now holds (Issue #2002)", () => {
+  resetHeldProviderCredentials();
+  try {
+    const pool = createClaudeCredentialPool({ provider: CLAUDE });
+    const env: Record<string, string> = {};
+    pool.applySelection(tokenFile("provider-2"), (name, value) => {
+      env[name] = value;
+    });
+    assertEquals(heldProviderCredentialLabel(CLAUDE_PROVIDER_ID), "provider-2");
+  } finally {
+    resetHeldProviderCredentials();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Reading the exhaustion back out of a usage-limit signal (Issue #2002)
+// ---------------------------------------------------------------------------
+
+function usageSignal(
+  overrides: Partial<RateLimitSignalData> = {},
+): RateLimitSignalData {
+  return {
+    timestamp: Math.floor(NOW / 1000),
+    waitSeconds: 289_493,
+    kind: "usage",
+    provider: "claude",
+    credentialLabel: "provider",
+    resetEpochMs: NOW + 80 * HOUR,
+    ...overrides,
+  };
+}
+
+Deno.test("exhaustionFromUsageSignal - a labelled Claude usage signal names the spent token and a week window", () => {
+  const exhaustion = exhaustionFromUsageSignal(usageSignal(), NOW);
+  assertEquals(exhaustion?.label, "provider");
+  assertEquals(exhaustion?.windows, [
+    { window: "seven_day", resetAt: NOW + 80 * HOUR },
+  ]);
+});
+
+Deno.test("exhaustionFromUsageSignal - a reset within five hours is the five-hour window", () => {
+  const exhaustion = exhaustionFromUsageSignal(
+    usageSignal({ resetEpochMs: NOW + 3 * HOUR }),
+    NOW,
+  );
+  assertEquals(exhaustion?.windows[0]?.window, "five_hour");
+});
+
+Deno.test("exhaustionFromUsageSignal - without resetEpochMs the wait derives the reset", () => {
+  const signal = usageSignal({ waitSeconds: 3600 });
+  delete signal.resetEpochMs;
+  const exhaustion = exhaustionFromUsageSignal(signal, NOW);
+  assertEquals(exhaustion?.windows[0], {
+    window: "five_hour",
+    resetAt: NOW + HOUR,
+  });
+});
+
+Deno.test("exhaustionFromUsageSignal - nothing to record: GitHub, another provider, no label, already reset", () => {
+  assertEquals(
+    exhaustionFromUsageSignal(usageSignal({ kind: "github" }), NOW),
+    null,
+  );
+  assertEquals(
+    exhaustionFromUsageSignal(usageSignal({ provider: "codex" }), NOW),
+    null,
+  );
+  const unlabelled = usageSignal();
+  delete unlabelled.credentialLabel;
+  assertEquals(exhaustionFromUsageSignal(unlabelled, NOW), null);
+  assertEquals(
+    exhaustionFromUsageSignal(usageSignal({ credentialLabel: "  " }), NOW),
+    null,
+  );
+  assertEquals(
+    exhaustionFromUsageSignal(usageSignal({ resetEpochMs: NOW - 1 }), NOW),
+    null,
+  );
+});
+
+Deno.test("exhaustionFromUsageSignal - a legacy usage signal with no provider is Claude's", () => {
+  const legacy = usageSignal();
+  delete legacy.provider;
+  assertEquals(exhaustionFromUsageSignal(legacy, NOW)?.label, "provider");
+});
+
+Deno.test("primeClaudePoolFromUsageSignal - an active labelled signal is recorded before start-up ranks the pool (Issue #2002)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "pool_prime_2002_" });
+  try {
+    const written = await writeRateLimitSignal(
+      workDir,
+      289_493,
+      NOW + 80 * HOUR,
+      "usage",
+      { provider: "claude", credentialLabel: "provider" },
+    );
+    assertEquals(written.ok, true);
+    // The signal's own timestamp is the wall clock, so "now" for the
+    // activity check is the wall clock too; the recorded reset is NOW-based.
+    const recorded: Array<{ label: string; windows: unknown }> = [];
+    const lines: string[] = [];
+    const primed = await primeClaudePoolFromUsageSignal(
+      {
+        recordExhaustion(label, windows) {
+          recorded.push({ label, windows });
+        },
+      },
+      workDir,
+      { now: () => Date.now(), log: (line) => lines.push(line) },
+    );
+    assertEquals(primed, true);
+    assertEquals(recorded.length, 1);
+    assertEquals(recorded[0]?.label, "provider");
+    assert(
+      lines.some((line) =>
+        line.includes("names provider as the spent subscription")
+      ),
+      lines.join("\n"),
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("primeClaudePoolFromUsageSignal - no directory, no signal, an expired one or a GitHub one records nothing", async () => {
+  const recorded: string[] = [];
+  const pool = {
+    recordExhaustion(label: string) {
+      recorded.push(label);
+    },
+  };
+  assertEquals(await primeClaudePoolFromUsageSignal(pool, undefined), false);
+  const workDir = await Deno.makeTempDir({ prefix: "pool_prime_2002_" });
+  try {
+    assertEquals(await primeClaudePoolFromUsageSignal(pool, workDir), false);
+    await writeRateLimitSignal(workDir, 600, undefined, "github");
+    assertEquals(await primeClaudePoolFromUsageSignal(pool, workDir), false);
+    await writeRateLimitSignal(
+      workDir,
+      1,
+      undefined,
+      "usage",
+      { provider: "claude", credentialLabel: "provider" },
+    );
+    assertEquals(
+      await primeClaudePoolFromUsageSignal(pool, workDir, {
+        now: () => Date.now() + 10_000,
+      }),
+      false,
+      "an expired signal is not a current exhaustion",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+  assertEquals(recorded, []);
 });

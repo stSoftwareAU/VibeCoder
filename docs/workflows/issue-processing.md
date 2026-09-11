@@ -1090,6 +1090,80 @@ flowchart TD
     style F2 fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+## ⏳ A PR the content-creation throttle refused — deferred, never failed
+
+GitHub runs **two** rate limits, and only one of them was understood here. The
+primary hourly quota has a published reset and a REST way round it (Issue #42).
+The **secondary** limit is a burst throttle on *content creation*: it refuses the
+write, asks for "a few minutes", and refuses REST just as readily as GraphQL.
+
+`runGhCommand` retried a refused `gh pr create` for about fourteen seconds —
+2 s, 4 s, 8 s — and gave up. The run was then recorded as a **failure** with the
+branch pushed and no PR on it, and because every `rate_limit` category mapped to
+`usage-limit`, a self-clearing GitHub throttle was indistinguishable in the
+record from an exhausted model subscription. A week of transcripts made this the
+single most common shape of "failure whose work was complete".
+
+**The rule.** The work is finished, quality-gated and pushed; the create is the
+only thing outstanding. So the run waits in minutes, and if the limit outlasts
+the run it *parks* the PR instead of failing:
+
+| Outcome | When | What follows |
+| --- | --- | --- |
+| `pr_deferred` | the secondary limit outlasted the run | no failure, no cooldown, no failure streak; the branch stands, the resume state stands, and Priority 0.9 raises the PR next cycle |
+| `github-abuse-limit` | any run failure whose message names the secondary limit | classified apart from `usage-limit`, so fleet records can count a GitHub throttle separately from a spent subscription |
+
+- **Minute-scale backoff** — 60 s / 120 s / 240 s, or the `Retry-After` GitHub
+  sent when it sends one: the limit itself saying when it clears outranks our
+  schedule, in either direction. Never shorter than the shared `pr_creation`
+  circuit breaker's interval, so concurrent slots on one host lengthen each
+  other's waits instead of piling back onto the same limit. A wait that would
+  not fit inside the run's hard cap, handler deadline or cycle deadline is never
+  started — it would meet the same refusal with less budget left.
+- **The latch's own cool-down is not this path** — `primaryQuotaSkipMessage()`
+  names both limits, and `gh api` is exempt from the latch, so that message
+  still takes the Issue #42 REST fallback and opens the PR at once. Only if REST
+  is refused too does the PR park.
+- **Parked, not lost** — `deferred_pr_store.ts` records the branch, base, title
+  and the body the run had already composed, the issue thread gets a `PR pending`
+  note naming the branch, and the release comment says the same.
+- **Raised with no agent run** — Priority 0.9 (`deferred_pr_drain.ts`) opens the
+  PR over REST on the next cycle. A PR that turned up some other way drops the
+  record; a refusal that is still the throttle leaves it parked; any other
+  failure is retried five times and then abandoned **loudly**, with a comment
+  naming the branch the work is still on. A throttle that never clears is
+  bounded by age instead: a record parked longer than 24 h is abandoned the same
+  loud way, because a content-creation throttle that has held for a day is not
+  that throttle.
+
+**Implementation.** `createPrWithSecondaryLimitBackoff` in
+[`pr_creation_retry.ts`](../../worker/deno/lib/pr_creation_retry.ts),
+`isSecondaryRateLimitMessage` / `planSecondaryLimitWait` in
+[`secondary_rate_limit.ts`](../../worker/deno/lib/secondary_rate_limit.ts),
+`deferPrCreation` in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+and `drainDeferredPrs` in
+[`deferred_pr_drain.ts`](../../worker/deno/lib/deferred_pr_drain.ts)
+(Issue #1951).
+
+```mermaid
+flowchart TD
+    A["Branch pushed, gates passed"] --> C["gh pr create"]
+    C -->|created| D["PR outcome"]
+    C -->|"secondary rate limit"| W{"Does the next wait fit<br/>inside the run's deadline?"}
+    W -->|yes| S["Wait 60s / 120s / 240s<br/>or Retry-After"] --> C
+    W -->|no| P["Park the PR:<br/>branch, base, title, body<br/>comment 'PR pending'<br/>outcome pr_deferred"]
+    P --> N["Next cycle — Priority 0.9"]
+    N --> R["Raise the PR over REST<br/>no agent run"]
+    C -->|"any other error"| F["Run fails, as before"]
+    style C fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style W fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style D fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style R fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style P fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style F fill:#c45858,stroke:#6b2020,color:#fff
+```
+
 ## 🩹 Orphaned milestone merge — self-heal, then bounce
 
 A merged PR is not a landed change. When a child PR merges into

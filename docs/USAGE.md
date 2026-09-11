@@ -739,6 +739,7 @@ No manual intervention required — fixes are pushed to the existing PR branch.
 
 ```mermaid
 flowchart TD
+    P09["🔴 Priority 0.9 — Deferred PR Raise (PRs a GitHub content-creation throttle refused)"]
     P1["🔴 Priority 1 — PR Feedback & Reviews"]
     P15["🟠 Priority 1.5 — Failed Spelling/Quality Checks"]
     P155["🟠 Priority 1.55 — Failed CI/Integration Checks"]
@@ -765,8 +766,9 @@ flowchart TD
     P25["🟤 Priority 2.5 — `low-priority` label (fallback when no eligible higher-tier candidate exists in any repo)"]
     P29["⚪ Priority 2.9 — `idle-task` label (worker-filed busywork; only self-appliable label)"]
 
-    P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P172 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
+    P09 --> P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P172 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
 
+    style P09 fill:#d00000,stroke:#9d0208,color:#fff
     style P1 fill:#d00000,stroke:#9d0208,color:#fff
     style P15 fill:#dc2f02,stroke:#d00000,color:#fff
     style P155 fill:#e85d04,stroke:#dc2f02,color:#fff
