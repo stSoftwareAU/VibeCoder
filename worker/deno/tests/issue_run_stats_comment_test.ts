@@ -272,6 +272,35 @@ Deno.test("tallyIssueCost - sums the run totals across stats comments", () => {
   );
 });
 
+Deno.test("tallyIssueCost - covers a non-Claude run through the unchanged regex (Issue #1937)", () => {
+  // A Codex run now renders a USD figure on the same heading line, so the
+  // issue total includes it: no `pricing unknown` sub-bullet, no `(partial …)`
+  // suffix, and the tally regex needs no change to read it.
+  const codex = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["gpt-5-codex"])],
+    runId: "vibe-run-codex",
+  });
+  const claude = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-run-claude",
+  });
+
+  assertStringIncludes(codex, "`gpt-5-codex`: $");
+  assertStringIncludes(codex, " (API-equivalent) — input ");
+  assertEquals(codex.includes("pricing unknown"), false);
+
+  const tally = tallyIssueCost([codex, claude]);
+  assertEquals(tally.runs, 2);
+  assertEquals(tally.partial, false);
+  assertEquals(
+    tally.total,
+    tallyIssueCost([codex]).total + tallyIssueCost([claude]).total,
+  );
+  assert(tally.total > 0, "the Codex run must contribute a real figure");
+});
+
 Deno.test("tallyIssueCost - ignores comments that are not run stats", () => {
   const tally = tallyIssueCost([
     "Quoting a cost line in prose: - **Estimated cost (USD, estimate only):** ~$99.00",
