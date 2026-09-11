@@ -242,6 +242,19 @@ import {
   resetRepoFailures as repoTrackerReset,
 } from "./repo_failure_tracker.ts";
 import {
+  backedOffRepos,
+  clearRepoFastFailures,
+  formatRepoFastFailureSummary,
+  isFastFailure,
+  loadRepoFastFailureStates,
+  recordRepoFastFailure,
+  recordRepoFastFailureDiagnostic,
+  refreshRepoFastFailureBackOffs,
+  type RepoFastFailureOptions,
+  resolveRepoFastFailurePolicy,
+} from "./repo_fast_failure_tracker.ts";
+import { fileRepoFastFailureIssue } from "./repo_fast_failure_issue.ts";
+import {
   isRateLimitActive as rateLimitSignalIsActive,
   readRateLimitBlockKind,
   writeRateLimitSignal,
@@ -757,6 +770,119 @@ export async function createProductionRunCoreDeps(
     failureFile: repoFailureFile,
     threshold: 3,
   };
+
+  // Issue #1950: the counters above are per-cycle and PID-scoped, so a
+  // repository whose runs die at setup was retried every cycle for a week.
+  // The fast-failure tracker is the durable half: it lives on the work
+  // volume, keyed by hostname rather than PID, and decays on its own.
+  const fastFailurePolicyInput = {
+    fastFailureSeconds: config.fastFailureSeconds,
+    threshold: config.repoFastFailureThreshold,
+    windowHours: config.repoFastFailureWindowHours,
+  };
+  const fastFailurePolicy = resolveRepoFastFailurePolicy(
+    fastFailurePolicyInput,
+  );
+  const fastFailureOptions: RepoFastFailureOptions = {
+    workDir,
+    policy: fastFailurePolicyInput,
+    warn: (message: string) => logger.warn(message),
+  };
+
+  /**
+   * Record one fast failure for `repo` and, when it tips the repository
+   * over the threshold, file the single deduplicated diagnostic issue that
+   * names the failing phase and the last error line (Issue #1950).
+   *
+   * Every failure path is reported rather than swallowed: a tracker that
+   * quietly stops counting is the fault this module exists to remove.
+   */
+  async function recordFastFailureAndMaybeFile(
+    repo: string,
+    issueNumber: number,
+    outcome: Extract<RunOutcome, { kind: "no_pr" }>,
+  ): Promise<void> {
+    const recorded = await recordRepoFastFailure({
+      ...fastFailureOptions,
+      repo,
+      failure: {
+        phase: outcome.phase,
+        message: outcome.message,
+        issueNumber,
+        elapsedSeconds: outcome.elapsedSeconds,
+      },
+    });
+    if (!recorded.ok) {
+      logger.warn(
+        `Could not record a fast failure for ${repo}: ${recorded.error.message}`,
+      );
+      return;
+    }
+    const state = recorded.value;
+    const windowHours = Math.round(fastFailurePolicy.windowSeconds / 3600);
+    logger.info(
+      `repo-fast-failures: ${repo} ${state.count} in the last ${windowHours}h ` +
+        `(phase ${outcome.phase}, ${outcome.elapsedSeconds}s)` +
+        (state.backedOff ? " — backed off" : ""),
+    );
+    // One diagnostic per repository: a back-off that already carries one
+    // never files again.
+    if (!state.backedOff || state.diagnosticIssue !== undefined) return;
+    const decision = await fileRepoFastFailureIssue({
+      state,
+      policy: fastFailurePolicy,
+      machineId,
+      ghFn: runGhCommandRaw,
+      ...(config.repoConfig ? { repoConfigs: config.repoConfig } : {}),
+      log: (message: string) => logger.info(message),
+    });
+    if (decision.action === "suppressed") {
+      logger.warn(
+        `repo-fast-failures: ${repo} is backed off but no diagnostic could ` +
+          `be filed (${decision.reason})`,
+      );
+      return;
+    }
+    const attached = await recordRepoFastFailureDiagnostic({
+      ...fastFailureOptions,
+      repo,
+      diagnosticRepo: decision.targetRepo,
+      diagnosticIssue: decision.issueNumber,
+    });
+    if (!attached.ok) {
+      logger.warn(
+        `Could not attach diagnostic ${decision.targetRepo}#${decision.issueNumber} ` +
+          `to ${repo}: ${attached.error.message}`,
+      );
+    }
+  }
+
+  /**
+   * Whether a repository's fast-failure diagnostic issue has been closed
+   * (Issue #1950). `undefined` means the state could not be read, which the
+   * tracker treats as "still open" — an unreadable issue never releases a
+   * back-off.
+   */
+  async function isDiagnosticIssueClosed(
+    diagnosticRepo: string,
+    diagnosticIssue: number,
+  ): Promise<boolean | undefined> {
+    const raw = await runGhCommand([
+      "issue",
+      "view",
+      String(diagnosticIssue),
+      "--repo",
+      diagnosticRepo,
+      "--json",
+      "state",
+      "--jq",
+      ".state",
+    ]);
+    const issueState = raw.trim().toUpperCase();
+    if (issueState === "CLOSED") return true;
+    if (issueState === "OPEN") return false;
+    return undefined;
+  }
 
   // Issue #580: the CI-check state lives on the work volume, not on a relative
   // path under the read-only checkout. The volume root rather than a repo
@@ -3004,6 +3130,20 @@ export async function createProductionRunCoreDeps(
       // `idle-task` issue and the quota left goes to `top-priority` and
       // `work-on` work. An unknown reading never refuses work.
       const weekPaceEngaged = await weekPaceGate.isEngaged();
+      // Issue #1950: repositories whose runs keep dying at setup are not
+      // claimed again until the window lapses or their diagnostic issue is
+      // closed. The probe runs first so a repaired repository is released
+      // promptly, and it only touches repositories that are actually backed
+      // off and carry a diagnostic — bounded by how many are broken.
+      await refreshRepoFastFailureBackOffs({
+        ...fastFailureOptions,
+        isIssueClosed: isDiagnosticIssueClosed,
+        log: (message: string) => logger.info(message),
+      });
+      const fastFailureBackOff = await backedOffRepos(fastFailureOptions);
+      const excludedRepos = fastFailureBackOff.size > 0
+        ? new Set([...(options?.excludeRepos ?? []), ...fastFailureBackOff])
+        : options?.excludeRepos;
       const result = await findOldestIssue(config, {
         githubUser,
         weekPaceEngaged,
@@ -3045,11 +3185,10 @@ export async function createProductionRunCoreDeps(
           return until;
         },
         // Repositories the maintenance lane has leased wholesale (Issues
-        // #4176, #213, narrowed by #1091): skipped before any eligibility
+        // #4176, #213, narrowed by #1091), unioned with the ones backed off
+        // for fast failures (Issue #1950): skipped before any eligibility
         // check, because that pass may touch any branch of the clone.
-        ...(options?.excludeRepos
-          ? { excludeRepos: options.excludeRepos }
-          : {}),
+        ...(excludedRepos ? { excludeRepos: excludedRepos } : {}),
         // Issue #1091: the streams sibling slots hold, carried as the claims
         // that occupy them, so `isMilestoneOccupied` refuses those streams
         // and the rest of the repository stays claimable.
@@ -3772,6 +3911,27 @@ export async function createProductionRunCoreDeps(
     },
     async recordRepoSuccess(repo: string) {
       await repoTrackerRecordSuccess(repoFailureConfig, repo);
+      // Issue #1950: a run that got somewhere proves the repository's
+      // environment works, so its fast-failure history goes with it.
+      const cleared = await clearRepoFastFailures({
+        ...fastFailureOptions,
+        repo,
+      });
+      if (!cleared.ok) {
+        logger.warn(
+          `Could not clear the fast-failure history for ${repo}: ${cleared.error.message}`,
+        );
+      } else if (cleared.value) {
+        logger.info(`repo-fast-failures: ${repo} cleared after a success`);
+      }
+    },
+
+    // Issue #1950: the cycle-summary line naming every repository with a
+    // live fast failure and how long each is backed off for.
+    async describeRepoFastFailures() {
+      return formatRepoFastFailureSummary(
+        await loadRepoFastFailureStates(fastFailureOptions),
+      );
     },
 
     // -- Crash handling --
@@ -3867,6 +4027,32 @@ export async function createProductionRunCoreDeps(
             );
           }
         } catch { /* best-effort — never blocks the release */ }
+      }
+      // Issue #1950: a run that died before the agent produced output, or
+      // inside `fast_failure_seconds`, failed at claim or setup — the
+      // repository's environment, not the issue. Counted durably so three
+      // of them in a day back the repository off and file one diagnostic,
+      // instead of the whole week of retries the fleet used to spend.
+      if (
+        outcome?.kind === "no_pr" &&
+        isFastFailure(
+          {
+            category: outcome.category,
+            elapsedSeconds: outcome.elapsedSeconds,
+          },
+          fastFailurePolicy,
+        )
+      ) {
+        try {
+          await recordFastFailureAndMaybeFile(repo, issueNumber, outcome);
+        } catch (err) {
+          // Best-effort — never blocks the release, but never silent either.
+          logger.warn(
+            `Fast-failure tracking failed for ${repo}#${issueNumber}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
       }
       // Issue #4170: a released claim ends the attempt deliberately, so the
       // durable resume state must not make the next attempt "resume" it.

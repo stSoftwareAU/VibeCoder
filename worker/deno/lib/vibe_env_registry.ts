@@ -736,6 +736,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "marker",
     note: "the GitHub ruleset's display name, not a variable",
   },
+  VIBE_REPO_FAST_FAILURE: {
+    role: "marker",
+    note:
+      "fast-failure repository back-off diagnostic issue-body marker prefix (Issue #1950)",
+  },
   VIBE_RUN_FAILURE: {
     role: "marker",
     note: "run-failure issue body marker prefix",

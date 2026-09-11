@@ -191,6 +191,9 @@ export interface ConfigFileJson {
   host_disk_low_floor_percent?: number;
   stale_failed_diagnostic_days?: number;
   stale_planning_warning_days?: number;
+  fast_failure_seconds?: number;
+  repo_fast_failure_threshold?: number;
+  repo_fast_failure_window_hours?: number;
   phase_model_overrides?: Record<string, string>;
   phase_effort_overrides?: Record<string, string>;
   codex_phase_model_overrides?: Record<string, string>;
@@ -721,6 +724,9 @@ export function validateConfigFileJson(
     "host_disk_low_floor_percent",
     "stale_failed_diagnostic_days",
     "stale_planning_warning_days",
+    "fast_failure_seconds",
+    "repo_fast_failure_threshold",
+    "repo_fast_failure_window_hours",
     "context_budget_warning_percent",
     "context_budget_error_percent",
     "context_budget_block_percent",

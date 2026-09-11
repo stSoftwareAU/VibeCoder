@@ -916,6 +916,14 @@ export interface RunCoreDeps {
   recordRepoFailure: (repo: string, issueNumber?: number) => Promise<void>;
   recordRepoSuccess: (repo: string) => Promise<void>;
 
+  /**
+   * The durable per-repository fast-failure state, for the cycle summary
+   * (Issue #1950) — `repo X: 5 fast failures, backed off until …`. Returns
+   * null when no repository has a live fast failure, so a healthy fleet
+   * adds no line. Optional: test deps omit it.
+   */
+  describeRepoFastFailures?: () => Promise<string | null>;
+
   // Crash handling
   sendCrashNotification: (details: string) => Promise<void>;
   clearHeartbeat: () => Promise<void>;
@@ -4533,6 +4541,21 @@ async function logCycleGhTelemetry(deps: RunCoreDeps): Promise<void> {
     } catch (err) {
       deps.log(
         `graphql-quota: probe failed (${
+          err instanceof Error ? err.message : String(err)
+        })`,
+      );
+    }
+  }
+  // Issue #1950: which repositories are failing at setup, and how long each
+  // is backed off for. Previously the pattern was only ever visible in a
+  // hand-written weekly report.
+  if (deps.describeRepoFastFailures) {
+    try {
+      const line = await deps.describeRepoFastFailures();
+      if (line) deps.log(line);
+    } catch (err) {
+      deps.log(
+        `repo-fast-failures: state unreadable (${
           err instanceof Error ? err.message : String(err)
         })`,
       );
