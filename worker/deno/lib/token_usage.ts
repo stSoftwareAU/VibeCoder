@@ -154,10 +154,11 @@ const HAIKU_PRICING: ModelPricing = {
 // UNPRICED_UPPER_BOUND_PRICING. This replaces the Issue #1701 decision to
 // leave the Codex ids unpriced.
 //
-// `cacheWritePerMillion` is 0 for every row below: no vendor bills a
-// per-token cache write (Codex reports no cache-write counter at all, and
-// Gemini's explicit-cache storage is charged hourly, which is not modelled).
-// `cacheReadPerMillion` is the vendor's cached-input rate.
+// `cacheWritePerMillion` is 0 for every row below: none of these three
+// vendors bills a per-token cache write the way Anthropic does (Codex reports
+// no cache-write counter at all, and Gemini's explicit-cache storage is
+// charged hourly, which is not modelled). `cacheReadPerMillion` is the
+// vendor's cached-input rate.
 //
 // Each id keeps its own row even where two currently share a rate, so a
 // divergence at the vendor is a one-row edit and the ordered prefix walk in
@@ -265,9 +266,14 @@ const GEMINI_2_5_FLASH_PRICING: ModelPricing = {
  * 2026-09-11. Basis: the **standard-hours (peak)** `deepseek-flash` rate
  * ($0.30 cache-miss input / $0.006 cache-hit input / $1.20 output per MTok),
  * with **no off-peak discount** applied — off-peak is half price, so this row
- * never under-states. `deepseek-reasoner` is a legacy alias the vendor no
- * longer lists: while accepted it resolved to the thinking mode of the Flash
- * model and billed at the Flash price, which is the rate priced here.
+ * never under-states.
+ *
+ * That page lists only `deepseek-flash` and `deepseek-v4-pro`; it does not
+ * name `deepseek-reasoner` at all, and it says a legacy model name it still
+ * accepts is served by the Flash model and billed at the Flash price. The
+ * Flash rate is therefore the only rate the source supports for this id.
+ * Whether the vendor still accepts the id the worker routes to is Issue
+ * #1941; this row prices the id as configured today.
  */
 const DEEPSEEK_REASONER_PRICING: ModelPricing = {
   inputPerMillion: 0.30,
@@ -283,9 +289,8 @@ const DEEPSEEK_REASONER_PRICING: ModelPricing = {
  * Source: https://api-docs.deepseek.com/quick_start/pricing, checked on
  * 2026-09-11. Basis: the **standard-hours (peak)** `deepseek-flash` rate
  * ($0.30 cache-miss input / $0.006 cache-hit input / $1.20 output per MTok),
- * with **no off-peak discount** applied. `deepseek-chat` is a legacy alias
- * the vendor no longer lists: while accepted it resolved to the non-thinking
- * mode of the Flash model and billed at the Flash price.
+ * with **no off-peak discount** applied — the same basis, and the same
+ * source-supported reasoning, as the `deepseek-reasoner` row above.
  */
 const DEEPSEEK_CHAT_PRICING: ModelPricing = {
   inputPerMillion: 0.30,
@@ -359,11 +364,12 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
     cacheReadPerMillion: 0.08,
   }],
   ["claude-3-opus", OPUS_PRICING_LEGACY],
-  // Non-Claude ids are priced at the vendor's **API-equivalent list price**,
-  // labelled as such wherever the figure is shown (Issue #1937, #1923,
-  // #1930) — every one of these providers runs on a fixed-price
-  // subscription, so the figure is what the tokens would have cost on that
-  // vendor's API and never a bill. This replaces the Issue #1701 decision to
+  // Non-Claude ids are priced at the vendor's **API-equivalent list price**
+  // (Issue #1937, #1923, #1930) — every one of these providers runs on a
+  // fixed-price subscription, so the figure is what the tokens would have
+  // cost on that vendor's API and never a bill. `formatCostEstimateLines`
+  // says so on the run-stats sub-bullet it renders, reading
+  // `apiEquivalent` off the row. This replaces the Issue #1701 decision to
   // leave the Codex ids unpriced and charged at
   // UNPRICED_UPPER_BOUND_PRICING.
   //
@@ -372,6 +378,13 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   // prefix (`gpt-5-codex` and `gpt-5-mini` before `gpt-5`,
   // `gemini-2.5-flash-lite` before `gemini-2.5-flash`). Pinned by
   // `token_usage_test.ts`.
+  //
+  // The `gpt-5` key also captures a dotted future id (`gpt-5.2`,
+  // `gpt-5.3-codex`), which OpenAI prices dearer than `gpt-5` — such an id
+  // costs at the `gpt-5` rate rather than at its own, so a run on one would
+  // be under-stated until it gets a row of its own. The worker routes only
+  // to the three ids priced here (`config_defaults.ts`), so add the row with
+  // the routing change rather than ahead of it.
   ["gpt-5-codex", GPT_5_CODEX_PRICING],
   ["gpt-5-mini", GPT_5_MINI_PRICING],
   ["gpt-5", GPT_5_PRICING],
