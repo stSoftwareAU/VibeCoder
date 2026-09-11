@@ -145,7 +145,8 @@ consecutive failures).
 flowchart TD
   Cron["Cron / launchd"] --> Run["run.sh"]
   Run --> Core["run-entrypoint driver (Deno)"]
-  Core --> P1["1: PR feedback"]
+  Core --> P09["0.9: Deferred PR raise"]
+  P09 --> P1["1: PR feedback"]
   P1 --> P15["1.5: Spelling"]
   P15 --> P155["1.55: CI checks"]
   P155 --> P16["1.6: Branch updates"]
@@ -189,6 +190,7 @@ flowchart TD
 
 | Priority | Task                                                  | Details                                                                                                                                  |
 | -------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| 0.9 | Deferred PR raise | Raise the PRs GitHub's secondary (content-creation) rate limit refused mid-run — the work is already committed, quality-gated and pushed, so the PR is opened over REST with no agent run (Issue #1951) |
 | 1        | PR feedback and reviews                               | Authorised commenters or thumbs-up                                                                                                       |
 | 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                    |
 | 1.55 | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs |
