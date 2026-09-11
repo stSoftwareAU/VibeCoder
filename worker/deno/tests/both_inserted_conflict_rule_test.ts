@@ -224,46 +224,121 @@ Deno.test("resolveBothInserted - a file with no conflict hunk defers", () => {
 // JSON ledgers
 // ---------------------------------------------------------------------------
 
-Deno.test("resolveBothInserted - a JSON ledger whose union does not parse defers", () => {
-  // Two entries appended to the same array without a separating comma.
-  const base = '{\n  "entries": [\n  ]\n}\n';
-  const conflicted = `{
-  "entries": [
-<<<<<<< HEAD
-    { "id": "ours" }
-=======
-    { "id": "theirs" }
->>>>>>> origin/main
+// ---------------------------------------------------------------------------
+// `.json` is unioned by value, not by text (Issue #1968)
+// ---------------------------------------------------------------------------
+
+/** The merge base of the ledger both branches appended a slice to. */
+const LEDGER_BASE = `{
+  "parent": 1209,
+  "slices": [
+    {
+      "issue": 1910,
+      "chunk": "12z",
+      "paths": [
+        "worker/deno/lib/a.ts"
+      ]
+    }
   ]
 }
 `;
 
-  const outcome = resolve("docs/audits/ledger.json", conflicted, base);
+/**
+ * The conflict `git merge` actually produces for that pair of appends —
+ * captured from a real merge, markers and all. The hunk falls *inside* the
+ * appended object, so no concatenation of the two sides is valid JSON.
+ */
+const LEDGER_CONFLICT = `{
+  "parent": 1209,
+  "slices": [
+    {
+      "issue": 1910,
+      "chunk": "12z",
+      "paths": [
+        "worker/deno/lib/a.ts"
+      ]
+    },
+    {
+<<<<<<< HEAD
+      "issue": 1940,
+      "chunk": "top-up-1940",
+      "paths": [
+        "worker/deno/lib/gemini_token_usage.ts"
+=======
+      "issue": 1943,
+      "chunk": "top-up-1943",
+      "paths": [
+        "worker/deno/lib/other_new.ts"
+>>>>>>> origin/main
+      ]
+    }
+  ]
+}
+`;
 
-  assertEquals(outcome.kind, "unresolved");
-  assertStringIncludes(
-    outcome.kind === "unresolved" ? outcome.reason : "",
-    "does not parse as JSON",
+Deno.test("resolveBothInserted - two appended ledger slices are unioned, not dropped (Issue #1968)", () => {
+  const outcome = resolve(
+    "docs/audits/lib-sweep-coverage.json",
+    LEDGER_CONFLICT,
+    LEDGER_BASE,
+  );
+
+  assertEquals(outcome.kind, "resolved");
+  assertEquals(
+    JSON.parse(outcome.kind === "resolved" ? outcome.text : "null"),
+    {
+      parent: 1209,
+      slices: [
+        {
+          issue: 1910,
+          chunk: "12z",
+          paths: ["worker/deno/lib/a.ts"],
+        },
+        // The base branch's slice first, then the PR branch's — and neither
+        // is dropped, which is the failure this test exists for.
+        {
+          issue: 1943,
+          chunk: "top-up-1943",
+          paths: ["worker/deno/lib/other_new.ts"],
+        },
+        {
+          issue: 1940,
+          chunk: "top-up-1940",
+          paths: ["worker/deno/lib/gemini_token_usage.ts"],
+        },
+      ],
+    },
+  );
+  assert(
+    !(outcome.kind === "resolved" ? outcome.text : "").includes("<<<<<<<"),
+    "no conflict marker survives in the union",
   );
 });
 
 Deno.test("resolveBothInserted - a JSON ledger whose union parses is kept", () => {
-  // A newest-first ledger: both sides prepended an entry above the seed one,
-  // so keeping both leaves the array well-formed.
+  // A newest-first ledger: both sides prepended an entry above the seed one.
   const base = `{
   "entries": [
-    { "id": "seed" }
+    {
+      "id": "seed"
+    }
   ]
 }
 `;
   const conflicted = `{
   "entries": [
 <<<<<<< HEAD
-    { "id": "ours" },
+    {
+      "id": "ours"
+    },
 =======
-    { "id": "theirs" },
+    {
+      "id": "theirs"
+    },
 >>>>>>> origin/main
-    { "id": "seed" }
+    {
+      "id": "seed"
+    }
   ]
 }
 `;
@@ -275,6 +350,66 @@ Deno.test("resolveBothInserted - a JSON ledger whose union parses is kept", () =
     JSON.parse(outcome.kind === "resolved" ? outcome.text : "null"),
     { entries: [{ id: "theirs" }, { id: "ours" }, { id: "seed" }] },
     "both entries survive, the default branch's first, and the result parses",
+  );
+});
+
+Deno.test("resolveBothInserted - a JSON side that deleted a base entry defers", () => {
+  // One side removed the seed entry, so this is not two pure insertions and
+  // the union must hand the file back rather than restoring or dropping it.
+  const base = `{
+  "entries": [
+    {
+      "id": "seed"
+    }
+  ]
+}
+`;
+  const conflicted = `{
+  "entries": [
+<<<<<<< HEAD
+    {
+      "id": "ours"
+    }
+=======
+    {
+      "id": "theirs"
+    },
+    {
+      "id": "seed"
+    }
+>>>>>>> origin/main
+  ]
+}
+`;
+
+  const outcome = resolve("docs/audits/ledger.json", conflicted, base);
+
+  assertEquals(outcome.kind, "unresolved");
+  assertStringIncludes(
+    outcome.kind === "unresolved" ? outcome.reason : "",
+    "not two pure insertions",
+  );
+});
+
+Deno.test("resolveBothInserted - a JSON file the union would reformat defers", () => {
+  // The base's array is hand-compacted, so re-serialising it would rewrite a
+  // line neither side touched. Formatting is the author's, not the merge's.
+  const base = '{\n  "entries": ["seed"]\n}\n';
+  const conflicted = `{
+<<<<<<< HEAD
+  "entries": ["ours", "seed"]
+=======
+  "entries": ["theirs", "seed"]
+>>>>>>> origin/main
+}
+`;
+
+  const outcome = resolve("docs/audits/ledger.json", conflicted, base);
+
+  assertEquals(outcome.kind, "unresolved");
+  assertStringIncludes(
+    outcome.kind === "unresolved" ? outcome.reason : "",
+    "does not round-trip",
   );
 });
 

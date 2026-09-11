@@ -41,9 +41,25 @@
  *   up. "Could not read the base" is never treated as "the base was empty".
  * - **Manifests and lock files** — those have their own rules, and a lock file
  *   is regenerated rather than text-merged.
- * - **A `.json` result that does not parse** — the union of two ledger entries
- *   can be invalid JSON (two objects appended into one array without a comma),
- *   and an unparseable ledger is deferred, never written.
+ * - **A `.json` result that does not parse** — an unparseable ledger is
+ *   deferred, never written.
+ *
+ * ## `.json` is unioned by value, not by text (Issue #1968)
+ *
+ * Two branches that each append an object to the same JSON array conflict
+ * *inside* the object, so no arrangement of the two hunks' text is valid JSON —
+ * the one shape `docs/audits/lib-sweep-coverage.json` produces in practice was
+ * exactly the one the textual union could not resolve, and a hand resolution
+ * dropped a sweep slice and turned `main` red (#1966).
+ *
+ * A `.json` path is therefore merged structurally by
+ * `json_insertion_union.ts`: both sides are reconstructed whole from the
+ * segments, parsed, unioned over the merge base, and re-serialised in the
+ * file's own formatting. That merge does its own insertion-only checking — the
+ * base's array items and object keys must survive on both sides — so it
+ * replaces the line-based checks below rather than running after them, which
+ * matters because appending to a JSON array also edits the previous entry's
+ * closing line to add a comma. Anything it refuses defers, as before.
  *
  * The module is pure — no git, no network, no file I/O.
  *
@@ -58,6 +74,7 @@ import {
   type RuleContext,
   type RuleOutcome,
 } from "./dependency_conflict_rules.ts";
+import { unionJsonInsertions } from "./json_insertion_union.ts";
 
 /** The rule's registered name, quoted in the pass's log and PR comment. */
 export const BOTH_INSERTED_RULE_NAME = "both-inserted";
@@ -91,6 +108,26 @@ function baseName(path: string): string {
 /** Whether this rule is willing to look at a repository-relative path. */
 export function isBothInsertedCandidate(path: string): boolean {
   return !OWNED_ELSEWHERE.has(baseName(path));
+}
+
+/** Whether a path is a JSON document, which is unioned by value (Issue #1968). */
+function isJsonPath(path: string): boolean {
+  return baseName(path).endsWith(".json");
+}
+
+/**
+ * One side of a conflicted file, rendered whole.
+ *
+ * The literal segments plus a single side's hunks are exactly that side's own
+ * version of the file, which is what the structured JSON union needs.
+ */
+function renderSide(
+  segments: readonly ConflictSegment[],
+  side: "ours" | "theirs",
+): string {
+  return segments
+    .map((segment) => segment.kind === "literal" ? segment.text : segment[side])
+    .join("");
 }
 
 /** An `unresolved` outcome, so the reason reads the same way every time. */
@@ -145,6 +182,17 @@ export function resolveBothInserted(
     return defer(`${context.path} has no conflict hunk to resolve`);
   }
 
+  if (isJsonPath(context.path)) {
+    const union = unionJsonInsertions(
+      context.base,
+      renderSide(segments, "ours"),
+      renderSide(segments, "theirs"),
+    );
+    return union.ok
+      ? { kind: "resolved", text: union.value }
+      : defer(`${context.path} was not unioned as JSON: ${union.error}`);
+  }
+
   // A file merged with `diff3` markers states its base regions outright; a
   // non-empty one is a deletion or an edit, whatever the whole-file check says.
   for (const hunk of hunks) {
@@ -197,7 +245,7 @@ export function resolveBothInserted(
  * so both rungs apply the same guard rather than two copies of it.
  */
 export function unionIsWellFormed(path: string, text: string): boolean {
-  if (!baseName(path).endsWith(".json")) return true;
+  if (!isJsonPath(path)) return true;
   try {
     JSON.parse(text);
     return true;

@@ -1,6 +1,6 @@
 {
   "parent": 1209,
-  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/ and worker/deno/setup/. Every non-test module under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate.",
+  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/ and worker/deno/setup/. Every non-test module under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate. A top-up slice's chunk id is top-up-<issue> so two runs adding modules in the same window cannot allocate the same id (#1968).",
   "slices": [
     {
       "issue": 1214,
@@ -974,7 +974,7 @@
     },
     {
       "issue": 1846,
-      "chunk": "12n",
+      "chunk": "top-up-1846",
       "title": "top-up: bot-authored PR lookup",
       "ledger": "docs/audits/security-sweep-1846-pr-bot-lookup.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: pr_bot_lookup.ts (#1846)",
@@ -986,7 +986,7 @@
     },
     {
       "issue": 1885,
-      "chunk": "12o",
+      "chunk": "top-up-1885",
       "title": "top-up: the weekly Claude quota pace gate",
       "ledger": "docs/audits/security-sweep-1885-claude-week-pace.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: claude_week_pace.ts (#1885)",
@@ -998,7 +998,7 @@
     },
     {
       "issue": 1862,
-      "chunk": "12p",
+      "chunk": "top-up-1862",
       "title": "top-up: the re-approved-then-superseded hand-off",
       "ledger": "docs/audits/security-sweep-1862-reapproval-superseded-handoff.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: reapproval_superseded_handoff.ts (#1862)",
@@ -1206,7 +1206,7 @@
     },
     {
       "issue": 1822,
-      "chunk": "12n",
+      "chunk": "top-up-1822",
       "title": "top-up: the file-scoped audit check table",
       "ledger": "docs/audits/security-sweep-1822-workflow-file-checks.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: workflow_file_checks.ts (#1822)",
@@ -1218,7 +1218,7 @@
     },
     {
       "issue": 1823,
-      "chunk": "12o",
+      "chunk": "top-up-1823",
       "title": "top-up: the action pin resolver",
       "ledger": "docs/audits/security-sweep-1823-action-pin-resolver.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: action_pin_resolver.ts (#1823)",
@@ -1230,7 +1230,7 @@
     },
     {
       "issue": 1859,
-      "chunk": "12p",
+      "chunk": "top-up-1859",
       "title": "top-up: the pre-PR changed-workflow gate",
       "ledger": "docs/audits/security-sweep-1859-changed-workflow-gate.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: changed_workflow_gate.ts (#1859)",
@@ -1384,7 +1384,7 @@
     },
     {
       "issue": 1938,
-      "chunk": "12ab",
+      "chunk": "top-up-1938",
       "title": "top-up: the Gemini CLI token-usage decoder",
       "ledger": "docs/audits/security-sweep-1938-gemini-token-usage.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: gemini_token_usage.ts (#1938)",

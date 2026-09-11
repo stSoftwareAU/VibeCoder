@@ -1,7 +1,7 @@
 # Security sweep — the weekly Claude quota pace gate (`claude_week_pace.ts`)
 
 **Issue:** [#1885](https://github.com/stSoftwareAU/VibeCoder/issues/1885)
-(chunk 12o) · **Parent:** #1209
+(chunk top-up-1885) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
 after the chunk-12 slices (12a–12n) recorded their coverage:
@@ -12,7 +12,7 @@ after the chunk-12 slices (12a–12n) recorded their coverage:
 
 Appending the module to a slice whose sweep ran before it existed is the
 cheapest way to make `diffCoverage` green and a false record — the failure
-12f's own record documents. The module is claimed by **12o**, and this file is
+12f's own record documents. The module is claimed by **top-up-1885**, and this file is
 the reading of it.
 
 ## `worker/deno/lib/claude_week_pace.ts`

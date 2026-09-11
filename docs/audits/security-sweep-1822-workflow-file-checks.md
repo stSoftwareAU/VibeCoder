@@ -1,7 +1,7 @@
 # Security sweep — file-scoped audit check table (`workflow_file_checks.ts`)
 
 **Issue:** [#1822](https://github.com/stSoftwareAU/VibeCoder/issues/1822)
-(chunk 12n) · **Parent:** #1209
+(chunk top-up-1822) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
 after the chunk-12 slices (12a–12m) recorded their coverage:
@@ -12,7 +12,7 @@ after the chunk-12 slices (12a–12m) recorded their coverage:
 
 Appending the module to a slice whose sweep ran before it existed is the
 cheapest way to make `diffCoverage` green and a false record — the failure
-12f's own record documents. The module is claimed by **12n**, and this file is
+12f's own record documents. The module is claimed by **top-up-1822**, and this file is
 the reading of it.
 
 ## `worker/deno/lib/workflow_file_checks.ts`
