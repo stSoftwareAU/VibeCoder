@@ -60,6 +60,25 @@ function formatSignals(signals: ReadonlyArray<string>): string {
 }
 
 /**
+ * Render the classifier trailer appended to every no-changes reply.
+ *
+ * Exported so the verbatim path in `pr_ci_processor.ts` (Issue #1876) — which
+ * posts the agent's own `.pr_response_message` instead of the stock text —
+ * shares one rendering with the stock bodies built below.
+ *
+ * @param classification - Output of {@link classifyCiFailure}.
+ * @returns The trailer, including its leading blank line.
+ */
+export function formatClassifierTrailer(
+  classification: CiFailureClassification,
+): string {
+  const { reason, signals } = classification;
+  return `\n\n**Classifier reason:** ${reason}\n**Signals:**\n${
+    formatSignals(signals)
+  }`;
+}
+
+/**
  * Build the PR comment body and label decision for a CI failure where the
  * worker did not push any code changes.
  *
@@ -70,10 +89,8 @@ export function buildCiNoChangesResponse(
   checkName: string,
   classification: CiFailureClassification,
 ): NoChangesResponse {
-  const { category, reason, signals } = classification;
-  const signalBlock = formatSignals(signals);
-  const trailer =
-    `\n\n**Classifier reason:** ${reason}\n**Signals:**\n${signalBlock}`;
+  const { category } = classification;
+  const trailer = formatClassifierTrailer(classification);
 
   switch (category) {
     case "code-fix-required": {

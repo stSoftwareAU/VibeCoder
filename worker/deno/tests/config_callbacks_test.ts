@@ -65,6 +65,18 @@ Deno.test("config callbacks - configured hooks reach WorkerConfig", async () => 
   });
 });
 
+Deno.test("config callbacks - a cycle heartbeat path reaches WorkerConfig (Issue #1955)", async () => {
+  await withConfig(async (path, write) => {
+    await write({
+      repos: ["org/repo"],
+      callbacks: { cycle: "/opt/hooks/cycle.sh" },
+    });
+    const config = await loadConfig(path);
+    assertEquals(config.callbacks.cycle, "/opt/hooks/cycle.sh");
+    assertEquals(config.callbacks.success, undefined);
+  });
+});
+
 Deno.test("config callbacks - a relative hook path fails the config load", async () => {
   await withConfig(async (path, write) => {
     await write({ repos: ["org/repo"], callbacks: { success: "hooks/s.sh" } });

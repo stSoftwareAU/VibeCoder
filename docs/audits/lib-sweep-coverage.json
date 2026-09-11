@@ -1389,11 +1389,59 @@
       ]
     },
     {
-      "issue": 1951,
+      "issue": 1877,
       "chunk": "12ac",
+      "title": "top-up: the CI-fix attempt markers",
+      "ledger": "docs/audits/security-sweep-1877-ci-fix-attempt-markers.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: ci_fix_attempt_markers.ts (#1877)",
+      "status": "swept",
+      "sweptAt": "2d294bc3e5e50f7c160bb469e35d07e2af20d1d1",
+      "paths": [
+        "worker/deno/lib/ci_fix_attempt_markers.ts"
+      ]
+    },
+    {
+      "issue": 1878,
+      "chunk": "12ad",
+      "title": "top-up: aggregator recognition from workflow needs:",
+      "ledger": "docs/audits/security-sweep-1878-workflow-job-needs.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12aa recorded their coverage: workflow_job_needs.ts (#1878)",
+      "status": "swept",
+      "sweptAt": "d72345e3a008a54356fba376387984d56ae00a3b",
+      "paths": [
+        "worker/deno/lib/workflow_job_needs.ts"
+      ]
+    },
+    {
+      "issue": 1879,
+      "chunk": "12ae",
+      "title": "top-up: the CI-fix PR marker reader",
+      "ledger": "docs/audits/security-sweep-1879-ci-fix-pr-markers.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12ab recorded their coverage: ci_fix_pr_markers.ts (#1879)",
+      "status": "swept",
+      "sweptAt": "d0d30d458b6e08116ebb549bcbb817728af204f0",
+      "paths": [
+        "worker/deno/lib/ci_fix_pr_markers.ts"
+      ]
+    },
+    {
+      "issue": 1880,
+      "chunk": "12af",
+      "title": "top-up: the base-branch check reader",
+      "ledger": "docs/audits/security-sweep-1880-ci-base-branch-check.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12ac recorded their coverage: ci_base_branch_check.ts (#1880)",
+      "status": "swept",
+      "sweptAt": "2a01c53d9429ebcb3db1d18c94fa48e23a66c493",
+      "paths": [
+        "worker/deno/lib/ci_base_branch_check.ts"
+      ]
+    },
+    {
+      "issue": 1951,
+      "chunk": "12ag",
       "title": "top-up: deferred PR creation after a GitHub secondary rate limit",
       "ledger": "docs/audits/security-sweep-1951-deferred-pr.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: secondary_rate_limit.ts, pr_creation_retry.ts, deferred_pr_store.ts, deferred_pr_drain.ts and phases/pr_deferral.ts (#1951)",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: secondary_rate_limit.ts, pr_creation_retry.ts, deferred_pr_store.ts, deferred_pr_drain.ts and phases/pr_deferral.ts (#1951)",
       "status": "swept",
       "sweptAt": "0fc56ced62f912f3434d314ac0f72ea576978a6e",
       "paths": [

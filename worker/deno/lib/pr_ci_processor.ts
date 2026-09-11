@@ -60,17 +60,39 @@ import {
 } from "./push_claim_verification.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import {
-  type AutoFixAttempt,
   buildAutoFixCapSummary,
   computeFailureSignature,
   consumesAutoFixAttempt,
   DEFAULT_MAX_AUTO_FIX_ATTEMPTS,
-  getAutoFixAttempts,
   hasReachedAutoFixCap,
-  recordAutoFixAttempt,
 } from "./auto_fix_attempt_tracker.ts";
 import {
+  buildCiFixAttemptMarker,
+  buildCiFixDeferralMarker,
+  type CiFixAttemptOutcome,
+  type CiFixAttemptRecord,
+  countAttempts,
+  findDeferral,
+  findNoChangeComment,
+  type FleetCiFixMarkers,
+} from "./ci_fix_attempt_markers.ts";
+import { isCheckRedOnBranch } from "./ci_base_branch_check.ts";
+import {
+  type BlockedDependency,
+  detectBlockedOutcome,
+  formatDependencyRef,
+} from "./blocked_outcome.ts";
+import {
+  appendAttemptToComment,
+  buildCapAttemptRows,
+  isBlockerOpen,
+  parseBlockerRef,
+  type PrCiFixMarkerState,
+  readPrCiFixMarkers,
+} from "./ci_fix_pr_markers.ts";
+import {
   buildCiNoChangesResponse,
+  formatClassifierTrailer,
   PR_ESCALATION_NEXT_STEP,
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
@@ -86,6 +108,11 @@ import {
   runPrFailureActions,
 } from "./pr_failure_actions.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
+import { readWorkflowFiles } from "./workflow_scan_common.ts";
+import {
+  buildJobNeedsMap,
+  isDownstreamOfRedJob,
+} from "./workflow_job_needs.ts";
 import type { FetchFn } from "./ci_fetch_types.ts";
 import type { fetchGithubActionsLogExcerpt } from "./github_actions_log_fetcher.ts";
 import {
@@ -120,12 +147,32 @@ export interface CiFixInput {
   /** Base64-encoded annotations JSON. */
   encodedAnnotations: string;
   /**
+   * The pull request's base branch (Issue #1880).
+   *
+   * The agent may report the failure as pre-existing on the base by ending
+   * its `.pr_response_message` with a `Depends on owner/repo#N` line. That
+   * claim is only honoured when this branch's own latest run of the same
+   * check is red, so an absent base ref means the claim cannot be verified
+   * and the ordinary no-changes path runs.
+   */
+  baseRef?: string;
+  /**
    * Optional check `target_url` / `details_url` (Issue #1893). Handed to
    * the CI log provider so it can locate the build it describes. Optional
    * because not all CI sources populate it, and the dispatcher is gated on
    * the repo's `ciProviders` configuration anyway.
    */
   targetUrl?: string;
+  /**
+   * Every check name failing on the same head, as the scan saw them
+   * (Issue #1878).
+   *
+   * The scan filters aggregator checks against the host's clone, which
+   * sits on the default branch; this list lets the processor repeat that
+   * decision against the branch it actually checked out. Absent means
+   * "unknown" and nothing is filtered here.
+   */
+  siblingFailedCheckNames?: string[];
 }
 
 /** Result of CI fix processing. */
@@ -186,8 +233,24 @@ export interface CiProcessorDeps {
    * State directory for CI retry tracking. Defaults to
    * {@link resolveCiCheckStateDir} — an absolute path inside the work
    * directory, never relative to the process cwd (Issue #552).
+   *
+   * It holds the **check-run retry counter only**. The auto-fix attempt
+   * tally moved onto the pull request in Issue #1879, so nothing here is
+   * read or written for the cap.
    */
   stateDir?: string;
+  /**
+   * Logins whose CI-fix markers on the pull request count as the fleet's
+   * own record (Issue #1879) — this host's `github_user` plus the sibling
+   * `fleet_pr_authors` / `service_accounts` the scans already resolve.
+   *
+   * A marker is a claim about what the fleet did and only a comment's
+   * *author* is authenticated, so a login outside this set is ignored.
+   * Left empty the tally cannot be attributed at all: the cap does not
+   * bind and the shortfall is logged as an error rather than passing for a
+   * fresh budget.
+   */
+  fleetLogins?: readonly string[];
   /** Claude model override. */
   claudeModel?: string;
   /** Function to run gh commands (injectable for testing). */
@@ -660,6 +723,41 @@ async function recordCiMilestone(
 }
 
 /**
+ * Is this check an aggregator whose needed job is also red on this head
+ * (Issue #1878)?
+ *
+ * Re-runs the scan's decision against the **checked-out** branch, whose
+ * `.github/workflows` is the head's own topology rather than the default
+ * branch's. Returns `false` — diagnose normally — whenever the question
+ * cannot be answered: no sibling list from the scan, no work directory,
+ * or workflow YAML that will not read.
+ */
+async function _isDownstreamAggregator(
+  input: CiFixInput,
+  processorDeps: CiProcessorDeps,
+): Promise<boolean> {
+  const siblings = input.siblingFailedCheckNames;
+  if (siblings === undefined || siblings.length === 0) return false;
+  const workDir = processorDeps.workDir;
+  if (workDir === undefined || workDir.length === 0) return false;
+
+  try {
+    const map = buildJobNeedsMap(await readWorkflowFiles(workDir));
+    return isDownstreamOfRedJob(input.checkName, siblings, map);
+  } catch (error: unknown) {
+    processorDeps.logger.warn(
+      "Could not read workflow YAML for aggregator detection",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return false;
+  }
+}
+
+/**
  * Inner CI fix processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
  */
@@ -731,6 +829,32 @@ async function _processCiWithHeartbeat(
   // The branch is the PR's: this is a real attempt, so it counts against
   // `maxCiRetries` (Issue #1677 — see `_processCiFailureLocked`).
   await recordCiCheckRetry(stateDir, repo, checkRunId);
+
+  // Issue #1878: repeat the scan's aggregator decision against the branch
+  // that was actually checked out. The scan reads the host's clone, which
+  // sits on the default branch, so a head that added or renamed the
+  // aggregator is only caught here. The retry above stands: a check the
+  // scan could not filter must not be re-selected on every cycle for ever.
+  if (await _isDownstreamAggregator(input, processorDeps)) {
+    logger.info(
+      `CI fix skipped for PR #${prNumber}: check '${checkName}' needs a job ` +
+        `that is also failing on this head — it has no failure of its own ` +
+        `(Issue #1878)`,
+      { repo, prNumber, checkName, checkRunId },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: 0,
+        retryCount: newRetryCount,
+        summary:
+          `Check '${checkName}' is downstream of another failing check on ` +
+          `PR #${prNumber} — skipped`,
+      },
+    };
+  }
 
   // Capture pre-Claude HEAD so we can detect commits Claude pushes itself
   // (Issue #1863). The final-mile commitAndPushPending only sees uncommitted
@@ -835,24 +959,67 @@ async function _processCiWithHeartbeat(
       ? { workspaceRoot: processorDeps.workDir }
       : {}),
   });
-  const priorAttempts = await getAutoFixAttempts(stateDir, signature);
+  // Issue #1879: the tally is the pull request's own fleet-authored markers,
+  // read once here and reused for the cap, the dedup and the escalation's
+  // own comment scan. Every host reads the same record, so three attempts
+  // are three across the fleet rather than three per host.
+  const markerState = await readPrCiFixMarkers({
+    repo,
+    prNumber,
+    // Pull requests share the issue-comments endpoint.
+    getComments: (targetRepo, targetNumber) =>
+      deps.github.createClient(logger).getIssueComments(
+        targetRepo,
+        targetNumber,
+      ),
+    fleetLogins: processorDeps.fleetLogins ?? [],
+    logger,
+  });
+  if (markerState.readFailed) {
+    // The tally is unknown, and `ci_fix_attempt_markers.ts` is explicit that
+    // an unknown tally is "cannot decide", not "go ahead": running the agent
+    // here would spend an attempt nothing could count. A read failure is
+    // transient, so standing down costs one cycle and the next scan retries.
+    logger.warn(
+      "CI fix stood down: the pull request's CI-fix markers could not be " +
+        "read, so the fleet-wide attempt cap cannot be evaluated " +
+        "(Issue #1879)",
+      { repo, prNumber, checkName, signature },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount,
+        summary:
+          `PR #${prNumber} (${checkName}) — the CI-fix attempt markers could ` +
+          `not be read; stood down rather than spending an uncounted attempt`,
+      },
+    };
+  }
+
+  const priorAttempts = markerState.markers.attempts.get(signature) ?? [];
+  const attemptCount = countAttempts(markerState.markers, signature);
   logger.info("Auto-fix failure signature", {
     repo,
     prNumber,
     checkName,
     signature,
-    priorAttempts: priorAttempts.length,
+    priorAttempts: attemptCount,
+    capEnforced: markerState.capEnforced,
     maxAutoFixAttempts,
     category: failureClassification.category,
   });
 
-  if (hasReachedAutoFixCap(priorAttempts.length, maxAutoFixAttempts)) {
+  if (hasReachedAutoFixCap(attemptCount, maxAutoFixAttempts)) {
     logger.warn("Auto-fix attempt cap reached — escalating to a human", {
       repo,
       prNumber,
       checkName,
       signature,
-      attempts: priorAttempts.length,
+      attempts: attemptCount,
       maxAutoFixAttempts,
     });
 
@@ -868,12 +1035,19 @@ async function _processCiWithHeartbeat(
         checkName,
         signature,
         maxAttempts: maxAutoFixAttempts,
-        attempts: priorAttempts,
+        attempts: buildCapAttemptRows(priorAttempts),
       }),
       nextStep: PR_ESCALATION_NEXT_STEP,
       // One consolidated comment per signature — never a fourth
-      // "I tried again" note.
+      // "I tried again" note. The comments are already in hand, so the
+      // dedup scan costs no second read.
       dedupKey: `auto-fix-cap:${signature}`,
+      // Only a read that actually happened: an empty list handed over as
+      // "the comments" would tell the dedup scan there is no prior
+      // escalation when in truth nothing was read.
+      ...(markerState.readFailed
+        ? {}
+        : { prefetchedComments: markerState.comments }),
       ensureLabelColour: "d4c5f9",
       ensureLabelDescription:
         "Worker could not produce a fix; human review required",
@@ -894,11 +1068,45 @@ async function _processCiWithHeartbeat(
     };
   }
 
+  // Issue #1879: the fleet already diagnosed this exact failure on this
+  // exact head and reported that nothing needed changing. Nothing has moved
+  // since, so a second run — on this host or any other — would reach the
+  // same conclusion and post a second copy of it. Run no agent and post
+  // nothing; a new head re-opens the question below.
+  // The *earliest* no-change comment is the one carrying the diagnosis, so
+  // that is what a repeat is appended to — but the short-circuit asks a
+  // different question, "has any run already answered for **this** head?",
+  // which a later attempt recorded in that same comment can satisfy.
+  const priorNoChange = findNoChangeComment(markerState.markers, signature);
+  const answeredThisHead = beforeSha !== undefined &&
+    priorAttempts.some((record) =>
+      record.outcome === "no-change" && record.head === beforeSha
+    );
+  if (priorNoChange !== undefined && answeredThisHead) {
+    logger.info(
+      "CI fix skipped: the fleet has already reported no change required " +
+        "for this failure on this head (Issue #1879)",
+      { repo, prNumber, checkName, signature, head: beforeSha },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount,
+        summary:
+          `PR #${prNumber} (${checkName}) — already diagnosed as "no change ` +
+          `required" on this head (signature ${signature}); posted nothing`,
+      },
+    };
+  }
+
   await recordCiMilestone(
     processorDeps,
     input,
     `Diagnosing \`${checkName}\` (${failureClassification.category}) — ` +
-      `fix attempt ${priorAttempts.length + 1} of ${maxAutoFixAttempts}`,
+      `fix attempt ${attemptCount + 1} of ${maxAutoFixAttempts}`,
   );
 
   // Build prompt — pass raw annotations so v4+ templates can surface the
@@ -1149,8 +1357,14 @@ async function _processCiWithHeartbeat(
     // One rebuild per underlying failure. A finding that survives a rebuild
     // is not in this branch, so rebuilding again would be the same wrong
     // answer given twice — escalate with the evidence instead.
+    // Issue #1879: a marker records the outcome, not the category, so the
+    // closest available reading of "a rebuild has already been tried" is
+    // "a previous attempt at this same signature pushed something". That is
+    // deliberately broader than the category test it replaces — an ordinary
+    // pushed fix also counts — and the guard errs towards not rebuilding
+    // twice, which is the safe direction for a force-push.
     const alreadyRebuilt = priorAttempts.some(
-      (attempt) => attempt.category === "history-rewrite-required",
+      (attempt) => attempt.outcome === "pushed",
     );
     if (alreadyRebuilt) {
       logger.warn(
@@ -1299,6 +1513,26 @@ async function _processCiWithHeartbeat(
     );
   }
 
+  // Issue #1879: every comment this run posts carries the marker the next
+  // host counts. An `infrastructure` blip is deliberately not charged, so it
+  // writes no marker (see `consumesAutoFixAttempt`). `no-change` is the
+  // honest outcome whenever nothing reached the pull request — a fix made
+  // locally but never pushed left the head exactly as the last run found it.
+  const attemptMarker = _buildAttemptMarker({
+    charge: consumesAutoFixAttempt(failureClassification.category),
+    signature,
+    checkName,
+    head: beforeSha,
+    attempt: attemptCount + 1,
+    outcome: actuallyPushed ? "pushed" : "no-change",
+    repo,
+    prNumber,
+    logger,
+  });
+  const markerSuffix = attemptMarker === undefined
+    ? ""
+    : `\n\n${attemptMarker}`;
+
   // Reply with outcome — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded) {
     const base = customMessage ??
@@ -1316,7 +1550,8 @@ async function _processCiWithHeartbeat(
     // claim is falsifiable at a glance rather than by a human comparing the
     // comment against `git log`.
     const body = rebuilt +
-      (pushVerification ? formatVerifiedPushSuffix(pushVerification) : "");
+      (pushVerification ? formatVerifiedPushSuffix(pushVerification) : "") +
+      markerSuffix;
     await replyToComment(repo, prNumber, body, deps);
   } else if (hasChanges && !pushSucceeded) {
     // Issue #211: carry the failing recovery step and git's stderr into the
@@ -1324,10 +1559,13 @@ async function _processCiWithHeartbeat(
     const detail = pushFailureDetail
       ? `\n\nPush recovery detail: ${pushFailureDetail}`
       : "";
+    // Always its own comment: a push that failed is news, and folding it
+    // into an unrelated "no change required" comment would bury it. The
+    // marker still says `no-change` — nothing reached the pull request.
     await replyToComment(
       repo,
       prNumber,
-      `I fixed the CI failure (**${checkName}**) locally but failed to push the changes. Please check the branch status.${detail}`,
+      `I fixed the CI failure (**${checkName}**) locally but failed to push the changes. Please check the branch status.${detail}${markerSuffix}`,
       deps,
     );
   } else {
@@ -1343,7 +1581,146 @@ async function _processCiWithHeartbeat(
       claudeResult.value.output,
     );
     const response = buildCiNoChangesResponse(checkName, classification);
-    if (response.addNeedsHuman) {
+    // Issue #1876: the CI-fix prompt promises the agent's `.pr_response_message`
+    // is posted verbatim, and on this path it was being discarded for the stock
+    // text — a reviewer read "could not determine a fix" where the agent had
+    // explained the failure sits in the base branch. Prefer the agent's own
+    // words, keeping the classifier trailer so the categorisation is still
+    // visible; fall back to the stock body only when it wrote nothing.
+    const verbatimBody = customMessage === undefined
+      ? undefined
+      : `${customMessage}${formatClassifierTrailer(classification)}`;
+
+    // Issue #1880: the agent may report the failure as pre-existing on the
+    // base branch, ending its message with a `Depends on owner/repo#N` line.
+    // Verified against the base branch's own latest run of the same check,
+    // that is a deferral rather than a failed repair: the diagnosis is posted
+    // once, no `needs-human` is applied and no attempt is charged, because
+    // nothing on this pull request could have fixed it. An unverified claim
+    // falls through to the ordinary path below and costs an attempt.
+    const deferral = await _resolveBaseBranchDeferral({
+      customMessage,
+      repo,
+      prNumber,
+      baseRef: input.baseRef,
+      checkName,
+      signature,
+      markers: markerState.markers,
+      ghCommandFn: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+      logger,
+    });
+
+    if (deferral.kind === "already-deferred") {
+      // The scanner should have skipped this pull request while the blocker
+      // is open (Issue #1849 refreshes it once the blocker lands), so being
+      // here at all is worth saying out loud — but a second copy of the same
+      // diagnosis is not.
+      logger.warn(
+        "CI fix already deferred to a blocking issue for this failure — " +
+          "posting nothing (Issue #1880)",
+        { repo, prNumber, checkName, signature, dependsOn: deferral.ref },
+      );
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          changesPushed: false,
+          annotationCount: annotations.length,
+          retryCount: newRetryCount,
+          summary: `deferred: depends on ${deferral.ref}`,
+        },
+      };
+    }
+
+    if (deferral.kind === "defer") {
+      logger.info(
+        "CI fix deferred: the same check is red on the base branch " +
+          "(Issue #1880)",
+        {
+          repo,
+          prNumber,
+          checkName,
+          signature,
+          baseRef: input.baseRef,
+          dependsOn: deferral.ref,
+        },
+      );
+      const posted = await replyToComment(
+        repo,
+        prNumber,
+        // The agent's own words, the classifier trailer that keeps the
+        // categorisation visible, and the marker the next host reads.
+        `${verbatimBody ?? response.body}\n\n${deferral.marker}`,
+        deps,
+      );
+      if (!posted) {
+        // The comment IS the deferral record: without it no marker reaches
+        // the pull request, every later scan re-runs the agent, and claiming
+        // a deferral here would be a success no evidence supports.
+        logger.error(
+          "The CI-fix deferral comment could not be posted, so the deferral " +
+            "was not recorded — reporting the run as unprocessed so the " +
+            "next scan retries (Issue #1880)",
+          { repo, prNumber, checkName, signature, dependsOn: deferral.ref },
+        );
+        return {
+          ok: true,
+          value: {
+            processed: false,
+            changesPushed: false,
+            annotationCount: annotations.length,
+            retryCount: newRetryCount,
+            summary:
+              `PR #${prNumber} (${checkName}) — the base-branch deferral to ` +
+              `${deferral.ref} could not be posted; nothing was recorded`,
+          },
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          changesPushed: false,
+          annotationCount: annotations.length,
+          retryCount: newRetryCount,
+          summary: `deferred: depends on ${deferral.ref}`,
+        },
+      };
+    }
+
+    // A repeat "no change required" for the same failure appends **this
+    // run's own words** and its marker to the comment already carrying the
+    // diagnosis, rather than posting a second copy — one CI-fix comment per
+    // failure signature per pull request, fleet-wide. The new head can
+    // genuinely produce a different reading, so the agent's message is
+    // carried over rather than assumed unchanged (Issue #1876).
+    const editedInPlace = attemptMarker !== undefined &&
+        priorNoChange !== undefined
+      ? await _appendAttemptInPlace({
+        repo,
+        prNumber,
+        record: priorNoChange,
+        markerState,
+        marker: attemptMarker,
+        attempt: attemptCount + 1,
+        head: beforeSha,
+        diagnosis: verbatimBody ?? response.reason ?? response.body,
+        processorDeps,
+      })
+      : false;
+
+    if (editedInPlace) {
+      // The explanation is the comment just edited, so nothing is posted.
+      // No label is applied here either: `needs-human` belongs to the
+      // `escalateToHuman` chokepoint (Issue #2202), which the run that first
+      // posted this diagnosis already went through for the same signature —
+      // and which the cap escalation goes through again at attempt 3.
+      logger.info(
+        "CI-fix reply appended to the existing comment — no second copy, " +
+          "no second escalation (Issue #1879)",
+        { repo, prNumber, checkName, signature },
+      );
+    } else if (response.addNeedsHuman) {
       // Issue #2211: route via the shared escalateToHuman helper so the
       // `needs-human` label and the explanation comment are applied
       // atomically through a single chokepoint. The classifier-derived
@@ -1357,7 +1734,12 @@ async function _processCiWithHeartbeat(
         target: { kind: "pr", number: prNumber },
         needsHumanLabel: "needs-human",
         heading: "CI failure needs human attention",
-        reason: response.reason ?? response.body,
+        reason: (verbatimBody ?? response.reason ?? response.body) +
+          markerSuffix,
+        // The nextStep is the worker's own instruction to the reviewer, not
+        // the agent's report — the history-rewrite arm's "rotate the
+        // credential" guidance must survive an agent message replacing the
+        // reason.
         nextStep: response.nextStep ?? PR_ESCALATION_NEXT_STEP,
         ensureLabelColour: "d4c5f9",
         ensureLabelDescription:
@@ -1366,34 +1748,20 @@ async function _processCiWithHeartbeat(
         logger,
       });
     } else {
-      await replyToComment(repo, prNumber, response.body, deps);
+      await replyToComment(
+        repo,
+        prNumber,
+        (verbatimBody ?? response.body) + markerSuffix,
+        deps,
+      );
     }
   }
 
-  // Record this completed attempt against the failure signature (Issue
-  // #3582). Infrastructure-category failures are deliberately not charged:
-  // a runner blip is no evidence the worker cannot fix the code.
-  let autoFixAttemptCount = priorAttempts.length;
-  if (consumesAutoFixAttempt(failureClassification.category)) {
-    const attemptRecord: AutoFixAttempt = {
-      repo,
-      locus: { kind: "pr", number: prNumber },
-      checkName,
-      category: failureClassification.category,
-      diagnosis: failureClassification.reason,
-      change: summariseChange(customMessage, hasChanges),
-      outcome: actuallyPushed
-        ? "pushed a fix; the build was still not green"
-        : hasChanges
-        ? "a fix was made locally but could not be pushed"
-        : "no code changes were produced",
-    };
-    autoFixAttemptCount = await recordAutoFixAttempt(
-      stateDir,
-      signature,
-      attemptRecord,
-    );
-  }
+  // The attempt is recorded by the marker the comment above carries — there
+  // is no host-local file to write (Issue #1879).
+  const autoFixAttemptCount = attemptMarker === undefined
+    ? attemptCount
+    : attemptCount + 1;
 
   logger.info("CI fix processing complete", {
     repo,
@@ -1422,20 +1790,141 @@ async function _processCiWithHeartbeat(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Fleet-wide attempt markers (Issue #1879)
+// ---------------------------------------------------------------------------
+
 /**
- * Summarise what an attempt changed, for the consolidated cap comment
- * (Issue #3582). Prefers Claude's own `.pr_response_message`, trimmed to a
- * single table-friendly line.
+ * Build the marker recording this attempt, or explain why there is none.
+ *
+ * Two reasons produce no marker, and they are not the same thing:
+ * an `infrastructure` failure is deliberately **not charged** (a runner blip
+ * says nothing about the worker's ability to fix the code), while an
+ * unreadable head SHA is a **fault** — the attempt really happened and will
+ * go uncounted — so it is logged as an error rather than passed over.
  */
-function summariseChange(
-  customMessage: string | undefined,
-  hasChanges: boolean,
-): string {
-  const text = customMessage?.replace(/\s+/g, " ").trim();
-  if (text && text.length > 0) {
-    return text.length > 300 ? `${text.slice(0, 297)}...` : text;
+function _buildAttemptMarker(opts: {
+  charge: boolean;
+  signature: string;
+  checkName: string;
+  head: string | undefined;
+  attempt: number;
+  outcome: CiFixAttemptOutcome;
+  repo: string;
+  prNumber: number;
+  logger: Logger;
+}): string | undefined {
+  if (!opts.charge) return undefined;
+  if (opts.head === undefined) {
+    opts.logger.error(
+      "The PR head SHA could not be read, so this CI-fix attempt records no " +
+        "marker and does not count against the fleet-wide cap (Issue #1879)",
+      { repo: opts.repo, prNumber: opts.prNumber, signature: opts.signature },
+    );
+    return undefined;
   }
-  return hasChanges ? "changes were made (no summary provided)" : "nothing";
+  try {
+    return buildCiFixAttemptMarker({
+      signature: opts.signature,
+      checkName: opts.checkName,
+      head: opts.head,
+      attempt: opts.attempt,
+      outcome: opts.outcome,
+    });
+  } catch (error: unknown) {
+    opts.logger.error(
+      "Could not build the CI-fix attempt marker — this attempt does not " +
+        "count against the fleet-wide cap (Issue #1879)",
+      {
+        repo: opts.repo,
+        prNumber: opts.prNumber,
+        signature: opts.signature,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Append this attempt to the comment that already carries the diagnosis.
+ *
+ * @returns `true` when the edit landed — the caller then posts nothing.
+ *   `false` when it could not, so the diagnosis is posted as a fresh comment
+ *   rather than lost.
+ */
+async function _appendAttemptInPlace(opts: {
+  repo: string;
+  prNumber: number;
+  record: CiFixAttemptRecord;
+  markerState: PrCiFixMarkerState;
+  marker: string;
+  attempt: number;
+  head: string | undefined;
+  /** This run's own reading of the failure, carried over verbatim. */
+  diagnosis: string;
+  processorDeps: CiProcessorDeps;
+}): Promise<boolean> {
+  const { logger, deps } = opts.processorDeps;
+  const original = opts.markerState.comments.find(
+    (comment) => comment.id === opts.record.commentId,
+  );
+  if (original === undefined) {
+    logger.warn(
+      "The existing CI-fix comment could not be re-read — posting a fresh " +
+        "comment instead (Issue #1879)",
+      {
+        repo: opts.repo,
+        prNumber: opts.prNumber,
+        commentId: opts.record.commentId,
+      },
+    );
+    return false;
+  }
+
+  const where = opts.head === undefined
+    ? "a new head"
+    : `\`${opts.head.slice(0, 7)}\``;
+  const note = `---\n\n**Attempt ${opts.attempt} — ${where}:** the same ` +
+    `failure, no change pushed.\n\n${opts.diagnosis.trim()}`;
+  const client = deps.github.createClient(logger);
+  if (typeof client.updateComment !== "function") {
+    logger.error(
+      "This GitHub client cannot edit comments, so the repeat CI-fix " +
+        "diagnosis is posted as a fresh comment (Issue #1879)",
+      { repo: opts.repo, prNumber: opts.prNumber },
+    );
+    return false;
+  }
+  try {
+    await client.updateComment(
+      opts.repo,
+      opts.record.commentId,
+      appendAttemptToComment(original.body, note, opts.marker),
+    );
+    logger.info(
+      "Appended the CI-fix attempt to the existing comment (Issue #1879)",
+      {
+        repo: opts.repo,
+        prNumber: opts.prNumber,
+        commentId: opts.record.commentId,
+        attempt: opts.attempt,
+      },
+    );
+    return true;
+  } catch (error: unknown) {
+    logger.error(
+      "Could not append the CI-fix attempt to the existing comment — " +
+        "posting a fresh comment instead (Issue #1879)",
+      {
+        repo: opts.repo,
+        prNumber: opts.prNumber,
+        commentId: opts.record.commentId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1853,7 +2342,7 @@ async function replyToComment(
   prNumber: number,
   message: string,
   deps: WorkerDeps,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await deps.github.runGhCommand([
       "pr",
@@ -1864,7 +2353,249 @@ async function replyToComment(
       "--body",
       message,
     ]);
+    return true;
   } catch {
-    // Comment failure is non-critical
+    // Comment failure is non-critical to the fix itself — the code change is
+    // already pushed. A caller whose **record** is the comment (the
+    // base-branch deferral, Issue #1880) must not read this as success, so
+    // the outcome is returned rather than swallowed.
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Base-branch deferral (Issue #1880)
+// ---------------------------------------------------------------------------
+
+/** What {@link _resolveBaseBranchDeferral} decided. */
+type BaseBranchDeferral =
+  /** Not a verified base-branch failure — run the ordinary no-changes path. */
+  | { kind: "none" }
+  /** Defer: post the diagnosis once with `marker`, charge no attempt. */
+  | { kind: "defer"; ref: string; marker: string }
+  /** The fleet already deferred this failure — post nothing. */
+  | { kind: "already-deferred"; ref: string };
+
+/** Inputs for {@link _resolveBaseBranchDeferral}. */
+interface BaseBranchDeferralOptions {
+  /** The agent's `.pr_response_message`, or `undefined` when it wrote none. */
+  customMessage: string | undefined;
+  /** Repository in `owner/repo` form. */
+  repo: string;
+  /** Pull request number. */
+  prNumber: number;
+  /** The pull request's base branch, when the scan carried one. */
+  baseRef: string | undefined;
+  /** Name of the failing check. */
+  checkName: string;
+  /** Failure signature the markers are keyed by. */
+  signature: string;
+  /** Fleet-authored markers already on the pull request. */
+  markers: FleetCiFixMarkers;
+  /** Runs a `gh` command. */
+  ghCommandFn: (args: string[]) => Promise<string>;
+  /** Logger — every refusal to defer names its reason. */
+  logger: Logger;
+}
+
+/**
+ * Decide whether this no-changes run is a verified base-branch deferral.
+ *
+ * A deferral costs the fleet nothing — no attempt, no `needs-human` — so it
+ * is granted only when **both** halves hold: the agent declared a dependency
+ * on a `Depends on owner/repo#N` line, and the base branch's own latest run
+ * of the same check is red. Every other reading (no declaration, no base ref,
+ * a green base, a lookup that errored, a marker that would not build) returns
+ * `none`, and the caller then posts the ordinary reply and charges an
+ * attempt — so an unverifiable claim fails loud through the cap rather than
+ * parking the pull request.
+ *
+ * @param options - The agent's message, the failure, and the `gh` runner.
+ * @returns What the caller should do.
+ */
+async function _resolveBaseBranchDeferral(
+  options: BaseBranchDeferralOptions,
+): Promise<BaseBranchDeferral> {
+  const {
+    customMessage,
+    repo,
+    prNumber,
+    baseRef,
+    checkName,
+    signature,
+    markers,
+    ghCommandFn,
+    logger,
+  } = options;
+
+  if (customMessage === undefined) return { kind: "none" };
+
+  // The pull request is the "self" here, so a `Depends on #<this PR>` line
+  // cannot make the pull request its own blocker.
+  const blocked = detectBlockedOutcome(customMessage, {
+    repo,
+    issueNumber: prNumber,
+  });
+  if (blocked === undefined) return { kind: "none" };
+
+  // A bare `#N` names an issue in the pull request's own repo; the marker and
+  // the dependency gate both want the full `owner/repo#N` form.
+  const dependency: BlockedDependency = {
+    repo: blocked.dependency.repo ?? repo,
+    number: blocked.dependency.number,
+  };
+  const ref = formatDependencyRef(dependency);
+
+  if (baseRef === undefined || baseRef.trim().length === 0) {
+    logger.warn(
+      "CI-fix agent declared a base-branch dependency but the scan carried " +
+        "no base branch, so the claim could not be verified — running the " +
+        "ordinary no-changes path (Issue #1880)",
+      { repo, prNumber, checkName, dependsOn: ref },
+    );
+    return { kind: "none" };
+  }
+
+  const red = await isCheckRedOnBranch({
+    repo,
+    branch: baseRef,
+    checkName,
+    ghCommandFn,
+  });
+  if (!red.ok) {
+    // Never read as "the base is green": the lookup failed, which is a fault
+    // to surface rather than a verdict to act on.
+    logger.error(
+      "Could not read the base branch's checks, so a declared base-branch " +
+        "failure could not be verified — running the ordinary no-changes " +
+        "path (Issue #1880)",
+      {
+        repo,
+        prNumber,
+        checkName,
+        baseRef,
+        dependsOn: ref,
+        error: red.error.message,
+      },
+    );
+    return { kind: "none" };
+  }
+  if (!red.value) {
+    logger.info(
+      "CI-fix agent declared a base-branch failure but the base branch's " +
+        "latest run of this check is not red — running the ordinary " +
+        "no-changes path (Issue #1880)",
+      { repo, prNumber, checkName, baseRef, dependsOn: ref },
+    );
+    return { kind: "none" };
+  }
+
+  const prior = findDeferral(markers, signature);
+  if (prior !== undefined) {
+    // Loop guard, mirroring `hasPriorDeferral` in `blocked_deferral.ts`: a
+    // deferral holds only while **its own** blocker is open. The question is
+    // therefore asked of `prior.dependsOn`, not of the reference this run
+    // declared — a prior deferral on a closed blocker did not hold, and
+    // deferring again (on the same issue or on a fresh one) would park the
+    // pull request for ever with no comment, no attempt and no human. The
+    // ordinary path runs instead and the attempt cap escalates it.
+    const stillOpen = await _blockerStillOpen({
+      ref: prior.dependsOn,
+      ghCommandFn,
+      repo,
+      prNumber,
+      logger,
+    });
+    if (stillOpen === false) {
+      logger.warn(
+        "The blocking issue this failure was already deferred to is closed " +
+          "and the failure is still here — not deferring a second time " +
+          "(Issue #1880)",
+        {
+          repo,
+          prNumber,
+          checkName,
+          signature,
+          priorDependsOn: prior.dependsOn,
+          dependsOn: ref,
+        },
+      );
+      return { kind: "none" };
+    }
+    // An unreadable blocker state is already an error in the log; the
+    // ordinary path is the loud outcome, so take it rather than parking the
+    // pull request on a reading that never arrived.
+    if (stillOpen === undefined) return { kind: "none" };
+    return { kind: "already-deferred", ref: prior.dependsOn };
+  }
+
+  let marker: string;
+  try {
+    marker = buildCiFixDeferralMarker({ signature, checkName, dependsOn: ref });
+  } catch (error: unknown) {
+    // The marker is what the next host reads; without it a deferral would be
+    // invisible and repeated on every scan, so an unbuildable marker refuses
+    // the deferral rather than posting an unrecorded one.
+    logger.error(
+      "Could not build the CI-fix deferral marker — running the ordinary " +
+        "no-changes path (Issue #1880)",
+      {
+        repo,
+        prNumber,
+        checkName,
+        dependsOn: ref,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return { kind: "none" };
+  }
+
+  return { kind: "defer", ref, marker };
+}
+
+/**
+ * Is the blocking issue still open?
+ *
+ * @returns `true` when open, `false` when closed, and `undefined` when the
+ *   lookup failed — which is reported as an error and never guessed at.
+ */
+async function _blockerStillOpen(opts: {
+  /** The blocker, in the `owner/repo#N` form the marker records. */
+  ref: string;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  repo: string;
+  prNumber: number;
+  logger: Logger;
+}): Promise<boolean | undefined> {
+  const { ref, ghCommandFn, repo, prNumber, logger } = opts;
+  const blocker = parseBlockerRef(ref);
+  if (blocker === null) {
+    // `parseCiFixDeferralMarkers` validates the shape, so this is a defect
+    // rather than data — it is named, and the caller takes the loud path.
+    logger.error(
+      "A recorded CI-fix deferral names a dependency that is not in " +
+        "`owner/repo#N` form — running the ordinary no-changes path " +
+        "(Issue #1880)",
+      { repo, prNumber, dependsOn: ref },
+    );
+    return undefined;
+  }
+  try {
+    // No iteration cache is consulted (see `isBlockerOpen`): a blocker that
+    // closed moments ago must read as closed here, not as whatever an
+    // earlier scan cached. The same read serves the scanner (Issue #1881).
+    return await isBlockerOpen(blocker, ghCommandFn);
+  } catch (error: unknown) {
+    logger.error(
+      "Could not read the state of the issue a prior CI-fix deferral names " +
+        "— running the ordinary no-changes path (Issue #1880)",
+      {
+        repo,
+        prNumber,
+        dependsOn: ref,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return undefined;
   }
 }

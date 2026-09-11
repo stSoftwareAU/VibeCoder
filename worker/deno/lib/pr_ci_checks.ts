@@ -26,6 +26,17 @@ export interface FailedCiCheck {
   /** Base64-encoded annotations JSON */
   encodedAnnotations: string;
   /**
+   * The pull request's base branch (Issue #1880).
+   *
+   * Carried so the CI-fix processor can verify a `Depends on owner/repo#N`
+   * claim that the failure is pre-existing on the base: the base branch's
+   * latest run of the same check must itself be red before the failure is
+   * deferred. Optional because the spelling route and the failure-action
+   * synthesiser build this shape without one; absent means the claim cannot
+   * be verified and the ordinary path runs.
+   */
+  baseRef?: string;
+  /**
    * Optional check `target_url` / `details_url` (Issue #1892).
    * Used by the PR failure action dispatcher to locate the external
    * build (e.g. extract a build number from a URL like
@@ -33,6 +44,19 @@ export interface FailedCiCheck {
    * because not all check sources populate it.
    */
   targetUrl?: string;
+  /**
+   * Every check name failing on the same head, including this one
+   * (Issue #1878).
+   *
+   * Carried so the CI-fix processor can repeat the scanner's
+   * aggregator decision against the real checkout: a job that `needs:`
+   * another job which is also red has no failure of its own, and
+   * diagnosing it produces a stock comment about a job that ran none of
+   * the repo's code. Optional because the spelling route and the
+   * failure-action synthesiser build this shape without a sibling list;
+   * absent means "unknown", and the processor then filters nothing.
+   */
+  siblingFailedCheckNames?: string[];
 }
 
 /**

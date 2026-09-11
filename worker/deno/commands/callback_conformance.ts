@@ -8,6 +8,7 @@
  *     [--success /opt/vibe-hooks/success.sh] \
  *     [--failure /opt/vibe-hooks/failure.sh] \
  *     [--always /opt/vibe-hooks/always.sh] \
+ *     [--cycle /opt/vibe-hooks/cycle.sh] \
  *     [--timeout-seconds 10]
  *
  * With no hook paths it proves the contract using its own portable `/bin/sh`
@@ -58,7 +59,7 @@ function parseArguments(
     ok: false,
     error: parsed.error
       .replace(/callbacks\.timeout_seconds/g, "--timeout-seconds")
-      .replace(/callbacks\.(success|failure|always)/g, "--$1"),
+      .replace(/callbacks\.(success|failure|always|cycle)/g, "--$1"),
   };
 }
 

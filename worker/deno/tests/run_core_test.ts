@@ -1006,6 +1006,25 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "run_core - createWorkProgressTracker tracks issues scanned and claims attempted (Issue #1955)",
+  () => {
+    const tracker = createWorkProgressTracker();
+    assertEquals(tracker.issuesScanned, 0);
+    assertEquals(tracker.claimsAttempted, 0);
+
+    tracker.recordIssueSeen();
+    tracker.recordIssueSeen();
+    tracker.recordClaimAttempt();
+    assertEquals(tracker.issuesScanned, 2);
+    assertEquals(tracker.claimsAttempted, 1);
+
+    tracker.resetScanProgress();
+    assertEquals(tracker.issuesScanned, 0);
+    assertEquals(tracker.claimsAttempted, 0);
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Tests — Sleep with jitter
 // ---------------------------------------------------------------------------
