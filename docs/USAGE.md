@@ -264,24 +264,36 @@ branch deleted, issue unassigned for automatic retry.
 **Second failure**: Comment added, `failed` label replaces `failed-once`, issue
 skipped in future scans.
 
-**Which failures count (Issue #1949)**: every terminal failure that is not
-transient infrastructure enters the ladder — a failed quality gate, a run that
-produced no changes and no useful output, a push refusal, an unexplained
-failure. A run that fails in 40 seconds is *stronger* evidence of a stuck issue
-than one that fails slowly, so it climbs the same ladder. Transient
-infrastructure — a rate or usage limit, an out-of-credit account, a run
-interrupted before it finished, a scheduled release, a timeout bound by the
-cycle deadline — consumes no attempt and keeps the flat retry cooldown.
+**Which failures count (Issue #1949)**: a terminal coding-run failure the run
+reports enters the ladder unless it is transient infrastructure — a failed
+quality gate, a run that produced no changes and no useful output, an
+unexplained failure. A run that fails in 40 seconds is *stronger* evidence of a
+stuck issue than one that fails slowly, so it climbs the same ladder.
+
+Two groups are exempt and consume no attempt, keeping the flat retry cooldown:
+
+- **Account state** — a rate or usage limit, an out-of-credit account, a run
+  interrupted before it finished, a scheduled release, a timeout bound by the
+  cycle deadline.
+- **Host state** — an out-of-memory kill, a full disk, a worker crash, a tool
+  missing from the image, an unexplained external kill. These are the host's
+  fault, and the worker files them against itself rather than the issue.
 
 Each ladder failure also steps an escalating re-claim cooldown (2 h → 6 h →
 24 h) so a doomed issue cannot burn consecutive cycles while its attempts play
 out; a third consecutive ladder failure within 48 hours hands the issue to a
 human with `needs-human`.
 
+Infrastructure-category failures that do enter the ladder — a push refusal, a
+zero-output run, a missing `workflow` token scope — keep the bounded
+self-healing retries of Issue #387: they stay at `failed-once` for up to five
+attempts rather than going straight to `failed`, while still serving the
+escalating cooldown.
+
 ```mermaid
 flowchart LR
     F["🔨 Terminal run failure"] --> C{"Transient<br/>infrastructure?"}
-    C -->|"rate/usage limit,<br/>out of credit,<br/>interrupted,<br/>scheduled release,<br/>deadline-bound timeout"| T["⏳ Flat retry cooldown,<br/>no attempt consumed"]
+    C -->|"account state:<br/>rate/usage limit, out of credit,<br/>interrupted, scheduled release,<br/>deadline-bound timeout<br/>host state:<br/>OOM, full disk, crash,<br/>missing tools, external kill"| T["⏳ Flat retry cooldown,<br/>no attempt consumed"]
     C -->|"anything else"| L["📝 failed-once → failed<br/>+ 2 h / 6 h / 24 h cooldown"]
 
     style F fill:#3a86ff,stroke:#023e8a,color:#fff

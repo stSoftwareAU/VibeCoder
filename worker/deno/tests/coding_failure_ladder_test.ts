@@ -11,7 +11,9 @@
 import { assertEquals } from "@std/assert";
 import {
   applyCodingFailureLadder,
+  buildRepeatedFailureEscalation,
   classifyCodingFailure,
+  planCodingFailure,
 } from "../lib/coding_failure_ladder.ts";
 import {
   buildScheduledReleaseReason,
@@ -203,4 +205,126 @@ Deno.test("applyCodingFailureLadder - the configured label names are passed thro
 
   assertEquals(calls[0]?.labels?.failedLabel, "blocked");
   assertEquals(calls[0]?.labels?.failedOnceLabel, "blocked-once");
+});
+
+// ---------------------------------------------------------------------------
+// Host faults are the host's, not the issue's (Issue #1949)
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyCodingFailure - a full disk is the host's fault, not the issue's", () => {
+  const decision = classifyCodingFailure(
+    "Claude failed: No space left on device while writing the worktree",
+  );
+  assertEquals(decision.failureClass, "disk-full");
+  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.cooldownKind, undefined);
+});
+
+Deno.test("classifyCodingFailure - an OOM kill is the host's fault, not the issue's", () => {
+  const decision = classifyCodingFailure(
+    "Claude was killed by signal SIGKILL — out of memory (exit 137)",
+  );
+  assertEquals(decision.failureClass, "oom");
+  assertEquals(decision.disposition, "transient");
+});
+
+Deno.test("classifyCodingFailure - a missing tool is the host's fault, not the issue's", () => {
+  const decision = classifyCodingFailure(
+    "git: command not found — not available in the worker environment",
+  );
+  assertEquals(decision.failureClass, "missing-tools");
+  assertEquals(decision.disposition, "transient");
+});
+
+// ---------------------------------------------------------------------------
+// planCodingFailure — what the main loop owes a finished run
+// ---------------------------------------------------------------------------
+
+Deno.test("planCodingFailure - a successful run owes nothing", () => {
+  const plan = planCodingFailure({
+    success: true,
+    expectedSkip: false,
+    reason: "",
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+  assertEquals(plan.decision, undefined);
+});
+
+Deno.test("planCodingFailure - a declared skip is not a failure (Issue #175)", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: true,
+    reason: "Quality checks failed: ./quality.sh exited 1",
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+});
+
+Deno.test("planCodingFailure - a non-transient failure steps the ladder and the cooldown", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    reason: "No code changes and no useful output from Claude",
+  });
+  assertEquals(plan.applyLadder, true);
+  assertEquals(plan.cooldownKind, "non_transient");
+});
+
+Deno.test("planCodingFailure - a transient failure steps neither", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    reason: "Claude usage limit reached (subscription window)",
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+});
+
+Deno.test("planCodingFailure - a phase that already stepped the ladder is not stepped twice", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    reason: "Quality checks failed: ./quality.sh exited 1 (deno lint)",
+    ladderApplied: true,
+  });
+  assertEquals(plan.applyLadder, false);
+  // The attempt still counts: the phase judged it worth a ladder step.
+  assertEquals(plan.cooldownKind, "non_transient");
+});
+
+Deno.test("planCodingFailure - an applied ladder counts the attempt even when the final reason reads transient", () => {
+  // The quality gate stepped the ladder, then the retry was rate-limited —
+  // the attempt was still consumed, so the cooldown must not fall back to
+  // the flat base.
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    reason: "Claude usage limit reached (subscription window)",
+    ladderApplied: true,
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, "non_transient");
+});
+
+// ---------------------------------------------------------------------------
+// buildRepeatedFailureEscalation
+// ---------------------------------------------------------------------------
+
+Deno.test("buildRepeatedFailureEscalation - a timeout keeps the Issue #4304 wording", () => {
+  const escalation = buildRepeatedFailureEscalation("timeout", 3);
+  assertEquals(escalation.heading, "Repeated execute timeouts");
+  assertEquals(escalation.reason.includes("3 times in a row"), true);
+  assertEquals(escalation.nextStep.includes("timeout budget"), true);
+});
+
+Deno.test("buildRepeatedFailureEscalation - a non-transient failure points at the failure comments", () => {
+  const escalation = buildRepeatedFailureEscalation("non_transient", 4);
+  assertEquals(escalation.heading, "Repeated run failures");
+  assertEquals(escalation.reason.includes("4 times in a row"), true);
+  assertEquals(escalation.reason.includes("timing out"), false);
+  assertEquals(
+    escalation.nextStep.includes("per-attempt failure comments"),
+    true,
+  );
 });

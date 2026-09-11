@@ -18,7 +18,7 @@
  * ```mermaid
  * flowchart TD
  *     F["Coding run fails"] --> C{"classifyCodingFailure"}
- *     C -->|"rate limit / interrupted /<br/>scheduled release / out of credit /<br/>deadline-bound timeout"| T["transient:<br/>flat 600 s cooldown,<br/>no attempt consumed"]
+ *     C -->|"account state: rate limit,<br/>out of credit, interrupted,<br/>scheduled release, deadline-bound timeout<br/>host state: OOM, full disk,<br/>crash, missing tools, external kill"| T["transient:<br/>flat 600 s cooldown,<br/>no attempt consumed"]
  *     C -->|"anything else"| L["ladder:<br/>failed-once → failed<br/>+ escalating cooldown"]
  *     L --> L1["1st: failed-once,<br/>2 h cooldown, retried once"]
  *     L1 --> L2["2nd: failed,<br/>excluded from discovery"]
@@ -70,17 +70,31 @@ export interface CodingFailureDecision {
 /**
  * The failure classes that are transient infrastructure, never the issue.
  *
- * `usage-limit`, `interrupted` and `scheduled-release` are the three the
- * issue names; `out-of-credit` is the same account-state bucket the
- * classifier puts beside `usage-limit`, and permanently failing an issue
- * because the account ran out of credit would blame the issue for the
- * fleet's billing.
+ * Two groups, both of which would blame the issue for something that is not
+ * the issue:
+ *
+ * - **Account state** — `usage-limit`, `interrupted` and `scheduled-release`
+ *   are the three the issue names; `out-of-credit` is the same account-state
+ *   bucket the classifier puts beside `usage-limit`, and permanently failing
+ *   an issue because the account ran out of credit would blame the issue for
+ *   the fleet's billing.
+ * - **Host state** — a full disk, an OOM kill, a crashed worker, a tool
+ *   missing from the image and an unexplained external kill are the host's
+ *   fault. The run-outcome auto-filer (Issue #4329) already files those
+ *   against the *worker*, so making them consume the issue's two attempts
+ *   would permanently sideline a perfectly good issue after two host
+ *   incidents.
  */
 const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
   "usage-limit",
   "interrupted",
   "scheduled-release",
   "out-of-credit",
+  "disk-full",
+  "oom",
+  "killed-unknown",
+  "worker-crash",
+  "missing-tools",
 ]);
 
 /**
@@ -201,4 +215,101 @@ export async function applyCodingFailureLadder(
       error: err instanceof Error ? err : new Error(String(err)),
     };
   }
+}
+
+/** One finished coding run, as the main loop sees it. */
+export interface CodingRunOutcomeSummary {
+  success: boolean;
+  /** A phase declared its own bounce (Issue #175) — not a failure. */
+  expectedSkip: boolean;
+  /** The terminal failure reason, when the run failed. */
+  reason: string;
+  /** A phase already stepped the ladder for this run (Issue #1949). */
+  ladderApplied?: boolean;
+}
+
+/** What the main loop must do about a finished coding run. */
+export interface CodingFailurePlan {
+  /** Whether the caller must step the ladder itself. */
+  applyLadder: boolean;
+  /** Cooldown kind to record; absent for a success, a skip or a transient. */
+  cooldownKind?: CooldownFailureKind;
+  /** The classification, absent when the run did not terminally fail. */
+  decision?: CodingFailureDecision;
+}
+
+/**
+ * Decide what the main loop owes a finished coding run.
+ *
+ * Pure, so the wiring the reported defect lives in is testable without a
+ * GitHub client or a worker configuration. A run whose ladder a phase
+ * already stepped always counts as an attempt — the phase judged it worth a
+ * step, so the cooldown must agree even when the run's *final* reason reads
+ * as transient (a quality-gate failure followed by a rate-limited retry).
+ */
+export function planCodingFailure(
+  run: CodingRunOutcomeSummary,
+): CodingFailurePlan {
+  if (run.success || run.expectedSkip) return { applyLadder: false };
+
+  const decision = classifyCodingFailure(run.reason);
+  if (run.ladderApplied) {
+    return {
+      applyLadder: false,
+      cooldownKind: decision.cooldownKind ?? "non_transient",
+      decision,
+    };
+  }
+
+  return {
+    applyLadder: decision.disposition === "ladder",
+    ...(decision.cooldownKind ? { cooldownKind: decision.cooldownKind } : {}),
+    decision,
+  };
+}
+
+/** The hand-off copy for an issue that has used up its retries. */
+export interface RepeatedFailureEscalation {
+  heading: string;
+  reason: string;
+  nextStep: string;
+}
+
+/**
+ * Wording for the `needs-human` hand-off after three consecutive ladder
+ * failures inside the escalation window.
+ *
+ * A timeout keeps the Issue #4304 wording — the operator's next step really
+ * is a budget or a split. Every other non-transient failure gets wording
+ * that points at the per-attempt failure comments instead (Issue #1949),
+ * because nothing about it says the run ran out of time.
+ */
+export function buildRepeatedFailureEscalation(
+  failureKind: CooldownFailureKind,
+  attempts: number,
+): RepeatedFailureEscalation {
+  if (failureKind === "timeout") {
+    return {
+      heading: "Repeated execute timeouts",
+      reason: `This issue has now failed ${attempts} times in a row within ` +
+        `48 h, the latest by timing out — each attempt burned a full agent ` +
+        `run and produced no changes. The worker has stopped retrying ` +
+        `(24 h escalating cooldown, Issue #4304).`,
+      nextStep:
+        "Split the issue into smaller pieces, raise its timeout budget, or " +
+        "investigate why the agent cannot finish it (see the worker logs for " +
+        "the per-attempt progress lines).",
+    };
+  }
+  return {
+    heading: "Repeated run failures",
+    reason: `This issue has now failed ${attempts} times in a row within ` +
+      `48 h for non-transient reasons — no pull request was raised by any ` +
+      `attempt. The worker has stopped retrying (24 h escalating cooldown, ` +
+      `Issue #1949).`,
+    nextStep:
+      "Review the per-attempt failure comments on this issue and either " +
+      "clarify the requirements or close it — the worker will not re-claim " +
+      "it until the failure labels are cleared.",
+  };
 }

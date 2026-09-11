@@ -169,26 +169,31 @@ export async function loadState(
 
     // Clean expired entries
     const now = nowSeconds();
-    parsed.entries = parsed.entries.filter((entry) => {
-      if (
-        typeof entry.repo !== "string" ||
-        typeof entry.issueNumber !== "number" ||
-        typeof entry.timestamp !== "number"
-      ) {
-        return false;
-      }
+    parsed.entries = parsed.entries
+      .filter((entry) =>
+        typeof entry.repo === "string" &&
+        typeof entry.issueNumber === "number" &&
+        typeof entry.timestamp === "number"
+      )
       // An unrecognised `kind` must never earn a 24 h cooldown by accident
       // (Issue #1949): drop it so the entry reverts to the flat base.
-      if (entry.kind !== undefined && !isCooldownFailureKind(entry.kind)) {
-        delete entry.kind;
-      }
+      .map((entry) =>
+        entry.kind === undefined || isCooldownFailureKind(entry.kind)
+          ? entry
+          : {
+            repo: entry.repo,
+            issueNumber: entry.issueNumber,
+            timestamp: entry.timestamp,
+          }
+      )
       // Ladder entries persist for the escalation window (Issue #4304,
       // #1949); everything else expires on the base cooldown.
-      const retention = entry.kind
-        ? ESCALATION_HISTORY_SECONDS
-        : issueRetryCooldown;
-      return (now - entry.timestamp) < retention;
-    });
+      .filter((entry) => {
+        const retention = entry.kind
+          ? ESCALATION_HISTORY_SECONDS
+          : issueRetryCooldown;
+        return (now - entry.timestamp) < retention;
+      });
 
     return parsed;
   } catch (err) {

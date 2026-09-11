@@ -214,7 +214,8 @@ import {
 // `failed-once` -> `failed` ladder the planning and question routes use.
 import {
   applyCodingFailureLadder,
-  classifyCodingFailure,
+  buildRepeatedFailureEscalation,
+  planCodingFailure,
 } from "./coding_failure_ladder.ts";
 import { handleIssueFailure as handleIssueFailureFn } from "./label_failure.ts";
 // Adaptive claim floor (Issue #245): the evidence lookup and the key the
@@ -3490,14 +3491,18 @@ export async function createProductionRunCoreDeps(
       // than a slow one, not weaker. Transient infrastructure (rate limit,
       // interruption, scheduled release, deadline-bound timeout) keeps the
       // flat base cooldown and consumes no attempt.
-      let failureKind: CooldownFailureKind | undefined;
-      if (!result.success && !isExpectedSkip && result.ladderApplied) {
-        // A phase already stepped the ladder with better evidence than the
-        // phase reason (today: the quality gate, with the raw gate output).
-        // Stepping it again here would take an unlabelled issue straight to
-        // `failed` in one run, so only the cooldown is recorded.
-        failureKind = classifyCodingFailure(result.reason).cooldownKind;
-      } else if (!result.success && !isExpectedSkip) {
+      // A phase that already stepped the ladder (today: the quality gate,
+      // with the raw gate output) is not stepped again here — that would
+      // take an unlabelled issue straight to `failed` in one run — but its
+      // attempt is still counted by the cooldown.
+      const plan = planCodingFailure({
+        success: result.success,
+        expectedSkip: isExpectedSkip,
+        reason: result.reason,
+        ...(result.ladderApplied ? { ladderApplied: true } : {}),
+      });
+      const failureKind: CooldownFailureKind | undefined = plan.cooldownKind;
+      if (plan.applyLadder) {
         const ladderOutcome = await applyCodingFailureLadder({
           repo: issue.repo,
           issueNumber: issue.issueNumber,
@@ -3512,7 +3517,6 @@ export async function createProductionRunCoreDeps(
             questionLabel: config.questionLabel,
           },
         }, { handleIssueFailure: handleIssueFailureFn });
-        failureKind = ladderOutcome.decision.cooldownKind;
         if (ladderOutcome.error) {
           // Never swallowed: the run already failed and its claim still has
           // to be released, so this is reported rather than thrown.
@@ -3593,8 +3597,10 @@ export async function createProductionRunCoreDeps(
       if (
         failureKind && recorded.ok && recorded.value.consecutiveFailures >= 3
       ) {
-        const attempts = recorded.value.consecutiveFailures;
-        const timedOut = failureKind === "timeout";
+        const escalation = buildRepeatedFailureEscalation(
+          failureKind,
+          recorded.value.consecutiveFailures,
+        );
         try {
           const ghClient = createGitHubClient(logger);
           await escalateToHuman({
@@ -3602,25 +3608,13 @@ export async function createProductionRunCoreDeps(
             repo,
             target: { kind: "issue", number: issueNumber },
             needsHumanLabel: config.needsHumanLabel,
-            heading: timedOut
-              ? "Repeated execute timeouts"
-              : "Repeated run failures",
-            reason: timedOut
-              ? `This issue has now failed ${attempts} times in a row within ` +
-                `48 h, the latest by timing out — each attempt burned a full ` +
-                `agent run and produced no changes. The worker has stopped ` +
-                `retrying (24 h escalating cooldown, Issue #4304).`
-              : `This issue has now failed ${attempts} times in a row within ` +
-                `48 h for non-transient reasons — no pull request was raised ` +
-                `by any attempt. The worker has stopped retrying (24 h ` +
-                `escalating cooldown, Issue #1949).`,
-            nextStep: timedOut
-              ? "Split the issue into smaller pieces, raise its timeout budget, " +
-                "or investigate why the agent cannot finish it (see the worker " +
-                "logs for the per-attempt progress lines)."
-              : "Review the per-attempt failure comments on this issue and " +
-                "either clarify the requirements or close it — the worker " +
-                "will not re-claim it until the failure labels are cleared.",
+            heading: escalation.heading,
+            reason: escalation.reason,
+            nextStep: escalation.nextStep,
+            // The key keeps its historical name on purpose: one hand-off per
+            // issue is the behaviour wanted, and renaming it would post a
+            // second comment on an issue a timeout escalation already
+            // covered (Issue #1949).
             dedupKey: `timeout-escalation-${issueNumber}`,
             githubUser,
             deps: { github: { ensureLabelExists: ensureLabelExistsFn } },
