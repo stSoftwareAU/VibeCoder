@@ -1922,10 +1922,30 @@ route is never taken on a guess.
    claims — a check is excluded only when its failing *step* is a spelling
    tool (see [Routing by failed step](#routing-by-failed-step-issue-1579)),
    not merely because its name mentions spelling.
-4. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
+4. Drops **aggregator** checks, first thing in the per-check loop and so
+   ahead of the spelling-route lookup — a job whose `needs:` (read from the host's
+   existing clone at `repoCheckoutPath`, never cloned by the scan) includes
+   another job that is also red on the same head is downstream of that
+   failure, not a failure of its own (Issue #1878, see
+   [workflow_job_needs.ts](../worker/deno/lib/workflow_job_needs.ts)). One
+   `skipReason` line per PR names what was dropped; no clone means no
+   filtering, and the surviving check carries `siblingFailedCheckNames` so
+   the processor can repeat the decision against the real checkout.
+5. Skips checks **deferred on an open issue** (Issue #1881): when a
+   fleet-authored `vibe-ci-fix-deferred` marker on the PR names the check
+   and the `depends-on` issue it records is still open, that check is not
+   returned — nothing on the branch can fix a failure the base branch
+   already has (see [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)
+   `findOpenDeferrals`). Other failing checks on the same PR are still
+   returned, and one `skipReason` line per PR names what was deferred and
+   on which issue. Once the issue closes the check is returned as usual.
+   A comment thread or issue state that cannot be read, a marker from
+   outside the fleet, or a malformed reference all leave the check
+   undeferred and are logged — an error never suppresses a real failure.
+6. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
    over-retried failures.
-5. Prioritises PRs targeting the default branch (where integration tests run).
-6. Fetches check annotations and returns the highest-priority failure.
+6. Prioritises PRs targeting the default branch (where integration tests run).
+7. Fetches check annotations and returns the highest-priority failure.
 
 **Retry tracking** — uses local state files in `$CI_CHECK_STATE_DIR` (default
 `$WORK_DIR/.ci_check_state`, resolved to an **always absolute** path by
@@ -1934,12 +1954,20 @@ Each check run ID has a `.retries` file recording how many times it has been
 attempted. `record_ci_check_retry()` increments the counter before each fix
 attempt.
 
-The **scan** and the **processor** must resolve the same directory. The scan
-reads the retry counters the processor writes, and clears the auto-fix attempt
-budget recorded against a PR once that PR reports green. While the scan kept a
-relative default it addressed a different store: the cap was never observed, a
-spent auto-fix budget was never cleared, and the lane escalated red checks to a
-human rather than fixing them.
+The **scan** and the **processor** must resolve the same directory: the scan
+reads the retry counters the processor writes, and while it kept a relative
+default it addressed a different store, so the cap was never observed and the
+lane escalated red checks to a human rather than fixing them.
+
+**The auto-fix attempt cap is not in that directory** (Issue #1879). It is
+counted from fleet-authored `<!-- vibe-ci-fix-attempt … -->` markers in the
+pull request's own comments
+([ci_fix_attempt_markers.ts](../worker/deno/lib/ci_fix_attempt_markers.ts),
+read by [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)), so
+every host in the fleet shares one budget of three attempts per failure
+signature and posts one comment per signature. Nothing reads or writes
+`*.autofix.json` any more; a repeat "no change required" on a new head is
+appended to the existing comment via `GitHubClient.updateComment`.
 
 **Priority** — runs at priority 1.55 in the main loop, after spelling fixes
 (1.5) but before branch updates (1.6).
@@ -3441,6 +3469,69 @@ Three defences, each independent of the others:
   `milestone-resurrection` job runs it on PRs into `milestone/*` and on the
   rollup PR.
 
+#### ⏳ A sync PR never outlives the branch it targets
+
+A sync PR merges the default branch **into** a milestone branch, so it is the
+one PR the fleet raises that must never target the default branch. GitHub does
+not close the PRs pointing at a branch it deletes on merge — it **retargets**
+them to the default branch (`automatic_base_change_succeeded`), carrying their
+approvals and their auto-merge arming with them. `VibeCoder#1957` reached
+`main` that way fourteen minutes after the milestone's final PR merged: a
+squash remnant whose only diff reverted the milestone's own work, approved a
+minute later by a reviewer working through the day's PRs, and stopped from
+landing only by an unrelated red shard (Issue #1967).
+
+[milestone_sync_pr_retirement.ts](../worker/deno/lib/milestone_sync_pr_retirement.ts)
+closes the sync PR at each of the three moments it stops being useful, and the
+`gh pr close --delete-branch` takes the sync branch with it so nothing can be
+re-raised or retargeted from it:
+
+```mermaid
+flowchart TD
+    S["Sync sweep raises<br/>sync/milestone-x → milestone/x<br/>(auto-merge armed)"]
+    S --> D{What happens next?}
+    D -- "sync lands by direct push" --> E["closeLandedMilestoneSyncPrs:<br/>diff is empty → close"]
+    D -- "milestone completes" --> R["retireMilestoneSyncPrs:<br/>close before the final PR<br/>is raised, and after it merges"]
+    D -- "neither, and the base is deleted" --> G["GitHub retargets the PR<br/>onto the default branch"]
+    G --> M["enableAutoMerge:<br/>closeRetargetedSyncPr —<br/>closed, never merged"]
+    style G fill:#9d0208,stroke:#6a040f,color:#fff
+    style M fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **The sync landed another way.** A direct push that succeeds leaves the
+  earlier cycle's PR open with nothing to merge and auto-merge still armed.
+  "Nothing to merge" is `ahead_by == 0` on the compare endpoint, never the
+  PR's file list: GitHub computes a diff asynchronously, so a PR raised
+  seconds ago reports no files for a moment, and `ahead_by` counts *commits*
+  — so the merge commit a sync exists to contribute (the ancestry of Issue
+  #1048, not the file changes) keeps the PR open. A comparison that cannot be
+  read closes nothing, because "could not tell" is never "empty".
+- **The milestone is finishing.** `milestone_completion.ts` retires the sync PR
+  **before** it raises the final PR — the retarget happens in the window
+  between that PR merging and GitHub deleting the branch, so the sync PR has to
+  be gone beforehand — and again once the final PR is confirmed merged.
+- **Defence in depth.** The refusal sits in
+  [`enableAutoMerge`](../worker/deno/lib/pr_auto_merge.ts), the one door every
+  arming path goes through — the priority 1.65 sweep, the PR-maintenance scan,
+  the CI-fix re-arm and `pr_manager` — and *before* the unprotected-base direct
+  merge, which would otherwise land the PR without GitHub's arming at all. A
+  `sync/milestone-*` head on the default branch is closed with the reason
+  posted on the PR, and the attempt returns `closed_retargeted_sync`, which the
+  maintenance scan classifies as `sync_pr_retired`: nothing to wait for,
+  nothing to escalate. Two conditions keep the destructive verb honest — the
+  head must live in **this repository** (a fork names its own branches, Issue
+  #1249), and a default branch that cannot be read defers as
+  `sync-base-unreadable` rather than arming, because the one PR that must never
+  merge into the default branch is the one whose base could not be compared
+  with it.
+
+  Two details make that reachable and make it stick. `ensureAutoMergeOnOpenPrs`
+  skips a PR that already has auto-merge armed — except a `sync/milestone-*`
+  head, because carried-over arming is precisely the state a retargeted sync
+  PR is found in. And every close here **disarms first**
+  (`gh pr merge --disable-auto`), so a close GitHub refuses leaves a PR that
+  can no longer land rather than one that still can.
+
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
 A milestone branch that conflicts with the default branch gets the same
@@ -4076,6 +4167,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)                                                     | PR branch update operations                                                                                                                                                          |
 |                             | [pr_branch_update_failure_streak.ts](../worker/deno/lib/pr_branch_update_failure_streak.ts)                       | Consecutive branch-update failures per `(repo, branch)` — escalate once, then skip                                                                                                   |
 |                             | [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts)                                                       | CI failure processing workflow                                                                                                                                                       |
+|                             | [ci_fix_attempt_markers.ts](../worker/deno/lib/ci_fix_attempt_markers.ts)                                         | CI-fix attempt/deferral PR comment markers, parsed with fleet-author verification                                                                                                    |
 |                             | [pr_feedback_processor.ts](../worker/deno/lib/pr_feedback_processor.ts)                                           | PR feedback processing workflow                                                                                                                                                      |
 |                             | [pr_maintenance.ts](../worker/deno/lib/pr_maintenance.ts)                                                         | PR maintenance operations (branch updates, auto-merge, cleanup)                                                                                                                      |
 |                             | [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts)                                           | Spelling failure processing workflow                                                                                                                                                 |

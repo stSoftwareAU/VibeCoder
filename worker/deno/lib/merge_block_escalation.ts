@@ -93,6 +93,13 @@ export type MergeAttemptOutcome =
    * itself on the PR, and the merge is retried once the children close.
    */
   | { kind: "milestone_children_open" }
+  /**
+   * A milestone sync PR GitHub retargeted onto the default branch, which the
+   * arming chokepoint closed rather than merged (Issue #1967). The PR no
+   * longer exists as an open PR, so there is nothing to wait for and nothing
+   * to escalate.
+   */
+  | { kind: "sync_pr_retired" }
   /** The PR is green but the merge itself was refused. */
   | { kind: "merge_error"; message: string };
 
@@ -188,6 +195,10 @@ export function classifyMergeAttempt(
     case "milestone_base_behind":
       // The milestone branch is behind the default branch (Issue #1779).
       // The sync clears it every cycle; waiting is the whole design.
+      return "await_checks";
+    case "sync_pr_retired":
+      // The PR was closed by the arming chokepoint (Issue #1967). Nothing
+      // further to do, and nothing a human needs to see.
       return "await_checks";
     case "default_branch_unapproved":
       // The guard is holding the PR for a review (Issue #1082). The

@@ -9,12 +9,13 @@
  *
  * Issue #580 put the *processor* on the work volume. It left the **scanner**
  * (`findFailedCiChecks`) on the relative default, so the two halves of the
- * lane addressed different stores: the scanner read retry counters that were
- * never there, and its green-build sweep cleared auto-fix budgets in a
- * directory the processor never wrote to. A signature that reached
- * `maxAutoFixAttempts` therefore stayed spent forever and the lane escalated
- * to a human instead of fixing the check — which is why semgrep failures
- * waited for someone to ask for a fix by hand (Issue #552).
+ * lane addressed different stores and the scanner read retry counters that
+ * were never there — the cap was never enforced, and semgrep failures waited
+ * for someone to ask for a fix by hand (Issue #552).
+ *
+ * Since Issue #1879 this directory holds the **check-run retry counter
+ * only**: the auto-fix attempt tally moved onto the pull request, where every
+ * host in the fleet reads the same record.
  *
  * This module is the single resolver both halves share. It lives on its own so
  * `pr_maintenance` can use it without importing the much larger

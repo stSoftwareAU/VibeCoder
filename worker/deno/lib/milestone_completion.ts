@@ -26,6 +26,7 @@ import {
   formatChildNumbers,
 } from "./milestone_open_children.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import { retireMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
 import {
   isMilestoneTrackingTitle,
   MILESTONE_TRACKING_MARKER,
@@ -1281,6 +1282,17 @@ async function processRepoMilestones(
           cache,
         );
       }
+      // Issue #1967: this milestone is finishing without a final PR, so its
+      // branch is now branch cleanup's to delete — and an open sync PR would
+      // be retargeted onto the default branch when it goes.
+      await retireMilestoneSyncPrs({
+        repo,
+        milestoneBranch,
+        ghCommandFn,
+        log,
+        reason: `milestone '${milestone.title}' is complete with nothing to ` +
+          `merge, so '${milestoneBranch}' is being retired`,
+      });
       await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
       log(
         `Milestone '${milestone.title}' in ${repo} is complete with nothing to merge (branch missing or 0 commits ahead) — closed directly, no tracker or summary PR (Issue #3214)`,
@@ -1300,6 +1312,36 @@ async function processRepoMilestones(
       cache,
       verification,
     );
+
+    // Issue #1967: retire the milestone's sync PR *before* the final PR
+    // exists. GitHub does not close the PRs targeting a branch it deletes on
+    // merge — it retargets them to the default branch, approvals and
+    // auto-merge intact — so the sync PR has to be gone before the final PR
+    // can merge, not after.
+    //
+    // Only on the cycle that actually raises the final PR. A summary PR that
+    // already exists may sit unmerged for days behind a red check, and
+    // retiring the sync every one of those cycles would close and re-raise
+    // it endlessly while leaving the milestone branch unable to take the
+    // default branch through a PR. The post-merge retirement below is what
+    // covers a sync raised after this point.
+    const existingSummary = await hasExistingMilestoneSummaryPr(
+      repo,
+      milestone.title,
+      milestoneBranch,
+      ghCommandFn,
+      cache,
+    );
+    if (existingSummary.ok && existingSummary.value === null) {
+      await retireMilestoneSyncPrs({
+        repo,
+        milestoneBranch,
+        ghCommandFn,
+        log,
+        reason: `milestone '${milestone.title}' is complete and its final PR ` +
+          `into '${defaultBranch}' is being raised`,
+      });
+    }
 
     // Create summary PR (idempotent)
     log(`Milestone '${milestone.title}' is complete — creating summary PR`);
@@ -1344,6 +1386,18 @@ async function processRepoMilestones(
         ghCommandFn,
       );
       if (mergedResult.ok && mergedResult.value) {
+        // Issue #1967: and again after the merge — a sync PR raised in the
+        // window between the check above and this one is exactly the PR
+        // GitHub has just retargeted onto the default branch.
+        await retireMilestoneSyncPrs({
+          repo,
+          milestoneBranch,
+          ghCommandFn,
+          log,
+          reason:
+            `the final PR #${prResult.prNumber} for milestone '${milestone.title}' ` +
+            `has merged`,
+        });
         await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
       }
     }

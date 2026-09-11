@@ -1,40 +1,37 @@
 /**
- * Tests for auto_fix_attempt_tracker.ts (Issue #3582).
+ * Tests for auto_fix_attempt_tracker.ts (Issues #3582, #1879).
  *
- * Covers the stable failure signature, the persisted attempt counter,
- * the cap decision, the consolidated escalation summary, and the
- * green-build reset.
+ * Covers the stable failure signature, the cap decision and the
+ * consolidated escalation summary. The persisted attempt counter and its
+ * green-build reset are gone: the tally lives on the pull request as
+ * fleet-authored markers (Issue #1879), so this module performs no I/O and
+ * the tests here need no state directory.
  *
  * Uses Australian English throughout.
  */
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import {
-  type AutoFixAttempt,
+  type AutoFixCapAttempt,
   buildAutoFixCapSummary,
-  clearAutoFixAttempts,
-  clearAutoFixAttemptsForLocus,
   computeFailureSignature,
   consumesAutoFixAttempt,
   DEFAULT_MAX_AUTO_FIX_ATTEMPTS,
-  getAutoFixAttempts,
   hasReachedAutoFixCap,
   normaliseLogExcerpt,
-  recordAutoFixAttempt,
   resolveMaxAutoFixAttempts,
 } from "../lib/auto_fix_attempt_tracker.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const LOCUS = { kind: "pr" as const, number: 42 };
 
-function attempt(overrides: Partial<AutoFixAttempt> = {}): AutoFixAttempt {
+function attempt(
+  overrides: Partial<AutoFixCapAttempt> = {},
+): AutoFixCapAttempt {
   return {
-    repo: "owner/repo",
-    locus: LOCUS,
-    checkName: "build",
+    attempt: 1,
     diagnosis: "compilation error in Foo.java",
-    change: "added the missing import",
-    outcome: "pushed a fix; build still red",
+    outcome: "pushed a fix; the build was still not green",
     ...overrides,
   };
 }
@@ -143,109 +140,6 @@ Deno.test("auto_fix_attempt_tracker - signature is filename-safe", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Attempt counter persistence
-// ---------------------------------------------------------------------------
-
-Deno.test("auto_fix_attempt_tracker - three pushes on one failure reach attempt 3", async () => {
-  const stateDir = await Deno.makeTempDir();
-  try {
-    // Three distinct fix commits produce three new check-run ids, but the
-    // log excerpt describes the same underlying failure each time.
-    const excerpts = [
-      "2026-07-29T01:00:00Z build #1 error: cannot find symbol Foo",
-      "2026-07-29T02:00:00Z build #2 error: cannot find symbol Foo",
-      "2026-07-29T03:00:00Z build #3 error: cannot find symbol Foo",
-    ];
-    const counts: number[] = [];
-    const signatures = new Set<string>();
-
-    for (const excerpt of excerpts) {
-      const signature = computeFailureSignature({
-        repo: "owner/repo",
-        locus: LOCUS,
-        checkName: "build",
-        logExcerpt: excerpt,
-      });
-      signatures.add(signature);
-      counts.push(await recordAutoFixAttempt(stateDir, signature, attempt()));
-    }
-
-    assertEquals(signatures.size, 1);
-    assertEquals(counts, [1, 2, 3]);
-
-    const [signature] = [...signatures];
-    const attempts = await getAutoFixAttempts(stateDir, signature!);
-    assertEquals(attempts.length, 3);
-    assertEquals(attempts[0]?.attempt, 1);
-    assertEquals(attempts[2]?.attempt, 3);
-  } finally {
-    await Deno.remove(stateDir, { recursive: true });
-  }
-});
-
-Deno.test("auto_fix_attempt_tracker - a different failure on the same PR keeps its own counter", async () => {
-  const stateDir = await Deno.makeTempDir();
-  try {
-    const first = computeFailureSignature({
-      repo: "owner/repo",
-      locus: LOCUS,
-      checkName: "build",
-      logExcerpt: "error: cannot find symbol Foo",
-    });
-    const second = computeFailureSignature({
-      repo: "owner/repo",
-      locus: LOCUS,
-      checkName: "build",
-      logExcerpt: "error: assertion failed",
-    });
-
-    await recordAutoFixAttempt(stateDir, first, attempt());
-    await recordAutoFixAttempt(stateDir, first, attempt());
-    const secondCount = await recordAutoFixAttempt(
-      stateDir,
-      second,
-      attempt({ diagnosis: "failing test" }),
-    );
-
-    assertEquals(secondCount, 1);
-    assertEquals((await getAutoFixAttempts(stateDir, first)).length, 2);
-  } finally {
-    await Deno.remove(stateDir, { recursive: true });
-  }
-});
-
-Deno.test("auto_fix_attempt_tracker - getAutoFixAttempts returns empty for an unknown signature", async () => {
-  const stateDir = await Deno.makeTempDir();
-  try {
-    assertEquals(await getAutoFixAttempts(stateDir, "nosuchsignature"), []);
-  } finally {
-    await Deno.remove(stateDir, { recursive: true });
-  }
-});
-
-Deno.test("auto_fix_attempt_tracker - corrupt state file is discarded, not fatal", async () => {
-  const stateDir = await Deno.makeTempDir();
-  try {
-    const signature = computeFailureSignature({
-      repo: "owner/repo",
-      locus: LOCUS,
-      checkName: "build",
-      logExcerpt: "error: boom",
-    });
-    await recordAutoFixAttempt(stateDir, signature, attempt());
-    await Deno.writeTextFile(
-      `${stateDir}/${signature}.autofix.json`,
-      "{not json",
-    );
-
-    assertEquals(await getAutoFixAttempts(stateDir, signature), []);
-    assertEquals(await recordAutoFixAttempt(stateDir, signature, attempt()), 1);
-  } finally {
-    await Deno.remove(stateDir, { recursive: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
 // Cap decision
 // ---------------------------------------------------------------------------
 
@@ -263,98 +157,16 @@ Deno.test("auto_fix_attempt_tracker - infrastructure failures do not consume an 
 });
 
 // ---------------------------------------------------------------------------
-// Green reset
-// ---------------------------------------------------------------------------
-
-Deno.test("auto_fix_attempt_tracker - a green result clears the counter", async () => {
-  const stateDir = await Deno.makeTempDir();
-  try {
-    const signature = computeFailureSignature({
-      repo: "owner/repo",
-      locus: LOCUS,
-      checkName: "build",
-      logExcerpt: "error: boom",
-    });
-    await recordAutoFixAttempt(stateDir, signature, attempt());
-    await recordAutoFixAttempt(stateDir, signature, attempt());
-
-    await clearAutoFixAttempts(stateDir, signature);
-
-    assertEquals(await getAutoFixAttempts(stateDir, signature), []);
-    // Budget is fresh again, not inherited.
-    assertEquals(await recordAutoFixAttempt(stateDir, signature, attempt()), 1);
-  } finally {
-    await Deno.remove(stateDir, { recursive: true });
-  }
-});
-
-Deno.test("auto_fix_attempt_tracker - clearing a green locus leaves other loci untouched", async () => {
-  const stateDir = await Deno.makeTempDir();
-  try {
-    const greenPr = computeFailureSignature({
-      repo: "owner/repo",
-      locus: LOCUS,
-      checkName: "build",
-      logExcerpt: "error: boom",
-    });
-    const otherPr = computeFailureSignature({
-      repo: "owner/repo",
-      locus: { kind: "pr", number: 99 },
-      checkName: "build",
-      logExcerpt: "error: boom",
-    });
-    await recordAutoFixAttempt(stateDir, greenPr, attempt());
-    await recordAutoFixAttempt(
-      stateDir,
-      otherPr,
-      attempt({ locus: { kind: "pr", number: 99 } }),
-    );
-
-    const cleared = await clearAutoFixAttemptsForLocus(
-      stateDir,
-      "owner/repo",
-      LOCUS,
-    );
-
-    assertEquals(cleared, 1);
-    assertEquals(await getAutoFixAttempts(stateDir, greenPr), []);
-    assertEquals((await getAutoFixAttempts(stateDir, otherPr)).length, 1);
-  } finally {
-    await Deno.remove(stateDir, { recursive: true });
-  }
-});
-
-Deno.test("auto_fix_attempt_tracker - clearing a locus in a missing state dir is a no-op", async () => {
-  const cleared = await clearAutoFixAttemptsForLocus(
-    "/tmp/vibe-no-such-state-dir-3582",
-    "owner/repo",
-    LOCUS,
-  );
-  assertEquals(cleared, 0);
-});
-
-// ---------------------------------------------------------------------------
 // Consolidated summary
 // ---------------------------------------------------------------------------
 
 Deno.test("auto_fix_attempt_tracker - summary covers every attempt in one comment", () => {
-  const attempts: AutoFixAttempt[] = [
-    attempt({
-      attempt: 1,
-      diagnosis: "missing import",
-      change: "added import",
-      outcome: "still red",
-    }),
-    attempt({
-      attempt: 2,
-      diagnosis: "wrong package",
-      change: "renamed package",
-      outcome: "still red",
-    }),
+  const attempts: AutoFixCapAttempt[] = [
+    attempt({ attempt: 1, diagnosis: "missing import", outcome: "still red" }),
+    attempt({ attempt: 2, diagnosis: "wrong package", outcome: "still red" }),
     attempt({
       attempt: 3,
       diagnosis: "API removed upstream",
-      change: "reverted call site",
       outcome: "still red",
     }),
   ];
@@ -369,7 +181,7 @@ Deno.test("auto_fix_attempt_tracker - summary covers every attempt in one commen
   assert(summary.includes("3 automatic fix attempts"));
   for (const a of attempts) {
     assert(summary.includes(a.diagnosis), `missing diagnosis: ${a.diagnosis}`);
-    assert(summary.includes(a.change), `missing change: ${a.change}`);
+    assert(summary.includes(`| ${a.attempt} |`), `missing row ${a.attempt}`);
   }
   assert(summary.includes("abc123"));
   assert(summary.includes("build"));
@@ -409,20 +221,4 @@ Deno.test("auto_fix_attempt_tracker - global and per-repo overrides are honoured
   assertEquals(resolveMaxAutoFixAttempts(config, "owner/strict"), 1);
   // Non-positive per-repo values are guarded back to the global setting.
   assertEquals(resolveMaxAutoFixAttempts(config, "owner/bad"), 5);
-});
-
-Deno.test("recordAutoFixAttempt - a read-only state directory does not abort the repair (Issue #580)", async () => {
-  // Sibling of the retry counter: an unguarded write here would take the
-  // CI-fix lane down the same way. The attempt number must still come back.
-  const root = await Deno.makeTempDir();
-  const stateDir = `${root}/state`;
-  try {
-    await Deno.mkdir(stateDir);
-    await Deno.chmod(stateDir, 0o500);
-    const attempts = await recordAutoFixAttempt(stateDir, "sig-abc", attempt());
-    assertEquals(attempts, 1);
-  } finally {
-    await Deno.chmod(stateDir, 0o700);
-    await Deno.remove(root, { recursive: true });
-  }
 });

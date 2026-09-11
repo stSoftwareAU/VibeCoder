@@ -8,6 +8,7 @@
  *     "success": "/absolute/path/to/success.sh",
  *     "failure": "/absolute/path/to/failure.sh",
  *     "always":  "/absolute/path/to/always.sh",
+ *     "cycle":   "/absolute/path/to/cycle.sh",
  *     "timeout_seconds": 60
  *   }
  * }
@@ -42,7 +43,18 @@
 import type { Result } from "../types.ts";
 
 /** Outcome conditions a callback may be registered against. */
-export const CALLBACK_EVENTS = ["success", "failure", "always"] as const;
+export const CALLBACK_EVENTS = [
+  "success",
+  "failure",
+  "always",
+  "cycle",
+] as const;
+
+/**
+ * Hooks that fire for one terminal issue run. `cycle` is a scan-loop
+ * heartbeat, not a run hook, so the run dispatcher never includes it.
+ */
+export const RUN_CALLBACK_EVENTS = ["success", "failure", "always"] as const;
 
 /** One of {@link CALLBACK_EVENTS}. */
 export type CallbackEvent = typeof CALLBACK_EVENTS[number];
@@ -67,6 +79,14 @@ export interface CallbacksConfig {
   failure?: string;
   /** Executable run after the applicable outcome hook, in both cases. */
   always?: string;
+  /**
+   * Executable run once at the end of every scan cycle (Issue #1955).
+   *
+   * Distinct from the three run hooks: a host that claimed nothing still
+   * fires this, so an archive can tell idle from dead. Run hooks are
+   * unchanged.
+   */
+  cycle?: string;
   /** Wall-clock budget for one callback, in seconds. */
   timeoutSeconds: number;
 }
@@ -79,6 +99,16 @@ export function noCallbacks(): CallbacksConfig {
 /** Whether any hook is configured. */
 export function hasAnyCallback(config: CallbacksConfig): boolean {
   return CALLBACK_EVENTS.some((event) => config[event] !== undefined);
+}
+
+/** Whether any per-issue-run hook is configured. */
+export function hasAnyRunCallback(config: CallbacksConfig): boolean {
+  return RUN_CALLBACK_EVENTS.some((event) => config[event] !== undefined);
+}
+
+/** Whether the per-cycle heartbeat hook is configured. */
+export function hasCycleCallback(config: CallbacksConfig): boolean {
+  return config.cycle !== undefined;
 }
 
 /** Short description of a value for an error message. */

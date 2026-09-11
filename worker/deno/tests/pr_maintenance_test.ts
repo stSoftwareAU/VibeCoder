@@ -30,11 +30,6 @@ import { INVITATION_PR_FIELDS } from "../lib/pr_invitation_lookup.ts";
 import type { Logger } from "../types.ts";
 import type { FailedCiCheck } from "../lib/pr_ci_checks.ts";
 import type { MergeAttemptOutcome } from "../lib/merge_block_escalation.ts";
-import {
-  computeFailureSignature,
-  getAutoFixAttempts,
-  recordAutoFixAttempt,
-} from "../lib/auto_fix_attempt_tracker.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1603,55 +1598,6 @@ Deno.test("closeIssuesForMergedPrs - skips when no issue number in title", async
 });
 
 // ============================================================================
-// findFailedCiChecks — green build clears the auto-fix budget (Issue #3582)
-// ============================================================================
-
-Deno.test("findFailedCiChecks - a green PR clears its auto-fix attempt counters", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const stateDir = `${tmpDir}/.ci_state`;
-  try {
-    const signature = computeFailureSignature({
-      repo: "org/repo",
-      locus: { kind: "pr", number: 10 },
-      checkName: "CI / test",
-      logExcerpt: "error: cannot find symbol",
-    });
-    await recordAutoFixAttempt(stateDir, signature, {
-      repo: "org/repo",
-      locus: { kind: "pr", number: 10 },
-      checkName: "CI / test",
-      diagnosis: "missing import",
-      change: "added import",
-      outcome: "still red",
-    });
-    assertEquals((await getAutoFixAttempts(stateDir, signature)).length, 1);
-
-    // The PR now has no failing checks — the build is green.
-    const ghFn = (args: string[]): Promise<string> => {
-      const key = args.join(" ");
-      if (key.includes("pr list")) {
-        return Promise.resolve(JSON.stringify([
-          { number: 10, headRefName: "issue-10-fix", baseRefName: "main" },
-        ]));
-      }
-      return Promise.resolve("[]");
-    };
-
-    const options: CiCheckScanOptions = {
-      ...makeBaseScanOptions({ ghCommandFn: ghFn }),
-      stateDir,
-      maxRetries: 3,
-    };
-
-    const result = await findFailedCiChecks(options);
-    assertEquals(result.ok, true);
-    assertEquals(await getAutoFixAttempts(stateDir, signature), []);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-// ============================================================================
 // Fleet-author scoping of the maintenance scans
 //
 // Two behaviours are locked in together:
@@ -2281,4 +2227,46 @@ Deno.test("findPrCommentsToFix - self-skip guards still ignore the host's own co
 
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.value, null);
+});
+
+Deno.test("ensureAutoMergeOnOpenPrs - an already-armed sync PR is not skipped: it reaches the close path (Issue #1967)", async () => {
+  // GitHub retargets a sync PR onto the default branch when its milestone
+  // branch is deleted and carries the arming with it, so "already armed" is
+  // exactly the state the dangerous PR is found in. Skipping it here is how
+  // VibeCoder#1957 stayed open long enough to be approved.
+  const reached: number[] = [];
+  const ghFn = (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("pr list")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          number: 1957,
+          headRefName: "sync/milestone-scan",
+          autoMergeRequest: { mergeMethod: "MERGE" },
+        },
+        {
+          number: 1960,
+          headRefName: "issue-1960-fix",
+          autoMergeRequest: { mergeMethod: "SQUASH" },
+        },
+      ]));
+    }
+    return Promise.resolve("[]");
+  };
+
+  const result = await ensureAutoMergeOnOpenPrs({
+    ...makeBaseScanOptions({ ghCommandFn: ghFn }),
+    getRepoConfig: () => "",
+    enableAutoMergeFn: (_repo: string, prNumber: number) => {
+      reached.push(prNumber);
+      return Promise.resolve({
+        result: "closed_retargeted_sync",
+        message: "closed, never merged",
+      });
+    },
+  });
+
+  assertEquals(result.ok, true);
+  // Only the sync-shaped head goes through; the ordinary armed PR is still
+  // skipped exactly as before.
+  assertEquals(reached, [1957]);
 });

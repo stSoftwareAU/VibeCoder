@@ -12,10 +12,10 @@
  * flowchart LR
  *     E["Extension author"] --> C["callback-conformance"]
  *     C --> R["Real invokeRunCallbacks<br/>real /bin/sh hooks"]
- *     R --> V["6 verdicts:<br/>PASS / FAIL"]
+ *     R --> V["7 verdicts:<br/>PASS / FAIL"]
  * ```
  *
- * Six properties, one check each — the ones an extension's correctness rests
+ * Seven properties, one check each — the ones an extension's correctness rests
  * on:
  *
  * 1. a successful run fires `success`, then `always`;
@@ -24,7 +24,8 @@
  * 4. a callback fault leaves the original VibeCoder result unchanged;
  * 5. context fields identify the correct concurrent run;
  * 6. the session transcript path, when present, belongs to that run — and its
- *    contents are never exported.
+ *    contents are never exported. A missing path names `sessionLogAbsentReason`.
+ * 7. an idle cycle fires `callbacks.cycle` once, with no run-only scalars.
  *
  * Every check drives the **production** runner over **real** subprocesses, so
  * a pass is a statement about this environment rather than about a mock. One
@@ -38,18 +39,22 @@
  * writes its own portable `/bin/sh` hooks and proves the contract. An
  * extension that supplies its own hook paths has them driven for checks 1 and
  * 2, and its `always` hook for check 3, so the verdict covers its executables
- * at the absolute paths the worker will really use.
+ * at the absolute paths the worker will really use. An extension's `cycle`
+ * hook is driven for check 7.
  *
  * Checks that need a **deliberate fault** (a hook that exits non-zero or
  * hangs) always inject a fixture hook for the faulting side: an extension's
- * hook cannot be asked to fail on demand. Checks 5 and 6 need to observe what
- * a hook *saw*, so they use fixture hooks that record their environment.
+ * hook cannot be asked to fail on demand. Checks 5, 6 and 7 need to observe
+ * what a hook *saw*, so they use fixture hooks that record their environment
+ * unless the extension supplied the hook under test.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
 import {
+  CALLBACK_SCHEMA_VERSION,
   type CallbackInvocation,
+  invokeCycleCallback,
   invokeRunCallbacks,
   type IssueRunCallbackContext,
 } from "./run_callbacks.ts";
@@ -65,6 +70,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "result-unchanged-by-callback-fault",
   "concurrent-context-isolation",
   "session-log-belongs-to-run",
+  "cycle-heartbeat",
 ] as const;
 
 /** One of {@link CONFORMANCE_CHECK_IDS}. */
@@ -82,6 +88,7 @@ const CHECK_TITLES: Record<ConformanceCheckId, string> = {
     "context fields identify the correct concurrent run",
   "session-log-belongs-to-run":
     "the session transcript path, when present, belongs to that run",
+  "cycle-heartbeat": "an idle cycle fires cycle once, with no run-only scalars",
 };
 
 /** Hook paths an extension wants driven through the contract. */
@@ -89,6 +96,7 @@ export interface ConformanceHooks {
   success?: string;
   failure?: string;
   always?: string;
+  cycle?: string;
 }
 
 /** Inputs to {@link runCallbackConformance}. */
@@ -619,8 +627,21 @@ async function checkSessionLogBelongsToRun(
     `the transcript-carrying run published ${present.sessionLogPath} rather than ${transcript}`,
   );
   faults.expect(
+    present.sessionLogAbsentReason === undefined,
+    `a transcript-carrying run also published sessionLogAbsentReason=${present.sessionLogAbsentReason}`,
+  );
+  faults.expect(
     absent.sessionLogPath === undefined,
     `a run with no transcript published ${absent.sessionLogPath}`,
+  );
+  faults.expect(
+    absent.sessionLogAbsentReason === "file_missing",
+    `a run with no transcript published sessionLogAbsentReason=${absent.sessionLogAbsentReason} rather than file_missing`,
+  );
+  faults.expect(
+    (present.telemetry !== undefined) !==
+      (present.telemetryAbsentReason !== undefined),
+    "every context must carry telemetry or telemetryAbsentReason, never neither",
   );
 
   const callbacks: CallbacksConfig = {
@@ -674,6 +695,115 @@ async function checkSessionLogBelongsToRun(
 }
 
 /**
+ * Check 7: an idle cycle fires `callbacks.cycle` once, with no run-only
+ * scalars (Issue #1955).
+ */
+async function checkCycleHeartbeat(
+  root: string,
+  hooks: ConformanceHooks,
+  timeoutSeconds: number,
+): Promise<ConformanceCheck> {
+  const id = "cycle-heartbeat" as const;
+  const faults = new Faults();
+  const dir = await scenarioDir(root, id);
+
+  const cycleHook = hooks.cycle ?? await writeHook(
+    dir,
+    "cycle.sh",
+    [
+      `echo "$VIBECODER_CALLBACK_EVENT|$VIBECODER_CYCLE_END_REASON|$VIBECODER_CLAIMS_TAKEN" >> "${dir}/evidence.txt"`,
+      `cp "$VIBECODER_CALLBACK_CONTEXT" "${dir}/cycle-context.json"`,
+      `env > "${dir}/cycle-env.txt"`,
+    ].join("\n"),
+  );
+
+  const invocations = await invokeCycleCallback({
+    callbacks: { cycle: cycleHook, timeoutSeconds },
+    context: {
+      runId: "vibe-conformance-cycle",
+      host: "conformance-host",
+      startedAt: "2026-09-11T00:00:00.000Z",
+      finishedAt: "2026-09-11T00:01:00.000Z",
+      durationSeconds: 60,
+      issuesScanned: 3,
+      claimsAttempted: 0,
+      claimsTaken: 0,
+      endReason: "no_eligible_work",
+      fleetSummary: {
+        claims: 0,
+        successes: 0,
+        failures: 0,
+        skips: 0,
+        idleSeconds: 60,
+        occupiedSeconds: 0,
+        rateLimitedSeconds: 0,
+        tokenBlockedSeconds: 0,
+      },
+    },
+    log: () => {},
+    logError: () => {},
+  });
+
+  faults.expect(
+    invocations.length === 1 && invocations[0]?.event === "cycle",
+    `expected one cycle invocation, got ${describeAll(invocations)}`,
+  );
+  faults.expect(
+    invocations[0]?.status === "ok",
+    `the cycle hook ${describe(invocations[0])}`,
+  );
+
+  if (hooks.cycle === undefined) {
+    const recorded = await evidence(dir);
+    faults.expect(
+      recorded.length === 1 && recorded[0] === "cycle|no_eligible_work|0",
+      `fixture cycle hook recorded ${recorded.join(", ") || "nothing"}`,
+    );
+    let document: Record<string, unknown> = {};
+    try {
+      document = JSON.parse(
+        await Deno.readTextFile(`${dir}/cycle-context.json`),
+      );
+    } catch (error) {
+      faults.expect(false, `the cycle hook received no context: ${error}`);
+    }
+    faults.expect(
+      document.schemaVersion === CALLBACK_SCHEMA_VERSION &&
+        document.event === "cycle" &&
+        document.endReason === "no_eligible_work",
+      `cycle context was ${
+        JSON.stringify({
+          schemaVersion: document.schemaVersion,
+          event: document.event,
+          endReason: document.endReason,
+        })
+      }`,
+    );
+    faults.expect(
+      !("result" in document) && !("issueNumber" in document),
+      "a cycle context must not carry run-only scalars",
+    );
+    let childEnv = "";
+    try {
+      childEnv = await Deno.readTextFile(`${dir}/cycle-env.txt`);
+    } catch (error) {
+      faults.expect(false, `the cycle hook exported no environment: ${error}`);
+    }
+    faults.expect(
+      !childEnv.includes("VIBECODER_RESULT=") &&
+        !childEnv.includes("VIBECODER_ISSUE_NUMBER="),
+      "a cycle hook must not inherit run-only environment scalars",
+    );
+  }
+
+  return verdict(
+    id,
+    faults,
+    `${describeAll(invocations)}; idle cycle recorded`,
+  );
+}
+
+/**
  * Run the conformance fixture and report a verdict per contract property.
  *
  * Never throws for a failing property — a failure is a `passed: false` check
@@ -704,6 +834,7 @@ export async function runCallbackConformance(
       await checkResultUnchanged(root, timeoutSeconds),
       await checkConcurrentIsolation(root, timeoutSeconds),
       await checkSessionLogBelongsToRun(root, timeoutSeconds),
+      await checkCycleHeartbeat(root, hooks, timeoutSeconds),
     ];
     return {
       passed: checks.every((one) => one.passed),

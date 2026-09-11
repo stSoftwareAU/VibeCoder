@@ -13,9 +13,13 @@ import { assert, assertEquals } from "@std/assert";
 import {
   buildCallbackContextDocument,
   buildCallbackEnv,
+  buildCycleCallbackDocument,
+  buildCycleCallbackEnv,
   CALLBACK_SCHEMA_VERSION,
   type CallbackInvocation,
+  type CycleCallbackContext,
   INHERITED_ENV_VARS,
+  invokeCycleCallback,
   invokeRunCallbacks,
   type IssueRunCallbackContext,
   MAX_CAPTURED_OUTPUT_CHARS,
@@ -373,7 +377,7 @@ Deno.test("run_callbacks - the environment carries the documented scalars", () =
     "/tmp/ctx.json",
     () => undefined,
   );
-  assertEquals(env.VIBECODER_CALLBACK_SCHEMA_VERSION, "1");
+  assertEquals(env.VIBECODER_CALLBACK_SCHEMA_VERSION, "2");
   assertEquals(env.VIBECODER_CALLBACK_EVENT, "failure");
   assertEquals(env.VIBECODER_CALLBACK_CONTEXT, "/tmp/ctx.json");
   assertEquals(env.VIBECODER_RUN_ID, "vibe-abc-123456");
@@ -485,4 +489,111 @@ Deno.test("run_callbacks - concurrent runs receive isolated contexts", async () 
   assertEquals(seen["/hooks/success.sh"], ["101"]);
   assertEquals(seen["/hooks/failure.sh"], ["202"]);
   assertEquals(new Set(seen["/hooks/always.sh"]), new Set(["101", "202"]));
+});
+
+function cycleContext(
+  overrides: Partial<CycleCallbackContext> = {},
+): CycleCallbackContext {
+  return {
+    runId: "vibe-abc-123456",
+    host: "worker-1",
+    startedAt: "2026-09-02T01:00:00.000Z",
+    finishedAt: "2026-09-02T01:05:00.000Z",
+    durationSeconds: 300,
+    issuesScanned: 4,
+    claimsAttempted: 1,
+    claimsTaken: 0,
+    endReason: "no_eligible_work",
+    fleetSummary: {
+      claims: 0,
+      successes: 0,
+      failures: 0,
+      skips: 0,
+      idleSeconds: 30,
+      occupiedSeconds: 0,
+      rateLimitedSeconds: 0,
+      tokenBlockedSeconds: 0,
+    },
+    ...overrides,
+  };
+}
+
+Deno.test("run_callbacks - a cycle hook fires once and leaves run hooks alone (Issue #1955)", async () => {
+  const { runner, spawns } = recordingRunner(() => exits(0));
+  const invocations = await invokeCycleCallback({
+    callbacks: {
+      ...HOOKS,
+      cycle: "/hooks/cycle.sh",
+      timeoutSeconds: 30,
+    },
+    context: cycleContext(),
+    log: () => {},
+    logError: () => {},
+    run: runner,
+    readEnv: () => undefined,
+    writeContextFile: (document) =>
+      Promise.resolve({
+        path: `/tmp/ctx-${document.event}.json`,
+        cleanup: () => Promise.resolve(),
+      }),
+  });
+  assertEquals(invocations.map((i) => i.event), ["cycle"]);
+  assertEquals(spawns.map((s) => s.executable), ["/hooks/cycle.sh"]);
+});
+
+Deno.test("run_callbacks - a cycle-only config does not fire run hooks (Issue #1955)", async () => {
+  const { invocations } = await invoke({
+    callbacks: { cycle: "/hooks/cycle.sh", timeoutSeconds: 30 },
+  });
+  assertEquals(invocations, []);
+});
+
+Deno.test("run_callbacks - the cycle document names the end reason (Issue #1955)", () => {
+  const document = buildCycleCallbackDocument(cycleContext());
+  assertEquals(document.schemaVersion, CALLBACK_SCHEMA_VERSION);
+  assertEquals(document.event, "cycle");
+  assertEquals(document.endReason, "no_eligible_work");
+  assertEquals(document.claimsTaken, 0);
+  assert(!("result" in document));
+  assert(!("issueNumber" in document));
+});
+
+Deno.test("run_callbacks - absence reasons and outcome export as scalars (Issues #1947 #1948)", () => {
+  const env = buildCallbackEnv(
+    context({
+      telemetryAbsentReason: "usage_not_reported",
+      sessionLogAbsentReason: "tee_disabled",
+      outcome: {
+        kind: "no_pr",
+        category: "evidence_missing",
+        phase: "completion",
+        failureClass: "agent-outcome",
+      },
+    }),
+    "failure",
+    "/tmp/c.json",
+    () => undefined,
+  );
+  assertEquals(env.VIBECODER_TELEMETRY_ABSENT_REASON, "usage_not_reported");
+  assertEquals(env.VIBECODER_SESSION_LOG_ABSENT_REASON, "tee_disabled");
+  assertEquals(env.VIBECODER_OUTCOME_KIND, "no_pr");
+  assertEquals(env.VIBECODER_OUTCOME_CATEGORY, "evidence_missing");
+  assertEquals(env.VIBECODER_OUTCOME_PHASE, "completion");
+  assertEquals(env.VIBECODER_OUTCOME_FAILURE_CLASS, "agent-outcome");
+  assert(!("VIBECODER_PR_NUMBER" in env));
+});
+
+Deno.test("run_callbacks - a cycle env has no run-only scalars (Issue #1955)", () => {
+  const env = buildCycleCallbackEnv(
+    cycleContext(),
+    "/tmp/cycle.json",
+    () => undefined,
+  );
+  assertEquals(env.VIBECODER_CALLBACK_EVENT, "cycle");
+  assertEquals(env.VIBECODER_CYCLE_END_REASON, "no_eligible_work");
+  assertEquals(env.VIBECODER_CLAIMS_TAKEN, "0");
+  assertEquals(env.VIBECODER_ISSUES_SCANNED, "4");
+  assert(!("VIBECODER_RESULT" in env));
+  assert(!("VIBECODER_ISSUE_NUMBER" in env));
+  assert(!("VIBECODER_EXIT_CODE" in env));
 });

@@ -269,6 +269,12 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
         shuffleRepos: shuffleArray,
         maxRetries,
         stateDir,
+        // Issue #1878: the parent of the per-repo clones, so this scan
+        // drops aggregator checks exactly as the run loop's does. Empty
+        // means no clone to read, and nothing is filtered.
+        workDir: String(
+          args["work-dir"] ?? config.workDir ?? Deno.env.get("WORK_DIR") ?? "",
+        ),
         prAuthors: config.fleetPrAuthors ?? [],
         allowedAuthors: config.allowedAuthors ?? [],
         getDefaultBranch: async (repo: string) => {

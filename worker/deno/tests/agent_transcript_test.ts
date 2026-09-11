@@ -10,6 +10,8 @@ import {
   agentTranscriptPath,
   AgentTranscriptWriter,
   maybeCreateAgentTranscriptWriter,
+  peekTranscriptAbsence,
+  resetTranscriptAbsenceForTests,
 } from "../lib/agent_transcript.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { createAgentStub } from "./support/agent_stub.ts";
@@ -127,6 +129,40 @@ Deno.test("agent_transcript - size cap stops the tee with a warning", async () =
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => undefined);
   }
+});
+
+Deno.test("agent_transcript - a size cap records size_cap_exceeded (Issue #1948)", async () => {
+  resetTranscriptAbsenceForTests();
+  const dir = await Deno.makeTempDir({ prefix: "agent_transcript_" });
+  const filePath = `${dir}/agent-test.jsonl`;
+  try {
+    const writer = new AgentTranscriptWriter({
+      filePath,
+      maxBytes: 20,
+      runId: "vibe-1",
+      issueNumber: 1948,
+    });
+    writer.feed("under the cap\n");
+    writer.feed("this line must not land\n");
+    writer.close();
+    assertEquals(peekTranscriptAbsence("vibe-1", 1948), "size_cap_exceeded");
+  } finally {
+    resetTranscriptAbsenceForTests();
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("agent_transcript - a write failure records write_failed (Issue #1948)", () => {
+  resetTranscriptAbsenceForTests();
+  const writer = new AgentTranscriptWriter({
+    filePath: "/nonexistent-dir-for-test/agent-test.jsonl",
+    runId: "vibe-1",
+    issueNumber: 1948,
+  });
+  writer.feed("line one\n");
+  writer.close();
+  assertEquals(peekTranscriptAbsence("vibe-1", 1948), "write_failed");
+  resetTranscriptAbsenceForTests();
 });
 
 Deno.test("agent_transcript - factory returns undefined when the switch is off", () => {
