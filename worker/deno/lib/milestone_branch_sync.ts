@@ -58,6 +58,7 @@ import {
   type ConflictAttemptOutcome,
   isConflictAttemptDue,
   isConflictBudgetExhausted,
+  isRepeatedFailureReason,
   loadSyncStreaks,
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
@@ -1272,9 +1273,15 @@ export async function syncMilestoneBranches(
             ? syncResult.error
             : undefined;
 
+          // A reason that has not changed since the previous cycle is a
+          // reason no retry will change (Issue #1964). Read before the
+          // conclusion overwrites it.
+          let repeatedReason = false;
+
           // Conclude the ledger attempt this failure ends (Issue #1778).
           if (streakPath && entry) {
             const verdict = judgeSyncFailure(syncResult.error, agentAllowed);
+            repeatedReason = isRepeatedFailureReason(entry, verdict.reason);
             entry = concludeConflictAttempt(
               entry,
               verdict.outcome,
@@ -1397,9 +1404,13 @@ export async function syncMilestoneBranches(
               }
             }
           } else if (
-            entry && entry.count >= MILESTONE_SYNC_ESCALATION_THRESHOLD &&
-            !entry.escalated
+            entry && !entry.escalated &&
+            (entry.count >= MILESTONE_SYNC_ESCALATION_THRESHOLD ||
+              repeatedReason)
           ) {
+            // Either the branch has failed for long enough, or it has failed
+            // twice for the identical reason — which four more cycles would
+            // only repeat (Issue #1964).
             const escalated = await escalateSyncFailure(
               repo,
               milestone,
@@ -1407,6 +1418,7 @@ export async function syncMilestoneBranches(
               syncResult.error.message,
               ghCommandFn,
               log,
+              repeatedReason,
             );
             if (escalated) {
               entry.escalated = true;
@@ -1759,6 +1771,8 @@ async function escalateSyncFailure(
   reason: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
+  /** True when this cycle's reason is identical to the previous cycle's. */
+  repeatedReason = false,
 ): Promise<boolean> {
   // Ahead/behind counts, best-effort via one REST compare (only on the rare
   // escalation, not per cycle). base...head reports how far head has diverged.
@@ -1792,6 +1806,13 @@ async function escalateSyncFailure(
     `\`${milestone.defaultBranch}\` for ${failureCount} consecutive cycles` +
     `${aheadBehind}.\n\n` +
     `Latest reason from git:\n\n> ${reason}\n\n` +
+    `${
+      repeatedReason
+        ? `That reason is **identical** to the previous cycle's, so a retry ` +
+          `changes nothing — this is escalated on the second occurrence ` +
+          `rather than after four (Issue #1964).\n\n`
+        : ""
+    }` +
     `${describeBranchTips(tips)}\n\n` +
     `The worker will keep retrying but cannot resolve this itself. Once the ` +
     `branch syncs, this escalation clears automatically (Issue #4260).`;

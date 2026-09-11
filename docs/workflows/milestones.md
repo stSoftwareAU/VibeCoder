@@ -284,6 +284,21 @@ pass climbs, in the very clone the merge conflicted in:
 2. **The resolution agent** — asked only about the paths the rules deferred,
    and required to resolve *and stage* them, exactly as the PR pass requires.
 
+**One writer of the merge commit (Issue #1964).** The agent stages; the
+worker's final-mile commit writes the merge, so the commit message always
+carries the rung that settled each file. An agent that commits the merge
+anyway is **tolerated, not punished**: before committing, the sync reads the
+merge state, and a HEAD that is already the merge of the branch's pre-merge
+commit and the default branch's tip keeps its commit and has its message
+rewritten. A merge that is neither in progress nor committed — an agent that
+aborted it, or committed something else — resets the branch to its pre-merge
+commit and fails **by name**, rather than as an unexplained `git commit`
+exit 1. Every git failure on the sync path quotes git's **stdout as well as
+its stderr**, because `git commit` explains "nothing to commit, working tree
+clean" on stdout; a sync whose reason is identical to the previous cycle's
+escalates on that **second** occurrence instead of spending four cycles and
+four agent runs repeating it.
+
 Only a file every rung leaves undecided aborts the merge and reaches a human,
 and the escalation then names the rung that failed (`agent: …`). An agent that
 fails, is ended by the worker, leaves a path unmerged or leaves a conflict

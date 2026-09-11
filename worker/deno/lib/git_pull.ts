@@ -30,6 +30,10 @@ import {
   buildRebaseArgs,
 } from "./git_ref_args.ts";
 import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
+import {
+  describeGitFailure,
+  readMergeCommitState,
+} from "./milestone_merge_state.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -293,8 +297,13 @@ async function pushSyncedMilestoneBranch(
   );
   if (push.ok && push.value.code === 0) return "";
 
+  // Git's own account of the refusal, stdout included (Issue #1964) — a push
+  // that failed for some other reason used to leave no trace at all.
+  const detail = describeGitFailure(push);
   const stderr = push.ok ? push.value.stderr : push.error.message;
-  if (!isRuleViolationPush(stderr)) return "";
+  if (!isRuleViolationPush(stderr)) {
+    return `PUSH FAILED for '${milestoneBranch}': ${detail} (Issue #1964) — `;
+  }
 
   if (!repo) {
     return `PUSH REFUSED by a repository rule and no repository was named, ` +
@@ -364,11 +373,9 @@ async function gateThenPushMilestoneBranch(
       options,
     );
     if (!reset.ok || reset.value.code !== 0) {
+      // stdout counts as much as stderr here (Issue #1964).
       resetNote = ` — and the local merge could NOT be reset to ` +
-        `${preMergeSha}: ${
-          (reset.ok ? reset.value.stderr : reset.error.message).trim() ||
-          "git reported no stderr"
-        }`;
+        `${preMergeSha}: ${describeGitFailure(reset)}`;
     }
     return {
       ok: false,
@@ -557,20 +564,16 @@ export async function syncMilestoneBranchWithDefault(
       options,
     );
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
-      // Surface git's own stderr (Issue #49): "error: Your local changes to the
-      // following files would be overwritten by checkout: …" — usually a dirty
-      // tree a timed-out claim left on this shared clone — is the whole
-      // diagnosis, and the old error discarded it. Same shape as the #4260
-      // merge-failure surfacing below.
-      const stderrTail = (checkoutResult.ok
-        ? checkoutResult.value.stderr
-        : checkoutResult.error.message)
-        .trim().split("\n").slice(0, 6).join(" | ");
+      // Surface git's own output (Issue #49): "error: Your local changes to
+      // the following files would be overwritten by checkout: …" — usually a
+      // dirty tree a timed-out claim left on this shared clone — is the whole
+      // diagnosis, and the old error discarded it. stdout counts too
+      // (Issue #1964), so a stdout-only refusal is never logged as silence.
       return {
         ok: false,
         error: new Error(
           `Failed to checkout milestone branch '${milestoneBranch}': ${
-            stderrTail || "git reported no stderr"
+            describeGitFailure(checkoutResult, { lines: 6, from: "head" })
           }`,
         ),
       };
@@ -652,16 +655,13 @@ export async function syncMilestoneBranchWithDefault(
     ? preMergeShaResult.value.stdout.trim()
     : "";
   if (!preMergeSha) {
-    const detail = (preMergeShaResult.ok
-      ? preMergeShaResult.value.stderr
-      : preMergeShaResult.error.message).trim();
     return {
       ok: false,
       error: new Error(
         `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
           `its pre-merge HEAD could not be read, so a merge the gate rejects ` +
           `could not be rolled back (Issue #974): ${
-            detail || "git reported no stderr"
+            describeGitFailure(preMergeShaResult)
           }`,
       ),
     };
@@ -713,16 +713,14 @@ export async function syncMilestoneBranchWithDefault(
     // history, dirty tree, vanished remote…). This used to return ok:true and
     // be logged as "Synced …" — FLEET milestone/4064 sat 5 commits behind
     // Develop for days while every cycle said 0 failed. Surface git's own
-    // stderr so the real reason is in the log.
-    const stderrTail =
-      (mergeResult.ok ? mergeResult.value.stderr : mergeResult.error.message)
-        .trim().split("\n").slice(-3).join(" | ");
+    // output — stdout as well as stderr (Issue #1964) — so the real reason is
+    // in the log.
     return {
       ok: false,
       error: new Error(
         `Merge of '${defaultBranch}' into '${milestoneBranch}' failed ` +
           `with no conflicted files — a non-conflict failure ` +
-          `(Issue #4260): ${stderrTail || "git reported no stderr"}`,
+          `(Issue #4260): ${describeGitFailure(mergeResult)}`,
       ),
     };
   }
@@ -885,29 +883,64 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
-  const commitResult = await runGitCommand(
-    [
-      "commit",
-      "-m",
-      buildResolutionCommitMessage({
-        defaultBranch,
-        milestoneBranch,
-        plan: { ...plan, resolved, escalations },
-      }),
-    ],
+  const resolutionMessage = buildResolutionCommitMessage({
+    defaultBranch,
+    milestoneBranch,
+    plan: { ...plan, resolved, escalations },
+  });
+
+  // Who writes the merge commit is read from git, not assumed (Issue #1964).
+  // The agent rung works in this very clone, and an agent that committed the
+  // merge itself leaves nothing for `git commit -m …`: git exits 1 saying
+  // "nothing to commit, working tree clean" on stdout, and the sync used to
+  // read that as a failure, abort and throw a good resolution away every
+  // cycle until a human took the branch.
+  const mergeState = await readMergeCommitState({
+    preMergeSha,
+    defaultSha,
     options,
-  );
-  if (!commitResult.ok || commitResult.value.code !== 0) {
-    await runGitCommand(["merge", "--abort"], options);
-    // Honest failure (Issue #4260) — same reasoning as above.
-    const stderrTail =
-      (commitResult.ok ? commitResult.value.stderr : commitResult.error.message)
-        .trim().split("\n").slice(-3).join(" | ");
+  });
+  if (mergeState.kind === "no-merge") {
+    // The merge is gone and HEAD is not it — an aborted merge, or a rung that
+    // committed something else. Nothing here is a resolution, so the branch
+    // goes back exactly where it stood and the state is named rather than
+    // rediscovered as an unexplained `git commit` exit 1.
+    const reset = await runGitCommand(
+      ["reset", "--hard", preMergeSha],
+      options,
+    );
+    const resetNote = reset.ok && reset.value.code === 0 ? "" : ` — and the ` +
+      `branch could NOT be reset to ${preMergeSha}: ${
+        describeGitFailure(reset)
+      }`;
     return {
       ok: false,
       error: new Error(
-        `Failed to commit conflict resolution for '${milestoneBranch}' ` +
-          `(Issue #4260): ${stderrTail || "git reported no stderr"}`,
+        `Refusing to commit the resolution of '${defaultBranch}' into ` +
+          `'${milestoneBranch}' (Issue #1964): ${mergeState.detail}${resetNote}`,
+      ),
+    };
+  }
+
+  // An already-committed merge keeps its commit and takes the sync's message,
+  // so the record of which rung settled each file is the same either way.
+  const commitResult = mergeState.kind === "already-committed"
+    ? await runGitCommand(
+      ["commit", "--amend", "-m", resolutionMessage],
+      options,
+    )
+    : await runGitCommand(["commit", "-m", resolutionMessage], options);
+  if (!commitResult.ok || commitResult.value.code !== 0) {
+    await runGitCommand(["merge", "--abort"], options);
+    // Honest failure (Issue #4260), with git's stdout as well as its stderr
+    // (Issue #1964) — `git commit` explains itself on stdout.
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to ${
+          mergeState.kind === "already-committed" ? "re-word" : "commit"
+        } the conflict resolution for '${milestoneBranch}' ` +
+          `(Issues #4260, #1964): ${describeGitFailure(commitResult)}`,
       ),
     };
   }
