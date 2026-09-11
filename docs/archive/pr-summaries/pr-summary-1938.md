@@ -88,8 +88,9 @@ flowchart LR
   and `::gemini_token_usage - one unreadable counter condemns the whole model`
   — reviewer: partial — reason: the reviewer read a real defect — the first
   version zero-filled any counter it could not read as long as *one* field in
-  the entry was numeric, so `{"input_tokens":1000,"output_tokens":"200"}`
-  decoded to `outputTokens: 0`. Fixed here: `readCounter` distinguishes an
+  the entry was numeric, so an entry carrying a numeric `input_tokens` beside
+  an `output_tokens` stated as a string decoded to a zero output count rather
+  than to UNKNOWN. Fixed here: `readCounter` distinguishes an
   absent field from one stated unusably, one unusable counter condemns the
   whole entry, and an entry missing either billable counter is refused. Three
   new tests cover it
