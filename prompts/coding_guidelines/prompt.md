@@ -68,9 +68,10 @@ progress survives.
 
   Run the command in the **foreground** and let it take as long as it takes —
   the run has a budget and the harness reports progress. A foreground `sleep`
-  is **blocked by the agent harness**, so a "bounded poll" loop is not merely
-  discouraged: the Bash call is refused and the turn is spent on the refusal.
-  There is no sleep-based wait to fall back on.
+  is **blocked by the agent harness** — its own Bash tool documents the
+  refusal — so a "bounded poll" loop is not merely discouraged: where that
+  block is in force the call is refused and the turn is spent on the refusal.
+  Never build a wait on it.
 
   When you genuinely must wait for something that has not finished, wait
   **inside a command that blocks on its own** rather than in the shell:
