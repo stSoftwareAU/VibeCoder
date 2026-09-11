@@ -37,8 +37,14 @@ Deno.test("auto selector rejects metered and unknown billing modes", () => {
   ], { now: NOW });
 
   assertEquals(selected.winner?.provider, "codex");
-  assertEquals(selected.ranked.find((c) => c.provider === "api")?.excluded, "metered-billing");
-  assertEquals(selected.ranked.find((c) => c.provider === "mystery")?.excluded, "billing-unknown");
+  assertEquals(
+    selected.ranked.find((c) => c.provider === "api")?.excluded,
+    "metered-billing",
+  );
+  assertEquals(
+    selected.ranked.find((c) => c.provider === "mystery")?.excluded,
+    "billing-unknown",
+  );
 });
 
 Deno.test("auto selector uses reset-aware constrained rate, not headline percent", () => {
@@ -115,7 +121,11 @@ Deno.test("stale status loses to fresh status", () => {
 
 Deno.test("configured provider order is the final deterministic tie-break", () => {
   const identical = {
-    windows: [{ id: "primary", remainingPercent: 50, resetsAt: NOW + 3_600_000 }],
+    windows: [{
+      id: "primary",
+      remainingPercent: 50,
+      resetsAt: NOW + 3_600_000,
+    }],
   };
   const selected = selectAutomaticProvider([
     status("claude", identical),

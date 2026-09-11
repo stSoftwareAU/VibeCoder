@@ -20,6 +20,16 @@ export interface AutomaticProviderOutage {
   readonly provider: string;
   readonly category: AutomaticProviderOutageCategory;
   readonly observedAt: number;
+  /** Earliest safe instant to probe a quota-exhausted provider again. */
+  readonly retryAt?: number;
+}
+
+/** Cooldown when an exhaustion response did not name its reset. */
+export const DEFAULT_AUTO_PROVIDER_QUOTA_RECHECK_MS = 5 * 60_000;
+
+export interface RecordAutomaticProviderOutageOptions {
+  readonly observedAt?: number;
+  readonly retryAt?: number;
 }
 
 let automaticRoutingActive = false;
@@ -40,19 +50,38 @@ export function isAutomaticProviderRoutingActive(): boolean {
 export function recordAutomaticProviderOutage(
   provider: string,
   category: AutomaticProviderOutageCategory,
-  observedAt: number = Date.now(),
+  options: RecordAutomaticProviderOutageOptions = {},
 ): void {
   if (!automaticRoutingActive) return;
   const id = provider.trim();
   if (!id) return;
-  outages.set(id, { provider: id, category, observedAt });
+  const observedAt = options.observedAt ?? Date.now();
+  const retryAt = category === "quota-exhausted"
+    ? options.retryAt ?? observedAt + DEFAULT_AUTO_PROVIDER_QUOTA_RECHECK_MS
+    : undefined;
+  outages.set(id, {
+    provider: id,
+    category,
+    observedAt,
+    ...(retryAt === undefined ? {} : { retryAt }),
+  });
 }
 
 /** Current process-local outage for one provider, if any. */
 export function automaticProviderOutage(
   provider: string,
+  now: number = Date.now(),
 ): AutomaticProviderOutage | undefined {
-  return outages.get(provider.trim());
+  const id = provider.trim();
+  const outage = outages.get(id);
+  if (
+    outage?.category === "quota-exhausted" &&
+    outage.retryAt !== undefined && outage.retryAt <= now
+  ) {
+    outages.delete(id);
+    return undefined;
+  }
+  return outage;
 }
 
 /** Clear an outage once fresh evidence proves the provider is usable again. */

@@ -28,9 +28,7 @@
  * Australian English spelling throughout (behaviour, authorised).
  */
 
-import type {
-  ProviderSubscriptionStatus,
-} from "./provider_quota.ts";
+import type { ProviderSubscriptionStatus } from "./provider_quota.ts";
 
 /** Maximum age of status evidence accepted as fresh by the default policy. */
 export const DEFAULT_AUTO_PROVIDER_STATUS_MAX_AGE_MS = 10 * 60_000;
@@ -135,8 +133,9 @@ function constrainedRatePerHour(
 function candidateView(
   status: ProviderSubscriptionStatus,
   inputIndex: number,
-  options: Required<Pick<AutomaticProviderSelectionOptions, "now" | "maxAgeMs">> &
-    Pick<AutomaticProviderSelectionOptions, "preference">,
+  options:
+    & Required<Pick<AutomaticProviderSelectionOptions, "now" | "maxAgeMs">>
+    & Pick<AutomaticProviderSelectionOptions, "preference">,
 ): AutomaticProviderCandidate {
   const preference = options.preference ?? [];
   const index = preferenceIndex(status.provider, preference, inputIndex);
@@ -277,7 +276,9 @@ export function selectAutomaticProvider(
 ): AutomaticProviderSelection {
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_AUTO_PROVIDER_STATUS_MAX_AGE_MS;
   if (!Number.isFinite(options.now)) {
-    throw new Error("automatic provider selection requires a finite current time");
+    throw new Error(
+      "automatic provider selection requires a finite current time",
+    );
   }
   if (!Number.isFinite(maxAgeMs) || maxAgeMs <= 0) {
     throw new Error(
@@ -294,7 +295,8 @@ export function selectAutomaticProvider(
       })
     )
     .sort(compareCandidates);
-  const winner = ranked.find((candidate) => candidate.excluded === null) ?? null;
+  const winner = ranked.find((candidate) => candidate.excluded === null) ??
+    null;
   const exhaustedResets = ranked
     .filter((candidate) => candidate.excluded === "exhausted")
     .map((candidate) => candidate.earliestResetAt)

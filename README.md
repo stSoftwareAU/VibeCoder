@@ -79,6 +79,23 @@ Select one with the `agent_provider` key in `.config.json`:
 }
 ```
 
+Mixed Claude/Codex hosts can opt into quota-aware selection before each work
+item. Only credentials proved to be fixed-price subscriptions are candidates;
+API-key and unknown-billing accounts are never selected:
+
+```json
+{
+  "agent_provider_mode": "auto",
+  "agent_provider": "claude",
+  "agent_providers": ["claude", "codex"]
+}
+```
+
+In auto mode, `agent_provider` is the preference tie-break. An explicit
+per-invocation provider remains absolute, and `VIBE_AGENT_PROVIDER` can pin an
+enabled provider for that process. If every eligible subscription is exhausted
+or unavailable, the worker waits instead of falling through to metered usage.
+
 `agent_providers` lists every provider enabled for a run: each gets its own
 credential file, its own startup preflight and its own read-only container
 mount, so no vendor's secret reaches another vendor's agent. It must include
@@ -101,7 +118,7 @@ host builds and runs a Codex image rather than reusing the default one.
   — how the seam works, what the image installs, and how to add the next
   provider.
 - [Configuration Reference](docs/CONFIGURATION.md#-configuration-defaults) —
-  the `agent_provider` and `agent_providers` keys in full.
+  the provider-selection keys in full.
 - [Setup Guide](docs/SETUP.md#choosing-the-coding-agent) — provisioning each
   vendor's credentials.
 - [Quorum](docs/QUORUM.md) — running several providers at once, so two agents

@@ -38,13 +38,13 @@ import {
   setAutomaticProviderRoutingActive,
 } from "./provider_auto_state.ts";
 import {
+  type AutomaticProviderSelection,
   formatAutomaticProviderSelection,
   selectAutomaticProvider,
-  type AutomaticProviderSelection,
 } from "./provider_auto_selection.ts";
 import {
-  ProviderSubscriptionStatusCache,
   type ProviderSubscriptionStatus,
+  ProviderSubscriptionStatusCache,
 } from "./provider_quota.ts";
 import type { RateLimitSignalData } from "./rate_limit_signal.ts";
 
@@ -136,9 +136,6 @@ async function readModeConfig(
   readTextFile: (path: string) => Promise<string>,
 ): Promise<AutomaticProviderConfig> {
   const environmentProvider = env(AGENT_PROVIDER_ENV)?.trim();
-  if (environmentProvider) {
-    return resolveAutomaticProviderConfig({ environmentProvider });
-  }
   const path = env("CONFIG_PATH")?.trim() || ".config.json";
   let raw: RawProviderModeConfig = {};
   try {
@@ -147,6 +144,12 @@ async function readModeConfig(
       raw = parsed as RawProviderModeConfig;
     }
   } catch (error) {
+    // A config file has always been optional. Its absence therefore means the
+    // historical pinned default, not a host-wide pause. Other read errors and
+    // malformed JSON still fail closed below.
+    if (error instanceof Deno.errors.NotFound) {
+      return resolveAutomaticProviderConfig({ environmentProvider });
+    }
     // The canonical config loader has already validated the file before the
     // main loop. If it becomes unreadable afterwards, fail closed here rather
     // than silently enabling a strategy that could select a billed provider.
@@ -156,11 +159,17 @@ async function readModeConfig(
       }`,
     );
   }
-  return resolveAutomaticProviderConfig({
+  const configured = resolveAutomaticProviderConfig({
     configuredMode: raw.agent_provider_mode,
     configuredProvider: raw.agent_provider,
     configuredProviders: raw.agent_providers,
   });
+  // Preserve the established config-file precedence in pinned mode. Once the
+  // file explicitly opts into auto, the environment becomes an emergency
+  // per-process pin with higher precedence than automatic selection.
+  return configured.mode === "auto" && environmentProvider
+    ? resolveAutomaticProviderConfig({ environmentProvider })
+    : configured;
 }
 
 /** Status-resolver seam; tests never need real provider credentials/network. */
@@ -202,7 +211,10 @@ async function claudeStatus(
       // The budget endpoint itself authenticates the OAuth credential. A
       // 401/403 is stronger evidence than an unknown quota and must not become
       // the last-resort provider that gets hammered again.
-      if (!budget.known && (budget.reason === "http-401" || budget.reason === "http-403")) {
+      if (
+        !budget.known &&
+        (budget.reason === "http-401" || budget.reason === "http-403")
+      ) {
         return {
           ...status,
           availability: "unavailable",
@@ -210,7 +222,9 @@ async function claudeStatus(
           reason: "authentication-rejected",
         };
       }
-      if (status.availability === "available") clearAutomaticProviderOutage("claude");
+      if (status.availability === "available") {
+        clearAutomaticProviderOutage("claude");
+      }
       return status;
     });
   }
@@ -281,7 +295,7 @@ export async function resolveAutomaticProviderStatus(
   providerId: string,
   context: { workDir: string; env: EnvLookup; now: number },
 ): Promise<ProviderSubscriptionStatus> {
-  const outage = automaticProviderOutage(providerId);
+  const outage = automaticProviderOutage(providerId, context.now);
   if (outage?.category === "authentication") {
     return unavailableStatus(
       providerId,
@@ -373,12 +387,24 @@ export async function refreshAutomaticProviderRouting(options: {
 }): Promise<AutomaticProviderRuntimeResult> {
   const env = options.env ?? ((name: string) => Deno.env.get(name));
   const now = options.now ?? Date.now();
-  const readTextFile = options.readTextFile ?? ((path) => Deno.readTextFile(path));
+  const readTextFile = options.readTextFile ??
+    ((path) => Deno.readTextFile(path));
   const log = options.log ?? ((message: string) => console.error(message));
   const config = await readModeConfig(env, readTextFile);
 
   if (config.mode !== "auto") {
     setAutomaticProviderRoutingActive(false);
+    if (config.reason === `${AGENT_PROVIDER_ENV}-explicit-pin`) {
+      const pinned = config.preference[0];
+      const enabled = options.enabledProviderIds.map((id) => id.trim());
+      if (!pinned || !enabled.includes(pinned)) {
+        throw new Error(
+          `${AGENT_PROVIDER_ENV} pin ${JSON.stringify(pinned ?? "")} is not ` +
+            `in the enabled agent_providers set`,
+        );
+      }
+      setConfiguredAgentProviderId(pinned);
+    }
     return { automatic: false, shouldPause: false, selection: null };
   }
   setAutomaticProviderRoutingActive(true);
@@ -398,6 +424,9 @@ export async function refreshAutomaticProviderRouting(options: {
         env,
         now,
       });
+      if (status.availability === "available") {
+        clearAutomaticProviderOutage(providerId);
+      }
       return signalScopedStatus(status, options.signal, now);
     } catch {
       // A provider-status fault cannot make metered billing eligible. We know
