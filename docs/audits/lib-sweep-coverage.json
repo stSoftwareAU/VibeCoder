@@ -286,6 +286,7 @@
         "worker/deno/lib/milestone_sync_conflict.ts",
         "worker/deno/lib/milestone_sync_diagnostic_closeout.ts",
         "worker/deno/lib/milestone_sync_pr.ts",
+        "worker/deno/lib/milestone_sync_pr_retirement.ts",
         "worker/deno/lib/milestone_sync_streak.ts",
         "worker/deno/lib/milestone_tracker_identity.ts",
         "worker/deno/lib/native_sub_issues.ts",

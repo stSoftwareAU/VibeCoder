@@ -14,6 +14,7 @@ import { directMergePr } from "./direct_merge.ts";
 import {
   decideMilestoneBaseMerge,
   decideSummaryPrMerge,
+  isMilestoneBranch,
   postOpenChildrenBlockComment,
   renderBlockWarning,
   retargetOrphanBoundPr,
@@ -28,6 +29,10 @@ import {
   mergeMethodFlagForHead,
   squashedSyncWarning,
 } from "./milestone_sync_pr.ts";
+import {
+  closeRetargetedSyncPr,
+  isRetargetedSyncPr,
+} from "./milestone_sync_pr_retirement.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
@@ -75,6 +80,14 @@ export enum AutoMergeResult {
    * instead and is picked up by the normal merge path next scan.
    */
   RetargetedToDefault = "retargeted_to_default",
+  /**
+   * The PR's head is a `sync/milestone-*` branch and its base is the
+   * **default** branch, so GitHub retargeted it there when its milestone
+   * branch was deleted (Issue #1967). A sync PR merges the default branch
+   * *into* a milestone branch; against the default branch its diff reverts
+   * the milestone's work. It was closed, never merged.
+   */
+  ClosedRetargetedSync = "closed_retargeted_sync",
 }
 
 /**
@@ -193,8 +206,12 @@ export interface EnableAutoMergeResult {
    * deliberate hold rather than a merge error (Issue #1779). A milestone
    * base behind the default branch gets no comment and no label — the next
    * cycle's milestone sync clears it.
+   *
+   * `sync-base-unreadable` is the same kind of hold (Issue #1967): a
+   * sync-shaped head whose base could not be compared with the default
+   * branch is neither armed nor escalated — it is re-read next scan.
    */
-  deferral?: "milestone-behind";
+  deferral?: "milestone-behind" | "sync-base-unreadable";
 }
 
 /**
@@ -518,13 +535,96 @@ export async function enableAutoMerge(
     };
   }
 
+  const baseRefName = options.baseRefName ??
+    (await fetchBaseRefName(repo, prNumber, ghCommandFn));
+
+  // Issue #1967: a milestone sync PR merges the default branch *into* a
+  // milestone branch, so one whose base IS the default branch has had its
+  // base deleted and been retargeted here by GitHub — approval and
+  // auto-merge arming carried over, and a diff that reverts the milestone's
+  // own work. VibeCoder#1957 reached `main` that way. This is the arming
+  // chokepoint every path goes through, so the refusal sits here: closed,
+  // never merged, with the reason posted on the PR.
+  // A sync PR still on a `milestone/**` base is in exactly the state it was
+  // raised in, so it needs no lookup at all — which is also what keeps the
+  // healthy path free of an extra API call.
+  if (
+    isMilestoneSyncBranch(options.headRefName) && baseRefName &&
+    !isMilestoneBranch(baseRefName)
+  ) {
+    const resolved = await (options.getDefaultBranchFn ??
+      ((r: string) => getRepoDefaultBranch(r, ghCommandFn)))(repo);
+    if (!resolved.ok) {
+      // "I could not read it" is never actioned, and here it must not be
+      // armed either: the one PR that must never merge into the default
+      // branch is the one whose base could not be compared with it.
+      return {
+        result: AutoMergeResult.Deferred,
+        deferral: "sync-base-unreadable",
+        message:
+          `PR #${prNumber} has a milestone-sync head '${options.headRefName}' ` +
+          `on base '${baseRefName}', and ${repo}'s default branch could not ` +
+          `be read (${resolved.error.message}) — not armed, re-read next ` +
+          `scan (Issue #1967)`,
+      };
+    }
+    if (
+      isRetargetedSyncPr(
+        {
+          number: prNumber,
+          headRefName: options.headRefName,
+          baseRefName,
+        },
+        resolved.value,
+      )
+    ) {
+      // A fork chooses its own branch names, so a sync-shaped head that is
+      // not in this repository is a claim, not evidence (Issue #1249) — it
+      // is somebody's own PR and is never closed. It is not armed either:
+      // the read also returns false when it *failed*, and arming the one PR
+      // that must never merge into the default branch because a `pr view`
+      // blipped is the opposite of what this guard is for.
+      if (!await fetchHeadIsSameRepository(repo, prNumber, ghCommandFn)) {
+        log(
+          forkSyncDowngradeWarning(repo, prNumber, options.headRefName ?? ""),
+        );
+        return {
+          result: AutoMergeResult.Deferred,
+          deferral: "sync-base-unreadable",
+          message:
+            `PR #${prNumber} has a milestone-sync head '${options.headRefName}' ` +
+            `on the default branch '${resolved.value}', but its head could ` +
+            `not be confirmed to live in ${repo} — neither closed nor armed ` +
+            `(Issue #1967)`,
+        };
+      }
+      const closed = await closeRetargetedSyncPr({
+        repo,
+        prNumber,
+        headRefName: options.headRefName ?? "",
+        defaultBranch: resolved.value,
+        ghCommandFn,
+        log,
+      });
+      return {
+        result: closed
+          ? AutoMergeResult.ClosedRetargetedSync
+          : AutoMergeResult.Failed,
+        message: closed
+          ? `PR #${prNumber} closed, never merged: a milestone sync PR ` +
+            `retargeted onto '${resolved.value}' (Issue #1967)`
+          : `PR #${prNumber} is a milestone sync PR retargeted onto ` +
+            `'${resolved.value}' and could NOT be closed — its auto-merge ` +
+            `was disarmed but it is still open (Issue #1967)`,
+      };
+    }
+  }
+
   // Issue #4375: on a base with no required checks GitHub's `--auto` merges
   // IMMEDIATELY, whatever CI says — observed when milestone child PR #4363
   // merged 20 s after a force-push with `validate` still running. Such a
   // base gets the gated, SHA-pinned direct merge instead: green, current,
   // settled head, or deferred until the next scan.
-  const baseRefName = options.baseRefName ??
-    (await fetchBaseRefName(repo, prNumber, ghCommandFn));
   if (baseRefName) {
     const memoKey = `${repo}#${baseRefName}`;
     let protectedBase = baseProtectionMemo.get(memoKey);
