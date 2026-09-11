@@ -330,8 +330,11 @@ Deno.test("config_defaults - lowPriorityLabel is hardwired (Issue #1834)", async
   });
 });
 
-Deno.test("config_defaults - OPERATIONAL_DEFAULTS has correct maxGrillMeRounds (Issue #1616)", () => {
-  assertEquals(OPERATIONAL_DEFAULTS.maxGrillMeRounds, 5);
+Deno.test("config_defaults - OPERATIONAL_DEFAULTS has correct maxGrillMeRounds (Issue #1616, #1933)", () => {
+  // Issue #1933 raised the default from 5 to 20: the number is a runaway
+  // ceiling, not a productivity budget — the stall guard stops an
+  // unproductive grilling long before a productive one reaches 20 rounds.
+  assertEquals(OPERATIONAL_DEFAULTS.maxGrillMeRounds, 20);
 });
 
 Deno.test("config_defaults - OPERATIONAL_DEFAULTS has correct grillMeTimeout (Issue #3154)", () => {

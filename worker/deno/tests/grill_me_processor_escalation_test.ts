@@ -196,27 +196,260 @@ Deno.test(
 );
 
 // ============================================================================
-// 2) Safety-cap escalation posts explanation comment with planning/work-on
+// 2) The stop rule (Issue #1933): a productive grilling runs on, an
+//    unproductive one gets one forced final round, and only a forced round
+//    that posts no Ready escalates.
 // ============================================================================
 
+/** A round comment whose `### Questions` section carries `stems`. */
+function roundBody(roundNumber: number, ...stems: string[]): string {
+  const questions = stems
+    .map((stem, i) => `${i + 1}. ${stem}\n   - [x] yes\n   - [ ] other`)
+    .join("\n\n");
+  return [
+    `${GRILL_ME_ROUND_MARKER}${roundNumber}`,
+    "",
+    "**TL;DR:** a round",
+    "",
+    "### Questions",
+    "",
+    questions,
+    "",
+    "**⏳ Awaiting your reply.**",
+  ].join("\n");
+}
+
+/** `rounds` answered rounds, each asking a stem no earlier round asked. */
+function productiveGrilling(rounds: number): GitHubComment[] {
+  const comments: GitHubComment[] = [];
+  for (let n = 1; n <= rounds; n++) {
+    comments.push(
+      makeComment({
+        id: n * 2 - 1,
+        author: "testbot",
+        body: roundBody(n, `Question ${n}?`),
+        createdAt: `2026-01-0${n}T00:00:00Z`,
+      }),
+    );
+    comments.push(
+      makeComment({
+        id: n * 2,
+        author: "user1",
+        body: `reply ${n}`,
+        createdAt: `2026-01-0${n}T01:00:00Z`,
+      }),
+    );
+  }
+  return comments;
+}
+
 Deno.test(
-  "Issue #2209: safety-cap escalation posts explanation comment that names planning/work-on",
+  "Issue #1933: five answered productive rounds run Round 6 instead of escalating (GRQ#4754)",
   async () => {
-    const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 2 }) });
+    // The reported bug: the developer answered five rounds in 2.5 hours, every
+    // round asked something new, and the fixed cap escalated anyway. The
+    // repository default is the ceiling under test, so this run uses it rather
+    // than a test-local override — against the unfixed code (a default cap of
+    // 5) the fifth answered round escalated instead of asking Round 6.
+    const ctx = makeContext({ config: buildDefaultWorkerConfig() });
+    const priorComments = productiveGrilling(5);
+    const addedLabels: string[] = [];
+    const postedBodies: string[] = [];
+    let capturedPrompt = "";
+
+    const ghClient = stubGhClient({
+      getIssueComments: () => Promise.resolve(priorComments),
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      addLabel: (_r, _n, label) => {
+        addedLabels.push(label);
+        return Promise.resolve();
+      },
+      postComment: (_r, _n, body) => {
+        postedBodies.push(body);
+        return Promise.resolve(undefined);
+      },
+    });
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (opts: { prompt: string }) => {
+          capturedPrompt = opts.prompt;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}6`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.processed, true);
+    assertEquals(result.value.roundNumber, 6);
+    assertEquals(result.value.escalatedToHuman, false);
+    assertEquals(result.value.isFinalRound, false);
+    // No forced-final signal in the prompt — this is an ordinary round.
+    assertEquals(
+      capturedPrompt.includes("This round is a forced final round"),
+      false,
+    );
+    assertEquals(capturedPrompt.includes("Forced final round:"), false);
+    const escalation = postedBodies.find((b) =>
+      b.includes("## Grill-Me Escalation")
+    );
+    assertEquals(
+      escalation,
+      undefined,
+      `A productive grilling must not escalate; got: ${
+        postedBodies.join(" | ")
+      }`,
+    );
+  },
+);
+
+Deno.test(
+  "Issue #1933: a stalled round forces a final round that posts Ready with the trigger line",
+  async () => {
+    const ctx = makeContext({ config: buildDefaultWorkerConfig() });
+    // Round 3 repeats every stem Rounds 1-2 already asked.
     const priorComments: GitHubComment[] = [
+      ...productiveGrilling(2),
       makeComment({
-        id: 1,
+        id: 90,
         author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}1`,
+        body: roundBody(3, "Question 1?", "*Question  2!*"),
+        createdAt: "2026-01-03T00:00:00Z",
       }),
-      makeComment({ id: 2, author: "user1", body: "reply 1" }),
       makeComment({
-        id: 3,
-        author: "testbot",
-        body: `${GRILL_ME_ROUND_MARKER}2`,
+        id: 91,
+        author: "user1",
+        body: "reply 3",
+        createdAt: "2026-01-03T01:00:00Z",
       }),
-      makeComment({ id: 4, author: "user1", body: "reply 2" }),
     ];
+    const postedBodies: string[] = [];
+    let capturedPrompt = "";
+
+    const ghClient = stubGhClient({
+      getIssueComments: () => Promise.resolve(priorComments),
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      postComment: (_r, _n, body) => {
+        postedBodies.push(body);
+        return Promise.resolve(undefined);
+      },
+    });
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (opts: { prompt: string }) => {
+          capturedPrompt = opts.prompt;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: GRILL_ME_READY_MARKER,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.processed, true);
+    assertEquals(result.value.isFinalRound, true);
+    assertEquals(result.value.escalatedToHuman, false);
+    // The prompt must demand the Ready comment and name the trigger line the
+    // Ready comment carries under its TL;DR.
+    assertStringIncludes(capturedPrompt, "This round is a forced final round");
+    assertStringIncludes(
+      capturedPrompt,
+      "Forced final round: stall guard tripped at Round 3",
+    );
+    assertStringIncludes(capturedPrompt, "named assumption");
+    // Ready was posted, so no escalation comment.
+    const escalation = postedBodies.find((b) =>
+      b.includes("## Grill-Me Escalation")
+    );
+    assertEquals(
+      escalation,
+      undefined,
+      `A forced round that posted Ready must not escalate; got: ${
+        postedBodies.join(" | ")
+      }`,
+    );
+  },
+);
+
+Deno.test(
+  "Issue #1933: the ceiling round is itself the forced final round",
+  async () => {
+    // Two productive rounds and a ceiling of three: the next round is the
+    // third, so it is forced even though nothing has stalled.
+    const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 3 }) });
+    const priorComments = productiveGrilling(2);
+    let capturedPrompt = "";
+
+    const ghClient = stubGhClient({
+      getIssueComments: () => Promise.resolve(priorComments),
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+    });
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (opts: { prompt: string }) => {
+          capturedPrompt = opts.prompt;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: GRILL_ME_READY_MARKER,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.roundNumber, 3);
+    assertEquals(result.value.isFinalRound, true);
+    assertStringIncludes(
+      capturedPrompt,
+      "Forced final round: round ceiling (3) reached",
+    );
+  },
+);
+
+Deno.test(
+  "Issue #1933: a forced final round that posts a round comment instead escalates, naming the trigger",
+  async () => {
+    const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 3 }) });
+    const priorComments = productiveGrilling(2);
     const addedLabels: string[] = [];
     const postedBodies: string[] = [];
 
@@ -233,7 +466,20 @@ Deno.test(
       },
     });
 
-    const deps = createMockDeps();
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}3`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          }),
+      },
+    });
+
     const result = await processGrillMe(ctx, {
       promptsDir: PROMPTS_DIR,
       ghClient,
@@ -245,19 +491,84 @@ Deno.test(
     assertEquals(result.value.escalatedToHuman, true);
     assert(addedLabels.includes("needs-human"));
 
-    const escalationComment = postedBodies.find((b) =>
-      b.includes("## Grill-Me Escalation") ||
-      b.includes("## Needs human attention")
+    const escalation = postedBodies.find((b) =>
+      b.includes("## Grill-Me Escalation")
     );
     assert(
-      escalationComment !== undefined,
-      `Expected an escalation comment; got bodies: ${postedBodies.join(" | ")}`,
+      escalation !== undefined,
+      `Expected a Grill-Me Escalation comment; got: ${
+        postedBodies.join(" | ")
+      }`,
     );
-    assertStringIncludes(escalationComment, "**Why:**");
-    assertStringIncludes(escalationComment, "**Next step:**");
-    assertStringIncludes(escalationComment, "safety cap");
-    assertStringIncludes(escalationComment, "planning");
-    assertStringIncludes(escalationComment, "work-on");
+    assertStringIncludes(escalation, "**Why:**");
+    assertStringIncludes(escalation, "**Next step:**");
+    // Names the trigger and that no Ready comment followed.
+    assertStringIncludes(escalation, "round ceiling (3) reached");
+    assertStringIncludes(escalation, GRILL_ME_READY_MARKER);
+    assertStringIncludes(escalation, "planning");
+    assertStringIncludes(escalation, "work-on");
+  },
+);
+
+Deno.test(
+  "Issue #1933: a forced final round that posts nothing escalates as well as failing loudly",
+  async () => {
+    const ctx = makeContext({ config: makeConfig({ maxGrillMeRounds: 3 }) });
+    const priorComments = productiveGrilling(2);
+    const addedLabels: string[] = [];
+    const postedBodies: string[] = [];
+
+    const ghClient = stubGhClient({
+      getIssueComments: () => Promise.resolve(priorComments),
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      addLabel: (_r, _n, label) => {
+        addedLabels.push(label);
+        return Promise.resolve();
+      },
+      postComment: (_r, _n, body) => {
+        postedBodies.push(body);
+        return Promise.resolve(undefined);
+      },
+    });
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "no marker at all", exitCode: 0, timedOut: false },
+          }),
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+    // The round genuinely failed, so the Result is an error — the escalation
+    // is in addition to the failure marker, never instead of it.
+    assertEquals(result.ok, false);
+    assert(addedLabels.includes("needs-human"));
+    const escalation = postedBodies.find((b) =>
+      b.includes("## Grill-Me Escalation")
+    );
+    assert(
+      escalation !== undefined,
+      `Expected a Grill-Me Escalation comment; got: ${
+        postedBodies.join(" | ")
+      }`,
+    );
+    assertStringIncludes(escalation, "round ceiling (3) reached");
+    assertStringIncludes(escalation, "no comment was posted");
+    const failure = postedBodies.find((b) =>
+      b.includes(GRILL_ME_FAILED_MARKER)
+    );
+    assert(
+      failure !== undefined,
+      "the failure marker must still be posted so consecutive failures count",
+    );
   },
 );
 
