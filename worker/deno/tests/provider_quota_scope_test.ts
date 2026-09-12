@@ -207,3 +207,77 @@ Deno.test("isHostRateLimitPauseActive - a restart holding a fresh subscription i
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+Deno.test("isHostRateLimitPauseActive - an honoured usage pause says which credential the signal names, which the run holds and why it pauses, once (Issue #2024)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "quota_scope_2024_" });
+  try {
+    // Unlabelled, as a pre-#2002 worker wrote it.
+    assertEquals(
+      (await writeRateLimitSignal(workDir, 286_110, undefined, "usage")).ok,
+      true,
+    );
+    const lines: string[] = [];
+    const options = {
+      heldCredentialLabel: () => "provider-3",
+      log: (line: string) => lines.push(line),
+    };
+    assertEquals(
+      await isHostRateLimitPauseActive(workDir, ["claude"], undefined, options),
+      true,
+    );
+    assertEquals(
+      await isHostRateLimitPauseActive(workDir, ["claude"], undefined, options),
+      true,
+    );
+    assertEquals(lines.length, 1, "explained once, not on every poll");
+    assertEquals(
+      lines[0]?.includes("names claude as spent but no credential"),
+      true,
+      lines[0],
+    );
+    assertEquals(lines[0]?.includes("holds claude/provider-3"), true, lines[0]);
+    assertEquals(lines[0]?.includes("pausing the host"), true, lines[0]);
+    assertEquals(lines[0]?.includes("names no credential"), true, lines[0]);
+
+    // The run that holds the spent subscription itself.
+    assertEquals(
+      (await writeRateLimitSignal(workDir, 286_110, undefined, "usage", {
+        provider: "claude",
+        credentialLabel: "provider-3",
+      })).ok,
+      true,
+    );
+    assertEquals(
+      await isHostRateLimitPauseActive(workDir, ["claude"], undefined, options),
+      true,
+    );
+    assertEquals(lines.length, 2);
+    assertEquals(
+      lines[1]?.includes("names claude/provider-3 as spent"),
+      true,
+      lines[1],
+    );
+    assertEquals(
+      lines[1]?.includes("holds the spent subscription"),
+      true,
+      lines[1],
+    );
+
+    // A run that recorded no credential of its own.
+    assertEquals(
+      await isHostRateLimitPauseActive(workDir, ["claude"], undefined, {
+        heldCredentialLabel: () => undefined,
+        log: options.log,
+      }),
+      true,
+    );
+    assertEquals(lines.length, 3);
+    assertEquals(
+      lines[2]?.includes("recorded no claude credential"),
+      true,
+      lines[2],
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
