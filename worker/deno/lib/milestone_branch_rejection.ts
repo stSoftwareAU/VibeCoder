@@ -75,10 +75,11 @@ export function describeRepoLevelRejection(
       "A branch being created carries no status checks yet, so a ruleset " +
       "applying `required_status_checks` to this ref pattern rejects every " +
       "push that would create it. Check the repository's rulesets for one " +
-      "matching this ref, then either add the fleet account as a bypass " +
-      "actor or drop the check requirement from a rule that cannot apply at " +
-      "creation time. This refusal is identical for every issue in the " +
-      "milestone, so the others are left claimable rather than parked.";
+      "matching this ref, then set `do_not_enforce_on_create: true` on its " +
+      "`required_status_checks` rule (the Issue #3912 remedy: the checks " +
+      "still gate every merge), or add the fleet account as a bypass actor. " +
+      "This refusal is identical for every issue in the milestone, so the " +
+      "others are left claimable rather than parked.";
   }
   if (/\bGH006\b/i.test(message) || /protected branch/i.test(message)) {
     return `Branch protection refused \`${branch}\`. The fleet account needs ` +
