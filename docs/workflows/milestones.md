@@ -296,9 +296,13 @@ branch to its pre-merge commit rather than pushing:
 - **The safety gate still runs.** The index gate saw nothing to inspect, so
   the adopted commit's own changed paths are classified instead — a `.env`, a
   credential file or a stray `.heartbeat_*` refuses the adoption.
-- **A plan that can no longer be applied is refused.** Taking a side needs the
-  conflicted index, so a commit made while the triage still had sides to take
-  is not the resolution the plan describes.
+- **The triage's sides are taken before any rung runs (Issue #2006).** The
+  agent rung stages the whole working tree when the agent is done, and that
+  `git add -A` used to stage the triage's still-unmerged paths too — markers
+  and all — so their side could no longer be taken and the whole resolution,
+  agent work included, was refused. Staging the sides first means a rung that
+  commits the merge commits them too, and the adopted commit is judged on its
+  safety alone.
 - **A state that could not be read resets nothing.** "No merge in progress" is
   only believed when git says so determinately; a timeout or a broken
   repository fails loudly with the branch untouched.

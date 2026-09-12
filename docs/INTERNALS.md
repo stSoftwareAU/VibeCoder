@@ -3251,7 +3251,11 @@ not write. Four rules decide what is mechanical:
 [milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)).
 What the triage cannot decide is not a human's problem yet: the sync climbs the
 same two rungs the PR pass climbs, over the paths still left, inside the very
-clone the merge conflicted in.
+clone the merge conflicted in. The triage's own `ours`/`theirs` sides are
+staged **before** the ladder climbs (Issue #2006): the agent rung stages the
+whole tree when the agent is done, and a triaged path still unmerged at that
+point would be staged with its conflict markers and lose the merge stages its
+side is taken from.
 
 1. **The dependency rules** — the same
    [dependency_conflict_apply.ts](../worker/deno/lib/dependency_conflict_apply.ts)
