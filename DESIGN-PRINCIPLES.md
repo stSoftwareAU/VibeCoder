@@ -135,7 +135,10 @@ ladder — the binding constraint on fleet occupancy today.
 - **F4 — one order, fleet-wide.** `top-priority` > `work-on` > `low-priority`
   > `idle-task`, applied **across the whole fleet** rather than within a
   repository. The next issue claimed is always the fleet's highest-tier
-  startable issue.
+  startable issue. After `top-priority` and before `work-on`, leftovers
+  that finish a **started, fleet-viable milestone** are lifted regardless
+  of their own tier (Issue #2009) so a long-lived milestone branch is
+  merged before another one is opened. `top-priority` remains first.
 - **F4a — `nice` orders repositories within a tier, never above one.** The
   per-repo `nice` setting breaks ties **inside** a label tier. It never lifts
   a repository above a tier nor holds one below it: a high-`nice` repository's
@@ -628,10 +631,13 @@ values are guarded down to `0` by `getRepoNice()` in
 - **Outermost grouping is the label tier; `nice` is the inner one
   (Issue #1063).** `selectHighestPriority()` in
   `worker/deno/lib/issue_priority.ts` walks the label ladder
-  (`top-priority` → `work-on` → self-diagnostic → `low-priority` →
+  (`top-priority` → close-out → `work-on` → self-diagnostic → `low-priority` →
   `idle-task`) across the whole fleet and drains each tier everywhere before
   reaching the next; only *within* a tier does it partition candidates by
-  resolved `nice` and take the lowest-`nice` group first. A `nice: -20`
+  resolved `nice` and take the lowest-`nice` group first. Close-out
+  (Issue #2009) is a band, not a `nice` partition: a leftover that finishes
+  a started, fleet-viable milestone is taken after `top-priority` and before
+  `work-on`, and `nice` does not demote it. A `nice: -20`
   repo's `work-on` issue therefore does **not** outrank a `nice: -15` repo's
   `top-priority` issue — the divergence from **F4a** reported on Issue #1063,
   now closed. `orderCandidatesByNiceTier()` is unchanged: it orders a single

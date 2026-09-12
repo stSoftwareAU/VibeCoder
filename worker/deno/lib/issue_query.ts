@@ -471,6 +471,75 @@ export async function fetchAllIssues(
   return issues;
 }
 
+/** Cached row for {@link fetchOpenMilestoneClosedCounts} (Issue #2009). */
+interface MilestoneClosedCount {
+  title: string;
+  closed: number;
+}
+
+/**
+ * Fetch each open milestone's closed-issue count (Issue #2009).
+ *
+ * Used by issue selection to recognise a *started* milestone — one that
+ * already has at least one closed child — without a per-candidate API
+ * call. The listing is the same `repos/<repo>/milestones` payload
+ * completion already reads; it is cached under `milestones_open_counts`.
+ *
+ * A missing `closed_issues` field is treated as 0 (not started). A
+ * failed or non-array payload throws rather than reading as "no
+ * milestones" (Issue #4257).
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param cache - Optional cache instance
+ * @param ghCommandFn - Optional gh command function for testing
+ * @returns Map of milestone title → closed-issue count
+ */
+export async function fetchOpenMilestoneClosedCounts(
+  repo: string,
+  cache?: IssueCache,
+  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+): Promise<Map<string, number>> {
+  const cacheKey = "milestones_open_counts";
+
+  if (cache) {
+    const cached = await cache.read<MilestoneClosedCount[]>(repo, cacheKey);
+    if (cached) {
+      return new Map(cached.map((row) => [row.title, row.closed]));
+    }
+  }
+
+  const output = await ghCommandFn([
+    "api",
+    `repos/${repo}/milestones?state=open&per_page=100`,
+  ]);
+  assertListOutput(output, `fetchOpenMilestoneClosedCounts(${repo})`);
+
+  const parsed: unknown = JSON.parse(output.trim());
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `fetchOpenMilestoneClosedCounts(${repo}): gh output was not a JSON ` +
+        `array — treating as a failed call, not an empty list (Issue #4257)`,
+    );
+  }
+
+  const rows: MilestoneClosedCount[] = [];
+  for (const item of parsed) {
+    if (!isRecord(item)) continue;
+    if (typeof item.title !== "string" || item.title === "") continue;
+    const closed = typeof item.closed_issues === "number" &&
+        Number.isFinite(item.closed_issues) &&
+        item.closed_issues >= 0
+      ? item.closed_issues
+      : 0;
+    rows.push({ title: item.title, closed });
+  }
+
+  if (cache) {
+    await cache.write(repo, cacheKey, rows);
+  }
+  return new Map(rows.map((row) => [row.title, row.closed]));
+}
+
 /**
  * A closed issue with its milestone title, returned by
  * `fetchAllClosedIssues` (Issue #1908).
