@@ -35,6 +35,11 @@ Targeted Deno tests (from `worker/deno`):
 - `tests/milestone_sync_streak_test.ts`
 - `tests/milestone_branch_sync_test.ts`
 - `tests/agent_run_termination_test.ts`
+- `tests/milestone_merge_behaviour_test.ts`
+- `tests/pr_branch_state_compare_direction_test.ts`
+- `tests/pr_branch_state_batch_test.ts`
+- `tests/merge_conflict_pr_blocked_reachability_test.ts`
+- `tests/merge_head_pin_test.ts`
 - `deno task check:manifests`
 
 No UI change; visual evidence does not apply.

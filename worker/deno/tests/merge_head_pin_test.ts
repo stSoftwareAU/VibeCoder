@@ -119,7 +119,11 @@ function createDirectMergeMock(
               headRefName: "issue-1",
               baseRefName: "milestone/x",
               mergeable: "MERGEABLE",
-              headRef: { compare: { aheadBy: 1, behindBy: 0 } },
+              headRefOid: CHECKED_SHA,
+              baseRef: {
+                target: { oid: "a".repeat(40) },
+                compare: { aheadBy: 1, behindBy: 0 },
+              },
             },
           },
         },

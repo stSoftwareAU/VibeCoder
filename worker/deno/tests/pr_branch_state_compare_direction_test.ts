@@ -80,8 +80,11 @@ function compareRefs(
  * direction.
  */
 function answerCompareQuery(query: string): string {
+  // The live query may nest `target { oid }` inside the compare receiver
+  // (Issue #2014). Match either shape so a swapped query still gets a
+  // truthfully-swapped answer.
   const match = query.match(
-    /(baseRef|headRef)\s*\{\s*compare\(headRef:\s*"([^"]+)"\)/,
+    /(baseRef|headRef)\s*\{[\s\S]*?compare\(headRef:\s*"([^"]+)"\)/,
   );
   if (!match) {
     throw new Error(`Query has no recognisable compare field: ${query}`);

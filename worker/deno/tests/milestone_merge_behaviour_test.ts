@@ -141,8 +141,11 @@ function fakeGitHub(
       }
 
       // Ahead/behind comparison.
+      // The live query hangs `compare` off `baseRef` and may nest
+      // `target { oid }` first (Issue #2014). Match either shape so the
+      // fake still answers GitHub's real compare semantics.
       const shape = query.match(
-        /(baseRef|headRef)\s*\{\s*compare\(headRef:\s*"([^"]+)"\)/,
+        /(baseRef|headRef)\s*\{[\s\S]*?compare\(headRef:\s*"([^"]+)"\)/,
       );
       if (shape) {
         const receiver = shape[1] === "baseRef" ? MILESTONE_BASE : PR_HEAD;
