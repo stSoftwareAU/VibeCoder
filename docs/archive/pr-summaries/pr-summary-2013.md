@@ -41,7 +41,7 @@ Test run after the change (`worker/deno`):
 
 ```text
 deno test --allow-all tests/milestone_sync_conflict_resolution_test.ts
-ok | 10 passed | 0 failed (27s)
+ok | 11 passed | 0 failed (30s)
 ```
 
 `./quality.sh` run in full after the final edit:
@@ -67,6 +67,9 @@ which is skipped on this host regardless of the change.
   pins and which this change deliberately leaves unchanged.
 - **regression test** —
   `worker/deno/tests/milestone_sync_conflict_resolution_test.ts::syncMilestoneBranchWithDefault - two appended ledger slices are unioned by value, not escalated (Issue #2013)`
+  (and `…::a .json the structural union refuses says why, alongside the parse failure (Issue #2013)`
+  for the fallback's error path) — both observed failing against the unfixed
+  code and passing after the fix
 
 ## Test Plan
 
@@ -77,6 +80,14 @@ which is skipped on this host regardless of the change.
   runs the whole sync, and asserts the merged ledger holds both slices with the
   default branch's first, in the file's own formatting, resolved by the union
   rung itself with no escalation and a commit on the branch.
+- **Added**
+  `worker/deno/tests/milestone_sync_conflict_resolution_test.ts::syncMilestoneBranchWithDefault - a .json the structural union refuses says why, alongside the parse failure (Issue #2013)`
+  — covers the new fallback's error path: a ledger whose merge base is
+  hand-formatted (`"entries": [\n  ]`) does not round-trip, so the structural
+  union declines, the textual union still produces a document that does not
+  parse, and the escalation names both the parse failure and why the by-value
+  merge was unavailable. Observed failing against the unfixed code (the
+  "it was not unioned as JSON first" clause absent) and passing after the fix.
 - **Unchanged and still green**
   `…::syncMilestoneBranchWithDefault - a JSON ledger whose union does not parse escalates rather than being written (Issue #1768)`
   — its merge base (`"entries": [\n  ]`) does not round-trip through

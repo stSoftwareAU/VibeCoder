@@ -393,6 +393,55 @@ Deno.test(
 );
 
 Deno.test(
+  "syncMilestoneBranchWithDefault - a .json the structural union refuses says why, alongside the parse failure (Issue #2013)",
+  async () => {
+    // A hand-formatted empty array (`[\n  ]`) is not what JSON.stringify
+    // emits, so the structural union declines rather than reformat lines
+    // neither side touched. The textual union then leaves two objects with no
+    // comma between them, exactly as before — but the escalation now also
+    // names why the by-value merge was not available, so a human reading it is
+    // not left to guess which rung declined.
+    const fx = await setup(
+      { "docs/audits/ledger.json": '{\n  "entries": [\n  ]\n}\n' },
+      {
+        files: {
+          "docs/audits/ledger.json":
+            '{\n  "entries": [\n    { "id": "branch" }\n  ]\n}\n',
+        },
+        subject: "Issue #2013: the branch's audit entry",
+      },
+      {
+        files: {
+          "docs/audits/ledger.json":
+            '{\n  "entries": [\n    { "id": "main" }\n  ]\n}\n',
+        },
+        subject: "Issue #2013: main's audit entry",
+      },
+    );
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+      );
+
+      assert(!result.ok, "an unparseable JSON union must not be written");
+      assert(isConflictEscalation(result.error));
+      assertStringIncludes(result.error.message, "does not parse as JSON");
+      assertStringIncludes(
+        result.error.message,
+        "it was not unioned as JSON first",
+      );
+      assertStringIncludes(result.error.message, "round-trip");
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
   "syncMilestoneBranchWithDefault - two appended ledger slices are unioned by value, not escalated (Issue #2013)",
   async () => {
     // The shape `docs/audits/lib-sweep-coverage.json` actually produces: each

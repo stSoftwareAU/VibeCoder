@@ -245,9 +245,11 @@ export function resolveBothInserted(
  * other format has no such check and is not blocked by one.
  *
  * This rule no longer needs it — a `.json` path takes the structured union
- * above, which cannot produce an invalid document — but the milestone ladder's
- * union merge (`milestone_conflict_git.ts`) still text-unions with
- * `git merge-file --union`, and that is the rung this guard now protects.
+ * above, which cannot produce an invalid document — and since Issue #2013 the
+ * milestone ladder's union merge (`milestone_conflict_git.ts`) tries that same
+ * structured union first. It still falls back to `git merge-file --union` for
+ * anything the structured union refuses, so that fallback is the rung this
+ * guard now protects.
  */
 export function unionIsWellFormed(path: string, text: string): boolean {
   if (!isJsonPath(path)) return true;
