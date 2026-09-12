@@ -3,9 +3,11 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   activeAgentProvider,
+  IMAGE_AGENT_PROVIDERS_ENV,
   selectAgentProvider,
   setConfiguredAgentProviderId,
 } from "../lib/agent_provider.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
 import {
   refreshAutomaticProviderRouting,
   resolveAutomaticProviderConfig,
@@ -17,8 +19,29 @@ import {
   setAutomaticProviderRoutingActive,
 } from "../lib/provider_auto_state.ts";
 import type { ProviderSubscriptionStatus } from "../lib/provider_quota.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 const NOW = 10_000_000;
+
+/**
+ * An environment whose image installed both providers (Issue #1977).
+ *
+ * The routing under test resolves providers through an {@link EnvLookup}, and
+ * resolution is gated on the set the *running image* installed. Reading the
+ * ambient environment therefore made these cases assert which agent CLIs this
+ * host's image happens to carry: on a `claude`-only image they failed with
+ * "did not install the codex provider" instead of exercising the routing. The
+ * installed set is stated here, so the assertions hold on any image.
+ */
+function statedEnv(values: Record<string, string> = {}): EnvLookup {
+  return envFrom({
+    [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex",
+    ...values,
+  });
+}
+
+/** {@link statedEnv} plus the config path these cases read their config from. */
+const CONFIGURED_ENV = statedEnv({ CONFIG_PATH: "/config.json" });
 
 function available(
   provider: string,
@@ -96,7 +119,7 @@ Deno.test("pinned mode makes no automatic status probe", async () => {
           agent_provider: "claude",
           agent_providers: ["claude", "codex"],
         }),
-      env: (name) => name === "CONFIG_PATH" ? "/config.json" : undefined,
+      env: CONFIGURED_ENV,
       resolveStatus: () => {
         probes++;
         return available("claude", 50, 5);
@@ -106,7 +129,7 @@ Deno.test("pinned mode makes no automatic status probe", async () => {
     assertEquals(result.automatic, false);
     assertEquals(result.shouldPause, false);
     assertEquals(probes, 0);
-    assertEquals(activeAgentProvider().id, "claude");
+    assertEquals(activeAgentProvider({ env: CONFIGURED_ENV }).id, "claude");
   });
 });
 
@@ -119,7 +142,7 @@ Deno.test("missing optional config preserves pinned mode", async () => {
       now: NOW,
       readTextFile: () =>
         Promise.reject(new Deno.errors.NotFound("config absent")),
-      env: () => undefined,
+      env: statedEnv(),
       resolveStatus: () => {
         probes++;
         return available("claude", 50, 5);
@@ -129,7 +152,7 @@ Deno.test("missing optional config preserves pinned mode", async () => {
     assertEquals(result.automatic, false);
     assertEquals(result.shouldPause, false);
     assertEquals(probes, 0);
-    assertEquals(activeAgentProvider().id, "claude");
+    assertEquals(activeAgentProvider({ env: CONFIGURED_ENV }).id, "claude");
   });
 });
 
@@ -146,7 +169,7 @@ Deno.test("auto mode selects quota winner and updates only default routing", asy
           agent_provider: "claude",
           agent_providers: ["claude", "codex"],
         }),
-      env: (name) => name === "CONFIG_PATH" ? "/config.json" : undefined,
+      env: CONFIGURED_ENV,
       resolveStatus: (provider) =>
         provider === "claude"
           ? available("claude", 80, 160)
@@ -157,9 +180,12 @@ Deno.test("auto mode selects quota winner and updates only default routing", asy
     assertEquals(result.automatic, true);
     assertEquals(result.shouldPause, false);
     assertEquals(result.selection?.winner?.provider, "codex");
-    assertEquals(activeAgentProvider().id, "codex");
+    assertEquals(activeAgentProvider({ env: CONFIGURED_ENV }).id, "codex");
     // Per-invocation pins bypass the process default even after an auto switch.
-    assertEquals(selectAgentProvider("claude").id, "claude");
+    assertEquals(
+      selectAgentProvider("claude", { env: CONFIGURED_ENV }).id,
+      "claude",
+    );
     assertEquals(logs.some((line) => line.includes("claude->codex")), true);
   });
 });
@@ -176,11 +202,10 @@ Deno.test("VIBE_AGENT_PROVIDER disables auto mode and preserves explicit provide
           agent_provider_mode: "auto",
           agent_providers: ["claude", "codex"],
         }),
-      env: (name) => {
-        if (name === "CONFIG_PATH") return "/config.json";
-        if (name === "VIBE_AGENT_PROVIDER") return "codex";
-        return undefined;
-      },
+      env: statedEnv({
+        CONFIG_PATH: "/config.json",
+        VIBE_AGENT_PROVIDER: "codex",
+      }),
       resolveStatus: () => {
         probes++;
         return available("claude", 100, 1);
@@ -189,7 +214,7 @@ Deno.test("VIBE_AGENT_PROVIDER disables auto mode and preserves explicit provide
 
     assertEquals(result.automatic, false);
     assertEquals(probes, 0);
-    assertEquals(activeAgentProvider().id, "codex");
+    assertEquals(activeAgentProvider({ env: CONFIGURED_ENV }).id, "codex");
   });
 });
 
@@ -204,15 +229,14 @@ Deno.test("pinned config keeps file precedence over VIBE_AGENT_PROVIDER", async 
           agent_provider: "claude",
           agent_providers: ["claude", "codex"],
         }),
-      env: (name) => {
-        if (name === "CONFIG_PATH") return "/config.json";
-        if (name === "VIBE_AGENT_PROVIDER") return "codex";
-        return undefined;
-      },
+      env: statedEnv({
+        CONFIG_PATH: "/config.json",
+        VIBE_AGENT_PROVIDER: "codex",
+      }),
     });
 
     assertEquals(result.automatic, false);
-    assertEquals(activeAgentProvider().id, "claude");
+    assertEquals(activeAgentProvider({ env: CONFIGURED_ENV }).id, "claude");
   });
 });
 
@@ -234,7 +258,7 @@ Deno.test("provider-scoped usage signal makes auto route around exhausted provid
           agent_provider_mode: "auto",
           agent_providers: ["claude", "codex"],
         }),
-      env: (name) => name === "CONFIG_PATH" ? "/config.json" : undefined,
+      env: CONFIGURED_ENV,
       resolveStatus: (provider) => available(provider, 50, 5),
       log: () => {},
     });
@@ -261,7 +285,7 @@ Deno.test("observed authentication failure routes subsequent work to another sub
           agent_provider: "claude",
           agent_providers: ["claude", "codex"],
         }),
-      env: (name) => name === "CONFIG_PATH" ? "/config.json" : undefined,
+      env: CONFIGURED_ENV,
       resolveStatus: (provider, context) =>
         provider === "claude"
           ? resolveAutomaticProviderStatus(provider, context)
@@ -295,7 +319,7 @@ Deno.test("all fixed subscriptions exhausted pauses without choosing a provider"
           agent_provider_mode: "auto",
           agent_providers: ["claude", "codex"],
         }),
-      env: (name) => name === "CONFIG_PATH" ? "/config.json" : undefined,
+      env: CONFIGURED_ENV,
       resolveStatus: (provider) => exhausted(provider),
       log: () => {},
     });
@@ -304,7 +328,7 @@ Deno.test("all fixed subscriptions exhausted pauses without choosing a provider"
     assertEquals(result.selection?.winner, null);
     assertEquals(result.selection?.retryAt, NOW + 3_600_000);
     // No fallback mutation occurs when there is no safe winner.
-    assertEquals(activeAgentProvider().id, "claude");
+    assertEquals(activeAgentProvider({ env: CONFIGURED_ENV }).id, "claude");
   });
 });
 
@@ -319,7 +343,7 @@ Deno.test("status resolver failure is fail-closed, never a metered candidate", a
           agent_provider_mode: "auto",
           agent_providers: ["claude"],
         }),
-      env: (name) => name === "CONFIG_PATH" ? "/config.json" : undefined,
+      env: CONFIGURED_ENV,
       resolveStatus: () => {
         throw new Error("probe exploded with secret-shaped detail");
       },
@@ -332,6 +356,36 @@ Deno.test("status resolver failure is fail-closed, never a metered candidate", a
     assertEquals(
       result.selection?.ranked[0]?.status.reason,
       "status-resolution-failed",
+    );
+  });
+});
+
+Deno.test("automatic routing reads the active provider from the environment it was given", async () => {
+  await withProviderState(async () => {
+    // The stated image installed codex alone while the process default is
+    // still claude, so adopting a winner must fail loud naming claude. The
+    // ambient image cannot make this pass or fail: the environment handed to
+    // the refresh is the one that decides (Issue #1977).
+    await assertRejects(
+      () =>
+        refreshAutomaticProviderRouting({
+          workDir: "/tmp/vibe-auto-stated-image",
+          enabledProviderIds: ["claude", "codex"],
+          now: NOW,
+          readTextFile: async () =>
+            JSON.stringify({
+              agent_provider_mode: "auto",
+              agent_providers: ["claude", "codex"],
+            }),
+          env: envFrom({
+            [IMAGE_AGENT_PROVIDERS_ENV]: "codex",
+            CONFIG_PATH: "/config.json",
+          }),
+          resolveStatus: (provider) => available(provider, 50, 5),
+          log: () => {},
+        }),
+      Error,
+      'did not install the "claude" coding-agent provider',
     );
   });
 });
