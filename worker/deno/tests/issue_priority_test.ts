@@ -4,6 +4,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  buildCloseOutMilestones,
   formatCandidateOutput,
   orderCandidatesByNiceTier,
   selectFairWithinTier,
@@ -13,9 +14,11 @@ import {
 } from "../lib/issue_priority.ts";
 import type {
   IssueCandidate,
+  MilestoneCloseOut,
   SelectionOptions,
   SelectionResult,
 } from "../lib/issue_priority.ts";
+import { workStreamKey } from "../lib/work_stream.ts";
 
 function makeCandidate(
   overrides: Partial<IssueCandidate> = {},
@@ -1713,3 +1716,432 @@ Deno.test("selectHighestPriority - week pace off keeps every tier eligible", () 
     "low-priority",
   );
 });
+
+// =============================================================================
+// Finish a started milestone before starting another (Issue #2009)
+// =============================================================================
+
+function closeOutMap(
+  entries: Array<{ repo: string; milestone: string; remainingViable: number }>,
+): Map<string, MilestoneCloseOut> {
+  return new Map(
+    entries.map((entry) => [
+      workStreamKey(entry.repo, entry.milestone),
+      { remainingViable: entry.remainingViable },
+    ]),
+  );
+}
+
+Deno.test(
+  "selectHighestPriority - close-out low-priority beats older unstarted work-on (Issue #2009)",
+  () => {
+    const closeOut = makeCandidate({
+      number: 10,
+      repo: "owner/started",
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      createdAt: "2024-06-01T00:00:00Z",
+    });
+    const unstarted = makeCandidate({
+      number: 20,
+      repo: "owner/fresh",
+      milestone: "Brand new",
+      labelIndex: 99,
+      source: "work-on",
+      createdAt: "2024-01-01T00:00:00Z",
+    });
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [],
+      workOnCandidates: [unstarted],
+      blockedEntries: [],
+      lowPriorityCandidates: [closeOut],
+      closeOutMilestones: closeOutMap([
+        { repo: "owner/started", milestone: "Almost done", remainingViable: 1 },
+      ]),
+    };
+    assertEquals(selectHighestPriority(result)?.number, 10);
+  },
+);
+
+Deno.test(
+  "selectHighestPriority - without a close-out map today's tier order holds (Issue #2009)",
+  () => {
+    const closeOut = makeCandidate({
+      number: 10,
+      repo: "owner/started",
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      createdAt: "2024-06-01T00:00:00Z",
+    });
+    const unstarted = makeCandidate({
+      number: 20,
+      repo: "owner/fresh",
+      milestone: "Brand new",
+      labelIndex: 99,
+      source: "work-on",
+      createdAt: "2024-01-01T00:00:00Z",
+    });
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [],
+      workOnCandidates: [unstarted],
+      blockedEntries: [],
+      lowPriorityCandidates: [closeOut],
+    };
+    assertEquals(selectHighestPriority(result)?.number, 20);
+  },
+);
+
+Deno.test(
+  "selectHighestPriority - top-priority still beats a close-out issue (Issue #2009)",
+  () => {
+    const top = makeCandidate({
+      number: 1,
+      repo: "owner/urgent",
+      milestone: "",
+      source: "configured-label",
+      createdAt: "2024-08-01T00:00:00Z",
+    });
+    const closeOut = makeCandidate({
+      number: 10,
+      repo: "owner/started",
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      createdAt: "2024-01-01T00:00:00Z",
+    });
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [top],
+      workOnCandidates: [],
+      blockedEntries: [],
+      lowPriorityCandidates: [closeOut],
+      closeOutMilestones: closeOutMap([
+        { repo: "owner/started", milestone: "Almost done", remainingViable: 1 },
+      ]),
+    };
+    assertEquals(selectHighestPriority(result)?.number, 1);
+  },
+);
+
+Deno.test(
+  "selectHighestPriority - closer-to-done started milestone beats one with more left (Issue #2009)",
+  () => {
+    const almostDone = makeCandidate({
+      number: 11,
+      repo: "owner/repo",
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      createdAt: "2024-06-01T00:00:00Z",
+    });
+    const stillGoing = makeCandidate({
+      number: 21,
+      repo: "owner/repo",
+      milestone: "Still going",
+      labelIndex: 99,
+      source: "work-on",
+      createdAt: "2024-01-01T00:00:00Z",
+    });
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [],
+      workOnCandidates: [stillGoing],
+      blockedEntries: [],
+      lowPriorityCandidates: [almostDone],
+      closeOutMilestones: closeOutMap([
+        { repo: "owner/repo", milestone: "Almost done", remainingViable: 1 },
+        { repo: "owner/repo", milestone: "Still going", remainingViable: 3 },
+      ]),
+    };
+    assertEquals(selectHighestPriority(result)?.number, 11);
+  },
+);
+
+Deno.test(
+  "selectHighestPriority - week pace drops a close-out low-priority (Issue #2009)",
+  () => {
+    const closeOut = makeCandidate({
+      number: 10,
+      repo: "owner/started",
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      createdAt: "2024-01-01T00:00:00Z",
+    });
+    const unstarted = makeCandidate({
+      number: 20,
+      repo: "owner/fresh",
+      milestone: "Brand new",
+      labelIndex: 99,
+      source: "work-on",
+      createdAt: "2024-06-01T00:00:00Z",
+    });
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [],
+      workOnCandidates: [unstarted],
+      blockedEntries: [],
+      lowPriorityCandidates: [closeOut],
+      closeOutMilestones: closeOutMap([
+        { repo: "owner/started", milestone: "Almost done", remainingViable: 1 },
+      ]),
+    };
+    assertEquals(
+      selectHighestPriority(result, { weekPaceEngaged: true })?.number,
+      20,
+    );
+  },
+);
+
+Deno.test(
+  "selectHighestPriority - close-out low-priority beats same-repo work-on that #2164 would suppress (Issue #2009)",
+  () => {
+    const closeOut = makeCandidate({
+      number: 10,
+      repo: "owner/repo",
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      createdAt: "2024-06-01T00:00:00Z",
+    });
+    const unstarted = makeCandidate({
+      number: 20,
+      repo: "owner/repo",
+      milestone: "",
+      labelIndex: 99,
+      source: "work-on",
+      createdAt: "2024-01-01T00:00:00Z",
+    });
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [],
+      workOnCandidates: [unstarted],
+      blockedEntries: [],
+      lowPriorityCandidates: [closeOut],
+      reposWithOpenWorkOn: new Set(["owner/repo"]),
+      closeOutMilestones: closeOutMap([
+        { repo: "owner/repo", milestone: "Almost done", remainingViable: 1 },
+      ]),
+    };
+    assertEquals(selectHighestPriority(result)?.number, 10);
+  },
+);
+
+Deno.test(
+  "selectHighestPriority - non-milestone work-on still beats non-milestone low-priority (Issue #2009)",
+  () => {
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [],
+      workOnCandidates: [
+        makeCandidate({
+          number: 20,
+          milestone: "",
+          labelIndex: 99,
+          source: "work-on",
+          createdAt: "2024-06-01T00:00:00Z",
+        }),
+      ],
+      blockedEntries: [],
+      lowPriorityCandidates: [
+        makeCandidate({
+          number: 10,
+          milestone: "",
+          labelIndex: 199,
+          source: "low-priority",
+          createdAt: "2024-01-01T00:00:00Z",
+        }),
+      ],
+      closeOutMilestones: new Map(),
+    };
+    assertEquals(selectHighestPriority(result)?.number, 20);
+  },
+);
+
+Deno.test(
+  "selectHighestPriority - close-out prefers in-milestone priority-high then oldest (Issue #2009)",
+  () => {
+    const high = makeCandidate({
+      number: 12,
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      milestonePriority: 1,
+      createdAt: "2024-06-01T00:00:00Z",
+    });
+    const older = makeCandidate({
+      number: 11,
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      milestonePriority: 2,
+      createdAt: "2024-01-01T00:00:00Z",
+    });
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [],
+      workOnCandidates: [],
+      blockedEntries: [],
+      lowPriorityCandidates: [older, high],
+      closeOutMilestones: closeOutMap([
+        { repo: "owner/repo", milestone: "Almost done", remainingViable: 2 },
+      ]),
+    };
+    assertEquals(selectHighestPriority(result)?.number, 12);
+  },
+);
+
+Deno.test(
+  "selectHighestPriority - nice does not demote a close-out candidate (Issue #2009)",
+  () => {
+    const closeOut = makeCandidate({
+      number: 10,
+      repo: "owner/high-nice",
+      milestone: "Almost done",
+      labelIndex: 199,
+      source: "low-priority",
+      createdAt: "2024-06-01T00:00:00Z",
+    });
+    const unstarted = makeCandidate({
+      number: 20,
+      repo: "owner/low-nice",
+      milestone: "Brand new",
+      labelIndex: 99,
+      source: "work-on",
+      createdAt: "2024-01-01T00:00:00Z",
+    });
+    const result: SelectionResult = {
+      selected: null,
+      labelCandidates: [],
+      workOnCandidates: [unstarted],
+      blockedEntries: [],
+      lowPriorityCandidates: [closeOut],
+      closeOutMilestones: closeOutMap([
+        {
+          repo: "owner/high-nice",
+          milestone: "Almost done",
+          remainingViable: 1,
+        },
+      ]),
+    };
+    const selected = selectHighestPriority(result, {
+      repoNice: (repo) => repo === "owner/high-nice" ? 20 : -20,
+    });
+    assertEquals(selected?.number, 10);
+  },
+);
+
+Deno.test(
+  "buildCloseOutMilestones - started and fully admitted is fleet-viable (Issue #2009)",
+  () => {
+    const candidate = makeCandidate({
+      number: 10,
+      repo: "owner/repo",
+      milestone: "Almost done",
+      source: "low-priority",
+    });
+    const map = buildCloseOutMilestones(
+      [
+        {
+          repo: "owner/repo",
+          number: 10,
+          milestone: "Almost done",
+        },
+      ],
+      [candidate],
+      new Set([workStreamKey("owner/repo", "Almost done")]),
+    );
+    assertEquals(map.get(workStreamKey("owner/repo", "Almost done")), {
+      remainingViable: 1,
+    });
+  },
+);
+
+Deno.test(
+  "buildCloseOutMilestones - leftover blocked issue is not fleet-viable (Issue #2009)",
+  () => {
+    const candidate = makeCandidate({
+      number: 10,
+      repo: "owner/repo",
+      milestone: "Almost done",
+      source: "low-priority",
+    });
+    const map = buildCloseOutMilestones(
+      [
+        {
+          repo: "owner/repo",
+          number: 10,
+          milestone: "Almost done",
+        },
+        {
+          repo: "owner/repo",
+          number: 11,
+          milestone: "Almost done",
+        },
+      ],
+      [candidate],
+      new Set([workStreamKey("owner/repo", "Almost done")]),
+    );
+    assertEquals(map.has(workStreamKey("owner/repo", "Almost done")), false);
+  },
+);
+
+Deno.test(
+  "buildCloseOutMilestones - unstarted milestone is not close-out (Issue #2009)",
+  () => {
+    const candidate = makeCandidate({
+      number: 10,
+      repo: "owner/repo",
+      milestone: "Brand new",
+      source: "work-on",
+    });
+    const map = buildCloseOutMilestones(
+      [
+        {
+          repo: "owner/repo",
+          number: 10,
+          milestone: "Brand new",
+        },
+      ],
+      [candidate],
+      new Set(),
+    );
+    assertEquals(map.size, 0);
+  },
+);
+
+Deno.test(
+  "buildCloseOutMilestones - tracking issue is not counted as remaining work (Issue #2009)",
+  () => {
+    const candidate = makeCandidate({
+      number: 10,
+      repo: "owner/repo",
+      milestone: "Almost done",
+      source: "low-priority",
+    });
+    const map = buildCloseOutMilestones(
+      [
+        {
+          repo: "owner/repo",
+          number: 10,
+          milestone: "Almost done",
+        },
+        {
+          repo: "owner/repo",
+          number: 99,
+          milestone: "Almost done",
+          tracking: true,
+        },
+      ],
+      [candidate],
+      new Set([workStreamKey("owner/repo", "Almost done")]),
+    );
+    assertEquals(map.get(workStreamKey("owner/repo", "Almost done")), {
+      remainingViable: 1,
+    });
+  },
+);

@@ -1,4 +1,5 @@
 import { MILESTONE_PRIORITY_VALUES } from "./milestone_priority.ts";
+import { workStreamKey } from "./work_stream.ts";
 
 /**
  * Priority ordering and candidate ranking for issue selection (Issue #910).
@@ -14,6 +15,10 @@ import { MILESTONE_PRIORITY_VALUES } from "./milestone_priority.ts";
  *                          Legacy `help wanted` / `claude` labels remain
  *                          configurable for backward compatibility but
  *                          are no longer part of the hardwired set.
+ *   1b. close-out        — a leftover in a started, fleet-viable milestone
+ *                          (Issue #2009). Lifted after top-priority and
+ *                          before work-on so a started milestone is
+ *                          finished before another branch is opened.
  *   2. work-on           — explicit work-on signal
  *   2b. self-diagnostic  — an auto-filed worker diagnostic the worker
  *                          scheduled itself (Issue #505). Below both
@@ -199,6 +204,97 @@ export interface SelectionResult {
    * Optional for backward compatibility — defaults to an empty set.
    */
   reposWithOpenLowPriority?: ReadonlySet<string>;
+  /**
+   * Started, fleet-viable milestones whose leftover issues should be
+   * selected after `top-priority` and before `work-on` (Issue #2009).
+   *
+   * Keyed by {@link workStreamKey}. Presence means the milestone has
+   * already started (at least one closed child) and every remaining
+   * open non-tracking issue is an admitted candidate. Optional — an
+   * absent or empty map leaves today's tier order unchanged.
+   */
+  closeOutMilestones?: ReadonlyMap<string, MilestoneCloseOut>;
+}
+
+/**
+ * A started, fleet-viable milestone that selection should close out
+ * before opening another work stream (Issue #2009).
+ */
+export interface MilestoneCloseOut {
+  /** Open non-tracking issues still admitted in this milestone. */
+  remainingViable: number;
+}
+
+/**
+ * An open issue considered when deciding whether a milestone is
+ * fleet-viable (Issue #2009).
+ */
+export interface CloseOutOpenIssue {
+  repo: string;
+  number: number;
+  milestone: string;
+  /** True when this is the milestone's tracking issue, not real work. */
+  tracking?: boolean;
+}
+
+/**
+ * Build the close-out map for {@link selectHighestPriority} (Issue #2009).
+ *
+ * A milestone is close-out eligible only when it is started *and*
+ * fleet-viable: every remaining open non-tracking issue appears among
+ * the admitted candidates. A leftover `needs-human`, dependency-blocked
+ * or otherwise skipped issue means the fleet cannot finish the
+ * milestone, so the rule does not apply.
+ *
+ * @param openIssues - Open issues that still belong to a milestone
+ * @param candidates - Candidates the existing gates have already admitted
+ * @param startedKeys - `workStreamKey`s of milestones with closed children
+ * @returns Map of started, fleet-viable milestones
+ */
+export function buildCloseOutMilestones(
+  openIssues: readonly CloseOutOpenIssue[],
+  candidates: readonly IssueCandidate[],
+  startedKeys: ReadonlySet<string>,
+): Map<string, MilestoneCloseOut> {
+  const result = new Map<string, MilestoneCloseOut>();
+  if (startedKeys.size === 0) return result;
+
+  const openByKey = new Map<string, Set<number>>();
+  for (const issue of openIssues) {
+    if (issue.milestone === "" || issue.tracking) continue;
+    const key = workStreamKey(issue.repo, issue.milestone);
+    if (!startedKeys.has(key)) continue;
+    const numbers = openByKey.get(key);
+    if (numbers) numbers.add(issue.number);
+    else openByKey.set(key, new Set([issue.number]));
+  }
+
+  const admittedByKey = new Map<string, Set<number>>();
+  for (const candidate of candidates) {
+    if (candidate.milestone === "") continue;
+    const key = workStreamKey(candidate.repo, candidate.milestone);
+    if (!startedKeys.has(key)) continue;
+    const numbers = admittedByKey.get(key);
+    if (numbers) numbers.add(candidate.number);
+    else admittedByKey.set(key, new Set([candidate.number]));
+  }
+
+  for (const [key, open] of openByKey) {
+    const admitted = admittedByKey.get(key);
+    if (!admitted || admitted.size === 0 || admitted.size !== open.size) {
+      continue;
+    }
+    let extra = false;
+    for (const number of admitted) {
+      if (!open.has(number)) {
+        extra = true;
+        break;
+      }
+    }
+    if (extra) continue;
+    result.set(key, { remainingViable: admitted.size });
+  }
+  return result;
 }
 
 /**
@@ -475,6 +571,12 @@ function selectAcrossNiceTiers(
  * out before it resets, so what is left of it goes to `top-priority` and
  * `work-on` work rather than to backlog and busywork.
  *
+ * Issue #2009: after tier 1 and before tier 2, leftovers that belong to a
+ * started, fleet-viable milestone are lifted into a close-out band. The
+ * band only re-orders candidates the existing gates have already admitted;
+ * it never outranks `top-priority`, and week-pace still drops tiers 3 and
+ * 4 so a low-priority close-out is not claimed while the quota is short.
+ *
  * @param result - Selection result with all candidates and metadata
  * @returns Selected candidate, or null if none eligible
  */
@@ -500,6 +602,7 @@ export function selectHighestPriority(
     blockedEntries,
     reposWithOpenWorkOn,
     reposWithOpenLowPriority,
+    closeOutMilestones,
   } = result;
 
   // Issue #2164: a repo with a *suppressing* open work-on issue must not
@@ -547,7 +650,8 @@ export function selectHighestPriority(
   // every repo — ordered by `nice` within the tier — before the next tier is
   // considered, so an urgency label anywhere outranks routine work anywhere.
   //
-  //   1  configured-label  →  2  work-on  →  2b self-diagnostic
+  //   1  configured-label  →  1b close-out (Issue #2009)
+  //   →  2  work-on  →  2b self-diagnostic
   //   →  3  low-priority   →  4  idle-task (fleet-global floor, Issue #2812)
   //
   // Issue #1885: while the weekly Claude quota is projected to run out before
@@ -555,13 +659,35 @@ export function selectHighestPriority(
   // entirely, so the quota that remains is spent on urgency signals rather
   // than on backlog and busywork. Tiers 1, 2 and 2b are never gated — the
   // point is to redirect the remaining quota, never to stop working.
-  const tiers: IssueCandidate[][] = [
+  const weekPaceEngaged = options?.weekPaceEngaged === true;
+
+  const selectedLabel = selectAcrossNiceTiers(
     labelCandidates,
+    repoNice,
+    options,
+  );
+  if (selectedLabel) return selectedLabel;
+
+  // Issue #2009: finish a started, fleet-viable milestone before opening
+  // another. Drawn from the raw lower-tier lists so a same-repo unstarted
+  // work-on (the #2164 suppressor) cannot hide the leftover that would
+  // close the started stream. `nice` does not apply — close-out is a
+  // band of its own, not a within-tier tie-break.
+  const closeOutSelected = selectCloseOutCandidate(
+    [
+      ...eligibleWorkOn,
+      ...selfDiagnosticCandidates,
+      ...(weekPaceEngaged ? [] : lowPriorityCandidates),
+      ...(weekPaceEngaged ? [] : idleTaskCandidates),
+    ],
+    closeOutMilestones,
+  );
+  if (closeOutSelected) return closeOutSelected;
+
+  const tiers: IssueCandidate[][] = [
     eligibleWorkOn,
     selfDiagnosticCandidates,
-    ...(options?.weekPaceEngaged
-      ? []
-      : [eligibleLowPriority, eligibleIdleTask]),
+    ...(weekPaceEngaged ? [] : [eligibleLowPriority, eligibleIdleTask]),
   ];
 
   for (const tier of tiers) {
@@ -569,6 +695,49 @@ export function selectHighestPriority(
     if (selected) return selected;
   }
   return null;
+}
+
+/**
+ * Pick the leftover that finishes the closest started milestone
+ * (Issue #2009).
+ *
+ * Order: fewest remaining viable issues, then in-milestone
+ * `priority-high` / `priority-low`, then oldest. `nice` and
+ * `randomFn` are deliberately ignored — rotating away from the
+ * milestone that is about to close would recreate the drift this
+ * band exists to prevent.
+ */
+function selectCloseOutCandidate(
+  candidates: readonly IssueCandidate[],
+  closeOutMilestones: ReadonlyMap<string, MilestoneCloseOut> | undefined,
+): IssueCandidate | null {
+  if (!closeOutMilestones || closeOutMilestones.size === 0) return null;
+
+  const closeOut = candidates.filter((candidate) =>
+    candidate.milestone !== "" &&
+    closeOutMilestones.has(workStreamKey(candidate.repo, candidate.milestone))
+  );
+  if (closeOut.length === 0) return null;
+
+  const normal = MILESTONE_PRIORITY_VALUES.normal;
+  const sorted = [...closeOut].sort((a, b) => {
+    const remainingA = closeOutMilestones.get(
+      workStreamKey(a.repo, a.milestone),
+    )?.remainingViable ?? Number.POSITIVE_INFINITY;
+    const remainingB = closeOutMilestones.get(
+      workStreamKey(b.repo, b.milestone),
+    )?.remainingViable ?? Number.POSITIVE_INFINITY;
+    if (remainingA !== remainingB) return remainingA - remainingB;
+    if (
+      a.milestone !== "" &&
+      a.milestone === b.milestone &&
+      (a.milestonePriority ?? normal) !== (b.milestonePriority ?? normal)
+    ) {
+      return (a.milestonePriority ?? normal) - (b.milestonePriority ?? normal);
+    }
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+  return sorted[0] ?? null;
 }
 
 /**

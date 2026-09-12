@@ -49,14 +49,15 @@ flowchart TD
 
 ## 🥇 Issue selection priority
 
-When the worker scans for eligible issues it groups every candidate into one of four **tiers** and selects from the highest non-empty tier. Within a tier, the globally oldest issue (by `createdAt`) wins.
+When the worker scans for eligible issues it groups every candidate into one of four **tiers** and selects from the highest non-empty tier. Within a tier, the globally oldest issue (by `createdAt`) wins. After `top-priority` and before `work-on`, leftovers that finish a **started, fleet-viable milestone** are lifted into a close-out band (Issue #2009) so a long-lived milestone branch is merged before another one is opened.
 
 | Tier | Source | Global rule |
 |------|--------|-------------|
-| 1 | **`top-priority`** discovery label | Selected before any lower tier. |
-| 2 | **`work-on`** label (added by an allowed author) | Selected only when **no** eligible `top-priority` candidate exists in **any** scanned repo. |
-| 2b | **self-scheduled worker diagnostic** (no label — provenance) | An issue the worker auto-filed about itself, in its own repo, carrying a recognised provenance marker. Selected only when **no** eligible `top-priority` or `work-on` candidate exists in **any** scanned repo, and always ahead of the backlog. See [Self-scheduled worker diagnostics](#-self-scheduled-worker-diagnostics-tier-2b). |
-| 3 | **`low-priority`** label | Selected only when **no** eligible `top-priority`, `work-on` **or** self-scheduled diagnostic candidate exists in **any** scanned repo. |
+| 1 | **`top-priority`** discovery label | Selected before any lower tier. The human urgency signal — close-out does not override it. |
+| 1b | **close-out** — leftover in a started, fleet-viable milestone | Selected after `top-priority` and **before** `work-on`, regardless of the leftover's own tier. A `low-priority` issue that completes a started milestone beats a `work-on` issue that would open a new branch. See [Finish a started milestone](#-finish-a-started-milestone-before-starting-another). |
+| 2 | **`work-on`** label (added by an allowed author) | Selected only when **no** eligible `top-priority` or close-out candidate exists in **any** scanned repo. |
+| 2b | **self-scheduled worker diagnostic** (no label — provenance) | An issue the worker auto-filed about itself, in its own repo, carrying a recognised provenance marker. Selected only when **no** eligible `top-priority`, close-out or `work-on` candidate exists in **any** scanned repo, and always ahead of the backlog. See [Self-scheduled worker diagnostics](#-self-scheduled-worker-diagnostics-tier-2b). |
+| 3 | **`low-priority`** label | Selected only when **no** eligible `top-priority`, close-out, `work-on` **or** self-scheduled diagnostic candidate exists in **any** scanned repo. |
 | 4 | **`idle-task`** label | The lowest-priority "work on this" tier. An `idle-task` issue is worked exactly like any other — it raises a fix PR through the standard pipeline — **except** a registered scan _wrapper_ (identified by title or body) runs its scan template instead of raising a PR. A **fleet-global floor**: selected only when **no** repo in **any** `nice` tier has a selectable `top-priority` / `work-on` / `low-priority` candidate. The single label the Vibe Coder may self-apply. |
 
 The label priority order is therefore: `top-priority` > `work-on` > `low-priority` > `idle-task`. The legacy `help wanted` and `claude` discovery labels were retired in; only `idle-task` is self-appliable by the Vibe Coder. Tier 2b carries **no label at all** — it is claimable on provenance — so it does not change that order.
@@ -76,7 +77,9 @@ flowchart TD
     B --> J{Any selectable real work<br/>in ANY nice tier?<br/>top-priority / work-on / low-priority}
     J -- yes --> C{Any configured-label?}
     C -- yes --> D[Tier 1: oldest configured-label]
-    C -- no --> E{Any unblocked work-on?}
+    C -- no --> CO{Any close-out leftover<br/>in a started fleet-viable<br/>milestone?}
+    CO -- yes --> CP[Band 1b: closest-to-done leftover]
+    CO -- no --> E{Any unblocked work-on?}
     E -- yes --> F[Tier 2: oldest work-on]
     E -- no --> M{Any self-scheduled<br/>worker diagnostic?}
     M -- yes --> N[Tier 2b: oldest diagnostic]
@@ -85,12 +88,25 @@ flowchart TD
     K -- yes --> L[Tier 4: idle-task<br/>fleet-global floor]
     K -- no --> I[No issue selected]
     style D fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style CP fill:#7a9c6a,stroke:#3d5a2d,color:#1a1a1a
     style F fill:#e0a050,stroke:#8b4500,color:#1a1a1a
     style N fill:#c48a8a,stroke:#6a1d1d,color:#1a1a1a
     style H fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style L fill:#b89a5a,stroke:#6a541d,color:#1a1a1a
     style I fill:#707070,stroke:,color:#fff
 ```
+
+### 🏁 Finish a started milestone before starting another
+
+Long-lived milestone branches drift from the default branch and then fail to merge. Selection is the cheapest place to prevent that: **finish a started milestone before opening another**, when everything left in it is fleet-viable (Issue #2009).
+
+- **Started:** the open milestone already has at least one closed child (`closed_issues > 0` on the cached milestone listing).
+- **Fleet-viable:** every remaining open non-tracking issue already passed the existing gates — it carries a work-tier label (or is a self-diagnostic) and is not blocked (`needs-human`, `failed`, `grill-me`, `planning`, `refine-issue`, unresolved dependency, open sub-issue, occupied stream, paced behind). If any leftover needs a human, the rule does not apply.
+- **Order inside the band:** fewest remaining viable issues first, then in-milestone `priority-high` / `priority-low`, then oldest. `nice` does not apply.
+- **What it must not override:** `top-priority` stays first. The one-PR-per-work-stream gate, dependency blocking, milestone-behind pacing, and the weekly quota pace gate for tiers 3 and 4 are unchanged — the band only re-orders candidates those gates have already admitted. A paced or blocked started milestone contributes nothing, so the fleet does not sit idle waiting for it.
+- **Non-milestone `work-on`** still beats non-milestone `low-priority`. The promotion applies only to leftovers that close out a started milestone.
+
+The decision is logged once per selection (`close-out: has N viable issues left, selecting #X over tier-2 #Y`).
 
 ### ⏳ Weekly Claude quota pace gate (tiers 3 and 4)
 

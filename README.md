@@ -571,7 +571,10 @@ The worker **never** self-applies the reserved workflow labels (`top-priority`,
 pickup-priority order is
 `top-priority` > `work-on` > `low-priority` > `idle-task`, all meaning
 _work on this issue_ and differing only in priority; **only `idle-task` is
-self-appliable by the Vibe Coder**. The worker can nonetheless schedule its
+self-appliable by the Vibe Coder**. After `top-priority`, leftovers that
+finish a started, fleet-viable milestone are lifted before `work-on`
+(Issue #2009) so a long-lived milestone branch is merged before another
+is opened. The worker can nonetheless schedule its
 **own auto-filed diagnostics** without a label — provenance, not a label,
 makes them claimable, one at a time, audited and announced
 (tier 2b, Issue #505). See

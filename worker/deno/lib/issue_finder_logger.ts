@@ -176,6 +176,22 @@ export interface BlockingPrInfo {
 }
 
 /**
+ * A close-out selection decision (Issue #2009).
+ *
+ * Logged once per scan when a leftover in a started, fleet-viable
+ * milestone is chosen ahead of a candidate that would have opened a
+ * new work stream.
+ */
+export interface CloseOutSelectionInfo {
+  remainingViable: number;
+  selectedRepo: string;
+  selectedNumber: number;
+  passedOverRepo?: string;
+  passedOverNumber?: number;
+  passedOverSource?: string;
+}
+
+/**
  * Interface for the issue finder diagnostic logger.
  */
 export interface IssueFinderDiagnostics {
@@ -228,6 +244,19 @@ export interface IssueFinderDiagnostics {
   logBlockingPr(info: BlockingPrInfo): void;
   /** Log the final candidate selection */
   logFinalSelection(repo: string, issueNumber: number, source: string): void;
+  /**
+   * Log that a started, fleet-viable milestone was closed out ahead of
+   * a lower-tier candidate that would have opened a new stream
+   * (Issue #2009). Written unconditionally so the choice is auditable
+   * without `ISSUE_FINDER_DEBUG`.
+   */
+  logCloseOutSelection(info: CloseOutSelectionInfo): void;
+  /**
+   * Log that the open-milestone listing failed, so this repo contributes
+   * no close-out keys (Issue #2009). Written unconditionally — a failed
+   * listing must not look like "no started milestones".
+   */
+  logCloseOutListingFailed(repo: string, detail: string): void;
   /** Log a claim race outcome (Issue #1090) */
   logClaimRaceOutcome(
     repo: string,
@@ -261,6 +290,23 @@ export interface IssueFinderDiagnostics {
  * single log entry cannot be padded out to obscure the surrounding
  * diagnostic trail.
  */
+function closeOutPassedOverTier(source: string): string {
+  switch (source) {
+    case "configured-label":
+      return "tier-1";
+    case "work-on":
+      return "tier-2";
+    case "self-diagnostic":
+      return "tier-2b";
+    case "low-priority":
+      return "tier-3";
+    case "idle-task":
+      return "tier-4";
+    default:
+      return source;
+  }
+}
+
 const MAX_UNTRUSTED_FIELD_LENGTH = 200;
 
 /**
@@ -502,6 +548,36 @@ export function createDiagnostics(options: {
       emit(
         `[issue-finder] selected repo=${repo} issue=#${issueNumber} source=${source}`,
       );
+    },
+
+    logCloseOutSelection(info: CloseOutSelectionInfo): void {
+      const selected = `${
+        sanitiseLogField(info.selectedRepo)
+      }#${info.selectedNumber}`;
+      let message =
+        `[issue-finder] close-out: has ${info.remainingViable} viable ` +
+        `issues left, selecting ${selected}`;
+      if (
+        info.passedOverRepo !== undefined &&
+        info.passedOverNumber !== undefined &&
+        info.passedOverSource !== undefined
+      ) {
+        const passedOver = `${
+          sanitiseLogField(info.passedOverRepo)
+        }#${info.passedOverNumber}`;
+        message += ` over ${closeOutPassedOverTier(info.passedOverSource)} ` +
+          passedOver;
+      }
+      messages.push(message);
+      write(message);
+    },
+
+    logCloseOutListingFailed(repo: string, detail: string): void {
+      const message = `[issue-finder] close-out: listing-failed repo=${
+        sanitiseLogField(repo)
+      } detail="${sanitiseLogField(detail)}"`;
+      messages.push(message);
+      write(message);
     },
 
     logClaimRaceOutcome(

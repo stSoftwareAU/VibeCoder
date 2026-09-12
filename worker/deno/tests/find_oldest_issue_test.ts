@@ -55,6 +55,11 @@ interface RepoFixture {
   issues: Record<string, unknown>[];
   /** Timeline events returned for any timeline query in the repo. */
   timeline?: Record<string, unknown>[];
+  /**
+   * Open milestones returned for `gh api repos/<repo>/milestones`
+   * (Issue #2009). `closed_issues > 0` marks a milestone as started.
+   */
+  milestones?: Record<string, unknown>[];
 }
 
 /**
@@ -89,6 +94,10 @@ function createPerRepoMockGh(
     if (command.includes("timeline")) {
       const fixture = fixtures[repo];
       return Promise.resolve(JSON.stringify(fixture?.timeline ?? []));
+    }
+    if (command.includes("/milestones")) {
+      const fixture = fixtures[repo];
+      return Promise.resolve(JSON.stringify(fixture?.milestones ?? []));
     }
     return Promise.resolve("[]");
   };
@@ -1167,5 +1176,265 @@ Deno.test(
     );
     assertEquals(summary.totalConsidered, 1);
     assertEquals(summary.skippedByReason.cooldown, 1);
+  },
+);
+
+// =============================================================================
+// Finish a started milestone before starting another (Issue #2009)
+// =============================================================================
+
+Deno.test(
+  "findOldestIssue - started-milestone low-priority beats older unstarted work-on (Issue #2009)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          {
+            number: 10,
+            title: "Last low-priority in a started milestone",
+            url: "https://github.com/owner/repo-a/issues/10",
+            assignees: [],
+            labels: [{ name: "low-priority" }],
+            createdAt: "2024-06-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Almost done" },
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+        ],
+        milestones: [
+          { title: "Almost done", open_issues: 1, closed_issues: 4 },
+        ],
+      },
+      "owner/repo-b": {
+        issues: [
+          {
+            number: 20,
+            title: "Older work-on that would open a new milestone",
+            url: "https://github.com/owner/repo-b/issues/20",
+            assignees: [],
+            labels: [{ name: "work-on" }],
+            createdAt: "2024-01-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Brand new" },
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "work-on" }, actor: ALICE },
+        ],
+        milestones: [
+          { title: "Brand new", open_issues: 1, closed_issues: 0 },
+        ],
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes("owner/repo-a"), true);
+    assertEquals(result.output.includes("|10|"), true);
+    const closeOutLine = output.find((line) => line.includes("close-out:"));
+    assert(closeOutLine, "close-out selection must be logged");
+    assertStringIncludes(closeOutLine, "has 1 viable issues left");
+    assertStringIncludes(closeOutLine, "#10");
+    assertStringIncludes(closeOutLine, "#20");
+  },
+);
+
+Deno.test(
+  "findOldestIssue - started milestone with needs-human leftover keeps today's order (Issue #2009)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          {
+            number: 10,
+            title: "Last issue is waiting on a human",
+            url: "https://github.com/owner/repo-a/issues/10",
+            assignees: [],
+            labels: [{ name: "low-priority" }, { name: "needs-human" }],
+            createdAt: "2024-06-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Almost done" },
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+          { event: "labeled", label: { name: "needs-human" }, actor: ALICE },
+        ],
+        milestones: [
+          { title: "Almost done", open_issues: 1, closed_issues: 4 },
+        ],
+      },
+      "owner/repo-b": {
+        issues: [
+          {
+            number: 20,
+            title: "Unstarted work-on",
+            url: "https://github.com/owner/repo-b/issues/20",
+            assignees: [],
+            labels: [{ name: "work-on" }],
+            createdAt: "2024-01-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Brand new" },
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "work-on" }, actor: ALICE },
+        ],
+        milestones: [
+          { title: "Brand new", open_issues: 1, closed_issues: 0 },
+        ],
+      },
+    });
+
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes("owner/repo-b"), true);
+    assertEquals(result.output.includes("|20|"), true);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - top-priority still wins over a started-milestone close-out (Issue #2009)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          {
+            number: 10,
+            title: "Close-out leftover",
+            url: "https://github.com/owner/repo-a/issues/10",
+            assignees: [],
+            labels: [{ name: "low-priority" }],
+            createdAt: "2024-01-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Almost done" },
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+        ],
+        milestones: [
+          { title: "Almost done", open_issues: 1, closed_issues: 4 },
+        ],
+      },
+      "owner/repo-b": {
+        issues: [
+          {
+            number: 1,
+            title: "Human urgency",
+            url: "https://github.com/owner/repo-b/issues/1",
+            assignees: [],
+            labels: [{ name: "top-priority" }],
+            createdAt: "2024-08-01T00:00:00Z",
+            author: ALICE,
+            milestone: null,
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "top-priority" }, actor: ALICE },
+        ],
+      },
+    });
+
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes("owner/repo-b"), true);
+    assertEquals(result.output.includes("|1|"), true);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - two started milestones: fewer remaining viable issues wins (Issue #2009)",
+  async () => {
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          {
+            number: 11,
+            title: "Last issue in Almost done",
+            url: "https://github.com/owner/repo-a/issues/11",
+            assignees: [],
+            labels: [{ name: "low-priority" }],
+            createdAt: "2024-06-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Almost done" },
+          },
+          {
+            number: 21,
+            title: "First of three in Still going",
+            url: "https://github.com/owner/repo-a/issues/21",
+            assignees: [],
+            labels: [{ name: "work-on" }],
+            createdAt: "2024-01-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Still going" },
+          },
+          {
+            number: 22,
+            title: "Second of three in Still going",
+            url: "https://github.com/owner/repo-a/issues/22",
+            assignees: [],
+            labels: [{ name: "work-on" }],
+            createdAt: "2024-01-02T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Still going" },
+          },
+          {
+            number: 23,
+            title: "Third of three in Still going",
+            url: "https://github.com/owner/repo-a/issues/23",
+            assignees: [],
+            labels: [{ name: "work-on" }],
+            createdAt: "2024-01-03T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "Still going" },
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+          { event: "labeled", label: { name: "work-on" }, actor: ALICE },
+        ],
+        milestones: [
+          { title: "Almost done", open_issues: 1, closed_issues: 4 },
+          { title: "Still going", open_issues: 3, closed_issues: 1 },
+        ],
+      },
+    });
+
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes("|11|"), true);
   },
 );
