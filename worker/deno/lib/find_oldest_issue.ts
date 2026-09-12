@@ -15,13 +15,19 @@
 import type { WorkerConfig } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import { IssueCache } from "./issue_cache.ts";
-import type { FilterableIssue } from "./issue_filter.ts";
+import {
+  type FilterableIssue,
+  isMilestoneTrackingIssue,
+} from "./issue_filter.ts";
 import {
   fetchAllIssues,
+  fetchOpenMilestoneClosedCounts,
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
 import {
+  buildCloseOutMilestones,
+  type CloseOutOpenIssue,
   formatCandidateOutput,
   type IssueCandidate,
   selectHighestPriority,
@@ -44,7 +50,7 @@ import {
   isRateLimitError,
 } from "./issue_finder_common.ts";
 import { shuffleArray } from "./array_utils.ts";
-import { applyInFlightClaims } from "./work_stream.ts";
+import { applyInFlightClaims, workStreamKey } from "./work_stream.ts";
 import { collectLabelCandidates } from "./collect_label_candidates.ts";
 import { collectWorkOnCandidates } from "./collect_work_on_candidates.ts";
 import { collectLowPriorityCandidates } from "./collect_low_priority_candidates.ts";
@@ -459,6 +465,49 @@ export async function findOldestIssue(
     filteredIdleTask = await crossWorkerFilter(localFilteredIdleTask);
   }
 
+  const startedKeys = new Set<string>();
+  for (const repo of scanRepos) {
+    try {
+      const counts = await fetchOpenMilestoneClosedCounts(repo, cache, ghFn);
+      for (const [title, closed] of counts) {
+        if (closed > 0) startedKeys.add(workStreamKey(repo, title));
+      }
+    } catch (err) {
+      if (isRateLimitError(err)) throw err;
+      // Conservative: a failed listing contributes no close-out keys, so
+      // today's tier order holds for that repo. The throw above already
+      // refused to cache a poisoned empty list (Issue #4257). Surface the
+      // fault so a failed listing is not mistaken for "none started".
+      const detail = err instanceof Error ? err.message : String(err);
+      diag.logCloseOutListingFailed(repo, detail);
+    }
+  }
+
+  const openIssues: CloseOutOpenIssue[] = [];
+  for (const [repo, issues] of issuesByRepo) {
+    for (const issue of issues) {
+      if (issue.milestone === "") continue;
+      openIssues.push({
+        repo,
+        number: issue.number,
+        milestone: issue.milestone,
+        tracking: isMilestoneTrackingIssue(issue),
+      });
+    }
+  }
+
+  const closeOutMilestones = buildCloseOutMilestones(
+    openIssues,
+    [
+      ...filteredLabel,
+      ...filteredWorkOn,
+      ...filteredSelfDiagnostic,
+      ...filteredLowPriority,
+      ...filteredIdleTask,
+    ],
+    startedKeys,
+  );
+
   const selectionResult: SelectionResult = {
     selected: null,
     labelCandidates: filteredLabel,
@@ -472,6 +521,7 @@ export async function findOldestIssue(
     // filtering.
     reposWithOpenWorkOn,
     reposWithOpenLowPriority,
+    closeOutMilestones,
   };
 
   // Randomise among equal-priority candidates to reduce claim races
@@ -512,6 +562,39 @@ export async function findOldestIssue(
 
   if (selected) {
     diag.logFinalSelection(selected.repo, selected.number, selected.source);
+
+    // Issue #2009: when close-out lifted a leftover over a candidate that
+    // would have opened a new stream, say so once so the choice is
+    // auditable. A configured-label winner is never a close-out lift.
+    const closeOutKey = selected.milestone === ""
+      ? ""
+      : workStreamKey(selected.repo, selected.milestone);
+    const closeOut = closeOutKey === ""
+      ? undefined
+      : closeOutMilestones.get(closeOutKey);
+    if (closeOut && selected.source !== "configured-label") {
+      const withoutCloseOut = selectHighestPriority(
+        { ...selectionResult, closeOutMilestones: undefined },
+        selectionOptions,
+      );
+      const passedOver = withoutCloseOut &&
+          (withoutCloseOut.repo !== selected.repo ||
+            withoutCloseOut.number !== selected.number)
+        ? withoutCloseOut
+        : undefined;
+      diag.logCloseOutSelection({
+        remainingViable: closeOut.remainingViable,
+        selectedRepo: selected.repo,
+        selectedNumber: selected.number,
+        ...(passedOver
+          ? {
+            passedOverRepo: passedOver.repo,
+            passedOverNumber: passedOver.number,
+            passedOverSource: passedOver.source,
+          }
+          : {}),
+      });
+    }
 
     // Issue #1718: when a lower tier is selected and any configured-label
     // candidate was considered or blocked, emit a structured

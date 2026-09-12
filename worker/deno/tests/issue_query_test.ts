@@ -15,6 +15,7 @@ import {
   fetchAllIssues,
   fetchAllOpenPRs,
   fetchMergedPRsByUser,
+  fetchOpenMilestoneClosedCounts,
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
   getBlockingPRForIssue,
@@ -1592,6 +1593,79 @@ Deno.test("issue_query - fetchAllClosedIssues returns [] uncached on empty gh ou
       null,
       "a failed closed-issues call must not poison issues_closed_all",
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchOpenMilestoneClosedCounts maps title to closed_issues (Issue #2009)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const mockGh = (args: string[]): Promise<string> => {
+      assert(args.includes("api"));
+      assert(
+        args.some((arg) => arg.includes("repos/org/repo/milestones")),
+      );
+      return Promise.resolve(JSON.stringify([
+        { title: "Almost done", open_issues: 1, closed_issues: 4 },
+        { title: "Brand new", open_issues: 3, closed_issues: 0 },
+        { title: "Missing closed", open_issues: 2 },
+      ]));
+    };
+    const counts = await fetchOpenMilestoneClosedCounts(
+      "org/repo",
+      cache,
+      mockGh,
+    );
+    assertEquals(counts.get("Almost done"), 4);
+    assertEquals(counts.get("Brand new"), 0);
+    assertEquals(counts.get("Missing closed"), 0);
+    assertEquals(
+      await cache.read("org/repo", "milestones_open_counts") !== null,
+      true,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchOpenMilestoneClosedCounts serves the cache (Issue #2009)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    const mockGh = (): Promise<string> => {
+      calls++;
+      return Promise.resolve(JSON.stringify([
+        { title: "Almost done", closed_issues: 2 },
+      ]));
+    };
+    await fetchOpenMilestoneClosedCounts("org/repo", cache, mockGh);
+    const again = await fetchOpenMilestoneClosedCounts(
+      "org/repo",
+      cache,
+      mockGh,
+    );
+    assertEquals(calls, 1);
+    assertEquals(again.get("Almost done"), 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchOpenMilestoneClosedCounts rejects empty gh output (Issue #2009)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    await assertRejects(
+      () =>
+        fetchOpenMilestoneClosedCounts(
+          "org/repo",
+          cache,
+          () => Promise.resolve(""),
+        ),
+      Error,
+      "4257",
+    );
+    assertEquals(await cache.read("org/repo", "milestones_open_counts"), null);
   } finally {
     await cleanup();
   }

@@ -280,6 +280,41 @@ Deno.test("issue_finder_logger - enabled property reflects configuration", () =>
 // =============================================================================
 
 Deno.test(
+  "issue_finder_logger - logCloseOutSelection emits unconditionally when disabled (Issue #2009)",
+  () => {
+    const { diag, output } = createTestDiagnostics(false);
+
+    diag.logCloseOutSelection({
+      remainingViable: 1,
+      selectedRepo: "owner/started",
+      selectedNumber: 10,
+      passedOverRepo: "owner/fresh",
+      passedOverNumber: 20,
+      passedOverSource: "work-on",
+    });
+
+    assertEquals(output.length, 1);
+    const line = output[0]!;
+    assertStringIncludes(line, "[issue-finder] close-out:");
+    assertStringIncludes(line, "has 1 viable issues left");
+    assertStringIncludes(line, "selecting owner/started#10");
+    assertStringIncludes(line, "over tier-2 owner/fresh#20");
+  },
+);
+
+Deno.test(
+  "issue_finder_logger - logCloseOutListingFailed emits unconditionally (Issue #2009)",
+  () => {
+    const { diag, output } = createTestDiagnostics(false);
+    diag.logCloseOutListingFailed("owner/repo", "gh returned no output");
+    assertEquals(output.length, 1);
+    assertStringIncludes(output[0]!, "close-out: listing-failed");
+    assertStringIncludes(output[0]!, "repo=owner/repo");
+    assertStringIncludes(output[0]!, "gh returned no output");
+  },
+);
+
+Deno.test(
   "issue_finder_logger - logSelectionReasoning emits unconditionally when disabled",
   () => {
     // The reasoning line answers a user question right now (#1717) and

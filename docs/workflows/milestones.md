@@ -450,6 +450,8 @@ By default, issues within a milestone are processed oldest-first (by creation da
 
 These `priority-high`/`priority-low` labels order issues **within a single milestone only**; they are independent of the cross-repo discovery tiers (`top-priority` > `work-on` > `low-priority` > `idle-task`) that decide which issue is picked across the whole queue. The discovery tiers are the canonical reference — see [Issue selection priority](issue-processing.md#-issue-selection-priority).
 
+**Finish a started milestone before starting another** (Issue #2009): when an open milestone already has closed children and every leftover is fleet-viable, that leftover is selected after `top-priority` and **before** any `work-on` that would open a new milestone branch — even if the leftover is `low-priority` and the new work is older. A leftover that needs a human (`needs-human`, blocked, unlabelled) does not apply the rule. Among started milestones, the one with the fewest remaining viable issues is closed out first. See [Finish a started milestone](issue-processing.md#-finish-a-started-milestone-before-starting-another).
+
 ### Priority labels
 
 | Label | Effect |
@@ -461,7 +463,7 @@ These `priority-high`/`priority-low` labels order issues **within a single miles
 ### How it works
 
 1. **Within the same milestone:** Issues with `priority-high` are picked first, then normal (no label), then `priority-low`. Within the same priority level, oldest-first applies.
-2. **Across milestones:** Priority labels have no effect. Cross-milestone selection remains globally oldest-first.
+2. **Across milestones:** Priority labels have no effect on which *milestone* is worked. Close-out (Issue #2009) prefers the started, fleet-viable milestone with the fewest leftovers; only then does oldest-first apply. `priority-high` / `priority-low` still order issues *inside* one milestone.
 3. **Non-milestone issues:** Priority labels have no effect on issues without a milestone.
 4. **Fallback:** When no priority labels are present, the existing oldest-first behaviour is preserved.
 
