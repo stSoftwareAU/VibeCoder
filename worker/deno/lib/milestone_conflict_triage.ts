@@ -92,6 +92,12 @@ export type ResolutionRung =
   | "triage"
   /** Decided by the deterministic dependency rules. */
   | "rule"
+  /**
+   * Decided from history: the other branch already carried this side's
+   * exact version of the file and moved on, so its version contains ours
+   * (Issue #2023).
+   */
+  | "ported"
   /** Decided by the merge-conflict resolution agent. */
   | "agent";
 
@@ -708,6 +714,7 @@ export function describeDecisionRung(
   sides: { ours: string; theirs: string },
 ): string {
   if (d.rung === "rule") return `rule: ${d.reason}`;
+  if (d.rung === "ported") return `ported: ${d.reason}`;
   if (d.rung === "agent") return "agent";
   const how = d.action === "union"
     ? "kept both sides' hunks"
