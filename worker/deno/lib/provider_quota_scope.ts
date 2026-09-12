@@ -130,23 +130,42 @@ export async function isHostRateLimitPauseActive(
     blocked,
   );
   const pauses = usageSignalPausesHost(signal, enabledProviderIds, held);
-  if (!pauses && usageSignalIsForAnotherCredential(signal, held)) {
-    // Said once per (spent, held) pair rather than on every slot of every
-    // cycle: the reader polls this several times a minute.
-    const key = `${blocked}/${signal.credentialLabel}->${held}`;
-    if (lastDiscountedSignal !== key) {
-      lastDiscountedSignal = key;
-      (options.log ?? ((message: string) => console.error(message)))(
-        `[quota] the usage-limit signal names ${blocked}/${signal.credentialLabel} ` +
-          `as spent; this run holds ${blocked}/${held} — not pausing (Issue #2002)`,
+  // Said once per (spent, held, decision) triple rather than on every slot of
+  // every cycle: the reader polls this several times a minute.
+  const spent = signal.credentialLabel?.trim() || "";
+  const key = `${blocked}/${spent}->${held ?? ""}:${pauses}`;
+  if (lastExplainedSignal !== key) {
+    lastExplainedSignal = key;
+    const log = options.log ?? ((message: string) => console.error(message));
+    const names = spent.length > 0
+      ? `names ${blocked}/${spent} as spent`
+      : `names ${blocked} as spent but no credential`;
+    const holds = held
+      ? `this run holds ${blocked}/${held}`
+      : `this run recorded no ${blocked} credential`;
+    if (!pauses && usageSignalIsForAnotherCredential(signal, held)) {
+      log(
+        `[quota] the usage-limit signal ${names}; ${holds} — not pausing (Issue #2002)`,
+      );
+    } else if (pauses) {
+      // Issue #2024: the ranking above says which token was chosen and why;
+      // this says why the host pauses anyway, so the two lines can be read
+      // together instead of leaving the operator to infer the contradiction.
+      const because = spent.length === 0
+        ? "the signal names no credential (written before Issue #2002), so it is read as host-wide"
+        : !held
+        ? "the run's own credential is unrecorded, so the signal cannot be discounted"
+        : "this run holds the spent subscription";
+      log(
+        `[quota] the usage-limit signal ${names}; ${holds} — pausing the host: ${because} (Issue #2024)`,
       );
     }
   }
   return pauses;
 }
 
-/** The last (spent → held) pair the reader explained, so it is said once. */
-let lastDiscountedSignal: string | null = null;
+/** The last (spent → held, decision) triple explained, so it is said once. */
+let lastExplainedSignal: string | null = null;
 
 /**
  * Whether a usage signal names a credential other than the one this run holds

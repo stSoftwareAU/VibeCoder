@@ -123,6 +123,36 @@ export async function writeRateLimitSignal(
 }
 
 /**
+ * Retire the rate-limit signal file (Issue #2024).
+ *
+ * A signal that is already gone is a success: the caller wanted it absent and
+ * it is. Only a filesystem refusal is an error.
+ *
+ * @param workDir - Directory containing the signal file
+ * @returns Result indicating success or failure
+ */
+export async function clearRateLimitSignal(
+  workDir: string,
+): Promise<Result<void>> {
+  try {
+    await Deno.remove(rateLimitSignalPath(workDir));
+    return { ok: true, value: undefined };
+  } catch (error: unknown) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { ok: true, value: undefined };
+    }
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to clear rate-limit signal: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    };
+  }
+}
+
+/**
  * Read the rate-limit signal file.
  *
  * @param workDir - Directory containing the signal file
