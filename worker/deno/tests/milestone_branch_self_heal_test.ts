@@ -13,7 +13,9 @@ import { formatMilestoneBranchRefusedMarker } from "../lib/milestone_branch_self
 import type { SelfDiagnosticFiling } from "../lib/self_diagnostic_attestation.ts";
 import { assert, assertEquals } from "@std/assert";
 import type { Result } from "../types.ts";
+import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
 import {
+  isFleetRaisedPr,
   MILESTONE_RETARGET_MARKER,
   type MilestoneSelfHealDeps,
   renderRetargetComment,
@@ -45,6 +47,10 @@ interface StubPr {
   comments?: (string | { body: string; author: string })[];
   /** Head branch; defaults to an issue branch. */
   headRefName?: string;
+  /** PR author; defaults to the fleet login (Issue #2022). */
+  author?: string;
+  /** PR body; defaults to one carrying the worker marker (Issue #2022). */
+  body?: string;
 }
 
 interface StubWorld {
@@ -152,6 +158,9 @@ function makeHarness(
           closingIssuesReferences: (pr.closingIssues ?? []).map((n) => ({
             number: n,
           })),
+          author: { login: pr.author ?? FLEET_LOGIN },
+          body: pr.body ??
+            `Fixes it.\n\n${WORKER_PR_MARKER_PREFIX}${pr.number} -->`,
         })),
       ));
     }
@@ -797,4 +806,181 @@ Deno.test("selfHealMilestoneBranches - a failure that is not repository-level is
   } finally {
     resetRepoLevelRejectionsForTest();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Only fleet-raised PRs are retargeted (Issue #2022)
+// ---------------------------------------------------------------------------
+
+Deno.test("selfHealMilestoneBranches - never retargets a PR a human raised, even on an issue-N branch (Issue #2022)", async () => {
+  const world: StubWorld = {
+    milestones: [milestone53()],
+    branches: new Set([MILESTONE_53_BRANCH]),
+    prs: [{
+      number: 4000,
+      baseRefName: "main",
+      closingIssues: [3868],
+      headRefName: "issue-3868-replayed-onto-main",
+      author: "maintainer",
+      body: "Replayed commit by commit onto main on purpose. Closes #3868",
+    }],
+  };
+  const harness = makeHarness(world);
+
+  const result = await selfHealMilestoneBranches(harness.deps);
+  assert(result.ok);
+  assertEquals(result.value.prsRetargeted, 0);
+  assertEquals(result.value.failures, 0);
+  assertEquals(world.prs[0]!.baseRefName, "main");
+  assertEquals(harness.comments.length, 0);
+  assert(
+    harness.calls.every((c) => !(c[0] === "pr" && c[1] === "edit")),
+    "no base change was attempted",
+  );
+  assert(
+    harness.logs.some((l) =>
+      l.includes("#4000") && l.includes("not raised by the fleet") &&
+      l.includes("maintainer")
+    ),
+    "the decision is logged once",
+  );
+});
+
+Deno.test("selfHealMilestoneBranches - a fleet author without the worker marker is not enough (Issue #2022)", async () => {
+  const world: StubWorld = {
+    milestones: [milestone53()],
+    branches: new Set([MILESTONE_53_BRANCH]),
+    prs: [{
+      number: 4001,
+      baseRefName: "main",
+      closingIssues: [3868],
+      body: "A PR the service account raised by hand, with no worker marker.",
+    }],
+  };
+  const harness = makeHarness(world);
+
+  const result = await selfHealMilestoneBranches(harness.deps);
+  assert(result.ok);
+  assertEquals(result.value.prsRetargeted, 0);
+  assertEquals(world.prs[0]!.baseRefName, "main");
+  assertEquals(harness.comments.length, 0);
+});
+
+Deno.test("selfHealMilestoneBranches - a worker marker from a non-fleet author is not enough (Issue #2022)", async () => {
+  const world: StubWorld = {
+    milestones: [milestone53()],
+    branches: new Set([MILESTONE_53_BRANCH]),
+    prs: [{
+      number: 4002,
+      baseRefName: "main",
+      closingIssues: [3868],
+      author: "drive-by-attacker",
+    }],
+  };
+  const harness = makeHarness(world);
+
+  const result = await selfHealMilestoneBranches(harness.deps);
+  assert(result.ok);
+  assertEquals(result.value.prsRetargeted, 0);
+  assertEquals(world.prs[0]!.baseRefName, "main");
+});
+
+Deno.test("selfHealMilestoneBranches - an unresolved fleet identity retargets nothing (Issue #2022)", async () => {
+  const world: StubWorld = {
+    milestones: [milestone53()],
+    branches: new Set([MILESTONE_53_BRANCH]),
+    prs: [{ number: 4003, baseRefName: "main", closingIssues: [3868] }],
+  };
+  const harness = makeHarness(world);
+  harness.deps.dedupAuthors = { fleetAuthors: [] };
+
+  const result = await selfHealMilestoneBranches(harness.deps);
+  assert(result.ok);
+  assertEquals(result.value.prsRetargeted, 0);
+  assertEquals(world.prs[0]!.baseRefName, "main");
+  assert(
+    harness.logs.some((l) => l.includes("Fleet identity unresolved")),
+    "the refusal names its cause",
+  );
+});
+
+Deno.test("selfHealMilestoneBranches - a merge dry run that would conflict refuses the retarget (Issue #2022)", async () => {
+  const world: StubWorld = {
+    milestones: [milestone53()],
+    branches: new Set([MILESTONE_53_BRANCH]),
+    prs: [{ number: 4004, baseRefName: "main", closingIssues: [3868] }],
+  };
+  const harness = makeHarness(world);
+  const asked: string[] = [];
+  harness.deps.mergeWouldConflictFn = (_repo, base, head) => {
+    asked.push(`${base}<-${head}`);
+    return Promise.resolve(true);
+  };
+
+  const result = await selfHealMilestoneBranches(harness.deps);
+  assert(result.ok);
+  assertEquals(result.value.prsRetargeted, 0);
+  assertEquals(result.value.failures, 0);
+  assertEquals(world.prs[0]!.baseRefName, "main");
+  assertEquals(harness.comments.length, 0);
+  assertEquals(asked, [`${MILESTONE_53_BRANCH}<-issue-4004-x`]);
+  assert(harness.logs.some((l) => l.includes("would conflict")));
+});
+
+Deno.test("selfHealMilestoneBranches - a merge dry run that cannot answer allows the retarget, and says so (Issue #2022)", async () => {
+  const world: StubWorld = {
+    milestones: [milestone53()],
+    branches: new Set([MILESTONE_53_BRANCH]),
+    prs: [{ number: 4005, baseRefName: "main", closingIssues: [3868] }],
+  };
+  const harness = makeHarness(world);
+  harness.deps.mergeWouldConflictFn = () => Promise.resolve(null);
+
+  const result = await selfHealMilestoneBranches(harness.deps);
+  assert(result.ok);
+  assertEquals(result.value.prsRetargeted, 1);
+  assertEquals(world.prs[0]!.baseRefName, MILESTONE_53_BRANCH);
+  assert(harness.logs.some((l) => l.includes("could not be read")));
+});
+
+Deno.test("isFleetRaisedPr - both signals required, head must be a safe positional (Issue #2022)", () => {
+  const fleet = ["VibeCoderST", "stservice"];
+  const body = `${WORKER_PR_MARKER_PREFIX}7 -->`;
+  assertEquals(
+    isFleetRaisedPr(
+      { author: "vibecoderst", body, headRefName: "issue-7-x" },
+      fleet,
+    ),
+    true,
+  );
+  assertEquals(
+    isFleetRaisedPr(
+      { author: "maintainer", body, headRefName: "issue-7-x" },
+      fleet,
+    ),
+    false,
+  );
+  assertEquals(
+    isFleetRaisedPr({
+      author: "stservice",
+      body: "no marker",
+      headRefName: "issue-7-x",
+    }, fleet),
+    false,
+  );
+  assertEquals(
+    isFleetRaisedPr({ author: "stservice", body, headRefName: "-rf" }, fleet),
+    false,
+  );
+  assertEquals(
+    isFleetRaisedPr({ author: null, body, headRefName: "issue-7-x" }, fleet),
+    false,
+  );
+  assertEquals(
+    isFleetRaisedPr(
+      { author: "stservice", body, headRefName: "issue-7-x" },
+      [],
+    ),
+    false,
+  );
 });
