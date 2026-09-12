@@ -60,8 +60,9 @@ tested instead:
   `provider_auto_runtime_test.ts` cases that fail on this container for an
   unrelated reason — the image installed only the `claude` provider, so
   `assertImageInstalledProvider` throws `The running container image did not
-  install the "codex" coding-agent provider`. Unrelated to this diff and
-  reproducible on the unmodified tree.
+  install the "codex" coding-agent provider`. Unrelated to this diff: the same
+  two cases fail identically in a worktree at the base commit
+  `ba7e3d52`, on the unmodified tree.
 
 ## Reproduction
 
