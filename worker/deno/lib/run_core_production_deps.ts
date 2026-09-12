@@ -2735,6 +2735,9 @@ export async function createProductionRunCoreDeps(
         // this was, so "swept and found nothing" is legible in the log.
         reposWithNoCandidates: sweep.value.reposWithNoCandidates.join(", ") ||
           "none",
+        // Issue #2005: PRs whose milestone branch was brought level inline
+        // and whose arming was then retried in this same sweep.
+        prsRetriedAfterResync: sweep.value.prsRetriedAfterResync,
         pass: refreshOpenPrs ? "post-scan" : "priority-1.65",
         authors: maintenanceAuthors.join(", "),
       });

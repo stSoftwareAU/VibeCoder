@@ -422,6 +422,17 @@ export interface IssueRunPresyncArgs {
   logger: Logger;
   /** The cycle's watchdog deadline, when the run has one (Issue #1778). */
   cycleDeadlineEpochMs?: number;
+  /**
+   * Offer the ladder's agent rung (Issue #2005). Default true — an issue
+   * run climbs the whole ladder, which is what lets a failure be charged.
+   *
+   * A caller with no run deadline to bound an agent with passes false:
+   * `grantAgentRun` with no deadline grants an **unbounded** agent run, and
+   * the auto-merge sweep is not a place to start one. The cheap merge-down
+   * is what such a caller wants; the periodic sync at priority 1.72 owns
+   * the conflict ladder, with its own deadline and timeout (Issue #1778).
+   */
+  allowAgentRung?: boolean;
   /** Injected for tests; production passes the real implementations. */
   countCommitsAheadFn?: typeof countCommitsAhead;
   syncMilestoneBranchFn?: typeof syncMilestoneBranchWithDefault;
@@ -530,14 +541,18 @@ export async function presyncMilestoneBranchForIssueRun(
 
   // The same grant the sweep computes (Issue #1778): the rung is offered only
   // while the run's deadline covers a whole agent run, and the timeout handed
-  // out is never more time than the run actually holds.
-  const grant = grantAgentRun({
-    nowMs,
-    ...(args.cycleDeadlineEpochMs !== undefined
-      ? { deadlineEpochMs: args.cycleDeadlineEpochMs }
-      : {}),
-    agentTimeoutMs: config.claudeTimeout * 1000,
-  });
+  // out is never more time than the run actually holds. A caller that cannot
+  // bound an agent withholds the rung outright rather than granting an
+  // unbounded one (Issue #2005).
+  const grant = args.allowAgentRung === false
+    ? { agentAllowed: false }
+    : grantAgentRun({
+      nowMs,
+      ...(args.cycleDeadlineEpochMs !== undefined
+        ? { deadlineEpochMs: args.cycleDeadlineEpochMs }
+        : {}),
+      agentTimeoutMs: config.claudeTimeout * 1000,
+    });
 
   // One at a time per repository: the merge below resets and checks out the
   // shared clone, and two lanes can hold one repository since Issue #923.

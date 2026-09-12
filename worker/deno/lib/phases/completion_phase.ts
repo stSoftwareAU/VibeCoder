@@ -26,10 +26,12 @@ import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { presyncMilestoneBranchForIssueRun } from "../milestone_presync.ts";
 import {
+  acceptMilestoneResync,
   milestoneBehindComment,
-  resyncCleared,
+  milestoneBehindMarker,
 } from "../milestone_behind_resync.ts";
 import { repoDirName } from "../work_volume_tiers.ts";
+import { redactSecrets } from "../secret_redaction.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
@@ -272,7 +274,15 @@ async function armAutoMergeAtCreation(
   // already performs before a child branch is cut, so run it here and arm
   // again. A branch that cannot be brought level defers exactly as before.
   if (result.ok && result.value.deferral === "milestone-behind") {
-    const cleared = await clearMilestoneBehind(ctx, state, prNumber, deps);
+    const cleared = await clearMilestoneBehind(
+      ctx,
+      state,
+      prNumber,
+      // The gate names the branch it deferred on; `state` is the fallback
+      // for a deferral raised before that field existed.
+      result.value.milestoneBranch ?? state.milestoneBranch,
+      deps,
+    );
     if (cleared) result = await arm();
   }
 
@@ -312,11 +322,11 @@ async function clearMilestoneBehind(
   ctx: IssueContext,
   state: PhaseState,
   prNumber: number,
+  milestoneBranch: string | undefined,
   deps: WorkerDeps,
 ): Promise<boolean> {
   const { repo, config, milestoneTitle } = ctx;
   const logger = deps.logger;
-  const milestoneBranch = state.milestoneBranch;
   if (!milestoneBranch || !milestoneTitle) {
     // The gate named a milestone base this run does not know the branch for.
     // Never guessed: an unnamed branch is not synced, and the deferral stands
@@ -350,7 +360,7 @@ async function clearMilestoneBehind(
     ghCommandFn: deps.github.runGhCommand,
   });
 
-  if (resyncCleared(presync)) {
+  if (acceptMilestoneResync(repo, milestoneBranch, presync)) {
     logger.info(
       `Milestone base brought level before arming: ${presync.detail} ` +
         "(Issue #2005)",
@@ -365,13 +375,29 @@ async function clearMilestoneBehind(
   );
   try {
     const client = deps.github.createClient(logger);
+    // Once per PR and branch, not once per cycle the conflict persists:
+    // the recovery path finalises the same PR on every later run.
+    const marker = milestoneBehindMarker(milestoneBranch);
+    const existing = await client.getIssueComments(repo, prNumber);
+    if (existing.some((comment) => comment.body.includes(marker))) {
+      logger.info(
+        "The milestone-behind deferral reason is already on the PR",
+        { repo, prNumber, milestoneBranch },
+      );
+      return false;
+    }
     await client.postComment(
       repo,
       prNumber,
-      milestoneBehindComment(
-        milestoneBranch,
-        state.defaultBranch,
-        presync.detail,
+      // `postComment` redacts nothing of its own, and the pre-sync detail
+      // carries git and agent output — which can carry a tokenised remote
+      // URL. Every outbound sink redacts independently.
+      redactSecrets(
+        milestoneBehindComment(
+          milestoneBranch,
+          state.defaultBranch,
+          presync.detail,
+        ),
       ),
     );
   } catch (err) {

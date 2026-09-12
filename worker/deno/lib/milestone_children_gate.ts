@@ -758,6 +758,32 @@ export function _resetMilestoneBehindMemo(): void {
 }
 
 /**
+ * Forget the memoised compare for one milestone branch (Issue #2005).
+ *
+ * The memo exists so N children of one milestone cost one API call, and its
+ * 60-second life is short enough that the *next cycle's* sync is seen. That
+ * is no longer short enough now the worker syncs a behind milestone branch
+ * **inline** and arms again seconds later: the retry would be served the
+ * pre-sync reading and defer for a branch that is level. So the one event
+ * that genuinely invalidates the reading — a sync that landed — says so.
+ *
+ * @param repo - Repository in `owner/repo` form
+ * @param milestoneBranch - The branch whose compare is now stale
+ */
+export function forgetMilestoneBehind(
+  repo: string,
+  milestoneBranch: string,
+): void {
+  // The key carries the default branch between the two, which the caller
+  // does not know, so every default branch for this pair is dropped.
+  const prefix = `${repo}#`;
+  const suffix = `...${milestoneBranch}`;
+  for (const key of [...behindMemo.keys()]) {
+    if (key.startsWith(prefix) && key.endsWith(suffix)) behindMemo.delete(key);
+  }
+}
+
+/**
  * Commits `milestoneBranch` is behind `defaultBranch`, memoised per
  * (repo, default branch, milestone branch) for {@link MILESTONE_BEHIND_MEMO_TTL_MS}.
  *

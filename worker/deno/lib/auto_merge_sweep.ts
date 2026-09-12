@@ -28,9 +28,9 @@ import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 import type { EnableAutoMergeResult } from "./pr_auto_merge.ts";
 import {
+  acceptMilestoneResync,
   memoiseMilestoneResync,
   type MilestoneResyncFn,
-  resyncCleared,
 } from "./milestone_behind_resync.ts";
 
 /** One open PR the sweep may act on. */
@@ -139,11 +139,12 @@ export interface SweepAutoMergeSummary {
    */
   prsSkippedNotOpen: number;
   /**
-   * PRs armed only after their milestone branch was brought level inline
-   * (Issue #2005). Named, not folded into `prsAttempted`: the whole point
-   * of the recovery is that it is visible when it fires.
+   * PRs whose arming was retried after their milestone branch was brought
+   * level inline (Issue #2005). Named, not folded into `prsAttempted`: the
+   * whole point of the recovery is that it is visible when it fires, so
+   * the sweep's summary line reports it.
    */
-  prsRearmedAfterResync: number;
+  prsRetriedAfterResync: number;
 }
 
 /**
@@ -180,7 +181,7 @@ export async function sweepAutoMerge(
     prsAttempted: 0,
     reposWithNoCandidates: [],
     prsSkippedNotOpen: 0,
-    prsRearmedAfterResync: 0,
+    prsRetriedAfterResync: 0,
   };
   const authors = fleetAuthors.join(", ");
   // Issue #1515: one quota exhaustion is one line, not one per repository.
@@ -270,24 +271,26 @@ export async function sweepAutoMerge(
           // wait a whole cycle for the periodic sync. Sync it here — once
           // per milestone, on the sync ladder's own ledger — and arm again.
           // A branch that cannot be brought level keeps the deferral.
+          //
+          // Its own try: the verdict above is a fact about this PR, and a
+          // recovery that threw must not be the reason it goes unrecorded.
           if (outcome.deferral === "milestone-behind" && resyncMilestoneBase) {
-            const branch = outcome.milestoneBranch ?? pr.baseRefName;
-            if (branch === undefined) {
+            try {
+              outcome = await clearMilestoneBehind(
+                repo,
+                pr,
+                outcome,
+                resyncMilestoneBase,
+                attemptMerge,
+                summary,
+                logger,
+              );
+            } catch (err) {
               logger.warn(
-                "Auto-merge sweep: a milestone-behind deferral named no " +
-                  "branch — no inline sync attempted (Issue #2005)",
-                { repo, prNumber: pr.number },
+                "Auto-merge sweep: the inline milestone sync threw — the " +
+                  "deferral stands (Issue #2005)",
+                { repo, prNumber: pr.number, error: errorMessage(err) },
               );
-            } else {
-              const resync = await resyncMilestoneBase(repo, branch);
-              logger.info(
-                `Auto-merge sweep: inline milestone sync — ${resync.detail}`,
-                { repo, prNumber: pr.number, milestoneBranch: branch },
-              );
-              if (resyncCleared(resync)) {
-                outcome = await attemptMerge(repo, pr);
-                summary.prsRearmedAfterResync++;
-              }
             }
           }
           recordOutcome(repo, pr.number, outcome);
@@ -323,6 +326,44 @@ export async function sweepAutoMerge(
       error: err instanceof Error ? err : new Error(String(err)),
     };
   }
+}
+
+/**
+ * Bring this PR's milestone branch level and arm again (Issue #2005).
+ *
+ * Returns the outcome the sweep should record: the retry's when the branch
+ * was brought level, and the original deferral when it was not — so a
+ * milestone whose sync conflicts is left exactly as the Issue #1779 gate
+ * left it, with no side-pick.
+ */
+async function clearMilestoneBehind(
+  repo: string,
+  pr: SweepablePr,
+  deferred: EnableAutoMergeResult,
+  resyncMilestoneBase: MilestoneResyncFn,
+  attemptMerge: SweepAutoMergeOptions["attemptMerge"],
+  summary: SweepAutoMergeSummary,
+  logger: Pick<Logger, "info" | "warn">,
+): Promise<EnableAutoMergeResult> {
+  const branch = deferred.milestoneBranch ?? pr.baseRefName;
+  if (branch === undefined) {
+    // A branch nobody named is never guessed at: syncing the wrong one
+    // would merge the default branch into a base this PR does not target.
+    logger.warn(
+      "Auto-merge sweep: a milestone-behind deferral named no branch — " +
+        "no inline sync attempted (Issue #2005)",
+      { repo, prNumber: pr.number },
+    );
+    return deferred;
+  }
+  const resync = await resyncMilestoneBase(repo, branch);
+  logger.info(
+    `Auto-merge sweep: inline milestone sync — ${resync.detail}`,
+    { repo, prNumber: pr.number, milestoneBranch: branch },
+  );
+  if (!acceptMilestoneResync(repo, branch, resync)) return deferred;
+  summary.prsRetriedAfterResync++;
+  return await attemptMerge(repo, pr);
 }
 
 function errorMessage(err: unknown): string {

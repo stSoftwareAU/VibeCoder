@@ -1481,6 +1481,18 @@
       "paths": [
         "worker/deno/lib/git_stdin_message.ts"
       ]
+    },
+    {
+      "issue": 2005,
+      "chunk": "top-up-2005",
+      "title": "top-up: the inline milestone-behind recovery",
+      "ledger": "docs/audits/security-sweep-2005-milestone-behind-resync.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_behind_resync.ts (#2005)",
+      "status": "swept",
+      "sweptAt": "7594d73c99dd6a991b464e9d375fd6bad90d1002",
+      "paths": [
+        "worker/deno/lib/milestone_behind_resync.ts"
+      ]
     }
   ],
   "roots": [

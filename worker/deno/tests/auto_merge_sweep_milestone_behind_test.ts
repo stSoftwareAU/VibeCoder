@@ -45,7 +45,7 @@ interface Observed {
   attempts: number[];
   resyncs: string[];
   recorded: AutoMergeResult[];
-  rearmed: number;
+  retried: number;
 }
 
 /**
@@ -110,7 +110,7 @@ async function runSweep(options: {
     attempts,
     resyncs,
     recorded,
-    rearmed: result.value.prsRearmedAfterResync,
+    retried: result.value.prsRetriedAfterResync,
   };
 }
 
@@ -147,7 +147,7 @@ Deno.test("#2005 - one inline sync per milestone clears every child PR on it", a
     ],
     "the recorded outcome is the armed one, not the deferral",
   );
-  assertEquals(observed.rearmed, 2, "two PRs needed the inline sync");
+  assertEquals(observed.retried, 2, "two PRs needed the inline sync");
 });
 
 Deno.test("#2005 - a milestone whose sync conflicts keeps its deferral", async () => {
@@ -166,7 +166,7 @@ Deno.test("#2005 - a milestone whose sync conflicts keeps its deferral", async (
       AutoMergeResult.Deferred,
     ],
   );
-  assertEquals(observed.rearmed, 0);
+  assertEquals(observed.retried, 0);
 });
 
 Deno.test("#2005 - without the resync seam the sweep behaves exactly as before", async () => {
@@ -174,7 +174,7 @@ Deno.test("#2005 - without the resync seam the sweep behaves exactly as before",
 
   assertEquals(observed.resyncs, []);
   assertEquals(observed.attempts, [11, 12, 13, 14]);
-  assertEquals(observed.rearmed, 0);
+  assertEquals(observed.retried, 0);
 });
 
 Deno.test("#2005 - a deferral naming no branch is never synced against a guess", async () => {
@@ -185,5 +185,40 @@ Deno.test("#2005 - a deferral naming no branch is never synced against a guess",
 
   assertEquals(observed.resyncs, [], "no branch is guessed at");
   assertEquals(observed.attempts, [11, 12, 13, 14]);
-  assertEquals(observed.rearmed, 0);
+  assertEquals(observed.retried, 0);
+});
+
+Deno.test("#2005 - a throwing inline sync still records every PR's deferral", async () => {
+  const attempts: number[] = [];
+  const recorded: AutoMergeResult[] = [];
+
+  const result = await sweepAutoMerge({
+    repos: [REPO],
+    isRepoAllowed: () => true,
+    fleetAuthors: ["VibeCoderST"],
+    listOpenPrs: () => Promise.resolve(PRS),
+    prLiveState: () => Promise.resolve({ open: true } as PrLiveStateReading),
+    attemptMerge: (_repo: string, pr: SweepablePr) => {
+      attempts.push(pr.number);
+      return Promise.resolve({
+        result: AutoMergeResult.Deferred,
+        deferral: "milestone-behind",
+        milestoneBranch: pr.baseRefName,
+        message: `milestone behind default branch — PR #${pr.number}`,
+      } as EnableAutoMergeResult);
+    },
+    resyncMilestoneBase: () => Promise.reject(new Error("git is unreachable")),
+    recordOutcome: (_repo, _prNumber, outcome) => {
+      recorded.push(outcome.result as AutoMergeResult);
+    },
+    invalidateOpenPrCache: () => Promise.resolve(),
+    logger: silentLogger,
+  });
+
+  assert(result.ok);
+  // A recovery that threw must not be the reason a verdict goes unrecorded.
+  assertEquals(attempts, [11, 12, 13, 14]);
+  assertEquals(recorded.length, 4, "every PR's deferral is still recorded");
+  assertEquals(result.value.prsAttempted, 4);
+  assertEquals(result.value.prsRetriedAfterResync, 0);
 });
