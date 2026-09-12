@@ -8,6 +8,9 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { resetRepoLevelRejectionsForTest } from "../lib/milestone_branch_rejection.ts";
+import { formatMilestoneBranchRefusedMarker } from "../lib/milestone_branch_self_heal.ts";
+import type { SelfDiagnosticFiling } from "../lib/self_diagnostic_attestation.ts";
 import { assert, assertEquals } from "@std/assert";
 import type { Result } from "../types.ts";
 import {
@@ -619,4 +622,179 @@ Deno.test("selfHealMilestoneBranches - never retargets the milestone's own deliv
     !harness.logs.some((l) => l.includes("Failed to retarget PR #4354")),
     harness.logs.join("\n"),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2007: a repository that refuses milestone branches is reported once
+// and not retried for the rest of the run.
+// ---------------------------------------------------------------------------
+
+const GH013 =
+  "Failed to push milestone branch milestone/scan-20260909 to origin from Develop: " +
+  "git push --end-of-options origin origin/Develop:refs/heads/milestone/scan-20260909 exited 1: " +
+  "remote: error: GH013: Repository rule violations found for refs/heads/milestone/scan-20260909.";
+
+/** Wrap the harness so `issue list` / `issue create` answer like GitHub. */
+function withIssueApi(
+  harness: StubHarness,
+  existing: { number: number; body: string; author: string }[] = [],
+): { creates: string[][]; filings: SelfDiagnosticFiling[] } {
+  const creates: string[][] = [];
+  const filings: SelfDiagnosticFiling[] = [];
+  const inner = harness.deps.ghCommandFn;
+  harness.deps.ghCommandFn = (args) => {
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify(
+        existing.map((e) => ({
+          number: e.number,
+          body: e.body,
+          author: { login: e.author },
+        })),
+      ));
+    }
+    if (args[0] === "issue" && args[1] === "create") {
+      creates.push([...args]);
+      return Promise.resolve(`https://github.com/${REPO}/issues/77\n`);
+    }
+    return inner(args);
+  };
+  harness.deps.recordFiling = (filing) => {
+    filings.push(filing);
+    return Promise.resolve(true);
+  };
+  return { creates, filings };
+}
+
+Deno.test("selfHealMilestoneBranches - a repository-level refusal files one diagnostic and is not retried within the run (Issue #2007)", async () => {
+  resetRepoLevelRejectionsForTest();
+  try {
+    const world: StubWorld = {
+      milestones: [milestone53()],
+      branches: new Set<string>(),
+      prs: [],
+    };
+    const harness = makeHarness(world, () => ({
+      ok: false,
+      error: new Error(GH013),
+    }));
+    const api = withIssueApi(harness);
+
+    const first = await selfHealMilestoneBranches(harness.deps);
+    const second = await selfHealMilestoneBranches(harness.deps);
+
+    assert(first.ok && second.ok);
+    assertEquals(first.value.failures, 1);
+    assertEquals(second.value.failures, 1, "still counted as a failure");
+    assertEquals(
+      harness.ensureCalls.length,
+      1,
+      "the refused push is made once per run, not once per cycle",
+    );
+    assertEquals(api.creates.length, 1, "exactly one diagnostic is filed");
+    const body = api.creates[0]![api.creates[0]!.indexOf("--body") + 1]!;
+    assert(body.includes(formatMilestoneBranchRefusedMarker(REPO)), body);
+    assert(body.includes("do_not_enforce_on_create: true"), "names the flag");
+    assert(body.includes("GH013"), "quotes the repository's answer");
+    assertEquals(api.creates[0]![api.creates[0]!.indexOf("--repo") + 1], REPO);
+    assertEquals(api.filings.length, 1);
+    assertEquals(api.filings[0]?.issueNumber, 77);
+    assertEquals(api.filings[0]?.familyId, "milestone-branch-refused");
+    assertEquals(
+      harness.logs.filter((l) => l.includes("Filing one diagnostic")).length,
+      1,
+      "the remedy is said once",
+    );
+    assertEquals(
+      harness.logs.filter((l) => l.includes("Not retrying milestone branch"))
+        .length,
+      1,
+      "the second cycle says why it did not push",
+    );
+  } finally {
+    resetRepoLevelRejectionsForTest();
+  }
+});
+
+Deno.test("selfHealMilestoneBranches - an existing fleet-authored diagnostic is reused, not duplicated (Issue #2007)", async () => {
+  resetRepoLevelRejectionsForTest();
+  try {
+    const world: StubWorld = {
+      milestones: [milestone53()],
+      branches: new Set<string>(),
+      prs: [],
+    };
+    const harness = makeHarness(world, () => ({
+      ok: false,
+      error: new Error(GH013),
+    }));
+    const api = withIssueApi(harness, [{
+      number: 12,
+      body: `${formatMilestoneBranchRefusedMarker(REPO)}\nfiled earlier`,
+      author: FLEET_LOGIN,
+    }]);
+
+    const result = await selfHealMilestoneBranches(harness.deps);
+
+    assert(result.ok);
+    assertEquals(api.creates.length, 0, "no second diagnostic");
+    assertEquals(api.filings.length, 0);
+    assert(
+      harness.logs.some((l) => l.includes("filing: exists:#12")),
+      harness.logs.join(" | "),
+    );
+  } finally {
+    resetRepoLevelRejectionsForTest();
+  }
+});
+
+Deno.test("selfHealMilestoneBranches - a forged diagnostic from outside the fleet does not dedup (Issue #2007)", async () => {
+  resetRepoLevelRejectionsForTest();
+  try {
+    const world: StubWorld = {
+      milestones: [milestone53()],
+      branches: new Set<string>(),
+      prs: [],
+    };
+    const harness = makeHarness(world, () => ({
+      ok: false,
+      error: new Error(GH013),
+    }));
+    const api = withIssueApi(harness, [{
+      number: 12,
+      body: `${formatMilestoneBranchRefusedMarker(REPO)}\nplanted`,
+      author: "stranger",
+    }]);
+
+    await selfHealMilestoneBranches(harness.deps);
+
+    assertEquals(api.creates.length, 1, "a genuine diagnostic is still filed");
+  } finally {
+    resetRepoLevelRejectionsForTest();
+  }
+});
+
+Deno.test("selfHealMilestoneBranches - a failure that is not repository-level is retried on the next pass as before (Issue #2007)", async () => {
+  resetRepoLevelRejectionsForTest();
+  try {
+    const world: StubWorld = {
+      milestones: [milestone53()],
+      branches: new Set<string>(),
+      prs: [],
+    };
+    const harness = makeHarness(world, () => ({
+      ok: false,
+      error: new Error(
+        "fatal: unable to access origin: network is unreachable",
+      ),
+    }));
+    const api = withIssueApi(harness);
+
+    await selfHealMilestoneBranches(harness.deps);
+    await selfHealMilestoneBranches(harness.deps);
+
+    assertEquals(harness.ensureCalls.length, 2, "a transient fault is retried");
+    assertEquals(api.creates.length, 0, "and files nothing");
+  } finally {
+    resetRepoLevelRejectionsForTest();
+  }
 });

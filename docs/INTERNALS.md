@@ -3857,6 +3857,21 @@ flowchart TD
     F -- no --> G[Retarget + explanatory comment]
 ```
 
+**A repository that refuses the branch is reported once, not retried every
+cycle (Issue #2007).** A milestone ruleset that enforces `required_status_checks`
+on branch *creation* refuses every push that would create the branch
+(`GH013`, the Issue #3912 failure), identically on every cycle until an admin
+sets `do_not_enforce_on_create` on that rule — the fleet account cannot write
+rulesets. The self-heal used to log the refusal and push again every cycle for
+days (116 times on one host) and file nothing. It now classifies the failure
+with `milestone_branch_rejection.ts`; a repository-level refusal is said once
+with the remedy, one deduplicated diagnostic is filed in the repository
+(marker `VIBE_MILESTONE_BRANCH_REFUSED:<repo>`, matched on marker **and** fleet
+authorship, attested like every worker-filed diagnostic), and the push is not
+repeated for the rest of the run. The next worker start tries once more, which
+is how a fixed ruleset is noticed. A fault that is not repository-level — a
+dropped connection — is retried on the next cycle exactly as before.
+
 Both halves are idempotent. The branch check is the remote itself, so the next
 cycle is a no-op once the branch is back; the retarget is guarded by the
 `<!-- vibe-coder:milestone-retarget -->` marker in the explanatory comment, so a
