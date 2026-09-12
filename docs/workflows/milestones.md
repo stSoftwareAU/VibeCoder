@@ -249,8 +249,10 @@ flowchart TD
     D -- no --> H
     K --> G{"Any file still undecided?"}
     H --> RU{"Dependency rules?"}
-    RU -- "left over" --> AG{"Resolution agent?"}
     RU -- decided --> G
+    RU -- "left over" --> PT{"Ported? The other branch's<br/>history carries this side's<br/>exact version of the file"}
+    PT -- "yes: take the side that contains the other" --> G
+    PT -- "neither history does" --> AG{"Resolution agent?"}
     AG -- decided --> G
     AG -- "fails or aborts" --> G
     G -- yes --> X["Abort the merge — nothing pushed —<br/>escalate naming the failed rung, with both<br/>sides' exports, test names and the difference"]
@@ -274,6 +276,8 @@ Three rules decide a file, and one rule outranks all of them:
    no evidence.
 3. **Two designs for the same problem** — neither side contains the other, so
    the triage decides nothing and the file climbs to the next rung.
+
+**The ported rung (Issue #2023).** Between the dependency rules and the agent sits a rung that asks history instead of reading hunks. On 2026-09-12 the agent rung spent 44 minutes and 800 tool calls on a ninety-file conflict — twenty-five add/add pairs across whole directories — merging the default branch into a milestone whose content had already reached that default branch through another milestone's squash. The three-way merge saw two branches editing every file from an ancient base; the hunks had no answer, but history did. For each conflicted path the rung checks whether the **default branch's history ever carried the milestone's exact current version** of that file (`git log --find-object=<blob>`, byte for byte). If it did, the default branch absorbed the milestone's version and has since moved on, so its version contains the milestone's and is taken. Symmetrically, if the milestone's history carried the default branch's exact version, the milestone moved on and its version is taken. Neither is a side-pick: the side kept provably contains the other, and the merge commit records `ported: '<default>' already carried this exact version at <sha> and moved on` per file. A path neither history explains is left for the agent, narrowed to exactly those paths, so the rung can never make an outcome worse than today's. The conflict's shape (files, add/add pairs, directories) is logged once as `wrong-base shape` when it exceeds twenty files or add/add pairs in more than one directory, so the sync's report can say what it was looking at.
 
 **The rest of the ladder (Issue #1777).** What the triage cannot decide is not
 a human's problem yet. The sync climbs the same two rungs the PR merge-conflict

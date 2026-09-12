@@ -20,6 +20,12 @@ import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import type { FileDecision } from "./milestone_conflict_triage.ts";
 import {
+  portedDecision,
+  type PortedFn,
+  resolvePortedPaths,
+  type ShapeThresholds,
+} from "./milestone_conflict_ported.ts";
+import {
   applyDependencyConflictRules,
   type ConflictGitRunner,
   type DependencyRuleApplier,
@@ -64,6 +70,14 @@ export interface ConflictLadderInput {
   agentFn?: MilestoneConflictAgentFn;
   /** The rules rung; defaults to the shared dependency rules. */
   applyRulesFn?: DependencyRuleApplier;
+  /**
+   * The ported rung (Issue #2023); defaults to the real one. Runs between
+   * the rules and the agent, settles only the paths whose other side
+   * provably absorbed them, and leaves the rest for the agent.
+   */
+  portedFn?: PortedFn;
+  /** When a conflict's shape is logged as wrong-base; defaults apply. */
+  shapeThresholds?: ShapeThresholds;
   logger?: Logger;
 }
 
@@ -231,6 +245,8 @@ export async function climbConflictLadder(
     defaultBranch,
     agentFn,
     applyRulesFn = applyDependencyConflictRules,
+    portedFn = resolvePortedPaths,
+    shapeThresholds,
     logger,
   } = input;
 
@@ -270,6 +286,36 @@ export async function climbConflictLadder(
     .filter((path) => byPath.has(path));
   if (deferred.length === 0) return { resolved, escalations: [] };
 
+  // --- Rung 2b: history — the "ported" rule (Issue #2023) -----------------
+  // Ninety files with add/add pairs across directories is not a set of hunks
+  // to read; it is a branch whose content the default branch already
+  // absorbed under different history. For each path, if the other branch's
+  // history carries this side's exact version, the other side contains ours
+  // and is taken. The paths it cannot prove stay the agent's, as before.
+  const ported = await portedFn({
+    paths: deferred,
+    options,
+    milestoneBranch,
+    defaultBranch,
+    ...(shapeThresholds ? { thresholds: shapeThresholds } : {}),
+    log: (message) => logger?.info(message, { milestoneBranch, defaultBranch }),
+  });
+  for (const settled of ported.resolved) {
+    const decision = byPath.get(settled.path);
+    if (!decision) continue;
+    resolved.push(portedDecision(decision, settled, defaultBranch));
+  }
+  const stillDeferred = ported.undecided.map((u) => u.path);
+  if (stillDeferred.length === 0) return { resolved, escalations: [] };
+  if (ported.resolved.length > 0) {
+    logger?.info(
+      "Milestone sync: the ported rule settled some paths; the rest go on " +
+        "up the ladder (Issue #2023)",
+      { milestoneBranch, defaultBranch, remaining: stillDeferred },
+    );
+  }
+  deferred.length = 0;
+  deferred.push(...stillDeferred);
   // --- Rung 3: the resolution agent ----------------------------------------
   const stillEscalated = (reason: (path: string) => string): FileDecision[] =>
     deferred.map((path) => {

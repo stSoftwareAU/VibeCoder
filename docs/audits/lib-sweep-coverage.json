@@ -1481,6 +1481,18 @@
       "paths": [
         "worker/deno/lib/git_stdin_message.ts"
       ]
+    },
+    {
+      "issue": 2023,
+      "chunk": "top-up-2023",
+      "title": "top-up: the milestone sync's ported rule",
+      "ledger": "docs/audits/security-sweep-2023-milestone-conflict-ported.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_conflict_ported.ts (#2023)",
+      "status": "swept",
+      "sweptAt": "c2607ccc5177dcdc8342ee4e612b9a4730f917f3",
+      "paths": [
+        "worker/deno/lib/milestone_conflict_ported.ts"
+      ]
     }
   ],
   "roots": [
