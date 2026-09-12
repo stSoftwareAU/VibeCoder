@@ -497,6 +497,71 @@ async function readRefSha(
 }
 
 /**
+ * One in-cycle sync attempt per (repo, milestone branch) until
+ * {@link resetMilestoneArmSyncMemo} (Issue #2005).
+ *
+ * Completion, the priority 1.65 sweep and the post-scan sweep all ask the
+ * same question — "can this milestone be brought level so a child can
+ * arm?" — and must share one attempt. Two children of one milestone in
+ * one cycle must not climb the ladder twice.
+ */
+const armSyncMemo = new Map<string, Promise<MilestonePresyncResult>>();
+
+/** Memo key for {@link presyncMilestoneOnceForArming}. */
+export function milestoneArmSyncKey(
+  repo: string,
+  milestoneBranch: string,
+): string {
+  return `${repo.toLowerCase()}#${milestoneBranch}`;
+}
+
+/** Drop the in-cycle arming-sync memo. Called at each main-loop iteration. */
+export function resetMilestoneArmSyncMemo(): void {
+  armSyncMemo.clear();
+}
+
+/**
+ * The pre-cut sync, once per milestone per cycle (Issue #2005).
+ *
+ * Concurrent callers share the in-flight promise so two PRs on the same
+ * branch cannot start two merges.
+ */
+export function presyncMilestoneOnceForArming(
+  args: IssueRunPresyncArgs,
+): Promise<MilestonePresyncResult> {
+  const key = milestoneArmSyncKey(args.repo, args.milestoneBranch);
+  const existing = armSyncMemo.get(key);
+  if (existing) return existing;
+  const pending = presyncMilestoneBranchForIssueRun(args);
+  armSyncMemo.set(key, pending);
+  return pending;
+}
+
+/**
+ * Bind the in-cycle arming sync to one issue run or sweep (Issue #2005).
+ *
+ * The milestone branch comes from the gate at call time, so a recovered
+ * PR whose base moved still syncs the branch it is actually on.
+ */
+export function bindIssueRunBehindSync(
+  args: Omit<IssueRunPresyncArgs, "milestoneBranch" | "milestoneTitle"> & {
+    milestoneTitle?: string;
+  },
+): (info: {
+  milestoneBranch: string;
+  behindBy: number;
+}) => Promise<MilestonePresyncResult> {
+  return (info) =>
+    presyncMilestoneOnceForArming({
+      ...args,
+      milestoneTitle: args.milestoneTitle && args.milestoneTitle.length > 0
+        ? args.milestoneTitle
+        : info.milestoneBranch.replace(/^milestone\//, ""),
+      milestoneBranch: info.milestoneBranch,
+    });
+}
+
+/**
  * The pre-cut sync as an issue run performs it (Issue #1780).
  *
  * Binds {@link presyncMilestoneBranch} to real git, the run's conflict ledger
