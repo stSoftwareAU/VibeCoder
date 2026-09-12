@@ -451,7 +451,12 @@ export async function refreshAutomaticProviderRouting(options: {
     return { automatic: true, shouldPause: true, selection };
   }
 
-  const previous = activeAgentProvider().id;
+  // Resolved through the injected environment, not the ambient one
+  // (Issue #1977): every other read in this function already goes through
+  // `env`, and reading `Deno.env` here made the active provider — and the
+  // image-installed set it is checked against — a fact about the host rather
+  // than about the routing being decided.
+  const previous = activeAgentProvider({ env }).id;
   const selected = selection.winner.provider;
   if (previous !== selected) {
     setConfiguredAgentProviderId(selected);
