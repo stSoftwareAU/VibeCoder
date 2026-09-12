@@ -4,7 +4,7 @@
 (chunk 12q) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
-_after_ the chunk-12 slices (12a–12p) recorded their coverage:
+_after_ the chunk-12 slices recorded their coverage:
 
 - `worker/deno/lib/merge_conflict_agent.ts` — added by #1767.
 
