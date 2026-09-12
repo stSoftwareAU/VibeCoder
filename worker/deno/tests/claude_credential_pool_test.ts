@@ -37,6 +37,7 @@ import {
   createClaudeCredentialPool,
   exhaustionFromUsageSignal,
   primeClaudePoolFromUsageSignal,
+  usageSignalNamesNoCredential,
 } from "../lib/claude_credential_pool.ts";
 import {
   heldProviderCredentialLabel,
@@ -44,6 +45,7 @@ import {
 } from "../lib/credential_preflight.ts";
 import {
   type RateLimitSignalData,
+  readRateLimitSignal,
   writeRateLimitSignal,
 } from "../lib/rate_limit_signal.ts";
 import { CLAUDE_FIVE_HOUR_GATE_MIN_REMAINING } from "../lib/claude_token_selection.ts";
@@ -720,4 +722,148 @@ Deno.test("primeClaudePoolFromUsageSignal - no directory, no signal, an expired 
     await Deno.remove(workDir, { recursive: true });
   }
   assertEquals(recorded, []);
+});
+
+Deno.test("usageSignalNamesNoCredential - only an unlabelled usage signal of this provider", () => {
+  const unlabelled = usageSignal();
+  delete unlabelled.credentialLabel;
+  assertEquals(usageSignalNamesNoCredential(unlabelled), true);
+  const legacy = usageSignal();
+  delete legacy.credentialLabel;
+  delete legacy.provider;
+  assertEquals(
+    usageSignalNamesNoCredential(legacy),
+    true,
+    "no provider reads as Claude",
+  );
+  assertEquals(usageSignalNamesNoCredential(usageSignal()), false, "labelled");
+  assertEquals(
+    usageSignalNamesNoCredential({ ...unlabelled, provider: "codex" }),
+    false,
+    "another provider's signal",
+  );
+  assertEquals(
+    usageSignalNamesNoCredential({ ...unlabelled, kind: "github" }),
+    false,
+    "a GitHub block is host-wide by design",
+  );
+});
+
+Deno.test("primeClaudePoolFromUsageSignal - an unlabelled usage signal is retired when the pool has two or more subscriptions (Issue #2024)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "pool_prime_2024_" });
+  try {
+    // The shape a pre-#2002 health check left on Mac-Ultra-M2: kind only.
+    const written = await writeRateLimitSignal(
+      workDir,
+      286_110,
+      undefined,
+      "usage",
+    );
+    assertEquals(written.ok, true);
+    const recorded: string[] = [];
+    const lines: string[] = [];
+    const primed = await primeClaudePoolFromUsageSignal(
+      {
+        recordExhaustion(label) {
+          recorded.push(label);
+        },
+        candidateCount: () => Promise.resolve(3),
+      },
+      workDir,
+      { now: () => Date.now(), log: (line) => lines.push(line) },
+    );
+    assertEquals(
+      primed,
+      false,
+      "nothing is recorded as spent — the signal cannot say which token",
+    );
+    assertEquals(recorded, []);
+    assertEquals(
+      (await readRateLimitSignal(workDir)).ok,
+      false,
+      "the signal file is gone",
+    );
+    assert(
+      lines.some((line) =>
+        line.includes("names no credential") &&
+        line.includes("3 subscriptions") &&
+        line.includes("retired")
+      ),
+      lines.join("\n"),
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("primeClaudePoolFromUsageSignal - an unlabelled usage signal stands on a single-subscription host, when the pool size is unknown, and when it is labelled (Issue #2024)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "pool_prime_2024_" });
+  const pool = {
+    recordExhaustion() {},
+  };
+  try {
+    await writeRateLimitSignal(workDir, 286_110, undefined, "usage");
+    const lines: string[] = [];
+    const log = (line: string) => lines.push(line);
+    await primeClaudePoolFromUsageSignal(
+      { ...pool, candidateCount: () => Promise.resolve(1) },
+      workDir,
+      { now: () => Date.now(), log },
+    );
+    assertEquals(
+      (await readRateLimitSignal(workDir)).ok,
+      true,
+      "one subscription: the signal is about it",
+    );
+    await primeClaudePoolFromUsageSignal(pool, workDir, {
+      now: () => Date.now(),
+      log,
+    });
+    assertEquals(
+      (await readRateLimitSignal(workDir)).ok,
+      true,
+      "pool size unknown: untouched",
+    );
+    assertEquals(lines, []);
+
+    // A labelled signal is recorded, never retired, whatever the pool size.
+    await writeRateLimitSignal(workDir, 286_110, undefined, "usage", {
+      provider: "claude",
+      credentialLabel: "provider",
+    });
+    const recorded: string[] = [];
+    const primed = await primeClaudePoolFromUsageSignal(
+      {
+        recordExhaustion(label) {
+          recorded.push(label);
+        },
+        candidateCount: () => Promise.resolve(3),
+      },
+      workDir,
+      { now: () => Date.now(), log },
+    );
+    assertEquals(primed, true);
+    assertEquals(recorded, ["provider"]);
+    assertEquals((await readRateLimitSignal(workDir)).ok, true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("createClaudeCredentialPool - candidateCount reports the discovered subscription tokens once (Issue #2024)", async () => {
+  let discoveries = 0;
+  const pool = createClaudeCredentialPool({
+    now: () => NOW,
+    discover: () => {
+      discoveries += 1;
+      return Promise.resolve([
+        tokenFile("provider"),
+        tokenFile("provider-2"),
+        tokenFile("provider-3"),
+      ]);
+    },
+  });
+  assertEquals(await pool.candidateCount(), 3);
+  assertEquals(await pool.candidateCount(), 3);
+  assertEquals(discoveries, 1, "discovered at most once");
 });
