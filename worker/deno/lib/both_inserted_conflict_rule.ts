@@ -41,8 +41,9 @@
  *   up. "Could not read the base" is never treated as "the base was empty".
  * - **Manifests and lock files** — those have their own rules, and a lock file
  *   is regenerated rather than text-merged.
- * - **A `.json` result that does not parse** — an unparseable ledger is
- *   deferred, never written.
+ * - **A `.json` union the structured merge will not make** — a deletion, a
+ *   conflicting edit, or a file whose formatting it would not reproduce. An
+ *   invalid or reformatted ledger is deferred, never written.
  *
  * ## `.json` is unioned by value, not by text (Issue #1968)
  *
@@ -67,7 +68,9 @@
  */
 
 import {
+  applyHunkChoices,
   type ConflictSegment,
+  type ConflictSide,
   type ManifestRule,
   type ManifestRuleRegistry,
   manifestRuleRegistry,
@@ -118,16 +121,17 @@ function isJsonPath(path: string): boolean {
 /**
  * One side of a conflicted file, rendered whole.
  *
- * The literal segments plus a single side's hunks are exactly that side's own
- * version of the file, which is what the structured JSON union needs.
+ * Every hunk resolves to the one side, so the result is that side's version of
+ * the file plus whatever the *other* side inserted cleanly — git merged those
+ * regions without asking, so they are common text. The structured union treats
+ * a shared insertion as one entry, so the extra common text costs nothing.
  */
 function renderSide(
   segments: readonly ConflictSegment[],
-  side: "ours" | "theirs",
+  side: ConflictSide,
 ): string {
-  return segments
-    .map((segment) => segment.kind === "literal" ? segment.text : segment[side])
-    .join("");
+  const hunkCount = segments.filter((s) => s.kind === "conflict").length;
+  return applyHunkChoices(segments, Array(hunkCount).fill(side));
 }
 
 /** An `unresolved` outcome, so the reason reads the same way every time. */
@@ -223,13 +227,6 @@ export function resolveBothInserted(
       : segment.theirs + segment.ours;
   }
 
-  if (!unionIsWellFormed(context.path, merged)) {
-    return defer(
-      `keeping both sides of ${context.path} does not parse as JSON, so the ` +
-        `union was not written`,
-    );
-  }
-
   return { kind: "resolved", text: merged };
 }
 
@@ -241,8 +238,10 @@ export function resolveBothInserted(
  * doubled comma, and an invalid ledger must never be written. A path in any
  * other format has no such check and is not blocked by one.
  *
- * Shared with the milestone ladder's union merge (`milestone_conflict_git.ts`)
- * so both rungs apply the same guard rather than two copies of it.
+ * This rule no longer needs it — a `.json` path takes the structured union
+ * above, which cannot produce an invalid document — but the milestone ladder's
+ * union merge (`milestone_conflict_git.ts`) still text-unions with
+ * `git merge-file --union`, and that is the rung this guard now protects.
  */
 export function unionIsWellFormed(path: string, text: string): boolean {
   if (!isJsonPath(path)) return true;

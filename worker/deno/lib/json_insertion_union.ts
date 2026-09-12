@@ -141,12 +141,14 @@ function mergeArrays(
     );
   }
   const merged: JsonValue[] = [];
+  // Both sides adding the same entry — a cherry-pick, or an insertion one side
+  // merged cleanly and the other made itself — keeps it once, wherever in the
+  // array each side anchored it.
+  const theirInsertions = [...theirGroups.values()].flat();
   const emitGroup = (index: number): void => {
-    const fromTheirs = theirGroups.get(index) ?? [];
-    merged.push(...fromTheirs);
+    merged.push(...theirGroups.get(index) ?? []);
     for (const item of ourGroups.get(index) ?? []) {
-      // Both sides adding the same entry (a cherry-pick) keeps it once.
-      if (fromTheirs.some((other) => jsonEquals(item, other))) continue;
+      if (theirInsertions.some((other) => jsonEquals(item, other))) continue;
       merged.push(item);
     }
   };
@@ -231,6 +233,19 @@ function mergeValue(
   );
 }
 
+/** Parse one side, naming it in the refusal so the caller can say which. */
+function parseSide(text: string, name: string): Result<JsonValue, string> {
+  try {
+    return { ok: true, value: JSON.parse(text) as JsonValue };
+  } catch (error) {
+    return refuse(
+      `the ${name} side is not valid JSON — ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 /** The indent the document is written with, or `null` when it is not spaces. */
 function detectIndent(text: string): number | null {
   const match = text.match(/\n( +)\S/);
@@ -250,18 +265,12 @@ export function unionJsonInsertions(
   ours: string,
   theirs: string,
 ): Result<string, string> {
-  const parsed: Record<string, JsonValue> = {};
-  for (const [name, text] of Object.entries({ base, ours, theirs })) {
-    try {
-      parsed[name] = JSON.parse(text) as JsonValue;
-    } catch (error) {
-      return refuse(
-        `the ${name} side is not valid JSON — ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
+  const parsedBase = parseSide(base, "base");
+  if (!parsedBase.ok) return parsedBase;
+  const parsedOurs = parseSide(ours, "ours");
+  if (!parsedOurs.ok) return parsedOurs;
+  const parsedTheirs = parseSide(theirs, "theirs");
+  if (!parsedTheirs.ok) return parsedTheirs;
 
   const indent = detectIndent(base);
   if (indent === null) {
@@ -273,14 +282,29 @@ export function unionJsonInsertions(
   const trailingNewline = base.endsWith("\n") ? "\n" : "";
   const serialise = (value: JsonValue): string =>
     JSON.stringify(value, null, indent) + trailingNewline;
-  if (serialise(parsed.base!) !== base) {
+  // A document `JSON.parse` accepts can still exhaust the stack on the way
+  // out, so the walk and the re-serialisation are guarded too: the caller
+  // gets a refusal it can defer on, never a crash in the conflict pass.
+  try {
+    if (serialise(parsedBase.value) !== base) {
+      return refuse(
+        "the merge base does not round-trip through JSON.stringify, so the " +
+          "union would reformat lines neither side touched",
+      );
+    }
+    const merged = mergeValue(
+      parsedBase.value,
+      parsedOurs.value,
+      parsedTheirs.value,
+      "$",
+    );
+    if (!merged.ok) return merged;
+    return { ok: true, value: serialise(merged.value) };
+  } catch (error) {
     return refuse(
-      "the merge base does not round-trip through JSON.stringify, so the " +
-        "union would reformat lines neither side touched",
+      `the union could not be built — ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     );
   }
-
-  const merged = mergeValue(parsed.base!, parsed.ours!, parsed.theirs!, "$");
-  if (!merged.ok) return merged;
-  return { ok: true, value: serialise(merged.value) };
 }

@@ -193,6 +193,33 @@ export function topUpChunkId(issue: number): string {
   return `top-up-${issue}`;
 }
 
+/** A chunk id written in the top-up form, capturing the issue it names. */
+const TOP_UP_CHUNK_RE = /^top-up-(\d+)$/;
+
+/**
+ * Slices whose `top-up-<issue>` chunk id names a different issue.
+ *
+ * The convention is only collision-free while the number in the id is the
+ * slice's own issue: `top-up-1940` on `issue: 1943` is back to an id two runs
+ * could both pick. A mismatch is a typo or a copied entry, and it is caught
+ * here rather than by the next merge (Issue #1968).
+ *
+ * @param slices - The ledger's slices, in file order.
+ * @returns Sorted `chunk (issue N)` entries; empty when every top-up id
+ *   matches its own issue.
+ */
+export function mismatchedTopUpIds(
+  slices: readonly { chunk: string; issue: number }[],
+): string[] {
+  return slices
+    .filter((slice) => {
+      const named = TOP_UP_CHUNK_RE.exec(slice.chunk)?.[1];
+      return named !== undefined && Number(named) !== slice.issue;
+    })
+    .map((slice) => `${slice.chunk} (issue ${slice.issue})`)
+    .sort();
+}
+
 /**
  * Chunk ids and issue numbers that more than one slice claims.
  *
@@ -277,6 +304,15 @@ export function parseCoverageLedger(json: string): SweepCoverageLedger {
         }. Two runs allocated the same id from ` +
         `the same ledger tail; give a top-up slice the collision-free id ` +
         `"top-up-<issue>" instead.`,
+    );
+  }
+  const mismatched = mismatchedTopUpIds(parsed);
+  if (mismatched.length > 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: top-up chunk id(s) naming another slice's ` +
+        `issue — ${
+          mismatched.join(", ")
+        }. A top-up id must be "top-up-" followed by its own issue number.`,
     );
   }
   if (duplicates.issues.length > 0) {

@@ -989,7 +989,7 @@
       "chunk": "top-up-1885",
       "title": "top-up: the weekly Claude quota pace gate",
       "ledger": "docs/audits/security-sweep-1885-claude-week-pace.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: claude_week_pace.ts (#1885)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: claude_week_pace.ts (#1885)",
       "status": "swept",
       "paths": [
         "worker/deno/lib/claude_week_pace.ts"
@@ -1001,7 +1001,7 @@
       "chunk": "top-up-1862",
       "title": "top-up: the re-approved-then-superseded hand-off",
       "ledger": "docs/audits/security-sweep-1862-reapproval-superseded-handoff.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: reapproval_superseded_handoff.ts (#1862)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: reapproval_superseded_handoff.ts (#1862)",
       "status": "swept",
       "paths": [
         "worker/deno/lib/reapproval_superseded_handoff.ts"
@@ -1221,7 +1221,7 @@
       "chunk": "top-up-1823",
       "title": "top-up: the action pin resolver",
       "ledger": "docs/audits/security-sweep-1823-action-pin-resolver.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: action_pin_resolver.ts (#1823)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: action_pin_resolver.ts (#1823)",
       "status": "swept",
       "sweptAt": "fe545122ac033ff4304ce6c3b635851e8f3e46d5",
       "paths": [
@@ -1233,7 +1233,7 @@
       "chunk": "top-up-1859",
       "title": "top-up: the pre-PR changed-workflow gate",
       "ledger": "docs/audits/security-sweep-1859-changed-workflow-gate.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: changed_workflow_gate.ts (#1859)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: changed_workflow_gate.ts (#1859)",
       "status": "swept",
       "sweptAt": "73b80a6f0355917642fb2a8c3249cdc504f519e6",
       "paths": [
@@ -1245,7 +1245,7 @@
       "chunk": "12q",
       "title": "the shared merge-conflict agent",
       "ledger": "docs/audits/security-sweep-1767-merge-conflict-agent.md",
-      "definition": "modules added to lib/ after 12a-12p recorded their coverage",
+      "definition": "modules added to lib/ after the chunk-12 slices recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/merge_conflict_agent.ts"
@@ -1423,7 +1423,7 @@
       "chunk": "12ae",
       "title": "top-up: the CI-fix PR marker reader",
       "ledger": "docs/audits/security-sweep-1879-ci-fix-pr-markers.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12ab recorded their coverage: ci_fix_pr_markers.ts (#1879)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: ci_fix_pr_markers.ts (#1879)",
       "status": "swept",
       "sweptAt": "d0d30d458b6e08116ebb549bcbb817728af204f0",
       "paths": [

@@ -4,7 +4,7 @@
 (chunk top-up-1859) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
-after chunk 12o:
+after the chunk-12 slices recorded their coverage:
 
 - `worker/deno/lib/changed_workflow_gate.ts` — added by #1859.
 
@@ -16,10 +16,10 @@ way to make `diffCoverage` green and a false record. The module is claimed by
 
 ## `worker/deno/lib/changed_workflow_gate.ts`
 
-The module runs `WORKFLOW_FILE_CHECKS` (swept as top-up-1822) over the workflow files a
-branch added or changed, before `gh pr create`. It holds no scanner logic: it
-selects paths, reads them through an injected reader, parses the YAML, iterates
-the check table and renders the verdict.
+The module runs `WORKFLOW_FILE_CHECKS` (swept as top-up-1822) over the
+workflow files a branch added or changed, before `gh pr create`. It holds no
+scanner logic: it selects paths, reads them through an injected reader, parses
+the YAML, iterates the check table and renders the verdict.
 
 | Property | Result |
 | -------- | ------ |

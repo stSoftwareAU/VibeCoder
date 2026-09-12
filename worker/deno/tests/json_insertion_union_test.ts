@@ -76,6 +76,29 @@ Deno.test("unionJsonInsertions - an entry both sides added is kept once", () => 
   });
 });
 
+Deno.test("unionJsonInsertions - an entry both sides added at different points is still kept once", () => {
+  // Rendering one side of a conflict also carries the other side's cleanly
+  // merged insertions, which can sit at a different anchor. The entry is the
+  // same entry, so it lands once.
+  const base = '{\n  "entries": [\n    "a",\n    "b"\n  ]\n}\n';
+  const ours = '{\n  "entries": [\n    "X",\n    "a",\n    "b"\n  ]\n}\n';
+  const theirs = '{\n  "entries": [\n    "a",\n    "X",\n    "b"\n  ]\n}\n';
+
+  assertEquals(JSON.parse(merged(base, ours, theirs)), {
+    entries: ["a", "X", "b"],
+  });
+});
+
+Deno.test("unionJsonInsertions - a document too deep to re-serialise is refused, not thrown", () => {
+  // `JSON.parse` accepts documents `JSON.stringify` cannot walk. The union
+  // must hand that back as a reason, never crash the conflict pass.
+  const deep = (n: number) => "[".repeat(n) + "]".repeat(n);
+  const base = "[\n  1\n]\n";
+  const result = unionJsonInsertions(base, deep(60000), deep(60000));
+
+  assert(!result.ok, "expected a refusal rather than a thrown error");
+});
+
 Deno.test("unionJsonInsertions - insertions keep their position relative to the base", () => {
   const base = '{\n  "entries": [\n    "b"\n  ]\n}\n';
   const ours = '{\n  "entries": [\n    "a",\n    "b"\n  ]\n}\n';

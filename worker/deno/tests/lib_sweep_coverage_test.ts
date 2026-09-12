@@ -29,6 +29,7 @@ import {
   listSweptModules,
   listSweptModulesForRoots,
   localLedgerRecords,
+  mismatchedTopUpIds,
   parseCoverageLedger,
   type SweepCoverageLedger,
   type SweepGitRunner,
@@ -265,6 +266,28 @@ Deno.test("parseCoverageLedger - collision-free top-up ids parse (Issue #1968)",
     "top-up-1940",
     "top-up-1943",
   ]);
+});
+
+Deno.test("parseCoverageLedger - a top-up id naming another issue fails loud (Issue #1968)", () => {
+  const err = assertThrows(
+    () =>
+      parseCoverageLedger(ledgerJson([
+        { chunk: "top-up-1940", issue: 1943 },
+      ])),
+    SweepLedgerError,
+  );
+  assert(err.message.includes("top-up-1940 (issue 1943)"), err.message);
+});
+
+Deno.test("mismatchedTopUpIds - only a top-up id is held to its own issue", () => {
+  assertEquals(
+    mismatchedTopUpIds([
+      { chunk: "top-up-1940", issue: 1940 },
+      { chunk: "12aa", issue: 1926 },
+      { chunk: "top-up-1938", issue: 1943 },
+    ]),
+    ["top-up-1938 (issue 1943)"],
+  );
 });
 
 Deno.test("topUpChunkId - derives the id from the issue, so two runs cannot collide (Issue #1968)", () => {

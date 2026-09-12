@@ -4,7 +4,7 @@
 (chunk top-up-1823) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
-after the chunk-12 slices (12a–12n) recorded their coverage:
+after the chunk-12 slices recorded their coverage:
 
 - `worker/deno/lib/action_pin_resolver.ts` — added by #1823.
 
@@ -12,8 +12,8 @@ after the chunk-12 slices (12a–12n) recorded their coverage:
 
 Appending the module to a slice whose sweep ran before it existed is the
 cheapest way to make `diffCoverage` green and a false record — the failure
-12f's own record documents. The module is claimed by **top-up-1823**, and this file is
-the reading of it.
+12f's own record documents. The module is claimed by
+**top-up-1823**, and this file is the reading of it.
 
 ## `worker/deno/lib/action_pin_resolver.ts`
 
