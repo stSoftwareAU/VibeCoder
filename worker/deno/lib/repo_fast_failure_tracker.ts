@@ -76,7 +76,7 @@ export interface RepoFastFailureEvent {
   at: number;
   /** Phase that died. */
   phase: string;
-  /** Last error line — bounded and redacted. */
+  /** The line that says why it failed — bounded and redacted. */
   detail: string;
   /** Issue the run was claiming, when known. */
   issueNumber?: number;
@@ -140,7 +140,7 @@ export interface RepoFastFailureState {
   backedOffUntil?: number;
   /** Phase of the most recent fast failure. */
   lastPhase?: string;
-  /** Last error line of the most recent fast failure. */
+  /** Diagnostic error line of the most recent fast failure. */
   lastDetail?: string;
   /** Epoch seconds of the most recent fast failure. */
   lastAt?: number;
@@ -219,11 +219,44 @@ export function isFastFailure(
   return elapsed < policy.fastFailureSeconds;
 }
 
-/** Trailing lines searched for the last non-empty one. */
+/** Trailing lines searched for the diagnostic one. */
 const LAST_LINE_WINDOW = 20;
 
 /**
- * The last non-empty line of a failure message, redacted and bounded.
+ * Trailing lines that end a failure without saying what went wrong.
+ *
+ * git's push summary is the case that cost a diagnostic (Issue #2034):
+ * `error: failed to push some refs to '<url>'` is always the last line and
+ * names only the repository, so a setup phase that died on a refused push
+ * filed an issue whose one piece of evidence was "a push failed". The reason
+ * — `! [remote rejected] … (push declined due to repository rule violations)`
+ * — sits one line above it, and is what a reader can act on.
+ *
+ * Deliberately narrow: each pattern matches a line that carries no diagnosis
+ * at all, so skipping it can only improve what is recorded. `hint:` is on the
+ * list because git's hints are advice appended *after* the rejection, and the
+ * last of them ("see the note about fast-forwards") explains nothing.
+ */
+const UNINFORMATIVE_LINE_PATTERNS: readonly RegExp[] = [
+  /^error: failed to push some refs\b/i,
+  /^To\s+\S+$/, // git's destination line, printed above the rejection
+  /^remote:\s*$/i, // GitHub's blank padding inside a `remote:` block
+  /^hint:/i,
+];
+
+/** Whether `line` is one of the trailing lines that carries no diagnosis. */
+function isUninformativeLine(line: string): boolean {
+  return UNINFORMATIVE_LINE_PATTERNS.some((pattern) => pattern.test(line));
+}
+
+/**
+ * The last line of a failure message that says *why* it failed, redacted and
+ * bounded.
+ *
+ * That is the last non-empty line, except that trailing lines carrying no
+ * diagnosis ({@link UNINFORMATIVE_LINE_PATTERNS}) are stepped over. When
+ * every line in the window is one of those, the true last line is kept: a
+ * record that says something imperfect beats one that says nothing.
  *
  * The line is filed into a public issue body and the failure message quotes
  * the agent's own output, so the message is handed to `redactedLineTail`
@@ -231,13 +264,17 @@ const LAST_LINE_WINDOW = 20;
  * a PEM block, a multi-line base64 blob and a `--token <value>` pair all
  * span lines, and a rule that never sees the line above cannot match them.
  */
-export function lastErrorLine(message: string): string {
+export function diagnosticErrorLine(message: string): string {
   const lines = redactedLineTail(message ?? "", LAST_LINE_WINDOW)
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  const last = lines.length > 0 ? lines[lines.length - 1]! : "";
-  return redactedTail(last, REPO_FAST_FAILURE_DETAIL_CHARS);
+  const informative = lines.filter((line) => !isUninformativeLine(line));
+  const candidates = informative.length > 0 ? informative : lines;
+  const chosen = candidates.length > 0
+    ? candidates[candidates.length - 1]!
+    : "";
+  return redactedTail(chosen, REPO_FAST_FAILURE_DETAIL_CHARS);
 }
 
 /** Coerce an unknown record read from disk into a well-formed one. */
@@ -491,7 +528,7 @@ async function mutate<T>(
 /** A fast failure to record. */
 export interface RepoFastFailureInput {
   phase: string;
-  /** Raw failure message; the last line is kept, redacted and bounded. */
+  /** Raw failure message; the diagnostic line is kept, redacted and bounded. */
   message: string;
   issueNumber?: number;
   elapsedSeconds?: number;
@@ -514,7 +551,7 @@ export async function recordRepoFastFailure(
     record.failures = [...record.failures, {
       at: now,
       phase: options.failure.phase,
-      detail: lastErrorLine(options.failure.message),
+      detail: diagnosticErrorLine(options.failure.message),
       ...(options.failure.issueNumber !== undefined
         ? { issueNumber: options.failure.issueNumber }
         : {}),

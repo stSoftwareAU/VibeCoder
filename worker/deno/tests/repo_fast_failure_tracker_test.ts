@@ -9,9 +9,9 @@ import {
   backedOffRepos,
   clearRepoFastFailures,
   DEFAULT_FAST_FAILURE_SECONDS,
+  diagnosticErrorLine,
   formatRepoFastFailureSummary,
   isFastFailure,
-  lastErrorLine,
   loadRepoFastFailureStates,
   readRepoFastFailureFile,
   recordRepoFastFailure,
@@ -20,6 +20,7 @@ import {
   repoFastFailurePath,
   resolveRepoFastFailurePolicy,
 } from "../lib/repo_fast_failure_tracker.ts";
+import { isRepoLevelBranchRejection } from "../lib/milestone_branch_rejection.ts";
 
 const HOST = "test-host";
 const REPO = "stSoftwareAU/example";
@@ -132,29 +133,29 @@ Deno.test("resolveRepoFastFailurePolicy - guards invalid operator values", () =>
   assertEquals(policy.windowSeconds, 24 * 3600);
 });
 
-Deno.test("lastErrorLine - keeps the last non-empty line", () => {
+Deno.test("diagnosticErrorLine - keeps the last non-empty line", () => {
   assertEquals(
-    lastErrorLine("starting\n\ndeno: command not found\n\n"),
+    diagnosticErrorLine("starting\n\ndeno: command not found\n\n"),
     "deno: command not found",
   );
 });
 
-Deno.test("lastErrorLine - a multi-line secret is redacted even though one line is kept", () => {
+Deno.test("diagnosticErrorLine - a multi-line secret is redacted even though one line is kept", () => {
   const message = [
     "cloning the repo",
     `${PEM_DASHES}BEGIN RSA ${PEM_LABEL}${PEM_DASHES}`,
     "MIIEowIBAAKCAQEAx7Vn9kCk3nR2yQ1sWq8pLd4fThisIsNotARealKeyAtAll==",
     `${PEM_DASHES}END RSA ${PEM_LABEL}${PEM_DASHES}`,
   ].join("\n");
-  const line = lastErrorLine(message);
+  const line = diagnosticErrorLine(message);
   // The BEGIN marker is on a line the selection drops, so the rule only
   // fires when the whole message is redacted first (Issue #1257).
   assert(!line.includes("PRIVATE KEY"), `leaked: ${line}`);
 });
 
-Deno.test("lastErrorLine - bounds a very long line", () => {
+Deno.test("diagnosticErrorLine - bounds a very long line", () => {
   const line = "x".repeat(5000);
-  assert(lastErrorLine(line).length <= 400);
+  assert(diagnosticErrorLine(line).length <= 400);
 });
 
 Deno.test("recordRepoFastFailure - three failures in the window back the repo off", async () => {
@@ -471,4 +472,62 @@ Deno.test("repoFastFailurePath - a hostile hostname cannot escape the work direc
     repoFastFailurePath("/work", "../../etc/passwd"),
     "/work/repo_fast_failures_.._.._etc_passwd.json",
   );
+});
+
+/**
+ * The push refusal GRQ-FX-validation answered every milestone claim with
+ * (Issue #2034), as it reaches the tracker: git's own summary line is last,
+ * and the reason sits above it.
+ */
+const PUSH_REFUSAL = [
+  "Failed to push milestone branch milestone/scan-20260910 to origin:",
+  "remote: error: GH013: Repository rule violations found for refs/heads/milestone/scan-20260910.",
+  "remote: ",
+  "remote: - 5 of 6 required status checks are expected.",
+  "remote: ",
+  "To https://github.com/stSoftwareAU/GRQ-FX-validation.git",
+  " ! [remote rejected]   Develop -> milestone/scan-20260910 (push declined due to repository rule violations)",
+  "error: failed to push some refs to 'https://github.com/stSoftwareAU/GRQ-FX-validation.git'",
+].join("\n");
+
+Deno.test("diagnosticErrorLine - a push failure records the refusal, not git's summary line (Issue #2034)", () => {
+  const detail = diagnosticErrorLine(PUSH_REFUSAL);
+  assertStringIncludes(detail, "push declined due to repository rule");
+  assertEquals(
+    detail.includes("failed to push some refs"),
+    false,
+    "git's summary line names the repository and nothing else",
+  );
+  // The line kept is one a reader — and the repo-level classifier — can act on.
+  assertEquals(isRepoLevelBranchRejection(detail), true);
+});
+
+Deno.test("diagnosticErrorLine - git's trailing hints do not displace the rejection (Issue #2034)", () => {
+  const detail = diagnosticErrorLine([
+    " ! [rejected]        issue-7 -> issue-7 (fetch first)",
+    "error: failed to push some refs to 'origin'",
+    "hint: Updates were rejected because the remote contains work that you do",
+    "hint: not have locally. Integrate the remote changes before pushing again.",
+  ].join("\n"));
+  assertStringIncludes(detail, "[rejected]");
+  assertStringIncludes(detail, "fetch first");
+});
+
+Deno.test("diagnosticErrorLine - an all-summary tail still records its last line (Issue #2034)", () => {
+  // Nothing informative survives the filter, so the record keeps what there
+  // was: an imperfect line beats an empty one.
+  const summaryOnly = "error: failed to push some refs to 'origin'";
+  assertEquals(diagnosticErrorLine(summaryOnly), summaryOnly);
+  assertEquals(diagnosticErrorLine(""), "");
+});
+
+Deno.test("recordRepoFastFailure - the stored detail names why the push was refused (Issue #2034)", async () => {
+  await withWorkDir(async (workDir) => {
+    const state = await record(workDir, 1_000, { message: PUSH_REFUSAL });
+    assertEquals(state.lastPhase, "setup");
+    assertStringIncludes(
+      state.lastDetail ?? "",
+      "push declined due to repository rule",
+    );
+  });
 });
