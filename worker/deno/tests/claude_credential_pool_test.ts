@@ -656,16 +656,19 @@ Deno.test("exhaustionFromUsageSignal - a legacy usage signal with no provider is
 Deno.test("primeClaudePoolFromUsageSignal - an active labelled signal is recorded before start-up ranks the pool (Issue #2002)", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "pool_prime_2002_" });
   try {
+    // writeRateLimitSignal stamps the signal with the wall clock, so the
+    // reset and the injected clock are both anchored to the wall clock too.
+    // Anchoring the reset to the fixed NOW instead made the test expire once
+    // the calendar passed NOW + 80h (Issue #2033).
+    const wallNow = Date.now();
     const written = await writeRateLimitSignal(
       workDir,
       289_493,
-      NOW + 80 * HOUR,
+      wallNow + 80 * HOUR,
       "usage",
       { provider: "claude", credentialLabel: "provider" },
     );
     assertEquals(written.ok, true);
-    // The signal's own timestamp is the wall clock, so "now" for the
-    // activity check is the wall clock too; the recorded reset is NOW-based.
     const recorded: Array<{ label: string; windows: unknown }> = [];
     const lines: string[] = [];
     const primed = await primeClaudePoolFromUsageSignal(
@@ -675,7 +678,7 @@ Deno.test("primeClaudePoolFromUsageSignal - an active labelled signal is recorde
         },
       },
       workDir,
-      { now: () => Date.now(), log: (line) => lines.push(line) },
+      { now: () => wallNow, log: (line) => lines.push(line) },
     );
     assertEquals(primed, true);
     assertEquals(recorded.length, 1);

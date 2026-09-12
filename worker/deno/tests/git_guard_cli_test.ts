@@ -158,6 +158,38 @@ Deno.test("git guard cli - a -F <path> message keeps the plain allow marker", ()
   assertEquals(result.gitArgs, ["commit", "-m", `subject\n\n${MASK}\n`]);
 });
 
+Deno.test("git guard cli - refuses commit-tree with no message option (Issue #1969)", () => {
+  // The plumbing spelling reads its message from stdin when no flag names it,
+  // so there is nothing in the argv for the guard to scan — refuse, naming the
+  // flagged spelling that is scannable.
+  const result = runGitGuardCli(
+    ["--", "commit-tree", "abc123"],
+    undefined,
+    unreadStdin,
+  );
+  assertEquals(result.exitCode, 1);
+  assertEquals(result.stdout, GIT_GUARD_REFUSE_MARKER);
+  assertEquals(result.gitArgs, undefined);
+  assertStringIncludes(result.stderr, "GIT_MESSAGE_UNREDACTABLE");
+  assertStringIncludes(result.stderr, "-m <text>");
+});
+
+Deno.test("git guard cli - a flagged commit-tree message is scanned, not refused", () => {
+  const result = runGitGuardCli(
+    ["--", "commit-tree", "abc123", "-F", "-"],
+    undefined,
+    pipedStdin(`subject\n\n${FAKE_TOKEN}\n`),
+  );
+  assertEquals(result.exitCode, 0);
+  assertEquals(result.stdout, GIT_GUARD_ALLOW_STDIN_MARKER);
+  assertEquals(result.gitArgs, [
+    "commit-tree",
+    "abc123",
+    "-m",
+    `subject\n\n${MASK}\n`,
+  ]);
+});
+
 Deno.test("git guard cli - a malformed invocation refuses", () => {
   const result = runGitGuardCli(["commit", "-m", "no separator"]);
   assertEquals(result.exitCode, 2);
