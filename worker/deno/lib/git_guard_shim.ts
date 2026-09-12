@@ -35,6 +35,13 @@
  * reach the guard and come back untouched); under-matching would be a silent
  * bypass.
  *
+ * **One subcommand is matched by name, because options cannot see it.**
+ * `git commit-tree <tree>` reads its message from stdin when neither `-m` nor
+ * `-F` is given, so no option in that argv betrays a message and the lexical
+ * test alone waved it through into permanent history (Issue #1969). The bare
+ * word `commit-tree` therefore joins the patterns, and the guard refuses the
+ * flagless spelling — naming `-m`/`-F`, which it does scan.
+ *
  * **Not covered: the shim rides on the `gh` install.** The wrapper is written
  * by `installGhGuardShim`, so a run that resolves no `gh` binary — or an
  * operator who opts into an unguarded agent with
@@ -117,10 +124,13 @@ export DENO_DIR=${shellQuote(opts.denoDir)}
 # -aF is caught, not just a leading -m), plus every long --f… form. They
 # deliberately over-match (--format, --amend, --force all reach the guard and
 # come back untouched); under-matching would be a silent bypass.
+# "commit-tree" is matched as a bare word because that subcommand takes its
+# message from stdin with no option at all (Issue #1969): a purely lexical
+# option test cannot see it, so every commit-tree reaches the guard.
 needs_guard=0
 for arg in "$@"; do
   case "$arg" in
-    -*m*|-*F*|--f*) needs_guard=1; break ;;
+    -*m*|-*F*|--f*|commit-tree) needs_guard=1; break ;;
   esac
 done
 if [ "$needs_guard" -eq 0 ]; then

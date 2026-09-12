@@ -496,6 +496,164 @@ Deno.test({
   },
 });
 
+// ---------------------------------------------------------------------------
+// `git commit-tree` — the message stdin carries with no flag naming it
+// (Issue #1969)
+// ---------------------------------------------------------------------------
+
+/** A real `git` on a private PATH, and a repository with one staged file. */
+interface RealGitRepo {
+  /** The PATH directory holding the real git and the stub gh the install needs. */
+  dir: string;
+  /** The repository the guarded commands run in. */
+  repo: string;
+}
+
+/** Run the real `git` in `repo`, failing the test on a non-zero exit. */
+async function realGitIn(
+  realGit: string,
+  repo: string,
+  args: string[],
+): Promise<string> {
+  const out = await new Deno.Command(realGit, { args, cwd: repo }).output();
+  assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+  return new TextDecoder().decode(out.stdout);
+}
+
+/**
+ * Build a private PATH holding the real `git` plus a repository with one file
+ * staged, so `git write-tree` has a tree for `commit-tree` to commit.
+ */
+async function makeRealGitRepo(realGit: string): Promise<RealGitRepo> {
+  const dir = await Deno.makeTempDir({ prefix: "git_guard_tree_path_" });
+  const repo = await Deno.makeTempDir({ prefix: "git_guard_tree_repo_" });
+  await Deno.writeTextFile(`${dir}/git`, `#!/bin/bash\nexec ${realGit} "$@"\n`);
+  await Deno.writeTextFile(`${dir}/gh`, "#!/bin/bash\nexit 0\n");
+  await Deno.chmod(`${dir}/git`, 0o755);
+  await Deno.chmod(`${dir}/gh`, 0o755);
+  await realGitIn(realGit, repo, [
+    "init",
+    "--quiet",
+    "--initial-branch",
+    "main",
+  ]);
+  await realGitIn(realGit, repo, ["config", "user.email", "vibe@example.com"]);
+  await realGitIn(realGit, repo, ["config", "user.name", "Vibe Coder"]);
+  // Never inherit the host's signing or hook configuration.
+  await realGitIn(realGit, repo, ["config", "commit.gpgsign", "false"]);
+  await realGitIn(realGit, repo, ["config", "core.hooksPath", "/dev/null"]);
+  await Deno.writeTextFile(`${repo}/file.txt`, "content\n");
+  await realGitIn(realGit, repo, ["add", "file.txt"]);
+  return { dir, repo };
+}
+
+/** Object types currently in `repo`'s object store, one per line. */
+function objectTypes(realGit: string, repo: string): Promise<string> {
+  return realGitIn(realGit, repo, [
+    "cat-file",
+    "--batch-all-objects",
+    "--batch-check=%(objecttype)",
+  ]);
+}
+
+Deno.test({
+  name:
+    "git-guard-shim - `git commit-tree <tree>` writes no commit object for an unscanned stdin message (Issue #1969)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const realGit = resolveRealGit();
+    assert(realGit !== undefined, "these tests need a real git on PATH");
+    const { dir, repo } = await makeRealGitRepo(realGit);
+    try {
+      const shim = expectInstalled(
+        await installGhGuardShim({
+          baseEnv: { ...Deno.env.toObject(), PATH: dir },
+          active: true,
+          allowedRepos: ["owner/repo"],
+        }),
+      );
+      await pinGuardToThisCheckout(shim, `${dir}/git`);
+      const tree = (await realGitIn(realGit, repo, ["write-tree"])).trim();
+
+      // No -m and no -F: git takes the message straight off stdin, so the
+      // whole argv is `commit-tree <tree>` and nothing names the message.
+      const result = await runShim(shim.gitShimPath!, shim.env, [
+        "commit-tree",
+        tree,
+      ], { stdin: `subject\n\nbody with ${FAKE_TOKEN}\n`, cwd: repo });
+
+      assert(result.code !== 0, "an unscannable message must refuse");
+      assertStringIncludes(result.stderr, "GIT_MESSAGE_UNREDACTABLE");
+      assertEquals(
+        result.stdout.trim(),
+        "",
+        "a refused commit-tree prints no commit id",
+      );
+      assertEquals(
+        (await objectTypes(realGit, repo)).includes("commit"),
+        false,
+        "no commit object may reach the store",
+      );
+
+      await shim.cleanup();
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+      await Deno.remove(repo, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "git-guard-shim - `git commit-tree -m` still commits, with the secret masked (Issue #1969)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const realGit = resolveRealGit();
+    assert(realGit !== undefined, "these tests need a real git on PATH");
+    const { dir, repo } = await makeRealGitRepo(realGit);
+    try {
+      const shim = expectInstalled(
+        await installGhGuardShim({
+          baseEnv: { ...Deno.env.toObject(), PATH: dir },
+          active: true,
+          allowedRepos: ["owner/repo"],
+        }),
+      );
+      await pinGuardToThisCheckout(shim, `${dir}/git`);
+      const tree = (await realGitIn(realGit, repo, ["write-tree"])).trim();
+
+      const result = await runShim(shim.gitShimPath!, shim.env, [
+        "commit-tree",
+        tree,
+        "-m",
+        `subject with ${FAKE_TOKEN}`,
+      ], { cwd: repo });
+      assertEquals(result.code, 0, result.stderr);
+
+      const commit = result.stdout.trim();
+      const committed = await realGitIn(realGit, repo, [
+        "log",
+        "-1",
+        "--format=%B",
+        commit,
+      ]);
+      assertStringIncludes(committed, `subject with ${MASK}`);
+      assertEquals(
+        committed.includes(FAKE_TOKEN),
+        false,
+        "the token must never reach the object store",
+      );
+
+      await shim.cleanup();
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+      await Deno.remove(repo, { recursive: true });
+    }
+  },
+});
+
 Deno.test("git guard shim - resolves its guard module inside the worker lib", () => {
   assertStringIncludes(defaultGitGuardModulePath(), "/lib/git_guard_cli.ts");
 });

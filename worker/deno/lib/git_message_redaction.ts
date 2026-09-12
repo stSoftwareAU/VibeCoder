@@ -121,6 +121,17 @@ interface MessageSubcommand {
    * `--gpg-sign=m`, never as a message.
    */
   readonly valueShorts: ReadonlySet<string>;
+  /**
+   * `git` reads the message from **stdin** when this subcommand is given no
+   * message option at all — true only for `commit-tree` (Issue #1969).
+   *
+   * Such a command carries no argument naming its message, so it is refused
+   * rather than run: the guard hands `git` an argv, and a message nothing in
+   * that argv names is one it could only smuggle in by growing the argv the
+   * shim verifies. The refusal names the flagged spellings, all of which are
+   * scanned.
+   */
+  readonly stdinWithoutOption?: boolean;
 }
 
 /**
@@ -142,6 +153,7 @@ const MESSAGE_SUBCOMMANDS: ReadonlyMap<string, MessageSubcommand> = new Map([
     message: true,
     file: true,
     valueShorts: new Set(["p", "S"]),
+    stdinWithoutOption: true,
   }],
   // -u <keyid>, -n <num> (list mode)
   ["tag", {
@@ -163,6 +175,12 @@ const MESSAGE_SUBCOMMANDS: ReadonlyMap<string, MessageSubcommand> = new Map([
   }],
   ["stash", { message: true, file: false, valueShorts: new Set() }],
 ]);
+
+/** What one redaction pass learnt about the argv while rewriting it. */
+interface PassState {
+  /** True once an option naming the message (`-m`/`-F`, any spelling) was read. */
+  sawMessageOption: boolean;
+}
 
 /** Global `git` options that consume the argument after them. */
 const GLOBAL_VALUE_OPTIONS: ReadonlySet<string> = new Set([
@@ -233,7 +251,9 @@ export function gitSubcommandIndex(args: readonly string[]): number {
  *   the real `git` has nothing left to read.
  * @returns A new array with message arguments redacted; every other argument
  *   is returned byte-for-byte unchanged. The argument count never changes.
- * @throws UnredactableMessageError when a message source cannot be scanned.
+ * @throws UnredactableMessageError when a message source cannot be scanned —
+ *   including a `commit-tree` given no message option at all, whose message
+ *   `git` would take from stdin with nothing in the argv naming it (#1969).
  */
 export function redactGitMessageArgs(
   args: readonly string[],
@@ -246,6 +266,7 @@ export function redactGitMessageArgs(
   const spec = MESSAGE_SUBCOMMANDS.get(out[start] ?? "");
   if (!spec) return out;
 
+  const state: PassState = { sawMessageOption: false };
   for (let i = start + 1; i < out.length; i++) {
     const arg = out[i] ?? "";
     // Everything after `--` is a pathspec, never a message.
@@ -253,10 +274,24 @@ export function redactGitMessageArgs(
     if (!arg.startsWith("-") || arg === "-") continue;
 
     if (arg.startsWith("--")) {
-      i = redactLongOption(out, i, spec, io);
+      i = redactLongOption(out, i, spec, io, state);
       continue;
     }
-    i = redactShortCluster(out, i, spec, io);
+    i = redactShortCluster(out, i, spec, io, state);
+  }
+
+  // Issue #1969: `git commit-tree <tree>` takes its message from stdin when no
+  // option names one, so the argv the guard scans holds no message at all.
+  // Refuse, naming the spellings that are scanned, rather than hand `git` a
+  // command whose message this control never saw.
+  if (spec.stdinWithoutOption && !state.sawMessageOption) {
+    throw new UnredactableMessageError(
+      "-",
+      `git ${out[start]} with neither -m nor -F reads its commit message ` +
+        "from standard input, where no argument names it and nothing can " +
+        "scan it — pass the message with -m <text> or -F <path>, or pipe it " +
+        "with -F -",
+    );
   }
   return out;
 }
@@ -276,14 +311,22 @@ export function redactGitMessageArgs(
  */
 export function usesStdinMessage(args: readonly string[]): boolean {
   let needed = false;
-  redactGitMessageArgs(args, {
-    stdin: {
-      read: () => {
-        needed = true;
-        return "";
+  try {
+    redactGitMessageArgs(args, {
+      stdin: {
+        read: () => {
+          needed = true;
+          return "";
+        },
       },
-    },
-  });
+    });
+  } catch (err) {
+    // A command this module refuses outright (`git commit-tree` with no
+    // message option, Issue #1969) reads no stdin: the refusal is raised again
+    // by the real pass and reported there, so swallowing it here cannot hide
+    // it. Any other error is a bug and still escapes.
+    if (!(err instanceof UnredactableMessageError)) throw err;
+  }
   return needed;
 }
 
@@ -338,6 +381,7 @@ function redactLongOption(
   i: number,
   spec: MessageSubcommand,
   sources: MessageSources,
+  state: PassState,
 ): number {
   const parsed = splitLongOption(out[i] ?? "");
   if (!parsed) return i;
@@ -345,6 +389,7 @@ function redactLongOption(
   const next = out[i + 1];
 
   if (spec.message && isLongOptionPrefix(name, "message", 1)) {
+    state.sawMessageOption = true;
     if (inlineValue !== undefined) {
       out[i] = `--message=${mask(inlineValue, sources)}`;
       return i;
@@ -355,6 +400,7 @@ function redactLongOption(
   }
 
   if (spec.file && isLongOptionPrefix(name, "file", FILE_PREFIX_MIN)) {
+    state.sawMessageOption = true;
     if (inlineValue !== undefined) {
       const masked = maskedMessageFile(inlineValue, sources);
       if (masked !== undefined) out[i] = `--message=${masked}`;
@@ -386,6 +432,7 @@ function redactShortCluster(
   i: number,
   spec: MessageSubcommand,
   sources: MessageSources,
+  state: PassState,
 ): number {
   const cluster = (out[i] ?? "").substring(1);
   for (let k = 0; k < cluster.length; k++) {
@@ -394,6 +441,7 @@ function redactShortCluster(
     const tail = cluster.substring(k + 1);
 
     if (letter === "m" && spec.message) {
+      state.sawMessageOption = true;
       if (tail.length > 0) {
         out[i] = `${head}m${mask(tail, sources)}`;
         return i;
@@ -405,6 +453,7 @@ function redactShortCluster(
     }
 
     if (letter === "F" && spec.file) {
+      state.sawMessageOption = true;
       if (tail.length > 0) {
         const masked = maskedMessageFile(tail, sources);
         if (masked !== undefined) out[i] = `${head}m${masked}`;

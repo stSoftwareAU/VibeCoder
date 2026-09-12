@@ -115,9 +115,66 @@ Deno.test("git message redaction - masks a commit-tree plumbing message", () => 
     redactGitMessageArgs(["commit-tree", "abc123", "-m", FAKE_TOKEN]),
     ["commit-tree", "abc123", "-m", MASK],
   );
-  // `-p <parent>` is routing.
-  const routing = ["commit-tree", "abc123", "-p", "deadbeef"];
-  assertEquals(redactGitMessageArgs(routing), routing);
+  // `-p <parent>` is routing and stays byte-for-byte. It is asserted inside a
+  // command that also carries a message because `commit-tree` with no message
+  // option at all is refused outright (Issue #1969).
+  assertEquals(
+    redactGitMessageArgs([
+      "commit-tree",
+      "abc123",
+      "-p",
+      "deadbeef",
+      "-m",
+      FAKE_TOKEN,
+    ]),
+    ["commit-tree", "abc123", "-p", "deadbeef", "-m", MASK],
+  );
+});
+
+Deno.test("git message redaction - refuses commit-tree with no message option (Issue #1969)", () => {
+  // `git commit-tree <tree>` reads its message from stdin when neither -m nor
+  // -F is given, and no argument names that message, so the only honest
+  // outcome is a refusal naming the flagged spelling.
+  for (
+    const args of [["commit-tree", "abc123"], [
+      "commit-tree",
+      "-p",
+      "dead",
+      "abc123",
+    ]]
+  ) {
+    let raised: unknown;
+    try {
+      redactGitMessageArgs(args, { stdin: { read: () => "unused" } });
+    } catch (err) {
+      raised = err;
+    }
+    assert(
+      raised instanceof UnredactableMessageError,
+      `expected a refusal for: ${args.join(" ")}`,
+    );
+    assertEquals(raised.source, "-");
+    assertStringIncludes(raised.message, "-m <text>");
+  }
+});
+
+Deno.test("git message redaction - a flagged commit-tree message is still scanned", () => {
+  assertEquals(
+    redactGitMessageArgs(["commit-tree", "abc123", "-m", FAKE_TOKEN]),
+    ["commit-tree", "abc123", "-m", MASK],
+  );
+  assertEquals(
+    redactGitMessageArgs(["commit-tree", "abc123", "-F", "-"], {
+      stdin: { read: () => `subject\n\n${FAKE_TOKEN}\n` },
+    }),
+    ["commit-tree", "abc123", "-m", `subject\n\n${MASK}\n`],
+  );
+  assertEquals(
+    redactGitMessageArgs(["commit-tree", "abc123", "--file", "/tmp/msg.txt"], {
+      readMessageFile: () => FAKE_TOKEN,
+    }),
+    ["commit-tree", "abc123", "--message", MASK],
+  );
 });
 
 Deno.test("git message redaction - scopes past git's own global options", () => {
@@ -360,6 +417,8 @@ Deno.test("git message redaction - usesStdinMessage answers for every spelling",
     const args of [
       // `git am` takes its mbox on stdin and has no message flag of its own.
       ["am", "--message-id"],
+      // Refused rather than read: nothing in the argv names this message.
+      ["commit-tree", "abc123"],
       ["commit", "-m", "subject"],
       ["commit", "-F", "/tmp/msg.txt"],
       // A pathspec, not a message.
