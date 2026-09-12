@@ -2442,6 +2442,9 @@ export async function createProductionRunCoreDeps(
           timelineCache,
           needsHumanLabel: config.needsHumanLabel,
           decisions: [...scanDecisions, ...drain.decisions],
+          workDir,
+          streakPath: (await import("./milestone_sync_streak.ts"))
+            .milestoneSyncStreakPath(workDir),
         });
       }
 

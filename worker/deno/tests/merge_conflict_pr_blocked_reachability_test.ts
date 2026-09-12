@@ -103,7 +103,11 @@ function makeGh(mergeable: string, labels: string[]) {
             p0: {
               number: PR_NUMBER,
               mergeable,
-              headRef: { compare: { aheadBy: 1, behindBy: 2 } },
+              headRefOid: "b".repeat(40),
+              baseRef: {
+                target: { oid: "a".repeat(40) },
+                compare: { aheadBy: 1, behindBy: 2 },
+              },
             },
           },
         },

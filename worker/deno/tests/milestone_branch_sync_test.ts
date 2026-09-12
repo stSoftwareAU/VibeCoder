@@ -1549,6 +1549,41 @@ Deno.test("syncMilestoneBranches - only one milestone gets the agent rung in a c
     assertEquals(deferred?.conflictAttempts, 0);
     assertEquals(deferred?.lastAttempt?.outcome, "not-charged");
     assertEquals(deferred?.lastAttempt?.reason, "agent deferred: cycle budget");
+    assertEquals(typeof deferred?.agentDeferredSince, "string");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a deferred branch is offered the agent first next cycle (Issue #2016)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2016-rotate-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const second = SECOND_BRANCH;
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${second}`]: {
+        count: 0,
+        escalated: false,
+        agentDeferredSince: "2026-09-11T00:00:00.000Z",
+      },
+    });
+    const grants: Record<string, { allowed: boolean; seconds?: number }> = {};
+    await syncMilestoneBranches(ledgerDeps([], {
+      milestones: [
+        { title: LEDGER_TITLE, branch: LEDGER_BRANCH, failure: "conflict" },
+        { title: SECOND_TITLE, branch: second, failure: "conflict" },
+      ],
+      streakPath,
+      nowMs: 10_000,
+      grants,
+    }));
+
+    assertEquals(
+      grants[second]?.allowed,
+      true,
+      "the deferred branch goes first",
+    );
+    assertEquals(grants[LEDGER_BRANCH]?.allowed, false);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

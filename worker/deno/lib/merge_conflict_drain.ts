@@ -27,7 +27,7 @@
  *   issue slot holds its repository — is not re-selected by the next scan.
  *   Without it the drain spins on the same PR.
  *
- * Per-PR budgets (4-hour cooldown, two concluded attempts, `needs-human`) are
+ * Per-PR budgets (1-hour cooldown, two concluded attempts, `needs-human`) are
  * the scan's, unchanged: this loop only decides how many of the PRs already
  * due get taken this cycle.
  *
@@ -101,6 +101,24 @@ export const DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT = 20 * 60 * 1000;
  * particular clone will cost — so it is deliberately generous.
  */
 export const DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS = 4 * 60 * 1000;
+
+/**
+ * Post-agent work already reserved inside
+ * {@link DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS} (Issue #2015).
+ *
+ * Named so the handler floor can spell "agent time plus the tail after it"
+ * without inventing a second allowance. The drain already subtracts the
+ * overhead before granting the agent, so this tail is 0 here.
+ */
+export const DEFAULT_CONFLICT_POST_AGENT_TAIL_MS = 0;
+
+/**
+ * Watchdog floor for an agent-backed merge-conflict handler (Issue #2015):
+ * one attempt's minimum agent time plus the overhead around it. The
+ * handler may run past the cycle `endTime` by up to this floor.
+ */
+export const MERGE_CONFLICT_AGENT_FLOOR_MS =
+  DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT + DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS;
 
 /**
  * What one attempt may grant its coding agent, decided by the drain from the

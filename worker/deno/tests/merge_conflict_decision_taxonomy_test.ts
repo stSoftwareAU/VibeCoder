@@ -73,6 +73,7 @@ function makeRecordingLogger(): RecordingLogger {
 /** One sample per reason kind — the taxonomy, with realistic operands. */
 const SAMPLES: Record<ConflictSkipReasonKind, ConflictSkipReason> = {
   "not-conflicting": { kind: "not-conflicting", mergeableState: "MERGEABLE" },
+  "label-cleared": { kind: "label-cleared", mergeableState: "MERGEABLE" },
   "out-of-scope-author": { kind: "out-of-scope-author", author: "outsider" },
   "already-handled": { kind: "already-handled" },
   "scan-error": { kind: "scan-error", stage: "labels", message: "gh exploded" },
@@ -168,6 +169,7 @@ Deno.test("conflictReasonOperands - each reason carries what makes it checkable"
 
 Deno.test("isQueuedConflictReason - separates the queue from what never entered it", () => {
   assertEquals(isQueuedConflictReason("not-conflicting"), false);
+  assertEquals(isQueuedConflictReason("label-cleared"), false);
   assertEquals(isQueuedConflictReason("out-of-scope-author"), false);
   assertEquals(isQueuedConflictReason("queue-empty"), false);
   assertEquals(isQueuedConflictReason("cooldown"), true);
@@ -367,6 +369,7 @@ const WELL_FORMED = fixture(`export function decide(
 export function describe(reason: ConflictSkipReason): string {
   switch (reason.kind) {
     case "not-conflicting":
+    case "label-cleared":
     case "out-of-scope-author":
     case "already-handled":
     case "scan-error":

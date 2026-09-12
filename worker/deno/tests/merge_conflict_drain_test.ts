@@ -15,6 +15,7 @@ import {
   type ConflictDrainOptions,
   DEFAULT_MAX_CONFLICTS_PER_CYCLE,
   drainConflictingPrs,
+  MERGE_CONFLICT_AGENT_FLOOR_MS,
 } from "../lib/merge_conflict_drain.ts";
 import type { ConflictingPr } from "../lib/pr_merge_conflict_scan.ts";
 import type { LogContext, Logger } from "../types.ts";
@@ -258,6 +259,26 @@ Deno.test("drainConflictingPrs - a pass with no room starts nothing", async () =
   assertEquals(asked, 0);
   assertEquals(result.taken, 0);
   assertEquals(result.stopReason, "deadline");
+});
+
+Deno.test("drainConflictingPrs - the merge-conflict floor is enough to start one attempt (Issue #2015)", async () => {
+  const resolved: number[] = [];
+  const nowMs = 1_000_000;
+  const result = await drainConflictingPrs({
+    prLiveState: () => Promise.resolve({ open: true }),
+    logger: makeSilentLogger(),
+    findNext: queueFinder([pr("org/alpha", 1)]),
+    acquireLease: alwaysLease,
+    resolve: (conflict) => {
+      resolved.push(conflict.prNumber);
+      return Promise.resolve({ processed: true, merged: true });
+    },
+    now: () => nowMs,
+    deadlineEpochMs: nowMs + MERGE_CONFLICT_AGENT_FLOOR_MS,
+  });
+
+  assertEquals(resolved, [1]);
+  assertEquals(result.stopReason, "queue-empty");
 });
 
 Deno.test("drainConflictingPrs - one repo's backlog cannot take the whole run", async () => {

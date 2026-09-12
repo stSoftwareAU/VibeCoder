@@ -43,6 +43,16 @@ export interface PRBranchState {
   behindBy: number;
   /** GitHub mergeable state (e.g. "MERGEABLE", "CONFLICTING", "UNKNOWN"). */
   mergeable: string;
+  /**
+   * Live head OID (Issue #2014). Present on the GraphQL path; undefined on
+   * the REST fallback so a missing SHA is never invented.
+   */
+  headSha?: string;
+  /**
+   * Live base-branch tip OID (Issue #2014). Present on the GraphQL path;
+   * undefined on the REST fallback.
+   */
+  baseSha?: string;
 }
 
 /** Result of a batched PR branch-state fetch. */
@@ -139,9 +149,11 @@ export function buildBatchQuery(
     return `p${i}: pullRequest(number: ${pr.number}) {
         number
         headRefName
+        headRefOid
         baseRefName
         mergeable
         baseRef {
+          target { oid }
           compare(headRef: "${head}") {
             aheadBy
             behindBy
@@ -165,17 +177,27 @@ interface BatchResponse {
 interface BatchPRNode {
   number?: number;
   mergeable?: string | null;
+  /** Live head OID (Issue #2014). */
+  headRefOid?: string | null;
   /**
    * Comparison hung off the **base** ref with the PR head as its argument,
    * so `aheadBy`/`behindBy` describe the PR relative to its base
-   * (Issue #470).
+   * (Issue #470). The target OID is the live base tip (Issue #2014).
    */
   baseRef?: {
+    target?: { oid?: string | null } | null;
     compare?: {
       aheadBy?: number;
       behindBy?: number;
     } | null;
   } | null;
+}
+
+/** A 40-hex OID, or undefined when the payload is missing or garbled. */
+function parseOid(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const sha = raw.trim();
+  return /^[0-9a-f]{40}$/i.test(sha) ? sha.toLowerCase() : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,10 +305,14 @@ export async function fetchPRBranchStateBatch(
     const node = repoNode[`p${i}`];
     if (!node) continue;
     const compare = node.baseRef?.compare ?? null;
+    const headSha = parseOid(node.headRefOid);
+    const baseSha = parseOid(node.baseRef?.target?.oid);
     states.set(pr.number, {
       aheadBy: typeof compare?.aheadBy === "number" ? compare.aheadBy : 0,
       behindBy: typeof compare?.behindBy === "number" ? compare.behindBy : 0,
       mergeable: typeof node.mergeable === "string" ? node.mergeable : "",
+      ...(headSha !== undefined ? { headSha } : {}),
+      ...(baseSha !== undefined ? { baseSha } : {}),
     });
   }
 

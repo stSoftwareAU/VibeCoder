@@ -38,7 +38,6 @@ import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
-  DEFAULT_CONFLICT_COOLDOWN_HOURS,
 } from "./pr_merge_conflict_scan.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 
@@ -62,12 +61,11 @@ export const DEFAULT_DEFERRAL_NOTICE_STREAK = 3;
  * How long a streak must have run before the notice is posted.
  *
  * Three passes can be seven minutes apart on a quiet host, which is not
- * starvation — it is a busy cycle. One cooldown window is the same clock the
- * per-PR budget already uses, so "deferred repeatedly, over more than one
- * window" is what earns a comment.
+ * starvation — it is a busy cycle. Pinned at four hours (Issue #2018) so
+ * the 1-hour cooldown cannot make starvation notices chatty: a PR still
+ * has to lose the same race across more than one quiet-host evening.
  */
-export const DEFAULT_DEFERRAL_NOTICE_MIN_SPAN_MS =
-  DEFAULT_CONFLICT_COOLDOWN_HOURS * 3600_000;
+export const DEFAULT_DEFERRAL_NOTICE_MIN_SPAN_MS = 4 * 3600_000;
 
 /**
  * How long an untouched entry survives in the cursor.
@@ -78,7 +76,11 @@ export const DEFAULT_DEFERRAL_NOTICE_MIN_SPAN_MS =
 export const DEFERRAL_ENTRY_TTL_MS = 7 * 24 * 3600_000;
 
 /** Which of the drain's bounds deferred the PR. */
-export type ConflictDeferralBound = "repo-leased" | "deadline" | "cap";
+export type ConflictDeferralBound =
+  | "repo-leased"
+  | "deadline"
+  | "cap"
+  | "stalled";
 
 /** What each bound is, in words, for the comment. */
 const BOUND_DESCRIPTIONS: Record<ConflictDeferralBound, string> = {
@@ -88,6 +90,7 @@ const BOUND_DESCRIPTIONS: Record<ConflictDeferralBound, string> = {
   // than "spent on resolutions" — the latter would be false for a cycle that
   // hit the cap on deferrals.
   "cap": "this cycle's cap on conflict PRs was already used up",
+  "stalled": "the merge-conflict queue stalled with no attempt concluding",
 };
 
 /** One PR's consecutive-deferral record. */
@@ -120,7 +123,8 @@ const productionIo: ConflictDeferralIo = {
 
 /** A bound name, validated back out of persisted JSON. */
 function toBound(raw: unknown): ConflictDeferralBound | undefined {
-  return raw === "repo-leased" || raw === "deadline" || raw === "cap"
+  return raw === "repo-leased" || raw === "deadline" || raw === "cap" ||
+      raw === "stalled"
     ? raw
     : undefined;
 }

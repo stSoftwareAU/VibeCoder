@@ -382,6 +382,42 @@ export function grantAgentRun(opts: {
   };
 }
 
+/** Oldest first; never-deferred entries keep their original order. */
+function compareAgentDeferredSince(
+  a: string | undefined,
+  b: string | undefined,
+): number {
+  if (a === undefined && b === undefined) return 0;
+  if (a === undefined) return 1;
+  if (b === undefined) return -1;
+  const aMs = Date.parse(a);
+  const bMs = Date.parse(b);
+  if (Number.isNaN(aMs) && Number.isNaN(bMs)) return 0;
+  if (Number.isNaN(aMs)) return 1;
+  if (Number.isNaN(bMs)) return -1;
+  return aMs - bMs;
+}
+
+/** The oldest outstanding agent deferral on any of this repo's branches. */
+function oldestRepoDeferral(
+  repo: string,
+  streaks: SyncStreaks,
+): string | undefined {
+  let oldest: string | undefined;
+  let oldestMs = Number.POSITIVE_INFINITY;
+  const prefix = `${repo}|`;
+  for (const [key, entry] of Object.entries(streaks)) {
+    if (!key.startsWith(prefix)) continue;
+    const since = entry.agentDeferredSince;
+    if (since === undefined) continue;
+    const ms = Date.parse(since);
+    if (Number.isNaN(ms) || ms >= oldestMs) continue;
+    oldest = since;
+    oldestMs = ms;
+  }
+  return oldest;
+}
+
 /**
  * Whether another conflict-resolution attempt is due for this branch
  * (Issue #1778).
@@ -990,7 +1026,16 @@ export async function syncMilestoneBranches(
   // holding it — a branch that merged cleanly asked nothing of the agent.
   let agentSpent = false;
 
-  for (const repo of repos) {
+  // Issue #2016: rotate the agent rung toward the branch that has waited
+  // longest. Never-deferred repos keep their original order (stable sort).
+  const orderedRepos = [...repos].sort((a, b) =>
+    compareAgentDeferredSince(
+      oldestRepoDeferral(a, streaks),
+      oldestRepoDeferral(b, streaks),
+    )
+  );
+
+  for (const repo of orderedRepos) {
     try {
       // Issue #1519: sync is a local-git operation. Skip repos that have
       // not been cloned in this environment — otherwise every git command
@@ -1043,7 +1088,14 @@ export async function syncMilestoneBranches(
         }
       }
 
-      for (const milestone of milestonesResult.value) {
+      const orderedMilestones = [...milestonesResult.value].sort((a, b) =>
+        compareAgentDeferredSince(
+          streaks[syncStreakKey(repo, a.milestoneBranch)]?.agentDeferredSince,
+          streaks[syncStreakKey(repo, b.milestoneBranch)]?.agentDeferredSince,
+        )
+      );
+
+      for (const milestone of orderedMilestones) {
         const streakKey = syncStreakKey(repo, milestone.milestoneBranch);
 
         // Cadence guard (Issue #1776): the branch already carries this tip,
@@ -1294,6 +1346,16 @@ export async function syncMilestoneBranches(
               conflictError ? conflictError.defaultSha : defaultSha,
               now(),
             );
+            if (
+              verdict.reason === "agent deferred: cycle budget" && !agentSpent
+            ) {
+              log(
+                `WARNING: recorded "agent deferred: cycle budget" for ` +
+                  `${repo} ${milestone.milestoneBranch} while the cycle's ` +
+                  `agent rung was still unspent — the handler floor is too ` +
+                  `short to offer a run (Issue #2016)`,
+              );
+            }
             streaks[streakKey] = entry;
             streaksDirty = true;
             if (verdict.outcome === "failed") {

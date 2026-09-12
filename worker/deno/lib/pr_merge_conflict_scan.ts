@@ -59,6 +59,7 @@ import { orderByPreference, preferredRepos } from "./conflict_queue_order.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
+import { resolveWorkEscalation } from "./escalate_as_work.ts";
 import {
   getLabelColour,
   getLabelDescription,
@@ -97,7 +98,74 @@ export {
 } from "./merge_conflict_markers.ts";
 
 /** Hours a PR waits after a failed attempt before another is made. */
-export const DEFAULT_CONFLICT_COOLDOWN_HOURS = 4;
+export const DEFAULT_CONFLICT_COOLDOWN_HOURS = 1;
+
+/** A 40-hex git OID. Unparseable input is never treated as a different SHA. */
+export const CONFLICT_TIP_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+
+/**
+ * Parse a git tip SHA (Issue #2014). Exactly 40 hex characters; anything
+ * else — including a truncated or garbled attribute — is `undefined`,
+ * never a different SHA.
+ */
+export function parseConflictTipSha(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const sha = raw.trim();
+  return CONFLICT_TIP_SHA_PATTERN.test(sha) ? sha.toLowerCase() : undefined;
+}
+
+/** Tips recorded as `base="…" head="…"` attributes on a marker line. */
+export function parseMarkerTips(body: string): ConflictAttemptTips {
+  const baseMatch = /\bbase="([^"]*)"/.exec(body);
+  const headMatch = /\bhead="([^"]*)"/.exec(body);
+  const baseSha = parseConflictTipSha(baseMatch?.[1]);
+  const headSha = parseConflictTipSha(headMatch?.[1]);
+  return {
+    ...(baseSha !== undefined ? { baseSha } : {}),
+    ...(headSha !== undefined ? { headSha } : {}),
+  };
+}
+
+/**
+ * Marker attributes for recorded tips (Issue #2014).
+ *
+ * Only parseable 40-hex SHAs are written. Garbled input is omitted rather
+ * than recorded as a different SHA.
+ */
+export function formatConflictTipAttributes(
+  tips: ConflictAttemptTips,
+): string {
+  const parts: string[] = [];
+  const base = parseConflictTipSha(tips.baseSha);
+  const head = parseConflictTipSha(tips.headSha);
+  if (base !== undefined) parts.push(`base="${base}"`);
+  if (head !== undefined) parts.push(`head="${head}"`);
+  return parts.length === 0 ? "" : ` ${parts.join(" ")}`;
+}
+
+/**
+ * Whether live tips differ from the last attempt's recorded tips.
+ *
+ * Both sides of both pairs must be parseable 40-hex SHAs. An unknown
+ * recorded or live tip is never "moved" — that would retry every cycle
+ * (Issue #2018).
+ */
+export function conflictTipsMoved(
+  recorded: ConflictLiveTips,
+  live: ConflictLiveTips,
+): boolean {
+  const recordedBase = parseConflictTipSha(recorded.baseSha);
+  const recordedHead = parseConflictTipSha(recorded.headSha);
+  const liveBase = parseConflictTipSha(live.baseSha);
+  const liveHead = parseConflictTipSha(live.headSha);
+  if (
+    recordedBase === undefined || recordedHead === undefined ||
+    liveBase === undefined || liveHead === undefined
+  ) {
+    return false;
+  }
+  return recordedBase !== liveBase || recordedHead !== liveHead;
+}
 
 /**
  * Attempts allowed before the processor stops retrying and escalates.
@@ -131,7 +199,7 @@ const NEEDS_HUMAN_LABEL = "needs-human";
  * no extra call, and it is what lets a PR outside the maintenance set be
  * recorded as `out-of-scope-author` rather than assumed away.
  */
-const PR_FIELDS = "number,headRefName,baseRefName,author";
+const PR_FIELDS = "number,headRefName,baseRefName,author,labels";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -151,6 +219,10 @@ export interface ConflictingPr {
   attemptCount: number;
   /** Attempts disrupted before they reached a conclusion (Issue #395). */
   disruptedCount: number;
+  /** Live base-branch tip this decision was judged against (Issue #2014). */
+  baseSha?: string;
+  /** Live head-branch tip this decision was judged against (Issue #2014). */
+  headSha?: string;
 }
 
 /** Attempt history read back from a PR's comment thread. */
@@ -163,6 +235,28 @@ export interface ConflictAttemptHistory {
   pendingAttempt: boolean;
   /** ISO timestamp of the most recent attempt, when known. */
   lastAttemptAt?: string;
+  /** Base tip recorded on the most recent attempt marker (Issue #2014). */
+  lastAttemptBaseSha?: string;
+  /** Head tip recorded on the most recent attempt marker (Issue #2014). */
+  lastAttemptHeadSha?: string;
+  /**
+   * Concluded failures and the tips they were judged against (Issue #2018).
+   * Legacy (untipped) failures have both SHAs undefined. Absent on hand-built
+   * fixtures and pre-#2018 histories — counted as none.
+   */
+  concludedFailures?: readonly ConflictAttemptTips[];
+}
+
+/** Tips one concluded failure recorded, when the marker carried them. */
+export interface ConflictAttemptTips {
+  baseSha?: string;
+  headSha?: string;
+}
+
+/** Live or recorded tips the cadence compares. */
+export interface ConflictLiveTips {
+  baseSha?: string;
+  headSha?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +285,12 @@ export interface ConflictAttemptHistory {
 export type ConflictSkipReason =
   /** The PR's branch merges cleanly — it is not in the queue at all. */
   | { kind: "not-conflicting"; mergeableState: string }
+  /**
+   * The PR still carried `merge-conflict` but GitHub now calls it
+   * `MERGEABLE`, so the stale label and any work-escalation record were
+   * cleared (Issue #2017). Never produced for `UNKNOWN`.
+   */
+  | { kind: "label-cleared"; mergeableState: string }
   /** Authored outside the push-capable maintenance set (Issue #4076). */
   | { kind: "out-of-scope-author"; author: string }
   /** Taken or deferred earlier in this same cycle's drain (Issue #561). */
@@ -227,7 +327,16 @@ export type ConflictSkipReason =
    * recorded attempt timestamp does not parse — the conservative case
    * {@link isConflictAttemptDue} holds back rather than guesses.
    */
-  | { kind: "cooldown"; msUntilDue: number | null; lastAttemptAt?: string }
+  | {
+    kind: "cooldown";
+    msUntilDue: number | null;
+    lastAttemptAt?: string;
+    /**
+     * True when a moved tip discarded earlier failures from the live
+     * budget (Issue #2018). Not a new kind — an operand on cooldown.
+     */
+    budgetReset?: boolean;
+  }
   /** Attempts keep being disrupted before they conclude (Issue #395). */
   | {
     kind: "disrupted-bound";
@@ -279,6 +388,7 @@ export type ConflictSkipReasonKind = ConflictSkipReason["kind"];
  */
 const CONFLICT_SKIP_REASON_KIND_SET: Record<ConflictSkipReasonKind, true> = {
   "not-conflicting": true,
+  "label-cleared": true,
   "out-of-scope-author": true,
   "already-handled": true,
   "scan-error": true,
@@ -338,6 +448,7 @@ export function isQueuedConflictReason(kind: ConflictSkipReasonKind): boolean {
   switch (kind) {
     // Decided before the PR ever reached the labelling step.
     case "not-conflicting":
+    case "label-cleared":
     case "out-of-scope-author":
     // Pass-level stops: about the pass, not about one queued PR.
     case "queue-empty":
@@ -376,6 +487,8 @@ export function conflictReasonOperands(
   switch (reason.kind) {
     case "not-conflicting":
       return { mergeableState: reason.mergeableState };
+    case "label-cleared":
+      return { mergeableState: reason.mergeableState };
     case "out-of-scope-author":
       return { author: reason.author };
     case "already-handled":
@@ -403,6 +516,7 @@ export function conflictReasonOperands(
         ...(reason.lastAttemptAt !== undefined
           ? { lastAttemptAt: reason.lastAttemptAt }
           : {}),
+        ...(reason.budgetReset === true ? { budgetReset: true } : {}),
       };
     case "disrupted-bound":
       return {
@@ -587,6 +701,14 @@ export interface FindConflictingPrOptions {
    * still runs, so a preferred PR that is not due is skipped like any other.
    */
   prefer?: readonly string[];
+  /**
+   * Clear the work-escalation record when a labelled PR is now MERGEABLE
+   * (Issue #2017). Defaults to {@link resolveWorkEscalation}.
+   */
+  resolveWorkEscalation?: (
+    repo: string,
+    prNumber: number,
+  ) => Promise<void>;
 }
 
 /** The `owner/repo#number` key {@link FindConflictingPrOptions.exclude} uses. */
@@ -636,6 +758,10 @@ export function parseConflictAttempts(
   let disruptedCount = 0;
   let pendingAttempt = false;
   let lastAttemptAt: string | undefined;
+  let lastAttemptBaseSha: string | undefined;
+  let lastAttemptHeadSha: string | undefined;
+  let pendingTips: ConflictAttemptTips = {};
+  const concludedFailures: ConflictAttemptTips[] = [];
 
   for (const raw of comments) {
     if (typeof raw !== "object" || raw === null) continue;
@@ -647,6 +773,10 @@ export function parseConflictAttempts(
       disruptedCount = 0;
       pendingAttempt = false;
       lastAttemptAt = undefined;
+      lastAttemptBaseSha = undefined;
+      lastAttemptHeadSha = undefined;
+      pendingTips = {};
+      concludedFailures.length = 0;
       continue;
     }
 
@@ -655,6 +785,15 @@ export function parseConflictAttempts(
       // no longer in the thread — the conservative direction.
       count++;
       pendingAttempt = false;
+      const failedTips = parseMarkerTips(comment.body);
+      const tips = failedTips.baseSha !== undefined ||
+          failedTips.headSha !== undefined
+        ? failedTips
+        : pendingTips;
+      concludedFailures.push(tips);
+      if (tips.baseSha !== undefined) lastAttemptBaseSha = tips.baseSha;
+      if (tips.headSha !== undefined) lastAttemptHeadSha = tips.headSha;
+      pendingTips = {};
       continue;
     }
 
@@ -664,6 +803,13 @@ export function parseConflictAttempts(
     // never reached a conclusion.
     if (pendingAttempt) disruptedCount++;
     pendingAttempt = true;
+    pendingTips = parseMarkerTips(comment.body);
+    if (pendingTips.baseSha !== undefined) {
+      lastAttemptBaseSha = pendingTips.baseSha;
+    }
+    if (pendingTips.headSha !== undefined) {
+      lastAttemptHeadSha = pendingTips.headSha;
+    }
 
     const createdAt = typeof comment.created_at === "string"
       ? comment.created_at
@@ -677,7 +823,15 @@ export function parseConflictAttempts(
     }
   }
 
-  return { count, disruptedCount, pendingAttempt, lastAttemptAt };
+  return {
+    count,
+    disruptedCount,
+    pendingAttempt,
+    lastAttemptAt,
+    ...(lastAttemptBaseSha !== undefined ? { lastAttemptBaseSha } : {}),
+    ...(lastAttemptHeadSha !== undefined ? { lastAttemptHeadSha } : {}),
+    concludedFailures,
+  };
 }
 
 /**
@@ -783,7 +937,17 @@ export function isConflictAttemptDue(
   history: ConflictAttemptHistory,
   nowMs: number,
   cooldownHours: number = DEFAULT_CONFLICT_COOLDOWN_HOURS,
+  live?: ConflictLiveTips,
 ): boolean {
+  if (
+    live !== undefined &&
+    conflictTipsMoved({
+      baseSha: history.lastAttemptBaseSha,
+      headSha: history.lastAttemptHeadSha,
+    }, live)
+  ) {
+    return true;
+  }
   if (history.lastAttemptAt === undefined) return true;
   const lastMs = Date.parse(history.lastAttemptAt);
   if (Number.isNaN(lastMs)) return false;
@@ -821,6 +985,36 @@ export function hasExhaustedConflictAttempts(
   maxAttempts: number = DEFAULT_MAX_CONFLICT_ATTEMPTS,
 ): boolean {
   return attemptCount >= maxAttempts;
+}
+
+/**
+ * Concluded failures that count against the live tips (Issue #2018).
+ *
+ * Legacy (untipped) failures count only until the first tipped failure;
+ * that tipped failure starts the per-tip count. Failures whose recorded
+ * tips do not equal the live tips are discarded. Unknown live tips are
+ * conservative: the window is counted rather than treated as a move.
+ */
+export function countFailuresOnLiveTips(
+  history: ConflictAttemptHistory,
+  live: ConflictLiveTips,
+): number {
+  const failures = history.concludedFailures ?? [];
+  const firstTipped = failures.findIndex((failure) =>
+    parseConflictTipSha(failure.baseSha) !== undefined &&
+    parseConflictTipSha(failure.headSha) !== undefined
+  );
+  const window = firstTipped === -1 ? failures : failures.slice(firstTipped);
+  const liveBase = parseConflictTipSha(live.baseSha);
+  const liveHead = parseConflictTipSha(live.headSha);
+  if (liveBase === undefined || liveHead === undefined) {
+    return window.length;
+  }
+  if (firstTipped === -1) return failures.length;
+  return window.filter((failure) =>
+    parseConflictTipSha(failure.baseSha) === liveBase &&
+    parseConflictTipSha(failure.headSha) === liveHead
+  ).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +1088,28 @@ export async function clearMergeConflictLabel(
   ]);
 }
 
+/** Mergeable state and live tips per PR number, batched where possible. */
+export interface PrConflictState {
+  mergeable: string;
+  baseSha?: string;
+  headSha?: string;
+}
+
+/** Label names a listing entry carried, when it asked for them. */
+export function listingLabelNames(pr: PrEntry): string[] | undefined {
+  if (!Array.isArray(pr.labels)) return undefined;
+  const names: string[] = [];
+  for (const label of pr.labels) {
+    const name = typeof label === "string"
+      ? label
+      : typeof label?.name === "string"
+      ? label.name
+      : undefined;
+    if (name && name.length > 0) names.push(name);
+  }
+  return names;
+}
+
 /** Mergeable state per PR number, batched where possible. */
 async function fetchMergeableStates(
   repo: string,
@@ -901,8 +1117,8 @@ async function fetchMergeableStates(
   ghCommandFn: (args: string[]) => Promise<string>,
   cache: IssueCache | undefined,
   logger: Logger,
-): Promise<Map<number, string>> {
-  const states = new Map<number, string>();
+): Promise<Map<number, PrConflictState>> {
+  const states = new Map<number, PrConflictState>();
   if (prs.length === 0) return states;
 
   const batch = await fetchPRBranchStateBatch(
@@ -920,7 +1136,11 @@ async function fetchMergeableStates(
 
   if (batch.ok) {
     for (const [number, state] of batch.states) {
-      states.set(number, state.mergeable);
+      states.set(number, {
+        mergeable: state.mergeable,
+        ...(state.baseSha !== undefined ? { baseSha: state.baseSha } : {}),
+        ...(state.headSha !== undefined ? { headSha: state.headSha } : {}),
+      });
     }
     return states;
   }
@@ -943,7 +1163,8 @@ async function fetchMergeableStates(
         "--jq",
         ".mergeable",
       ]);
-      states.set(pr.number, raw.trim());
+      // REST fallback leaves both SHAs undefined (Issue #2014).
+      states.set(pr.number, { mergeable: raw.trim() });
     } catch (err) {
       logger.debug("Merge-conflict scan: mergeable lookup failed", {
         repo,
@@ -1090,6 +1311,10 @@ export async function findConflictingPr(
     prefer,
   } = options;
 
+  const resolveEscalation = options.resolveWorkEscalation ??
+    ((repo: string, prNumber: number) =>
+      resolveWorkEscalation(repo, prNumber, { logger }));
+
   // The pass pushes a merge commit to the PR branch, so it is scoped to
   // the push-capable maintenance set (Issue #4076) — never an uninvited
   // human's PR.
@@ -1123,9 +1348,9 @@ export async function findConflictingPr(
   const decidePr = async (
     repo: string,
     pr: PrEntry,
-    mergeableState: string | undefined,
+    state: PrConflictState | undefined,
   ): Promise<ConflictScanPrOutcome> => {
-    if (mergeableState === undefined) {
+    if (state === undefined) {
       // The state lookup failed for this PR — both the batched query and the
       // REST fallback. Reporting that as "not conflicting" would read as a
       // healthy PR and hide a whole repository's backlog behind a DEBUG line,
@@ -1140,7 +1365,65 @@ export async function findConflictingPr(
       };
     }
 
+    const mergeableState = state.mergeable;
+    const liveTips: ConflictLiveTips = {
+      ...(state.baseSha !== undefined ? { baseSha: state.baseSha } : {}),
+      ...(state.headSha !== undefined ? { headSha: state.headSha } : {}),
+    };
+
     if (mergeableState !== "CONFLICTING") {
+      // Issue #2017: a labelled PR that now merges cleanly is a stale
+      // label, not a queue entry. UNKNOWN is never reconciled — GitHub
+      // has not computed the state, so we must not guess.
+      if (mergeableState === "MERGEABLE") {
+        let labels = listingLabelNames(pr);
+        if (labels === undefined) {
+          try {
+            labels = await fetchPrLabels(repo, pr.number, ghCommandFn);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            logger.warn("Merge-conflict scan: failed to read PR labels", {
+              repo,
+              prNumber: pr.number,
+              error: message,
+            });
+            return {
+              outcome: "skipped",
+              reason: { kind: "not-conflicting", mergeableState },
+            };
+          }
+        }
+        if (labels.includes(MERGE_CONFLICT_LABEL)) {
+          try {
+            await clearMergeConflictLabel(repo, pr.number, ghCommandFn);
+          } catch (err) {
+            logger.warn(
+              "Merge-conflict scan: failed to clear stale conflict label",
+              {
+                repo,
+                prNumber: pr.number,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }
+          try {
+            await resolveEscalation(repo, pr.number);
+          } catch (err) {
+            logger.debug(
+              "Merge-conflict scan: work-escalation closeout failed",
+              {
+                repo,
+                prNumber: pr.number,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }
+          return {
+            outcome: "skipped",
+            reason: { kind: "label-cleared", mergeableState },
+          };
+        }
+      }
       return {
         outcome: "skipped",
         reason: { kind: "not-conflicting", mergeableState },
@@ -1260,7 +1543,8 @@ export async function findConflictingPr(
     // (Issue #395). Reaching here means it is not: the label check above
     // already let it through, so the processor's final escalation never
     // landed and the PR would stall unowned for ever.
-    if (hasExhaustedConflictAttempts(history.count, maxAttempts)) {
+    const liveAttemptCount = countFailuresOnLiveTips(history, liveTips);
+    if (hasExhaustedConflictAttempts(liveAttemptCount, maxAttempts)) {
       // Issue #1115: a human is not the next rung any more. A branch that has
       // defeated two concluded merges is usually cheaper to redo than to
       // reconcile, so the PR is closed and its issue re-queued for a fresh PR
@@ -1297,7 +1581,7 @@ export async function findConflictingPr(
             repo,
             prNumber: pr.number,
             issueNumber: abandon.issueNumber,
-            attempts: history.count,
+            attempts: liveAttemptCount,
             maxAttempts,
             ...(awaitingLabel !== undefined ? { awaitingLabel } : {}),
           },
@@ -1307,7 +1591,7 @@ export async function findConflictingPr(
           reason: {
             kind: "abandoned-restarted",
             issueNumber: abandon.issueNumber,
-            attemptsSpent: history.count,
+            attemptsSpent: liveAttemptCount,
             ...(awaitingLabel !== undefined ? { awaitingLabel } : {}),
           },
         };
@@ -1320,7 +1604,7 @@ export async function findConflictingPr(
         {
           repo,
           prNumber: pr.number,
-          attempts: history.count,
+          attempts: liveAttemptCount,
           maxAttempts,
           route: route.kind,
         },
@@ -1329,7 +1613,11 @@ export async function findConflictingPr(
         repo,
         prNumber: pr.number,
         heading: "Merge conflict needs human attention",
-        reason: buildExhaustedEscalationReason(pr.number, history.count, route),
+        reason: buildExhaustedEscalationReason(
+          pr.number,
+          liveAttemptCount,
+          route,
+        ),
         nextStep: EXHAUSTED_CONFLICT_NEXT_STEP,
         // The key the resolution pass uses, so a landed escalation is not
         // duplicated — only its missing label is re-applied. A failed abandon
@@ -1345,14 +1633,15 @@ export async function findConflictingPr(
         outcome: "skipped",
         reason: {
           kind: "budget-spent",
-          attemptsSpent: history.count,
+          attemptsSpent: liveAttemptCount,
           maxAttempts,
         },
       };
     }
 
     const now = nowMs();
-    if (!isConflictAttemptDue(history, now, cooldownHours)) {
+    if (!isConflictAttemptDue(history, now, cooldownHours, liveTips)) {
+      const discarded = history.count > liveAttemptCount;
       return {
         outcome: "skipped",
         reason: {
@@ -1361,6 +1650,7 @@ export async function findConflictingPr(
           ...(history.lastAttemptAt !== undefined
             ? { lastAttemptAt: history.lastAttemptAt }
             : {}),
+          ...(discarded ? { budgetReset: true } : {}),
         },
       };
     }
@@ -1413,8 +1703,9 @@ export async function findConflictingPr(
     logger.info("Found a conflicting PR that needs a real merge", {
       repo,
       prNumber: pr.number,
-      attempts: history.count,
+      attempts: liveAttemptCount,
       disruptedCount,
+      ...(history.count > liveAttemptCount ? { budgetReset: true } : {}),
     });
 
     return {
@@ -1425,8 +1716,10 @@ export async function findConflictingPr(
         branchName: pr.headRefName,
         // allow-hardcoded-branch — safe fallback when the listing omits it
         baseBranch: pr.baseRefName || "main",
-        attemptCount: history.count,
+        attemptCount: liveAttemptCount,
         disruptedCount,
+        ...(state.baseSha !== undefined ? { baseSha: state.baseSha } : {}),
+        ...(state.headSha !== undefined ? { headSha: state.headSha } : {}),
       },
     };
   };

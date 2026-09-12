@@ -17,16 +17,19 @@ import {
   conflictCooldownMsRemaining,
   conflictPrKey,
   countDisruptedAttempts,
+  countFailuresOnLiveTips,
   DEFAULT_CONFLICT_COOLDOWN_HOURS,
   DEFAULT_MAX_CONFLICT_ATTEMPTS,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
   findConflictingPr,
   type FindConflictingPrOptions,
+  formatConflictTipAttributes,
   hasExhaustedConflictAttempts,
   hasExhaustedDisruptedAttempts,
   isConflictAttemptDue,
   MERGE_CONFLICT_LABEL,
   parseConflictAttempts,
+  parseConflictTipSha,
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
   type AbandonRestartRequest,
@@ -136,19 +139,29 @@ interface FakeRepoState {
   prsByState?: Record<string, Array<{ number: number; title: string }>>;
   /** Args prefix (joined with a space) whose call must throw (Issue #1115). */
   failOn?: string;
+  /** Open work-escalation issues `resolveWorkEscalation` lists (Issue #2017). */
+  escalationIssues?: Array<{
+    number: number;
+    body: string;
+    author: { login: string };
+  }>;
 }
 
 interface FakeGh {
   ghCommandFn: (args: string[]) => Promise<string>;
   labelsAdded: Array<{ prNumber: number; label: string }>;
+  labelsRemoved: Array<{ prNumber: number; label: string }>;
   commentsPosted: Array<{ prNumber: number; body: string }>;
+  issuesClosed: number[];
   calls: string[][];
 }
 
 /** A `gh` stub that answers exactly the calls this scan issues. */
 function makeFakeGh(state: FakeRepoState): FakeGh {
   const labelsAdded: Array<{ prNumber: number; label: string }> = [];
+  const labelsRemoved: Array<{ prNumber: number; label: string }> = [];
   const commentsPosted: Array<{ prNumber: number; body: string }> = [];
+  const issuesClosed: number[] = [];
   const calls: string[][] = [];
 
   const ghCommandFn = (args: string[]): Promise<string> => {
@@ -163,7 +176,18 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
       // existing-PR check (Issue #1115) does not.
       const fields = String(args[args.indexOf("--json") + 1] ?? "");
       if (fields.includes("headRefName")) {
-        return Promise.resolve(JSON.stringify(state.prs));
+        return Promise.resolve(JSON.stringify(
+          state.prs.map((pr) => ({
+            ...pr,
+            ...(fields.includes("labels")
+              ? {
+                labels: (state.labels[pr.number] ?? []).map((name) => ({
+                  name,
+                })),
+              }
+              : {}),
+          })),
+        ));
       }
       const prState = String(args[args.indexOf("--state") + 1] ?? "open");
       return Promise.resolve(JSON.stringify(
@@ -218,7 +242,11 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
         repository[`p${index}`] = {
           number: pr.number,
           mergeable: state.mergeable[pr.number] ?? "MERGEABLE",
-          headRef: { compare: { aheadBy: 1, behindBy: 0 } },
+          headRefOid: "b".repeat(40),
+          baseRef: {
+            target: { oid: "a".repeat(40) },
+            compare: { aheadBy: 1, behindBy: 0 },
+          },
         };
       });
       return Promise.resolve(JSON.stringify({ data: { repository } }));
@@ -269,12 +297,50 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
       return Promise.resolve("");
     }
 
+    if (args[0] === "api" && args.includes("DELETE")) {
+      const endpoint = String(args[3] ?? "");
+      const match = /issues\/(\d+)\/labels\/(.+)$/.exec(endpoint);
+      if (match) {
+        labelsRemoved.push({
+          prNumber: Number(match[1]),
+          label: decodeURIComponent(match[2] ?? ""),
+        });
+      }
+      return Promise.resolve("");
+    }
+
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify(state.escalationIssues ?? []));
+    }
+
+    if (args[0] === "issue" && args[1] === "close") {
+      issuesClosed.push(Number(args[2]));
+      return Promise.resolve("");
+    }
+
+    if (args[0] === "issue" && args[1] === "edit") {
+      if (args.includes("--remove-label")) {
+        labelsRemoved.push({
+          prNumber: Number(args[2]),
+          label: String(args[args.indexOf("--remove-label") + 1] ?? ""),
+        });
+      }
+      return Promise.resolve("");
+    }
+
     if (args[0] === "label" && args[1] === "list") return Promise.resolve("[]");
 
     return Promise.resolve("");
   };
 
-  return { ghCommandFn, labelsAdded, commentsPosted, calls };
+  return {
+    ghCommandFn,
+    labelsAdded,
+    labelsRemoved,
+    commentsPosted,
+    issuesClosed,
+    calls,
+  };
 }
 
 function makeOptions(
@@ -445,9 +511,14 @@ Deno.test("isConflictAttemptDue - honours the cooldown window", () => {
     lastAttemptAt,
   });
 
-  assertEquals(isConflictAttemptDue(history(oneHourAgo), now), false);
+  const thirtyMinutesAgo = new Date(now - 30 * 60_000).toISOString();
+  assertEquals(isConflictAttemptDue(history(thirtyMinutesAgo), now), false);
+  assertEquals(isConflictAttemptDue(history(oneHourAgo), now), true);
   assertEquals(isConflictAttemptDue(history(sixHoursAgo), now), true);
-  assertEquals(isConflictAttemptDue(history(oneHourAgo), now, 0.5), true);
+  assertEquals(
+    isConflictAttemptDue(history(thirtyMinutesAgo), now, 0.25),
+    true,
+  );
 });
 
 Deno.test("isConflictAttemptDue - an unparseable timestamp holds the PR back", () => {
@@ -473,13 +544,13 @@ Deno.test("conflictCooldownMsRemaining - reports what the cooldown has left", ()
 
   // No history at all: due now.
   assertEquals(conflictCooldownMsRemaining(history(), now), 0);
-  // One hour into a four-hour cooldown.
+  // One hour into a one-hour cooldown: due now.
   assertEquals(
     conflictCooldownMsRemaining(
       history(new Date(now - 3600_000).toISOString()),
       now,
     ),
-    3 * 3600_000,
+    0,
   );
   // Elapsed cooldowns clamp at zero rather than going negative.
   assertEquals(
@@ -539,6 +610,8 @@ Deno.test("findConflictingPr - returns the conflicting PR and labels it", async 
   assertEquals(result.value.selected?.branchName, "issue-16-fix");
   assertEquals(result.value.selected?.baseBranch, "main");
   assertEquals(result.value.selected?.attemptCount, 0);
+  assertEquals(result.value.selected?.baseSha, "a".repeat(40));
+  assertEquals(result.value.selected?.headSha, "b".repeat(40));
   assertEquals(fake.labelsAdded, [{
     prNumber: 48,
     label: MERGE_CONFLICT_LABEL,
@@ -587,7 +660,7 @@ Deno.test("findConflictingPr - holds a PR back inside its cooldown", async () =>
     comments: {
       48: [{
         body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-        created_at: new Date(now - 3600_000).toISOString(),
+        created_at: new Date(now - 30 * 60_000).toISOString(),
       }],
     },
   });
@@ -1026,7 +1099,7 @@ Deno.test("findConflictingPr - the cooldown record carries the milliseconds stil
     comments: {
       48: [{
         body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-        created_at: new Date(now - 3600_000).toISOString(),
+        created_at: new Date(now - 30 * 60_000).toISOString(),
       }],
     },
   }));
@@ -1034,10 +1107,10 @@ Deno.test("findConflictingPr - the cooldown record carries the milliseconds stil
   const { log } = await scanWith(fake);
 
   assertEquals(reasonFor(log, 48), "cooldown");
-  // One hour into a four-hour cooldown: three hours left, to the millisecond.
+  // Thirty minutes into a one-hour cooldown.
   assertEquals(
     recordFor(log, 48).context?.msUntilDue,
-    (DEFAULT_CONFLICT_COOLDOWN_HOURS - 1) * 3600_000,
+    30 * 60_000,
   );
 });
 
@@ -1099,7 +1172,7 @@ Deno.test("findConflictingPr - every labelled PR gets a record, plus one summary
       10: [],
       11: [{
         body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-        created_at: "2026-08-20T11:00:00Z",
+        created_at: "2026-08-20T11:30:00Z",
       }],
       12: [],
     },
@@ -1559,4 +1632,140 @@ Deno.test("findConflictingPr - an unresolved fleet identity spends no budget", a
   assertEquals(escalatedToHuman(fake, 48), false);
   assertEquals(reasonFor(log, 48), "attempted");
   assertEquals(result.value.selected?.attemptCount, 0);
+});
+
+Deno.test("parseConflictTipSha - only a 40-hex OID is a tip (Issue #2014)", () => {
+  assertEquals(parseConflictTipSha("A".repeat(40)), "a".repeat(40));
+  assertEquals(parseConflictTipSha("not-a-sha"), undefined);
+  assertEquals(parseConflictTipSha("a".repeat(39)), undefined);
+  assertEquals(
+    formatConflictTipAttributes({
+      baseSha: "A".repeat(40),
+      headSha: "garbled",
+    }),
+    ` base="${"a".repeat(40)}"`,
+  );
+});
+
+Deno.test("parseConflictAttempts - tipped markers record the live SHAs (Issue #2014)", () => {
+  const base = "a".repeat(40);
+  const head = "b".repeat(40);
+  const history = parseConflictAttempts([
+    {
+      body:
+        `${CONFLICT_ATTEMPT_MARKER} n="1" base="${base}" head="${head}" -->`,
+      created_at: "2026-08-19T11:00:00Z",
+    },
+    {
+      body: `${CONFLICT_FAILED_MARKER} n="1" base="${base}" head="${head}" -->`,
+      created_at: "2026-08-19T11:30:00Z",
+    },
+  ]);
+  assertEquals(history.lastAttemptBaseSha, base);
+  assertEquals(history.lastAttemptHeadSha, head);
+  assertEquals(history.concludedFailures, [{ baseSha: base, headSha: head }]);
+});
+
+Deno.test("countFailuresOnLiveTips - a moved tip discards earlier failures (Issue #2018)", () => {
+  const old = { baseSha: "a".repeat(40), headSha: "b".repeat(40) };
+  const live = { baseSha: "c".repeat(40), headSha: "d".repeat(40) };
+  assertEquals(
+    countFailuresOnLiveTips({
+      count: 2,
+      disruptedCount: 0,
+      pendingAttempt: false,
+      concludedFailures: [old, live],
+    }, live),
+    1,
+  );
+  assertEquals(
+    countFailuresOnLiveTips({
+      count: 2,
+      disruptedCount: 0,
+      pendingAttempt: false,
+      concludedFailures: [{}, {}],
+    }, live),
+    2,
+  );
+});
+
+Deno.test("isConflictAttemptDue - a moved tip is due even inside the cooldown (Issue #2014)", () => {
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const thirtyMinutesAgo = new Date(now - 30 * 60_000).toISOString();
+  const history = {
+    count: 1,
+    disruptedCount: 0,
+    pendingAttempt: false,
+    lastAttemptAt: thirtyMinutesAgo,
+    lastAttemptBaseSha: "a".repeat(40),
+    lastAttemptHeadSha: "b".repeat(40),
+  };
+  assertEquals(isConflictAttemptDue(history, now), false);
+  assertEquals(
+    isConflictAttemptDue(history, now, DEFAULT_CONFLICT_COOLDOWN_HOURS, {
+      baseSha: "c".repeat(40),
+      headSha: "d".repeat(40),
+    }),
+    true,
+  );
+});
+
+Deno.test("findConflictingPr - MERGEABLE plus merge-conflict clears the stale label (Issue #2017)", async () => {
+  const fake = makeFakeGh(makeState({
+    mergeable: { 48: "MERGEABLE" },
+    labels: { 48: [MERGE_CONFLICT_LABEL, "escalated"] },
+  }));
+  const resolved: number[] = [];
+
+  const { log } = await scanWith(fake, {
+    resolveWorkEscalation: (_repo, prNumber) => {
+      resolved.push(prNumber);
+      return Promise.resolve();
+    },
+  });
+
+  assertEquals(reasonFor(log, 48), "label-cleared");
+  assertEquals(
+    fake.labelsRemoved.some((l) =>
+      l.prNumber === 48 && l.label === MERGE_CONFLICT_LABEL
+    ),
+    true,
+  );
+  assertEquals(resolved, [48]);
+});
+
+Deno.test("findConflictingPr - UNKNOWN is never reconciled (Issue #2017)", async () => {
+  const fake = makeFakeGh(makeState({
+    mergeable: { 48: "UNKNOWN" },
+    labels: { 48: [MERGE_CONFLICT_LABEL] },
+  }));
+  const resolved: number[] = [];
+
+  const { log } = await scanWith(fake, {
+    resolveWorkEscalation: (_repo, prNumber) => {
+      resolved.push(prNumber);
+      return Promise.resolve();
+    },
+  });
+
+  assertEquals(reasonFor(log, 48), "not-conflicting");
+  assertEquals(fake.labelsRemoved, []);
+  assertEquals(resolved, []);
+});
+
+Deno.test("findConflictingPr - a MERGEABLE PR with no escalation issue still de-labels (Issue #2017)", async () => {
+  const fake = makeFakeGh(makeState({
+    mergeable: { 48: "MERGEABLE" },
+    labels: { 48: [MERGE_CONFLICT_LABEL] },
+  }));
+
+  const { log } = await scanWith(fake, {
+    resolveWorkEscalation: () => Promise.resolve(),
+  });
+
+  assertEquals(reasonFor(log, 48), "label-cleared");
+  assertEquals(
+    fake.labelsRemoved.some((l) => l.label === MERGE_CONFLICT_LABEL),
+    true,
+  );
 });

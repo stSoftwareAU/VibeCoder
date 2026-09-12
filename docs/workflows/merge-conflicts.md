@@ -319,7 +319,7 @@ settle still reaches no agent and now consults no issue either.
   escalated to a human as its own outcome — a re-initialised or rewritten
   branch, not a conflict the agent failed to resolve — and spends **no**
   attempt.
-- **One attempt per PR per 4 hours**, at most **3 concluded attempts**
+- **One attempt per PR per 1 hour**, at most **3 concluded attempts**
   (Issue #1766 — the first attempt and two retries against a base that has
   moved on since; milestone branches spend the same budget).
 - The attempt is recorded as a marker comment on the PR **before** the merge
@@ -426,7 +426,7 @@ attempt record exists*. It keys on the **age of the label**, read from the PR's
 flowchart TD
     A[PR carries merge-conflict] --> S{"Still CONFLICTING<br/>on the live state?"}
     S -->|"No — stale label"| Q[Nothing to say]
-    S -->|Yes| B{"Label older than 8 h?<br/>(2× the cooldown)"}
+    S -->|Yes| B{"Label older than 8 h?"}
     B -->|No| Q
     B -->|Yes| C{"needs-human, closed,<br/>or already escalated?"}
     C -->|Yes| Q
@@ -598,14 +598,15 @@ each carries the operands that make the decision checkable afterwards:
 | Reason | Operands | Meaning |
 | --- | --- | --- |
 | `attempted` | — | Selected for a resolution this pass. |
-| `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry. |
+| `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry. `UNKNOWN` stays here: the state is not established, so the scan never guesses. |
+| `label-cleared` | `mergeableState` | The PR still carried `merge-conflict` but GitHub now calls it `MERGEABLE`, so the stale label and any work-escalation record were cleared. Never produced for `UNKNOWN`. |
 | `out-of-scope-author` | `author` | Outside the push-capable maintenance set. |
 | `already-handled` | — | Taken or deferred earlier in this same cycle's drain. |
 | `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
 | `needs-human` | `label` | A human already owns the conflict. |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed — the PR is now a human's. |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `awaitingLabel`? | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. `awaitingLabel` is present when the worker may not apply that pickup label (Issue #1773): the issue was reopened with `needs-human` and names the label a trusted author must re-apply. |
-| `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
+| `cooldown` | `msUntilDue`, `lastAttemptAt`, `budgetReset`? | Still inside the 1-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. `budgetReset` is present when earlier failures were discarded because the live tips moved. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
 | `pr-not-open` | `state` | The live `gh pr view` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
@@ -625,7 +626,7 @@ Two properties are worth knowing when reading these:
   timeline. No record costs a GitHub call, which matters when this runs every
   ~2.5 minutes across every monitored repository.
 
-A PR that was never in the queue (`not-conflicting`, `out-of-scope-author`) is
+A PR that was never in the queue (`not-conflicting`, `label-cleared`, `out-of-scope-author`) is
 recorded at DEBUG so a fleet of healthy PRs costs no log volume; everything in
 the queue is INFO.
 
@@ -660,7 +661,7 @@ Three bounds keep the drain from becoming a monopoly:
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
-The per-PR budgets are unchanged: the 4-hour cooldown, the three concluded
+The per-PR budgets are unchanged: the 1-hour cooldown, the three concluded
 attempts, and the abandon rung with `needs-human` behind it are the scan's, and
 the drain only decides how many of the PRs already due get taken now.
 
