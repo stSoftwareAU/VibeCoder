@@ -14,6 +14,8 @@ import {
   MILESTONE_BEHIND_DEFER_REASON,
   milestonePacedUntil,
   presyncMilestoneBranch,
+  presyncMilestoneOnceForArming,
+  resetMilestoneArmSyncMemo,
 } from "../lib/milestone_presync.ts";
 import type { MilestonePresyncDeps } from "../lib/milestone_presync.ts";
 import {
@@ -704,6 +706,50 @@ Deno.test("milestonePacedUntil - a passed deferral, a missing entry and no miles
     undefined,
   );
   assertEquals(milestonePacedUntil(passed, "owner/repo", "", NOW), undefined);
+});
+
+Deno.test("presyncMilestoneOnceForArming - two PRs on one milestone share a single attempt (Issue #2005)", async () => {
+  resetMilestoneArmSyncMemo();
+  const workDir = await Deno.makeTempDir({ prefix: "issue-2005-memo-" });
+  try {
+    let syncs = 0;
+    const args = {
+      repo: REPO,
+      milestoneTitle: "#1730 Resolve merge conflicts",
+      milestoneBranch: MILESTONE,
+      defaultBranch: DEFAULT_BRANCH,
+      cwd: workDir,
+      workDir,
+      config: { ...buildDefaultWorkerConfig(), workDir },
+      logger: silentLogger,
+      countCommitsAheadFn: () =>
+        Promise.resolve({ ok: true as const, value: 2 }),
+      syncMilestoneBranchFn: (() => {
+        syncs++;
+        return Promise.resolve({
+          ok: true as const,
+          value: { message: "merged" },
+        });
+      }) as unknown as IssueRunPresyncArgs["syncMilestoneBranchFn"],
+      runGitCommandFn: () =>
+        Promise.resolve({
+          ok: true as const,
+          value: { code: 0, stdout: "a".repeat(40), stderr: "" },
+        }),
+    } satisfies IssueRunPresyncArgs;
+
+    const first = await presyncMilestoneOnceForArming(args);
+    const second = await presyncMilestoneOnceForArming(args);
+    assertEquals(first.status, "synced");
+    assertEquals(second.status, "synced");
+    assertEquals(syncs, 1, "the sweep memoises one sync per milestone");
+    resetMilestoneArmSyncMemo();
+    const third = await presyncMilestoneOnceForArming(args);
+    assertEquals(third.status, "synced");
+    assertEquals(syncs, 2, "a new cycle may try again");
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => {});
+  }
 });
 
 Deno.test("milestonePacedUntil - an unparseable deferral paces the branch rather than releasing it", () => {

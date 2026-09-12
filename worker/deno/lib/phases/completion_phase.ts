@@ -71,6 +71,8 @@ import {
   formatBuildStamp,
   resolveWorkerBuildInfo,
 } from "../worker_build_info.ts";
+import { bindIssueRunBehindSync } from "../milestone_presync.ts";
+import { repoDirName } from "../work_volume_tiers.ts";
 import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
 import {
   buildSecurityFixGateMessage,
@@ -233,6 +235,7 @@ export function repoOptsOutOfAutoMerge(
  */
 async function armAutoMergeAtCreation(
   ctx: IssueContext,
+  state: PhaseState,
   prNumber: number,
   deps: WorkerDeps,
 ): Promise<void> {
@@ -246,6 +249,7 @@ async function armAutoMergeAtCreation(
       { repo, prNumber },
     );
   }
+  const workDir = config.workDir;
   const result = await deps.pr.finalisePr({
     repo,
     prNumber,
@@ -253,6 +257,34 @@ async function armAutoMergeAtCreation(
     // Route the milestone gates' warnings into the worker log rather than
     // `console.warn`, which no operator reads.
     log: (message: string) => logger.warn(message, { repo, prNumber }),
+    ...(state.branchName ? { headRefName: state.branchName } : {}),
+    ...(state.milestoneBranch ?? state.baseBranch
+      ? { baseRefName: state.milestoneBranch ?? state.baseBranch }
+      : {}),
+    // Issue #2005: a child raised while its milestone fell behind mid-run
+    // used to wait a full cycle for the 1.72 sweep. Sync here with the
+    // same ledger as the pre-cut path, then arm in this cycle when it lands.
+    ...(workDir && state.defaultBranch && !skipAutoMerge
+      ? {
+        syncBehindMilestone: bindIssueRunBehindSync({
+          repo,
+          ...(ctx.milestoneTitle ? { milestoneTitle: ctx.milestoneTitle } : {}),
+          defaultBranch: state.defaultBranch,
+          cwd: `${workDir}/${repoDirName(repo)}`,
+          workDir,
+          config,
+          logger,
+          ...(ctx.cycleDeadlineEpochMs !== undefined
+            ? { cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs }
+            : {}),
+          syncMilestoneBranchFn: deps.git.syncMilestoneBranchWithDefault,
+          countCommitsAheadFn: deps.git.countCommitsAhead,
+          runGitCommandFn: deps.git.runGitCommand,
+          runAgentFn: deps.claude.runClaudeWithRetry,
+          ghCommandFn: deps.github.runGhCommand,
+        }),
+      }
+      : {}),
   });
   if (result.ok) {
     if (!skipAutoMerge) {
@@ -454,7 +486,7 @@ export async function recoverAndFinaliseExistingPr(
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
     if (prNumber > 0) {
-      await armAutoMergeAtCreation(ctx, prNumber, deps);
+      await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
   } catch (err) {
     logger.warn("Post-recovery finalisation error (non-fatal)", {
@@ -1896,7 +1928,7 @@ async function completionBody(
     // time (Issue #3909). The sweep already merged these children, so the
     // skip only ever delayed them.
     if (prNumber > 0) {
-      await armAutoMergeAtCreation(ctx, prNumber, deps);
+      await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 
     // Issue #1613: Surface a rejected dependency bump on the PR thread

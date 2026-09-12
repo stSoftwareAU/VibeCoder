@@ -14,6 +14,8 @@ import {
   isBaseProtected,
   isTransientError,
   logAutoMergeOutcome,
+  MILESTONE_BEHIND_SYNC_MARKER,
+  resetBehindSyncComments,
 } from "../lib/pr_auto_merge.ts";
 import {
   _resetMilestoneBehindMemo,
@@ -953,4 +955,109 @@ Deno.test("pr_auto_merge - any other direct-merge failure on an unprotected base
   assertEquals(second.result, AutoMergeResult.Failed);
   assertEquals(directCalls, 2);
   _resetBaseProtectionMemo();
+});
+
+// ---------------------------------------------------------------------------
+// In-cycle sync then re-arm (Issue #2005)
+// ---------------------------------------------------------------------------
+
+const BEHIND_ONCE = {
+  decision: "defer" as const,
+  reason: "milestone-behind" as const,
+  milestoneBranch: "milestone/1730-sync",
+  behindBy: 1,
+  detail: "milestone/1730-sync is 1 commit behind Develop",
+};
+
+Deno.test("pr_auto_merge - a clean in-cycle sync arms a behind child (Issue #2005)", async () => {
+  resetBehindSyncComments();
+  let gateCalls = 0;
+  const comments: string[] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 42,
+    headRefName: "issue-42-child",
+    baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => true,
+    decideMilestoneBaseFn: () => {
+      gateCalls++;
+      return Promise.resolve(
+        gateCalls === 1
+          ? BEHIND_ONCE
+          : { decision: "allow" as const, reason: "route-open" as const },
+      );
+    },
+    syncBehindMilestone: () =>
+      Promise.resolve({
+        status: "synced" as const,
+        detail: "merged default down",
+      }),
+    commentFn: async (_r, _n, body) => {
+      comments.push(body);
+    },
+    ghCommandFn: async (args) => {
+      if (args.includes("--auto")) return "ok";
+      return "";
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(gateCalls, 2);
+  assertEquals(comments.length, 0, "a clean sync does not comment");
+});
+
+Deno.test("pr_auto_merge - a conflicting in-cycle sync stays deferred and posts the reason (Issue #2005)", async () => {
+  resetBehindSyncComments();
+  const comments: string[] = [];
+  let autoCalls = 0;
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 43,
+    headRefName: "issue-43-child",
+    baseRefName: "milestone/1730-sync",
+    decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
+    syncBehindMilestone: () =>
+      Promise.resolve({
+        status: "deferred" as const,
+        detail: "unresolved conflict on src/foo.ts",
+      }),
+    commentFn: async (_r, _n, body) => {
+      comments.push(body);
+    },
+    ghCommandFn: async (args) => {
+      if (args.includes("--auto")) autoCalls++;
+      return "";
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertEquals(result.deferral, "milestone-behind");
+  assertStringIncludes(result.message, "unresolved conflict on src/foo.ts");
+  assertEquals(autoCalls, 0, "a conflicting sync must not arm");
+  assertEquals(comments.length, 1);
+  assertStringIncludes(comments[0]!, MILESTONE_BEHIND_SYNC_MARKER);
+  assertStringIncludes(comments[0]!, "unresolved conflict on src/foo.ts");
+});
+
+Deno.test("pr_auto_merge - a failed in-cycle sync comments once per PR per cycle (Issue #2005)", async () => {
+  resetBehindSyncComments();
+  const comments: string[] = [];
+  const opts = {
+    repo: "owner/repo",
+    headRefName: "issue-44-child",
+    baseRefName: "milestone/1730-sync",
+    decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
+    syncBehindMilestone: () =>
+      Promise.resolve({
+        status: "deferred" as const,
+        detail: "conflict",
+      }),
+    commentFn: async (_r: string, _n: number, body: string) => {
+      comments.push(body);
+    },
+    ghCommandFn: async () => "",
+  };
+  await enableAutoMerge({ ...opts, prNumber: 44 });
+  await enableAutoMerge({ ...opts, prNumber: 44 });
+  assertEquals(comments.length, 1);
+  await enableAutoMerge({ ...opts, prNumber: 45 });
+  assertEquals(comments.length, 2, "a sibling PR still gets the reason");
 });
