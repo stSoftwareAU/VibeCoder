@@ -23,6 +23,21 @@
  * retargeted at most once: a human who points it back at the default branch is
  * never overruled.
  *
+ * **Only a PR the fleet raised is ever retargeted (Issue #2022).** A human
+ * who bases a PR on the default branch chose that base — on 2026-09-12 the
+ * pass retargeted a maintainer's deliberate commit-by-commit replay onto a
+ * rewritten milestone branch and turned a clean PR into ninety conflicting
+ * files. Admission is {@link isFleetRaisedPr}: the author is a fleet login
+ * *and* the body carries the worker's own marker. A branch named
+ * `issue-<n>-…` is not evidence — humans use that shape too — and neither
+ * is the author alone. A PR that fails the test is left exactly as its
+ * author raised it: no base change, no comment, no label.
+ *
+ * A fleet PR is also not retargeted when the merge onto the milestone branch
+ * would conflict ({@link MilestoneSelfHealDeps.mergeWouldConflictFn}): the
+ * pass exists to stop work landing outside the milestone, not to manufacture
+ * conflicts for the merge-conflict lane to spend an hour on (#2023).
+ *
  * Deliberately out of scope: merged PRs are never touched, and PRs auto-closed
  * by a past branch deletion are not reopened.
  *
@@ -35,8 +50,11 @@ import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupAuthorOptions,
   type AlertDedupRow,
+  resolveAlertDedupAuthors,
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
+import { WORKER_PR_MARKER_PREFIX } from "./pr_body.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import {
@@ -94,6 +112,14 @@ export interface MilestoneSelfHealDeps {
    */
   localCloneExistsFn?: LocalCloneExistsFn;
   /**
+   * Whether merging `headRefName` onto `milestoneBranch` would conflict
+   * (Issue #2022). `true` refuses the retarget; `false` allows it; `null`
+   * means the answer could not be read, which allows it as before — the
+   * dry run is a guard against manufacturing conflicts, not a gate the
+   * retarget cannot pass without. Omitted in tests that do not care.
+   */
+  mergeWouldConflictFn?: MergeWouldConflictFn;
+  /**
    * Fleet identity used to verify who wrote the retarget marker (Issue
    * #1216). Omitted in production, which reads the configured fleet identity.
    */
@@ -133,6 +159,47 @@ interface OpenPr {
   milestoneTitle: string | null;
   /** Issue numbers the PR closes (`Closes #N`), per GitHub's own linkage. */
   closingIssues: number[];
+  /** The PR author's login, or `null` when the listing did not say. */
+  author: string | null;
+  /** The PR body; the worker's own PRs carry {@link WORKER_PR_MARKER_PREFIX}. */
+  body: string;
+}
+
+/**
+ * Answers whether merging a PR's head onto the milestone branch would
+ * conflict (Issue #2022). `null` when it could not be determined.
+ */
+export type MergeWouldConflictFn = (
+  repo: string,
+  milestoneBranch: string,
+  headRefName: string,
+) => Promise<boolean | null>;
+
+/**
+ * True when the fleet itself raised this PR (Issue #2022).
+ *
+ * Two independent signals, both required: the author is one of the fleet's
+ * logins, and the body carries the marker the worker writes into every PR it
+ * raises ({@link WORKER_PR_MARKER_PREFIX}). The marker alone is a fixed
+ * public string anyone can paste; the author alone is a human on any host
+ * that shares an account. The `issue-<n>-…` branch shape is deliberately not
+ * consulted — the PR that motivated this check was a maintainer's replay on
+ * exactly that shape.
+ *
+ * A head ref with a leading dash is refused as well (Issue #12): the retarget
+ * hands the head to git and gh as a positional.
+ *
+ * @param pr - The listed PR.
+ * @param fleetLogins - The resolved fleet maintenance set.
+ * @returns True only when both signals say the fleet raised it.
+ */
+export function isFleetRaisedPr(
+  pr: Pick<OpenPr, "author" | "body" | "headRefName">,
+  fleetLogins: readonly string[],
+): boolean {
+  if (!isFleetAuthor(pr.author, [...fleetLogins])) return false;
+  if (!pr.body.includes(WORKER_PR_MARKER_PREFIX)) return false;
+  return pr.headRefName !== "" && !pr.headRefName.startsWith("-");
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +264,10 @@ function parseOpenPrs(raw: string): OpenPr[] {
         milestoneTitle: milestone && typeof milestone.title === "string"
           ? milestone.title
           : null,
+        author: isRecord(entry.author) && typeof entry.author.login === "string"
+          ? entry.author.login
+          : null,
+        body: typeof entry.body === "string" ? entry.body : "",
         closingIssues: closing
           .filter(isRecord)
           .map((ref) => ref.number)
@@ -272,7 +343,7 @@ async function fetchOpenPrs(
       "--limit",
       "100",
       "--json",
-      "number,baseRefName,headRefName,milestone,closingIssuesReferences",
+      "number,baseRefName,headRefName,milestone,closingIssuesReferences,author,body",
     ]);
     return parseOpenPrs(raw);
   } catch (err) {
@@ -352,6 +423,8 @@ interface RetargetOptions {
   ghCommandFn: GhCommandFn;
   /** Fleet identity the retarget-marker author check uses (Issue #1216). */
   dedupAuthors?: AlertDedupAuthorOptions;
+  /** Merge dry run (Issue #2022); omitted means "cannot tell", which allows. */
+  mergeWouldConflictFn?: MergeWouldConflictFn;
   log: (message: string) => void;
 }
 
@@ -372,6 +445,7 @@ async function retargetChildPrs(
     candidates,
     ghCommandFn,
     dedupAuthors,
+    mergeWouldConflictFn,
     log,
   } = options;
   let retargeted = 0;
@@ -388,6 +462,35 @@ async function retargetChildPrs(
       )
     ) {
       continue;
+    }
+
+    // Issue #2022: never turn a clean PR into a conflicting one. A dry run
+
+    // that cannot answer allows the retarget as before, and says so.
+
+    if (mergeWouldConflictFn) {
+      const conflicts = await mergeWouldConflictFn(
+        repo,
+        milestoneBranch,
+        pr.headRefName,
+      );
+
+      if (conflicts === true) {
+        log(
+          `Not retargeting ${repo}#${pr.number} at '${milestoneBranch}': ` +
+            `merging its head '${pr.headRefName}' there would conflict, so ` +
+            `it stays on '${defaultBranch}' (Issue #2022)`,
+        );
+
+        continue;
+      }
+
+      if (conflicts === null) {
+        log(
+          `Merge dry run for ${repo}#${pr.number} onto '${milestoneBranch}' ` +
+            `could not be read — retargeting as before (Issue #2022)`,
+        );
+      }
     }
 
     const result = await retargetPrToMilestone(
@@ -487,6 +590,9 @@ export async function selfHealMilestoneBranches(
 
       // Fetched lazily and once per repo — most cycles need no PR listing.
       let openPrs: OpenPr[] | null | undefined;
+      // Issue #2022: the fleet's own logins, resolved once per repository;
+      // only a PR one of them raised may be retargeted.
+      let fleetLogins: string[] | undefined;
 
       for (const milestone of milestones) {
         // Idle-task milestones never carry a milestone branch — the findings
@@ -584,6 +690,19 @@ export async function selfHealMilestoneBranches(
           openPrs = await fetchOpenPrs(repo, ghCommandFn, log);
         }
         if (openPrs === null) continue;
+        if (fleetLogins === undefined) {
+          fleetLogins = await resolveAlertDedupAuthors(
+            deps.dedupAuthors ?? {},
+            log,
+          );
+          if (fleetLogins.length === 0) {
+            log(
+              `Fleet identity unresolved for ${repo} — no PR can be shown ` +
+                `to be the fleet's own, so none is retargeted this cycle ` +
+                `(Issue #2022)`,
+            );
+          }
+        }
 
         const childIssueNumbers = new Set(
           children.children
@@ -593,11 +712,25 @@ export async function selfHealMilestoneBranches(
         // The milestone's own delivery PR (head = the milestone branch,
         // closing the children) is not a child on the wrong base — retargeting
         // it onto its own head is refused by GitHub every cycle (Issue #4360).
-        const candidates = openPrs.filter((pr) =>
+        const onDefaultBranch = openPrs.filter((pr) =>
           pr.baseRefName === defaultBranch &&
           pr.headRefName !== milestoneBranch &&
           prBelongsToMilestone(pr, milestone.title, childIssueNumbers)
         );
+        // Issue #2022: a PR the fleet did not raise is not the fleet's to
+        // move. It is left exactly as its author raised it — logged once so
+        // the decision is visible, never commented on or labelled.
+        const logins = fleetLogins;
+        const candidates = onDefaultBranch.filter((pr) => {
+          if (logins.length > 0 && isFleetRaisedPr(pr, logins)) return true;
+          log(
+            `Leaving ${repo}#${pr.number} on '${defaultBranch}': it belongs ` +
+              `to milestone '${milestone.title}' but was not raised by the ` +
+              `fleet (author ${pr.author ?? "unknown"}), so the worker does ` +
+              `not touch it (Issue #2022)`,
+          );
+          return false;
+        });
         if (candidates.length === 0) continue;
 
         const outcome = await retargetChildPrs({
@@ -608,6 +741,7 @@ export async function selfHealMilestoneBranches(
           candidates,
           ghCommandFn,
           dedupAuthors: deps.dedupAuthors,
+          mergeWouldConflictFn: deps.mergeWouldConflictFn,
           log,
         });
         prsRetargeted += outcome.retargeted;

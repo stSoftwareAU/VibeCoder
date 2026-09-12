@@ -419,6 +419,19 @@ To disable milestone branch sync entirely, set `sync_milestone_branches: false` 
 - A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
 - This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 
+### Which PRs the self-heal may retarget (Issue #2022)
+
+The milestone **self-heal** (Issue #3912) runs just before the sync. It recreates a milestone branch that was deleted while the milestone still had open children, and it retargets an open child PR that is still based on the default branch at the milestone branch, with one explanatory comment.
+
+The retarget is allowed only for a PR the fleet itself raised. Admission requires **both** signals, checked in [`milestone_branch_self_heal.ts`](../../worker/deno/lib/milestone_branch_self_heal.ts) `isFleetRaisedPr`:
+
+- the PR's author is one of the fleet's logins (`service_accounts` / `fleet_pr_authors`, the same maintenance set every PR scan uses); and
+- the PR body carries the worker's own marker (`<!-- vibe-worker-issue-N -->`), which every PR the worker raises has.
+
+A branch named `issue-<n>-…` is not evidence — people use that shape too — and neither is the author on its own. A PR that fails the test is left exactly as its author raised it: no base change, no comment, no label, one log line saying why. If the fleet identity cannot be resolved, nothing is retargeted that cycle.
+
+A fleet PR is also **not** retargeted when merging its head onto the milestone branch would conflict. The worker dry-runs the merge in its clone (`git merge-tree --write-tree`) first; a conflicting result leaves the PR where it is, and a dry run that cannot answer allows the retarget as before and says so. The pass exists to stop work landing outside the milestone, not to manufacture conflicts for the merge-conflict lane to spend an hour on.
+
 ## 🏷️ Issue ordering within milestones
 
 By default, issues within a milestone are processed oldest-first (by creation date). You can override this order using **priority labels** to control which milestone issue the worker picks next.

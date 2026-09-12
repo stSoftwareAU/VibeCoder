@@ -165,6 +165,7 @@ import {
 import { updatePrBranch } from "./git_pull.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
+  assertSafeGitRef,
   buildCheckoutArgs,
   buildFetchArgs,
   buildPullArgs,
@@ -5017,6 +5018,39 @@ async function syncMilestoneBranchesFn(
         ensureDefaultBranchCurrent,
       ),
     localCloneExistsFn,
+    // Issue #2022: a fleet PR is not retargeted onto a milestone branch it
+    // would conflict with. A dry run in the host's clone: fetch both refs,
+    // then `merge-tree --write-tree`, which exits 1 on conflicts and writes
+    // nothing to the working tree.
+    mergeWouldConflictFn: async (repo, milestoneBranch, headRefName) => {
+      const cwd = `${workDir}/${repo.split("/")[1]}`;
+      try {
+        assertSafeGitRef(milestoneBranch, "merge dry-run base");
+        assertSafeGitRef(headRefName, "merge dry-run head");
+        for (const ref of [milestoneBranch, headRefName]) {
+          const fetched = await runGitCommand(buildFetchArgs("origin", ref), {
+            cwd,
+          });
+          if (!fetched.ok || fetched.value.code !== 0) return null;
+        }
+        const tree = await runGitCommand(
+          [
+            "merge-tree",
+            "--write-tree",
+            "--end-of-options",
+            `origin/${milestoneBranch}`,
+            `origin/${headRefName}`,
+          ],
+          { cwd },
+        );
+        if (!tree.ok) return null;
+        if (tree.value.code === 0) return false;
+        if (tree.value.code === 1) return true;
+        return null;
+      } catch {
+        return null;
+      }
+    },
     log: (msg: string) => logger.info(msg),
   });
 
