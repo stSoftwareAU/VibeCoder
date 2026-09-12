@@ -119,10 +119,14 @@ export function formatRepoFastFailureBody(
     `**Failing phase:** \`${safeForBody(state.lastPhase ?? "unknown")}\``,
     `**Host:** \`${machineId}\``,
     "",
-    "## Last error line",
+    "## Last error",
+    "",
+    "The last line of the failure that names a cause — git's own summary " +
+    "lines are stepped over, so a refused push shows the refusal rather " +
+    "than `failed to push some refs` (Issue #2034).",
     "",
     "```",
-    safeForBody(state.lastDetail ?? "(no error line captured)"),
+    safeForBody(state.lastDetail ?? "(no error captured)"),
     "```",
     "",
     "Closing this issue releases the back-off on the next scan; otherwise it " +

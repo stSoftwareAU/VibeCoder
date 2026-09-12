@@ -1872,7 +1872,7 @@ the PID — so the counters survive a worker restart.
 flowchart TD
     R["Run released with no PR"] --> F{"Fast failure?<br/>zero_output, or<br/>under fast_failure_seconds"}
     F -- "no" --> K["Nothing recorded"]
-    F -- "yes" --> C["Record the event:<br/>phase + last error line"]
+    F -- "yes" --> C["Record the event:<br/>phase + the diagnostic error line"]
     C --> T{"repo_fast_failure_threshold<br/>reached inside the window?"}
     T -- "no" --> K
     T -- "yes" --> B["Repository backed off —<br/>excluded from the claim scan"]
@@ -1901,8 +1901,12 @@ flowchart TD
 - **Exactly one diagnostic per repository.** Deduplicated on the body marker
   `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`, and only when a fleet
   account authored the match — a marker in a body is text anyone can write.
-  It carries the failing phase and the last error line. Closing it releases
-  the back-off on the next scan.
+  It carries the failing phase and the last error line that names a cause —
+  git's own summary lines (`error: failed to push some refs to '<url>'`,
+  `To <url>`, trailing `hint:` advice) are stepped over, so a run that died
+  on a refused push reports the refusal rather than the bare fact that a
+  push failed (Issue #2034). Closing it releases the back-off on the next
+  scan.
 - **Where it is filed.** `stSoftwareAU/VibeCoder` by default, matching the
   run-failure filing policy: a repository failing in its first minute is a
   worker-side environment fault. Set `fast_failure_diagnostics_here` in that
