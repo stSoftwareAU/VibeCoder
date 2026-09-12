@@ -95,6 +95,6 @@ which is skipped on this host regardless of the change.
   still escalates. No existing test was modified or removed.
 - Related suites re-run: `both_inserted_conflict_rule_test.ts`,
   `json_insertion_union_test.ts`, `milestone_conflict_ladder_test.ts`,
-  `milestone_conflict_triage_test.ts`, `milestone_conflict_dedup_test.ts`,
-  `milestone_conflict_ported_test.ts` — 93 passed, 0 failed.
+  `milestone_conflict_triage_test.ts`, `dependency_conflict_apply_test.ts` —
+  84 passed, 0 failed. The gate's own `deno tests` stage covers the rest.
 - Full gate: `./quality.sh` — PASSED.
