@@ -392,6 +392,120 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "syncMilestoneBranchWithDefault - a .json the structural union refuses says why, alongside the parse failure (Issue #2013)",
+  async () => {
+    // A hand-formatted empty array (`[\n  ]`) is not what JSON.stringify
+    // emits, so the structural union declines rather than reformat lines
+    // neither side touched. The textual union then leaves two objects with no
+    // comma between them, exactly as before — but the escalation now also
+    // names why the by-value merge was not available, so a human reading it is
+    // not left to guess which rung declined.
+    const fx = await setup(
+      { "docs/audits/ledger.json": '{\n  "entries": [\n  ]\n}\n' },
+      {
+        files: {
+          "docs/audits/ledger.json":
+            '{\n  "entries": [\n    { "id": "branch" }\n  ]\n}\n',
+        },
+        subject: "Issue #2013: the branch's audit entry",
+      },
+      {
+        files: {
+          "docs/audits/ledger.json":
+            '{\n  "entries": [\n    { "id": "main" }\n  ]\n}\n',
+        },
+        subject: "Issue #2013: main's audit entry",
+      },
+    );
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+      );
+
+      assert(!result.ok, "an unparseable JSON union must not be written");
+      assert(isConflictEscalation(result.error));
+      assertStringIncludes(result.error.message, "does not parse as JSON");
+      assertStringIncludes(
+        result.error.message,
+        "it was not unioned as JSON first",
+      );
+      assertStringIncludes(result.error.message, "round-trip");
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - two appended ledger slices are unioned by value, not escalated (Issue #2013)",
+  async () => {
+    // The shape `docs/audits/lib-sweep-coverage.json` actually produces: each
+    // branch appends a slice to the same array, so the hunk falls *inside* the
+    // appended object and no arrangement of the two sides' text is valid JSON.
+    // The textual union could only refuse it; the structural one merges it.
+    const ledger = (slices: { slice: string; files: number }[]): string =>
+      JSON.stringify({ slices }, null, 2) + "\n";
+    const seed = { slice: "seed", files: 1 };
+    const path = "docs/audits/lib-sweep-coverage.json";
+    const fx = await setup(
+      { [path]: ledger([seed]) },
+      {
+        files: { [path]: ledger([seed, { slice: "milestone", files: 3 }]) },
+        subject: "Issue #2013: the branch's sweep slice",
+      },
+      {
+        files: { [path]: ledger([seed, { slice: "main", files: 5 }]) },
+        subject: "Issue #2013: main's sweep slice",
+      },
+    );
+    try {
+      const published = (await gitOk(["rev-parse", "milestone/1559"], fx.clone))
+        .trim();
+
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1559",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+      );
+
+      assert(
+        result.ok,
+        `expected the JSON ledger union to land: ${
+          !result.ok && result.error.message
+        }`,
+      );
+      // Both slices survive, the default branch's first, in the file's own
+      // formatting — and the result is a document that parses.
+      assertEquals(
+        await Deno.readTextFile(`${fx.clone}/${path}`),
+        ledger([
+          seed,
+          { slice: "main", files: 5 },
+          { slice: "milestone", files: 3 },
+        ]),
+      );
+      assertEquals(result.value.conflict?.decisions?.[0]?.action, "union");
+      assertEquals(
+        result.value.conflict?.decisions?.[0]?.case,
+        "both-inserted",
+      );
+      assert(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim() !== published,
+        "the resolution should have been committed",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
 // ---------------------------------------------------------------------------
 // A resolution that cannot be verified is not a resolution
 // ---------------------------------------------------------------------------

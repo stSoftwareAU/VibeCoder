@@ -113,8 +113,14 @@ export function isBothInsertedCandidate(path: string): boolean {
   return !OWNED_ELSEWHERE.has(baseName(path));
 }
 
-/** Whether a path is a JSON document, which is unioned by value (Issue #1968). */
-function isJsonPath(path: string): boolean {
+/**
+ * Whether a path is a JSON document, which is unioned by value (Issue #1968).
+ *
+ * Exported because the milestone ladder's union rung asks the same question of
+ * the same paths (Issue #2013), and two spellings of "is this JSON" could drift
+ * into two different answers.
+ */
+export function isJsonPath(path: string): boolean {
   return baseName(path).endsWith(".json");
 }
 
@@ -239,9 +245,11 @@ export function resolveBothInserted(
  * other format has no such check and is not blocked by one.
  *
  * This rule no longer needs it — a `.json` path takes the structured union
- * above, which cannot produce an invalid document — but the milestone ladder's
- * union merge (`milestone_conflict_git.ts`) still text-unions with
- * `git merge-file --union`, and that is the rung this guard now protects.
+ * above, which cannot produce an invalid document — and since Issue #2013 the
+ * milestone ladder's union merge (`milestone_conflict_git.ts`) tries that same
+ * structured union first. It still falls back to `git merge-file --union` for
+ * anything the structured union refuses, so that fallback is the rung this
+ * guard now protects.
  */
 export function unionIsWellFormed(path: string, text: string): boolean {
   if (!isJsonPath(path)) return true;

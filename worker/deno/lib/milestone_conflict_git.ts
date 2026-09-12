@@ -18,7 +18,11 @@
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
-import { unionIsWellFormed } from "./both_inserted_conflict_rule.ts";
+import {
+  isJsonPath,
+  unionIsWellFormed,
+} from "./both_inserted_conflict_rule.ts";
+import { unionJsonInsertions } from "./json_insertion_union.ts";
 import {
   buildAddPathArgs,
   buildCheckoutStrategyArgs,
@@ -270,42 +274,28 @@ export type UnionOrder =
   | "default-first";
 
 /**
- * Merge one conflicted file as a **union**: both sides' hunks kept.
+ * Union the two sides' **text** with `git merge-file --union`.
  *
- * This is the resolution a test-file conflict gets when neither side contains
- * the other, because taking a side would drop cases, and the resolution an
- * append-only ledger gets when both sides only appended (Issue #1768). The
- * result is checked before it is staged — every case name on either side must
- * survive it, and a `.json` result must parse — and the merged tree still has
- * to pass the repository's own check and unit suite afterwards, so a union that
- * produces nonsense is rolled back rather than pushed.
+ * `git merge-file` works on files, not index specs, so the three stages are
+ * materialised in a scratch directory that is removed either way. `--union`
+ * keeps both sides whichever way round they are given; which file comes first
+ * is only what the merged text says first.
  *
- * @param order - Which side's hunk comes first in the merged text
- * @returns null when the union was staged; the reason it could not be, otherwise
+ * @returns the merged text, or the reason it could not be produced
  */
-export async function unionMergeConflictedFile(
-  file: ConflictedFile,
+async function textUnionMerge(
+  ours: string,
+  theirs: string,
+  baseText: string,
+  order: UnionOrder,
   options: GitCommandOptions,
-  order: UnionOrder = "milestone-first",
-): Promise<string | null> {
-  if (file.ours === null || file.theirs === null) {
-    return "one side has no version of the file, so there is nothing to union";
-  }
-  // `git merge-file` works on files, not index specs, so the three stages are
-  // materialised in a scratch directory that is removed either way. Stage 1
-  // is absent for an add/add conflict — an empty base is exactly right there.
-  const base = await runGitCommand(["show", `:1:${file.path}`], options);
+): Promise<Result<string, string>> {
   const scratch = await Deno.makeTempDir({ prefix: "vibe-union-" });
   let merged: { code: number; stdout: string; stderr: string };
   try {
-    await Deno.writeTextFile(`${scratch}/ours`, file.ours);
-    await Deno.writeTextFile(
-      `${scratch}/base`,
-      base.ok && base.value.code === 0 ? base.value.stdout : "",
-    );
-    await Deno.writeTextFile(`${scratch}/theirs`, file.theirs);
-    // `git merge-file --union` keeps both sides whichever way round they are
-    // given; which file is first is only what the merged text says first.
+    await Deno.writeTextFile(`${scratch}/ours`, ours);
+    await Deno.writeTextFile(`${scratch}/base`, baseText);
+    await Deno.writeTextFile(`${scratch}/theirs`, theirs);
     const first = order === "default-first" ? "theirs" : "ours";
     const last = order === "default-first" ? "ours" : "theirs";
     const label = (side: string) =>
@@ -328,13 +318,19 @@ export async function unionMergeConflictedFile(
       options,
     );
     if (!result.ok) {
-      return `a union merge of this file failed: ${result.error.message}`;
+      return {
+        ok: false,
+        error: `a union merge of this file failed: ${result.error.message}`,
+      };
     }
     merged = result.value;
   } catch (err) {
-    return `a union merge of this file could not be prepared: ${
-      err instanceof Error ? err.message : String(err)
-    }`;
+    return {
+      ok: false,
+      error: `a union merge of this file could not be prepared: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
   } finally {
     await Deno.remove(scratch, { recursive: true }).catch(() => undefined);
   }
@@ -342,9 +338,82 @@ export async function unionMergeConflictedFile(
   // `git merge-file` exits with the number of remaining conflicts; a union
   // merge leaves none, so anything non-zero means it did not do the job.
   if (merged.code !== 0) {
-    return `a union merge of this file failed: ${
-      merged.stderr.trim() || `git merge-file exited ${merged.code}`
-    }`;
+    return {
+      ok: false,
+      error: `a union merge of this file failed: ${
+        merged.stderr.trim() || `git merge-file exited ${merged.code}`
+      }`,
+    };
+  }
+  return { ok: true, value: merged.stdout };
+}
+
+/**
+ * Merge one conflicted file as a **union**: both sides' hunks kept.
+ *
+ * This is the resolution a test-file conflict gets when neither side contains
+ * the other, because taking a side would drop cases, and the resolution an
+ * append-only ledger gets when both sides only appended (Issue #1768). The
+ * result is checked before it is staged — every case name on either side must
+ * survive it, and a `.json` result must parse — and the merged tree still has
+ * to pass the repository's own check and unit suite afterwards, so a union that
+ * produces nonsense is rolled back rather than pushed.
+ *
+ * ## A `.json` ledger is unioned by value first (Issue #2013)
+ *
+ * Two branches that each append a slice to `docs/audits/*.json` conflict
+ * *inside* the appended object, so no arrangement of the two hunks' text is
+ * valid JSON: the textual union could only ever produce a document the
+ * well-formedness check below has to refuse, and this rung escalated that to a
+ * human. The PR-merge rung learnt the same lesson in #1968, so a `.json` path
+ * with a merge base is unioned **by value** first, through
+ * `json_insertion_union.ts` — which does its own insertion-only checking and
+ * re-serialises in the file's own formatting. Anything it refuses (a deletion,
+ * a conflicting edit, formatting it would not reproduce) falls back to the
+ * textual union exactly as before, and its reason is carried into the refusal
+ * so a human reading the escalation is told why the structural merge declined.
+ *
+ * @param order - Which side's hunk comes first in the merged text
+ * @returns null when the union was staged; the reason it could not be, otherwise
+ */
+export async function unionMergeConflictedFile(
+  file: ConflictedFile,
+  options: GitCommandOptions,
+  order: UnionOrder = "milestone-first",
+): Promise<string | null> {
+  if (file.ours === null || file.theirs === null) {
+    return "one side has no version of the file, so there is nothing to union";
+  }
+  // Stage 1 is the merge base. It is absent for an add/add conflict, which is
+  // "there is no base" rather than "the base was empty" — the structural JSON
+  // union needs a real one, and the textual union treats it as empty text.
+  const base = await runGitCommand(["show", `:1:${file.path}`], options);
+  const baseText = base.ok && base.value.code === 0 ? base.value.stdout : null;
+
+  // `unionJsonInsertions` emits its `theirs` argument's insertions first, and
+  // `file.theirs` is the default branch's side — so the two are passed
+  // straight through for "default-first" and swapped for "milestone-first".
+  const structured = isJsonPath(file.path) && baseText !== null
+    ? unionJsonInsertions(
+      baseText,
+      order === "default-first" ? file.ours : file.theirs,
+      order === "default-first" ? file.theirs : file.ours,
+    )
+    : null;
+
+  let mergedText: string;
+  if (structured?.ok) {
+    mergedText = structured.value;
+  } else {
+    const text = await textUnionMerge(
+      file.ours,
+      file.theirs,
+      baseText ?? "",
+      order,
+      options,
+    );
+    if (!text.ok) return text.error;
+    mergedText = text.value;
   }
 
   const wanted = [
@@ -353,7 +422,7 @@ export async function unionMergeConflictedFile(
       ...extractTestNames(file.theirs),
     ]),
   ];
-  const kept = new Set(extractTestNames(merged.stdout));
+  const kept = new Set(extractTestNames(mergedText));
   const lost = wanted.filter((name) => !kept.has(name));
   if (lost.length > 0) {
     return `a union merge of this file would lose ${lost.length} case(s): ${
@@ -363,15 +432,20 @@ export async function unionMergeConflictedFile(
 
   // A JSON ledger whose union does not parse is not a resolution (Issue
   // #1768): two entries appended into the same array leave the document
-  // invalid, and an invalid document must never be written or staged.
-  if (!unionIsWellFormed(file.path, merged.stdout)) {
+  // invalid, and an invalid document must never be written or staged. The
+  // structural union above cannot produce one, so reaching here with a `.json`
+  // path means it declined — and its reason is the one worth reporting.
+  if (!unionIsWellFormed(file.path, mergedText)) {
+    const why = structured && !structured.ok
+      ? ` (it was not unioned as JSON first: ${structured.error})`
+      : "";
     return "the union of both sides does not parse as JSON, so it was not " +
-      "written";
+      `written${why}`;
   }
 
   const cwd = options.cwd ?? ".";
   try {
-    await Deno.writeTextFile(`${cwd}/${file.path}`, merged.stdout);
+    await Deno.writeTextFile(`${cwd}/${file.path}`, mergedText);
   } catch (err) {
     return `the union of both sides could not be written: ${
       err instanceof Error ? err.message : String(err)
