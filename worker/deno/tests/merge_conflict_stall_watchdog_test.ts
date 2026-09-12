@@ -27,8 +27,15 @@ import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
+  conflictPrKey,
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
+import { readConflictDeferrals } from "../lib/merge_conflict_deferrals.ts";
+import {
+  loadSyncStreaks,
+  milestoneSyncStreakPath,
+  syncStreakKey,
+} from "../lib/milestone_sync_streak.ts";
 import {
   ESCALATED_AS_WORK_LABEL,
   type WorkEscalation,
@@ -253,7 +260,7 @@ Deno.test("detectConflictQueueStall - parked PRs are excluded", () => {
   }
 });
 
-Deno.test("detectConflictQueueStall - the threshold defaults to twice the cooldown", () => {
+Deno.test("detectConflictQueueStall - the threshold is pinned at eight hours (Issue #2018)", () => {
   assertEquals(DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS, 8);
   assertEquals(detect(observation(7.9)), null);
   assert(detect(observation(8.1)) !== null);
@@ -294,6 +301,7 @@ Deno.test("buildConflictStallComment - names the age, the silence and the skip r
 function fakeGitHub(
   prComments: Record<string, unknown>[] = [],
   mergeableState = "CONFLICTING",
+  headRefName?: string,
 ) {
   const calls: string[][] = [];
   const labelled: string[] = [];
@@ -312,6 +320,7 @@ function fakeGitHub(
         number: PR,
         labels: [{ name: MERGE_CONFLICT_LABEL }],
         mergeable: mergeableState,
+        ...(headRefName !== undefined ? { headRefName } : {}),
       }]));
     }
     if (verb === "api" && args[1]?.includes("/timeline")) {
@@ -718,4 +727,40 @@ Deno.test("scanConflictQueueStalls - an ordinary listing failure is still report
   assertEquals(listed, ["org/a", "org/b"], "every repository is still visited");
   assertEquals(captured.warnings.length, 2);
   assertStringIncludes(captured.warnings[0]!, "failed to list labelled PRs");
+});
+
+Deno.test("scanConflictQueueStalls - a stalled ordinary head is first next pass (Issue #2019)", async () => {
+  const github = fakeGitHub([], "CONFLICTING", "issue-116-fix");
+  const work = fakeEscalateWork();
+  const dir = await Deno.makeTempDir({ prefix: "issue-2019-stall-" });
+  try {
+    const stalls = await scanConflictQueueStalls({
+      ...scanOptions(github, work),
+      workDir: dir,
+    });
+    assertEquals(stalls.length, 1);
+    const state = await readConflictDeferrals(dir);
+    assertEquals(state.get(conflictPrKey(REPO, PR))?.bound, "stalled");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("scanConflictQueueStalls - a stalled milestone head records agentDeferredSince (Issue #2019)", async () => {
+  const github = fakeGitHub([], "CONFLICTING", "milestone/116");
+  const work = fakeEscalateWork();
+  const dir = await Deno.makeTempDir({ prefix: "issue-2019-ms-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const stalls = await scanConflictQueueStalls({
+      ...scanOptions(github, work),
+      streakPath,
+    });
+    assertEquals(stalls.length, 1);
+    const streaks = await loadSyncStreaks(streakPath);
+    const entry = streaks[syncStreakKey(REPO, "milestone/116")];
+    assertEquals(typeof entry?.agentDeferredSince, "string");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

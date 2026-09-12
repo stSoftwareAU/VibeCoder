@@ -147,6 +147,20 @@ function makeGit(
       captured.gitArgs.push(args);
       captured.events.push(`git:${args.slice(0, 2).join(" ")}`);
 
+      if (args[0] === "rev-parse" && args[1] === "HEAD") {
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: `${"b".repeat(40)}\n`, stderr: "" },
+        });
+      }
+
+      if (args[0] === "rev-parse" && args[1]?.startsWith("origin/")) {
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: `${"a".repeat(40)}\n`, stderr: "" },
+        });
+      }
+
       if (args[0] === "rev-parse" && args.includes("--is-shallow-repository")) {
         return Promise.resolve({
           ok: true,
@@ -492,7 +506,17 @@ Deno.test("buildConflictEscalationReason - names the files and the failure", () 
 // ---------------------------------------------------------------------------
 
 Deno.test("processMergeConflict - resolves a conflict, pushes, comments and clears the label", async () => {
-  const { captured, result } = await runProcessor(makeInput(), makeGitScript());
+  const closedOut: number[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    {
+      resolveWorkEscalation: (_repo, prNumber) => {
+        closedOut.push(prNumber);
+        return Promise.resolve();
+      },
+    },
+  );
 
   assert(result.ok);
   assertEquals(result.value.merged, true);
@@ -500,6 +524,7 @@ Deno.test("processMergeConflict - resolves a conflict, pushes, comments and clea
   assertEquals(captured.agentRuns, 1);
   assertEquals(captured.commitAndPushCalls, 1);
   assertEquals(captured.labelsRemoved, [MERGE_CONFLICT_LABEL]);
+  assertEquals(closedOut, [48]);
 
   const resolved = captured.comments.at(-1) ?? "";
   assertStringIncludes(resolved, CONFLICT_RESOLVED_MARKER);
@@ -510,6 +535,8 @@ Deno.test("processMergeConflict - records the attempt before touching the branch
 
   const firstComment = captured.comments[0] ?? "";
   assertStringIncludes(firstComment, CONFLICT_ATTEMPT_MARKER);
+  assertStringIncludes(firstComment, `base="${"a".repeat(40)}"`);
+  assertStringIncludes(firstComment, `head="${"b".repeat(40)}"`);
   assertStringIncludes(
     firstComment,
     `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,

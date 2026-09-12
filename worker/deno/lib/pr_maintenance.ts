@@ -108,6 +108,12 @@ export interface PrEntry {
    * posted before it (Issue #1770).
    */
   mergedAt?: string | null;
+  /**
+   * Labels, when the listing asked for them (Issue #2017). `gh pr list
+   * --json labels` returns `{ name }` objects; a string name is also
+   * accepted so fixtures stay cheap.
+   */
+  labels?: Array<{ name?: string } | string> | null;
 }
 
 /** Comment entry from the GitHub API. */
@@ -359,7 +365,7 @@ export interface CiCheckScanOptions extends PrScanOptions {
  * harmless to callers, which read only what they use.
  */
 export const PR_MAINTENANCE_LIST_FIELDS =
-  "number,title,headRefName,headRefOid,baseRefName,autoMergeRequest,createdAt,updatedAt,author,mergeable";
+  "number,title,headRefName,headRefOid,baseRefName,autoMergeRequest,createdAt,updatedAt,author,mergeable,labels";
 
 /**
  * Explicit page size for the cached superset listing (Issue #4303). The

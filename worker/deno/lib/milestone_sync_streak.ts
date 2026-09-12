@@ -127,11 +127,18 @@ export interface SyncStreakEntry {
   analysisEscalatedSha?: string;
   /**
    * Conflict-resolution attempts that reached a **failed** conclusion
-   * (Issue #1766). Only {@link resetConflictLedgerOnSuccess} zeroes it — a
-   * moved default tip does not, or a branch conflicting against a busy
-   * default branch would never exhaust anything.
+   * (Issue #1766). A moved default tip zeroes it (Issue #2016): the conflict
+   * in front of the branch is a different one, so the spent budget does not
+   * carry across.
    */
   conflictAttempts?: number;
+  /**
+   * ISO timestamp of the first `agent deferred: cycle budget` conclusion
+   * that is still outstanding (Issue #2016). Kept across further deferrals
+   * so the next cycle can rotate this branch to the front. Cleared by a
+   * charged failure or a successful sync.
+   */
+  agentDeferredSince?: string;
   /**
    * ISO timestamp of an attempt that opened and has not concluded. An open
    * attempt reads as disrupted rather than failed and is never charged,
@@ -288,10 +295,12 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const deferUntil = optionalText(entry.deferUntil);
   const syncedSha = optionalText(entry.lastSyncedDefaultSha);
   const lastAttempt = readLastAttempt(entry.lastAttempt);
+  const agentDeferredSince = optionalText(entry.agentDeferredSince);
   const revertedPrs = readPositiveInts(entry.revertedPrs);
   const revertedShas = readShaList(entry.revertedShas);
   return {
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
+    ...(agentDeferredSince ? { agentDeferredSince } : {}),
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
     // An unparseable deferral is kept, not dropped: dropping it would read a
@@ -349,7 +358,9 @@ function clearDeferralIfTipMoved(
     return entry;
   }
   const { deferUntil: _deferred, ...rest } = entry;
-  return rest;
+  // Issue #2016: a moved tip is a different conflict, so the spent budget
+  // does not carry across.
+  return { ...rest, conflictAttempts: 0 };
 }
 
 /**
@@ -397,9 +408,11 @@ export function concludeConflictAttempt(
     // way `recordDefaultSha` does. Without this the ledger would keep pacing
     // the branch against a conflict that no longer exists.
     : clearDeferralIfTipMoved(rest, defaultSha);
-  return {
+  const next: SyncStreakEntry = {
     ...paced,
-    conflictAttempts: (entry.conflictAttempts ?? 0) + (charged ? 1 : 0),
+    conflictAttempts: charged
+      ? (entry.conflictAttempts ?? 0) + 1
+      : (paced.conflictAttempts ?? entry.conflictAttempts ?? 0),
     lastAttempt: {
       at: new Date(nowMs).toISOString(),
       outcome,
@@ -414,6 +427,13 @@ export function concludeConflictAttempt(
       }
       : {}),
   };
+  if (charged) {
+    delete next.agentDeferredSince;
+  } else if (reason === "agent deferred: cycle budget") {
+    next.agentDeferredSince = entry.agentDeferredSince ??
+      new Date(nowMs).toISOString();
+  }
+  return next;
 }
 
 /**
@@ -460,11 +480,10 @@ export function isConflictAttemptDue(
  * Record the default-branch tip this branch has been measured against
  * (Issue #1766).
  *
- * A moved tip clears the deferral — the conflict to be resolved is a new one,
- * so waiting out a cooldown set for the old one helps nobody — but it never
- * touches {@link SyncStreakEntry.conflictAttempts}. A busy default branch
- * would otherwise refill the budget faster than the ladder could spend it,
- * and a genuinely unresolvable conflict would retry forever.
+ * A moved tip clears the deferral and zeroes
+ * {@link SyncStreakEntry.conflictAttempts} (Issue #2016): the conflict to
+ * be resolved is a new one, so waiting out a cooldown — or carrying a
+ * spent budget — set for the old one helps nobody.
  */
 export function recordDefaultSha(
   entry: SyncStreakEntry,
@@ -488,7 +507,12 @@ export function recordDefaultSha(
 export function resetConflictLedgerOnSuccess(
   entry: SyncStreakEntry,
 ): SyncStreakEntry {
-  const { attemptOpenedAt: _opened, deferUntil: _deferred, ...rest } = entry;
+  const {
+    attemptOpenedAt: _opened,
+    deferUntil: _deferred,
+    agentDeferredSince: _deferredSince,
+    ...rest
+  } = entry;
   return { ...rest, conflictAttempts: 0 };
 }
 

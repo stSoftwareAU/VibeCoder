@@ -26,6 +26,7 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { MERGE_CONFLICT_AGENT_FLOOR_MS } from "../lib/merge_conflict_drain.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
@@ -586,6 +587,29 @@ Deno.test("run_core dispatch - Planning Mode declares an agent floor of planning
   assertEquals(
     table.find((h) => h.name === "CI Fix")?.agentFloorMs,
     undefined,
+  );
+  assertEquals(
+    table.find((h) => h.name === "Resolve PR Merge Conflicts")?.agentFloorMs,
+    MERGE_CONFLICT_AGENT_FLOOR_MS,
+  );
+  assertEquals(
+    table.find((h) => h.name === "Milestone Branch Sync")?.agentFloorMs,
+    MERGE_CONFLICT_AGENT_FLOOR_MS,
+  );
+});
+
+Deno.test("run_core watchdog - five minutes left still grants the merge-conflict floor (Issue #2015)", () => {
+  const now = 3_300_000;
+  const endTime = 3_600_000;
+  assertEquals(
+    handlerHardTimeoutMs(
+      600,
+      true,
+      endTime,
+      now,
+      MERGE_CONFLICT_AGENT_FLOOR_MS,
+    ),
+    MERGE_CONFLICT_AGENT_FLOOR_MS,
   );
 });
 

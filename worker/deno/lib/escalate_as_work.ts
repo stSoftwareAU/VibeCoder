@@ -58,6 +58,7 @@
 
 import type { Logger, Result } from "../types.ts";
 import {
+  ALERT_DEDUP_JSON_FIELDS,
   ALERT_DEDUP_TITLE_JSON_FIELDS,
   type AlertDedupAuthorOptions,
   type AlertDedupRow,
@@ -313,5 +314,118 @@ export async function escalateAsWork(
       ok: false,
       error: error instanceof Error ? error : new Error(String(error)),
     };
+  }
+}
+
+/**
+ * Close the work-escalation record when the blockage has cleared
+ * (Issue #2017).
+ *
+ * Finds the open fleet-authored issue carrying
+ * {@link workEscalationMarker}, comments that the conflict cleared, closes
+ * it, and removes {@link ESCALATED_AS_WORK_LABEL} from the PR. Missing
+ * artefacts are a no-op: a PR that never escalated, or whose label is
+ * already gone, must not become an error.
+ */
+export async function resolveWorkEscalation(
+  repo: string,
+  prNumber: number,
+  deps: EscalateAsWorkDeps = {},
+): Promise<void> {
+  const gh = deps.gh ?? defaultGh;
+  const marker = workEscalationMarker(repo, prNumber);
+  const debug = (message: string, extra?: Record<string, unknown>) => {
+    deps.logger?.debug?.(message, { repo, prNumber, ...extra });
+  };
+
+  try {
+    const listed = await gh([
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--search",
+      `"${marker}" in:body`,
+      "--json",
+      ALERT_DEDUP_JSON_FIELDS,
+    ]);
+    let issueNumber: number | undefined;
+    try {
+      const parsed = JSON.parse(listed || "[]") as AlertDedupRow[];
+      const matches = parsed.filter((issue) =>
+        typeof issue.body === "string" && issue.body.includes(marker)
+      );
+      const verified = await selectFleetAuthoredMatches(
+        matches,
+        `work-escalation closeout ${repo}#${prNumber}`,
+        deps,
+        (message) => debug(message),
+        "the issue is left open — a close must never land on an issue the " +
+          "fleet did not open",
+      );
+      issueNumber = verified[0]?.number;
+    } catch {
+      debug("Could not parse the work-escalation listing");
+    }
+
+    if (issueNumber !== undefined) {
+      try {
+        await gh([
+          "issue",
+          "comment",
+          String(issueNumber),
+          "--repo",
+          repo,
+          "--body",
+          `The merge conflict on PR #${prNumber} has cleared; this ` +
+          "escalation is no longer needed.",
+        ]);
+      } catch (error) {
+        debug("Could not comment on the work-escalation issue", {
+          issueNumber,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
+        await gh([
+          "issue",
+          "close",
+          String(issueNumber),
+          "--repo",
+          repo,
+          "--reason",
+          "completed",
+        ]);
+      } catch (error) {
+        debug("Could not close the work-escalation issue", {
+          issueNumber,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } else {
+      debug("No open work-escalation issue to close");
+    }
+  } catch (error) {
+    debug("Work-escalation closeout listing failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    await gh([
+      "issue",
+      "edit",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--remove-label",
+      ESCALATED_AS_WORK_LABEL,
+    ]);
+  } catch (error) {
+    debug("Could not remove the escalated label from the PR", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }

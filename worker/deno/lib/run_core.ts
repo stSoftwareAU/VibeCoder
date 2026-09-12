@@ -140,6 +140,7 @@ import {
 } from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
 import { runWithWatchdog } from "./handler_watchdog.ts";
+import { MERGE_CONFLICT_AGENT_FLOOR_MS } from "./merge_conflict_drain.ts";
 import { resolveStartPriority, type ScanCursor } from "./scan_cursor.ts";
 import {
   formatBuildStamp,
@@ -255,7 +256,10 @@ export interface PriorityHandler {
    * timeout plus the handler's post-agent tail allowance, so the budget can
    * never be smaller than the agent timeout it contains — even when the cycle
    * has no time left. Undefined for a handler with no post-agent tail, which
-   * keeps the Issue #4369 cycle-deadline bound unchanged.
+   * keeps the Issue #4369 cycle-deadline bound unchanged. A declared floor
+   * may keep the handler running past the cycle `endTime` by up to that
+   * amount, so a merge-conflict attempt started with just enough budget can
+   * still finish (Issue #2015).
    */
   agentFloorMs?: number;
   /**
@@ -1614,6 +1618,11 @@ export function buildPriorityDispatchTable(
       priority: 1.61,
       name: "Resolve PR Merge Conflicts",
       agentBacked: true,
+      // Issue #2015: one attempt is 20 min of agent time plus 4 min of
+      // clone / fetch / conclude work. The handler may run past the cycle
+      // deadline by up to this floor so an attempt started with just enough
+      // budget is not killed on the way to its conclusion.
+      agentFloorMs: MERGE_CONFLICT_AGENT_FLOOR_MS,
       maintenanceLane: true,
       // The cycle deadline is passed through (Issue #561): the pass drains
       // every due conflict rather than one per cycle, and needs to know how
@@ -1703,6 +1712,10 @@ export function buildPriorityDispatchTable(
       // deadline it is handed: the rung is offered at most once a cycle, and
       // only while the budget left covers a whole run.
       agentBacked: true,
+      // Issue #2015: the sync climbs the same agent rung as 1.61, so it
+      // keeps the same floor. A deferred branch is rotated to the front
+      // next cycle rather than being charged for a run it was never offered.
+      agentFloorMs: MERGE_CONFLICT_AGENT_FLOOR_MS,
       execute: (opts) =>
         deps.syncMilestoneBranches(opts).then((r) =>
           r.ok

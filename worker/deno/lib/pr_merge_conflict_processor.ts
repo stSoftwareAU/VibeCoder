@@ -90,8 +90,11 @@ import {
   CONFLICT_RESOLVED_MARKER,
   DEFAULT_MAX_CONFLICT_ATTEMPTS,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
+  formatConflictTipAttributes,
+  parseConflictTipSha,
   recordConflictDecision,
 } from "./pr_merge_conflict_scan.ts";
+import { resolveWorkEscalation } from "./escalate_as_work.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,6 +117,10 @@ export interface MergeConflictInput {
    * PR so a silent stall cannot masquerade as a quiet queue.
    */
   disruptedCount?: number;
+  /** Live base-branch tip this attempt is judged against (Issue #2014). */
+  baseSha?: string;
+  /** Live head-branch tip this attempt is judged against (Issue #2014). */
+  headSha?: string;
 }
 
 /** Outcome of one conflict-resolution attempt. */
@@ -222,6 +229,14 @@ export interface MergeConflictProcessorDeps {
    * naming that route — loud and non-destructive, never a silent close.
    */
   trustedAuthors?: readonly string[];
+  /**
+   * Clear the work-escalation record when a merge lands (Issue #2017).
+   * Defaults to {@link resolveWorkEscalation}.
+   */
+  resolveWorkEscalation?: (
+    repo: string,
+    prNumber: number,
+  ) => Promise<void>;
 }
 
 /** What the human must do when the worker gives up on a conflict. */
@@ -248,6 +263,24 @@ interface GitOutcome {
  * caller can mistake "could not run git" for "git said nothing was wrong"
  * (fail loud — Issue #3234).
  */
+/** Live tips after fetch + checkout (Issue #2014). Unparseable SHAs are omitted. */
+async function readConflictTips(
+  run: GitRunner,
+  cwd: string,
+  baseBranch: string,
+): Promise<{ baseSha?: string; headSha?: string }> {
+  const base = await git(run, ["rev-parse", `origin/${baseBranch}`], cwd);
+  const head = await git(run, ["rev-parse", "HEAD"], cwd);
+  return {
+    ...(parseConflictTipSha(base.stdout.trim()) !== undefined
+      ? { baseSha: parseConflictTipSha(base.stdout.trim()) }
+      : {}),
+    ...(parseConflictTipSha(head.stdout.trim()) !== undefined
+      ? { headSha: parseConflictTipSha(head.stdout.trim()) }
+      : {}),
+  };
+}
+
 async function git(
   run: GitRunner,
   args: string[],
@@ -322,9 +355,12 @@ export function buildAttemptComment(
   maxAttempts: number,
   baseBranch: string,
   disruptedCount: number = 0,
+  tips: { baseSha?: string; headSha?: string } = {},
 ): string {
   const lines = [
-    `${CONFLICT_ATTEMPT_MARKER} n="${attemptNumber}" -->`,
+    `${CONFLICT_ATTEMPT_MARKER} n="${attemptNumber}"${
+      formatConflictTipAttributes(tips)
+    } -->`,
     `🔀 **Merge-conflict resolution — attempt ${attemptNumber} of ${maxAttempts}**`,
     "",
     `This PR conflicts with \`${baseBranch}\`, so no CI can run on it. The ` +
@@ -489,12 +525,15 @@ export function buildFailedComment(
   baseBranch: string,
   failureDetail: string,
   conflictedFiles: readonly string[],
+  tips: { baseSha?: string; headSha?: string } = {},
 ): string {
   const files = conflictedFiles.length > 0
     ? ["", "Conflicted files:", ...conflictedFiles.map((f) => `- \`${f}\``)]
     : [];
   return [
-    `${CONFLICT_FAILED_MARKER} n="${attemptNumber}" -->`,
+    `${CONFLICT_FAILED_MARKER} n="${attemptNumber}"${
+      formatConflictTipAttributes(tips)
+    } -->`,
     `❌ **Merge-conflict resolution — attempt ${attemptNumber} of ${maxAttempts} failed**`,
     "",
     `Merging \`${baseBranch}\` in did not produce a mergeable branch: ` +
@@ -841,6 +880,12 @@ async function resolveConflict(
     );
   }
 
+  // Issue #2014: record the tips this attempt is judged against, so a later
+  // scan can reset the budget when either side has moved.
+  const liveTips = await readConflictTips(run, workDir, baseBranch);
+  input.baseSha = liveTips.baseSha;
+  input.headSha = liveTips.headSha;
+
   // Record the attempt before merging anything (Issue #84): the marker is
   // what a later scan reads to tell "this attempt was disrupted" from "no
   // attempt has run". It opens the attempt; only a conclusion posted below
@@ -850,6 +895,7 @@ async function resolveConflict(
     maxAttempts,
     baseBranch,
     input.disruptedCount ?? 0,
+    liveTips,
   );
   let attemptCommentId: number | null = null;
   try {
@@ -1196,6 +1242,19 @@ async function resolveConflict(
     });
   }
 
+  try {
+    const resolveEscalation = processorDeps.resolveWorkEscalation ??
+      ((targetRepo: string, targetPr: number) =>
+        resolveWorkEscalation(targetRepo, targetPr, { logger }));
+    await resolveEscalation(repo, prNumber);
+  } catch (err) {
+    logger.debug("Failed to close the work-escalation record", {
+      repo,
+      prNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   logger.info("Merge conflict resolved and pushed", {
     repo,
     prNumber,
@@ -1536,6 +1595,7 @@ async function failAttempt(
         input.baseBranch,
         failureDetail,
         conflictedFiles,
+        { baseSha: input.baseSha, headSha: input.headSha },
       ),
     );
   } catch (err) {

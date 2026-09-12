@@ -292,7 +292,7 @@ Deno.test("conflict ledger - a failure defers the same tip and not a moved one (
   );
 });
 
-Deno.test("conflict ledger - a moved tip clears the deferral but not the count (Issue #1766)", () => {
+Deno.test("conflict ledger - a moved tip clears the deferral and zeroes the count (Issue #2016)", () => {
   const failedAt = Date.parse("2026-09-09T00:00:00Z");
   const failed = concludeConflictAttempt(
     { count: 0, escalated: false, conflictAttempts: 1 },
@@ -307,8 +307,8 @@ Deno.test("conflict ledger - a moved tip clears the deferral but not the count (
   assertEquals(moved.lastSyncedDefaultSha, "sha-y");
   assertEquals(
     moved.conflictAttempts,
-    2,
-    "a moved tip never zeroes the attempt count",
+    0,
+    "a moved tip zeroes the attempt count — the conflict is a new one",
   );
   assertEquals(moved.deferUntil, undefined, "a moved tip clears the deferral");
 
@@ -327,7 +327,7 @@ Deno.test("conflict ledger - a moved tip clears the deferral but not the count (
   // And once the tip has been recorded, a later move clears it as before.
   const thenMoved = recordDefaultSha(same, "sha-y");
   assertEquals(thenMoved.deferUntil, undefined);
-  assertEquals(thenMoved.conflictAttempts, 2);
+  assertEquals(thenMoved.conflictAttempts, 0);
 });
 
 Deno.test("conflict ledger - an uncharged conclusion on a moved tip clears the deferral (Issue #1766)", () => {
@@ -361,7 +361,7 @@ Deno.test("conflict ledger - an uncharged conclusion on a moved tip clears the d
     failedAt + 120_000,
   );
   assertEquals(onY.deferUntil, undefined);
-  assertEquals(onY.conflictAttempts, 1, "and nothing was charged");
+  assertEquals(onY.conflictAttempts, 0, "a moved tip zeroes the spent budget");
   assert(isConflictAttemptDue(onY, "sha-y", failedAt + 180_000));
 });
 
@@ -520,4 +520,40 @@ Deno.test("conflict ledger - a corrupt deferUntil holds the branch back, not for
     isConflictAttemptDue(entry, "sha-y", Date.now()),
     "a moved tip is still due",
   );
+});
+
+Deno.test("conflict ledger - the first cycle-budget deferral is remembered (Issue #2016)", () => {
+  const now = Date.parse("2026-09-12T00:00:00Z");
+  const first = concludeConflictAttempt(
+    { count: 0, escalated: false },
+    "not-charged",
+    "agent deferred: cycle budget",
+    "sha-x",
+    now,
+  );
+  assertEquals(first.agentDeferredSince, new Date(now).toISOString());
+  assertEquals(first.conflictAttempts ?? 0, 0);
+
+  const again = concludeConflictAttempt(
+    first,
+    "not-charged",
+    "agent deferred: cycle budget",
+    "sha-x",
+    now + 3600_000,
+  );
+  assertEquals(
+    again.agentDeferredSince,
+    first.agentDeferredSince,
+    "further deferrals keep the original timestamp",
+  );
+
+  const failed = concludeConflictAttempt(
+    again,
+    "failed",
+    "conflict unresolved at rung agent",
+    "sha-x",
+    now + 7200_000,
+  );
+  assertEquals(failed.agentDeferredSince, undefined);
+  assertEquals(failed.conflictAttempts, 1);
 });

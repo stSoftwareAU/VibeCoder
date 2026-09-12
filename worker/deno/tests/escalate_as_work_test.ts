@@ -14,6 +14,8 @@ import {
   buildWorkEscalationBody,
   DEFAULT_WORK_LABEL,
   escalateAsWork,
+  ESCALATED_AS_WORK_LABEL,
+  resolveWorkEscalation,
   workEscalationMarker,
   workEscalationTitle,
 } from "../lib/escalate_as_work.ts";
@@ -273,4 +275,64 @@ Deno.test("workEscalationTitle - names the PR, so the dedup key is stable", () =
     workEscalationTitle(STALL),
     "PR #549 cannot land: CI is red and no fix has landed",
   );
+});
+
+Deno.test("resolveWorkEscalation - comments, closes the issue and de-labels the PR (Issue #2017)", async () => {
+  const marker = workEscalationMarker("org/repo", 549);
+  const { gh, calls } = fakeGh(JSON.stringify([{
+    number: 601,
+    body: `${marker}\nblocked`,
+    author: { login: FLEET_AUTHOR },
+  }]));
+
+  await resolveWorkEscalation("org/repo", 549, {
+    gh,
+    fleetAuthors: [FLEET_AUTHOR],
+  });
+
+  assert(
+    calls.some((c) => c[0] === "issue" && c[1] === "comment" && c[2] === "601"),
+    "the escalation issue is told the conflict cleared",
+  );
+  assert(
+    calls.some((c) => c[0] === "issue" && c[1] === "close" && c[2] === "601"),
+    "the escalation issue is closed",
+  );
+  assert(
+    calls.some((c) =>
+      c[0] === "issue" && c[1] === "edit" && c.includes("--remove-label") &&
+      c.includes(ESCALATED_AS_WORK_LABEL)
+    ),
+    "the escalated label is removed from the PR",
+  );
+});
+
+Deno.test("resolveWorkEscalation - no issue is a no-op that still tries to de-label (Issue #2017)", async () => {
+  const { gh, calls } = fakeGh("[]");
+  await resolveWorkEscalation("org/repo", 549, {
+    gh,
+    fleetAuthors: [FLEET_AUTHOR],
+  });
+  assertEquals(
+    calls.some((c) => c[0] === "issue" && c[1] === "close"),
+    false,
+  );
+  assert(
+    calls.some((c) => c.includes("--remove-label")),
+    "a missing issue must not skip the label clear",
+  );
+});
+
+Deno.test("resolveWorkEscalation - a missing label is not an error (Issue #2017)", async () => {
+  const { gh } = fakeGh();
+  const failing = (args: string[]) => {
+    if (args.includes("--remove-label")) {
+      return Promise.reject(new Error("HTTP 404: Label does not exist"));
+    }
+    return gh(args);
+  };
+  await resolveWorkEscalation("org/repo", 549, {
+    gh: failing,
+    fleetAuthors: [FLEET_AUTHOR],
+  });
 });

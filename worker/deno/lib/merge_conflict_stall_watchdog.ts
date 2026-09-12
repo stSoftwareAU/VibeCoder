@@ -55,9 +55,19 @@ import {
   conflictPrKey,
   conflictReasonOperands,
   type ConflictSkipReason,
-  DEFAULT_CONFLICT_COOLDOWN_HOURS,
   MERGE_CONFLICT_LABEL,
 } from "./pr_merge_conflict_scan.ts";
+import {
+  type ConflictDeferralIo,
+  readConflictDeferrals,
+  recordDeferral,
+  writeConflictDeferrals,
+} from "./merge_conflict_deferrals.ts";
+import {
+  loadSyncStreaks,
+  saveSyncStreaks,
+  syncStreakKey,
+} from "./milestone_sync_streak.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 
 // ---------------------------------------------------------------------------
@@ -68,12 +78,12 @@ import type { TimelineCache } from "./timeline_cache.ts";
  * Hours a PR may carry `merge-conflict` with nothing concluding before the
  * queue is called stalled.
  *
- * Twice the post-attempt cooldown: one whole cooldown window can pass with no
- * attempt for entirely ordinary reasons (a busy lane, a held lease), so the
- * bound is the window a healthy queue cannot plausibly exceed.
+ * Eight hours of silence after the label (or the last conclusion) is a
+ * stalled queue. Pinned independently of the 1-hour cooldown (Issue #2018)
+ * so tightening the retry cadence does not also make the watchdog fire
+ * after two quiet hours.
  */
-export const DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS = 2 *
-  DEFAULT_CONFLICT_COOLDOWN_HOURS;
+export const DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS = 8;
 
 /**
  * Noun phrase for the escalation issue's title.
@@ -88,7 +98,8 @@ export const CONFLICT_STALL_SUMMARY =
 
 /** What clears this stall. */
 export const CONFLICT_STALL_NEXT_STEP =
-  "Find out why no resolution attempt ran: check that a host reached " +
+  "This PR is first on the next merge-conflict pass. The watchdog never " +
+  "opens an attempt — find out why none ran: check that a host reached " +
   "priority 1.61 for this repository, that the pass was not rate-limited or " +
   "cut short, and that the PR is still `CONFLICTING` rather than merely " +
   "carrying a stale label. Merging the base branch into the PR branch by " +
@@ -134,6 +145,8 @@ export interface ConflictStallObservation {
    * unestablished state is never escalated.
    */
   mergeableState?: string;
+  /** Head branch name, when the listing carried it (Issue #2019). */
+  headRefName?: string;
 }
 
 /** A merge-conflict queue that has stopped moving on one PR. */
@@ -161,6 +174,8 @@ export interface ConflictQueueStall {
   openAttempt: boolean;
   /** Skip reasons recorded for the PR this cycle (Issue #1109). */
   skipReasons: readonly ConflictSkipReason[];
+  /** Head branch name, when known (Issue #2019). */
+  headRefName?: string;
 }
 
 /** Options for {@link detectConflictQueueStall}. */
@@ -346,6 +361,9 @@ export function detectConflictQueueStall(
       : {}),
     openAttempt: signals.openAttempt,
     skipReasons: observation.skipReasons ?? [],
+    ...(observation.headRefName !== undefined
+      ? { headRefName: observation.headRefName }
+      : {}),
   };
 }
 
@@ -598,6 +616,18 @@ export interface ConflictStallScanOptions extends ConflictStallEscalationDeps {
   isRepoAllowed?: (repo: string) => boolean;
   /** Shared timeline cache, when the caller keeps one. */
   timelineCache?: TimelineCache;
+  /**
+   * Work-volume root used to persist a `"stalled"` deferral so an ordinary
+   * head is first on the next drain (Issue #2019).
+   */
+  workDir?: string;
+  /** Filesystem seams for the deferral cursor. */
+  deferralIo?: ConflictDeferralIo;
+  /**
+   * Path of `milestone_sync_failures.json`. A `milestone/**` head records
+   * `agentDeferredSince` here instead of a drain deferral.
+   */
+  streakPath?: string;
 }
 
 /** A PR the label listing returned. */
@@ -605,12 +635,13 @@ interface LabelledPr {
   number: number;
   labels: string[];
   mergeableState?: string;
+  headRefName?: string;
 }
 
 /** Fields the label listing asks for — the live state rides along with it. */
-const STALL_PR_FIELDS = "number,labels,mergeable";
+const STALL_PR_FIELDS = "number,labels,mergeable,headRefName";
 
-/** Parse `gh pr list --json number,labels,mergeable` output. */
+/** Parse `gh pr list --json number,labels,mergeable,headRefName` output. */
 function parseLabelledPrs(raw: string): LabelledPr[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
@@ -623,6 +654,7 @@ function parseLabelledPrs(raw: string): LabelledPr[] {
       number?: unknown;
       labels?: unknown;
       mergeable?: unknown;
+      headRefName?: unknown;
     };
     if (typeof record.number !== "number") continue;
     const labels: string[] = [];
@@ -639,6 +671,9 @@ function parseLabelledPrs(raw: string): LabelledPr[] {
       labels,
       ...(typeof record.mergeable === "string"
         ? { mergeableState: record.mergeable.toUpperCase() }
+        : {}),
+      ...(typeof record.headRefName === "string" && record.headRefName
+        ? { headRefName: record.headRefName }
         : {}),
     });
   }
@@ -852,6 +887,9 @@ export async function scanConflictQueueStalls(
           ...(labelledAtMs !== undefined ? { labelledAtMs } : {}),
           comments: await fetchIssueCommentPages(repo, pr.number, ghCommandFn),
           skipReasons: skipReasonsFor(decisions, repo, pr.number),
+          ...(pr.headRefName !== undefined
+            ? { headRefName: pr.headRefName }
+            : {}),
         };
       } catch (error) {
         logger.warn("Merge-conflict stall watchdog: could not read a PR", {
@@ -887,12 +925,89 @@ export async function scanConflictQueueStalls(
           prNumber: pr.number,
           error: escalation.error.message,
         });
+      } else {
+        await placeStalledPrFirst(stall, options, now);
       }
     }
     quota.repoDone();
   }
 
   return stalls;
+}
+
+/**
+ * Put a stalled PR first on the next pass (Issue #2019).
+ *
+ * Ordinary heads join the drain deferral cursor as `"stalled"`. A
+ * `milestone/**` head records `agentDeferredSince` on the sync ledger so
+ * the next sweep offers it the agent rung first. The watchdog still never
+ * opens an attempt.
+ */
+async function placeStalledPrFirst(
+  stall: ConflictQueueStall,
+  options: ConflictStallScanOptions,
+  nowMs: number,
+): Promise<void> {
+  const head = stall.headRefName ?? "";
+  if (head.startsWith("milestone/")) {
+    const path = options.streakPath;
+    if (!path) return;
+    try {
+      const streaks = await loadSyncStreaks(path);
+      const key = syncStreakKey(stall.repo, head);
+      const existing = streaks[key] ?? { count: 0, escalated: false };
+      const previous = existing.agentDeferredSince;
+      const previousMs = previous !== undefined ? Date.parse(previous) : NaN;
+      if (Number.isFinite(previousMs) && previousMs <= stall.stalledSinceMs) {
+        return;
+      }
+      streaks[key] = {
+        ...existing,
+        agentDeferredSince: new Date(stall.stalledSinceMs).toISOString(),
+      };
+      await saveSyncStreaks(path, streaks);
+    } catch (error) {
+      options.logger.debug?.(
+        "Merge-conflict stall watchdog: could not record milestone deferral",
+        {
+          repo: stall.repo,
+          prNumber: stall.prNumber,
+          error: errorMessage(error),
+        },
+      );
+    }
+    return;
+  }
+
+  if (!options.workDir) return;
+  try {
+    const state = await readConflictDeferrals(
+      options.workDir,
+      options.deferralIo,
+      nowMs,
+    );
+    recordDeferral(
+      state,
+      conflictPrKey(stall.repo, stall.prNumber),
+      "stalled",
+      nowMs,
+    );
+    await writeConflictDeferrals(
+      options.workDir,
+      state,
+      options.deferralIo,
+      nowMs,
+    );
+  } catch (error) {
+    options.logger.debug?.(
+      "Merge-conflict stall watchdog: could not record a stalled deferral",
+      {
+        repo: stall.repo,
+        prNumber: stall.prNumber,
+        error: errorMessage(error),
+      },
+    );
+  }
 }
 
 function errorMessage(error: unknown): string {
