@@ -54,6 +54,7 @@ import {
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
+import type { RepoLease } from "./maintenance_lane.ts";
 import { WORKER_PR_MARKER_PREFIX } from "./pr_body.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
@@ -111,6 +112,11 @@ export interface MilestoneSelfHealDeps {
    * rather than reported as a failure.
    */
   localCloneExistsFn?: LocalCloneExistsFn;
+  /**
+   * Lease a repository's shared clone for its repair (Issue #2030); `null`
+   * defers the repository to the next cycle. Omitted means uncontended.
+   */
+  leaseRepoFn?: (repo: string) => RepoLease | null;
   /**
    * Whether merging `headRefName` onto `milestoneBranch` would conflict
    * (Issue #2022). `true` refuses the retarget; `false` allows it; `null`
@@ -569,10 +575,21 @@ export async function selfHealMilestoneBranches(
   let failures = 0;
 
   for (const repo of repos) {
+    let lease: RepoLease | null | undefined;
     try {
       if (localCloneExistsFn && !(await localCloneExistsFn(repo))) {
         log(`Skipping milestone branch self-heal for ${repo} — no local clone`);
         continue;
+      }
+      if (deps.leaseRepoFn) {
+        lease = deps.leaseRepoFn(repo);
+        if (lease === null) {
+          log(
+            `Skipping milestone branch self-heal for ${repo} this cycle — an ` +
+              `issue slot holds its clone (Issue #2030)`,
+          );
+          continue;
+        }
       }
 
       const defaultBranchResult = await defaultBranchFn(repo);
@@ -754,6 +771,8 @@ export async function selfHealMilestoneBranches(
         } (Issue #3912)`,
       );
       failures++;
+    } finally {
+      lease?.release();
     }
   }
 

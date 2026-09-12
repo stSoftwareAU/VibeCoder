@@ -25,6 +25,10 @@ import type {
 } from "./run_core.ts";
 import { createDefaultRunCoreConfig } from "./run_core.ts";
 import { acquireMaintenanceRepoLease } from "./maintenance_lane.ts";
+import {
+  claimMilestoneSync,
+  releaseMilestoneSyncClaim,
+} from "./milestone_sync_claim.ts";
 import { drainConflictingPrs } from "./merge_conflict_drain.ts";
 import {
   announceDeferralStreak,
@@ -5018,6 +5022,9 @@ async function syncMilestoneBranchesFn(
         ensureDefaultBranchCurrent,
       ),
     localCloneExistsFn,
+    // Issue #2030: the pass runs in the maintenance lane; each repository's
+    // clone is leased against the issue pool for the repair.
+    leaseRepoFn: (repo) => acquireMaintenanceRepoLease(repo),
     // Issue #2022: a fleet PR is not retargeted onto a milestone branch it
     // would conflict with. A dry run in the host's clone: fetch both refs,
     // then `merge-tree --write-tree`, which exits 1 on conflicts and writes
@@ -5092,6 +5099,27 @@ async function syncMilestoneBranchesFn(
       );
     },
     localCloneExistsFn,
+    // Issue #2030: lane lease per repository, and a cross-host claim per
+    // branch so two hosts never resolve the same sync at once.
+    leaseRepoFn: (repo) => acquireMaintenanceRepoLease(repo),
+    claimSyncFn: (repo, milestoneBranch) =>
+      claimMilestoneSync({
+        milestoneBranch,
+        options: { cwd: `${workDir}/${repo.split("/")[1]}` },
+        hostLabel: getWorkerUniqueId(config.workerName),
+      }),
+    releaseSyncClaimFn: async (repo, milestoneBranch) => {
+      const released = await releaseMilestoneSyncClaim(milestoneBranch, {
+        cwd: `${workDir}/${repo.split("/")[1]}`,
+      });
+      if (!released.ok) {
+        logger.warn(
+          "Milestone sync claim could not be released; it expires by TTL " +
+            "(Issue #2030)",
+          { repo, milestoneBranch, reason: released.reason },
+        );
+      }
+    },
     log: (msg: string) => logger.info(msg),
     // Issue #1776: the cadence signal — one `git rev-parse` per repo, so a
     // cycle in which the default tip did not move syncs nothing.

@@ -2169,3 +2169,93 @@ Deno.test("syncMilestoneBranches - a clean merge refunds the grant to the next b
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Lane lease and cross-host claim (Issue #2030)
+// ---------------------------------------------------------------------------
+
+Deno.test("syncMilestoneBranches - a repository an issue slot holds is deferred, and a granted lease is released (Issue #2030)", async () => {
+  const logs: string[] = [];
+  const released: string[] = [];
+  const synced: string[] = [];
+  const deps: MilestoneBranchSyncDeps = {
+    repos: ["owner/held", "owner/free"],
+    ghCommandFn: (args: string[]) => {
+      const key = args.join(" ");
+      if (key.includes("/milestones")) {
+        return Promise.resolve(JSON.stringify([{ title: "v1.0", number: 1 }]));
+      }
+      if (key.includes("default_branch")) return Promise.resolve("main");
+      if (key.includes("branches/milestone")) {
+        return Promise.resolve("milestone/v1-0");
+      }
+      return Promise.resolve("[]");
+    },
+    syncBranchFn: (repo: string, branch: string) => {
+      synced.push(`${repo}:${branch}`);
+      return Promise.resolve({ ok: true as const, value: { message: "ok" } });
+    },
+    leaseRepoFn: (repo: string) =>
+      repo === "owner/held" ? null : { release: () => released.push(repo) },
+    log: (msg: string) => logs.push(msg),
+  };
+  const result = await syncMilestoneBranches(deps);
+  assert(result.ok);
+  assertEquals(synced, ["owner/free:milestone/v1-0"]);
+  assertEquals(released, ["owner/free"]);
+  assert(
+    logs.some((l) =>
+      l.includes("owner/held") && l.includes("issue slot holds its clone")
+    ),
+  );
+});
+
+Deno.test("syncMilestoneBranches - a branch another host claimed is skipped without a sync; a claimed one syncs and releases (Issue #2030)", async () => {
+  const logs: string[] = [];
+  const synced: string[] = [];
+  const releasedClaims: string[] = [];
+  const deps: MilestoneBranchSyncDeps = {
+    repos: ["owner/repo"],
+    ghCommandFn: (args: string[]) => {
+      const key = args.join(" ");
+      if (key.includes("/milestones")) {
+        return Promise.resolve(JSON.stringify([
+          { title: "held", number: 1 },
+          { title: "free", number: 2 },
+        ]));
+      }
+      if (key.includes("default_branch")) return Promise.resolve("main");
+      if (key.includes("branches/milestone")) return Promise.resolve("exists");
+      return Promise.resolve("[]");
+    },
+    syncBranchFn: (_repo: string, branch: string) => {
+      synced.push(branch);
+      return Promise.resolve({ ok: true as const, value: { message: "ok" } });
+    },
+    claimSyncFn: (_repo: string, branch: string) =>
+      Promise.resolve(
+        branch === "milestone/held"
+          ? {
+            kind: "held-elsewhere" as const,
+            ref: "refs/vibe/sync-claims/milestone/held",
+            ageMs: 5 * 60_000,
+          }
+          : {
+            kind: "claimed" as const,
+            ref: "refs/vibe/sync-claims/milestone/free",
+            tookOverStale: false,
+          },
+      ),
+    releaseSyncClaimFn: (_repo: string, branch: string) => {
+      releasedClaims.push(branch);
+      return Promise.resolve();
+    },
+    log: (msg: string) => logs.push(msg),
+  };
+  const result = await syncMilestoneBranches(deps);
+  assert(result.ok);
+  assertEquals(synced, ["milestone/free"]);
+  assertEquals(releasedClaims, ["milestone/free"]);
+  assertEquals(result.value.skipped, 1);
+  assert(logs.some((l) => l.includes("another host claimed 'milestone/held'")));
+});

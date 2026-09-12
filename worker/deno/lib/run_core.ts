@@ -1702,7 +1702,13 @@ export function buildPriorityDispatchTable(
       // watchdog rather than the flat 600 s one. Issue #1778 spends the
       // deadline it is handed: the rung is offered at most once a cycle, and
       // only while the budget left covers a whole run.
+      //
+      // Issue #2030: that rung used to run in the sequential list and stall
+      // every issue slot on the host for up to an hour. It now runs in the
+      // maintenance lane beside the pool, leasing each repository it touches
+      // so a slot never resets the shared clone mid-merge.
       agentBacked: true,
+      maintenanceLane: true,
       execute: (opts) =>
         deps.syncMilestoneBranches(opts).then((r) =>
           r.ok

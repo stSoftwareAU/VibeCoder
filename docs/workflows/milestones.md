@@ -222,6 +222,14 @@ Long-running milestones can drift significantly from the default branch, causing
 5. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). What the triage cannot decide climbs the rest of the ladder (Issue #1777): the deterministic dependency rules, then the resolution agent. Only a file **every** rung leaves undecided aborts the merge and escalates with both sides prepared, without blocking other work.
 6. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
 
+### Running beside issue work, one host per branch (Issue #2030)
+
+The sync's agent rung takes minutes to an hour. Until Issue #2030 it ran in the sequential pass list, so every issue slot on the host waited for it. It now runs in the **maintenance lane** (Issue #213) beside the issue pool, leasing each repository's shared clone for the duration of that repository's pass so an issue slot never resets the clone mid-merge; a repository a slot already holds is deferred to the next cycle with a log line. The self-heal that runs before the sync leases the same way.
+
+Two hosts used to spend the same rung on the same branch — the sync's attempt ledger is host-local. Before a branch is synced the host now takes a **claim**: a hidden ref `refs/vibe/sync-claims/<milestone-branch>` on the remote (no branch, no PR, no ruleset), pushed with `--force-with-lease` expecting the ref to be absent. A sibling's claim younger than two hours skips the branch this cycle without opening an attempt; an older one belongs to a host that died mid-sync and is taken over, still atomically. The claim is released when the sync concludes. A claim that cannot be read or written is logged and ignored: duplicate work is the cost of a claim outage, a stalled sync is not.
+
+And because a sibling may still land the same sync while this host is resolving it, the sync re-fetches the milestone branch **right before** the gate and push: if the default tip is already an ancestor of the remote branch, the local merge is discarded, the remote branch adopted, and the outcome is a success with nothing pushed.
+
 ### Conflict triage
 
 A conflicted sync used to have two moves, and both were wrong: taking the
