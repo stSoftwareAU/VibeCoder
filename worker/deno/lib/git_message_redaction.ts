@@ -54,6 +54,44 @@ import { redactSecrets } from "./secret_redaction.ts";
 export type MessageFileReader = (path: string) => string;
 
 /**
+ * The message `git` would have read from stdin (`-F -`), supplied by the
+ * caller because this module performs no I/O of its own (Issue #1953).
+ *
+ * Reading it here is the only way a piped message can be scanned at all: the
+ * guard runs as a subprocess *ahead* of the real `git`, and stdin can be
+ * consumed once. So the guard consumes it, masks it, and hands the result back
+ * inline as `-m <masked>` — exactly what a `-F <path>` message already becomes
+ * — leaving the real `git` nothing to re-read. Callers that supply no source
+ * keep the old fail-closed refusal.
+ */
+export interface StdinMessageSource {
+  /**
+   * Read the whole message from stdin.
+   *
+   * @throws UnredactableMessageError when the message cannot be scanned — no
+   *   pipe at all (stdin is a terminal), or more bytes than the bound allows.
+   */
+  read(): string;
+}
+
+/** Everything this module needs to scan a message it cannot see in argv. */
+export interface MessageSources {
+  /** Reader for `-F <path>` contents; absent means argv-only redaction. */
+  readMessageFile?: MessageFileReader;
+  /** Source for a `-F -` message; absent means `-F -` fails closed. */
+  stdin?: StdinMessageSource;
+  /**
+   * Called once per argument whose text was actually changed by masking.
+   *
+   * The guard used to infer this by comparing argv before and after, which a
+   * stdin message breaks: its two arguments are rewritten whether or not
+   * anything was masked, so the comparison would claim a redaction on every
+   * piped commit. Reporting it from where the masking happens is exact.
+   */
+  onMasked?: () => void;
+}
+
+/**
  * A message destined for branch history that could not be scanned for secrets.
  *
  * Raised rather than returning the arguments unchanged: an unscannable message
@@ -139,6 +177,32 @@ const GLOBAL_VALUE_OPTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Accept either shape of the sources argument.
+ *
+ * The bare reader is the original signature and most call sites still use it;
+ * the object form carries the stdin source added in Issue #1953.
+ */
+function normaliseSources(
+  sources?: MessageFileReader | MessageSources,
+): MessageSources {
+  if (!sources) return {};
+  return typeof sources === "function" ? { readMessageFile: sources } : sources;
+}
+
+/**
+ * Mask `text`, telling the caller when masking actually changed something.
+ *
+ * Every masking in this module goes through here, so `onMasked` is a complete
+ * account of what was rewritten — including a message that never appeared in
+ * argv at all.
+ */
+function mask(text: string, sources: MessageSources): string {
+  const masked = redactSecrets(text);
+  if (masked !== text) sources.onMasked?.();
+  return masked;
+}
+
+/**
  * Index of the subcommand token, skipping `git`'s own leading options.
  *
  * `git -C /repo -c user.name=x commit …` must scope as `commit`, so the
@@ -161,18 +225,21 @@ export function gitSubcommandIndex(args: readonly string[]): number {
  * Redact secrets from the message-carrying arguments of a `git` invocation.
  *
  * @param args - Arguments about to be passed to the `git` binary.
- * @param readMessageFile - Optional reader; supplying it extends redaction to
- *   the contents of `-F <path>` / `--file <path>` arguments, which are then
- *   rewritten to an inline masked `-m` so the caller's own file is never
- *   modified.
+ * @param sources - Either a bare `-F <path>` reader (the original signature)
+ *   or a {@link MessageSources} object. Supplying a reader extends redaction
+ *   to the contents of `-F <path>` / `--file <path>` arguments; supplying a
+ *   `stdin` source extends it to `-F -`. Either way the message is rewritten
+ *   to an inline masked `-m`, so the caller's own file is never modified and
+ *   the real `git` has nothing left to read.
  * @returns A new array with message arguments redacted; every other argument
  *   is returned byte-for-byte unchanged. The argument count never changes.
  * @throws UnredactableMessageError when a message source cannot be scanned.
  */
 export function redactGitMessageArgs(
   args: readonly string[],
-  readMessageFile?: MessageFileReader,
+  sources?: MessageFileReader | MessageSources,
 ): string[] {
+  const io = normaliseSources(sources);
   const out = [...args];
   const start = gitSubcommandIndex(out);
   if (start < 0) return out;
@@ -186,12 +253,38 @@ export function redactGitMessageArgs(
     if (!arg.startsWith("-") || arg === "-") continue;
 
     if (arg.startsWith("--")) {
-      i = redactLongOption(out, i, spec, readMessageFile);
+      i = redactLongOption(out, i, spec, io);
       continue;
     }
-    i = redactShortCluster(out, i, spec, readMessageFile);
+    i = redactShortCluster(out, i, spec, io);
   }
   return out;
+}
+
+/**
+ * Whether this argv would take its message from stdin (`-F -`).
+ *
+ * Answered by running the redaction itself against a probe source rather than
+ * by parsing the argv a second way: two parsers that disagree is exactly the
+ * bug this module's subcommand scoping exists to avoid. The guard uses it to
+ * decide whether to read stdin at all — `git am --message-id` reaches the
+ * guard on the wrapper's deliberately over-matching fast path and must be
+ * handed its own mbox untouched.
+ *
+ * @param args - Arguments about to be passed to the `git` binary.
+ * @returns True when a message source of `-` is present and would be used.
+ */
+export function usesStdinMessage(args: readonly string[]): boolean {
+  let needed = false;
+  redactGitMessageArgs(args, {
+    stdin: {
+      read: () => {
+        needed = true;
+        return "";
+      },
+    },
+  });
+  return needed;
 }
 
 /**
@@ -244,7 +337,7 @@ function redactLongOption(
   out: string[],
   i: number,
   spec: MessageSubcommand,
-  readMessageFile?: MessageFileReader,
+  sources: MessageSources,
 ): number {
   const parsed = splitLongOption(out[i] ?? "");
   if (!parsed) return i;
@@ -253,22 +346,22 @@ function redactLongOption(
 
   if (spec.message && isLongOptionPrefix(name, "message", 1)) {
     if (inlineValue !== undefined) {
-      out[i] = `--message=${redactSecrets(inlineValue)}`;
+      out[i] = `--message=${mask(inlineValue, sources)}`;
       return i;
     }
     if (next === undefined) return i;
-    out[i + 1] = redactSecrets(next);
+    out[i + 1] = mask(next, sources);
     return i + 1;
   }
 
   if (spec.file && isLongOptionPrefix(name, "file", FILE_PREFIX_MIN)) {
     if (inlineValue !== undefined) {
-      const masked = maskedMessageFile(inlineValue, readMessageFile);
+      const masked = maskedMessageFile(inlineValue, sources);
       if (masked !== undefined) out[i] = `--message=${masked}`;
       return i;
     }
     if (next === undefined) return i;
-    const masked = maskedMessageFile(next, readMessageFile);
+    const masked = maskedMessageFile(next, sources);
     if (masked !== undefined) {
       out[i] = "--message";
       out[i + 1] = masked;
@@ -292,7 +385,7 @@ function redactShortCluster(
   out: string[],
   i: number,
   spec: MessageSubcommand,
-  readMessageFile?: MessageFileReader,
+  sources: MessageSources,
 ): number {
   const cluster = (out[i] ?? "").substring(1);
   for (let k = 0; k < cluster.length; k++) {
@@ -302,24 +395,24 @@ function redactShortCluster(
 
     if (letter === "m" && spec.message) {
       if (tail.length > 0) {
-        out[i] = `${head}m${redactSecrets(tail)}`;
+        out[i] = `${head}m${mask(tail, sources)}`;
         return i;
       }
       const next = out[i + 1];
       if (next === undefined) return i;
-      out[i + 1] = redactSecrets(next);
+      out[i + 1] = mask(next, sources);
       return i + 1;
     }
 
     if (letter === "F" && spec.file) {
       if (tail.length > 0) {
-        const masked = maskedMessageFile(tail, readMessageFile);
+        const masked = maskedMessageFile(tail, sources);
         if (masked !== undefined) out[i] = `${head}m${masked}`;
         return i;
       }
       const next = out[i + 1];
       if (next === undefined) return i;
-      const masked = maskedMessageFile(next, readMessageFile);
+      const masked = maskedMessageFile(next, sources);
       if (masked !== undefined) {
         out[i] = `${head}m`;
         out[i + 1] = masked;
@@ -337,26 +430,26 @@ function redactShortCluster(
  * Read a message file and return its masked contents, or undefined when there
  * was nothing to mask (the file reference is then left exactly as it was).
  *
- * With no reader supplied the caller opted into argv-only redaction, so the
- * reference is left alone.
+ * `-` is the message on stdin, and it is the one source that is **always**
+ * returned rather than left alone (Issue #1953): stdin can be consumed once,
+ * so once the guard has read it the real `git` must be handed the text in
+ * argv whether or not a secret was found in it.
+ *
+ * With no reader supplied the caller opted into argv-only redaction, so a path
+ * reference is left alone; with no stdin source supplied `-` fails closed,
+ * which is what the worker's own chokepoint still does.
  *
  * @throws UnredactableMessageError when the message cannot be read at all.
  */
 function maskedMessageFile(
   path: string,
-  readMessageFile?: MessageFileReader,
+  sources: MessageSources,
 ): string | undefined {
-  if (!readMessageFile) return undefined;
-  if (path === "-") {
-    throw new UnredactableMessageError(
-      path,
-      "a git message read from stdin cannot be scanned for secrets — write " +
-        "it to a file and pass -F <path>",
-    );
-  }
+  if (path === "-") return maskedStdinMessage(sources);
+  if (!sources.readMessageFile) return undefined;
   let text: string;
   try {
-    text = readMessageFile(path);
+    text = sources.readMessageFile(path);
   } catch (err) {
     throw new UnredactableMessageError(
       path,
@@ -365,6 +458,23 @@ function maskedMessageFile(
       }`,
     );
   }
-  const masked = redactSecrets(text);
+  const masked = mask(text, sources);
   return masked === text ? undefined : masked;
+}
+
+/**
+ * Consume the `-F -` message and return its masked text (Issue #1953).
+ *
+ * @throws UnredactableMessageError when no stdin source was supplied, or when
+ *   the source itself could not produce a scannable message.
+ */
+function maskedStdinMessage(sources: MessageSources): string {
+  if (!sources.stdin) {
+    throw new UnredactableMessageError(
+      "-",
+      "a git message read from stdin cannot be scanned for secrets — write " +
+        "it to a file and pass -F <path>",
+    );
+  }
+  return mask(sources.stdin.read(), sources);
 }

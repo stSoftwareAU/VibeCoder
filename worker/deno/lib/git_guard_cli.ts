@@ -9,26 +9,50 @@
  * The contract with the shim mirrors the `gh` guard's: a **positive verdict
  * marker on stdout**, not an exit code, because `deno` itself exits 1 on a
  * module-resolution or runtime error and "exit 0/1" alone cannot distinguish a
- * verdict from a broken guard. The shim proceeds only on
- * {@link GIT_GUARD_ALLOW_MARKER}; anything else — a refusal, a crash, an empty
- * stdout — refuses the `git` call.
+ * verdict from a broken guard. The shim proceeds only on one of the two allow
+ * markers — {@link GIT_GUARD_ALLOW_MARKER} or
+ * {@link GIT_GUARD_ALLOW_STDIN_MARKER}; anything else — a refusal, a crash, an
+ * empty stdout — refuses the `git` call.
  *
  * Exit codes accompany the marker: `0` allowed, `1` refused because the
  * message could not be scanned, `2` malformed invocation.
+ *
+ * A message piped on stdin (`git commit -F -`) is consumed here and handed
+ * back inline in the argv (Issue #1953). The shim is told so by a distinct
+ * allow marker, {@link GIT_GUARD_ALLOW_STDIN_MARKER}, because it must then run
+ * the real `git` with stdin closed.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import {
   type MessageFileReader,
+  type MessageSources,
   redactGitMessageArgs,
+  type StdinMessageSource,
   UnredactableMessageError,
+  usesStdinMessage,
 } from "./git_message_redaction.ts";
+import {
+  preReadStdinSource,
+  readProcessStdinMessage,
+  unreadStdinSource,
+} from "./git_stdin_message.ts";
 import { installConsoleRedaction } from "./console_redaction.ts";
 import { encodeNulFields } from "./guard_field_encoding.ts";
 
 /** Printed on stdout when — and only when — the command may proceed. */
 export const GIT_GUARD_ALLOW_MARKER = "VIBE_GIT_GUARD_ALLOW";
+
+/**
+ * Printed instead of {@link GIT_GUARD_ALLOW_MARKER} when the guard consumed a
+ * `-F -` message from stdin (Issue #1953).
+ *
+ * The message is in the returned argv now, so the shim must run the real `git`
+ * with its stdin closed: a stream can be read once, and a second reader would
+ * see an empty — or, worse, a partial — message.
+ */
+export const GIT_GUARD_ALLOW_STDIN_MARKER = "VIBE_GIT_GUARD_ALLOW_STDIN";
 
 /** Printed on stdout when the guard refused the command. */
 export const GIT_GUARD_REFUSE_MARKER = "VIBE_GIT_GUARD_REFUSE";
@@ -68,12 +92,16 @@ export function encodeGitGuardStdout(result: GitGuardCliResult): string {
  *
  * @param argv - The guard's own argv: `--`, then the `git` arguments.
  * @param readMessageFile - Reader for `-F <path>` contents (test seam).
+ * @param stdin - Source for a `-F -` message, already read from the stream
+ *   ({@link preReadStdinSource}); reading it is what makes the stdin verdict
+ *   marker appear.
  * @returns The exit code, the stderr line to emit, and — when allowed — the
  *   arguments the shim must run.
  */
 export function runGitGuardCli(
   argv: readonly string[],
   readMessageFile: MessageFileReader = denoMessageFileReader,
+  stdin: StdinMessageSource = unreadStdinSource,
 ): GitGuardCliResult {
   const separator = argv.indexOf("--");
   if (separator < 0) {
@@ -87,9 +115,38 @@ export function runGitGuardCli(
   }
   const gitArgv = argv.slice(separator + 1) as string[];
 
+  // A stdin message is read at most once and reported here rather than
+  // inferred from argv: its two arguments are rewritten whether or not a
+  // secret was found, so an argv comparison would claim a redaction on every
+  // piped commit.
+  let stdinConsumed = false;
+  let redacted = false;
+  const sources: MessageSources = {
+    readMessageFile,
+    stdin: {
+      read: () => {
+        // One command, one read. `git commit -F - -F -` would otherwise be
+        // handed the same text twice, where the real `git` sees the message
+        // once and then an empty stream.
+        if (stdinConsumed) {
+          throw new UnredactableMessageError(
+            "-",
+            "this git command names stdin as its message source more than " +
+              "once, and a stream can be read only once",
+          );
+        }
+        stdinConsumed = true;
+        return stdin.read();
+      },
+    },
+    onMasked: () => {
+      redacted = true;
+    },
+  };
+
   let gitArgs: string[];
   try {
-    gitArgs = redactGitMessageArgs(gitArgv, readMessageFile);
+    gitArgs = redactGitMessageArgs(gitArgv, sources);
   } catch (err) {
     if (!(err instanceof UnredactableMessageError)) throw err;
     return {
@@ -99,10 +156,11 @@ export function runGitGuardCli(
     };
   }
 
-  const redacted = gitArgs.some((arg, i) => arg !== gitArgv[i]);
   return {
     exitCode: 0,
-    stdout: GIT_GUARD_ALLOW_MARKER,
+    stdout: stdinConsumed
+      ? GIT_GUARD_ALLOW_STDIN_MARKER
+      : GIT_GUARD_ALLOW_MARKER,
     stderr: redacted
       ? "[SECURITY] [GIT_MESSAGE_REDACTED] a secret was masked in the " +
         "message of this git command before it reached history."
@@ -111,13 +169,45 @@ export function runGitGuardCli(
   };
 }
 
+/**
+ * Read the stdin message this argv needs, as a source redaction can replay.
+ *
+ * Redaction is synchronous and the read is not — it is bounded by a deadline so
+ * a stream nobody closes cannot hold the agent's `git` open — so the message is
+ * read first and handed over already in hand. A read that refuses is carried
+ * into the source, so the refusal reaches the caller through the same path as
+ * every other unscannable message.
+ *
+ * @param gitArgv - The `git` arguments, after the `--` separator.
+ * @returns The source to evaluate this command with.
+ */
+async function stdinSourceFor(
+  gitArgv: readonly string[],
+): Promise<StdinMessageSource> {
+  if (!usesStdinMessage(gitArgv)) return unreadStdinSource;
+  try {
+    return preReadStdinSource(await readProcessStdinMessage());
+  } catch (err) {
+    if (!(err instanceof UnredactableMessageError)) throw err;
+    return {
+      read: () => {
+        throw err;
+      },
+    };
+  }
+}
+
 if (import.meta.main) {
   // The refusal reason quotes a path from the agent's own argv, which is where
   // a credential can ride in; the NUL-encoded verdict is written through
   // `Deno.stdout` and is untouched by the patch.
   installConsoleRedaction();
 
-  const result = runGitGuardCli(Deno.args);
+  const separator = Deno.args.indexOf("--");
+  const stdin = await stdinSourceFor(
+    separator < 0 ? [] : Deno.args.slice(separator + 1),
+  );
+  const result = runGitGuardCli(Deno.args, denoMessageFileReader, stdin);
   await Deno.stdout.write(
     new TextEncoder().encode(encodeGitGuardStdout(result)),
   );

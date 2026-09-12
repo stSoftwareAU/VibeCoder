@@ -1457,6 +1457,18 @@
         "worker/deno/lib/pr_creation_retry.ts",
         "worker/deno/lib/secondary_rate_limit.ts"
       ]
+    },
+    {
+      "issue": 1953,
+      "chunk": "12ah",
+      "title": "top-up: the bounded git stdin message reader",
+      "ledger": "docs/audits/security-sweep-1953-git-stdin-message.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: git_stdin_message.ts (#1953)",
+      "status": "swept",
+      "sweptAt": "d3034d431e8a0fa49949ee6b7f423660fd80142e",
+      "paths": [
+        "worker/deno/lib/git_stdin_message.ts"
+      ]
     }
   ],
   "roots": [
