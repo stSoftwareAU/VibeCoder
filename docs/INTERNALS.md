@@ -941,8 +941,11 @@ flowchart LR
   model usage limit wrote it — and, for a usage limit, which provider and
   which credential file ran out (Issue #2002), so a run holding another
   subscription of the same provider is not paused by it and the next start
-  ranks the spent one last. Each carries a wait count alongside the total
-  backoff.
+  ranks the spent one last. A usage signal that names no credential — one
+  left by a worker older than that — is retired at start-up when the pool
+  holds two or more subscriptions, since it cannot say which one it is about
+  (Issue #2024); every honoured usage pause is attributed once in the log.
+  Each carries a wait count alongside the total backoff.
 - **Failure classes** are the phase a run died at (`setup`, `execute`,
   `quality_gate`, …), with `timeout` taking precedence — so "13 failures" says
   where. Skips (claim rejected, expected bounce) are excluded from

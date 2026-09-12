@@ -64,6 +64,7 @@ import {
   CLAUDE_PROVIDER_ID,
 } from "./agent_provider.ts";
 import {
+  clearRateLimitSignal,
   isRateLimitActive,
   type RateLimitSignalData,
   readRateLimitSignal,
@@ -183,6 +184,12 @@ export interface ClaudeCredentialPool {
    *   the host has fewer than two pool candidates.
    */
   selectEligible(now?: number): Promise<ProviderTokenFile | null>;
+
+  /**
+   * How many subscription tokens this host's pool holds, discovered at most
+   * once and shared with every selection (Issue #2024).
+   */
+  candidateCount(): Promise<number>;
 
   /** The start-up selector: the ranking winner, with no gate filter. */
   readonly selectToken: ProviderTokenSelector;
@@ -308,6 +315,10 @@ export function createClaudeCredentialPool(
       // against?" — so a winner that fails it is no selection at all.
       if (winner === null || !winner.passesFiveHourGate) return null;
       return pool[winner.index] ?? null;
+    },
+
+    async candidateCount() {
+      return (await candidates()).length;
     },
 
     selectToken: async (tokens, provider) => {
@@ -551,7 +562,9 @@ export function exhaustionFromUsageSignal(
  * @returns Whether an exhaustion was recorded.
  */
 export async function primeClaudePoolFromUsageSignal(
-  pool: Pick<ClaudeCredentialPool, "recordExhaustion">,
+  pool:
+    & Pick<ClaudeCredentialPool, "recordExhaustion">
+    & Partial<Pick<ClaudeCredentialPool, "candidateCount">>,
   workDir: string | undefined,
   options: {
     now?: () => number;
@@ -575,7 +588,16 @@ export async function primeClaudePoolFromUsageSignal(
       now(),
       options.providerId,
     );
-    if (exhaustion === null) return false;
+    if (exhaustion === null) {
+      await retireUnattributableUsageSignal(
+        pool,
+        workDir,
+        signal.value,
+        options.providerId,
+        log,
+      );
+      return false;
+    }
     log(
       `${LOG_PREFIX}: the active usage-limit signal names ` +
         `${exhaustion.label} as the spent subscription — recording it ` +
@@ -592,4 +614,71 @@ export async function primeClaudePoolFromUsageSignal(
     );
     return false;
   }
+}
+
+/**
+ * Whether a usage signal blames this provider but names no credential file
+ * (Issue #2024): the shape every writer produced before Issue #2002.
+ *
+ * @param signal - The signal as read from the file.
+ * @param providerId - The provider this pool serves; defaults to Claude.
+ * @returns True for an unlabelled usage signal of this provider.
+ */
+export function usageSignalNamesNoCredential(
+  signal: RateLimitSignalData,
+  providerId: string = CLAUDE_PROVIDER_ID,
+): boolean {
+  if ((signal.kind ?? "github") !== "usage") return false;
+  const provider = signal.provider?.trim() || CLAUDE_PROVIDER_ID;
+  if (provider !== providerId) return false;
+  return (signal.credentialLabel?.trim() ?? "").length === 0;
+}
+
+/**
+ * Retire a usage signal that cannot say which subscription ran out
+ * (Issue #2024).
+ *
+ * A signal written before Issue #2002 names no credential. On a host with one
+ * subscription that is no loss — the signal can only be about that token, so
+ * the host-wide pause stands. On a pool of two or more it is a contradiction
+ * waiting to happen: start-up ranks the candidates and exports the one with
+ * budget, the work loop then honours the unlabelled signal host-wide and
+ * exits, and the launcher — which can see the same budget — starts it all
+ * again, every few minutes, for the whole window. Mac-Ultra-M2 spent a
+ * weekend that way with 58 % of a weekly window unused.
+ *
+ * Retiring the file hands the question to the cycle-start health check, which
+ * probes the token the run actually holds. If that one is spent too, the
+ * current writer stamps a properly labelled signal and the next start ranks
+ * it last, exactly as Issue #2002 intends.
+ *
+ * Never throws and never records anything: a pool that cannot say how many
+ * candidates it has leaves the signal — and the historical pause — untouched.
+ */
+async function retireUnattributableUsageSignal(
+  pool: Partial<Pick<ClaudeCredentialPool, "candidateCount">>,
+  workDir: string,
+  signal: RateLimitSignalData,
+  providerId: string | undefined,
+  log: (message: string) => void,
+): Promise<void> {
+  if (!usageSignalNamesNoCredential(signal, providerId)) return;
+  if (!pool.candidateCount) return;
+  const count = await pool.candidateCount();
+  if (count < 2) return;
+  const cleared = await clearRateLimitSignal(workDir);
+  if (!cleared.ok) {
+    log(
+      `${LOG_PREFIX}: the active usage-limit signal names no credential ` +
+        `and could not be retired (the host-wide pause stands): ` +
+        cleared.error.message,
+    );
+    return;
+  }
+  log(
+    `${LOG_PREFIX}: the active usage-limit signal names no credential ` +
+      `(written before Issue #2002) — with ${count} subscriptions in the ` +
+      `pool it cannot say which one ran out, so it is retired and the ` +
+      `start-up health check re-probes the selected one (Issue #2024)`,
+  );
 }

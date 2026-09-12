@@ -9,6 +9,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  clearRateLimitSignal,
   formatRateLimitReset,
   isRateLimitActive,
   rateLimitSignalPath,
@@ -264,6 +265,23 @@ Deno.test("writeRateLimitSignal - a usage signal carries the provider and the cr
       assertEquals(read.value.credentialLabel, "provider-2");
       assertEquals(read.value.resetEpochMs, 1_789_000_000_000);
     }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("clearRateLimitSignal - retires the file, and an absent file is already retired (Issue #2024)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    assertEquals((await clearRateLimitSignal(tmpDir)).ok, true);
+    const written = await writeRateLimitSignal(tmpDir, 600, undefined, "usage");
+    assertEquals(written.ok, true);
+    const cleared = await clearRateLimitSignal(tmpDir);
+    assertEquals(cleared.ok, true);
+    const read = await readRateLimitSignal(tmpDir);
+    assertEquals(read.ok, false);
+    const status = await isRateLimitActive(tmpDir);
+    assertEquals(status.ok && status.value.active, false);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

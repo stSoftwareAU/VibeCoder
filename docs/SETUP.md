@@ -898,8 +898,25 @@ says once why it is not pausing:
 [quota] the usage-limit signal names claude/provider as spent; this run holds claude/provider-3 — not pausing (Issue #2002)
 ```
 
-A signal written by an older worker carries no label and keeps pausing the
-whole host, exactly as before.
+A signal written by an older worker carries no label. On a host with **one**
+subscription it keeps pausing the whole host, exactly as before — it can only
+be about that token. On a pool of **two or more** it cannot say which token
+ran out, and honouring it host-wide while the launcher restarts for the token
+that has budget is a loop with no exit (Issue #2024), so the next start
+**retires** it and lets the cycle-start health check re-probe the token the
+run actually holds — which, if spent, writes a labelled signal:
+
+```text
+[SECURITY] claude token pool: the active usage-limit signal names no credential (written before Issue #2002) — with 3 subscriptions in the pool it cannot say which one ran out, so it is retired and the start-up health check re-probes the selected one (Issue #2024)
+```
+
+Whenever the work loop *does* honour a usage pause it says, once, which
+credential the signal names, which one the run holds and why that pauses —
+so the selection line and the pause line read together:
+
+```text
+[quota] the usage-limit signal names claude/provider-3 as spent; this run holds claude/provider-3 — pausing the host: this run holds the spent subscription (Issue #2024)
+```
 
 **What the operator sees.** The decision is logged at `INFO`, one line per
 candidate, best first, then the winner:
