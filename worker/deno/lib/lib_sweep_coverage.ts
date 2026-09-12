@@ -40,7 +40,15 @@ export type SweepSliceStatus = "swept" | "claimed";
 export interface SweepSlice {
   /** GitHub issue number that owns the slice. */
   readonly issue: number;
-  /** Chunk id from the parent scan's plan, e.g. `12a`. */
+  /**
+   * Chunk id from the parent scan's plan, e.g. `12a`.
+   *
+   * A **top-up** slice uses {@link topUpChunkId} — `top-up-<issue>` — rather
+   * than the next letter after the ledger's tail: two branches cut from the
+   * same base always read the same tail and so always choose the same next
+   * letter, which is how #1940 and #1943 both picked `12aa` and one of them
+   * was lost in the resolution (Issue #1968).
+   */
   readonly chunk: string;
   /** Human-readable subject of the slice. */
   readonly title: string;
@@ -171,11 +179,87 @@ function parseRoots(raw: unknown): string[] {
 }
 
 /**
+ * Chunk id for a top-up slice, collision-free by construction (Issue #1968).
+ *
+ * The original sweep's ids came from the parent scan's chunk plan, which a
+ * single agent allocated in one pass. A top-up is allocated by whichever run
+ * added a module, and concurrent runs each read the same ledger tail: deriving
+ * the id from the issue number instead means two runs cannot choose the same
+ * one, because two runs are never working the same issue.
+ *
+ * @param issue - GitHub issue number that owns the slice.
+ */
+export function topUpChunkId(issue: number): string {
+  return `top-up-${issue}`;
+}
+
+/** A chunk id written in the top-up form, capturing the issue it names. */
+const TOP_UP_CHUNK_RE = /^top-up-(\d+)$/;
+
+/**
+ * Slices whose `top-up-<issue>` chunk id names a different issue.
+ *
+ * The convention is only collision-free while the number in the id is the
+ * slice's own issue: `top-up-1940` on `issue: 1943` is back to an id two runs
+ * could both pick. A mismatch is a typo or a copied entry, and it is caught
+ * here rather than by the next merge (Issue #1968).
+ *
+ * @param slices - The ledger's slices, in file order.
+ * @returns Sorted `chunk (issue N)` entries; empty when every top-up id
+ *   matches its own issue.
+ */
+export function mismatchedTopUpIds(
+  slices: readonly { chunk: string; issue: number }[],
+): string[] {
+  return slices
+    .filter((slice) => {
+      const named = TOP_UP_CHUNK_RE.exec(slice.chunk)?.[1];
+      return named !== undefined && Number(named) !== slice.issue;
+    })
+    .map((slice) => `${slice.chunk} (issue ${slice.issue})`)
+    .sort();
+}
+
+/**
+ * Chunk ids and issue numbers that more than one slice claims.
+ *
+ * Both are identities: a chunk id names a slice in its written record and in
+ * every failure message, and an issue owns exactly one slice. A duplicate of
+ * either means two slices were merged that were written against the same
+ * ledger tail, which is the collision that has to fail on the PR that
+ * introduces it rather than after the merge.
+ *
+ * @param slices - The ledger's slices, in file order.
+ * @returns Sorted duplicate chunk ids and issue numbers; both empty when every
+ *   slice is uniquely identified.
+ */
+export function duplicateSliceIds(
+  slices: readonly { chunk: string; issue: number }[],
+): { chunks: string[]; issues: number[] } {
+  const seenChunks = new Set<string>();
+  const seenIssues = new Set<number>();
+  const chunks = new Set<string>();
+  const issues = new Set<number>();
+  for (const slice of slices) {
+    if (seenChunks.has(slice.chunk)) chunks.add(slice.chunk);
+    else seenChunks.add(slice.chunk);
+    if (seenIssues.has(slice.issue)) issues.add(slice.issue);
+    else seenIssues.add(slice.issue);
+  }
+  return {
+    chunks: [...chunks].sort(),
+    issues: [...issues].sort((a, b) => a - b),
+  };
+}
+
+/**
  * Parse the ledger's JSON text.
  *
  * Fails loud: a malformed ledger throws rather than yielding a partial one,
  * because an empty or truncated slice list would silently read as "everything
- * is swept".
+ * is swept". A slice id claimed twice throws for the same reason — the second
+ * claimant is a slice some merge resolved by hand, and the record it points at
+ * no longer names it unambiguously (Issue #1968).
  *
  * @param json - Raw file text.
  * @returns The parsed ledger.
@@ -210,11 +294,41 @@ export function parseCoverageLedger(json: string): SweepCoverageLedger {
       `${LIB_SWEEP_LEDGER_PATH}: "slices" must be a non-empty array`,
     );
   }
+  const parsed = slices.map(parseSlice);
+  const duplicates = duplicateSliceIds(parsed);
+  if (duplicates.chunks.length > 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: chunk id(s) claimed by more than one slice — ` +
+        `${
+          duplicates.chunks.join(", ")
+        }. Two runs allocated the same id from ` +
+        `the same ledger tail; give a top-up slice the collision-free id ` +
+        `"top-up-<issue>" instead.`,
+    );
+  }
+  const mismatched = mismatchedTopUpIds(parsed);
+  if (mismatched.length > 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: top-up chunk id(s) naming another slice's ` +
+        `issue — ${
+          mismatched.join(", ")
+        }. A top-up id must be "top-up-" followed by its own issue number.`,
+    );
+  }
+  if (duplicates.issues.length > 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: issue number(s) owning more than one slice — ` +
+        `${
+          duplicates.issues.join(", ")
+        }. One issue owns one slice; merge the ` +
+        `paths into a single entry.`,
+    );
+  }
   return {
     roots: parseRoots(ledger.roots),
     parent,
     description: requireString(ledger.description, "description"),
-    slices: slices.map(parseSlice),
+    slices: parsed,
   };
 }
 

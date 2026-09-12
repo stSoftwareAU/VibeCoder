@@ -763,6 +763,21 @@ file list a delta sweep regenerates from, rather than from stale counts
 in an overflow issue. Drift is a report, not a merge gate: rewriting a
 swept module must not turn CI red.
 
+**Adding a top-up slice.** A module that enters the ledger roots after the
+chunk-12 slices recorded their coverage gets its own slice, with its own
+written record under `docs/audits/`. Its `chunk` id is **`top-up-<issue>`**
+(`topUpChunkId` in `worker/deno/lib/lib_sweep_coverage.ts`), never the next
+letter after the ledger's tail: two runs working in parallel read the same
+tail and so choose the same next letter, which is how #1940 and #1943 both
+picked `12aa` and one slice was dropped in the resolution, turning `main` red
+(#1968, #1966). Deriving the id from the issue makes the collision impossible,
+because two runs never work the same issue. `parseCoverageLedger` refuses a
+ledger with a repeated `chunk` id, a repeated `issue`, or a `top-up-<issue>` id
+that names another slice's issue, so a collision fails on the PR that
+introduces it; and a conflicted `docs/audits/*.json` is unioned
+by value (`json_insertion_union.ts`), so two slices appended in the same window
+reconcile with both present rather than one survivor.
+
 ## Vulnerability taxonomy covered
 
 From the `prompts/security_scan/` v16 prompt the Phase 2 taxonomy

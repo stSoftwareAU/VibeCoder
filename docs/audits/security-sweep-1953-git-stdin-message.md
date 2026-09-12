@@ -1,7 +1,7 @@
 # Security sweep — bounded `git` stdin messages (`git_stdin_message.ts`)
 
 **Issue:** [#1953](https://github.com/stSoftwareAU/VibeCoder/issues/1953)
-(chunk 12ah) · **Parent:** #1209
+(chunk top-up-1953) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
 with #1953:
@@ -12,7 +12,7 @@ with #1953:
 
 Appending a module to a slice whose sweep ran before it existed is the cheapest
 way to make `diffCoverage` green and a false record. The module is claimed by
-**12ah**, and this file is the reading of it.
+**top-up-1953**, and this file is the reading of it.
 
 ## `worker/deno/lib/git_stdin_message.ts`
 

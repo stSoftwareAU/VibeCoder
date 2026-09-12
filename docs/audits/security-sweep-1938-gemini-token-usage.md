@@ -1,7 +1,7 @@
 # Security sweep — Gemini CLI token-usage decoding (`gemini_token_usage.ts`)
 
 **Issue:** [#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938)
-(chunk 12aa) · **Parent:** #1209
+(chunk top-up-1938) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
 after the chunk-12 slices (12a–12z) recorded their coverage:
@@ -12,7 +12,7 @@ after the chunk-12 slices (12a–12z) recorded their coverage:
 
 Appending a module to a slice whose sweep ran before it existed is the cheapest
 way to make `diffCoverage` green and a false record. The module is claimed by
-**12aa**, and this file is the reading of it.
+**top-up-1938**, and this file is the reading of it.
 
 ## `worker/deno/lib/gemini_token_usage.ts`
 

@@ -1,6 +1,6 @@
 {
   "parent": 1209,
-  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/ and worker/deno/setup/. Every non-test module under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate.",
+  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/ and worker/deno/setup/. Every non-test module under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate. A top-up slice's chunk id is top-up-<issue> so two runs adding modules in the same window cannot allocate the same id (#1968).",
   "slices": [
     {
       "issue": 1214,
@@ -974,7 +974,7 @@
     },
     {
       "issue": 1846,
-      "chunk": "12n",
+      "chunk": "top-up-1846",
       "title": "top-up: bot-authored PR lookup",
       "ledger": "docs/audits/security-sweep-1846-pr-bot-lookup.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: pr_bot_lookup.ts (#1846)",
@@ -986,10 +986,10 @@
     },
     {
       "issue": 1885,
-      "chunk": "12o",
+      "chunk": "top-up-1885",
       "title": "top-up: the weekly Claude quota pace gate",
       "ledger": "docs/audits/security-sweep-1885-claude-week-pace.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: claude_week_pace.ts (#1885)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: claude_week_pace.ts (#1885)",
       "status": "swept",
       "paths": [
         "worker/deno/lib/claude_week_pace.ts"
@@ -998,10 +998,10 @@
     },
     {
       "issue": 1862,
-      "chunk": "12p",
+      "chunk": "top-up-1862",
       "title": "top-up: the re-approved-then-superseded hand-off",
       "ledger": "docs/audits/security-sweep-1862-reapproval-superseded-handoff.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: reapproval_superseded_handoff.ts (#1862)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: reapproval_superseded_handoff.ts (#1862)",
       "status": "swept",
       "paths": [
         "worker/deno/lib/reapproval_superseded_handoff.ts"
@@ -1206,7 +1206,7 @@
     },
     {
       "issue": 1822,
-      "chunk": "12n",
+      "chunk": "top-up-1822",
       "title": "top-up: the file-scoped audit check table",
       "ledger": "docs/audits/security-sweep-1822-workflow-file-checks.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: workflow_file_checks.ts (#1822)",
@@ -1218,10 +1218,10 @@
     },
     {
       "issue": 1823,
-      "chunk": "12o",
+      "chunk": "top-up-1823",
       "title": "top-up: the action pin resolver",
       "ledger": "docs/audits/security-sweep-1823-action-pin-resolver.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12n recorded their coverage: action_pin_resolver.ts (#1823)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: action_pin_resolver.ts (#1823)",
       "status": "swept",
       "sweptAt": "fe545122ac033ff4304ce6c3b635851e8f3e46d5",
       "paths": [
@@ -1230,10 +1230,10 @@
     },
     {
       "issue": 1859,
-      "chunk": "12p",
+      "chunk": "top-up-1859",
       "title": "top-up: the pre-PR changed-workflow gate",
       "ledger": "docs/audits/security-sweep-1859-changed-workflow-gate.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12o recorded their coverage: changed_workflow_gate.ts (#1859)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: changed_workflow_gate.ts (#1859)",
       "status": "swept",
       "sweptAt": "73b80a6f0355917642fb2a8c3249cdc504f519e6",
       "paths": [
@@ -1245,7 +1245,7 @@
       "chunk": "12q",
       "title": "the shared merge-conflict agent",
       "ledger": "docs/audits/security-sweep-1767-merge-conflict-agent.md",
-      "definition": "modules added to lib/ after 12a-12p recorded their coverage",
+      "definition": "modules added to lib/ after the chunk-12 slices recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/merge_conflict_agent.ts"
@@ -1384,7 +1384,7 @@
     },
     {
       "issue": 1938,
-      "chunk": "12ab",
+      "chunk": "top-up-1938",
       "title": "top-up: the Gemini CLI token-usage decoder",
       "ledger": "docs/audits/security-sweep-1938-gemini-token-usage.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: gemini_token_usage.ts (#1938)",
@@ -1423,7 +1423,7 @@
       "chunk": "12ae",
       "title": "top-up: the CI-fix PR marker reader",
       "ledger": "docs/audits/security-sweep-1879-ci-fix-pr-markers.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12ab recorded their coverage: ci_fix_pr_markers.ts (#1879)",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: ci_fix_pr_markers.ts (#1879)",
       "status": "swept",
       "sweptAt": "d0d30d458b6e08116ebb549bcbb817728af204f0",
       "paths": [
@@ -1459,8 +1459,20 @@
       ]
     },
     {
+      "issue": 1968,
+      "chunk": "top-up-1968",
+      "title": "top-up: the structured JSON union for append-only ledgers",
+      "ledger": "docs/audits/security-sweep-1968-json-insertion-union.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12ag recorded their coverage: json_insertion_union.ts (#1968)",
+      "status": "swept",
+      "sweptAt": "e2f50c4837bd6b7c1a363c51748dc621b8dcfc71",
+      "paths": [
+        "worker/deno/lib/json_insertion_union.ts"
+      ]
+    },
+    {
       "issue": 1953,
-      "chunk": "12ah",
+      "chunk": "top-up-1953",
       "title": "top-up: the bounded git stdin message reader",
       "ledger": "docs/audits/security-sweep-1953-git-stdin-message.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: git_stdin_message.ts (#1953)",

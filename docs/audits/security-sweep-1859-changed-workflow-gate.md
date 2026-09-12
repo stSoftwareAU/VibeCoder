@@ -1,10 +1,10 @@
 # Security sweep — pre-PR changed-workflow gate (`changed_workflow_gate.ts`)
 
 **Issue:** [#1859](https://github.com/stSoftwareAU/VibeCoder/issues/1859)
-(chunk 12p) · **Parent:** #1209
+(chunk top-up-1859) · **Parent:** #1209
 
 This is the written record for the one module that entered `worker/deno/lib/`
-after chunk 12o:
+after the chunk-12 slices recorded their coverage:
 
 - `worker/deno/lib/changed_workflow_gate.ts` — added by #1859.
 
@@ -12,14 +12,14 @@ after chunk 12o:
 
 Appending a module to a slice whose sweep ran before it existed is the cheapest
 way to make `diffCoverage` green and a false record. The module is claimed by
-**12p**, and this file is the reading of it.
+**top-up-1859**, and this file is the reading of it.
 
 ## `worker/deno/lib/changed_workflow_gate.ts`
 
-The module runs `WORKFLOW_FILE_CHECKS` (swept as 12n) over the workflow files a
-branch added or changed, before `gh pr create`. It holds no scanner logic: it
-selects paths, reads them through an injected reader, parses the YAML, iterates
-the check table and renders the verdict.
+The module runs `WORKFLOW_FILE_CHECKS` (swept as top-up-1822) over the
+workflow files a branch added or changed, before `gh pr create`. It holds no
+scanner logic: it selects paths, reads them through an injected reader, parses
+the YAML, iterates the check table and renders the verdict.
 
 | Property | Result |
 | -------- | ------ |

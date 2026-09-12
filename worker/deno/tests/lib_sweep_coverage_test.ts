@@ -22,16 +22,19 @@ import {
   describeCoverageDiff,
   diffCoverage,
   driftSince,
+  duplicateSliceIds,
   ENUMERATED_SLICE_MAX_PATHS,
   LIB_SWEEP_LEDGER_PATH,
   LIB_SWEEP_ROOT,
   listSweptModules,
   listSweptModulesForRoots,
   localLedgerRecords,
+  mismatchedTopUpIds,
   parseCoverageLedger,
   type SweepCoverageLedger,
   type SweepGitRunner,
   SweepLedgerError,
+  topUpChunkId,
   unnamedSmallSliceModules,
 } from "../lib/lib_sweep_coverage.ts";
 
@@ -206,6 +209,118 @@ Deno.test("parseCoverageLedger - missing roots fails naming the field (Issue #16
     SweepLedgerError,
   );
   assert(err.message.includes("roots"), err.message);
+});
+
+/** A ledger's JSON text, with each slice's chunk id and issue supplied. */
+function ledgerJson(slices: Array<{ chunk: string; issue: number }>): string {
+  return JSON.stringify({
+    roots: [LIB_SWEEP_ROOT],
+    parent: 1209,
+    description: "d",
+    slices: slices.map((s) => ({
+      issue: s.issue,
+      chunk: s.chunk,
+      title: "t",
+      ledger: "docs/audits/x.md",
+      definition: "d",
+      status: "swept",
+      sweptAt: FIXTURE_COMMIT,
+      paths: [`worker/deno/lib/${s.issue}.ts`],
+    })),
+  });
+}
+
+Deno.test("parseCoverageLedger - two slices sharing a chunk id fail loud (Issue #1968)", () => {
+  // Two branches cut from the same tail both allocated `12aa`. The merge that
+  // brings both in must fail here, not after it has landed on main.
+  const err = assertThrows(
+    () =>
+      parseCoverageLedger(ledgerJson([
+        { chunk: "12aa", issue: 1940 },
+        { chunk: "12aa", issue: 1943 },
+      ])),
+    SweepLedgerError,
+  );
+  assert(err.message.includes("12aa"), err.message);
+  assert(err.message.includes("top-up-<issue>"), err.message);
+});
+
+Deno.test("parseCoverageLedger - two slices owning the same issue fail loud (Issue #1968)", () => {
+  const err = assertThrows(
+    () =>
+      parseCoverageLedger(ledgerJson([
+        { chunk: "top-up-1940", issue: 1940 },
+        { chunk: "12ab", issue: 1940 },
+      ])),
+    SweepLedgerError,
+  );
+  assert(err.message.includes("1940"), err.message);
+});
+
+Deno.test("parseCoverageLedger - collision-free top-up ids parse (Issue #1968)", () => {
+  const ledger = parseCoverageLedger(ledgerJson([
+    { chunk: topUpChunkId(1940), issue: 1940 },
+    { chunk: topUpChunkId(1943), issue: 1943 },
+  ]));
+  assertEquals(ledger.slices.map((s) => s.chunk), [
+    "top-up-1940",
+    "top-up-1943",
+  ]);
+});
+
+Deno.test("parseCoverageLedger - a top-up id naming another issue fails loud (Issue #1968)", () => {
+  const err = assertThrows(
+    () =>
+      parseCoverageLedger(ledgerJson([
+        { chunk: "top-up-1940", issue: 1943 },
+      ])),
+    SweepLedgerError,
+  );
+  assert(err.message.includes("top-up-1940 (issue 1943)"), err.message);
+});
+
+Deno.test("mismatchedTopUpIds - only a top-up id is held to its own issue", () => {
+  assertEquals(
+    mismatchedTopUpIds([
+      { chunk: "top-up-1940", issue: 1940 },
+      { chunk: "12aa", issue: 1926 },
+      { chunk: "top-up-1938", issue: 1943 },
+    ]),
+    ["top-up-1938 (issue 1943)"],
+  );
+});
+
+Deno.test("topUpChunkId - derives the id from the issue, so two runs cannot collide (Issue #1968)", () => {
+  assertEquals(topUpChunkId(1968), "top-up-1968");
+  assert(topUpChunkId(1940) !== topUpChunkId(1943));
+});
+
+Deno.test("duplicateSliceIds - reports every repeated chunk id and issue number", () => {
+  assertEquals(
+    duplicateSliceIds([
+      { chunk: "12aa", issue: 1940 },
+      { chunk: "12aa", issue: 1943 },
+      { chunk: "12ab", issue: 1943 },
+      { chunk: "12ac", issue: 1951 },
+    ]),
+    { chunks: ["12aa"], issues: [1943] },
+  );
+  assertEquals(
+    duplicateSliceIds([
+      { chunk: "12aa", issue: 1940 },
+      { chunk: "12ab", issue: 1943 },
+    ]),
+    { chunks: [], issues: [] },
+  );
+});
+
+Deno.test("the real ledger allocates each chunk id and issue number once (Issue #1968)", () => {
+  // `readRealLedger` parses, so a collision throws before this assertion; the
+  // explicit check states the invariant the acceptance criterion names.
+  assertEquals(duplicateSliceIds(readRealLedger().slices), {
+    chunks: [],
+    issues: [],
+  });
 });
 
 Deno.test("diffCoverage - a module on disk that no slice claims is unswept", () => {
