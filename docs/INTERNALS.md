@@ -3241,8 +3241,15 @@ not write. Four rules decide what is mechanical:
   default branch's addition first (Issue #1768). This is the append-only ledger
   shape — `CHANGELOG.md`, `docs/RELEASE-NOTES.md`, the audit ledgers under
   `docs/audits/` — measured as the second-largest conflict class on the
-  milestone branches. A base that was not read decides nothing, and a `.json`
-  ledger whose union does not parse escalates rather than being written.
+  milestone branches. A base that was not read decides nothing. A `.json`
+  ledger is unioned **by value** through
+  [json_insertion_union.ts](../worker/deno/lib/json_insertion_union.ts) before
+  any text is merged (Issue #2013), because two branches that each append a
+  slice conflict *inside* the appended object and no arrangement of the two
+  hunks' text is valid JSON. What that structural merge refuses — a deletion, a
+  conflicting edit, formatting it would not reproduce — falls back to the
+  textual union, and a `.json` union that does not parse still escalates rather
+  than being written.
 - **Two designs for the same problem** — `IndirectSpawnRules` (#1378) against
   `scanContentForVariableBinarySpawn` (#1227) — neither contains the other and
   at least one side changed a line the merge base had, so the triage decides

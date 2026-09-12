@@ -113,8 +113,14 @@ export function isBothInsertedCandidate(path: string): boolean {
   return !OWNED_ELSEWHERE.has(baseName(path));
 }
 
-/** Whether a path is a JSON document, which is unioned by value (Issue #1968). */
-function isJsonPath(path: string): boolean {
+/**
+ * Whether a path is a JSON document, which is unioned by value (Issue #1968).
+ *
+ * Exported because the milestone ladder's union rung asks the same question of
+ * the same paths (Issue #2013), and two spellings of "is this JSON" could drift
+ * into two different answers.
+ */
+export function isJsonPath(path: string): boolean {
   return baseName(path).endsWith(".json");
 }
 
