@@ -292,7 +292,7 @@ Deno.test("attemptPrSelfHealing - returns ok with PR URL when PR exists", async 
         value: "https://github.com/owner/repo/pull/99",
       }),
       retargetPrToMilestone: async () => ({ ok: true, value: "retargeted" }),
-      finalisePr: async () => ({ ok: true, value: "finalised" }),
+      finalisePr: async () => ({ ok: true, value: { message: "finalised" } }),
       ensureIssueClosedIfPrMerged: async () => ({ ok: true, value: undefined }),
       log: () => {},
     },
@@ -324,7 +324,7 @@ Deno.test("attemptPrSelfHealing - passes the repository's skip_auto_merge opt-ou
       retargetPrToMilestone: async () => ({ ok: true, value: "retargeted" }),
       finalisePr: async (opts) => {
         captured = opts;
-        return { ok: true, value: "finalised" };
+        return { ok: true, value: { message: "finalised" } };
       },
       ensureIssueClosedIfPrMerged: async () => ({ ok: true, value: undefined }),
       log: (m) => {
@@ -355,7 +355,7 @@ Deno.test("attemptPrSelfHealing - without the opt-out finalisePr is asked to arm
       retargetPrToMilestone: async () => ({ ok: true, value: "retargeted" }),
       finalisePr: async (opts) => {
         captured = opts;
-        return { ok: true, value: "finalised" };
+        return { ok: true, value: { message: "finalised" } };
       },
       ensureIssueClosedIfPrMerged: async () => ({ ok: true, value: undefined }),
       log: () => {},
@@ -379,7 +379,7 @@ Deno.test("attemptPrSelfHealing - returns error when no PR exists", async () => 
         error: new Error("No PR found"),
       }),
       retargetPrToMilestone: async () => ({ ok: true, value: "retargeted" }),
-      finalisePr: async () => ({ ok: true, value: "finalised" }),
+      finalisePr: async () => ({ ok: true, value: { message: "finalised" } }),
       ensureIssueClosedIfPrMerged: async () => ({ ok: true, value: undefined }),
       log: () => {},
     },
@@ -407,7 +407,7 @@ Deno.test("attemptPrSelfHealing - retargets to milestone when milestone branch s
         assertEquals(branch, "milestone/v2");
         return { ok: true, value: "retargeted" };
       },
-      finalisePr: async () => ({ ok: true, value: "finalised" }),
+      finalisePr: async () => ({ ok: true, value: { message: "finalised" } }),
       ensureIssueClosedIfPrMerged: async () => ({ ok: true, value: undefined }),
       log: () => {},
     },
@@ -457,7 +457,7 @@ function createMockDeps(
       error: new Error("No PR found"),
     }),
     retargetPrToMilestone: async () => ({ ok: true, value: "retargeted" }),
-    finalisePr: async () => ({ ok: true, value: "finalised" }),
+    finalisePr: async () => ({ ok: true, value: { message: "finalised" } }),
     ensureIssueClosedIfPrMerged: async () => ({ ok: true, value: undefined }),
     runGitCommand: async (args: string[]) => {
       // Default: report changes present

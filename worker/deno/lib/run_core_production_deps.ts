@@ -88,6 +88,7 @@ import {
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { createMilestoneResync } from "./milestone_behind_resync.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
@@ -2691,6 +2692,17 @@ export async function createProductionRunCoreDeps(
             fleetAuthors: maintenanceAuthors,
             log: (message: string) => logger.warn(message),
           }),
+        // Issue #2005: a child PR whose milestone branch fell behind the
+        // default branch mid-cycle is deferred by the Issue #1779 gate.
+        // Sync the branch here — once per milestone per sweep, on the sync
+        // ladder's own ledger, budget and pacing — and arm it again in this
+        // cycle rather than leaving it for the next one.
+        resyncMilestoneBase: createMilestoneResync({
+          workDir: config.workDir || workDir,
+          config,
+          logger,
+          ghCommandFn: runGhCommand,
+        }),
         // Issue #470: this outcome used to be discarded. A gate that
         // refused every merge in the fleet was therefore invisible —
         // the priority logged its name and a duration while nothing

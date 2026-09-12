@@ -51,7 +51,7 @@ function createMockDeps(
     findExistingPrForBranch: () =>
       Promise.resolve({ ok: false, error: new Error("No PR found") }),
     retargetPrToMilestone: () => Promise.resolve({ ok: true, value: "ok" }),
-    finalisePr: () => Promise.resolve({ ok: true, value: "ok" }),
+    finalisePr: () => Promise.resolve({ ok: true, value: { message: "ok" } }),
     ensureIssueClosedIfPrMerged: () =>
       Promise.resolve({ ok: true, value: undefined }),
     runGitCommand: (args: string[]) =>

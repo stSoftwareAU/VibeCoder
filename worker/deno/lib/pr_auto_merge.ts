@@ -212,6 +212,13 @@ export interface EnableAutoMergeResult {
    * branch is neither armed nor escalated — it is re-read next scan.
    */
   deferral?: "milestone-behind" | "sync-base-unreadable";
+  /**
+   * The milestone branch a `milestone-behind` deferral is waiting on
+   * (Issue #2005). The caller clears the deferral by syncing this branch
+   * inline and arming again, so it must not have to parse the message to
+   * learn which branch that is.
+   */
+  milestoneBranch?: string;
 }
 
 /**
@@ -497,7 +504,12 @@ export async function enableAutoMerge(
     return {
       result: AutoMergeResult.Deferred,
       ...(routeGate.reason === "milestone-behind"
-        ? { deferral: "milestone-behind" as const }
+        ? {
+          deferral: "milestone-behind" as const,
+          // Issue #2005: the caller syncs this branch inline and arms
+          // again in the same cycle rather than waiting for the sweep.
+          milestoneBranch: routeGate.milestoneBranch,
+        }
         : {}),
       message: routeGate.reason === "milestone-behind"
         ? `milestone behind default branch (${routeGate.behindBy} commit${
@@ -853,16 +865,34 @@ async function refuseMilestoneMerge(
 }
 
 /**
+ * What {@link finalisePr} concluded (Issue #2005).
+ *
+ * It used to answer with the message alone, so a caller could not tell an
+ * armed PR from one *deliberately* held back — and the held-back case is the
+ * one worth acting on: a `milestone-behind` deferral is cleared by syncing
+ * the milestone branch, which the caller can do in the same cycle rather
+ * than leaving the PR unarmed until the next one.
+ */
+export interface FinalisePrOutcome {
+  /** Human-readable line for the log — what the message used to be. */
+  message: string;
+  /** Why arming deferred, when it did. */
+  deferral?: EnableAutoMergeResult["deferral"];
+  /** The milestone branch a `milestone-behind` deferral waits on. */
+  milestoneBranch?: string;
+}
+
+/**
  * Finalise a PR by enabling auto-merge, with direct-merge fallback (Issue #480, #927).
  *
  * @param options - Auto-merge options
  * @param directMergeFn - Function to attempt direct merge as fallback
- * @returns Result with success status and message
+ * @returns Result carrying the message and any deliberate deferral
  */
 export async function finalisePr(
   options: EnableAutoMergeOptions,
   directMergeFn?: (repo: string, prNumber: number) => Promise<void>,
-): Promise<Result<string, Error>> {
+): Promise<Result<FinalisePrOutcome, Error>> {
   const result = await enableAutoMerge(options);
 
   if (result.result === AutoMergeResult.NotAllowed && directMergeFn) {
@@ -870,16 +900,29 @@ export async function finalisePr(
       await directMergeFn(options.repo, options.prNumber);
       return {
         ok: true,
-        value: `Direct merge attempted for PR #${options.prNumber}`,
+        value: {
+          message: `Direct merge attempted for PR #${options.prNumber}`,
+        },
       };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return {
         ok: true,
-        value: `Auto-merge not available, direct merge also failed: ${msg}`,
+        value: {
+          message: `Auto-merge not available, direct merge also failed: ${msg}`,
+        },
       };
     }
   }
 
-  return { ok: true, value: result.message };
+  return {
+    ok: true,
+    value: {
+      message: result.message,
+      ...(result.deferral ? { deferral: result.deferral } : {}),
+      ...(result.milestoneBranch
+        ? { milestoneBranch: result.milestoneBranch }
+        : {}),
+    },
+  };
 }

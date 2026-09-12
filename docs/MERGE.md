@@ -437,12 +437,28 @@ the default branch already has.
   sweep cost **one** API call, and a PR based on the default branch costs none.
   The memo expires well inside a cycle, so the next sync is seen rather than a
   stale reading held for the life of the process.
-- **What the worker does.** Nothing: no `--auto`, no gated direct merge, no
-  comment and no label. `logAutoMergeOutcome` records
-  `deferred: milestone behind default branch (N commits)` and the PR is left
-  exactly as it was. The every-cycle milestone sync (Issue #1776) — or a
-  roll-back — clears it, and the next sweep merges. The deferral names itself
-  (`deferral: "milestone-behind"`), so the PR-maintenance scan classifies it
+- **What the worker does.** It syncs the milestone branch there and then, and
+  arms again in the same cycle (Issue #2005). Waiting for the periodic sync
+  was the old behaviour and it cost an hour per child PR: the sync runs at
+  priority 1.72, *after* the auto-merge sweep at 1.65, so even a clean sync
+  landed a cycle late for arming purposes. One observed child PR was raised at
+  22:11Z and merged by hand at 23:26Z. The recovery is not a second sync
+  ladder — it is the Issue #1780 inline pre-sync
+  ([`milestone_presync.ts`](../worker/deno/lib/milestone_presync.ts)) on the
+  same conflict ledger, the same per-branch budget and the same pacing. It
+  runs in two places, both through
+  [`milestone_behind_resync.ts`](../worker/deno/lib/milestone_behind_resync.ts):
+  the completion phase, the moment the child PR is raised, and the auto-merge
+  sweep, memoised to **one attempt per milestone branch per sweep** so N
+  children cost one sync exactly as they already cost one compare.
+- **A branch that cannot be brought level still defers.** No side-pick is
+  taken: a conflict, a spent conflict budget or a paced retry leaves the PR
+  unarmed exactly as before, `logAutoMergeOutcome` records
+  `deferred: milestone behind default branch (N commits)`, and the completion
+  phase posts the pre-sync's own reason on the PR thread so the hold is not
+  silent once this run has tried and failed. The deferral names itself
+  (`deferral: "milestone-behind"`) and carries the branch
+  (`milestoneBranch`), so the PR-maintenance scan classifies it
   `await_checks` rather than escalating a healthy child to `needs-human`.
 - **The milestone sync PR is exempt.** Its base *is* the milestone branch and
   its head is `sync/milestone-*` — it is the PR that clears "behind". Deferring
@@ -467,6 +483,25 @@ the default branch already has.
   GitHub auto-merge was armed *before* the milestone branch fell behind still
   merges when its checks pass — GitHub owns that merge, and nothing the worker
   decides afterwards is consulted.
+
+```mermaid
+sequenceDiagram
+    participant C as Completion phase / sweep
+    participant G as decideMilestoneBaseMerge
+    participant S as Inline pre-sync (#1780 ladder)
+    participant PR as The child PR
+    C->>G: arm auto-merge
+    G-->>C: defer / milestone-behind
+    C->>S: sync milestone/<slug> (once per branch)
+    alt the merge lands
+        S-->>C: level / synced
+        C->>G: arm again — same cycle
+        G-->>PR: auto-merge armed
+    else the merge conflicts
+        S-->>C: deferred (budget charged, branch paced)
+        C->>PR: comment: why it is still unarmed
+    end
+```
 
 Two callers deliberately do **not** require a synced base. The post-merge
 landing check (`merge_landing.ts`) asks a different question — that PR has

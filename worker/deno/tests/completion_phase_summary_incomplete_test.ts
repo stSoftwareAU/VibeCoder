@@ -233,7 +233,10 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
       },
       finalisePr: () => {
         finaliseCalls++;
-        return Promise.resolve({ ok: true, value: "auto-merge armed" });
+        return Promise.resolve({
+          ok: true,
+          value: { message: "auto-merge armed" },
+        });
       },
     },
   });

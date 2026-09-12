@@ -619,6 +619,12 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
           return {
             result: autoMergeResult.result,
             message: autoMergeResult.message,
+            // Issue #2005: the deferral used to be dropped here, so the
+            // scan's own `milestone-behind` branch could never be reached
+            // and a deliberate hold was escalated as a merge error.
+            ...(autoMergeResult.deferral
+              ? { deferral: autoMergeResult.deferral }
+              : {}),
           };
         },
         directMergeFn: async (repo: string, prNumber: number) => {

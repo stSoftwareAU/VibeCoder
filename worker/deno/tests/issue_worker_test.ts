@@ -2444,7 +2444,9 @@ Deno.test("completion - the arming outcome is logged at PR creation (Issue #1136
       finalisePr: (() =>
         Promise.resolve({
           ok: true,
-          value: "PR #5 left on milestone/oidc-auth: checks pending",
+          value: {
+            message: "PR #5 left on milestone/oidc-auth: checks pending",
+          },
         })) as unknown as typeof deps.pr.finalisePr,
     },
   });

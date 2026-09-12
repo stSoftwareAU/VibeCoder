@@ -24,6 +24,12 @@ import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
 import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import { presyncMilestoneBranchForIssueRun } from "../milestone_presync.ts";
+import {
+  milestoneBehindComment,
+  resyncCleared,
+} from "../milestone_behind_resync.ts";
+import { repoDirName } from "../work_volume_tiers.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
@@ -233,6 +239,7 @@ export function repoOptsOutOfAutoMerge(
  */
 async function armAutoMergeAtCreation(
   ctx: IssueContext,
+  state: PhaseState,
   prNumber: number,
   deps: WorkerDeps,
 ): Promise<void> {
@@ -246,17 +253,32 @@ async function armAutoMergeAtCreation(
       { repo, prNumber },
     );
   }
-  const result = await deps.pr.finalisePr({
-    repo,
-    prNumber,
-    skipAutoMerge,
-    // Route the milestone gates' warnings into the worker log rather than
-    // `console.warn`, which no operator reads.
-    log: (message: string) => logger.warn(message, { repo, prNumber }),
-  });
+  const arm = () =>
+    deps.pr.finalisePr({
+      repo,
+      prNumber,
+      skipAutoMerge,
+      // Route the milestone gates' warnings into the worker log rather than
+      // `console.warn`, which no operator reads.
+      log: (message: string) => logger.warn(message, { repo, prNumber }),
+    });
+
+  let result = await arm();
+
+  // Issue #2005: the default branch moved while this run worked, so the
+  // milestone branch this PR targets is behind it and the Issue #1779 gate
+  // deferred the arming. Waiting for the next cycle's sweep costs an hour
+  // per child PR; the sync this run needs is the very one Issue #1780
+  // already performs before a child branch is cut, so run it here and arm
+  // again. A branch that cannot be brought level defers exactly as before.
+  if (result.ok && result.value.deferral === "milestone-behind") {
+    const cleared = await clearMilestoneBehind(ctx, state, prNumber, deps);
+    if (cleared) result = await arm();
+  }
+
   if (result.ok) {
     if (!skipAutoMerge) {
-      logger.info(`Auto-merge armed at creation: ${result.value}`, {
+      logger.info(`Auto-merge armed at creation: ${result.value.message}`, {
         repo,
         prNumber,
       });
@@ -267,6 +289,102 @@ async function armAutoMergeAtCreation(
     repo,
     prNumber,
   });
+}
+
+/**
+ * Bring this PR's milestone branch level with the default branch, inline
+ * (Issue #2005).
+ *
+ * The same ladder Issue #1780 runs before a child branch is cut: the shared
+ * clone, the branch's own conflict ledger, the sweep's pacing and its
+ * conflict budget. Nothing here is a second attempt at the merge — a branch
+ * the ledger has already paced or spent out reports `deferred` without
+ * touching git.
+ *
+ * A branch that could not be brought level is said out loud on the PR
+ * thread: the #1779 deferral is silent by design because it expects the next
+ * cycle to clear it, and once this run has tried and failed that expectation
+ * no longer holds.
+ *
+ * @returns True when the branch is level and arming is worth retrying
+ */
+async function clearMilestoneBehind(
+  ctx: IssueContext,
+  state: PhaseState,
+  prNumber: number,
+  deps: WorkerDeps,
+): Promise<boolean> {
+  const { repo, config, milestoneTitle } = ctx;
+  const logger = deps.logger;
+  const milestoneBranch = state.milestoneBranch;
+  if (!milestoneBranch || !milestoneTitle) {
+    // The gate named a milestone base this run does not know the branch for.
+    // Never guessed: an unnamed branch is not synced, and the deferral stands
+    // with the reason in the log rather than a silent no-op.
+    logger.warn(
+      "Auto-merge deferred on a milestone base this run cannot name — " +
+        "no inline sync attempted (Issue #2005)",
+      { repo, prNumber, milestoneTitle, milestoneBranch },
+    );
+    return false;
+  }
+
+  const presync = await presyncMilestoneBranchForIssueRun({
+    repo,
+    milestoneTitle,
+    milestoneBranch,
+    defaultBranch: state.defaultBranch,
+    // The shared clone the periodic sweep uses — never this lane's worktree,
+    // whose checkout of the milestone branch every other lane is refused.
+    cwd: `${config.workDir}/${repoDirName(repo)}`,
+    workDir: config.workDir,
+    config,
+    logger,
+    ...(ctx.cycleDeadlineEpochMs !== undefined
+      ? { cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs }
+      : {}),
+    syncMilestoneBranchFn: deps.git.syncMilestoneBranchWithDefault,
+    countCommitsAheadFn: deps.git.countCommitsAhead,
+    runGitCommandFn: deps.git.runGitCommand,
+    runAgentFn: deps.claude.runClaudeWithRetry,
+    ghCommandFn: deps.github.runGhCommand,
+  });
+
+  if (resyncCleared(presync)) {
+    logger.info(
+      `Milestone base brought level before arming: ${presync.detail} ` +
+        "(Issue #2005)",
+      { repo, prNumber, milestoneBranch },
+    );
+    return true;
+  }
+
+  logger.warn(
+    `Auto-merge still deferred: ${presync.detail} (Issue #2005)`,
+    { repo, prNumber, milestoneBranch },
+  );
+  try {
+    const client = deps.github.createClient(logger);
+    await client.postComment(
+      repo,
+      prNumber,
+      milestoneBehindComment(
+        milestoneBranch,
+        state.defaultBranch,
+        presync.detail,
+      ),
+    );
+  } catch (err) {
+    logger.warn(
+      "Could not post the milestone-behind deferral reason on the PR",
+      {
+        repo,
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+  }
+  return false;
 }
 
 /**
@@ -454,7 +572,7 @@ export async function recoverAndFinaliseExistingPr(
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
     if (prNumber > 0) {
-      await armAutoMergeAtCreation(ctx, prNumber, deps);
+      await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
   } catch (err) {
     logger.warn("Post-recovery finalisation error (non-fatal)", {
@@ -1896,7 +2014,7 @@ async function completionBody(
     // time (Issue #3909). The sweep already merged these children, so the
     // skip only ever delayed them.
     if (prNumber > 0) {
-      await armAutoMergeAtCreation(ctx, prNumber, deps);
+      await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 
     // Issue #1613: Surface a rejected dependency bump on the PR thread

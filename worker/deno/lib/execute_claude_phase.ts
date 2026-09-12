@@ -74,7 +74,7 @@ import { getOrGenerateCodebaseMap } from "./codebase_map_cache.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
 import { findExistingPrForBranch } from "./pr_issue_linking.ts";
 import { retargetPrToMilestone } from "./pr_retarget.ts";
-import { finalisePr } from "./pr_auto_merge.ts";
+import { finalisePr, type FinalisePrOutcome } from "./pr_auto_merge.ts";
 import {
   ensureIssueClosedIfPrMerged,
   type LifecycleDeps,
@@ -323,7 +323,7 @@ export interface ExecuteClaudePhaseDeps {
   /** Finalise a PR (auto-merge, etc.). */
   finalisePr: (
     options: { repo: string; prNumber: number; skipAutoMerge?: boolean },
-  ) => Promise<Result<string, Error>>;
+  ) => Promise<Result<FinalisePrOutcome, Error>>;
   /** Ensure an issue is closed when its PR is merged. */
   ensureIssueClosedIfPrMerged: (
     repo: string,

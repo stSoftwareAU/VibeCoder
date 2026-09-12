@@ -27,6 +27,11 @@ import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
 import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 import type { EnableAutoMergeResult } from "./pr_auto_merge.ts";
+import {
+  memoiseMilestoneResync,
+  type MilestoneResyncFn,
+  resyncCleared,
+} from "./milestone_behind_resync.ts";
 
 /** One open PR the sweep may act on. */
 export interface SweepablePr {
@@ -97,6 +102,17 @@ export interface SweepAutoMergeOptions {
     prNumber: number,
     outcome: EnableAutoMergeResult,
   ) => void;
+  /**
+   * Bring a milestone branch level with the default branch, inline
+   * (Issue #2005).
+   *
+   * Called only when an attempt reports the Issue #1779 `milestone-behind`
+   * deferral, and memoised here to one attempt per milestone branch per
+   * sweep — the N children of one milestone cost one sync, exactly as they
+   * already cost one memoised compare. Omitted, the deferral stands as it
+   * did before: the periodic sweep clears it a cycle later.
+   */
+  resyncMilestoneBase?: MilestoneResyncFn;
   /** Drop the repo's cached open-PR list after a merge attempt mutated it. */
   invalidateOpenPrCache: (repo: string) => Promise<void>;
   /** Logger. */
@@ -122,6 +138,12 @@ export interface SweepAutoMergeSummary {
    * not read like a sweep that found nothing at all.
    */
   prsSkippedNotOpen: number;
+  /**
+   * PRs armed only after their milestone branch was brought level inline
+   * (Issue #2005). Named, not folded into `prsAttempted`: the whole point
+   * of the recovery is that it is visible when it fires.
+   */
+  prsRearmedAfterResync: number;
 }
 
 /**
@@ -146,11 +168,19 @@ export async function sweepAutoMerge(
     logger,
   } = options;
 
+  // Issue #2005: one sync attempt per milestone branch for the whole sweep.
+  // Built here rather than by the caller so the memo's lifetime is the
+  // sweep's, which is what "once per cycle" means.
+  const resyncMilestoneBase = options.resyncMilestoneBase === undefined
+    ? undefined
+    : memoiseMilestoneResync(options.resyncMilestoneBase);
+
   const summary: SweepAutoMergeSummary = {
     reposVisited: [],
     prsAttempted: 0,
     reposWithNoCandidates: [],
     prsSkippedNotOpen: 0,
+    prsRearmedAfterResync: 0,
   };
   const authors = fleetAuthors.join(", ");
   // Issue #1515: one quota exhaustion is one line, not one per repository.
@@ -234,7 +264,32 @@ export async function sweepAutoMerge(
         }
 
         try {
-          const outcome = await attemptMerge(repo, pr);
+          let outcome = await attemptMerge(repo, pr);
+          // Issue #2005: a child PR whose milestone branch fell behind the
+          // default branch is deferred by the Issue #1779 gate and used to
+          // wait a whole cycle for the periodic sync. Sync it here — once
+          // per milestone, on the sync ladder's own ledger — and arm again.
+          // A branch that cannot be brought level keeps the deferral.
+          if (outcome.deferral === "milestone-behind" && resyncMilestoneBase) {
+            const branch = outcome.milestoneBranch ?? pr.baseRefName;
+            if (branch === undefined) {
+              logger.warn(
+                "Auto-merge sweep: a milestone-behind deferral named no " +
+                  "branch — no inline sync attempted (Issue #2005)",
+                { repo, prNumber: pr.number },
+              );
+            } else {
+              const resync = await resyncMilestoneBase(repo, branch);
+              logger.info(
+                `Auto-merge sweep: inline milestone sync — ${resync.detail}`,
+                { repo, prNumber: pr.number, milestoneBranch: branch },
+              );
+              if (resyncCleared(resync)) {
+                outcome = await attemptMerge(repo, pr);
+                summary.prsRearmedAfterResync++;
+              }
+            }
+          }
           recordOutcome(repo, pr.number, outcome);
           summary.prsAttempted++;
           mutated = true;
