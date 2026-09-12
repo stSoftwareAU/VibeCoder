@@ -14,6 +14,7 @@ import { directMergePr } from "./direct_merge.ts";
 import {
   decideMilestoneBaseMerge,
   decideSummaryPrMerge,
+  invalidateMilestoneBehindMemoForBranch,
   isMilestoneBranch,
   postOpenChildrenBlockComment,
   renderBlockWarning,
@@ -193,6 +194,59 @@ export interface EnableAutoMergeOptions {
    * can land such a PR at all. Omitted, the Issue #2416 refusal stands.
    */
   fleetAuthors?: readonly string[];
+  /**
+   * When the milestone base is behind the default branch, attempt one
+   * in-cycle sync and re-arm if it lands (Issue #2005). Absent, the
+   * #1779 deferral stands — no `--auto`, no comment.
+   */
+  syncBehindMilestone?: (info: {
+    milestoneBranch: string;
+    behindBy: number;
+  }) => Promise<{
+    status: "level" | "synced" | "deferred";
+    detail: string;
+  }>;
+}
+
+/** Marker on a PR comment that an in-cycle sync could not clear "behind". */
+export const MILESTONE_BEHIND_SYNC_MARKER =
+  "<!-- vibe-milestone-behind-sync -->";
+
+/** PRs already told about a failed in-cycle sync this cycle. */
+const postedBehindSyncReason = new Set<string>();
+
+/** Drop the per-PR behind-sync comment registry. Tests and cycle start. */
+export function resetBehindSyncComments(): void {
+  postedBehindSyncReason.clear();
+}
+
+async function postBehindSyncReason(
+  repo: string,
+  prNumber: number,
+  milestoneBranch: string,
+  detail: string,
+  commentFn: (repo: string, prNumber: number, body: string) => Promise<void>,
+  log: (message: string) => void,
+): Promise<void> {
+  const key = `${repo}#${prNumber}`;
+  if (postedBehindSyncReason.has(key)) return;
+  postedBehindSyncReason.add(key);
+  const body = [
+    MILESTONE_BEHIND_SYNC_MARKER,
+    `The milestone branch \`${milestoneBranch}\` is still behind the ` +
+    `default branch after an in-cycle sync: ${detail}`,
+    "",
+    "Auto-merge is not armed. The periodic milestone sync will retry; a " +
+    "conflicting sync is never side-picked (Issue #2005).",
+  ].join("\n");
+  try {
+    await commentFn(repo, prNumber, body);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(
+      `WARNING: could not post the in-cycle sync deferral on ${repo}#${prNumber}: ${message}`,
+    );
+  }
 }
 
 /** Result of enabling auto-merge. */
@@ -204,8 +258,9 @@ export interface EnableAutoMergeResult {
   /**
    * Why a `deferred` outcome deferred, when the caller must treat it as a
    * deliberate hold rather than a merge error (Issue #1779). A milestone
-   * base behind the default branch gets no comment and no label — the next
-   * cycle's milestone sync clears it.
+   * base behind the default branch is first offered an in-cycle sync
+   * (Issue #2005); a conflicting sync still gets no `--auto` and no
+   * label, and the reason is posted on the PR.
    *
    * `sync-base-unreadable` is the same kind of hold (Issue #1967): a
    * sync-shaped head whose base could not be compared with the default
@@ -470,7 +525,7 @@ export async function enableAutoMerge(
   // built on what the default branch already has. The compare is memoised
   // per milestone, so the N children of one milestone in a sweep cost one
   // call, and a non-milestone base costs none.
-  const routeGate = await (options.decideMilestoneBaseFn ??
+  let routeGate = await (options.decideMilestoneBaseFn ??
     decideMilestoneBaseMerge)({
       repo,
       prNumber,
@@ -489,10 +544,66 @@ export async function enableAutoMerge(
   // healthy milestone child onto the review-gated default branch.
   //
   // Issue #1779: a behind milestone base defers the same way — no `--auto`,
-  // no gated direct merge, no comment and no label. The next cycle's
-  // milestone sync (or a roll-back) clears it. Known limit: a PR whose
-  // GitHub auto-merge was armed *before* the branch fell behind still merges
-  // when its checks pass — this gate governs arming, not GitHub's merge.
+  // no gated direct merge, no label. Issue #2005: when the caller supplies
+  // a sync hook, one in-cycle attempt runs first; a clean landing re-asks
+  // the gate and arms in this cycle. A conflicting sync still defers, and
+  // the reason is posted on the PR. Known limit: a PR whose GitHub
+  // auto-merge was armed *before* the branch fell behind still merges when
+  // its checks pass — this gate governs arming, not GitHub's merge.
+  if (
+    routeGate.decision === "defer" &&
+    routeGate.reason === "milestone-behind" &&
+    options.syncBehindMilestone
+  ) {
+    let sync: { status: "level" | "synced" | "deferred"; detail: string };
+    try {
+      sync = await options.syncBehindMilestone({
+        milestoneBranch: routeGate.milestoneBranch,
+        behindBy: routeGate.behindBy,
+      });
+    } catch (err) {
+      const thrown = err instanceof Error ? err.message : String(err);
+      log(
+        `WARNING: in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
+      );
+      sync = { status: "deferred", detail: thrown };
+    }
+    if (sync.status === "level" || sync.status === "synced") {
+      invalidateMilestoneBehindMemoForBranch(
+        repo,
+        routeGate.milestoneBranch,
+      );
+      routeGate = await (options.decideMilestoneBaseFn ??
+        decideMilestoneBaseMerge)({
+          repo,
+          prNumber,
+          baseRefName: options.baseRefName,
+          ...(options.headRefName ? { headRefName: options.headRefName } : {}),
+          ghCommandFn,
+          requireSyncedBase: true,
+          ...(options.getDefaultBranchFn
+            ? { getDefaultBranchFn: options.getDefaultBranchFn }
+            : {}),
+        });
+    } else {
+      await postBehindSyncReason(
+        repo,
+        prNumber,
+        routeGate.milestoneBranch,
+        sync.detail,
+        commentFn,
+        log,
+      );
+      return {
+        result: AutoMergeResult.Deferred,
+        deferral: "milestone-behind",
+        message:
+          `milestone behind default branch (${routeGate.behindBy} commit${
+            routeGate.behindBy === 1 ? "" : "s"
+          }) — in-cycle sync deferred: ${sync.detail} (Issue #2005)`,
+      };
+    }
+  }
   if (routeGate.decision === "defer") {
     return {
       result: AutoMergeResult.Deferred,

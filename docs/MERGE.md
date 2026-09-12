@@ -437,13 +437,17 @@ the default branch already has.
   sweep cost **one** API call, and a PR based on the default branch costs none.
   The memo expires well inside a cycle, so the next sync is seen rather than a
   stale reading held for the life of the process.
-- **What the worker does.** Nothing: no `--auto`, no gated direct merge, no
-  comment and no label. `logAutoMergeOutcome` records
-  `deferred: milestone behind default branch (N commits)` and the PR is left
-  exactly as it was. The every-cycle milestone sync (Issue #1776) — or a
-  roll-back — clears it, and the next sweep merges. The deferral names itself
-  (`deferral: "milestone-behind"`), so the PR-maintenance scan classifies it
-  `await_checks` rather than escalating a healthy child to `needs-human`.
+- **What the worker does.** It first tries the same inline milestone sync
+  the child run uses before cutting a branch (Issue #2005 / #1780), once
+  per milestone per cycle. A clean landing (or a sync PR that merges in
+  the remaining budget) invalidates the compare memo and arms the PR in
+  the same cycle — at creation, on the post-scan sweep, and on priority
+  1.65. A conflicting sync still does nothing to the merge: no `--auto`,
+  no gated direct merge, no label, and no side-pick. The reason is posted
+  on the PR; the periodic 1.72 sweep is the backstop. The deferral names
+  itself (`deferral: "milestone-behind"`), so the PR-maintenance scan
+  classifies it `await_checks` rather than escalating a healthy child to
+  `needs-human`.
 - **The milestone sync PR is exempt.** Its base *is* the milestone branch and
   its head is `sync/milestone-*` — it is the PR that clears "behind". Deferring
   it for the state it exists to fix would deadlock the milestone: the sync

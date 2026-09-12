@@ -396,7 +396,15 @@ import {
   checkSoftwareUpdates,
   softwareUpdateOptionsFromEnv,
 } from "./software_updates.ts";
-import { enableAutoMerge, logAutoMergeOutcome } from "./pr_auto_merge.ts";
+import {
+  enableAutoMerge,
+  logAutoMergeOutcome,
+  resetBehindSyncComments,
+} from "./pr_auto_merge.ts";
+import {
+  presyncMilestoneOnceForArming,
+  resetMilestoneArmSyncMemo,
+} from "./milestone_presync.ts";
 import { closeIssuesForMergedPrs as prIssueCloseForMerged } from "./pr_issue_linking.ts";
 import {
   formatGb,
@@ -406,6 +414,7 @@ import {
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
   reclaimWorkVolumeTiers,
+  repoDirName,
   summariseWorkVolumeTiers,
 } from "./work_volume_tiers.ts";
 import {
@@ -2691,6 +2700,42 @@ export async function createProductionRunCoreDeps(
             // from a sibling fleet account's approval.
             fleetAuthors: maintenanceAuthors,
             log: (message: string) => logger.warn(message),
+            // Issue #2005: one in-cycle sync per milestone, then re-arm.
+            // Shared with completion so a child raised this cycle and a
+            // sibling the sweep already saw do not climb the ladder twice.
+            syncBehindMilestone: async (info) => {
+              const defaultBranch = await getRepoDefaultBranch(
+                repo,
+                runGhCommand,
+              );
+              if (!defaultBranch.ok) {
+                return {
+                  status: "deferred" as const,
+                  detail:
+                    `default branch could not be read (${defaultBranch.error.message})`,
+                };
+              }
+              const root = config.workDir || workDir;
+              return presyncMilestoneOnceForArming({
+                repo,
+                milestoneTitle: info.milestoneBranch.replace(
+                  /^milestone\//,
+                  "",
+                ),
+                milestoneBranch: info.milestoneBranch,
+                defaultBranch: defaultBranch.value,
+                cwd: `${root}/${repoDirName(repo)}`,
+                workDir: root,
+                config,
+                logger,
+                syncMilestoneBranchFn:
+                  workerDeps.git.syncMilestoneBranchWithDefault,
+                countCommitsAheadFn: workerDeps.git.countCommitsAhead,
+                runGitCommandFn: workerDeps.git.runGitCommand,
+                runAgentFn: workerDeps.claude.runClaudeWithRetry,
+                ghCommandFn: runGhCommand,
+              });
+            },
           }),
         // Issue #470: this outcome used to be discarded. A gate that
         // refused every merge in the fleet was therefore invisible —
@@ -4275,6 +4320,8 @@ export async function createProductionRunCoreDeps(
       timelineBatchRegistry.reset();
       clearCommentCache();
       resetRepoAccessLogState();
+      resetMilestoneArmSyncMemo();
+      resetBehindSyncComments();
     },
 
     // Issue #1486: one cross-repo search per owner fills the per-repo

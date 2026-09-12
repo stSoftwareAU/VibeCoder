@@ -400,6 +400,7 @@ Deno.test("decideMilestoneBaseMerge - resolves the base itself when the caller h
 
 import {
   _resetMilestoneBehindMemo,
+  invalidateMilestoneBehindMemoForBranch,
   MILESTONE_BEHIND_MEMO_TTL_MS,
 } from "../lib/milestone_children_gate.ts";
 
@@ -542,6 +543,26 @@ Deno.test("decideMilestoneBaseMerge - two children of one milestone cost ONE com
     1,
     "the compare is memoised per repo+milestone",
   );
+});
+
+Deno.test("decideMilestoneBaseMerge - invalidating the memo re-reads the compare (Issue #2005)", async () => {
+  _resetMilestoneBehindMemo();
+  const compares: string[][] = [];
+  const gh = ghForSyncedGate({ behindBy: 1, compares });
+  const opts = {
+    repo: "org/repo",
+    prNumber: 42,
+    baseRefName: "milestone/sync",
+    requireSyncedBase: true as const,
+    defaultBranch: "Develop",
+    ghCommandFn: gh,
+  };
+  assertEquals((await decideMilestoneBaseMerge(opts)).decision, "defer");
+  assertEquals((await decideMilestoneBaseMerge(opts)).decision, "defer");
+  assertEquals(compares.length, 1, "second call is memoised");
+  invalidateMilestoneBehindMemoForBranch("org/repo", "milestone/sync");
+  assertEquals((await decideMilestoneBaseMerge(opts)).decision, "defer");
+  assertEquals(compares.length, 2, "invalidate forces a fresh compare");
 });
 
 Deno.test("decideMilestoneBaseMerge - the memoised compare expires so the next cycle's sync clears the defer (Issue #1779)", async () => {

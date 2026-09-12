@@ -2316,6 +2316,51 @@ Deno.test("completion - arms auto-merge on a milestone child PR at creation (Iss
   );
 });
 
+Deno.test("completion - a behind milestone is offered an in-cycle sync before arming (Issue #2005)", async () => {
+  const ctx = makeContext({
+    milestoneTitle: "OIDC Auth",
+    config: makeConfig({ workDir: "/tmp/work" }),
+  });
+  const state = makeState({
+    milestoneBranch: "milestone/oidc-auth",
+    defaultBranch: "main",
+  });
+  let capturedHook:
+    | ((info: { milestoneBranch: string; behindBy: number }) => Promise<{
+      status: string;
+      detail: string;
+    }>)
+    | undefined;
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: () => Promise.resolve("https://github.com/org/repo/pull/5"),
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: ((opts: {
+        skipAutoMerge?: boolean;
+        syncBehindMilestone?: (info: {
+          milestoneBranch: string;
+          behindBy: number;
+        }) => Promise<{ status: string; detail: string }>;
+      }) => {
+        capturedHook = opts.syncBehindMilestone;
+        return Promise.resolve({ ok: true, value: "finalised" });
+      }) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  assertEquals(
+    typeof capturedHook,
+    "function",
+    "completion must pass the in-cycle sync hook so a behind milestone can arm in-run",
+  );
+});
+
 Deno.test("completion - enables auto-merge for non-milestone PRs (Issue #1125)", async () => {
   const ctx = makeContext(); // no milestoneTitle
   const state = makeState(); // no milestoneBranch

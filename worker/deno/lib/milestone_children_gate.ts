@@ -758,6 +758,25 @@ export function _resetMilestoneBehindMemo(): void {
 }
 
 /**
+ * Drop the cached compare for one milestone branch (Issue #2005).
+ *
+ * An in-cycle sync that just landed would otherwise be hidden by the 60 s
+ * memo, and the re-arm would still see the stale "behind" reading.
+ */
+export function invalidateMilestoneBehindMemoForBranch(
+  repo: string,
+  milestoneBranch: string,
+): void {
+  const prefix = `${repo}#`;
+  const suffix = `...${milestoneBranch}`;
+  for (const key of behindMemo.keys()) {
+    if (key.startsWith(prefix) && key.endsWith(suffix)) {
+      behindMemo.delete(key);
+    }
+  }
+}
+
+/**
  * Commits `milestoneBranch` is behind `defaultBranch`, memoised per
  * (repo, default branch, milestone branch) for {@link MILESTONE_BEHIND_MEMO_TTL_MS}.
  *
