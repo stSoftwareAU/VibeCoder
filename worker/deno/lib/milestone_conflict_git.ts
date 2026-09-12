@@ -29,6 +29,7 @@ import {
   parseUnmergedStages,
   resolveTowardsIncoming,
 } from "./merge_conflict_stages.ts";
+import { describeGitFailure } from "./milestone_merge_state.ts";
 import {
   type ConflictedFile,
   type ConflictPlan,
@@ -84,16 +85,14 @@ export async function readConflictedSides(
       ? parseUnmergedStages(staged.value.stdout)
       : { base: false, ours: false, theirs: false };
     if (!hasAnyStage(stages)) {
-      const detail = staged.ok
-        ? staged.value.stderr.trim()
-        : staged.error.message;
+      const detail = describeGitFailure(staged);
       return {
         ok: false,
         error: new Error(
           `Refusing to resolve the merge of '${defaultBranch}' into ` +
             `'${milestoneRef}': the merge stages of conflicted file '${path}' ` +
             `could not be read, so which side has a version of it is unknown ` +
-            `(Issues #1048, #1559): ${detail || "git reported no stderr"}`,
+            `(Issues #1048, #1559): ${detail}`,
         ),
       };
     }
@@ -145,17 +144,13 @@ async function readStage(
   if (!present) return { ok: true, value: null };
   const result = await runGitCommand(["show", `:${stage}:${path}`], options);
   if (!result.ok || result.value.code !== 0) {
-    const detail = result.ok
-      ? result.value.stderr.trim()
-      : result.error.message;
+    const detail = describeGitFailure(result);
     return {
       ok: false,
       error: new Error(
         `Refusing to resolve a conflicted merge: stage ${stage} of ` +
           `'${path}' is present but could not be read, so one side of the ` +
-          `conflict is unknown (Issue #1559): ${
-            detail || "git reported no stderr"
-          }`,
+          `conflict is unknown (Issue #1559): ${detail}`,
       ),
     };
   }
@@ -384,9 +379,8 @@ export async function unionMergeConflictedFile(
   }
   const added = await runGitCommand(buildAddPathArgs(file.path), options);
   if (!added.ok || added.value.code !== 0) {
-    const detail = added.ok ? added.value.stderr.trim() : added.error.message;
     return `the union of both sides could not be staged: ${
-      detail || "git reported no stderr"
+      describeGitFailure(added)
     }`;
   }
   return null;
@@ -406,7 +400,7 @@ function takeSideError(
     `Failed to ${what} '${whose}'s version of '${file}' while merging ` +
       `'${defaultBranch}' into '${milestoneBranch}' — refusing to commit a ` +
       `resolution that would keep the other side instead ` +
-      `(Issues #1048, #1559): ${detail.trim() || "git reported no stderr"}`,
+      `(Issues #1048, #1559): ${detail.trim()}`,
   );
 }
 
@@ -442,17 +436,13 @@ export async function applyConflictPlan(
     if (!hasAnyStage(stages)) {
       // Every conflicted path has stages. None means git could not be read,
       // and guessing here is precisely the silent wrong answer (Issue #1048).
-      const detail = staged.ok
-        ? staged.value.stderr.trim()
-        : staged.error.message;
+      const detail = describeGitFailure(staged);
       return {
         ok: false,
         error: new Error(
           `Refusing to resolve the merge of '${defaultBranch}' into ` +
             `'${milestoneBranch}': the merge stages of conflicted file ` +
-            `'${file.path}' could not be read (Issue #1048): ${
-              detail || "git reported no stderr"
-            }`,
+            `'${file.path}' could not be read (Issue #1048): ${detail}`,
         ),
       };
     }

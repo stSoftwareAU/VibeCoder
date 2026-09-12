@@ -166,10 +166,18 @@ export async function loadResumeState(
  * commit is the durable artifact, and this pointer is what lets the next
  * claim find it (branch checkout plus `--resume`). Deleting it in the same
  * breath as writing it made preservation resumable in name only.
+ *
+ * A PR deferred by GitHub's secondary rate limit (Issue #1951) is the second
+ * such release: the work is finished and pushed, and the PR is parked for the
+ * next cycle's drain. Should that drain never raise it — a record lost with
+ * the host, a repo off the roster — the next claim of the issue is the
+ * fallback, and this pointer is what lets it resume the branch instead of
+ * starting the work again.
  */
 export function resumeStateSurvivesRelease(
   outcome: { kind: string; message?: string } | undefined,
 ): boolean {
+  if (outcome?.kind === "pr_deferred") return true;
   return outcome?.kind === "no_pr" && describesPreservedWip(outcome.message);
 }
 

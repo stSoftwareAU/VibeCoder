@@ -30,6 +30,12 @@ import {
   buildRebaseArgs,
 } from "./git_ref_args.ts";
 import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
+import {
+  assertAdoptedMergeIsSafe,
+  describeGitFailure,
+  type GitRunResult,
+  readMergeCommitState,
+} from "./milestone_merge_state.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -62,12 +68,13 @@ import {
 } from "./milestone_merge_gate.ts";
 
 /**
- * Describe a failed `git checkout` with git's own stderr (Issue #49, #335).
+ * Describe a failed `git checkout` with git's own output (Issues #49, #335).
  *
  * A checkout failure that only says which branch failed cannot be acted on:
  * Issue #335 saw the same branch log 65 identical warnings across days with
- * no diagnosis in any of them. The stderr *is* the diagnosis — a missing ref,
- * a dirty tree, a lock file — so it travels with the error.
+ * no diagnosis in any of them. Git's output *is* the diagnosis — a missing
+ * ref, a dirty tree, a lock file — so it travels with the error, stdout
+ * included (Issue #1964).
  *
  * @param branchName - The branch that could not be checked out
  * @param result - The `runGitCommand` result for the failed checkout
@@ -75,12 +82,13 @@ import {
  */
 function checkoutFailureError(
   branchName: string,
-  result: Result<{ code: number; stderr: string }>,
+  result: GitRunResult,
 ): Error {
-  const detail = (result.ok ? result.value.stderr : result.error.message)
-    .trim().split("\n").slice(0, 6).join(" | ") ||
-    (result.ok ? `exit ${result.value.code}` : "git reported no stderr");
-  return new Error(`Failed to checkout branch '${branchName}': ${detail}`);
+  return new Error(
+    `Failed to checkout branch '${branchName}': ${
+      describeGitFailure(result, { lines: 6, from: "head" })
+    }`,
+  );
 }
 
 /**
@@ -279,6 +287,11 @@ export async function syncFeatureBranchWithDefault(
  * merge unattended rather than failing the sync. A repository whose milestone
  * branches are ungated never reaches the fallback.
  *
+ * A push that fails for anything other than a repository rule is a **failed
+ * sync** (Issue #1964): it used to return an empty note, so the branch was
+ * logged as synced, counted as synced and recorded against the tip it never
+ * reached — which is the cadence guard then skipping it every cycle.
+ *
  * @returns A note to append to the sync's outcome, empty on the ordinary path.
  */
 async function pushSyncedMilestoneBranch(
@@ -286,19 +299,31 @@ async function pushSyncedMilestoneBranch(
   defaultBranch: string,
   options: GitCommandOptions,
   repo?: string,
-): Promise<string> {
+): Promise<Result<string>> {
   const push = await runGitCommand(
     ["push", "origin", milestoneBranch],
     options,
   );
-  if (push.ok && push.value.code === 0) return "";
+  if (push.ok && push.value.code === 0) return { ok: true, value: "" };
 
+  // Git's own account of the refusal, stdout included (Issue #1964).
   const stderr = push.ok ? push.value.stderr : push.error.message;
-  if (!isRuleViolationPush(stderr)) return "";
+  if (!isRuleViolationPush(stderr)) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to push '${milestoneBranch}' to origin, so the merge is ` +
+          `local only (Issue #1964): ${describeGitFailure(push)}`,
+      ),
+    };
+  }
 
   if (!repo) {
-    return `PUSH REFUSED by a repository rule and no repository was named, ` +
-      `so no sync PR could be raised (Issue #589) — `;
+    return {
+      ok: true,
+      value: `PUSH REFUSED by a repository rule and no repository was named, ` +
+        `so no sync PR could be raised (Issue #589) — `,
+    };
   }
 
   const raised = await raiseMilestoneSyncPr(
@@ -309,8 +334,12 @@ async function pushSyncedMilestoneBranch(
       git: async (args) => {
         const result = await runGitCommand(args, options);
         return result.ok
-          ? { code: result.value.code, stderr: result.value.stderr }
-          : { code: 1, stderr: result.error.message };
+          ? {
+            code: result.value.code,
+            stderr: result.value.stderr,
+            stdout: result.value.stdout,
+          }
+          : { code: 1, stderr: result.error.message, stdout: "" };
       },
       gh: async (args) => {
         const result = await spawnGh(args);
@@ -322,13 +351,19 @@ async function pushSyncedMilestoneBranch(
     },
   );
   if (!raised.ok) {
-    return `PUSH REFUSED by a repository rule and the sync PR could not be ` +
-      `raised: ${raised.error.message} (Issue #589) — `;
+    return {
+      ok: true,
+      value: `PUSH REFUSED by a repository rule and the sync PR could not be ` +
+        `raised: ${raised.error.message} (Issue #589) — `,
+    };
   }
-  return raised.value.opened
-    ? `RAISED a sync PR from '${raised.value.branch}' — the branch is gated, ` +
-      `so the push became a pull request (Issue #589) — `
-    : `UPDATED the open sync PR from '${raised.value.branch}' (Issue #589) — `;
+  return {
+    ok: true,
+    value: raised.value.opened
+      ? `RAISED a sync PR from '${raised.value.branch}' — the branch is ` +
+        `gated, so the push became a pull request (Issue #589) — `
+      : `UPDATED the open sync PR from '${raised.value.branch}' (Issue #589) — `,
+  };
 }
 
 /**
@@ -364,11 +399,9 @@ async function gateThenPushMilestoneBranch(
       options,
     );
     if (!reset.ok || reset.value.code !== 0) {
+      // stdout counts as much as stderr here (Issue #1964).
       resetNote = ` — and the local merge could NOT be reset to ` +
-        `${preMergeSha}: ${
-          (reset.ok ? reset.value.stderr : reset.error.message).trim() ||
-          "git reported no stderr"
-        }`;
+        `${preMergeSha}: ${describeGitFailure(reset)}`;
     }
     return {
       ok: false,
@@ -385,12 +418,14 @@ async function gateThenPushMilestoneBranch(
     options,
     repo,
   );
+  // A push that did not happen is not a sync (Issue #1964).
+  if (!pushNote.ok) return pushNote;
   // Say when nothing verified the tree, rather than let an unchecked push
   // read exactly like a checked one.
   const gateNote = outcome.status === "skipped"
     ? `UNGATED: ${outcome.detail} (Issue #974) — `
     : "";
-  return { ok: true, value: `${gateNote}${pushNote}` };
+  return { ok: true, value: `${gateNote}${pushNote.value}` };
 }
 
 /** Resolve a ref to its commit SHA; empty string when it cannot be read. */
@@ -557,20 +592,16 @@ export async function syncMilestoneBranchWithDefault(
       options,
     );
     if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
-      // Surface git's own stderr (Issue #49): "error: Your local changes to the
-      // following files would be overwritten by checkout: …" — usually a dirty
-      // tree a timed-out claim left on this shared clone — is the whole
-      // diagnosis, and the old error discarded it. Same shape as the #4260
-      // merge-failure surfacing below.
-      const stderrTail = (checkoutResult.ok
-        ? checkoutResult.value.stderr
-        : checkoutResult.error.message)
-        .trim().split("\n").slice(0, 6).join(" | ");
+      // Surface git's own output (Issue #49): "error: Your local changes to
+      // the following files would be overwritten by checkout: …" — usually a
+      // dirty tree a timed-out claim left on this shared clone — is the whole
+      // diagnosis, and the old error discarded it. stdout counts too
+      // (Issue #1964), so a stdout-only refusal is never logged as silence.
       return {
         ok: false,
         error: new Error(
           `Failed to checkout milestone branch '${milestoneBranch}': ${
-            stderrTail || "git reported no stderr"
+            describeGitFailure(checkoutResult, { lines: 6, from: "head" })
           }`,
         ),
       };
@@ -652,16 +683,13 @@ export async function syncMilestoneBranchWithDefault(
     ? preMergeShaResult.value.stdout.trim()
     : "";
   if (!preMergeSha) {
-    const detail = (preMergeShaResult.ok
-      ? preMergeShaResult.value.stderr
-      : preMergeShaResult.error.message).trim();
     return {
       ok: false,
       error: new Error(
         `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
           `its pre-merge HEAD could not be read, so a merge the gate rejects ` +
           `could not be rolled back (Issue #974): ${
-            detail || "git reported no stderr"
+            describeGitFailure(preMergeShaResult)
           }`,
       ),
     };
@@ -713,16 +741,14 @@ export async function syncMilestoneBranchWithDefault(
     // history, dirty tree, vanished remote…). This used to return ok:true and
     // be logged as "Synced …" — FLEET milestone/4064 sat 5 commits behind
     // Develop for days while every cycle said 0 failed. Surface git's own
-    // stderr so the real reason is in the log.
-    const stderrTail =
-      (mergeResult.ok ? mergeResult.value.stderr : mergeResult.error.message)
-        .trim().split("\n").slice(-3).join(" | ");
+    // output — stdout as well as stderr (Issue #1964) — so the real reason is
+    // in the log.
     return {
       ok: false,
       error: new Error(
         `Merge of '${defaultBranch}' into '${milestoneBranch}' failed ` +
           `with no conflicted files — a non-conflict failure ` +
-          `(Issue #4260): ${stderrTail || "git reported no stderr"}`,
+          `(Issue #4260): ${describeGitFailure(mergeResult)}`,
       ),
     };
   }
@@ -821,6 +847,83 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
+  // Who writes the merge commit is read from git, not assumed (Issue #1964).
+  // The agent rung works in this very clone, and an agent that committed the
+  // merge itself leaves nothing for `git commit -m …`: git exits 1 saying
+  // "nothing to commit, working tree clean" on stdout, and the sync used to
+  // read that as a failure, abort and throw a good resolution away every
+  // cycle until a human took the branch. Read BEFORE the plan is applied,
+  // because taking a side needs the conflicted index the commit cleared.
+  const mergeState = await readMergeCommitState({
+    preMergeSha,
+    defaultSha,
+    options,
+  });
+
+  /**
+   * Refuse the resolution, optionally putting the branch back where it stood.
+   *
+   * A state nobody could read restores nothing: discarding work on a check
+   * that did not run is the one direction that cannot be undone.
+   */
+  const refuseResolution = async (
+    detail: string,
+    restore: boolean,
+  ): Promise<Result<MilestoneSyncOutcome>> => {
+    let note = "";
+    if (restore) {
+      const reset = await runGitCommand(
+        ["reset", "--hard", preMergeSha],
+        options,
+      );
+      note = reset.ok && reset.value.code === 0
+        ? ` — the branch was reset to ${preMergeSha}`
+        : ` — and the branch could NOT be reset to ${preMergeSha}: ${
+          describeGitFailure(reset)
+        }`;
+    }
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to commit the resolution of '${defaultBranch}' into ` +
+          `'${milestoneBranch}' (Issue #1964): ${detail}${note}`,
+      ),
+    };
+  };
+
+  if (mergeState.kind === "unknown") {
+    return await refuseResolution(mergeState.detail, false);
+  }
+  if (mergeState.kind === "no-merge") {
+    return await refuseResolution(mergeState.detail, true);
+  }
+  if (mergeState.kind === "already-committed") {
+    // A rung that committed the merge while the triage still had sides to
+    // take committed a tree the plan does not describe: taking a side needs
+    // the conflicted index, and the commit cleared it.
+    const pending = resolved.filter(
+      (d) => d.action === "ours" || d.action === "theirs",
+    );
+    if (pending.length > 0) {
+      return await refuseResolution(
+        `the merge was committed by another rung while ${pending.length} ` +
+          `file(s) still needed the conflicted index to take a side: ${
+            pending.map((d) => d.path).join(", ")
+          }`,
+        true,
+      );
+    }
+    // The index gate saw nothing to inspect, so the commit's own changes are
+    // held to it here rather than adopted unchecked (Issue #1758).
+    const safe = await assertAdoptedMergeIsSafe({ preMergeSha, options });
+    if (!safe.ok) {
+      return await refuseResolution(
+        `the merge commit was written by another rung and ${safe.error.message}`,
+        true,
+      );
+    }
+  }
+
   const applied = await applyConflictPlan(
     { ...plan, resolved, escalations },
     sides,
@@ -885,29 +988,40 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
-  const commitResult = await runGitCommand(
-    [
-      "commit",
-      "-m",
-      buildResolutionCommitMessage({
-        defaultBranch,
-        milestoneBranch,
-        plan: { ...plan, resolved, escalations },
-      }),
-    ],
-    options,
-  );
+  const resolutionMessage = buildResolutionCommitMessage({
+    defaultBranch,
+    milestoneBranch,
+    plan: { ...plan, resolved, escalations },
+  });
+
+  // An already-committed merge keeps its commit and takes the sync's message,
+  // so the record of which rung settled each file is the same either way.
+  const alreadyCommitted = mergeState.kind === "already-committed";
+  const commitResult = alreadyCommitted
+    ? await runGitCommand(
+      ["commit", "--amend", "-m", resolutionMessage],
+      options,
+    )
+    : await runGitCommand(["commit", "-m", resolutionMessage], options);
   if (!commitResult.ok || commitResult.value.code !== 0) {
+    // Honest failure (Issue #4260), with git's stdout as well as its stderr
+    // (Issue #1964) — `git commit` explains itself on stdout. Either way the
+    // branch goes back where it stood: an un-reworded merge left behind would
+    // be pushed next cycle with no record of which rung settled what.
+    if (alreadyCommitted) {
+      return await refuseResolution(
+        `its commit could not be re-worded: ${
+          describeGitFailure(commitResult)
+        }`,
+        true,
+      );
+    }
     await runGitCommand(["merge", "--abort"], options);
-    // Honest failure (Issue #4260) — same reasoning as above.
-    const stderrTail =
-      (commitResult.ok ? commitResult.value.stderr : commitResult.error.message)
-        .trim().split("\n").slice(-3).join(" | ");
     return {
       ok: false,
       error: new Error(
-        `Failed to commit conflict resolution for '${milestoneBranch}' ` +
-          `(Issue #4260): ${stderrTail || "git reported no stderr"}`,
+        `Failed to commit the conflict resolution for '${milestoneBranch}' ` +
+          `(Issues #4260, #1964): ${describeGitFailure(commitResult)}`,
       ),
     };
   }

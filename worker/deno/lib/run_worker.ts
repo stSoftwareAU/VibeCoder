@@ -66,7 +66,10 @@ import {
 import type { AgentProviderDescriptor } from "./agent_provider.ts";
 import { getPromptsDir } from "./prompt_manager.ts";
 import { checkPromptsImmutable } from "./prompt_immutability.ts";
-import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
+import {
+  createClaudeCredentialPool,
+  primeClaudePoolFromUsageSignal,
+} from "./claude_credential_pool.ts";
 import {
   NETWORK_UNAVAILABLE_MARKER,
   resolveGithubUserWithRetry,
@@ -74,6 +77,11 @@ import {
 import { formatRunModeRecord, resolveRunHostId } from "./run_mode_record.ts";
 import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
+import {
+  recordedWorkflowScopeValue,
+  WORKFLOW_SCOPE_ENV,
+  workflowScopeVerdictFor,
+} from "./workflow_scope.ts";
 import { runCoreCommand } from "../commands/run_core.ts";
 import { AGENT_TRANSCRIPT_ENV } from "./agent_transcript.ts";
 import { applyOptionalFeatureEnv } from "./optional_feature_env.ts";
@@ -337,12 +345,22 @@ export function createDefaultRunWorkerDeps(
     recordRunMode: ({ logDir, mode, host, runId }) =>
       appendRunCoreLogLine(logDir, formatRunModeRecord({ mode, host, runId })),
     validateConfig: (config) => validateWorkerConfig(config),
-    checkCredentials: () =>
-      checkWorkerCredentials({
+    checkCredentials: async () => {
+      // Issue #2002: a usage-limit signal left by the previous run names the
+      // subscription that ran out. Record it as spent before start-up ranks
+      // the pool, so a start whose probes fail cannot export it again while
+      // another candidate exists. WORK_DIR was established above, at step 2.
+      await primeClaudePoolFromUsageSignal(
+        claudePool,
+        Deno.env.get("WORK_DIR"),
+        { log: (message) => logger.info(message) },
+      );
+      return await checkWorkerCredentials({
         log: (message) => logger.info(message),
         selectToken: claudePool.selectToken,
         setEnv,
-      }),
+      });
+    },
     resolveGithubUser: async () => {
       // Issue #949: retry a network-class failure before giving up. This is
       // the first GitHub call of the run, made seconds after the container
@@ -409,8 +427,14 @@ export function createDefaultRunWorkerDeps(
       try {
         const result = await getGhTokenScopes();
         if (!result.ok) {
-          logger.info(
-            `[SECURITY] gh token scope detection failed: ${result.error.message}`,
+          // Issue #1952: an unrecorded verdict is not a pass. Say at WARN
+          // that nothing was recorded and what the run loses by it, rather
+          // than leaving an INFO line nobody reads.
+          logger.warn(
+            `[SECURITY] gh token scope detection failed: ` +
+              `${result.error.message} — no ${WORKFLOW_SCOPE_ENV} verdict ` +
+              `recorded, so the pre-push workflow-scope check cannot run ` +
+              `and GitHub decides at the push (Issue #1952)`,
           );
           return;
         }
@@ -425,11 +449,17 @@ export function createDefaultRunWorkerDeps(
         // capability footprint is greppable in every run log.
         logger.info(`[SECURITY] gh token: ${summary}`);
         setEnv("GH_TOKEN_SCOPE_SUMMARY", summary);
+        // Issue #1952: record the verdict whenever detection established
+        // one, so "unset" means only "nobody could look" — a failed
+        // detection, or a GitHub App token whose `workflows` permission
+        // `gh auth status` does not report.
+        const recorded = recordedWorkflowScopeValue(
+          workflowScopeVerdictFor({ ok: true, hasWorkflowScope, isAppAuth }),
+        );
+        if (recorded !== undefined) {
+          setEnv(WORKFLOW_SCOPE_ENV, recorded);
+        }
         if (!isAppAuth) {
-          setEnv(
-            "GH_TOKEN_HAS_WORKFLOW_SCOPE",
-            hasWorkflowScope ? "true" : "false",
-          );
           if (!hasWorkflowScope) {
             // Issue #1475: this used to be an INFO line the operator never
             // saw, and the worker then claimed two workflow issues and lost
@@ -445,10 +475,12 @@ export function createDefaultRunWorkerDeps(
           }
         }
       } catch (err) {
-        logger.info(
+        // Issue #1952: as above — nothing recorded, said out loud.
+        logger.warn(
           `[SECURITY] gh token scope detection threw (continuing): ${
             err instanceof Error ? err.message : String(err)
-          }`,
+          } — no ${WORKFLOW_SCOPE_ENV} verdict recorded, so the pre-push ` +
+            `workflow-scope check cannot run (Issue #1952)`,
         );
       }
     },

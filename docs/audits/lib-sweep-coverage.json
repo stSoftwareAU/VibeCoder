@@ -279,6 +279,7 @@
         "worker/deno/lib/milestone_escalation_target.ts",
         "worker/deno/lib/milestone_health.ts",
         "worker/deno/lib/milestone_merge_gate.ts",
+        "worker/deno/lib/milestone_merge_state.ts",
         "worker/deno/lib/milestone_open_children.ts",
         "worker/deno/lib/milestone_presync.ts",
         "worker/deno/lib/milestone_resolution_gate.ts",
@@ -865,6 +866,7 @@
         "worker/deno/lib/workflow_labels.ts",
         "worker/deno/lib/workflow_permissions_scanner.ts",
         "worker/deno/lib/workflow_scan_common.ts",
+        "worker/deno/lib/workflow_scope_precheck.ts",
         "worker/deno/lib/workflow_trigger_scanner.ts",
         "worker/deno/lib/worktree_cleanup.ts",
         "worker/deno/lib/worktree_progress.ts",
@@ -1441,11 +1443,27 @@
       ]
     },
     {
-      "issue": 1953,
+      "issue": 1951,
       "chunk": "12ag",
+      "title": "top-up: deferred PR creation after a GitHub secondary rate limit",
+      "ledger": "docs/audits/security-sweep-1951-deferred-pr.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: secondary_rate_limit.ts, pr_creation_retry.ts, deferred_pr_store.ts, deferred_pr_drain.ts and phases/pr_deferral.ts (#1951)",
+      "status": "swept",
+      "sweptAt": "0fc56ced62f912f3434d314ac0f72ea576978a6e",
+      "paths": [
+        "worker/deno/lib/deferred_pr_drain.ts",
+        "worker/deno/lib/deferred_pr_store.ts",
+        "worker/deno/lib/phases/pr_deferral.ts",
+        "worker/deno/lib/pr_creation_retry.ts",
+        "worker/deno/lib/secondary_rate_limit.ts"
+      ]
+    },
+    {
+      "issue": 1953,
+      "chunk": "12ah",
       "title": "top-up: the bounded git stdin message reader",
       "ledger": "docs/audits/security-sweep-1953-git-stdin-message.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: git_stdin_message.ts (#1953)",
+      "definition": "modules added to worker/deno/lib/ after 12a-12ag recorded their coverage: git_stdin_message.ts (#1953)",
       "status": "swept",
       "sweptAt": "d3034d431e8a0fa49949ee6b7f423660fd80142e",
       "paths": [

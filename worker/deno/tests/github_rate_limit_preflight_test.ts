@@ -586,3 +586,81 @@ Deno.test("preflightGitHubRateLimit - falls back to core when graphql missing", 
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// ============================================================================
+// A usage signal is not a GitHub quota fact (Issue #2002)
+// ============================================================================
+
+Deno.test("preflightGitHubRateLimit - an active usage signal does not short-circuit; GitHub is checked (Issue #2002)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    // The 80-hour weekly-limit signal a spent subscription leaves behind.
+    await Deno.writeTextFile(
+      rateLimitSignalPath(tmpDir),
+      JSON.stringify({
+        timestamp: 1000,
+        waitSeconds: 289_493,
+        kind: "usage",
+        provider: "claude",
+        credentialLabel: "provider",
+      }),
+    );
+
+    let ghCalls = 0;
+    const logs: string[] = [];
+    const outcome = await preflightGitHubRateLimit({
+      workDir: tmpDir,
+      nowSeconds: () => 1100,
+      noCache: true,
+      runGhRateLimit: () => {
+        ghCalls++;
+        return Promise.resolve(
+          makeRateLimitPayload({
+            graphqlRemaining: 4500,
+            graphqlResetEpoch: 5000,
+          }),
+        );
+      },
+      log: (message) => logs.push(message),
+    });
+
+    assertEquals(outcome.rateLimited, false, "a healthy GitHub quota proceeds");
+    assertEquals(ghCalls, 1, "the GitHub quota was actually checked");
+    assertEquals(
+      logs.some((line) => line.includes("usage (model quota) signal")),
+      true,
+      `the reason is logged: ${logs.join("\n")}`,
+    );
+    // The signal itself is left for the work loop to honour.
+    const signalRead = await readRateLimitSignal(tmpDir);
+    assertEquals(signalRead.ok, true);
+    assertEquals(signalRead.ok && signalRead.value.kind, "usage");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("preflightGitHubRateLimit - an active GitHub-kind signal still short-circuits (Issue #2002)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      rateLimitSignalPath(tmpDir),
+      JSON.stringify({ timestamp: 1000, waitSeconds: 600, kind: "github" }),
+    );
+    let ghCalls = 0;
+    const outcome = await preflightGitHubRateLimit({
+      workDir: tmpDir,
+      nowSeconds: () => 1100,
+      runGhRateLimit: () => {
+        ghCalls++;
+        return Promise.resolve("{}");
+      },
+      log: () => {},
+    });
+    assertEquals(outcome.rateLimited, true);
+    assertEquals(outcome.remainingSeconds, 500);
+    assertEquals(ghCalls, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

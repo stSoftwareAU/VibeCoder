@@ -317,9 +317,16 @@ async function runGit(
   }
 }
 
-/** git's own stderr, or the note that it produced none. */
-function gitDetail(result: { stderr: string }): string {
-  return result.stderr.trim() || "git reported no stderr";
+/**
+ * Git's own account of a failure — stderr, then stdout (Issue #1964).
+ *
+ * `git commit --no-edit` of a roll-back merge explains "nothing to commit,
+ * working tree clean" on **stdout**, so stderr alone reported silence where
+ * git had said exactly what was wrong.
+ */
+function gitDetail(result: { stderr: string; stdout?: string }): string {
+  return result.stderr.trim() || result.stdout?.trim() ||
+    "git printed nothing";
 }
 
 /**
