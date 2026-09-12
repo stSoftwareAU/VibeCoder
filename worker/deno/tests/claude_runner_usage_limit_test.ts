@@ -21,7 +21,9 @@ import {
   runClaudeWithRetry,
   USAGE_LIMIT_MAX_WAIT_SECONDS,
 } from "../lib/claude_runner.ts";
+import type { Logger } from "../types.ts";
 import { rateLimitSignalPath } from "../lib/rate_limit_signal.ts";
+import { posixSingleQuote } from "../lib/shell_quote.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
@@ -37,7 +39,7 @@ function withUsageLimitStub<T>(
 ): Promise<T> {
   const body = `modelLog="$(dirname "$0")/models.log"\n` +
     `prev=""\nfor arg in "$@"; do\n  if [ "$prev" = "--model" ]; then printf '%s\\n' "$arg" >> "$modelLog"; fi\n  prev="$arg"\ndone\n` +
-    `printf '%s\\n' '${stderrMessage}' >&2\n` +
+    `printf '%s\\n' ${posixSingleQuote(stderrMessage)} >&2\n` +
     "exit 1\n";
   return withAgentStub(
     body,
@@ -154,6 +156,77 @@ Deno.test({
       assertEquals(result.value.usageLimit?.waitSeconds, 3600);
       assertEquals(result.value.usageLimit?.resetEpochMs, undefined);
       assertStringIncludes(result.value.stderr ?? "", "usage limit");
+    } finally {
+      await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - the CLI's 'session limit' refusal is terminal with its reset carried (Issue #1665)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const workDir = await Deno.makeTempDir({ prefix: "ul_workdir_" });
+    try {
+      const { result, models, securityTags, errors } = await withUsageLimitStub(
+        "You've hit your session limit \u00b7 resets 1:50pm (UTC)",
+        async (stub) => {
+          const securityTags: string[] = [];
+          const errors: string[] = [];
+          const result = await runClaudeWithRetry(
+            {
+              clock: fakeClock(),
+              prompt: "test",
+              model: "fable",
+              enableModelFallback: true,
+              timeoutSeconds: 30,
+              killAfterSeconds: 2,
+              agentBinaryPath: stub.path,
+              workDir,
+              logger: {
+                info: () => {},
+                warn: () => {},
+                error: (message: string) => {
+                  errors.push(message);
+                },
+                debug: () => {},
+                security: (event: string) => {
+                  securityTags.push(event);
+                },
+                skipReason: () => {},
+                timing: () => {},
+                scanSummary: () => {},
+                workerSummary: () => {},
+              } as unknown as Logger,
+            },
+            { maxRetries: 2, maxWaitSeconds: 600, initialWaitInterval: 300 },
+          );
+          let models: string[] = [];
+          try {
+            models = (await Deno.readTextFile(stub.modelLog)).trim().split(
+              "\n",
+            );
+          } catch { /* none */ }
+          return { result, models, securityTags, errors };
+        },
+      );
+
+      assert(result.ok);
+      assertEquals(result.value.exitCode, 2);
+      // One invocation — the ladder must not run for a subscription window.
+      assertEquals(models, ["fable"]);
+      const reset = result.value.usageLimit?.resetEpochMs;
+      assert(reset, "the reset time must be parsed from the refusal");
+      assertEquals(new Date(reset).toISOString().slice(11, 16), "13:50");
+      // The short-backoff ladder was not the branch taken.
+      assertEquals(securityTags.includes("RATE_LIMIT"), false);
+      assert(securityTags.includes("USAGE_LIMIT"), securityTags.join(","));
+      assertStringIncludes(
+        errors.join("\n"),
+        "Claude usage limit reached (subscription window)",
+      );
     } finally {
       await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
     }

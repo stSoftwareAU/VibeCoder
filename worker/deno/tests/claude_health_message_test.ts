@@ -155,3 +155,13 @@ Deno.test("summariseHealthFailure - 'hit your limit' is a usage limit, not a wea
   );
   assertEquals(summary.category, "usage-limit");
 });
+
+Deno.test("summariseHealthFailure - the CLI's 'session limit' line on stdout is a usage limit, not unrecognised output (Issue #1665)", () => {
+  const summary = summariseHealthFailure(
+    1,
+    "You've hit your session limit · resets 1:50pm (UTC)",
+    "",
+  );
+  assertEquals(summary.category, "usage-limit");
+  assertStringIncludes(summary.message, "session limit");
+});
