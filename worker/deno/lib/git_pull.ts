@@ -388,11 +388,21 @@ async function alreadySyncedElsewhere(
     options,
   );
   if (!fetched.ok || fetched.value.code !== 0) return false;
+  // The tip this sync merged is the local default branch, kept current by
+  // `ensureDefaultBranchCurrent`; a clone without a local one (a bare-origin
+  // test fixture, a narrow checkout) falls back to the remote-tracking ref.
+  const local = await runGitCommand(
+    ["rev-parse", "--verify", "--quiet", `${defaultBranch}^{commit}`],
+    options,
+  );
+  const defaultRef = local.ok && local.value.code === 0
+    ? defaultBranch
+    : `refs/remotes/origin/${defaultBranch}`;
   const contains = await runGitCommand(
     [
       "merge-base",
       "--is-ancestor",
-      defaultBranch,
+      defaultRef,
       `refs/remotes/origin/${milestoneBranch}`,
     ],
     options,

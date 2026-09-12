@@ -38,6 +38,9 @@ async function fleet(): Promise<
   const origin = `${root}/origin.git`;
   const seed = `${root}/seed`;
   await git(["init", "-q", "--bare", origin], root);
+  // A bare origin whose HEAD names `main`, whatever the runner's
+  // `init.defaultBranch` is, so a clone of it checks `main` out.
+  await git(["symbolic-ref", "HEAD", "refs/heads/main"], origin);
   await git(["init", "-q", "--initial-branch=main", seed], root);
   await git(["config", "user.email", "t@example.com"], seed);
   await git(["config", "user.name", "Test"], seed);
