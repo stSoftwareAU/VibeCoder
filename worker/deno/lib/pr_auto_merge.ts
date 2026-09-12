@@ -210,7 +210,7 @@ export interface EnableAutoMergeOptions {
 
 /** Marker on a PR comment that an in-cycle sync could not clear "behind". */
 export const MILESTONE_BEHIND_SYNC_MARKER =
-  "<!-- vibe-coder:milestone-behind-sync -->";
+  "<!-- vibe-milestone-behind-sync -->";
 
 /** PRs already told about a failed in-cycle sync this cycle. */
 const postedBehindSyncReason = new Set<string>();

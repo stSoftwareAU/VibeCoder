@@ -35,5 +35,5 @@ No UI change; visual evidence does not apply.
    commit behind the default branch. Confirm auto-merge is armed in the
    same cycle (creation log or post-scan sweep), without waiting for 1.72.
 2. Repeat with a conflicting sync. Confirm the PR stays unarmed, carries
-   the `<!-- vibe-coder:milestone-behind-sync -->` comment, and is not
+   the `<!-- vibe-milestone-behind-sync -->` comment, and is not
    side-picked.
