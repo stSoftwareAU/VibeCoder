@@ -18,6 +18,8 @@ import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import type { RepoLease } from "./maintenance_lane.ts";
+import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
 import {
   buildMergeGateEscalationComment,
@@ -246,6 +248,21 @@ export interface MilestoneBranchSyncDeps {
   localCloneExistsFn?: LocalCloneExistsFn;
   /** Logging function. */
   log: (message: string) => void;
+  /**
+   * Lease a repository's shared clone for the duration of its sync
+   * (Issue #2030). `null` means an issue slot holds it and the repository
+   * is deferred to the next cycle. Omitted means nothing runs concurrently.
+   */
+  leaseRepoFn?: (repo: string) => RepoLease | null;
+  /**
+   * Take the cross-host claim for a branch before syncing it (Issue #2030).
+   * `held-elsewhere` skips the branch this cycle without opening an
+   * attempt; `unknown` proceeds as if there were no claim. Omitted means
+   * no claim is taken.
+   */
+  claimSyncFn?: (repo: string, milestoneBranch: string) => Promise<SyncClaim>;
+  /** Release the claim once the sync concluded; best-effort. */
+  releaseSyncClaimFn?: (repo: string, milestoneBranch: string) => Promise<void>;
   /**
    * Optional self-heal event sink (Issue #4260). Production wires
    * `emitSelfHealEventAuto` so every failed sync leaves a forensic
@@ -991,6 +1008,9 @@ export async function syncMilestoneBranches(
   let agentSpent = false;
 
   for (const repo of repos) {
+    // Issue #2030: the lane runs beside the issue pool, so the clone is
+    // leased for the whole repository pass and given back whatever happens.
+    let lease: RepoLease | null | undefined;
     try {
       // Issue #1519: sync is a local-git operation. Skip repos that have
       // not been cloned in this environment — otherwise every git command
@@ -998,6 +1018,17 @@ export async function syncMilestoneBranches(
       if (localCloneExistsFn && !(await localCloneExistsFn(repo))) {
         log(`Skipping milestone sync for ${repo} — no local clone`);
         continue;
+      }
+      if (deps.leaseRepoFn) {
+        lease = deps.leaseRepoFn(repo);
+        if (lease === null) {
+          log(
+            `Skipping milestone sync for ${repo} this cycle — an issue slot ` +
+              `holds its clone; deferred to the next cycle (Issue #2030)`,
+          );
+          skipped++;
+          continue;
+        }
       }
 
       const milestonesResult = await findActiveMilestoneBranches(
@@ -1145,6 +1176,44 @@ export async function syncMilestoneBranches(
 
         // The cycle's agent rung goes to the first branch that needs it, and
         // only while the handler's budget still covers a whole run.
+        // Issue #2030: one host per branch. A sibling's fresh claim means
+        // the sync is in hand elsewhere; this host neither opens an attempt
+        // nor spends its rung on it. An unreadable claim proceeds as before.
+        if (deps.claimSyncFn) {
+          const claim = await deps.claimSyncFn(repo, milestone.milestoneBranch);
+          if (claim.kind === "held-elsewhere") {
+            log(
+              `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+                `another host claimed '${milestone.milestoneBranch}' ` +
+                `${Math.round(claim.ageMs / 60000)} min ago (${claim.ref}); ` +
+                `deferred to the next cycle (Issue #2030)`,
+            );
+            if (streakPath && streaks[streakKey]?.attemptOpenedAt) {
+              streaks[streakKey] = concludeConflictAttempt(
+                streaks[streakKey]!,
+                "disrupted",
+                "another host holds the sync claim",
+                defaultSha,
+                now(),
+              );
+              streaksDirty = true;
+            }
+            skipped++;
+            continue;
+          }
+          if (claim.kind === "unknown") {
+            log(
+              `Sync claim for '${milestone.milestoneBranch}' in ${repo} could ` +
+                `not be taken or read — proceeding without one: ${claim.reason} ` +
+                `(Issue #2030)`,
+            );
+          } else if (claim.tookOverStale) {
+            log(
+              `Took over a stale sync claim on '${milestone.milestoneBranch}' ` +
+                `in ${repo} (${claim.ref}) (Issue #2030)`,
+            );
+          }
+        }
         const grant = agentSpent ? { agentAllowed: false } : grantAgentRun({
           nowMs: now(),
           ...(deps.deadlineEpochMs !== undefined
@@ -1170,12 +1239,22 @@ export async function syncMilestoneBranches(
         if (agentAllowed) agentSpent = true;
 
         // Attempt sync
-        const syncResult = await syncBranchFn(
-          repo,
-          milestone.milestoneBranch,
-          milestone.defaultBranch,
-          grant,
-        );
+        let syncResult: Awaited<ReturnType<SyncBranchFn>>;
+        try {
+          syncResult = await syncBranchFn(
+            repo,
+            milestone.milestoneBranch,
+            milestone.defaultBranch,
+            grant,
+          );
+        } finally {
+          // The claim guards the sync, not the outcome: it is released on
+          // every path out so a sibling can take the next attempt.
+          if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
+            await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
+              .catch(() => undefined);
+          }
+        }
 
         if (syncResult.ok) {
           log(
@@ -1434,6 +1513,8 @@ export async function syncMilestoneBranches(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(`WARNING: Milestone branch sync failed for ${repo}: ${message}`);
+    } finally {
+      lease?.release();
     }
   }
 

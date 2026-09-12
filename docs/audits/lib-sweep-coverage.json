@@ -1493,6 +1493,18 @@
       "paths": [
         "worker/deno/lib/milestone_conflict_ported.ts"
       ]
+    },
+    {
+      "issue": 2030,
+      "chunk": "top-up-2030",
+      "title": "top-up: the cross-host milestone sync claim",
+      "ledger": "docs/audits/security-sweep-2030-milestone-sync-claim.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_sync_claim.ts (#2030)",
+      "status": "swept",
+      "sweptAt": "a9c41731b2c7fd150e7504815a3de92273407b0c",
+      "paths": [
+        "worker/deno/lib/milestone_sync_claim.ts"
+      ]
     }
   ],
   "roots": [

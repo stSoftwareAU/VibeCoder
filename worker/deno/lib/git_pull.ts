@@ -367,6 +367,81 @@ async function pushSyncedMilestoneBranch(
 }
 
 /**
+ * Whether the remote milestone branch already contains the default tip —
+ * a sibling host landed this sync while this one was resolving it
+ * (Issue #2030).
+ *
+ * Read right before the gate and push: the pre-merge fetch cannot see a
+ * sync that landed during the agent rung. When it has, the local merge is
+ * discarded for the remote's, and the outcome is a success with no push —
+ * the branch is synced, which is all the sync ever wanted. A read that
+ * fails answers `false`: the push that follows is what then refuses a moved
+ * branch, exactly as before.
+ */
+async function alreadySyncedElsewhere(
+  milestoneBranch: string,
+  defaultBranch: string,
+  options: GitCommandOptions,
+): Promise<boolean> {
+  const fetched = await runGitCommand(
+    buildFetchArgs("origin", milestoneBranch),
+    options,
+  );
+  if (!fetched.ok || fetched.value.code !== 0) return false;
+  // The tip this sync merged is the local default branch, kept current by
+  // `ensureDefaultBranchCurrent`; a clone without a local one (a bare-origin
+  // test fixture, a narrow checkout) falls back to the remote-tracking ref.
+  const local = await runGitCommand(
+    ["rev-parse", "--verify", "--quiet", `${defaultBranch}^{commit}`],
+    options,
+  );
+  const defaultRef = local.ok && local.value.code === 0
+    ? defaultBranch
+    : `refs/remotes/origin/${defaultBranch}`;
+  const contains = await runGitCommand(
+    [
+      "merge-base",
+      "--is-ancestor",
+      defaultRef,
+      `refs/remotes/origin/${milestoneBranch}`,
+    ],
+    options,
+  );
+  return contains.ok && contains.value.code === 0;
+}
+
+/** Adopt the remote's already-synced branch in place of the local merge. */
+async function adoptRemoteSync(
+  milestoneBranch: string,
+  defaultBranch: string,
+  options: GitCommandOptions,
+): Promise<Result<MilestoneSyncOutcome>> {
+  const reset = await runGitCommand(
+    ["reset", "--hard", `refs/remotes/origin/${milestoneBranch}`],
+    options,
+  );
+  if (!reset.ok || reset.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `'${milestoneBranch}' was synced with '${defaultBranch}' by another ` +
+          `host meanwhile, but the local merge could not be replaced by it: ${
+            describeGitFailure(reset)
+          } (Issue #2030)`,
+      ),
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      message: `ALREADY SYNCED by another host while this one was resolving ` +
+        `— local merge discarded, remote '${milestoneBranch}' adopted, ` +
+        `nothing pushed (Issue #2030)`,
+    },
+  };
+}
+
+/**
  * Type-check the merged tree, then push it — or refuse (Issue #974).
  *
  * Git reporting no conflict says only that both sides were internally
@@ -702,6 +777,9 @@ export async function syncMilestoneBranchWithDefault(
   );
 
   if (mergeResult.ok && mergeResult.value.code === 0) {
+    if (await alreadySyncedElsewhere(milestoneBranch, defaultBranch, options)) {
+      return await adoptRemoteSync(milestoneBranch, defaultBranch, options);
+    }
     // Push the synced milestone branch (Issue #605), or raise a PR for it
     // where a repository rule refuses the push (Issue #589) — but only once
     // the merged tree has passed the repo's own gate (Issue #974).
@@ -1031,6 +1109,11 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
+  // Issue #2030: the agent rung takes minutes; a sibling may have landed
+  // this very sync meanwhile. Its result is the branch's now, not ours.
+  if (await alreadySyncedElsewhere(milestoneBranch, defaultBranch, options)) {
+    return await adoptRemoteSync(milestoneBranch, defaultBranch, options);
+  }
   // A resolution the worker chose is verified the way a human's would be
   // (Issue #1559): the repository's own check, its manifest check and its
   // unit suite. A tree that defines none of them verified nothing, so
