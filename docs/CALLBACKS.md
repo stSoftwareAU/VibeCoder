@@ -164,10 +164,18 @@ counts the streak and escalates it.
 - **One report per streak.** The fourth failure and the four-hundredth add
   nothing. A single successful invocation clears the count, so the next fault is
   reported afresh.
-- The report names the hook path, the last run, the exit code, the duration and
-  the hook's captured (redacted) stderr.
+- **The report retires itself** (Issues #2039, #2041). The success that ends a
+  reported streak closes the issue the worker raised, with the recovery — which
+  run, after how many failures — as the closing comment. Only an issue a fleet
+  account opened is closed; somebody else's title match is left alone. A
+  success that ends a streak too short to have been reported closes nothing.
+- The report names the hook path, the last run, the exit code, the duration,
+  the hook's captured (redacted) stderr, and the callback schema version this
+  worker exports, so a hook refusing the version is diagnosed by the report
+  rather than by a human reading the stderr.
 - Delivery is best-effort in one direction only: a report that could not be
-  filed is logged as an error, and nothing about it alters the run's own result.
+  filed, or a closure that was refused, is logged as an error, and nothing
+  about it alters the run's own result.
 
 **What a hook author owes in return.** The worker bounds a hook's wall clock and
 reports its outcome; it cannot see inside it. A hook that retries must classify
@@ -229,7 +237,7 @@ The same facts are exported as scalars, one variable each:
 
 | Environment variable                  | JSON field                      | Always present | Meaning                                                                                                              |
 | ------------------------------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `VIBECODER_CALLBACK_SCHEMA_VERSION`   | `schemaVersion`                 | yes            | Contract version; refuse a version you do not know                                                                   |
+| `VIBECODER_CALLBACK_SCHEMA_VERSION`   | `schemaVersion`                 | yes            | Contract version — see [Versioning](#versioning--the-contract-is-additive)                                            |
 | `VIBECODER_CALLBACK_EVENT`            | `event`                         | yes            | `success`, `failure`, `always` or `cycle`                                                                            |
 | `VIBECODER_CALLBACK_CONTEXT`          | —                               | yes            | Path to the JSON document for this invocation                                                                        |
 | `VIBECODER_RUN_ID`                    | `runId`                         | yes            | Worker run id                                                                                                        |
@@ -271,8 +279,42 @@ Other optional facts the run could not supply — no provider, no session — ar
 **omitted** from both the document and the environment rather than emitted
 empty, so `[ -n "$VIBECODER_SESSION_ID" ]` is a truthful test. `result` and
 `exitCode` are unchanged (Issue #1947): hooks keyed on them keep working.
-Bump-worthy changes to a field's meaning raise `schemaVersion`, so a hook that
-checks it can refuse a contract it does not understand instead of misreading it.
+
+## Versioning — the contract is additive
+
+`schemaVersion` is a compatibility number, not a changelog. The rule, on both
+sides of the boundary:
+
+- **VibeCoder only adds.** A new field, a new value in an existing field, a new
+  event — none of these bumps `schemaVersion`. Every field an earlier version
+  exported is still exported, under the same name, with the same meaning and
+  the same type. `worker/deno/tests/callback_schema_compat_test.ts` pins the
+  schema 1 field set so a removal fails in review rather than in the fleet.
+- **A bump is a fleet-wide breaking change.** The number moves only when a
+  field is removed or its meaning changes, and that is a decision with a
+  release-notes entry, a release-floor move and the extensions upgraded
+  **before** the worker ships — never a side effect of a feature. The worker
+  updates itself on every host within the hour; an operator's hooks do not.
+- **A hook refuses the versions it cannot read, not the versions it has not
+  met.** Refuse a malformed version, and refuse a version _older_ than the one
+  the hook was written against if it depends on a later field. A **newer**
+  version keeps every field the hook knows: continue on those fields, and warn
+  once that the contract has moved so the extension author looks at what was
+  added.
+
+**The scar (Issues #2039, #2041).** On 2026-09-11 schema 2 added `outcome`,
+the absence reasons and the cycle event — all additive — and the number was
+raised anyway. The deployed hooks did exactly what this page then told them
+to, refused a version they did not know, and every callback on every host in
+the fleet failed on every issue: no health heartbeat, no run archive, one
+escalation per host per hook, and a reinstall by hand on each host to recover.
+Nothing about the change needed a bump; the bump was the outage.
+
+The worker reports a hook that refuses its schema version the same way it
+reports any other permanent hook failure
+([above](#a-hook-that-fails-on-every-issue-is-reported-once)); the report
+names the version the worker exports so the remedy — upgrade the extension on
+that host — is the first line, not a diagnosis.
 
 ## Session logs are sensitive — redaction is the hook author's job
 

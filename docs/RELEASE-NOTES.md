@@ -14,6 +14,46 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
+## 1.6.0 — the post-run callback contract is additive-only
+
+**Contract change, already in the fleet. Read it if you run post-run callback
+hooks: your hooks must accept callback schema version 2, and a hook that
+refuses it fails on every issue.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| The post-run callback context is stated as **additive-only**: `schemaVersion` moves only for a removal or a change of meaning, never for an addition, and the schema 1 field set is pinned by `callback_schema_compat_test.ts` so a removal fails in review rather than in the fleet | #2039 |
+| A hook should refuse a malformed or _older_ version it depends on, not a _newer_ one: a newer version keeps every field the hook knows, so continue on those and warn once | #2039 |
+| The `Post-run <event> callback failing on <host>` report names the schema version the worker exports and closes **itself** when the hook succeeds again, with the recovery as the closing comment; a title match the fleet did not open is left alone | #2039, #2041 |
+| The report no longer pre-judges the fault as the deployment's: the one fleet-wide outage so far was the worker's own version bump | #2041 |
+
+### Why a minor
+
+Release 1.5.170 (2026-09-11) raised the callback schema from 1 to 2 for an
+additive change — `outcome`, the absence reasons and the `cycle` event — with
+no release-notes entry and no floor move. Every deployed hook refused the
+version, as the contract then told it to, and every callback on every host
+failed on every issue until each host's extension was reinstalled by hand.
+This release is the record that contract change should have had, and the rule
+that stops it happening again.
+
+### Migration
+
+Upgrade any post-run callback extension so it accepts schema version 2 (and,
+per the new rule, any later version, on the fields it knows). Nothing in
+`.config.json` changes. A host whose hooks still refuse the version carries
+one open `Post-run … callback failing on …` issue per hook; the worker closes
+each one on the hook's next success after the upgrade.
+
+### Rollback
+
+None needed for the worker: the exported fields are unchanged from 1.5.170.
+Schema 2 is a superset of schema 1, so a hook has nothing to roll back to.
+
+The entries under _Unreleased_ below ship in this release as well.
+
 ## Unreleased — derived trust skips unlistable repos and reuses its snapshot
 
 **Behaviour change to the fail-closed trust rule. Nothing to migrate; read it

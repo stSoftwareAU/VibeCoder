@@ -50,8 +50,16 @@ import { redactSecrets } from "./secret_redaction.ts";
 /**
  * Version of the callback context document and environment contract.
  *
- * Bump when a field's meaning changes or a field is removed, so an extension
- * can refuse a contract it does not understand rather than misreading it.
+ * **The contract is additive; this number is not a changelog.** Adding a
+ * field, a value or an event never bumps it — a hook written against an
+ * older version keeps reading every field it knows. Bump it only when a
+ * field is removed or its meaning changes, and treat that as the fleet-wide
+ * breaking change it is: every deployed extension refuses the new version
+ * until a human reinstalls it on every host. On 2026-09-11 the 1 → 2 bump was
+ * made for an additive change and every callback on every host failed on
+ * every issue until each host was reinstalled by hand (Issues #2039, #2041).
+ * `callback_schema_compat_test.ts` pins the fields schema 1 promised, and
+ * `docs/CALLBACKS.md` ("Versioning") is the operator-facing rule.
  */
 export const CALLBACK_SCHEMA_VERSION = 2;
 

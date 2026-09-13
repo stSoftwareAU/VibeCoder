@@ -581,6 +581,33 @@ every surface that mentions it — README, `docs/`, operator manuals, prompt
 templates, and agent instructions — in the same change. Do it before the commit,
 not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
 
+## A Contract a Deployed Extension Reads Is Additive-Only
+
+The worker updates itself on every host within the hour. An operator's
+extension — a post-run callback hook, a container extension, anything that
+reads a documented interface from outside this repository — does not: it is
+reinstalled by a human, host by host. So a change to such an interface that an
+existing extension cannot read is a fleet-wide outage with a manual recovery on
+every host, however small the diff.
+
+- **Add; never remove or repurpose.** A new field, value, event or flag is
+  fine. Removing one, renaming one or changing its meaning is a breaking
+  change, whether or not a version number moves.
+- **A version number is compatibility, not a changelog.** Bump it only for a
+  removal or a change of meaning — never for an addition — and pin the field
+  set an existing version promised with a test, so a removal fails in review.
+- **A bump is a release decision, not a side effect.** It needs the entry in
+  [Release notes](docs/RELEASE-NOTES.md), the
+  [release floor](docs/RELEASE-TAGGING.md#the-release-floor) moved, and the
+  extensions upgraded on every host **before** the worker that emits the new
+  version ships. If that sequence cannot be run, the change is not ready.
+- **The scar.** On 2026-09-11 the post-run callback schema went 1 → 2 for an
+  additive change. Every deployed hook refused the version, every callback on
+  every host failed on every issue, and each host was reinstalled by hand
+  (Issues #2039, #2041). The
+  [callback contract's versioning rule](docs/CALLBACKS.md#versioning--the-contract-is-additive) is the
+  operator-facing statement for that contract.
+
 ## Commit Messages
 
 Reference the issue number in all commit messages (e.g.,
