@@ -149,3 +149,51 @@ Deno.test(
     assert(CALLBACK_SCHEMA_VERSION >= 2, "the series never goes backwards");
   },
 );
+
+Deno.test(
+  "#2039 - tripwire: an addition never moves the schema version, so a bump cannot land unnoticed",
+  () => {
+    // This is not a pin on an implementation detail; it is the fleet
+    // invariant. Every host's worker updates within the hour and every
+    // host's hooks do not, so the number moving is a fleet-wide outage
+    // unless the extensions were upgraded first. To move it legitimately:
+    //   1. the change removes a field or changes a meaning — otherwise
+    //      it is additive and the number stays;
+    //   2. docs/RELEASE-NOTES.md has the entry and .release-floor moves;
+    //   3. every deployed extension already passes the conformance
+    //      fixture's newer-schema-version-served check;
+    // then, and only then, raise this expected value with the constant.
+    assertEquals(
+      CALLBACK_SCHEMA_VERSION,
+      2,
+      "CALLBACK_SCHEMA_VERSION moved: that breaks every hook that has not " +
+        "been upgraded first. Additive changes never bump it (Issues #2039, " +
+        "#2041, docs/CALLBACKS.md → Versioning).",
+    );
+  },
+);
+
+Deno.test(
+  "#2039 - the builders serve an overridden schema version only when the fixture asks",
+  () => {
+    const env = buildCallbackEnv(
+      FULL_CONTEXT,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+      CALLBACK_SCHEMA_VERSION + 1,
+    );
+    assertEquals(
+      env.VIBECODER_CALLBACK_SCHEMA_VERSION,
+      String(CALLBACK_SCHEMA_VERSION + 1),
+    );
+    const document = buildCallbackContextDocument(
+      FULL_CONTEXT,
+      "always",
+      CALLBACK_SCHEMA_VERSION + 1,
+    );
+    assertEquals(document.schemaVersion, CALLBACK_SCHEMA_VERSION + 1);
+    // Every schema 1 field still rides along under the newer label.
+    for (const name of SCHEMA_1_ENV) assert(env[name] !== undefined, name);
+  },
+);

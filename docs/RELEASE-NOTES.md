@@ -28,6 +28,8 @@ refuses it fails on every issue.**
 | A hook should refuse a malformed or _older_ version it depends on, not a _newer_ one: a newer version keeps every field the hook knows, so continue on those and warn once | #2039 |
 | The `Post-run <event> callback failing on <host>` report names the schema version the worker exports and closes **itself** when the hook succeeds again, with the recovery as the closing comment; a title match the fleet did not open is left alone | #2039, #2041 |
 | The report no longer pre-judges the fault as the deployment's: the one fleet-wide outage so far was the worker's own version bump | #2041 |
+| The conformance fixture gains an eighth check, `newer-schema-version-served`: your `success` and `always` hooks are driven with a schema version one above the worker's and must not refuse it — run it in your extension's CI and a future bump cannot take the fleet out | #2039 |
+| A tripwire test pins `CALLBACK_SCHEMA_VERSION`, so a bump cannot land as a side effect of a feature; its text lists what a legitimate bump must have done first | #2039 |
 
 ### Why a minor
 

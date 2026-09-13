@@ -12,10 +12,10 @@
  * flowchart LR
  *     E["Extension author"] --> C["callback-conformance"]
  *     C --> R["Real invokeRunCallbacks<br/>real /bin/sh hooks"]
- *     R --> V["7 verdicts:<br/>PASS / FAIL"]
+ *     R --> V["8 verdicts:<br/>PASS / FAIL"]
  * ```
  *
- * Seven properties, one check each — the ones an extension's correctness rests
+ * Eight properties, one check each — the ones an extension's correctness rests
  * on:
  *
  * 1. a successful run fires `success`, then `always`;
@@ -25,7 +25,10 @@
  * 5. context fields identify the correct concurrent run;
  * 6. the session transcript path, when present, belongs to that run — and its
  *    contents are never exported. A missing path names `sessionLogAbsentReason`.
- * 7. an idle cycle fires `callbacks.cycle` once, with no run-only scalars.
+ * 7. an idle cycle fires `callbacks.cycle` once, with no run-only scalars;
+ * 8. a hook serves a schema version newer than this worker's — the contract
+ *    is additive, and refusing a version it has not met took out the fleet
+ *    once (Issue #2039).
  *
  * Every check drives the **production** runner over **real** subprocesses, so
  * a pass is a statement about this environment rather than about a mock. One
@@ -71,6 +74,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "concurrent-context-isolation",
   "session-log-belongs-to-run",
   "cycle-heartbeat",
+  "newer-schema-version-served",
 ] as const;
 
 /** One of {@link CONFORMANCE_CHECK_IDS}. */
@@ -89,6 +93,8 @@ const CHECK_TITLES: Record<ConformanceCheckId, string> = {
   "session-log-belongs-to-run":
     "the session transcript path, when present, belongs to that run",
   "cycle-heartbeat": "an idle cycle fires cycle once, with no run-only scalars",
+  "newer-schema-version-served":
+    "a hook serves a schema version newer than this worker's",
 };
 
 /** Hook paths an extension wants driven through the contract. */
@@ -206,6 +212,7 @@ function scenarioContext(
 async function invoke(
   callbacks: CallbacksConfig,
   context: IssueRunCallbackContext,
+  seams: { schemaVersion?: number } = {},
 ): Promise<{
   invocations: CallbackInvocation[];
   logs: string[];
@@ -216,6 +223,7 @@ async function invoke(
   const invocations = await invokeRunCallbacks({
     callbacks,
     context,
+    ...seams,
     log: (message) => logs.push(message),
     logError: (message) => errors.push(message),
   });
@@ -804,6 +812,82 @@ async function checkCycleHeartbeat(
 }
 
 /**
+ * Check 8: a hook serves a schema version newer than this worker's
+ * (Issue #2039).
+ *
+ * The contract is additive: a newer version keeps every field an older one
+ * exported, so a hook has nothing to fear from a number it has not met and
+ * everything to lose from refusing it — on 2026-09-11 every deployed hook
+ * refused version 2 and the whole fleet lost every callback on every issue.
+ * The fixture drives the extension's `success` and `always` hooks with the
+ * context labelled `CALLBACK_SCHEMA_VERSION + 1` and requires both to exit
+ * 0. A fixture hook records the version it saw, so the check is proved to
+ * have served the newer label rather than the current one.
+ */
+async function checkNewerSchemaVersionServed(
+  root: string,
+  hooks: ConformanceHooks,
+  timeoutSeconds: number,
+): Promise<ConformanceCheck> {
+  const id = "newer-schema-version-served" as const;
+  const faults = new Faults();
+  const dir = await scenarioDir(root, id);
+  const served = CALLBACK_SCHEMA_VERSION + 1;
+
+  const record = (event: string) =>
+    `echo "${event}|$VIBECODER_CALLBACK_SCHEMA_VERSION" >> "${dir}/evidence.txt"`;
+  const callbacks: CallbacksConfig = {
+    success: hooks.success ??
+      await writeHook(dir, "success.sh", record("success")),
+    always: hooks.always ?? await writeHook(dir, "always.sh", record("always")),
+    timeoutSeconds,
+  };
+
+  const { invocations } = await invoke(
+    callbacks,
+    scenarioContext({ runId: "vibe-conformance-newer-schema" }),
+    { schemaVersion: served },
+  );
+
+  faults.expect(
+    invocations.length === 2,
+    `expected success then always, got ${describeAll(invocations)}`,
+  );
+  for (const invocation of invocations) {
+    faults.expect(
+      invocation.status === "ok",
+      `the ${invocation.event} hook ${
+        describe(invocation)
+      } when served schema version ${served} (this worker exports ` +
+        `${CALLBACK_SCHEMA_VERSION}): the contract is additive, so a newer ` +
+        "version keeps every field the hook reads — accept it, warn if you " +
+        "like, and refuse only a malformed or older version " +
+        '(docs/CALLBACKS.md → "Versioning")' +
+        (invocation.stderr ? `; stderr: ${invocation.stderr}` : ""),
+    );
+  }
+
+  const recorded = await evidence(dir);
+  for (const event of ["success", "always"] as const) {
+    if (hooks[event] !== undefined) continue;
+    faults.expect(
+      recorded.includes(`${event}|${served}`),
+      `the fixture ${event} hook saw ${
+        recorded.find((line) => line.startsWith(`${event}|`)) ?? "no version"
+      }, not ${served}`,
+    );
+  }
+
+  return verdict(
+    id,
+    faults,
+    `${
+      describeAll(invocations)
+    }; served schemaVersion ${served} (this worker exports ${CALLBACK_SCHEMA_VERSION})`,
+  );
+}
+
+/**
  * Run the conformance fixture and report a verdict per contract property.
  *
  * Never throws for a failing property — a failure is a `passed: false` check
@@ -835,6 +919,7 @@ export async function runCallbackConformance(
       await checkConcurrentIsolation(root, timeoutSeconds),
       await checkSessionLogBelongsToRun(root, timeoutSeconds),
       await checkCycleHeartbeat(root, hooks, timeoutSeconds),
+      await checkNewerSchemaVersionServed(root, hooks, timeoutSeconds),
     ];
     return {
       passed: checks.every((one) => one.passed),

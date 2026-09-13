@@ -300,7 +300,12 @@ sides of the boundary:
   the hook was written against if it depends on a later field. A **newer**
   version keeps every field the hook knows: continue on those fields, and warn
   once that the contract has moved so the extension author looks at what was
-  added.
+  added. [The conformance fixture](#the-conformance-fixture) proves this where
+  the hooks are deployed: its `newer-schema-version-served` check drives your
+  hooks with a version one above the worker's and fails if either refuses it.
+- **The worker side is pinned.** `callback_schema_compat_test.ts` fails when
+  `CALLBACK_SCHEMA_VERSION` moves, so a bump cannot land as a side effect; the
+  test's own text lists what a legitimate bump must have done first.
 
 **The scar (Issues #2039, #2041).** On 2026-09-11 schema 2 added `outcome`,
 the absence reasons and the cycle event — all additive — and the number was
@@ -440,10 +445,12 @@ into a false failure.
 | `concurrent-context-isolation`       | context fields identify the correct concurrent run                                           |
 | `session-log-belongs-to-run`         | the transcript path, when present, belongs to that run — and its contents are never exported |
 | `cycle-heartbeat`                    | an idle cycle fires `callbacks.cycle` once, with no run-only scalars                         |
+| `newer-schema-version-served`        | your `success` and `always` hooks serve a schema version newer than this worker's            |
 
 With no hook paths the fixture uses its own portable `/bin/sh` hooks. With them
 it drives your executables for the two ordering checks, your `always` hook for
-the fault check, and your `cycle` hook for the heartbeat check; checks that need
+the fault check, your `cycle` hook for the heartbeat check, and your `success`
+and `always` hooks for the newer-version check; checks that need
 a **deliberate** fault (a hook told to exit non-zero or hang) always inject a
 fixture hook, since your hook cannot be asked to fail on demand, and the two
 observation checks use fixture hooks that report what they saw.
@@ -451,7 +458,7 @@ observation checks use fixture hooks that report what they saw.
 Sample output:
 
 ```text
-Post-run callback conformance: 7/7 checks passed
+Post-run callback conformance: 8/8 checks passed
 PASS success-then-always — a successful run runs success, then always
      success=ok(exit 0) → always=ok(exit 0), exactly once each
 …

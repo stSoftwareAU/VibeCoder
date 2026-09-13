@@ -31,6 +31,11 @@ recovered host tidies up after itself:
   closing comment. A shorter streak's success closes nothing; a title match the
   fleet did not open is left alone; a refused close is logged loud and never
   alters the run.
+- **Forward compatibility is proved where hooks are deployed.** The
+  conformance fixture's eighth check, `newer-schema-version-served`, drives
+  the extension's `success` and `always` hooks with
+  `CALLBACK_SCHEMA_VERSION + 1` and fails if either refuses it. A tripwire
+  test pins the constant so a bump cannot land as a side effect.
 - **The report body** names the schema version the worker exports and says to
   upgrade the extension when a hook refuses it, and no longer asserts in advance
   that the fault is "not a worker one".

@@ -19,6 +19,7 @@ import {
   writeHook,
 } from "../lib/callback_conformance.ts";
 import { callbackConformanceCommand } from "../commands/callback_conformance.ts";
+import { CALLBACK_SCHEMA_VERSION } from "../lib/run_callbacks.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const notPosix = Deno.build.os === "windows";
@@ -52,7 +53,7 @@ function check(
 
 Deno.test({
   name:
-    "callback_conformance - the fixture proves all seven contract properties in this environment",
+    "callback_conformance - the fixture proves all eight contract properties in this environment",
   ignore: notPosix,
   fn: async () => {
     const report = await runCallbackConformance();
@@ -88,14 +89,16 @@ Deno.test({
 
       assert(report.passed, formatConformanceReport(report));
       assertEquals(report.hooks, hooks, "the report echoes the hooks it drove");
-      // The extension's own executables really ran: success and failure once
-      // each (one per scenario), and always alongside both.
+      // The extension's own executables really ran: failure once (its
+      // ordering scenario), success twice (its ordering scenario and the
+      // newer-schema-version scenario, Issue #2039), and always alongside
+      // each of those.
       const ran = (await Deno.readTextFile(marker)).split("\n").filter((l) =>
         l !== ""
       );
-      assertEquals(ran.filter((l) => l === "success").length, 1);
+      assertEquals(ran.filter((l) => l === "success").length, 2);
       assertEquals(ran.filter((l) => l === "failure").length, 1);
-      assert(ran.filter((l) => l === "always").length >= 2, ran.join(","));
+      assert(ran.filter((l) => l === "always").length >= 3, ran.join(","));
     });
   },
 });
@@ -176,7 +179,7 @@ Deno.test({
       assert(text.includes(id), `${id} missing from the report`);
     }
     assert(text.includes("PASS"), text);
-    assert(text.includes("7/7"), text);
+    assert(text.includes("8/8"), text);
   },
 });
 
@@ -260,4 +263,75 @@ Deno.test("callback_conformance command - an out-of-range timeout is refused", a
       `${value} → ${result.message}`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2039: a hook must serve a schema version newer than the one it was
+// written against. On 2026-09-11 every deployed hook refused version 2 and
+// the whole fleet lost every callback; this check makes that refusal a red
+// verdict where the extension is deployed, before the worker ever moves.
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "callback_conformance - a hook that refuses a newer schema version fails the newer-schema-version-served check (Issue #2039)",
+  ignore: notPosix,
+  fn: async () => {
+    await withDir(async (dir) => {
+      // The 2026-09-07 GRQ hook, in one line: exactly one version is known.
+      const refusing = await writeHook(
+        dir,
+        "always.sh",
+        `[ "$VIBECODER_CALLBACK_SCHEMA_VERSION" = "${CALLBACK_SCHEMA_VERSION}" ] || { echo "unsupported callback schema version $VIBECODER_CALLBACK_SCHEMA_VERSION" >&2; exit 1; }`,
+      );
+      const report = await runCallbackConformance({
+        hooks: { always: refusing },
+      });
+
+      assertEquals(report.passed, false);
+      const one = check(report.checks, "newer-schema-version-served");
+      assertEquals(one.passed, false, one.detail);
+      assert(
+        one.detail.includes(`${CALLBACK_SCHEMA_VERSION + 1}`),
+        one.detail,
+      );
+      assert(one.detail.includes("additive"), one.detail);
+      // The hook served the current version, so every other check still
+      // passes: the verdict names exactly the property that failed.
+      assertEquals(check(report.checks, "success-then-always").passed, true);
+      assertEquals(
+        check(report.checks, "always-after-outcome-fault").passed,
+        true,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "callback_conformance - a hook that warns on a newer schema version and continues passes the check (Issue #2039)",
+  ignore: notPosix,
+  fn: async () => {
+    await withDir(async (dir) => {
+      const tolerant = await writeHook(
+        dir,
+        "always.sh",
+        [
+          `case "$VIBECODER_CALLBACK_SCHEMA_VERSION" in ''|*[!0-9]*) exit 1 ;; esac`,
+          `[ "$VIBECODER_CALLBACK_SCHEMA_VERSION" -le ${CALLBACK_SCHEMA_VERSION} ] || echo "schema version $VIBECODER_CALLBACK_SCHEMA_VERSION is newer than ${CALLBACK_SCHEMA_VERSION}; continuing on the fields I know" >&2`,
+          `[ -n "$VIBECODER_RUN_ID" ] && [ -n "$VIBECODER_RESULT" ]`,
+        ].join("\n"),
+      );
+      const report = await runCallbackConformance({
+        hooks: { always: tolerant },
+      });
+
+      const one = check(report.checks, "newer-schema-version-served");
+      assertEquals(one.passed, true, one.detail);
+      assert(
+        one.detail.includes(`${CALLBACK_SCHEMA_VERSION + 1}`),
+        one.detail,
+      );
+    });
+  },
 });

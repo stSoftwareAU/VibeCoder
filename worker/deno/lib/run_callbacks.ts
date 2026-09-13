@@ -293,6 +293,13 @@ export interface InvokeCallbackSeams {
   callbacks: CallbacksConfig;
   log: (message: string) => void;
   logError: (message: string) => void;
+  /**
+   * Conformance fixture only: the `schemaVersion` to label the context with.
+   * The fixture serves a hook a version **newer** than this worker's to prove
+   * it does not refuse a future contract (Issue #2039). Production callers
+   * never set it; the fields exported are the same either way.
+   */
+  schemaVersion?: number;
   run?: typeof runWithTimeout;
   readEnv?: (name: string) => string | undefined;
   now?: () => number;
@@ -332,9 +339,10 @@ function readEnvSafe(name: string): string | undefined {
 export function buildCallbackContextDocument(
   context: IssueRunCallbackContext,
   event: CallbackEvent,
+  schemaVersion: number = CALLBACK_SCHEMA_VERSION,
 ): Record<string, unknown> {
   const document: Record<string, unknown> = {
-    schemaVersion: CALLBACK_SCHEMA_VERSION,
+    schemaVersion,
     event,
     runId: context.runId,
     result: context.result,
@@ -410,13 +418,14 @@ export function buildCallbackEnv(
   event: CallbackEvent,
   contextFilePath: string,
   readEnv: (name: string) => string | undefined = readEnvSafe,
+  schemaVersion: number = CALLBACK_SCHEMA_VERSION,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of INHERITED_ENV_VARS) {
     const value = readEnv(name);
     if (value !== undefined) env[name] = value;
   }
-  put(env, "VIBECODER_CALLBACK_SCHEMA_VERSION", CALLBACK_SCHEMA_VERSION);
+  put(env, "VIBECODER_CALLBACK_SCHEMA_VERSION", schemaVersion);
   put(env, "VIBECODER_CALLBACK_EVENT", event);
   put(env, "VIBECODER_CALLBACK_CONTEXT", contextFilePath);
   put(env, "VIBECODER_RUN_ID", context.runId);
@@ -642,11 +651,18 @@ export async function invokeRunCallbacks(
     options.log(
       `Running ${event} callback for ${context.repository}#${context.issueNumber}: ${path}`,
     );
+    const schemaVersion = options.schemaVersion ?? CALLBACK_SCHEMA_VERSION;
     const invocation = await invokeOne(
       event,
       path,
-      buildCallbackContextDocument(context, event),
-      buildCallbackEnv(context, event, "", options.readEnv ?? readEnvSafe),
+      buildCallbackContextDocument(context, event, schemaVersion),
+      buildCallbackEnv(
+        context,
+        event,
+        "",
+        options.readEnv ?? readEnvSafe,
+        schemaVersion,
+      ),
       options,
     );
     invocations.push(invocation);
