@@ -193,39 +193,18 @@ export async function fileOrCommentIssue(
   const gh = deps.ghFn ?? spawnGh;
   const log = deps.log ?? ((message: string) => console.warn(message));
 
-  const listed = await gh(
-    [
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `in:title "${title}"`,
-      "--json",
-      ALERT_DEDUP_TITLE_JSON_FIELDS,
-    ],
-    { env },
-  );
+  const listed = await listOpenIssuesTitled(gh, repo, title, env);
   let existing: number | undefined;
-  if (listed.code === 0) {
-    try {
-      const issues = JSON.parse(listed.stdout) as (AlertDedupRow & {
-        title?: string;
-      })[];
-      const verified = await selectFleetAuthoredMatches(
-        issues.filter((issue) => issue.title === title),
-        `host escalation ${repo}`,
-        deps,
-        log,
-        'a fresh issue is created — reporting "commented" for a report ' +
-          "that landed on an issue the fleet did not open would be a lie",
-      );
-      existing = verified[0]?.number;
-    } catch {
-      // Unparseable listing — fall through to creation.
-    }
+  if (listed !== null) {
+    const verified = await selectFleetAuthoredMatches(
+      listed,
+      `host escalation ${repo}`,
+      deps,
+      log,
+      'a fresh issue is created — reporting "commented" for a report ' +
+        "that landed on an issue the fleet did not open would be a lie",
+    );
+    existing = verified[0]?.number;
   }
 
   const result = existing
@@ -245,4 +224,106 @@ export async function fileOrCommentIssue(
     );
   }
   return existing ? "commented" : "created";
+}
+
+/** An open issue row carrying the exact title the channel deduplicates on. */
+type TitledIssueRow = AlertDedupRow & { title?: string };
+
+/**
+ * The open issues in `repo` whose title is exactly `title`.
+ *
+ * `null` when the listing failed or could not be parsed — the caller decides
+ * whether that is "create a fresh issue" (filing) or "nothing to close"
+ * (closing); this helper only refuses to invent an answer.
+ */
+async function listOpenIssuesTitled(
+  gh: NonNullable<FileOrCommentDeps["ghFn"]>,
+  repo: string,
+  title: string,
+  env: Record<string, string>,
+): Promise<TitledIssueRow[] | null> {
+  const listed = await gh(
+    [
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--search",
+      `in:title "${title}"`,
+      "--json",
+      ALERT_DEDUP_TITLE_JSON_FIELDS,
+    ],
+    { env },
+  );
+  if (listed.code !== 0) return null;
+  try {
+    const issues = JSON.parse(listed.stdout) as TitledIssueRow[];
+    return issues.filter((issue) => issue.title === title);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a resolved condition's report was found and closed. */
+export type EscalationClosure = "closed" | "none";
+
+/**
+ * Close the open report for a condition that has ended, with the recovery as
+ * its closing comment (Issue #2039).
+ *
+ * The other half of {@link fileOrCommentIssue}. A report whose body says "a
+ * single success clears it" and then stays open until a human closes it has
+ * only moved the manual step, not removed it: after the 2026-09-11 callback
+ * contract bump the fleet raised eight such reports and a human closed all
+ * eight by hand after every host had recovered. The worker that raised the
+ * report is the one that knows the condition is over, so it retires it.
+ *
+ * Same authorship rule as filing: only an issue a fleet account opened is
+ * closed. A title match somebody else opened is left alone — closing it
+ * would silence a report that was never ours.
+ *
+ * @param escalation - The title the report was filed under and the recovery
+ *   to leave on it. `body` becomes the closing comment.
+ * @param deps - Injected `gh`, log sink and fleet identity.
+ * @returns `"closed"` when at least one report was closed, `"none"` when
+ *   nothing under that title was open (or none of it was the fleet's).
+ * @throws When the listing or a close was refused — the caller must know the
+ *   report is still open.
+ */
+export async function closeResolvedIssue(
+  escalation: HostEscalation,
+  deps: FileOrCommentDeps = {},
+): Promise<EscalationClosure> {
+  const { repo, title, body } = escalation;
+  const env = escalation.env ?? await resolveEscalationGhEnv();
+  const gh = deps.ghFn ?? spawnGh;
+  const log = deps.log ?? ((message: string) => console.warn(message));
+
+  const listed = await listOpenIssuesTitled(gh, repo, title, env);
+  if (listed === null) {
+    throw new Error(`gh issue list --repo ${repo} could not be read`);
+  }
+  const verified = await selectFleetAuthoredMatches(
+    listed,
+    `host escalation close ${repo}`,
+    deps,
+    log,
+    "the report is left open — closing an issue the fleet did not open " +
+      "would silence somebody else's",
+  );
+  if (verified.length === 0) return "none";
+  for (const issue of verified) {
+    const closed = await gh(
+      ["issue", "close", `${issue.number}`, "--repo", repo, "--comment", body],
+      { env },
+    );
+    if (closed.code !== 0) {
+      throw new Error(
+        `gh issue close ${issue.number} exited ${closed.code}: ${closed.stderr.trim()}`,
+      );
+    }
+  }
+  return "closed";
 }

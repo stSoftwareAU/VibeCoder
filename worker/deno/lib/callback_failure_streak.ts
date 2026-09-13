@@ -24,12 +24,23 @@
  * The streak is per callback event and lives in `WORK_DIR`, so it survives the
  * run boundary the condition itself survives.
  *
+ * The report retires itself (Issues #2039, #2041). When a reported hook
+ * succeeds again, the worker closes the issue it raised, with the recovery
+ * as the closing comment. Observed 2026-09-12: a contract bump broke every
+ * hook on every host, eight reports were raised, every host recovered, and
+ * all eight stayed open until a human closed them — the manual step the
+ * streak exists to remove, moved rather than removed.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { CallbackEvent } from "./run_callbacks_config.ts";
-import type { CallbackInvocation } from "./run_callbacks.ts";
 import {
+  CALLBACK_SCHEMA_VERSION,
+  type CallbackInvocation,
+} from "./run_callbacks.ts";
+import {
+  closeResolvedIssue,
   escalationHostId,
   fileOrCommentIssue,
   resolveEscalationGhEnv,
@@ -76,6 +87,20 @@ export interface CallbackFailureReport {
   stderr: string;
 }
 
+/** A reported hook that has succeeded again (Issue #2039). */
+export interface CallbackRecoveryReport {
+  /** Which hook — `success`, `failure` or `always`. */
+  event: CallbackEvent;
+  /** The configured hook path. */
+  path: string;
+  /** Consecutive issues the hook had failed on before this success. */
+  streak: number;
+  /** `owner/repo` of the run whose invocation succeeded. */
+  repository: string;
+  /** Issue number of the run whose invocation succeeded. */
+  issueNumber: number;
+}
+
 /** Injectable seams so the escalation is testable without git or GitHub. */
 export interface CallbackFailureStreakDeps {
   /** Reads the persisted streaks. Defaults to the `WORK_DIR` file. */
@@ -87,6 +112,8 @@ export interface CallbackFailureStreakDeps {
   ) => Promise<void>;
   /** Delivers the report. Defaults to {@link escalateCallbackFailure}. */
   escalate?: (report: CallbackFailureReport) => Promise<void>;
+  /** Retires the report. Defaults to {@link resolveCallbackFailure}. */
+  resolve?: (report: CallbackRecoveryReport) => Promise<void>;
   /** Informational sink. Defaults to a no-op. */
   log?: (message: string) => void;
   /** Fault sink — an escalation that could not be delivered. */
@@ -152,6 +179,71 @@ export function workerCheckoutDir(env: EnvLookup = processEnvLookup): string {
   return new URL("../../../", import.meta.url).pathname;
 }
 
+/** The title the report is filed under — the deduplication key. */
+export function callbackFailureTitle(
+  event: CallbackEvent,
+  host: string,
+): string {
+  return `Post-run ${event} callback failing on ${host}`;
+}
+
+/**
+ * The report body. Pure, so its promises can be tested.
+ *
+ * It names the schema version this worker exports because the one fleet-wide
+ * outage so far (2026-09-11) was the worker's own contract bump, not a
+ * deployment fault: a hook that refuses the version predates the contract,
+ * and the remedy is an extension upgrade the worker cannot perform itself.
+ */
+export function callbackFailureReportBody(
+  report: CallbackFailureReport,
+  host: string,
+): string {
+  return [
+    `The \`${report.event}\` callback on \`${host}\` has failed on ` +
+    `${report.streak} consecutive issues (Issue #1092). It runs after every ` +
+    "terminal issue run, so the cost is paid on every issue this host works; " +
+    "the run's own result is unaffected.",
+    "",
+    `- Hook: \`${report.path}\``,
+    `- Last run: ${report.repository}#${report.issueNumber}`,
+    `- Outcome: ${report.status}, exit ${report.exitCode}, ` +
+    `${report.durationSeconds.toFixed(1)}s`,
+    "",
+    report.stderr
+      ? ["Last captured stderr:", "", "```", report.stderr, "```"].join("\n")
+      : "The hook captured no stderr.",
+    "",
+    `This worker exports callback schema version ${CALLBACK_SCHEMA_VERSION}. ` +
+    "A hook that refuses that version was written against an older " +
+    "contract. The contract is additive — every field an older version " +
+    "exported is still there — so upgrade the extension on this host; the " +
+    "worker cannot reinstall an operator's hooks itself (docs/CALLBACKS.md, " +
+    '"Versioning").',
+    "",
+    "Otherwise fix the hook or remove it from `callbacks` in `.config.json`. " +
+    "A hook that cannot succeed should fail fast rather than retry: a " +
+    "permanent authorisation failure (HTTP 403, `Write access to repository " +
+    "not granted`) will not be cleared by a retry or a rebase, and any " +
+    "backlog the hook carries forward between runs must be bounded by the " +
+    "hook itself. See docs/CALLBACKS.md.",
+    "",
+    "This report is raised once per failure streak. The worker closes this " +
+    "issue itself on the hook's next successful invocation.",
+  ].join("\n");
+}
+
+/** The closing comment left when a reported hook succeeds again. */
+export function callbackRecoveryBody(
+  report: CallbackRecoveryReport,
+  host: string,
+): string {
+  return `The \`${report.event}\` callback on \`${host}\` succeeded on ` +
+    `${report.repository}#${report.issueNumber} after ${report.streak} ` +
+    "consecutive failing issues, so this report no longer describes the " +
+    "host. Closing it (Issue #1092).";
+}
+
 /**
  * Production escalator: one deduplicated issue in the worker's OWN repository,
  * titled for the host and the hook so an ongoing condition stays ONE incident.
@@ -166,35 +258,34 @@ export async function escalateCallbackFailure(
   const repo = await resolveOriginRepo(workerCheckoutDir(env));
   const host = escalationHostId(env);
   const ghEnv = await resolveEscalationGhEnv(env);
-  const title = `Post-run ${report.event} callback failing on ${host}`;
-  const body = [
-    `The \`${report.event}\` callback on \`${host}\` has failed on ` +
-    `${report.streak} consecutive issues (Issue #1092). It runs after every ` +
-    "terminal issue run, so the cost is paid on every issue this host works, " +
-    "and the run's own result is unaffected — this is a deployment fault, " +
-    "not a worker one.",
-    "",
-    `- Hook: \`${report.path}\``,
-    `- Last run: ${report.repository}#${report.issueNumber}`,
-    `- Outcome: ${report.status}, exit ${report.exitCode}, ` +
-    `${report.durationSeconds.toFixed(1)}s`,
-    "",
-    report.stderr
-      ? ["Last captured stderr:", "", "```", report.stderr, "```"].join("\n")
-      : "The hook captured no stderr.",
-    "",
-    "Fix the hook or remove it from `callbacks` in `.config.json`. A hook " +
-    "that cannot succeed should fail fast rather than retry: a permanent " +
-    "authorisation failure (HTTP 403, `Write access to repository not " +
-    "granted`) will not be cleared by a retry or a rebase, and any backlog " +
-    "the hook carries forward between runs must be bounded by the hook " +
-    "itself. See docs/CALLBACKS.md.",
-    "",
-    "This report is raised once per failure streak; a single successful " +
-    "invocation clears it.",
-  ].join("\n");
+  await fileOrCommentIssue({
+    repo,
+    title: callbackFailureTitle(report.event, host),
+    body: callbackFailureReportBody(report, host),
+    env: ghEnv,
+  });
+}
 
-  await fileOrCommentIssue({ repo, title, body, env: ghEnv });
+/**
+ * Production resolver: close the report {@link escalateCallbackFailure}
+ * raised, under the same title, with the recovery as its comment.
+ *
+ * Throws when the close was refused — the report is then still open and the
+ * caller says so.
+ */
+export async function resolveCallbackFailure(
+  report: CallbackRecoveryReport,
+  env: EnvLookup = processEnvLookup,
+): Promise<void> {
+  const repo = await resolveOriginRepo(workerCheckoutDir(env));
+  const host = escalationHostId(env);
+  const ghEnv = await resolveEscalationGhEnv(env);
+  await closeResolvedIssue({
+    repo,
+    title: callbackFailureTitle(report.event, host),
+    body: callbackRecoveryBody(report, host),
+    env: ghEnv,
+  });
 }
 
 /**
@@ -204,7 +295,9 @@ export async function escalateCallbackFailure(
  * out, un-spawnable — extends it, and the run that takes the streak to
  * {@link CALLBACK_FAILURE_ESCALATION_THRESHOLD} raises the one report for it.
  * Later failures in the same streak add nothing, so a hook broken for days
- * produces one incident rather than one per issue.
+ * produces one incident rather than one per issue. A success that ends a
+ * streak long enough to have been reported closes that report (Issue #2039);
+ * a success that ends a shorter streak has nothing to close.
  *
  * Never throws: a fault in the reporting path must not alter the run's own
  * outcome, which is the boundary the whole callback layer holds.
@@ -228,6 +321,8 @@ export async function recordCallbackOutcomes(
   const env = deps.env ?? processEnvLookup;
   const escalate = deps.escalate ??
     ((report: CallbackFailureReport) => escalateCallbackFailure(report, env));
+  const resolve = deps.resolve ??
+    ((report: CallbackRecoveryReport) => resolveCallbackFailure(report, env));
   const log = deps.log ?? (() => {});
   const logError = deps.logError ?? (() => {});
 
@@ -239,13 +334,24 @@ export async function recordCallbackOutcomes(
   }
 
   const due: CallbackFailureReport[] = [];
+  const recovered: CallbackRecoveryReport[] = [];
   for (const invocation of invocations) {
     if (invocation.status === "ok") {
-      if ((streaks[invocation.event] ?? 0) > 0) {
+      const ended = streaks[invocation.event] ?? 0;
+      if (ended > 0) {
         log(
           `The ${invocation.event} callback succeeded — clearing its ` +
             `failure streak (Issue #1092)`,
         );
+      }
+      if (ended >= CALLBACK_FAILURE_ESCALATION_THRESHOLD) {
+        recovered.push({
+          event: invocation.event,
+          path: invocation.path,
+          streak: ended,
+          repository: run.repository,
+          issueNumber: run.issueNumber,
+        });
       }
       streaks[invocation.event] = 0;
       continue;
@@ -280,6 +386,21 @@ export async function recordCallbackOutcomes(
         `Could not report the failing ${report.event} callback: ${
           error instanceof Error ? error.message : String(error)
         }`,
+      );
+    }
+  }
+
+  for (const report of recovered) {
+    log(
+      `The ${report.event} callback recovered after ${report.streak} ` +
+        `consecutive failing issues — closing its report (Issue #2039)`,
+    );
+    try {
+      await resolve(report);
+    } catch (error) {
+      logError(
+        `Could not close the report for the recovered ${report.event} ` +
+          `callback: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

@@ -16,11 +16,18 @@ import {
   CALLBACK_FAILURE_ESCALATION_THRESHOLD,
   CALLBACK_FAILURE_STREAK_FILE,
   type CallbackFailureReport,
+  callbackFailureReportBody,
   type CallbackFailureStreaks,
+  callbackFailureTitle,
+  callbackRecoveryBody,
+  type CallbackRecoveryReport,
   recordCallbackOutcomes,
   workerCheckoutDir,
 } from "../lib/callback_failure_streak.ts";
-import type { CallbackInvocation } from "../lib/run_callbacks.ts";
+import {
+  CALLBACK_SCHEMA_VERSION,
+  type CallbackInvocation,
+} from "../lib/run_callbacks.ts";
 
 const RUN = { repository: "stSoftwareAU/VibeCoder", issueNumber: 984 };
 
@@ -252,5 +259,184 @@ Deno.test(
       fallback.endsWith("/") && !fallback.includes("/worker/deno/lib"),
       fallback,
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issues #2039 / #2041: the report closes itself when the hook recovers.
+//
+// On 2026-09-11 a contract bump broke every deployed hook on every host. The
+// worker raised one report per host per hook — eight issues — and each body
+// promised "a single successful invocation clears it". The counter cleared;
+// the issues stayed open until a human closed all eight by hand. A report
+// that needs a human to retire it after the condition has gone is exactly
+// the manual step the streak exists to remove.
+// ---------------------------------------------------------------------------
+
+function recoveryDeps(store: ReturnType<typeof memoryStore>) {
+  const reports: CallbackFailureReport[] = [];
+  const recoveries: CallbackRecoveryReport[] = [];
+  return {
+    reports,
+    recoveries,
+    deps: {
+      ...store,
+      escalate: (report: CallbackFailureReport) => {
+        reports.push(report);
+        return Promise.resolve();
+      },
+      resolve: (report: CallbackRecoveryReport) => {
+        recoveries.push(report);
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
+Deno.test(
+  "#2039 - a success after a reported streak closes the report; a success after an unreported one closes nothing",
+  async () => {
+    const store = memoryStore();
+    const { reports, recoveries, deps } = recoveryDeps(store);
+    const record = (inv: CallbackInvocation) =>
+      recordCallbackOutcomes("/work", [inv], RUN, deps);
+    const success = invocation({
+      status: "ok",
+      exitCode: 0,
+      durationMs: 2_300,
+    });
+
+    // Below the threshold nothing was filed, so there is nothing to close.
+    await record(invocation());
+    await record(invocation());
+    await record(success);
+    assertEquals(reports.length, 0);
+    assertEquals(recoveries.length, 0, "no report, so no closure");
+
+    // The GRQ-23 shape of 2026-09-12: reported, then the hook is upgraded and
+    // the next issue's invocation succeeds.
+    for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
+      await record(invocation());
+    }
+    assertEquals(reports.length, 1);
+    await recordCallbackOutcomes(
+      "/work",
+      [success],
+      { repository: "stSoftwareAU/GRQ-AutoTrader", issueNumber: 266 },
+      deps,
+    );
+    assertEquals(recoveries, [{
+      event: "always",
+      path: "/opt/vibe-hooks/always.sh",
+      streak: CALLBACK_FAILURE_ESCALATION_THRESHOLD,
+      repository: "stSoftwareAU/GRQ-AutoTrader",
+      issueNumber: 266,
+    }]);
+    assertEquals(store.read().always, 0);
+
+    // The streak is over: a later success has nothing left to close.
+    await record(success);
+    assertEquals(recoveries.length, 1);
+  },
+);
+
+Deno.test(
+  "#2039 - a long streak's recovery reports how long it ran, and each event closes its own report",
+  async () => {
+    const store = memoryStore();
+    const { recoveries, deps } = recoveryDeps(store);
+    for (let i = 0; i < 10; i++) {
+      await recordCallbackOutcomes(
+        "/work",
+        [invocation({ event: "failure" }), invocation({ event: "always" })],
+        RUN,
+        deps,
+      );
+    }
+    await recordCallbackOutcomes(
+      "/work",
+      [
+        invocation({ event: "failure", status: "ok", exitCode: 0 }),
+        invocation({ event: "always", status: "ok", exitCode: 0 }),
+      ],
+      RUN,
+      deps,
+    );
+    assertEquals(recoveries.map((r) => [r.event, r.streak]), [
+      ["failure", 10],
+      ["always", 10],
+    ]);
+  },
+);
+
+Deno.test(
+  "#2039 - a closure that cannot be delivered is reported loud, and the streak still clears",
+  async () => {
+    const store = memoryStore({
+      always: CALLBACK_FAILURE_ESCALATION_THRESHOLD,
+    });
+    const errors: string[] = [];
+    const streaks = await recordCallbackOutcomes(
+      "/work",
+      [invocation({ status: "ok", exitCode: 0 })],
+      RUN,
+      {
+        ...store,
+        escalate: () => Promise.resolve(),
+        resolve: () => Promise.reject(new Error("gh issue close exited 1")),
+        logError: (message) => errors.push(message),
+      },
+    );
+    assertEquals(streaks.always, 0);
+    assertEquals(errors.length, 1, JSON.stringify(errors));
+    assertStringIncludes(errors[0]!, "gh issue close exited 1");
+    assertStringIncludes(errors[0]!, "always");
+  },
+);
+
+Deno.test(
+  "#2039 - the report names the schema version the worker exports and promises to close itself",
+  () => {
+    const report: CallbackFailureReport = {
+      event: "always",
+      path: "/workspace/.grq-vibecoder/callbacks/always.sh",
+      streak: 3,
+      repository: "stSoftwareAU/NEAT-AI-core",
+      issueNumber: 680,
+      status: "failed",
+      exitCode: 1,
+      durationSeconds: 0.02,
+      stderr:
+        "[grq:always] ERROR: unsupported callback schema version 2 (this extension understands 1); refusing to guess at the contract",
+    };
+    assertEquals(
+      callbackFailureTitle("always", "GRQ-23"),
+      "Post-run always callback failing on GRQ-23",
+    );
+    const body = callbackFailureReportBody(report, "GRQ-23");
+    assertStringIncludes(body, "stSoftwareAU/NEAT-AI-core#680");
+    assertStringIncludes(
+      body,
+      `callback schema version ${CALLBACK_SCHEMA_VERSION}`,
+    );
+    assertStringIncludes(body, "upgrade the extension");
+    assertStringIncludes(body, "closes this issue itself");
+    // The 2026-09-11 outage was the worker's contract bump, not the
+    // deployment's doing; the report must not pin the blame in advance.
+    assert(!body.includes("not a worker one"), body);
+
+    const recovery = callbackRecoveryBody(
+      {
+        event: "always",
+        path: report.path,
+        streak: 7,
+        repository: "stSoftwareAU/GRQ-AutoTrader",
+        issueNumber: 266,
+      },
+      "GRQ-23",
+    );
+    assertStringIncludes(recovery, "stSoftwareAU/GRQ-AutoTrader#266");
+    assertStringIncludes(recovery, "7 consecutive");
+    assertStringIncludes(recovery, "GRQ-23");
   },
 );

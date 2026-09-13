@@ -1044,6 +1044,13 @@ dependency — was the actual fix.
   provider, rather than compiled in.
 - **[Private Extensions](docs/PRIVATE-EXTENSIONS.md)** — the procedure, end to
   end, and the honest record of what cannot be done yet.
+- **The extension points are additive-only.** Core updates itself on every
+  host within the hour; an operator's extension is reinstalled by a human, one
+  host at a time. A field removed or repurposed in an interface an extension
+  reads takes out the whole fleet until every host is touched, so the
+  interfaces only ever gain — see
+  [Coding Standards](CODING-STANDARDS.md#a-contract-a-deployed-extension-reads-is-additive-only)
+  and the [callback contract's versioning rule](docs/CALLBACKS.md#versioning--the-contract-is-additive).
 
 **Rationale:** the alternative is a repository that slowly accumulates one
 deployment's toolchain under the guise of examples, and an operator whose tool
