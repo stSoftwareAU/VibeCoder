@@ -57,7 +57,6 @@ import {
   clearUnavailableDeepSeekModels,
   setActiveRepoDeepSeekModelOverrides,
   setDeepSeekPhaseModelConfigOverrides,
-  setUnavailableDeepSeekModels,
 } from "../lib/deepseek_executor.ts";
 import { DEEPSEEK_PHASE_MODEL_DEFAULTS } from "../lib/config_defaults.ts";
 
