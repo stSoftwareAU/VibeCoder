@@ -100,6 +100,7 @@ import {
   isGeminiAuthError,
 } from "./gemini_auth.ts";
 import {
+  deepSeekServedModelSatisfies,
   resolveDeepSeekEffort,
   resolveDeepSeekModel,
   warnDeepSeekEffortUnsupported,
@@ -342,6 +343,20 @@ export interface AgentProviderDescriptor {
    * which is what made the downgrade a no-op under Codex and Gemini.
    */
   cheaperModel?(model: string): string | null;
+  /**
+   * Whether a run served `served` satisfies the expectation `expected`
+   * (Issue #2053). Absent → the tier-aware {@link planning_run_stats}
+   * `modelsMatch(expected, served)` stands.
+   *
+   * A provider implements it when its vendor remaps requested ids to other
+   * ids of its own line-up: DeepSeek's endpoint serves `deepseek-v4-pro`
+   * when the base tier is asked, and its documented legacy alias
+   * `deepseek-v4-flash*` for Flash-tier requests. Serving a *better* tier
+   * than requested is not degradation — the detector exists to catch runs
+   * served a worse model than designed, so only downgrades must fail the
+   * check.
+   */
+  servedModelSatisfies?(served: string, expected: string): boolean;
   /** Build the CLI argument list for one invocation. */
   buildInvocation(request: AgentInvocationRequest): string[];
   /**
@@ -812,6 +827,13 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
 
   resolveEffort(phase?: string): string | undefined {
     return resolveDeepSeekEffort(phase);
+  },
+
+  // The vendor serves upgrades and its documented legacy alias instead of the
+  // requested id; only a downgrade fails the served-vs-expected check
+  // (Issue #2053).
+  servedModelSatisfies(served: string, expected: string): boolean {
+    return deepSeekServedModelSatisfies(served, expected);
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {

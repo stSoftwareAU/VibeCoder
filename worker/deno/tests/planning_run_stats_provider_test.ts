@@ -45,12 +45,20 @@ const CLEAN_ROUTING_ENV = emptyEnv;
 
 /** One judged planning invocation served by `served`. */
 function servedPlanningRun(served: string[]): PlanningInvocationStats[] {
+  return servedPhaseRun("planning", served);
+}
+
+/** One judged invocation of `phase` served by `served` (Issue #2053). */
+function servedPhaseRun(
+  phase: string,
+  served: string[],
+): PlanningInvocationStats[] {
   const runStats: RunStats = {
     servedModels: served,
     requestedModel: served[0] ?? "",
     wallClockMs: 1000,
   };
-  return [{ phase: "planning", runStats }];
+  return [{ phase, runStats }];
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +124,36 @@ Deno.test("buildDegradationReport - DeepSeek served the wrong DeepSeek tier is d
   assertEquals(report.verdict.degraded, true);
   assert(report.verdict.reason?.includes("deepseek-flash"));
   assert(report.verdict.reason?.includes("deepseek-v4-pro"));
+});
+
+Deno.test("buildDegradationReport - DeepSeek serving the top tier for a base-tier phase is healthy, not degraded (Issue #2053)", () => {
+  // The vendor's endpoint serves `deepseek-v4-pro` when `deepseek-flash` is
+  // asked (observed live on Issue #1927's first run): an upgrade is not
+  // degradation — the detector exists to catch runs served a worse model.
+  const provider = resolveAgentProvider("deepseek");
+  const report = buildDegradationReport({
+    invocations: servedPhaseRun("issue", ["deepseek-v4-pro"]),
+    phase: "issue",
+    provider,
+    env: CLEAN_ROUTING_ENV,
+  });
+  assertEquals(report.expectedModel, "deepseek-flash");
+  assertEquals(report.verdict.degraded, false);
+  assertEquals(report.verdict.indeterminate, undefined);
+});
+
+Deno.test("buildDegradationReport - DeepSeek served the legacy Flash alias for a base-tier phase is healthy (Issue #2053)", () => {
+  // `deepseek-v4-flash` is the vendor-documented legacy name still accepted
+  // and served by the Flash model — the same tier, so not degraded.
+  const provider = resolveAgentProvider("deepseek");
+  const report = buildDegradationReport({
+    invocations: servedPhaseRun("issue", ["deepseek-v4-flash"]),
+    phase: "issue",
+    provider,
+    env: CLEAN_ROUTING_ENV,
+  });
+  assertEquals(report.expectedModel, "deepseek-flash");
+  assertEquals(report.verdict.degraded, false);
 });
 
 Deno.test("resolveExpectedPlanningModel - a pinned best model still wins per provider (Issue #441)", () => {
