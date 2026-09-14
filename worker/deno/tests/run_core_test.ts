@@ -19,6 +19,7 @@ import {
   recordRepoProbe,
   resetRepoAccessState,
 } from "../lib/monitored_repo_access.ts";
+import type { AgentProviderSelector } from "../lib/agent_provider.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -538,6 +539,132 @@ Deno.test("run_core - preflight healthy allows normal execution", async () => {
   assertEquals(preflightIdx >= 0, true);
   assertEquals(gitResetIdx > preflightIdx, true);
   assertEquals(prFeedbackIdx > gitResetIdx, true);
+});
+
+// ---------------------------------------------------------------------------
+// Tests — provider fallback at the health gate (Issue #2055)
+// ---------------------------------------------------------------------------
+
+Deno.test("run_core - an exhausted preferred provider falls back to a healthy alternative at the health gate (Issue #2055)", async () => {
+  const probed: Array<string | undefined> = [];
+  const errors: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000; // End after 2 cycles
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) => {
+      probed.push(typeof provider === "string" ? provider : provider?.id);
+      if (provider === undefined) {
+        // The preferred provider (claude) is quota-exhausted.
+        return Promise.resolve({
+          ok: true,
+          value: { healthy: false, exitCode: 3 },
+        });
+      }
+      // The alternative is healthy.
+      return Promise.resolve({ ok: true, value: { healthy: true } });
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  await runCoreLoop(config, deps);
+
+  assert(
+    probed.includes("deepseek"),
+    "the gate must probe the configured alternative",
+  );
+  assertEquals(
+    errors.some((e) => e.includes("skipping cycle")),
+    false,
+    "a healthy alternative must not leave the host skipping cycles",
+  );
+});
+
+Deno.test("run_core - an unhealthy alternative keeps the skip-cycle path (Issue #2055)", async () => {
+  const errors: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: () =>
+      Promise.resolve({ ok: true, value: { healthy: false, exitCode: 3 } }),
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  await runCoreLoop(config, deps);
+
+  assert(
+    errors.some((e) => e.includes("skipping cycle")),
+    "no healthy alternative means the existing skip-cycle path stands",
+  );
+});
+
+Deno.test("run_core - an auth failure never consults the fallback (Issue #2055)", async () => {
+  const probed: Array<string | undefined> = [];
+  const errors: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) => {
+      probed.push(typeof provider === "string" ? provider : provider?.id);
+      // Auth failures (exitCode 2) are not fallback-eligible: a bad key is
+      // not fixed by switching providers.
+      return Promise.resolve({
+        ok: true,
+        value: { healthy: false, exitCode: 2 },
+      });
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  await runCoreLoop(config, deps);
+
+  assertEquals(
+    probed.includes("deepseek"),
+    false,
+    "auth failures must not probe alternatives",
+  );
+  assert(
+    errors.some((e) => e.includes("skipping cycle")),
+    "auth failures keep the skip-cycle path",
+  );
 });
 
 // ---------------------------------------------------------------------------
