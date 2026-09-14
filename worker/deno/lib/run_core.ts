@@ -465,6 +465,12 @@ export interface RunCoreDeps {
    * Optional — when absent the breaker is inert.
    */
   recheckAgentAuth?: () => Promise<{ authFailed: boolean; message?: string }>;
+  /**
+   * Record this run's provider switch durably beside the config
+   * (Issue #2062), so child processes load the switched provider.
+   * Optional: production implements it; a test harness may omit it.
+   */
+  writeProviderOverride?: (id: string) => Promise<void>;
   checkGhAuth: () => Promise<Result<{ valid: boolean }>>;
   /**
    * Fable-availability probe (Issue #3230, parent #3217).
@@ -5456,6 +5462,10 @@ export async function runCoreLoop(
                 `active provider for this run (Issue #2055)`,
             );
             setConfiguredAgentProviderId(fallbackId);
+            // (Issue #2062) The switch must reach child processes too:
+            // their config loads read the file's preferred id and would
+            // reset it. The override beside the config makes it run-scoped.
+            await deps.writeProviderOverride?.(fallbackId);
           }
 
           // Issue #1587: `gh auth status` spawns through the recorded

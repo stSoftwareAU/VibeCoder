@@ -65,6 +65,7 @@ import {
 import {
   activeAgentProvider,
   type AgentProviderSelector,
+  writeProviderOverrideFile,
 } from "./agent_provider.ts";
 import { checkGhAuth as ghAuthCheck } from "./gh_auth.ts";
 import {
@@ -1537,6 +1538,15 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Health checks --
+    // (Issue #2062) The health-gate switch must reach child processes:
+    // their config loads read the file's preferred id. The override lives
+    // beside the config file and every load applies it.
+    async writeProviderOverride(id: string) {
+      await writeProviderOverrideFile(
+        configPath.slice(0, configPath.lastIndexOf("/")),
+        id,
+      );
+    },
     async checkClaudeHealth(provider?: AgentProviderSelector) {
       // Key the cache by the provider actually probed (Issue #2055): the
       // health-gate fallback probes alternatives, and a deepseek success

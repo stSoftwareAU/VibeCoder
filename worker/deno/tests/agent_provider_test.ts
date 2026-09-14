@@ -22,6 +22,7 @@ import {
   agentProviderIds,
   assertImageInstalledProvider,
   CLAUDE_PROVIDER_ID,
+  clearProviderOverrideFile,
   CODEX_PROVIDER_ID,
   DEFAULT_AGENT_PROVIDER_ID,
   ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
@@ -30,9 +31,11 @@ import {
   IMAGE_AGENT_PROVIDERS_ENV,
   imageAgentProviderIds,
   PROVIDER_FRAGMENT_DIR,
+  readProviderOverrideFile,
   resolveAgentProvider,
   resolveAgentProviderId,
   resolveEnabledAgentProviderIds,
+  writeProviderOverrideFile,
 } from "../lib/agent_provider.ts";
 import { clearDeprecatedEnvWarnings } from "../lib/config_precedence.ts";
 import { capturingWarnings } from "./support/warnings.ts";
@@ -630,4 +633,34 @@ Deno.test("agent provider - Claude invocation without promptViaStdin is unchange
   const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
   const args = provider.buildInvocation({ prompt: "hello" });
   assertEquals(args.slice(-2), ["-p", "hello"]);
+});
+
+Deno.test("agent provider - the per-run provider override file round-trips (Issue #2062)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    assertEquals(await readProviderOverrideFile(dir), undefined);
+    await writeProviderOverrideFile(dir, "deepseek");
+    assertEquals(await readProviderOverrideFile(dir), "deepseek");
+    await clearProviderOverrideFile(dir);
+    assertEquals(await readProviderOverrideFile(dir), undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("agent provider - an override naming an unregistered id fails loudly (Issue #2062)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    // The write rejects asynchronously: the promise rejection must be
+    // observed, never left uncaught.
+    let threw = false;
+    try {
+      await writeProviderOverrideFile(dir, "aider");
+    } catch (err) {
+      threw = err instanceof Error && err.message.includes("aider");
+    }
+    assert(threw, "an unregistered override id must fail loudly");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

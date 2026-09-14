@@ -23,6 +23,7 @@ import {
   REPO_SLUG_PATTERN,
   validateConfig,
 } from "../lib/config.ts";
+import { resolveAgentProviderId } from "../lib/agent_provider.ts";
 import type { ConfigFile, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
@@ -42,6 +43,42 @@ async function withTempConfig(
     await Deno.remove(tempDir, { recursive: true });
   }
 }
+
+Deno.test("config - a provider override beside the config applies to the loaded agent (Issue #2062)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    agent_provider: "claude",
+    // The production shape: the fallback alternative is an enabled
+    // provider, so the switched id is always in the enabled set.
+    agent_providers: ["claude", "deepseek"],
+  };
+  await withTempConfig(testConfig, async (configPath) => {
+    // The health gate's fallback writes this beside the config so child
+    // processes load the switched provider, not the file's preferred one.
+    await Deno.writeTextFile(
+      `${configPath.slice(0, configPath.lastIndexOf("/"))}/.provider-override`,
+      "deepseek",
+    );
+    const config = await loadConfig(configPath);
+    assertEquals(config.agentProvider, "deepseek");
+    // And the seam records it, so invocations that resolve the active
+    // provider see the switch too.
+    assertEquals(resolveAgentProviderId(), "deepseek");
+  });
+});
+
+Deno.test("config - no override file leaves the configured provider alone (Issue #2062)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    agent_provider: "claude",
+  };
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.agentProvider, "claude");
+  });
+});
 
 Deno.test("config - getEnvOrDefault returns env var when set", () => {
   const result = getEnvOrDefault(

@@ -34,6 +34,7 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     logError: (_msg: string) => {},
     logTiming: (_op: string, _dur: number) => {},
     logWorkerSummary: (_processed: number, _dur: number) => {},
+    writeProviderOverride: (_id: string) => Promise.resolve(),
 
     // PID management
     checkPidFile: () => Promise.resolve({ canProceed: true, message: "OK" }),
