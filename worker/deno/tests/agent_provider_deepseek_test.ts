@@ -264,7 +264,7 @@ Deno.test("deepseek provider - the invocation takes the Claude CLI's argument sh
   clearDeepSeekRouting();
   const args = deepseek.buildInvocation({
     prompt: "PROMPT",
-    model: "deepseek-chat",
+    model: "deepseek-flash",
     systemPrompt: "GUIDANCE",
     disallowedTools: ["EnterPlanMode", "ExitPlanMode"],
     mcpConfigPath: "/tmp/mcp.json",
@@ -272,7 +272,7 @@ Deno.test("deepseek provider - the invocation takes the Claude CLI's argument sh
 
   assertEquals(args, [
     "--model",
-    "deepseek-chat",
+    "deepseek-flash",
     "--dangerously-skip-permissions",
     "--disallowed-tools",
     "EnterPlanMode,ExitPlanMode",
@@ -292,7 +292,7 @@ Deno.test("deepseek provider - a piped prompt leaves the text out of the argv", 
   clearDeepSeekRouting();
   const args = deepseek.buildInvocation({
     prompt: "a very long prompt",
-    model: "deepseek-chat",
+    model: "deepseek-flash",
     promptViaStdin: true,
   });
 

@@ -125,8 +125,8 @@ Deno.test("run_callback_telemetry - an adapter-less provider is provider_unsuppo
     callbackTelemetryAbsenceReason([
       {
         runStats: {
-          servedModels: ["deepseek-chat"],
-          requestedModel: "deepseek-chat",
+          servedModels: ["deepseek-flash"],
+          requestedModel: "deepseek-flash",
         },
       },
     ], "deepseek"),

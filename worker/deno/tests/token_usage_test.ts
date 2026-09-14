@@ -482,14 +482,14 @@ const API_EQUIVALENT_ROWS: ReadonlyArray<[string, ModelPricing]> = [
     cacheReadPerMillion: 0.03,
     apiEquivalent: true,
   }],
-  ["deepseek-reasoner", {
-    inputPerMillion: 0.30,
-    outputPerMillion: 1.20,
+  ["deepseek-v4-pro", {
+    inputPerMillion: 1.32,
+    outputPerMillion: 3.96,
     cacheWritePerMillion: 0,
-    cacheReadPerMillion: 0.006,
+    cacheReadPerMillion: 0.044,
     apiEquivalent: true,
   }],
-  ["deepseek-chat", {
+  ["deepseek-flash", {
     inputPerMillion: 0.30,
     outputPerMillion: 1.20,
     cacheWritePerMillion: 0,
@@ -529,8 +529,8 @@ Deno.test("token_usage - the ordered prefix walk reaches the specific row, not a
   assertEquals(flash?.inputPerMillion, 0.30);
 
   assertNotStrictEquals(
-    lookupModelPricing("deepseek-reasoner"),
-    lookupModelPricing("deepseek-chat"),
+    lookupModelPricing("deepseek-v4-pro"),
+    lookupModelPricing("deepseek-flash"),
   );
 });
 

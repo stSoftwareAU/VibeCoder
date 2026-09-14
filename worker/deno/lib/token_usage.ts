@@ -260,39 +260,40 @@ const GEMINI_2_5_FLASH_PRICING: ModelPricing = {
 };
 
 /**
- * DeepSeek `deepseek-reasoner` — the DeepSeek top tier.
+ * DeepSeek `deepseek-v4-pro` — the DeepSeek top tier.
  *
  * Source: https://api-docs.deepseek.com/quick_start/pricing, checked on
- * 2026-09-11. Basis: the **standard-hours (peak)** `deepseek-flash` rate
- * ($0.30 cache-miss input / $0.006 cache-hit input / $1.20 output per MTok),
+ * 2026-09-14. Basis: the **standard-hours (peak)** `deepseek-v4-pro` rate
+ * ($1.32 cache-miss input / $0.044 cache-hit input / $3.96 output per MTok),
  * with **no off-peak discount** applied — off-peak is half price, so this row
  * never under-states.
  *
- * That page lists only `deepseek-flash` and `deepseek-v4-pro`; it does not
- * name `deepseek-reasoner` at all, and it says a legacy model name it still
- * accepts is served by the Flash model and billed at the Flash price. The
- * Flash rate is therefore the only rate the source supports for this id.
- * Whether the vendor still accepts the id the worker routes to is Issue
- * #1941; this row prices the id as configured today.
+ * The vendor retired `deepseek-chat` / `deepseek-reasoner`, the ids the
+ * worker used to route here (Issue #1941); the page now names
+ * `deepseek-v4-pro` and `deepseek-flash` as the published ids, with V4 Pro
+ * service continuing after 2026-09-14 at unchanged billing. The retired ids
+ * keep no rows: a historical credit log that still names one prices at the
+ * conservative {@link UNPRICED_UPPER_BOUND_PRICING} instead, which over-states
+ * rather than fabricating a rate the vendor no longer publishes.
  */
-const DEEPSEEK_REASONER_PRICING: ModelPricing = {
-  inputPerMillion: 0.30,
-  outputPerMillion: 1.20,
+const DEEPSEEK_V4_PRO_PRICING: ModelPricing = {
+  inputPerMillion: 1.32,
+  outputPerMillion: 3.96,
   cacheWritePerMillion: 0,
-  cacheReadPerMillion: 0.006,
+  cacheReadPerMillion: 0.044,
   apiEquivalent: true,
 };
 
 /**
- * DeepSeek `deepseek-chat` — the DeepSeek base tier.
+ * DeepSeek `deepseek-flash` — the DeepSeek base tier.
  *
  * Source: https://api-docs.deepseek.com/quick_start/pricing, checked on
- * 2026-09-11. Basis: the **standard-hours (peak)** `deepseek-flash` rate
+ * 2026-09-14. Basis: the **standard-hours (peak)** `deepseek-flash` rate
  * ($0.30 cache-miss input / $0.006 cache-hit input / $1.20 output per MTok),
- * with **no off-peak discount** applied — the same basis, and the same
- * source-supported reasoning, as the `deepseek-reasoner` row above.
+ * with **no off-peak discount** applied — the same peak-rate basis as the
+ * `deepseek-v4-pro` row above.
  */
-const DEEPSEEK_CHAT_PRICING: ModelPricing = {
+const DEEPSEEK_FLASH_PRICING: ModelPricing = {
   inputPerMillion: 0.30,
   outputPerMillion: 1.20,
   cacheWritePerMillion: 0,
@@ -391,8 +392,8 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   ["gemini-2.5-pro", GEMINI_2_5_PRO_PRICING],
   ["gemini-2.5-flash-lite", GEMINI_2_5_FLASH_LITE_PRICING],
   ["gemini-2.5-flash", GEMINI_2_5_FLASH_PRICING],
-  ["deepseek-reasoner", DEEPSEEK_REASONER_PRICING],
-  ["deepseek-chat", DEEPSEEK_CHAT_PRICING],
+  ["deepseek-v4-pro", DEEPSEEK_V4_PRO_PRICING],
+  ["deepseek-flash", DEEPSEEK_FLASH_PRICING],
 ]);
 
 /**

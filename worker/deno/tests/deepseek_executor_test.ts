@@ -93,21 +93,21 @@ function captureWarnings(fn: () => void): string[] {
 Deno.test("deepseek routing - the full phase table routes as designed", () => {
   withCleanRouting({}, (env) => {
     const expected: Record<string, string> = {
-      planning: "deepseek-reasoner",
-      grill_me: "deepseek-reasoner",
-      quorum: "deepseek-reasoner",
-      quorum_judge: "deepseek-reasoner",
-      refinement: "deepseek-reasoner",
-      revision: "deepseek-reasoner",
-      question: "deepseek-reasoner",
-      clarification: "deepseek-reasoner",
-      issue: "deepseek-chat",
-      ci_fix: "deepseek-chat",
-      pr_feedback: "deepseek-chat",
-      quality_fix: "deepseek-chat",
-      spelling_fix: "deepseek-chat",
-      summarise: "deepseek-chat",
-      health: "deepseek-chat",
+      planning: "deepseek-v4-pro",
+      grill_me: "deepseek-v4-pro",
+      quorum: "deepseek-v4-pro",
+      quorum_judge: "deepseek-v4-pro",
+      refinement: "deepseek-v4-pro",
+      revision: "deepseek-v4-pro",
+      question: "deepseek-v4-pro",
+      clarification: "deepseek-v4-pro",
+      issue: "deepseek-flash",
+      ci_fix: "deepseek-flash",
+      pr_feedback: "deepseek-flash",
+      quality_fix: "deepseek-flash",
+      spelling_fix: "deepseek-flash",
+      summarise: "deepseek-flash",
+      health: "deepseek-flash",
     };
 
     for (const [phase, model] of Object.entries(expected)) {
@@ -121,15 +121,15 @@ Deno.test("deepseek routing - the full phase table routes as designed", () => {
   });
 });
 
-Deno.test("deepseek routing - planning reasons, summarise chats", () => {
+Deno.test("deepseek routing - planning runs the pro tier, summarise runs flash", () => {
   withCleanRouting({}, (env) => {
-    assertEquals(resolveDeepSeekModel("planning", env), "deepseek-reasoner");
-    assertEquals(resolveDeepSeekModel("summarise", env), "deepseek-chat");
+    assertEquals(resolveDeepSeekModel("planning", env), "deepseek-v4-pro");
+    assertEquals(resolveDeepSeekModel("summarise", env), "deepseek-flash");
     assertEquals(
       DEFAULT_DEEPSEEK_MODEL_TOP_TIER as string,
-      "deepseek-reasoner",
+      "deepseek-v4-pro",
     );
-    assertEquals(DEFAULT_DEEPSEEK_MODEL as string, "deepseek-chat");
+    assertEquals(DEFAULT_DEEPSEEK_MODEL as string, "deepseek-flash");
   });
 });
 
@@ -323,7 +323,7 @@ Deno.test("deepseek effort - an unhonourable effort warns once per phase", () =>
 
 Deno.test("deepseek config - the global override key passes the unknown-key check", () => {
   const warnings = detectUnknownConfigKeys({
-    deepseek_phase_model_overrides: { planning: "deepseek-reasoner" },
+    deepseek_phase_model_overrides: { planning: "deepseek-v4-pro" },
   });
   assertEquals(warnings, []);
   assertEquals(KNOWN_CONFIG_KEYS.has("deepseek_phase_model_overrides"), true);
@@ -331,7 +331,7 @@ Deno.test("deepseek config - the global override key passes the unknown-key chec
 
 Deno.test("deepseek config - the global override key validates as a string map", () => {
   const ok = validateConfigFileJson({
-    deepseek_phase_model_overrides: { planning: "deepseek-reasoner" },
+    deepseek_phase_model_overrides: { planning: "deepseek-v4-pro" },
   });
   assertEquals(ok.ok, true);
 
@@ -408,7 +408,7 @@ Deno.test("deepseek routing - both env reads go through the injected lookup, nev
   });
 
   withCleanRouting({ DEEPSEEK_MODEL_PLANNING: sentinel }, (env) => {
-    // Step 1 beats the designed "deepseek-reasoner" default.
+    // Step 1 beats the designed "deepseek-v4-pro" default.
     assertEquals(resolveDeepSeekModel("planning", env), sentinel);
   });
 });
