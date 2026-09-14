@@ -914,6 +914,73 @@ export function agentProviderIds(): string[] {
   return [...AGENT_PROVIDERS.keys()];
 }
 
+/** File beside `.config.json` carrying this run's provider override (Issue #2062). */
+export const PROVIDER_OVERRIDE_FILE_NAME = ".provider-override";
+
+/**
+ * Read the per-run provider override from `dir` (Issue #2062).
+ *
+ * The health gate's fallback writes the switched provider beside the
+ * config file so **child processes**, whose config load otherwise resets
+ * the active provider to the file's preferred id, load the same switch the
+ * parent made. Absent or unreadable → undefined; an unregistered id reads
+ * as absent rather than failing a run that is already past its gate.
+ *
+ * @param dir - Directory that holds the config file.
+ * @returns The canonical override id, or undefined when there is none.
+ */
+export async function readProviderOverrideFile(
+  dir: string,
+): Promise<string | undefined> {
+  try {
+    const raw = await Deno.readTextFile(
+      `${dir}/${PROVIDER_OVERRIDE_FILE_NAME}`,
+    );
+    const id = raw.trim();
+    if (!id) return undefined;
+    return AGENT_PROVIDERS.get(id)?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Write the per-run provider override beside the config (Issue #2062).
+ *
+ * Fails loudly on an unregistered id — the gate only writes ids it probed
+ * healthy, so a bad write is a code defect, not an operator typo.
+ *
+ * @param dir - Directory that holds the config file.
+ * @param id - The provider id to stand in for the configured one this run.
+ */
+export async function writeProviderOverrideFile(
+  dir: string,
+  id: string,
+): Promise<void> {
+  const canonical = resolveAgentProvider(id).id;
+  await Deno.writeTextFile(
+    `${dir}/${PROVIDER_OVERRIDE_FILE_NAME}`,
+    canonical,
+  );
+}
+
+/**
+ * Clear the per-run provider override (Issue #2062).
+ *
+ * Called once, at run start, so each run re-evaluates the configured
+ * preferred provider before the health gate may write a fresh switch.
+ * Absent file is a no-op.
+ *
+ * @param dir - Directory that holds the config file.
+ */
+export async function clearProviderOverrideFile(dir: string): Promise<void> {
+  try {
+    await Deno.remove(`${dir}/${PROVIDER_OVERRIDE_FILE_NAME}`);
+  } catch {
+    // Absent — nothing to clear.
+  }
+}
+
 /**
  * Resolve a provider descriptor by id.
  *

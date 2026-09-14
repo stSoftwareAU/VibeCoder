@@ -466,6 +466,12 @@ export interface RunCoreDeps {
    */
   recheckAgentAuth?: () => Promise<{ authFailed: boolean; message?: string }>;
   /**
+   * Record this run's provider switch durably beside the config
+   * (Issue #2062), so child processes load the switched provider.
+   * Optional: production implements it; a test harness may omit it.
+   */
+  writeProviderOverride?: (id: string) => Promise<void>;
+  /**
    * In-place tier adaptation for the health gate (Issue #2059): probe the
    * active provider's same-provider alternatives and re-route this run's
    * designed-default phases onto a healthy one. Absent (or returning
@@ -5477,6 +5483,10 @@ export async function runCoreLoop(
                 `active provider for this run (Issue #2055)`,
             );
             setConfiguredAgentProviderId(fallbackId);
+            // (Issue #2062) The switch must reach child processes too:
+            // their config loads read the file's preferred id and would
+            // reset it. The override beside the config makes it run-scoped.
+            await deps.writeProviderOverride?.(fallbackId);
           }
 
           // Issue #1587: `gh auth status` spawns through the recorded

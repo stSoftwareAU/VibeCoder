@@ -16,6 +16,7 @@ import {
   validateConfigFileJson,
 } from "./validation.ts";
 import {
+  readProviderOverrideFile,
   resolveAgentProviderId,
   resolveEnabledAgentProviderIds,
   setConfiguredAgentProviderId,
@@ -519,9 +520,24 @@ export async function loadConfig(
   // rather than surfacing as a missing binary mid-run. The selection is also
   // recorded on the seam, because the low-level modules that spawn the agent
   // hold no configuration handle.
-  const agentProvider = resolveAgentProviderId({
+  let agentProvider = resolveAgentProviderId({
     configured: file.agent_provider,
   });
+  // (Issue #2062) The health gate's provider fallback must reach child
+  // processes, whose config loads otherwise reset the active provider to the
+  // file's preferred id. The gate writes a per-run override beside the
+  // config; every load applies it, so the switch is run-scoped rather than
+  // process-scoped. The next run clears it before re-evaluating.
+  const providerOverride = await readProviderOverrideFile(
+    configPath.slice(0, configPath.lastIndexOf("/")),
+  );
+  if (providerOverride && providerOverride !== agentProvider) {
+    console.warn(
+      `[provider-override] ${providerOverride} stands in for configured ` +
+        `${agentProvider} this run (Issue #2062)`,
+    );
+    agentProvider = providerOverride;
+  }
   setConfiguredAgentProviderId(agentProvider);
 
   // The providers enabled for this run (Issue #4108). Each one is provisioned,
