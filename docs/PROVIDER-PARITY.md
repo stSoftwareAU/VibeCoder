@@ -86,6 +86,10 @@ only on `subscription-exhausted`, `transient-rate-limit` or
 `model-unavailable`, and only when the alternative is already enabled. Neither
 automatic mechanism is turned on for the production fleet by default.
 
+`agent_provider_mode: "auto"` is **not recommended as production-ready** until
+the restart/soak qualification in [Subscription soak](SUBSCRIPTION-SOAK.md)
+passes; see its staged rollout sign-off.
+
 ## Staged rollout
 
 1. Keep Claude as the default on existing Macs. Do not archive
