@@ -211,6 +211,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   // Anthropic-compatible endpoint has no effort control to override.
   deepseek_model: "deepseekModel",
   deepseek_phase_model_overrides: "deepseekPhaseModelOverrides",
+  // Per-repo coding-agent provider pin (Issue #2048).
+  agent_provider: "agentProvider",
   // Pre-flight enforcement gate (Issue #3577). Accept the kebab-case form
   // shown in the issue/docs example (`"pre-flight"`) and the snake_case form
   // (`pre_flight`); camelCase (`preFlight`) passes through unchanged.

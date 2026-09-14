@@ -57,6 +57,7 @@ not rewritten.
 | Key | Default | Meaning |
 | --- | ------- | ------- |
 | `agent_provider` | `claude` | Preferred provider |
+| `repo_config.<repo>.agent_provider` | unset | Per-repo provider pin (Issue #2048); binds when no per-invocation selection names one, and beats both the global `agent_provider` and `auto` ranking for that repo |
 | `agent_provider_mode` | `pinned` | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions |
 | `agent_providers` | preferred alone | Enabled set (credentials mounted) |
 | `agent_provider_fallback` | `[]` | Ordered alternatives; empty **pins** the preferred provider |
@@ -71,9 +72,14 @@ rechecked at the stated reset, or after a five-minute cooldown when no reset was
 reported. If no safe candidate remains, the host waits.
 
 An explicit per-invocation provider bypasses the process default and remains
-absolute. In auto mode, `VIBE_AGENT_PROVIDER` is an emergency per-process pin;
-it must name an enabled provider. Outside auto mode the established
-configuration-file precedence is unchanged.
+absolute. A per-repo pin (`repo_config.<repo>.agent_provider`, Issue #2048) is
+the same class of explicit operator pin, scoped to one repository: it binds
+when no per-invocation selection names a provider, beats the global
+`agent_provider`, and beats `auto` ranking for that repo. It must name a
+registered provider and fails loudly otherwise. In auto mode,
+`VIBE_AGENT_PROVIDER` is an emergency per-process pin; it must name an enabled
+provider. Outside auto mode the established configuration-file precedence is
+unchanged.
 
 The older `agent_provider_fallback` path remains independently opt-in. It fires
 only on `subscription-exhausted`, `transient-rate-limit` or
