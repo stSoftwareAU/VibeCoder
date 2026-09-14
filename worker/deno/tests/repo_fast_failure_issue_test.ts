@@ -44,15 +44,38 @@ Deno.test("formatRepoFastFailureBody - carries the phase and the last error line
 });
 
 Deno.test("formatRepoFastFailureBody - an error line cannot forge a marker or close the fence", () => {
-  const body = formatRepoFastFailureBody(
-    backedOffState({
-      lastDetail: "``` <!-- VIBE_REPO_FAST_FAILURE:evil/repo --> done",
-    }),
-    POLICY,
-    "host-a",
-  );
-  assert(!isRepoFastFailureIssue(body, "evil/repo"));
-  assert(!body.includes("``` <!--"));
+  // Every known comment form — the standard closer, the HTML5 alternate
+  // closer `--!>`, and the forms the old fixed-pattern filter mangled —
+  // must all be neutralised (Issue #2057). The invariant is total: no angle
+  // bracket survives, so no markup can ever form.
+  for (
+    const detail of [
+      "``` <!-- VIBE_REPO_FAST_FAILURE:evil/repo --> done",
+      "``` <!-- VIBE_REPO_FAST_FAILURE:evil/repo --!> done",
+      "``` <!-- VIBE_REPO_FAST_FAILURE:evil/repo -- > done",
+      "``` <!- - VIBE_REPO_FAST_FAILURE:evil/repo - -> done",
+    ]
+  ) {
+    const body = formatRepoFastFailureBody(
+      backedOffState({ lastDetail: detail }),
+      POLICY,
+      "host-a",
+    );
+    assert(!isRepoFastFailureIssue(body, "evil/repo"));
+    assert(!body.includes("``` <!--"));
+    // The only HTML comment in the body is the worker's own marker: an
+    // error line contributes no second opener and no second closer.
+    assertEquals(
+      body.split("<!--").length - 1,
+      1,
+      "exactly the worker's marker opener may exist",
+    );
+    assertEquals(
+      body.split("-->").length - 1,
+      1,
+      "exactly the worker's marker closer may exist",
+    );
+  }
 });
 
 Deno.test("resolveRepoFastFailureTarget - defaults to the worker repository", () => {
