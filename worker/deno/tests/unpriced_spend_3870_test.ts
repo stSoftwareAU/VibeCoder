@@ -238,7 +238,7 @@ Deno.test("credit_tracker - a day of only Codex/Gemini/DeepSeek invocations repo
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
   };
-  const models = ["gpt-5-codex", "gemini-2.5-pro", "deepseek-chat"];
+  const models = ["gpt-5-codex", "gemini-2.5-pro", "deepseek-flash"];
 
   await withCreditLog(
     models.map((model) => ({ model, ...tokens })),

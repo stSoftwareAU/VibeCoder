@@ -64,7 +64,7 @@ Deno.test("previousGenerationOf - a bare tier alias carries no generation (Issue
 Deno.test("previousGenerationOf - unparseable and empty ids are not flagged (Issue #1362)", () => {
   assertEquals(previousGenerationOf(""), undefined);
   assertEquals(previousGenerationOf("   "), undefined);
-  assertEquals(previousGenerationOf("deepseek-reasoner"), undefined);
+  assertEquals(previousGenerationOf("deepseek-v4-pro"), undefined);
   assertEquals(previousGenerationOf("claude-3-opus"), undefined);
 });
 
