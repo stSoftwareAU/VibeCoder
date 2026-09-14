@@ -101,9 +101,9 @@ a section without a marker, fails `deno test`.
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
 | [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
 | [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
-| [Model Fallback on Rate Limit](#model-fallback-on-rate-limit) | ✅ | ❌ | ❌ | ❌ | No `cheaperModel()` ladder: the attempt returns `no-ladder-for-provider` and warns once, naming the provider (#365). `deepseek-chat` is a different model, not a cheaper rung of `deepseek-reasoner` |
+| [Model Fallback on Rate Limit](#model-fallback-on-rate-limit) | ✅ | ❌ | ❌ | ❌ | No `cheaperModel()` ladder: the attempt returns `no-ladder-for-provider` and warns once, naming the provider (#365). `deepseek-flash` is a different model, not a cheaper rung of `deepseek-v4-pro` |
 | [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow) | ✅ | ✅ | ✅ | ✅ | — |
-| [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection) | ✅ | ⚠️ | ⚠️ | ✅ | The comment still posts, and the expected model comes from the invocation's *own* provider routing ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)), so DeepSeek is judged `deepseek-reasoner` vs `deepseek-reasoner`. Codex and Gemini expose no served model, so the verdict stays `❓ unknown` |
+| [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection) | ✅ | ⚠️ | ⚠️ | ✅ | The comment still posts, and the expected model comes from the invocation's *own* provider routing ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)), so DeepSeek is judged `deepseek-v4-pro` vs `deepseek-v4-pro`. Codex and Gemini expose no served model, so the verdict stays `❓ unknown` |
 | [Session ID — a UUID (Issue #204)](#session-id--a-uuid-issue-204) | ✅ | ❌ | ❌ | ✅ | Codex and Gemini name their own sessions; the worker supplies no id. DeepSeek runs the same CLI, so it takes the same worker-generated id |
 | [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal) | ✅ | ❌ | ❌ | ❌ | No Fable tier exists for them; the probe run on their CLI fails and is read optimistically as `available` |
 | [Pre-flight Fable reroute](#pre-flight-fable-reroute) | ✅ | ❌ | ❌ | ❌ | Nothing to reroute, and the chokepoint is **gated off** for them (#398): their invocations keep their own routing, are never flagged degraded, and the skipped reroute is logged once per provider. The gate matters most for DeepSeek, whose Anthropic CLI would accept `--model opus` and fail at the endpoint ([#417](https://github.com/stSoftwareAU/VibeCoder/issues/417)) |
@@ -262,7 +262,7 @@ pin any phase to a different tier without code changes.
 
 ### Per-phase decision log
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the log records the Claude tier/effort decisions and the prices behind them; the Codex and Gemini tables mirror its *shape* (top / base / cheap tier per phase) with their own model ids, re-pinned through configuration rather than through this log. DeepSeek's table copies the shape too — `deepseek-reasoner` over `deepseek-chat`, with no cheap rung to copy.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the log records the Claude tier/effort decisions and the prices behind them; the Codex and Gemini tables mirror its *shape* (top / base / cheap tier per phase) with their own model ids, re-pinned through configuration rather than through this log. DeepSeek's table copies the shape too — `deepseek-v4-pro` over `deepseek-flash`, with no cheap rung to copy.
 
  asked, after the Opus↔Sonnet premium collapsed from ~5× to ~1.7×,
 whether the phases previously parked on Sonnet for cost should move to
@@ -595,15 +595,15 @@ model ids:
 
 | Phase | DeepSeek model |
 |-------|----------------|
-| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `deepseek-reasoner` (top tier) |
-| `issue` (implementation) | `deepseek-chat` (base tier) |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `deepseek-chat` (base tier) |
-| `spelling_fix`, `summarise`, `health` | `deepseek-chat` (base tier) |
+| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `deepseek-v4-pro` (top tier) |
+| `issue` (implementation) | `deepseek-flash` (base tier) |
+| `ci_fix`, `pr_feedback`, `quality_fix` | `deepseek-flash` (base tier) |
+| `spelling_fix`, `summarise`, `health` | `deepseek-flash` (base tier) |
 
 **There is no cheap rung, and that is deliberate.** Claude, Codex and Gemini
 each drop the trivial trio (`spelling_fix`, `summarise`, `health`) onto a third,
 cheaper tier; DeepSeek publishes no such tier, so those phases run on
-`deepseek-chat` like the rest. The table is an implementation choice over the
+`deepseek-flash` like the rest. The table is an implementation choice over the
 current DeepSeek line-up, not a fixed contract — a deployment on a different
 line-up re-pins a tier through configuration rather than a code change.
 
@@ -644,8 +644,8 @@ byte-identical to one carrying no effort, and the run is **not** failed — the
 warning is the fix.
 
 **The Fable machinery is gated off, not merely absent.** DeepSeek has no Fable
-tier, no rate-limit ladder (`deepseek-chat` is a different model, not a cheaper
-rung of `deepseek-reasoner`) and no degraded-model reroute. The gate matters
+tier, no rate-limit ladder (`deepseek-flash` is a different model, not a cheaper
+rung of `deepseek-v4-pro`) and no degraded-model reroute. The gate matters
 more here than for Codex or Gemini: `--model opus` is a *well-formed* flag to
 the Anthropic CLI DeepSeek runs, so an ungated pre-flight reroute would be
 accepted locally and fail at the endpoint as an unresolvable model mid-run.
@@ -659,7 +659,7 @@ flowchart LR
     R["buildInvocation({ phase })"] --> S["resolveInvocationRouting()"]
     S --> M["resolveDeepSeekModel<br/>(six-step chain)"]
     S --> E["resolveDeepSeekEffort<br/>(what was asked for)"]
-    M -->|resolved| A["--model deepseek-reasoner<br/>or deepseek-chat"]
+    M -->|resolved| A["--model deepseek-v4-pro<br/>or deepseek-flash"]
     M -->|nothing, phase set| W["⚠️ warn once, CLI default stands"]
     E -->|any effort| V["⚠️ warn once per phase<br/>no argv element"]
     F["Fable reroute / rate-limit ladder"] -->|provider-gated| G["⛔ skipped, logged once"]
@@ -667,7 +667,7 @@ flowchart LR
 ```
 ### Model Fallback on Rate Limit
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — only Claude's descriptor defines `cheaperModel()`, so under Codex or Gemini no downgrade is attempted; the attempt returns `no-ladder-for-provider` and the worker warns once, naming the provider. DeepSeek defines no `cheaperModel()` either — `deepseek-chat` is a different model, not a cheaper rung of `deepseek-reasoner` — so it takes the same `no-ladder-for-provider` path.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — only Claude's descriptor defines `cheaperModel()`, so under Codex or Gemini no downgrade is attempted; the attempt returns `no-ladder-for-provider` and the worker warns once, naming the provider. DeepSeek defines no `cheaperModel()` either — `deepseek-flash` is a different model, not a cheaper rung of `deepseek-v4-pro` — so it takes the same `no-ladder-for-provider` path.
 
 When the worker is rate-limited after exhausting retries, it automatically
 downgrades to a cheaper model instead of failing:
@@ -770,7 +770,7 @@ version at runtime.
 
 ### Planning-run stats + degraded-model detection
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ✅ — the stats comment is posted for every provider, and since [#441](https://github.com/stSoftwareAU/VibeCoder/issues/441) the expected model is derived from the **invocation's own** provider routing (`provider.resolveModel(phase)`), not from Claude's chain. DeepSeek runs the Claude CLI with `--output-format stream-json`, so its served model **is** observed and is now judged against `deepseek-reasoner` rather than `fable`; a genuinely wrong DeepSeek tier (`deepseek-chat` for `planning`) still flags. The served model is read from those same `stream-json` assistant lines, which Codex and Gemini do not emit, so their runs observe no served model and report `❓ unknown` rather than a degraded verdict.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ✅ — the stats comment is posted for every provider, and since [#441](https://github.com/stSoftwareAU/VibeCoder/issues/441) the expected model is derived from the **invocation's own** provider routing (`provider.resolveModel(phase)`), not from Claude's chain. DeepSeek runs the Claude CLI with `--output-format stream-json`, so its served model **is** observed and is now judged against `deepseek-v4-pro` rather than `fable`; a genuinely wrong DeepSeek tier (`deepseek-flash` for `planning`) still flags. The served model is read from those same `stream-json` assistant lines, which Codex and Gemini do not emit, so their runs observe no served model and report `❓ unknown` rather than a degraded verdict.
 
 Every planning run posts a short model-usage stats block on the parent issue
 and computes a **degradation verdict**. The block reports the requested model,
@@ -794,7 +794,7 @@ configured best planning model, or an explicit rate-limit fallback fired:
 - **The chain is the provider's own, not Claude's** (Issue #441). Reading
   Claude's chain unconditionally was harmless while only Claude exposed a served
   model, but DeepSeek is carried on the Anthropic CLI: a `planning` run under
-  `agent_provider: deepseek` compared served `deepseek-reasoner` against expected
+  `agent_provider: deepseek` compared served `deepseek-v4-pro` against expected
   `fable` and flagged itself degraded for a tier the operator never requested.
   The gate is the descriptor, never a `provider.id === "claude"` equality check —
   the same shape [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398)
@@ -2080,7 +2080,7 @@ flowchart LR
 
 ### Model Pricing
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — `MODEL_PRICING` carries the Claude rows Anthropic bills **and** an **API-equivalent** row for each of the eight routable Codex, Gemini and DeepSeek ids (`gpt-5-codex`, `gpt-5-mini`, `gpt-5`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `deepseek-reasoner`, `deepseek-chat`). An API-equivalent figure is the vendor's API list price for the same tokens, labelled `(API-equivalent)` on its run-stats sub-bullet — never a bill, because each provider runs on a fixed-price subscription. An id outside the table is still charged at the dearest known rate and named in `unpricedModels`.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — `MODEL_PRICING` carries the Claude rows Anthropic bills **and** an **API-equivalent** row for each of the eight routable Codex, Gemini and DeepSeek ids (`gpt-5-codex`, `gpt-5-mini`, `gpt-5`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `deepseek-v4-pro`, `deepseek-flash`). An API-equivalent figure is the vendor's API list price for the same tokens, labelled `(API-equivalent)` on its run-stats sub-bullet — never a bill, because each provider runs on a fixed-price subscription. An id outside the table is still charged at the dearest known rate and named in `unpricedModels`.
 
 Approximate list prices (USD per million tokens, as of September 2026):
 
@@ -2096,7 +2096,8 @@ Approximate list prices (USD per million tokens, as of September 2026):
 | Claude Haiku 4.5 | $1.00 | $5.00 | $1.25 | $0.10 |
 
 The non-Claude rows below are **API-equivalent list prices** (USD per million
-tokens, read from the vendor pricing pages and **checked on 2026-09-11**), not
+tokens, read from the vendor pricing pages and **checked on 2026-09-11** — the
+DeepSeek rows **re-checked on 2026-09-14**), not
 bills — every one of these providers runs on a fixed-price subscription, so the
 figure is what the same tokens would have cost on that vendor's API and the
 run-stats sub-bullet says `(API-equivalent)`:
@@ -2109,8 +2110,8 @@ run-stats sub-bullet says `(API-equivalent)`:
 | `gemini-2.5-pro` | $1.25 | $10.00 | $0.00 | $0.1250 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
 | `gemini-2.5-flash` | $0.30 | $2.50 | $0.00 | $0.0300 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
 | `gemini-2.5-flash-lite` | $0.10 | $0.40 | $0.00 | $0.0100 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
-| `deepseek-reasoner` | $0.30 | $1.20 | $0.00 | $0.0060 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing) |
-| `deepseek-chat` | $0.30 | $1.20 | $0.00 | $0.0060 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing) |
+| `deepseek-v4-pro` | $1.32 | $3.96 | $0.00 | $0.0440 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing) |
+| `deepseek-flash` | $0.30 | $1.20 | $0.00 | $0.0060 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing) |
 
 Basis for each group, stated because the vendor publishes more than one rate:
 
@@ -2122,14 +2123,13 @@ Basis for each group, stated because the vendor publishes more than one rate:
   not the dearer audio one. Thinking tokens are billed as **output** ("Output
   price (including thinking tokens)"), so they need no rate of their own.
 - **DeepSeek** — the **standard-hours** rate with **no off-peak discount**
-  applied (off-peak is half price, so the row never under-states). The page
-  lists only `deepseek-flash` and `deepseek-v4-pro` and names neither
-  configured id, while stating that a legacy model name it still accepts is
-  served by the Flash model and billed at the Flash price — so the Flash rate
-  is the only rate the source supports for `deepseek-reasoner` and
-  `deepseek-chat`. Whether the vendor still accepts the two ids the worker
-  routes to is tracked as Issue #1941; these rows price the ids as configured
-  today.
+  applied (off-peak is half price, so a row never under-states). Each row is
+  that model's own peak rate: `deepseek-v4-pro` ($1.32 / $3.96 / $0.044) and
+  `deepseek-flash` ($0.30 / $1.20 / $0.006). The retired `deepseek-chat` /
+  `deepseek-reasoner` ids the worker previously routed to (Issue #1941) keep
+  no rows: the page no longer names them, and a historical credit log that
+  still does is priced at the conservative upper bound rather than a rate the
+  vendor no longer publishes.
 - **Cache write is $0.00 for every row** — none of these three vendors bills a
   per-token cache write the way Anthropic does (Codex reports no cache-write
   counter at all, and Gemini's explicit-cache *storage* is charged hourly,
@@ -2428,7 +2428,7 @@ Implementation:
 
 ### Context Window Budget Monitoring
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the chars ÷ 4 estimate and the thresholds run for every provider, but a non-Claude model id has no row in `MODEL_CONTEXT_WINDOWS`, so it is measured against the 200,000-token default ceiling rather than its real window. `deepseek-reasoner` and `deepseek-chat` have no `MODEL_CONTEXT_WINDOWS` row either, so they are measured against the same 200,000-token default.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the chars ÷ 4 estimate and the thresholds run for every provider, but a non-Claude model id has no row in `MODEL_CONTEXT_WINDOWS`, so it is measured against the 200,000-token default ceiling rather than its real window. `deepseek-v4-pro` and `deepseek-flash` have no `MODEL_CONTEXT_WINDOWS` row either, so they are measured against the same 200,000-token default.
 
 VibeCoder monitors how much of each model's context window is consumed
 by the assembled prompt, providing early warning when prompts grow too

@@ -6,7 +6,7 @@
  * every invocation. That was harmless for Codex and Gemini — neither exposes a
  * served model, so the verdict is `indeterminate` — but DeepSeek runs on the
  * Anthropic CLI with `--output-format stream-json`, so its served model *is*
- * observable: a `planning` run served `deepseek-reasoner` was compared against
+ * observable: a `planning` run served `deepseek-v4-pro` was compared against
  * Claude's `fable` and flagged degraded for a tier the operator never
  * requested.
  *
@@ -95,27 +95,27 @@ Deno.test("buildDegradationReport - every provider's own planning model is not d
 // DeepSeek — the provider the Claude-only chain mislabelled
 // ---------------------------------------------------------------------------
 
-Deno.test("buildDegradationReport - DeepSeek served deepseek-reasoner is healthy (Issue #441)", () => {
+Deno.test("buildDegradationReport - DeepSeek served deepseek-v4-pro is healthy (Issue #441)", () => {
   const provider = resolveAgentProvider("deepseek");
   const report = buildDegradationReport({
-    invocations: servedPlanningRun(["deepseek-reasoner"]),
+    invocations: servedPlanningRun(["deepseek-v4-pro"]),
     provider,
     env: CLEAN_ROUTING_ENV,
   });
-  assertEquals(report.expectedModel, "deepseek-reasoner");
+  assertEquals(report.expectedModel, "deepseek-v4-pro");
   assertEquals(report.verdict.degraded, false);
 });
 
 Deno.test("buildDegradationReport - DeepSeek served the wrong DeepSeek tier is degraded (Issue #441)", () => {
   const provider = resolveAgentProvider("deepseek");
   const report = buildDegradationReport({
-    invocations: servedPlanningRun(["deepseek-chat"]),
+    invocations: servedPlanningRun(["deepseek-flash"]),
     provider,
     env: CLEAN_ROUTING_ENV,
   });
   assertEquals(report.verdict.degraded, true);
-  assert(report.verdict.reason?.includes("deepseek-chat"));
-  assert(report.verdict.reason?.includes("deepseek-reasoner"));
+  assert(report.verdict.reason?.includes("deepseek-flash"));
+  assert(report.verdict.reason?.includes("deepseek-v4-pro"));
 });
 
 Deno.test("resolveExpectedPlanningModel - a pinned best model still wins per provider (Issue #441)", () => {
@@ -185,7 +185,7 @@ Deno.test("resolveExpectedPlanningModel - VIBE_AGENT_PROVIDER selects the chain 
       undefined,
       envFrom({ VIBE_AGENT_PROVIDER: "deepseek" }),
     ),
-    "deepseek-reasoner",
+    "deepseek-v4-pro",
   );
 });
 

@@ -247,7 +247,7 @@ export interface ExpectedModelProvider {
  *
  * Reading **Claude's** chain unconditionally is what this replaces: a
  * `planning` run under `agent_provider: deepseek` is carried on the Anthropic
- * CLI, so its served model *is* observable, and comparing `deepseek-reasoner`
+ * CLI, so its served model *is* observable, and comparing `deepseek-v4-pro`
  * against Claude's `fable` flagged every such run degraded for a tier the
  * operator never requested (Issue #441 — the same defect class as #398/#417,
  * one layer up).

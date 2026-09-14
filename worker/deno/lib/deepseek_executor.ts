@@ -22,8 +22,8 @@
  *   either would be configuration that can never be applied (Issue #3234).
  *
  * There is deliberately **no** `cheaperModel` export either. DeepSeek publishes
- * no cheaper rung — `deepseek-chat` is a different model, not a cheaper tier of
- * `deepseek-reasoner` — so the descriptor omits the optional method entirely
+ * no cheaper rung — `deepseek-flash` is a different model, not a cheaper tier of
+ * `deepseek-v4-pro` — so the descriptor omits the optional method entirely
  * and `model_fallback.ts` reports `no-ladder-for-provider` rather than
  * performing a silent no-op (Issue #365).
  *

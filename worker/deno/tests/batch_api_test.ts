@@ -399,7 +399,7 @@ Deno.test("batch_api - estimateBatchSavings never applies Anthropic's discount t
   // The API-equivalent rows added for Codex/Gemini/DeepSeek must not leak into
   // this estimate: the 50% discount is Anthropic's Batch API, so a saving on an
   // OpenAI/Google/DeepSeek list price would be fabricated.
-  for (const model of ["gpt-5-codex", "gemini-2.5-pro", "deepseek-chat"]) {
+  for (const model of ["gpt-5-codex", "gemini-2.5-pro", "deepseek-flash"]) {
     const savings = estimateBatchSavings({
       model,
       inputTokens: 1_000_000,

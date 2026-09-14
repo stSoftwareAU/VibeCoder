@@ -191,7 +191,7 @@ Deno.test("cost_estimate - a Codex sub-bullet is labelled API-equivalent with an
 });
 
 Deno.test("cost_estimate - Gemini and DeepSeek sub-bullets carry the API-equivalent label", () => {
-  for (const model of ["gemini-2.5-pro", "deepseek-chat"]) {
+  for (const model of ["gemini-2.5-pro", "deepseek-flash"]) {
     const lines = formatCostEstimateLines([
       { model, usage: usage(1_000_000, 1_000_000) },
     ]);

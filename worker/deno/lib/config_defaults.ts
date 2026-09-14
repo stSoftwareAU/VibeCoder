@@ -1279,20 +1279,20 @@ export const GEMINI_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
 // ---------------------------------------------------------------------------
 
 /**
- * Top DeepSeek model tier — the reasoning model (Issue #413).
+ * Top DeepSeek model tier — the pro model (Issue #413).
  *
  * Reserved for the planning-shaped phases, where the Vibe Coder interprets the
  * user's words into an implementable state and a better interpretation
  * compounds across every downstream sub-issue and PR.
  */
-export const DEFAULT_DEEPSEEK_MODEL_TOP_TIER = "deepseek-reasoner" as const;
+export const DEFAULT_DEEPSEEK_MODEL_TOP_TIER = "deepseek-v4-pro" as const;
 
 /**
  * Base DeepSeek model tier (Issue #413) — the general-purpose model every
  * other phase runs on. DeepSeek has no usable effort lever, so the tier itself
  * carries the whole routing decision.
  */
-export const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat" as const;
+export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash" as const;
 
 /**
  * Per-phase DeepSeek model defaults (Issue #413).
@@ -1304,7 +1304,7 @@ export const DEFAULT_DEEPSEEK_MODEL = "deepseek-chat" as const;
  *
  * There is no cheap rung here, unlike Claude and Gemini: DeepSeek publishes no
  * third, cheaper tier, so the trivial trio (`spelling_fix`, `summarise`,
- * `health`) runs on `deepseek-chat` too. That is a deliberate absence, not an
+ * `health`) runs on `deepseek-flash` too. That is a deliberate absence, not an
  * omission.
  */
 export const DEEPSEEK_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
