@@ -3244,6 +3244,7 @@ export async function checkClaudeHealth(
   logger?: Logger,
   agentProvider?: AgentProviderSelector,
   agentBinaryPath?: string,
+  model?: string,
 ): Promise<HealthCheckResult> {
   // Resolve once, per call: the probe, the auth message and the log lines all
   // describe the same agent even while another provider is probed
@@ -3261,6 +3262,10 @@ export async function checkClaudeHealth(
     logger,
     disallowedTools: [],
     agentProvider: provider,
+    // An explicit model probes a specific tier rather than the phase's
+    // routed one (Issue #2059's tier-adaptation probe); absent, the phase
+    // routing decides exactly as before.
+    ...(model ? { model } : {}),
     ...(agentBinaryPath ? { agentBinaryPath } : {}),
   });
 

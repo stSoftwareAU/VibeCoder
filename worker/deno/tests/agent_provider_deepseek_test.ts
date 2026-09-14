@@ -54,8 +54,10 @@ import {
 } from "../lib/credential_preflight.ts";
 import {
   clearDeepSeekEffortWarnings,
+  clearUnavailableDeepSeekModels,
   setActiveRepoDeepSeekModelOverrides,
   setDeepSeekPhaseModelConfigOverrides,
+  setUnavailableDeepSeekModels,
 } from "../lib/deepseek_executor.ts";
 import { DEEPSEEK_PHASE_MODEL_DEFAULTS } from "../lib/config_defaults.ts";
 
@@ -75,7 +77,21 @@ function clearDeepSeekRouting(): void {
   setDeepSeekPhaseModelConfigOverrides({});
   setActiveRepoDeepSeekModelOverrides(undefined);
   clearDeepSeekEffortWarnings();
+  clearUnavailableDeepSeekModels();
 }
+
+/** The descriptor's tier-adaptation seam (Issue #2059). */
+Deno.test("deepseek provider - alternativeModels and applyModelAdaptation are wired", () => {
+  clearDeepSeekRouting();
+  assertEquals(deepseek.alternativeModels?.("deepseek-flash"), [
+    "deepseek-v4-pro",
+  ]);
+  assertEquals(deepseek.alternativeModels?.("deepseek-v4-pro"), []);
+  assertEquals(claude.alternativeModels, undefined);
+  assertEquals(claude.applyModelAdaptation, undefined);
+  // The adaptation itself is covered by the executor's resolver tests.
+  assertEquals(typeof deepseek.applyModelAdaptation, "function");
+});
 
 /** Run `fn` with `console.warn` captured. */
 function withCapturedWarnings(fn: () => void): string[] {

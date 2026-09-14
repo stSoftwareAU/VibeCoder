@@ -465,6 +465,13 @@ export interface RunCoreDeps {
    * Optional — when absent the breaker is inert.
    */
   recheckAgentAuth?: () => Promise<{ authFailed: boolean; message?: string }>;
+  /**
+   * In-place tier adaptation for the health gate (Issue #2059): probe the
+   * active provider's same-provider alternatives and re-route this run's
+   * designed-default phases onto a healthy one. Absent (or returning
+   * `{ adapted: false }`) → the fallback-provider and skip paths stand.
+   */
+  tryModelAdaptation?: () => Promise<{ adapted: boolean; detail?: string }>;
   checkGhAuth: () => Promise<Result<{ valid: boolean }>>;
   /**
    * Fable-availability probe (Issue #3230, parent #3217).
@@ -5443,6 +5450,20 @@ export async function runCoreLoop(
             const exitCode = claudeHealth.ok
               ? claudeHealth.value.exitCode
               : undefined;
+            // (Issue #2059) An unavailable tier adapts in place before any
+            // provider switch is considered: the adaptation probes the
+            // provider's same-provider alternatives and re-routes the
+            // designed defaults onto a healthy one for this run.
+            if (exitCode !== 2 && deps.tryModelAdaptation) {
+              const adaptation = await deps.tryModelAdaptation();
+              if (adaptation.adapted) {
+                deps.log(
+                  `[provider-adaptation] routing adapted for this run: ` +
+                    `${adaptation.detail ?? "unavailable tier"} (Issue #2059)`,
+                );
+                continue;
+              }
+            }
             const fallbackId = exitCode === 3
               ? await probeHealthGateFallback(deps, config)
               : undefined;

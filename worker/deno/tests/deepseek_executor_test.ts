@@ -17,11 +17,13 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   clearDeepSeekEffortWarnings,
+  clearUnavailableDeepSeekModels,
   deepSeekServedModelSatisfies,
   resolveDeepSeekEffort,
   resolveDeepSeekModel,
   setActiveRepoDeepSeekModelOverrides,
   setDeepSeekPhaseModelConfigOverrides,
+  setUnavailableDeepSeekModels,
   warnDeepSeekEffortUnsupported,
 } from "../lib/deepseek_executor.ts";
 import * as configDefaults from "../lib/config_defaults.ts";
@@ -464,4 +466,63 @@ Deno.test("deepseek served-model - unrelated ids do not satisfy", () => {
     false,
   );
   assertEquals(deepSeekServedModelSatisfies("deepseek-v4-pro", "fable"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Tier adaptation (Issue #2059)
+// ---------------------------------------------------------------------------
+
+Deno.test("deepseek adaptation - a base-tier outage moves default-routed phases to the top tier", () => {
+  withCleanRouting({}, (env) => {
+    setUnavailableDeepSeekModels(["deepseek-flash"]);
+    try {
+      // The designed defaults routed these to flash; the adaptation moves
+      // them to the only healthy tier.
+      assertEquals(resolveDeepSeekModel("issue", env), "deepseek-v4-pro");
+      assertEquals(resolveDeepSeekModel("health", env), "deepseek-v4-pro");
+      assertEquals(resolveDeepSeekModel("summarise", env), "deepseek-v4-pro");
+      // Phases already on the top tier are untouched.
+      assertEquals(resolveDeepSeekModel("planning", env), "deepseek-v4-pro");
+    } finally {
+      clearUnavailableDeepSeekModels();
+    }
+  });
+});
+
+Deno.test("deepseek adaptation - an operator pin on the unavailable tier still wins", () => {
+  withCleanRouting({}, (env) => {
+    setUnavailableDeepSeekModels(["deepseek-flash"]);
+    // The operator explicitly pinned the tier in every higher layer — the
+    // adaptation must never override an explicit choice.
+    setDeepSeekPhaseModelConfigOverrides({ issue: "deepseek-flash" });
+    setActiveRepoDeepSeekModelOverrides({ deepseekModel: "deepseek-flash" });
+    try {
+      assertEquals(resolveDeepSeekModel("issue", env), "deepseek-flash");
+    } finally {
+      clearUnavailableDeepSeekModels();
+    }
+  });
+  withCleanRouting({ DEEPSEEK_MODEL_ISSUE: "deepseek-flash" }, (env) => {
+    setUnavailableDeepSeekModels(["deepseek-flash"]);
+    try {
+      assertEquals(resolveDeepSeekModel("issue", env), "deepseek-flash");
+    } finally {
+      clearUnavailableDeepSeekModels();
+    }
+  });
+});
+
+Deno.test("deepseek adaptation - an outage of the top tier leaves base-tier phases alone", () => {
+  withCleanRouting({}, (env) => {
+    setUnavailableDeepSeekModels(["deepseek-v4-pro"]);
+    try {
+      // No lower alternative exists: the base-tier phases keep their
+      // designed routing, and planning keeps the (unavailable) top tier —
+      // the health gate handles the provider-level verdict from here.
+      assertEquals(resolveDeepSeekModel("issue", env), "deepseek-flash");
+      assertEquals(resolveDeepSeekModel("planning", env), "deepseek-v4-pro");
+    } finally {
+      clearUnavailableDeepSeekModels();
+    }
+  });
 });
