@@ -18,6 +18,10 @@
  */
 
 import type { Result } from "../types.ts";
+import {
+  type AgentProviderSelector,
+  setConfiguredAgentProviderId,
+} from "./agent_provider.ts";
 import type { CooldownFailureKind } from "./cooldown_state.ts";
 import {
   advanceLaneRotation,
@@ -170,6 +174,13 @@ export interface RunCoreConfig {
   maxConsecutiveFailures: number;
   /** Rate limit backoff duration (seconds, default: 300). */
   rateLimitBackoff: number;
+  /**
+   * Ordered provider alternatives the health gate probes when the active
+   * provider is usage/rate limited (Issue #2055; default: [] — pinned).
+   * Copied from the loaded `.config.json` `agent_provider_fallback`, which
+   * config load already validated against the enabled set.
+   */
+  agentProviderFallback: string[];
   /**
    * Per-handler hard watchdog timeout (seconds, default: 600 — Issue #2473).
    *
@@ -443,7 +454,9 @@ export interface RunCoreDeps {
   checkFeatureAvailability: () => Promise<void>;
 
   // Health checks
-  checkClaudeHealth: () => Promise<Result<{ healthy: boolean }>>;
+  checkClaudeHealth: (
+    provider?: AgentProviderSelector,
+  ) => Promise<Result<{ healthy: boolean; exitCode?: number }>>;
   /**
    * Fresh (uncached) agent auth re-probe for the mid-cycle auth-outage
    * breaker (Issue #4167). The cycle-start health gate passed, but a
@@ -1423,6 +1436,7 @@ export function createDefaultRunCoreConfig(): RunCoreConfig {
     runDurationSeconds: 3600,
     sleepInterval: 30,
     maxConcurrentIssues: 1,
+    agentProviderFallback: [],
     maxConsecutiveFailures: 10,
     rateLimitBackoff: 300,
     // Issue #2473: conservative per-handler watchdog bounds. A single
@@ -4752,6 +4766,38 @@ async function logCycleGhTelemetry(deps: RunCoreDeps): Promise<void> {
 }
 
 /**
+ * Probe the configured fallback providers in order for a healthy one
+ * (Issue #2055).
+ *
+ * Called only when the active provider's health check failed with
+ * `exitCode: 3` (usage/rate limit) — the same failure class the
+ * invocation-layer `agent_provider_fallback` path fires on. Each alternative
+ * is probed with the same health check; the first healthy id is returned and
+ * the caller switches the active provider for this run. A failed alternative
+ * is logged loudly rather than skipped silently, because an operator who
+ * configured it as the fallback needs to know it is down too.
+ *
+ * @param deps - Injected dependencies
+ * @param config - Loop configuration carrying the ordered alternatives
+ * @returns The first healthy alternative id, or undefined when none is
+ *   healthy (or none is configured — the caller's skip-cycle path stands).
+ */
+async function probeHealthGateFallback(
+  deps: RunCoreDeps,
+  config: RunCoreConfig,
+): Promise<string | undefined> {
+  for (const id of config.agentProviderFallback) {
+    const probe = await deps.checkClaudeHealth(id);
+    if (probe.ok && probe.value.healthy) return id;
+    deps.logError(
+      `[provider-fallback] alternative ${id} is not healthy — ` +
+        `trying the next configured alternative (Issue #2055)`,
+    );
+  }
+  return undefined;
+}
+
+/**
  * Run the main worker event loop.
  *
  * This is the top-level orchestration: PID locking, initialisation, the
@@ -5385,9 +5431,31 @@ export async function runCoreLoop(
           const claudeHealth = await deps.checkClaudeHealth();
           if (!claudeHealth.ok || !claudeHealth.value.healthy) {
             lastHealthCheckPassed = false;
-            deps.logError("Claude health check failed — skipping cycle");
-            await deps.sleep(config.sleepInterval * 1000);
-            continue;
+            // (Issue #2055) An exhausted preferred provider is not a
+            // host-wide failure when the operator configured fallback
+            // alternatives: probe them in order, and the first healthy one
+            // becomes the active provider for this run — the same
+            // process-wide switch `provider_auto_runtime` performs. Only a
+            // usage/rate-limit failure (exitCode 3) is fallback-eligible;
+            // an auth failure is not fixed by switching providers, and
+            // every other failure keeps the skip-cycle path. The next run
+            // re-reads config and starts on the preferred provider again.
+            const exitCode = claudeHealth.ok
+              ? claudeHealth.value.exitCode
+              : undefined;
+            const fallbackId = exitCode === 3
+              ? await probeHealthGateFallback(deps, config)
+              : undefined;
+            if (!fallbackId) {
+              deps.logError("Claude health check failed — skipping cycle");
+              await deps.sleep(config.sleepInterval * 1000);
+              continue;
+            }
+            deps.log(
+              `[provider-fallback] ${fallbackId} is healthy — switching ` +
+                `active provider for this run (Issue #2055)`,
+            );
+            setConfiguredAgentProviderId(fallbackId);
           }
 
           // Issue #1587: `gh auth status` spawns through the recorded

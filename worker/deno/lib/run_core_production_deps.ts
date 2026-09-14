@@ -62,6 +62,10 @@ import {
   checkClaudeHealth as claudeHealthCheck,
   checkFableAvailability as probeFableAvailability,
 } from "./claude_runner.ts";
+import {
+  activeAgentProvider,
+  type AgentProviderSelector,
+} from "./agent_provider.ts";
 import { checkGhAuth as ghAuthCheck } from "./gh_auth.ts";
 import {
   createSpendCeilingCheck,
@@ -1172,6 +1176,11 @@ export async function createProductionRunCoreDeps(
       runCoreConfig.maxConcurrentIssues,
     maxConsecutiveFailures: runCoreConfig.maxConsecutiveFailures,
     rateLimitBackoff: runCoreConfig.rateLimitBackoff,
+    // (Issue #2055) The health gate consults the operator's ordered
+    // fallback alternatives when the preferred provider is usage/rate
+    // limited. Already validated against the enabled set at config load.
+    agentProviderFallback: config.agentProviderFallback ??
+      runCoreConfig.agentProviderFallback,
     // Issue #2473: per-handler watchdog bounds (conservative defaults).
     handlerTimeoutSeconds: runCoreConfig.handlerTimeoutSeconds,
     handlerSoftTimeoutSeconds: runCoreConfig.handlerSoftTimeoutSeconds,
@@ -1528,8 +1537,16 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Health checks --
-    async checkClaudeHealth() {
-      const cacheType = "claude";
+    async checkClaudeHealth(provider?: AgentProviderSelector) {
+      // Key the cache by the provider actually probed (Issue #2055): the
+      // health-gate fallback probes alternatives, and a deepseek success
+      // must never be cached as a claude success (or vice versa).
+      const probedId = provider === undefined
+        ? activeAgentProvider().id
+        : typeof provider === "string"
+        ? provider
+        : provider.id;
+      const cacheType = probedId;
       const cacheResult = isHealthCacheValid(
         healthCacheDir,
         cacheType,
@@ -1539,7 +1556,7 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: { healthy: true } };
       }
       try {
-        const result = await claudeHealthCheck(30, logger);
+        const result = await claudeHealthCheck(30, logger, provider);
         if (result.healthy) {
           recordHealthCheckSuccess(healthCacheDir, cacheType);
           return { ok: true, value: { healthy: true } };
@@ -1559,8 +1576,8 @@ export async function createProductionRunCoreDeps(
             undefined,
             "usage",
             {
-              provider: "claude",
-              credentialLabel: heldProviderCredentialLabel("claude"),
+              provider: probedId,
+              credentialLabel: heldProviderCredentialLabel(probedId),
             },
           );
           if (!signal.ok) {
@@ -1574,7 +1591,10 @@ export async function createProductionRunCoreDeps(
             );
           }
         }
-        return { ok: true, value: { healthy: false } };
+        return {
+          ok: true,
+          value: { healthy: false, exitCode: result.exitCode },
+        };
       } catch (err) {
         invalidateHealthCache(healthCacheDir, cacheType);
         return {
