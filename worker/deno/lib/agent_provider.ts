@@ -114,6 +114,7 @@ import {
   deepSeekAuthActionableMessage,
   isDeepSeekAuthError,
 } from "./deepseek_auth.ts";
+import type { RepoConfig } from "../types.ts";
 
 /** Directory, relative to `container/`, holding the per-provider fragments. */
 export const PROVIDER_FRAGMENT_DIR = "providers";
@@ -886,6 +887,57 @@ export function resolveAgentProvider(id: string): AgentProviderDescriptor {
     );
   }
   return provider;
+}
+
+/**
+ * The provider a repository pinned in `repo_config.<repo>.agent_provider`
+ * (Issue #2048), validated.
+ *
+ * Every source that states a value is validated, not just the one that binds
+ * (Issue #3234): a repo pin naming an unregistered id throws here, naming the
+ * key it was written under. A blank pin is the same as no pin — an empty
+ * string can never select a provider.
+ *
+ * @param repoConfig - The repo's merged RepoConfig, or undefined.
+ * @returns The canonical provider id, or undefined when the repo pins none.
+ * @throws When the pin names an unregistered provider.
+ */
+export function repoPinnedAgentProvider(
+  repoConfig: RepoConfig | undefined,
+): string | undefined {
+  const pinned = repoConfig?.agentProvider?.trim();
+  if (!pinned) return undefined;
+  const provider = AGENT_PROVIDERS.get(pinned);
+  if (!provider) {
+    throw new Error(
+      `Unsupported coding-agent provider ${JSON.stringify(pinned)} in ` +
+        `repo_config.<repo>.agent_provider. Supported providers: ` +
+        `${agentProviderIds().join(", ")}.`,
+    );
+  }
+  return provider.id;
+}
+
+/**
+ * Resolve the provider selection for one invocation, repo pin layered in
+ * (Issue #2048).
+ *
+ * An explicit per-invocation selection — a Quorum draft naming its provider,
+ * a caller pin — stays absolute (Issue #4109). Otherwise the repository's own
+ * pin binds; with neither, the result is `undefined` and the caller keeps the
+ * process-wide default, which is also how `agent_provider_mode: "auto"` moves
+ * the default between work items — a repo pin is an explicit operator pin and
+ * wins over the rank, exactly like `VIBE_AGENT_PROVIDER` does.
+ *
+ * @param explicit - The caller's per-invocation selection, when any.
+ * @param repoConfig - The invocation's repo config, when known.
+ * @returns The selection to hand to {@link selectAgentProvider}, or undefined.
+ */
+export function resolveInvocationAgentProvider(
+  explicit: AgentProviderSelector | undefined,
+  repoConfig: RepoConfig | undefined,
+): AgentProviderSelector | undefined {
+  return explicit ?? repoPinnedAgentProvider(repoConfig);
 }
 
 /**

@@ -1318,6 +1318,7 @@ Deno.test("config - loadConfig normalises repo_config snake_case keys to camelCa
         skip_quality_check: true,
         quality_command: "make test",
         custom_instructions: "Use Australian English",
+        agent_provider: "deepseek",
       } as unknown as import("../types.ts").RepoConfig,
     },
   };
@@ -1329,6 +1330,7 @@ Deno.test("config - loadConfig normalises repo_config snake_case keys to camelCa
     assertEquals(repoConf?.skipQualityCheck, true);
     assertEquals(repoConf?.qualityCommand, "make test");
     assertEquals(repoConf?.customInstructions, "Use Australian English");
+    assertEquals(repoConf?.agentProvider, "deepseek");
   });
 });
 
@@ -1340,6 +1342,7 @@ Deno.test("config - loadConfig preserves repo_config camelCase keys (Issue #1296
       "org/test-repo": {
         skipScreenshotCheck: true,
         qualityCommand: "make test",
+        agentProvider: "deepseek",
       },
     },
   };
@@ -1349,6 +1352,7 @@ Deno.test("config - loadConfig preserves repo_config camelCase keys (Issue #1296
     const repoConf = config.repoConfig?.["org/test-repo"];
     assertEquals(repoConf?.skipScreenshotCheck, true);
     assertEquals(repoConf?.qualityCommand, "make test");
+    assertEquals(repoConf?.agentProvider, "deepseek");
   });
 });
 

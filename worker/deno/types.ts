@@ -1016,6 +1016,18 @@ export interface RepoConfig {
    * requested for a DeepSeek phase is reported loudly rather than configured.
    */
   deepseekPhaseModelOverrides?: Record<string, string>;
+  /**
+   * Per-repo coding-agent provider pin (Issue #2048). Scopes the provider
+   * choice to this repository alone: the pin binds when an invocation carries
+   * no explicit provider of its own, and wins over the global `agent_provider`
+   * and over `agent_provider_mode: "auto"` ranking for this repo — it is an
+   * explicit operator pin, like `VIBE_AGENT_PROVIDER`, only repo-scoped.
+   *
+   * A set-but-unregistered id fails loudly at phase start, naming this key.
+   * Operator-only — configured in `.config.json` (no in-repo config mechanism
+   * — Issue #2626).
+   */
+  agentProvider?: string;
 }
 
 /**

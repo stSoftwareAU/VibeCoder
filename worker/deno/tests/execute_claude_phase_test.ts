@@ -1075,3 +1075,54 @@ Deno.test("runExecuteClaudePhase - routes the coding run through phase 'issue'",
   // default (Issue #2709).
   assertEquals(capturedPhase, "issue");
 });
+
+// --- Per-repo agent_provider pin tests (Issue #2048) ---
+
+Deno.test("runExecuteClaudePhase - a repo provider pin reaches the runner when nothing is explicit", async () => {
+  let capturedProvider: string | undefined = "sentinel";
+  await runExecuteClaudePhase(
+    createTestOptions({
+      repoConfigs: {
+        "owner/repo": { agentProvider: "deepseek" },
+      },
+    }),
+    createMockDeps({
+      runClaudeWithRetry: async (options) => {
+        capturedProvider = typeof options.agentProvider === "string"
+          ? options.agentProvider
+          : undefined;
+        return {
+          ok: true,
+          value: { exitCode: 0, output: "Done.", timedOut: false },
+        };
+      },
+    }),
+  );
+  assertEquals(capturedProvider, "deepseek");
+});
+
+Deno.test("runExecuteClaudePhase - an explicit provider stays absolute over the repo pin", async () => {
+  let capturedProvider: string | undefined = "sentinel";
+  await runExecuteClaudePhase(
+    createTestOptions({
+      agentProvider: "codex",
+      repoConfigs: {
+        "owner/repo": { agentProvider: "deepseek" },
+      },
+    }),
+    createMockDeps({
+      runClaudeWithRetry: async (options) => {
+        capturedProvider = typeof options.agentProvider === "string"
+          ? options.agentProvider
+          : undefined;
+        return {
+          ok: true,
+          value: { exitCode: 0, output: "Done.", timedOut: false },
+        };
+      },
+    }),
+  );
+  // A Quorum draft naming its own provider is the operator's per-invocation
+  // choice and beats the repo's pin (Issue #4109's precedence).
+  assertEquals(capturedProvider, "codex");
+});
