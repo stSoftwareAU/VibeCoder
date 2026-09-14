@@ -1,6 +1,6 @@
 /** Runtime wiring tests for automatic provider selection (Issue #1926). */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   activeAgentProvider,
   IMAGE_AGENT_PROVIDERS_ENV,
@@ -387,5 +387,48 @@ Deno.test("automatic routing reads the active provider from the environment it w
       Error,
       'did not install the "claude" coding-agent provider',
     );
+  });
+});
+
+Deno.test("a metered ANTHROPIC_API_KEY classifies Claude as ineligible for auto routing", async () => {
+  await withProviderState(async () => {
+    const status = await resolveAutomaticProviderStatus("claude", {
+      workDir: "/tmp/vibe-auto-anthropic-key",
+      env: statedEnv({ ANTHROPIC_API_KEY: "sk-ant-metered-must-never-route" }),
+      now: NOW,
+    });
+
+    assertEquals(status.billingMode, "metered");
+    assertEquals(status.availability, "unavailable");
+    assertEquals(status.reason, "api-key-account");
+  });
+});
+
+Deno.test("auto routing emits the soak status line without credential material", async () => {
+  await withProviderState(async () => {
+    const logged: string[] = [];
+    const result = await refreshAutomaticProviderRouting({
+      workDir: "/tmp/vibe-auto-soak-emit",
+      enabledProviderIds: ["claude", "codex"],
+      now: NOW,
+      readTextFile: async () =>
+        JSON.stringify({
+          agent_provider_mode: "auto",
+          agent_providers: ["claude", "codex"],
+        }),
+      env: CONFIGURED_ENV,
+      resolveStatus: (provider) => available(provider, 50, 5),
+      log: (message) => logged.push(message),
+    });
+
+    assertEquals(result.automatic, true);
+    const soakLine = logged.find((line) => line.startsWith("[soak] "));
+    assertEquals(typeof soakLine, "string", "the [soak] line is emitted");
+    assertStringIncludes(soakLine ?? "", "providers-enabled=claude,codex");
+    assertStringIncludes(soakLine ?? "", "chosen=claude");
+    assertStringIncludes(soakLine ?? "", "billing-guard=holds");
+    assertStringIncludes(soakLine ?? "", "last-quota-probe=");
+    // The summary is labels and reason codes only; no credential-shaped text.
+    assertEquals((soakLine ?? "").includes("secret"), false);
   });
 });

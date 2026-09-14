@@ -98,8 +98,9 @@ Before enabling Codex on a production host:
 5. Confirm no `OPENAI_API_KEY` or `CODEX_API_KEY` reaches a subscription-mode
    Codex child.
 
-The longer restart/token-refresh qualification belongs to #1927; this issue
-establishes the persistent authentication and billing boundary it will exercise.
+The longer restart/token-refresh qualification belongs to #1927 and is recorded
+in [Subscription soak](SUBSCRIPTION-SOAK.md); this issue establishes the
+persistent authentication and billing boundary that qualification exercises.
 
 ## Upstream reference
 

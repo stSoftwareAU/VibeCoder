@@ -1505,6 +1505,18 @@
       "paths": [
         "worker/deno/lib/milestone_sync_claim.ts"
       ]
+    },
+    {
+      "issue": 1927,
+      "chunk": "top-up-1927",
+      "title": "top-up: the subscription restart/soak status",
+      "ledger": "docs/audits/security-sweep-1927-subscription-soak.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: subscription_soak_status.ts (#1927)",
+      "status": "swept",
+      "sweptAt": "66643327347ffe9ef233d8b54f23e39678bb0fbe",
+      "paths": [
+        "worker/deno/lib/subscription_soak_status.ts"
+      ]
     }
   ],
   "roots": [

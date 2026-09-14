@@ -226,6 +226,17 @@ export interface ExpectedModelProvider {
    * constructed itself may ignore it.
    */
   resolveModel(phase?: string, env?: EnvLookup): string | undefined;
+  /**
+   * Whether a run served `served` satisfies the expectation `expected`
+   * (Issue #2053). Absent → the tier-aware `modelsMatch(expected, served)`
+   * stands, which is every provider whose vendor serves the id it was asked
+   * for.
+   *
+   * The same optional method on `AgentProviderDescriptor`: a real descriptor
+   * satisfies this interface unchanged, and a provider the caller
+   * constructed itself may ignore it.
+   */
+  servedModelSatisfies?(served: string, expected: string): boolean;
 }
 
 /**
@@ -363,6 +374,7 @@ export function assessDegradation(
   invocations: PlanningInvocationStats[],
   expectedModel: string,
   phase: string = "planning",
+  provider?: ExpectedModelProvider,
 ): DegradationVerdict {
   const judged = invocations.filter((inv) => inv.phase === phase);
 
@@ -399,9 +411,17 @@ export function assessDegradation(
   // run observed served models and **none** of them match the expected model. A
   // mixed run (e.g. Fable served most of the work, Opus served the rest) is not
   // degraded — the same rule `isMismatch()` applies to the fleet aggregate.
+  //
+  // The matcher is the provider's own when it supplies one (Issue #2053): a
+  // vendor that serves a *better* tier than requested (DeepSeek's upgrade
+  // remap) satisfies the expectation, while every provider without the hook
+  // keeps the tier-aware `modelsMatch` unchanged.
   if (expectedResolved) {
     const served = judged.flatMap((inv) => inv.runStats?.servedModels ?? []);
-    const matching = served.filter((s) => modelsMatch(expectedModel, s));
+    const matcher = provider?.servedModelSatisfies
+      ? (s: string) => provider.servedModelSatisfies!(s, expectedModel)
+      : (s: string) => modelsMatch(expectedModel, s);
+    const matching = served.filter(matcher);
     if (served.length > 0 && matching.length === 0) {
       const unique = [...new Set(served)];
       return {
@@ -712,13 +732,22 @@ export function buildDegradationReport(args: {
   env?: EnvLookup;
 }): DegradationReport {
   const phase = args.phase ?? "planning";
+  const env = args.env ?? processEnvLookup;
+  // One resolution serves both the expected model and the served-model
+  // matcher, so the two can never describe different providers (Issue #2053).
+  const provider = args.provider ?? activeAgentProvider({ env });
   const expectedModel = resolveExpectedPlanningModel(
     args.configuredBestModel,
     phase,
-    args.provider,
-    args.env ?? processEnvLookup,
+    provider,
+    env,
   );
-  const verdict = assessDegradation(args.invocations, expectedModel, phase);
+  const verdict = assessDegradation(
+    args.invocations,
+    expectedModel,
+    phase,
+    provider,
+  );
   const section = buildPlanningStatsSection({
     invocations: args.invocations,
     expectedModel,

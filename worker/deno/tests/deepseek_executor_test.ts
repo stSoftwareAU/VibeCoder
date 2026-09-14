@@ -17,6 +17,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   clearDeepSeekEffortWarnings,
+  deepSeekServedModelSatisfies,
   resolveDeepSeekEffort,
   resolveDeepSeekModel,
   setActiveRepoDeepSeekModelOverrides,
@@ -411,4 +412,56 @@ Deno.test("deepseek routing - both env reads go through the injected lookup, nev
     // Step 1 beats the designed "deepseek-v4-pro" default.
     assertEquals(resolveDeepSeekModel("planning", env), sentinel);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Served-model satisfaction (Issue #2053)
+// ---------------------------------------------------------------------------
+
+Deno.test("deepseek served-model - the vendor's upgrade remap satisfies a base-tier expectation", () => {
+  // Observed live on the first production run: `deepseek-flash` asked,
+  // `deepseek-v4-pro` served. An upgrade is not degradation.
+  assertEquals(
+    deepSeekServedModelSatisfies("deepseek-v4-pro", "deepseek-flash"),
+    true,
+  );
+});
+
+Deno.test("deepseek served-model - the legacy Flash alias satisfies a base-tier expectation", () => {
+  // `deepseek-v4-flash` is the vendor-documented legacy name still accepted
+  // and served by the Flash model — the same tier.
+  assertEquals(
+    deepSeekServedModelSatisfies("deepseek-v4-flash", "deepseek-flash"),
+    true,
+  );
+});
+
+Deno.test("deepseek served-model - identical and case-differing ids satisfy", () => {
+  assertEquals(
+    deepSeekServedModelSatisfies("deepseek-flash", "deepseek-flash"),
+    true,
+  );
+  assertEquals(
+    deepSeekServedModelSatisfies("DeepSeek-Flash", "deepseek-flash"),
+    true,
+  );
+});
+
+Deno.test("deepseek served-model - a downgrade does not satisfy", () => {
+  assertEquals(
+    deepSeekServedModelSatisfies("deepseek-flash", "deepseek-v4-pro"),
+    false,
+  );
+  assertEquals(
+    deepSeekServedModelSatisfies("deepseek-v4-flash", "deepseek-v4-pro"),
+    false,
+  );
+});
+
+Deno.test("deepseek served-model - unrelated ids do not satisfy", () => {
+  assertEquals(
+    deepSeekServedModelSatisfies("claude-fable-5", "deepseek-flash"),
+    false,
+  );
+  assertEquals(deepSeekServedModelSatisfies("deepseek-v4-pro", "fable"), false);
 });

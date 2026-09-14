@@ -190,3 +190,47 @@ export function warnDeepSeekEffortUnsupported(
       `it.`,
   );
 }
+
+/**
+ * Whether a run served `served` satisfies the expectation `expected`
+ * (Issue #2053).
+ *
+ * The vendor's endpoint does not always serve the id it was asked for:
+ *
+ * - It serves `deepseek-v4-pro` (the top tier) when `deepseek-flash` (the
+ *   base tier) is asked — observed live on the first production run, where
+ *   the worker flagged an upgrade as degraded. An upgrade is not
+ *   degradation: the detector exists to catch runs served a *worse* model
+ *   than designed.
+ * - It serves the documented legacy alias `deepseek-v4-flash*` for
+ *   Flash-tier requests ("still accepted, served by the Flash model").
+ *   The same tier under a legacy name is not degradation either.
+ *
+ * A downgrade — top tier asked, Flash-tier served — still fails the check,
+ * exactly like an id from a different vendor. Matching is case-insensitive
+ * and prefix-aware on both sides, mirroring {@link planning_run_stats}
+ * `modelsMatch`.
+ *
+ * @param served - The model id the API declared it served.
+ * @param expected - The model id the invocation was expected to run on.
+ * @returns True when the served model satisfies the expectation.
+ */
+export function deepSeekServedModelSatisfies(
+  served: string,
+  expected: string,
+): boolean {
+  const s = served.trim().toLowerCase();
+  const e = expected.trim().toLowerCase();
+  if (s === e || s.startsWith(e) || e.startsWith(s)) return true;
+
+  const expectedFlashTier = e.startsWith("deepseek-flash") ||
+    e.startsWith("deepseek-v4-flash");
+  if (!expectedFlashTier) return false;
+
+  // The vendor's upgrade remap: base tier asked, top tier served.
+  if (s.startsWith("deepseek-v4-pro")) return true;
+  // The vendor's documented legacy alias of the Flash model.
+  if (s.startsWith("deepseek-v4-flash")) return true;
+
+  return false;
+}
