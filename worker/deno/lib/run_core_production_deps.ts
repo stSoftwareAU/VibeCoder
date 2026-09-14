@@ -1547,7 +1547,10 @@ export async function createProductionRunCoreDeps(
         id,
       );
     },
-    async checkClaudeHealth(provider?: AgentProviderSelector) {
+    async checkClaudeHealth(
+      provider?: AgentProviderSelector,
+      model?: string,
+    ) {
       // Key the cache by the provider actually probed (Issue #2055): the
       // health-gate fallback probes alternatives, and a deepseek success
       // must never be cached as a claude success (or vice versa).
@@ -1566,7 +1569,13 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: { healthy: true } };
       }
       try {
-        const result = await claudeHealthCheck(30, logger, provider);
+        const result = await claudeHealthCheck(
+          30,
+          logger,
+          provider,
+          undefined,
+          model,
+        );
         if (result.healthy) {
           recordHealthCheckSuccess(healthCacheDir, cacheType);
           return { ok: true, value: { healthy: true } };
@@ -1612,6 +1621,41 @@ export async function createProductionRunCoreDeps(
           error: err instanceof Error ? err : new Error(String(err)),
         };
       }
+    },
+    // (Issue #2059) The health gate's in-place tier adaptation: when the
+    // active provider's health-checked model probed unavailable and the
+    // provider names same-provider alternatives, probe each with an
+    // explicit-model health check; the first healthy one adapts this run's
+    // routing. Operator pins always win (the resolver substitutes only the
+    // designed defaults), and providers without the seam return
+    // { adapted: false }.
+    async tryModelAdaptation() {
+      const provider = activeAgentProvider();
+      const failedModel = provider.resolveModel("health");
+      const alternatives = failedModel
+        ? (provider.alternativeModels?.(failedModel) ?? [])
+        : [];
+      for (const alternative of alternatives) {
+        const probe = await claudeHealthCheck(
+          30,
+          logger,
+          provider,
+          undefined,
+          alternative,
+        );
+        if (probe.healthy) {
+          provider.applyModelAdaptation?.(failedModel!, alternative);
+          return {
+            adapted: true,
+            detail: `${failedModel} → ${alternative}`,
+          };
+        }
+        logger.warn(
+          `[provider-adaptation] ${alternative} probed unhealthy too — ` +
+            `trying the next alternative (Issue #2059)`,
+        );
+      }
+      return { adapted: false };
     },
     async recheckAgentAuth() {
       // Issue #4167: always a fresh probe — the cached "healthy" from the

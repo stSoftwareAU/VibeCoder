@@ -100,6 +100,8 @@ import {
   isGeminiAuthError,
 } from "./gemini_auth.ts";
 import {
+  applyDeepSeekModelAdaptation,
+  deepSeekAlternativeModels,
   deepSeekServedModelSatisfies,
   resolveDeepSeekEffort,
   resolveDeepSeekModel,
@@ -357,6 +359,19 @@ export interface AgentProviderDescriptor {
    * check.
    */
   servedModelSatisfies?(served: string, expected: string): boolean;
+  /**
+   * Same-provider tiers to try when `model` probes unavailable (Issue #2059).
+   * Absent → no tier adaptation for this provider; the health gate's
+   * provider-level verdicts (fallback, skip) own the response.
+   */
+  alternativeModels?(model: string): string[];
+  /**
+   * Apply a tier adaptation for this run (Issue #2059): routes phases whose
+   * designed default is `unavailable` onto `alternative` — never overriding
+   * an explicit operator/repo/env pin. Absent → no adaptation for this
+   * provider.
+   */
+  applyModelAdaptation?(unavailable: string, alternative: string): void;
   /** Build the CLI argument list for one invocation. */
   buildInvocation(request: AgentInvocationRequest): string[];
   /**
@@ -834,6 +849,16 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
   // (Issue #2053).
   servedModelSatisfies(served: string, expected: string): boolean {
     return deepSeekServedModelSatisfies(served, expected);
+  },
+
+  // A tier outage adapts in place: the base tier's phases move to the top
+  // tier for this run, and the health gate drives the probe (Issue #2059).
+  alternativeModels(model: string): string[] {
+    return deepSeekAlternativeModels(model);
+  },
+
+  applyModelAdaptation(unavailable: string, alternative: string): void {
+    applyDeepSeekModelAdaptation(unavailable, alternative);
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {

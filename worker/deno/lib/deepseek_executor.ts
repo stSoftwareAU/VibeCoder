@@ -32,9 +32,10 @@
 
 import {
   DEEPSEEK_PHASE_MODEL_DEFAULTS,
+  DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
   PHASE_EFFORT_DEFAULTS,
 } from "./config_defaults.ts";
-import type { EnvLookup } from "./env_lookup.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
@@ -44,6 +45,9 @@ let _deepseekPhaseModelConfigOverrides: Readonly<Record<string, string>> = {};
 /** The active repo's DeepSeek routing overrides (Issue #413). */
 let _repoDeepSeekModel = "";
 let _repoDeepSeekPhaseModelOverrides: Readonly<Record<string, string>> = {};
+
+/** Models the vendor currently cannot serve, for this run (Issue #2059). */
+let _unavailableDeepSeekModels = new Set<string>();
 
 /**
  * Record the global per-phase DeepSeek model overrides (Issue #413).
@@ -104,7 +108,7 @@ export function resolveDeepSeekModel(
   phase?: string,
   env?: EnvLookup,
 ): string | undefined {
-  return resolvePhaseRoutedValue({
+  const model = resolvePhaseRoutedValue({
     logPrefix: "deepseek-executor",
     what: "model",
     flag: "--model",
@@ -119,6 +123,50 @@ export function resolveDeepSeekModel(
     phaseDefaults: DEEPSEEK_PHASE_MODEL_DEFAULTS,
     phaseDefaultsName: "DEEPSEEK_PHASE_MODEL_DEFAULTS",
   }, phase);
+
+  // (Issue #2059) A tier the vendor cannot serve: when the phase's value came
+  // from the designed default — every operator/repo/env layer absent — route
+  // it to the top tier for this run instead. An explicit pin always wins,
+  // and a phase already on the top tier is untouched.
+  if (
+    model && phase &&
+    _unavailableDeepSeekModels.has(model.trim().toLowerCase())
+  ) {
+    const defaultsValue = DEEPSEEK_PHASE_MODEL_DEFAULTS[
+      phase as keyof typeof DEEPSEEK_PHASE_MODEL_DEFAULTS
+    ];
+    const defaultSupplied = defaultsValue === model &&
+      !_repoDeepSeekPhaseModelOverrides[phase] &&
+      !_repoDeepSeekModel &&
+      !_deepseekPhaseModelConfigOverrides[phase] &&
+      !(env ?? processEnvLookup)(`DEEPSEEK_MODEL_${phase.toUpperCase()}`);
+    if (defaultSupplied && defaultsValue !== DEFAULT_DEEPSEEK_MODEL_TOP_TIER) {
+      warnAdaptedDeepSeekModelOnce(phase, model);
+      return DEFAULT_DEEPSEEK_MODEL_TOP_TIER;
+    }
+  }
+  return model;
+}
+
+/**
+ * Phases already warned about a tier adaptation, once per worker process.
+ */
+const _adaptationWarnedPhases = new Set<string>();
+
+/**
+ * Report a tier adaptation loudly, once per phase per process (Issue #2059).
+ */
+function warnAdaptedDeepSeekModelOnce(
+  phase: string,
+  unavailable: string,
+): void {
+  if (_adaptationWarnedPhases.has(phase)) return;
+  _adaptationWarnedPhases.add(phase);
+  console.warn(
+    `[deepseek] Model ${JSON.stringify(unavailable)} probed unavailable — ` +
+      `adapting phase "${phase}" to ${DEFAULT_DEEPSEEK_MODEL_TOP_TIER} for ` +
+      `this run (Issue #2059). Explicit pins still win.`,
+  );
 }
 
 /**
@@ -233,4 +281,68 @@ export function deepSeekServedModelSatisfies(
   if (s.startsWith("deepseek-v4-flash")) return true;
 
   return false;
+}
+
+/**
+ * Record the models the vendor currently cannot serve, for this run
+ * (Issue #2059). Replaces — never merges — the previous set, on the same
+ * rule as the per-repo override state.
+ *
+ * @param models - Model ids that probed unavailable.
+ */
+export function setUnavailableDeepSeekModels(models: readonly string[]): void {
+  _unavailableDeepSeekModels = new Set(
+    models.map((m) => m.trim().toLowerCase()).filter((m) => m !== ""),
+  );
+}
+
+/**
+ * Clear the unavailable-model set (Issue #2059).
+ *
+ * Exposed so a test — or a caller deliberately re-running as a fresh
+ * scenario — can observe the designed routing again.
+ */
+export function clearUnavailableDeepSeekModels(): void {
+  _unavailableDeepSeekModels = new Set();
+}
+
+/**
+ * The same-provider tiers to try when `model` is unavailable (Issue #2059).
+ *
+ * The base (Flash) tier has one alternative: the top tier. The top tier has
+ * none — nothing cheaper can stand in for it, and the health gate owns the
+ * provider-level verdict from there.
+ *
+ * @param model - The model id that probed unavailable.
+ * @returns Ordered alternative model ids, or [] when none exist.
+ */
+export function deepSeekAlternativeModels(model: string): string[] {
+  const wanted = model.trim().toLowerCase();
+  return wanted.startsWith("deepseek-flash") ||
+      wanted.startsWith("deepseek-v4-flash")
+    ? [DEFAULT_DEEPSEEK_MODEL_TOP_TIER]
+    : [];
+}
+
+/**
+ * Apply the tier adaptation for this run (Issue #2059).
+ *
+ * Records `unavailable` in the per-run set; the resolver then moves phases
+ * whose designed default is that model onto the top tier. `alternative` is
+ * the id the health gate probed healthy and is logged so the run's record
+ * names what the vendor will actually serve.
+ *
+ * @param unavailable - The model id that probed unavailable.
+ * @param alternative - The healthy alternative the probe confirmed.
+ */
+export function applyDeepSeekModelAdaptation(
+  unavailable: string,
+  alternative: string,
+): void {
+  setUnavailableDeepSeekModels([..._unavailableDeepSeekModels, unavailable]);
+  console.warn(
+    `[deepseek] Model ${JSON.stringify(unavailable)} probed unavailable — ` +
+      `adapting this run's routing to ${alternative} (Issue #2059). ` +
+      `Explicit pins still win.`,
+  );
 }

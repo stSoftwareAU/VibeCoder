@@ -668,6 +668,74 @@ Deno.test("run_core - an auth failure never consults the fallback (Issue #2055)"
   );
 });
 
+Deno.test("run_core - an unavailable tier adapts in place and the cycle continues (Issue #2059)", async () => {
+  const errors: string[] = [];
+  const calls: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: () =>
+      Promise.resolve({ ok: true, value: { healthy: false, exitCode: 1 } }),
+    tryModelAdaptation: () => {
+      calls.push("adapt");
+      return Promise.resolve({ adapted: true, detail: "flash → v4-pro" });
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  await runCoreLoop(config, deps);
+
+  assert(calls.includes("adapt"), "the gate must attempt the adaptation");
+  assertEquals(
+    errors.some((e) => e.includes("skipping cycle")),
+    false,
+    "an in-place adaptation must not leave the host skipping cycles",
+  );
+});
+
+Deno.test("run_core - a failed adaptation falls through to the existing paths (Issue #2059)", async () => {
+  const errors: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: () =>
+      Promise.resolve({ ok: true, value: { healthy: false, exitCode: 1 } }),
+    tryModelAdaptation: () => Promise.resolve({ adapted: false }),
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  await runCoreLoop(config, deps);
+
+  assert(
+    errors.some((e) => e.includes("skipping cycle")),
+    "no adaptation means the skip-cycle path stands",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Tests — Circuit breaker
 // ---------------------------------------------------------------------------
