@@ -58,6 +58,7 @@ import { setActiveRepoCodexModelEffortOverrides } from "./codex_executor.ts";
 import { setActiveRepoGeminiModelOverrides } from "./gemini_executor.ts";
 import { setActiveRepoDeepSeekModelOverrides } from "./deepseek_executor.ts";
 import type { AgentProviderSelector } from "./agent_provider.ts";
+import { resolveInvocationAgentProvider } from "./agent_provider.ts";
 import type { ProgressExtensionOptions } from "./progress_extension.ts";
 import {
   buildTimeoutFailureReason,
@@ -855,6 +856,16 @@ export async function runExecuteClaudePhase(
   // And the same for DeepSeek's model routing (Issue #413).
   setActiveRepoDeepSeekModelOverrides(repoConfigs?.[repo]);
 
+  // The repo's provider pin (Issue #2048): an explicit per-invocation
+  // selection stays absolute (a Quorum draft names its own provider);
+  // otherwise the repo pin binds for every invocation of this phase, and
+  // without either the runner keeps the process-wide default. A pin naming an
+  // unregistered provider fails loudly here, before any work starts.
+  const invocationAgentProvider = resolveInvocationAgentProvider(
+    options.agentProvider,
+    repoConfigs?.[repo],
+  );
+
   // Build a Logger instance from the log function for APIs that require it
   const logger: Logger = buildLoggerFromFn(deps.log);
 
@@ -1223,9 +1234,10 @@ export async function runExecuteClaudePhase(
         sessionResumeState,
         // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
         issueNumber: options.issueNumber,
-        // Per-invocation provider selection (Issue #4109); undefined keeps the
-        // active provider, exactly as before.
-        agentProvider: options.agentProvider,
+        // Per-invocation provider selection (Issue #4109) with the repo pin
+        // layered in (Issue #2048); undefined keeps the active provider,
+        // exactly as before.
+        agentProvider: invocationAgentProvider,
         // Browser/network capability is granted on need, not by default
         // (Issue #192): only an issue that must produce screenshot evidence
         // gets the Playwright MCP server. A backend issue's agent has no

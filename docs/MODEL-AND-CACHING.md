@@ -140,7 +140,7 @@ a section without a marker, fails `deno test`.
 | [6. Batch API (considered, not wired)](#6-batch-api-considered-not-wired) | ➖ | ➖ | ➖ | ➖ | No provider submits batch work |
 | [7. Context Budget Monitoring](#7-context-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Runs; Codex GPT-5 ids are measured against a 400k window, other non-Claude ids against the default ceiling |
 | [8. Effort-First Routing by Phase](#8-effort-first-routing-by-phase) | ✅ | ✅ | ❌ | ❌ | Codex varies its own four effort levels; Gemini and DeepSeek have no effort lever, so both vary tier alone and warn once per phase |
-| **[Configuration](#configuration)** | ✅ | ⚠️ | ⚠️ | ⚠️ | `codex_*` / `gemini_*` / `deepseek_*` keys instead; the session-store keys are Claude's and DeepSeek's |
+| **[Configuration](#configuration)** | ✅ | ⚠️ | ⚠️ | ⚠️ | `codex_*` / `gemini_*` / `deepseek_*` keys instead; the session-store keys are Claude's and DeepSeek's. Any provider can be pinned per repository via `repo_config.<repo>.agent_provider` (Issue #2048) |
 
 **Gaps with a fix issue.** #363 (Codex phase routing), #364 (Gemini phase
 routing), #365 (provider-aware rate-limit fallback), #366 (provider token
