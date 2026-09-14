@@ -28,6 +28,7 @@ import {
 import { resolveAgentStateDir } from "./agent_state_dir.ts";
 import { subscriptionStatusFromClaudeBudget } from "./claude_pool_budget.ts";
 import { probeClaudeTokenBudget } from "./claude_token_budget.ts";
+import { resolveCodexAuthMode } from "./codex_auth_mode.ts";
 import { CodexBudgetAdapter } from "./codex_budget.ts";
 import { subscriptionStatusFromCodexSnapshot } from "./codex_quota.ts";
 import type { EnvLookup } from "./env_lookup.ts";
@@ -47,6 +48,10 @@ import {
   ProviderSubscriptionStatusCache,
 } from "./provider_quota.ts";
 import type { RateLimitSignalData } from "./rate_limit_signal.ts";
+import {
+  buildSubscriptionSoakStatus,
+  type SubscriptionAuthEvidence,
+} from "./subscription_soak_status.ts";
 
 /** Dedicated selection-strategy key. Existing provider ids stay real ids. */
 export const AGENT_PROVIDER_MODE_CONFIG_KEY = "agent_provider_mode";
@@ -290,6 +295,72 @@ async function codexStatus(
   });
 }
 
+/**
+ * Authentication evidence for the soak observability surface, stripped of every
+ * credential value (Issue #1927).
+ *
+ * Presence is inspected, never the value: `CLAUDE_CODE_OAUTH_TOKEN` and a
+ * `chatgpt`-mode `CODEX_HOME` are the two durable subscription logins, while a
+ * `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` presence is a metered credential. The
+ * `reason` is a label (the variable *name*, not its value), safe to log.
+ */
+function subscriptionAuthEvidence(
+  providerId: string,
+  workDir: string,
+  env: EnvLookup,
+): SubscriptionAuthEvidence {
+  const has = (name: string) => (env(name) ?? "").trim().length > 0;
+  if (providerId === "claude") {
+    if (has("CLAUDE_CODE_OAUTH_TOKEN")) {
+      return { kind: "subscription-login", persistedDurably: true };
+    }
+    if (has("ANTHROPIC_API_KEY")) {
+      return {
+        kind: "metered",
+        persistedDurably: false,
+        reason: "ANTHROPIC_API_KEY",
+      };
+    }
+    return {
+      kind: "none",
+      persistedDurably: false,
+      reason: "subscription-credential-missing",
+    };
+  }
+  if (providerId === "codex") {
+    const home = codexHome(workDir, env);
+    if (!home) {
+      const metered = has("OPENAI_API_KEY") || has("CODEX_API_KEY");
+      return {
+        kind: metered ? "metered" : "none",
+        persistedDurably: false,
+        reason: metered ? "OPENAI_API_KEY" : "codex-home-missing",
+      };
+    }
+    const mode = resolveCodexAuthMode(home, env).mode;
+    if (mode === "chatgpt") {
+      return { kind: "subscription-login", persistedDurably: true };
+    }
+    if (mode === "api-key") {
+      return {
+        kind: "metered",
+        persistedDurably: false,
+        reason: "OPENAI_API_KEY",
+      };
+    }
+    return {
+      kind: "none",
+      persistedDurably: false,
+      reason: "subscription-credential-missing",
+    };
+  }
+  return {
+    kind: "none",
+    persistedDurably: false,
+    reason: "fixed-subscription-status-not-supported",
+  };
+}
+
 /** Production provider → generic status adapter. */
 export async function resolveAutomaticProviderStatus(
   providerId: string,
@@ -446,6 +517,22 @@ export async function refreshAutomaticProviderRouting(options: {
     log(decision);
     lastDecision = decision;
   }
+
+  // Soak qualification (Issue #1927): expose the routing decision to an
+  // unattended operator without ever carrying a credential value into the log.
+  const soak = buildSubscriptionSoakStatus({
+    enabledProviderIds: enabled,
+    statuses,
+    auths: Object.fromEntries(
+      enabled.map((id) => [
+        id,
+        subscriptionAuthEvidence(id, options.workDir, env),
+      ]),
+    ),
+    now,
+    selection,
+  });
+  log(soak.summary);
 
   if (selection.winner === null) {
     return { automatic: true, shouldPause: true, selection };
