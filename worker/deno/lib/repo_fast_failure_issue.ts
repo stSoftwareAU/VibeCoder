@@ -68,11 +68,18 @@ export function formatRepoFastFailureTitle(repo: string): string {
  *
  * The detail is the agent's own last error line, so it must not be able to
  * close a fence or forge one of our markers.
+ *
+ * Every angle bracket is replaced by its nearest inert glyph, so no markup
+ * of any kind can be opened or closed by construction — the fixed-pattern
+ * mangling this replaces was a bad-tag-filter (CodeQL, Issue #2057): a
+ * filter that names the forms it knows can be bypassed by the forms it does
+ * not. Glyphs rather than HTML entities because the text lands inside a
+ * fenced code block, where entities render literally instead of decoding.
  */
 function safeForBody(text: string): string {
   return (text ?? "")
-    .replace(/<!--/g, "<!- -")
-    .replace(/-->/g, "- ->")
+    .replace(/</g, "‹")
+    .replace(/>/g, "›")
     .replace(/```/g, "'''");
 }
 
