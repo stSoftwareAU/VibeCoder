@@ -25,11 +25,29 @@
  * untouched files back in scope, which is exactly what the rule below forbids;
  * the audit remains the authority on repository-wide questions.
  *
- * **Scope — only what the run touched.** A repository whose *pre-existing*
+ * **Scope — only what the run *introduced*.** A repository whose *pre-existing*
  * workflow files already carry findings is not this gate's business: an
  * untouched offender must not block an unrelated PR (the idle-task audit files
  * those). Deletions are out of scope too — the caller's diff filter excludes
  * them, so a path this gate cannot read is a genuine fault, not a removal.
+ *
+ * **Baseline diffing** (Issue #2043). Scoping to changed *files* was not
+ * enough: a file the run appended one step to was still checked whole, so a
+ * `push:` trigger that had been on the base commit for months blocked the PR
+ * that touched the file for an unrelated reason. Every check therefore runs
+ * twice — once over the branch's text, once over the **base commit's** version
+ * of the same paths — and a finding is the run's only when it is absent at
+ * base. The comparison is per check, by `(finding id, file)`, and it counts:
+ * two findings sharing an id in the head file when base carried one reports
+ * the extra one, so a second offender is never masked by the first. Line
+ * numbers are deliberately not part of the key — appending a step shifts every
+ * line below it without changing what is wrong.
+ *
+ * Known limitation: a few scanners embed a step index in the finding id, so
+ * *inserting* a step above a pre-existing offender renames its finding and the
+ * gate reports it as new. It over-reports rather than under-reports, and the
+ * remedy the message already names (fix it, or add a `best-practice-ignore`
+ * marker) clears it.
  *
  * **Fail loud** (Issue #3234). A diff that cannot be collected, a file that
  * cannot be read, and a file whose YAML does not parse are all reported as
@@ -47,6 +65,7 @@ import {
 } from "./workflow_file_checks.ts";
 import { isWorkflowPath, WORKFLOWS_DIR } from "./workflow_scope.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { WORKFLOW_GATE_MARKER } from "./failure_diagnosis.ts";
 
 /** The two reads the gate needs, injected so the whole path unit-tests. */
 export interface ChangedWorkflowGateDeps {
@@ -57,6 +76,13 @@ export interface ChangedWorkflowGateDeps {
   listChangedFiles(): Promise<readonly string[]>;
   /** Read one repo-relative path as text. Throw when it cannot be read. */
   readFile(path: string): Promise<string>;
+  /**
+   * Read the **base** commit's version of one repo-relative path, or `null`
+   * when the path did not exist at base (the branch added it, so nothing in it
+   * is pre-existing). Throw when the read itself fails: an unknown baseline is
+   * a fault, never a pass (Issue #2043).
+   */
+  readBaseFile(path: string): Promise<string | null>;
 }
 
 /** Verdict of the changed-workflow gate. */
@@ -127,6 +153,7 @@ export async function evaluateChangedWorkflowGate(
   }
 
   const files: WorkflowFile[] = [];
+  const baseFiles: WorkflowFile[] = [];
   for (const path of inScope) {
     let rawText: string;
     try {
@@ -144,21 +171,66 @@ export async function evaluateChangedWorkflowGate(
       errors.push(`could not parse ${path} as YAML: ${messageOf(err)}`);
     }
     files.push({ path, rawText, parsed, kind: "workflow" });
+
+    // The baseline (Issue #2043). `null` is "added by this run", which is not
+    // a fault; a throw is, because a baseline the gate could not read would
+    // otherwise silently turn every pre-existing finding into a block.
+    let baseText: string | null;
+    try {
+      baseText = await opts.deps.readBaseFile(path);
+    } catch (err) {
+      errors.push(
+        `could not read the base version of ${path}: ${messageOf(err)}`,
+      );
+      continue;
+    }
+    if (baseText === null) continue;
+    // A base version that does not parse is the state this run may well be
+    // fixing, so it is not an error here: the structural checks simply find
+    // nothing to baseline against, and the raw-text ones still do.
+    let baseParsed: unknown = null;
+    try {
+      baseParsed = parseYaml(baseText);
+    } catch {
+      baseParsed = null;
+    }
+    baseFiles.push({
+      path,
+      rawText: baseText,
+      parsed: baseParsed,
+      kind: "workflow",
+    });
   }
 
   const findings: WorkflowFileCheckFinding[] = [];
   const scanned = new Set(files.map((file) => file.path));
+  const ctx = { defaultBranch: opts.defaultBranch };
   for (const check of WORKFLOW_FILE_CHECKS) {
     let checkFindings: WorkflowFileCheckFinding[];
     try {
-      checkFindings = check.run(files, { defaultBranch: opts.defaultBranch });
+      checkFindings = check.run(files, ctx);
     } catch (err) {
       errors.push(`check \`${check.id}\` threw: ${messageOf(err)}`);
       continue;
     }
+    let baseFindings: WorkflowFileCheckFinding[] = [];
+    if (baseFiles.length > 0) {
+      try {
+        baseFindings = check.run(baseFiles, ctx);
+      } catch (err) {
+        // Without the baseline this check cannot tell the run's findings from
+        // the repository's, and guessing either way is wrong — report it.
+        errors.push(
+          `check \`${check.id}\` threw over the base version: ` +
+            messageOf(err),
+        );
+        continue;
+      }
+    }
     // A check may reason across the set it is given; only the files this run
     // touched are in scope, so anything else it names is dropped.
-    findings.push(...checkFindings.filter((f) => scanned.has(f.file)));
+    const scopedFindings = checkFindings.filter((f) => scanned.has(f.file));
+    findings.push(...dropPreExisting(scopedFindings, baseFindings));
   }
 
   return {
@@ -169,9 +241,60 @@ export async function evaluateChangedWorkflowGate(
   };
 }
 
+/**
+ * Drop the findings the base commit already carried, keeping the rest in
+ * order (Issue #2043).
+ *
+ * The comparison is a multiset difference keyed by `(finding id, file)`: when
+ * base carried one finding under a key and the branch carries three, two are
+ * reported. Line numbers are excluded from the key on purpose — appending a
+ * step shifts every line below it without changing what is wrong — and the
+ * *earliest* occurrences are the ones treated as pre-existing, so the finding
+ * reported anchors to the later, newly written line.
+ *
+ * @param headFindings - What the check said about the branch's text
+ * @param baseFindings - What the same check said about the base commit's text
+ * @returns Only the findings this run introduced
+ */
+function dropPreExisting(
+  headFindings: readonly WorkflowFileCheckFinding[],
+  baseFindings: readonly WorkflowFileCheckFinding[],
+): WorkflowFileCheckFinding[] {
+  if (baseFindings.length === 0) return [...headFindings];
+  const remaining = new Map<string, number>();
+  for (const finding of baseFindings) {
+    const key = baselineKey(finding);
+    remaining.set(key, (remaining.get(key) ?? 0) + 1);
+  }
+  const introduced: WorkflowFileCheckFinding[] = [];
+  for (const finding of headFindings) {
+    const key = baselineKey(finding);
+    const count = remaining.get(key) ?? 0;
+    if (count > 0) {
+      remaining.set(key, count - 1);
+      continue;
+    }
+    introduced.push(finding);
+  }
+  return introduced;
+}
+
+/** Identity of a finding across two versions of the same file. */
+function baselineKey(finding: WorkflowFileCheckFinding): string {
+  return `${finding.id}\u0000${finding.file}`;
+}
+
 /** An error's message, without leaking a stack trace into an issue comment. */
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The open PR already on the run's head when the gate blocked (Issue #2044). */
+export interface BlockedGatePr {
+  /** PR number, as GitHub numbers it. */
+  number: number;
+  /** PR URL, so the comment links what it names. */
+  url: string;
 }
 
 /**
@@ -182,15 +305,32 @@ function messageOf(err: unknown): string {
  * can carry a tail of `git` stderr, so the whole thing goes through the
  * `redactSecrets()` chokepoint before it leaves.
  *
+ * The gate runs whether or not a PR already exists — the finding is a defect
+ * in the change, not a documentation shortfall — so the message has two
+ * openings and says which world it is in (Issue #2044). Told "no PR was
+ * raised" while its own head carried an agent-created PR, a human read the
+ * run as having delivered nothing; the PR merged unchanged three hours later.
+ *
  * @param result - A verdict whose `ok` is false
+ * @param existingPr - The open PR on the run's head, when there is one
  * @returns One multi-line message for the phase failure and the issue thread
  */
 export function buildChangedWorkflowGateMessage(
   result: ChangedWorkflowGateResult,
+  existingPr?: BlockedGatePr,
 ): string {
+  // One phrase, shared with `detectFailureCategory` (Issue #2044), so a
+  // worker-authored refusal is never diagnosed `unknown` whichever opening
+  // it takes.
+  const opening = existingPr
+    ? `Workflow files changed by this run ${WORKFLOW_GATE_MARKER}, so PR ` +
+      `#${existingPr.number} (${existingPr.url}) cannot merge until the ` +
+      "finding below is fixed on it (Issue #1859). The work is on that PR — " +
+      "nothing needs redoing; push the fix to the same branch."
+    : `Workflow files changed by this run ${WORKFLOW_GATE_MARKER}, so no PR ` +
+      "was raised (Issue #1859).";
   const lines: string[] = [
-    "Workflow files changed by this run did not pass the GitHub Actions " +
-    "file checks, so no PR was raised (Issue #1859). Only files this run " +
+    `${opening} Only files this run ` +
     "touched are checked, so the fix is in the file itself: correct it, or — " +
     "for a scanner finding that genuinely does not apply — add a " +
     "`# best-practice-ignore: <finding-id>` comment beside the offending " +
