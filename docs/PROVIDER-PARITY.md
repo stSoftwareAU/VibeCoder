@@ -193,4 +193,8 @@ WIP branches are untouched.
 - Quota *probing* is still per provider (`provider_auto_runtime.ts`), even
   though billing classification is now descriptor-declared. Adding a
   subscription provider means writing its status adapter as well as its
-  `billing` declaration.
+  `billing` declaration. Those adapters (`claudeStatus`, `codexStatus`) still
+  test the same credential variables themselves while answering their own
+  question — remaining quota — so the same facts are written down twice.
+  Folding them into the shared classifier changes what is eligible for
+  `auto`, which this goal deliberately stages behind the soak qualification.
