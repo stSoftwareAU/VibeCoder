@@ -6,6 +6,7 @@ import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   buildDefaultBranchRulesetBody,
   buildDefaultBranchRulesetUpdateBody,
+  buildMilestoneRulesetBody,
   createRuleset,
   deleteRuleset,
   getBranchRules,
@@ -349,4 +350,25 @@ Deno.test("repo_rulesets - the update body drops entries that are not rule-shape
     "required_status_checks",
   ]);
   assertEquals(body.bypass_actors, undefined);
+});
+
+Deno.test("repo_rulesets - the milestone body exempts branch CREATION from its checks", () => {
+  // Issue #2067: the body setup writes was the trap it was meant to avoid.
+  // GitHub defaults `do_not_enforce_on_create` to false, so the ruleset the
+  // fleet created for itself refused every push that would CREATE a
+  // `milestone/**` branch — a branch that does not exist yet has no check
+  // runs to satisfy. GRQ-FX-validation carried exactly that ruleset and every
+  // run died in `setup` with "push declined due to repository rule
+  // violations".
+  const body = buildMilestoneRulesetBody("Vibe milestones", ["quality"]);
+
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.do_not_enforce_on_create, true);
+  // The checks themselves must survive: they are what gates the MERGE and
+  // what makes the base protected enough for auto-merge to be armed.
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "quality" },
+  ]);
+  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
 });

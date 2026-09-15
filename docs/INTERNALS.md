@@ -3872,7 +3872,11 @@ cycle (Issue #2007).** A milestone ruleset that enforces `required_status_checks
 on branch *creation* refuses every push that would create the branch
 (`GH013`, the Issue #3912 failure), identically on every cycle until an admin
 sets `do_not_enforce_on_create` on that rule — the fleet account cannot write
-rulesets. The self-heal used to log the refusal and push again every cycle for
+rulesets. Setup now closes that gap from the other end (Issue #2067): the
+`milestone/**` ruleset it *creates* carries the flag, and the
+`branch-protection-sync` step repairs an existing milestone-scoped ruleset that
+lacks it, so the refusal clears on the next setup run rather than waiting for
+an admin to find it. The self-heal used to log the refusal and push again every cycle for
 days (116 times on one host) and file nothing. It now classifies the failure
 with `milestone_branch_rejection.ts`; a repository-level refusal is said once
 with the remedy, one deduplicated diagnostic is filed in the repository
