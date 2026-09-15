@@ -93,8 +93,8 @@ export interface CallbackRunTelemetry {
    */
   turns?: number;
   /**
-   * The model that dominated the run's cost (Issue #2100): the served model
-   * of the invocation with the largest token total.
+   * The model the largest share of the run went through (Issue #2100): the
+   * served model of the invocation with the biggest token total.
    */
   model?: string;
 }
@@ -120,10 +120,11 @@ export interface IssueRunCallbackContext {
   /** Operator-configured worker name, when set. */
   workerName?: string;
   /**
-   * The workflow label the dispatch matched for this run (Issue #2100) —
-   * `work-on`, `grill-me`, `question`, `planning`, `idle-task`, or the
-   * operator's own configured label. Lets an archive compare implementation
-   * runs only; absent when the dispatch could not name one.
+   * The workflow the run served (Issue #2100) — the configured
+   * implementation label (`work-on` by default) or `idle-task`, so an
+   * archive can compare implementation runs only. An open string: a route
+   * that later gains its own run callbacks reports its own label here, which
+   * is additive. Absent when the dispatch could not name one.
    */
   mode?: string;
   /** Agent provider that served the run, when known. */
@@ -267,7 +268,7 @@ export interface TerminalIssueRun {
   startedAtEpochMs: number;
   /** Epoch ms the run terminated. */
   finishedAtEpochMs: number;
-  /** The workflow label the dispatch matched, when known (Issue #2100). */
+  /** The workflow the run served, when the dispatch named one (#2100). */
   mode?: string;
   /** Token and cost telemetry, when the run's invocations reported it. */
   telemetry?: CallbackRunTelemetry;

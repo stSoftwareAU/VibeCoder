@@ -3614,20 +3614,12 @@ export async function createProductionRunCoreDeps(
       // text still reached the prompt.
       const issueTitle = issueData.title;
 
-      // Issue #2100: the workflow label this dispatch matched, taken from the
-      // configured `*Label` values. Carried to the post-run callbacks so a
-      // fleet archive can tell an implementation run from an idle-task or
-      // custom-label one without reading a transcript.
+      // Issue #2100: the workflow this dispatch served, from the configured
+      // implementation label. Carried to the post-run callbacks so a fleet
+      // archive can tell an implementation run from an idle-task sweep
+      // without reading a transcript.
       const mode = resolveCallbackRunMode(issueData.labels ?? [], {
         workOnLabel: config.workOnLabel,
-        refineIssueLabel: config.refineIssueLabel,
-        grillMeLabel: config.grillMeLabel,
-        quorumLabel: config.quorumLabel,
-        planningLabel: config.planningLabel,
-        questionLabel: config.questionLabel,
-        customLabels: customDispatchMappings(config, "issue").map((mapping) =>
-          mapping.label
-        ),
       });
 
       // Issue #3647: re-verify the content-approval snapshot against the

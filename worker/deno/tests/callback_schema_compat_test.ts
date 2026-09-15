@@ -81,7 +81,9 @@ const SCHEMA_2_ENV = [
   "VIBECODER_TELEMETRY_ABSENT_REASON",
   "VIBECODER_SESSION_LOG_ABSENT_REASON",
   "VIBECODER_OUTCOME_KIND",
+  "VIBECODER_OUTCOME_CATEGORY",
   "VIBECODER_OUTCOME_PHASE",
+  "VIBECODER_OUTCOME_FAILURE_CLASS",
   "VIBECODER_PR_NUMBER",
 ] as const;
 
@@ -190,6 +192,15 @@ Deno.test(
         ...FULL_CONTEXT,
         sessionLogAbsentReason: "tee_disabled",
         telemetryAbsentReason: "usage_not_reported",
+        // A no-PR outcome, so `category` and `failureClass` are exercised
+        // too — a `pr` outcome carries neither.
+        outcome: {
+          kind: "no_pr",
+          category: "quality_check",
+          phase: "quality_gate",
+          failureClass: "gate_failed",
+          prNumber: 267,
+        },
       },
       "always",
       "/tmp/context.json",

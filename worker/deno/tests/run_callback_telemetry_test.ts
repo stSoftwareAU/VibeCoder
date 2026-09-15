@@ -211,6 +211,30 @@ Deno.test("run_callback_telemetry - turns are summed over only the invocations t
   assertEquals(telemetry?.turns, 4);
 });
 
+Deno.test("run_callback_telemetry - an invocation that reported turns but no usage still contributes them", () => {
+  // A run killed after its turn count but before a parseable usage line took
+  // those turns; dropping them would under-report the run (Issue #2100).
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        numTurns: 3,
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        numTurns: 6,
+        tokenUsage: usage(200, 20),
+      },
+    },
+  ]);
+  assertEquals(telemetry?.turns, 9);
+  assertEquals(telemetry?.inputTokens, 200);
+});
+
 Deno.test("run_callback_telemetry - the model is the served model of the invocation with the most tokens", () => {
   const telemetry = summariseCallbackTelemetry([
     {

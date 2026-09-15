@@ -249,7 +249,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_ISSUE_NUMBER`              | `issueNumber`                   | yes            | Issue number the run worked                                                                                          |
 | `VIBECODER_HOST`                      | `host`                          | yes            | Host the worker runs on                                                                                              |
 | `VIBECODER_WORKER_NAME`               | `workerName`                    | no             | Operator-configured worker name                                                                                      |
-| `VIBECODER_MODE`                      | `mode`                          | no             | Workflow label the dispatch matched: `work-on`, `grill-me`, `question`, `planning`, `idle-task`, or a custom label   |
+| `VIBECODER_MODE`                      | `mode`                          | no             | Workflow the run served: the configured implementation label (`work-on`) or `idle-task`                              |
 | `VIBECODER_PROVIDER`                  | `provider`                      | no             | Agent provider that served the run                                                                                   |
 | `VIBECODER_SESSION_ID`                | `sessionId`                     | no             | Agent session id                                                                                                     |
 | `VIBECODER_SESSION_LOG_PATH`          | `sessionLogPath`                | no             | Absolute path to this run's transcript, verified on disk                                                             |
@@ -264,7 +264,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_CACHE_READ_TOKENS`         | `telemetry.cacheReadTokens`     | no             | Cache-read tokens                                                                                                    |
 | `VIBECODER_ESTIMATED_COST_USD`        | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
 | `VIBECODER_TURNS`                     | `telemetry.turns`               | no             | Turns the run took, summed across its invocations                                                                    |
-| `VIBECODER_MODEL`                     | `telemetry.model`               | no             | Model that dominated the run's cost — the served model of the invocation with the largest token total                |
+| `VIBECODER_MODEL`                     | `telemetry.model`               | no             | Served model of the invocation with the biggest token total — the model most of the run went through                 |
 | `VIBECODER_TELEMETRY_ABSENT_REASON`   | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
 | `VIBECODER_OUTCOME_KIND`              | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
 | `VIBECODER_OUTCOME_CATEGORY`          | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`                                                                             |
@@ -282,9 +282,24 @@ mistaken for a run hook.
 `mode`, `telemetry.turns` and `telemetry.model` were **added** to schema 2
 without a version bump (Issue #2100), exactly as
 [Versioning](#versioning--the-contract-is-additive) requires. All three are
-optional: `mode` is absent when the dispatch named no workflow label, `turns`
-when no invocation reported a turn count, and `model` when the run made no
-priced invocation. A hook written before they existed is unaffected.
+optional, and a hook written before they existed is unaffected:
+
+- `mode` names the workflow the run served, so a fleet archive can compare
+  implementation runs only. Run callbacks fire for the issue scan's own
+  claims, so today the value is the configured implementation label
+  (`work-on`, or your own if you renamed it) or `idle-task`; it is absent
+  when no implementation label is configured. A **grill-me, quorum, planning,
+  question, refine-issue or custom-label run emits no run callback at all** —
+  those routes answer their issue and return without one — so no context is
+  produced for them rather than one carrying their label. If a future release
+  gives those routes callbacks, they will report their own label here, and
+  that too is additive.
+- `telemetry.turns` is summed over the invocations that reported a turn
+  count, and is absent when none did — never nought.
+- `telemetry.model` is the served model of the invocation with the biggest
+  token total, falling back to that invocation's requested model when the API
+  reported none. Tokens rather than estimated cost, so a model with no
+  pricing row can still be named; it is present whenever `telemetry` is.
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).

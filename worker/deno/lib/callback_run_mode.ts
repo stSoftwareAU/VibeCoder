@@ -2,17 +2,32 @@
  * Which workflow a terminal run served, for the callback context's `mode`
  * (Issue #2100, part of #2060).
  *
- * A fleet archive that counts runs cannot tell an implementation run from a
- * grill-me or question run without being told: `result`, `outcome` and the
- * telemetry look the same either way. `mode` names the **workflow label the
- * dispatch matched**, so a trial can compare implementation runs only.
+ * A fleet archive that counts runs cannot tell an implementation run from an
+ * idle-task sweep without being told: `result`, `outcome` and the telemetry
+ * look the same either way. `mode` names the workflow the dispatch served, so
+ * a trial can compare implementation runs only.
  *
- * The order below is the dispatcher's own: the label routes (priorities
- * 1.75–1.86) are tried before the issue scan, so a doubly-labelled issue is
- * attributed to the route that would actually have served it. An issue
- * carrying no workflow label at all was claimed by the implementation scan on
- * a priority label (`top-priority`, `low-priority`) — a queue position, not a
- * workflow — so it reports the configured `work-on` label.
+ * ## Scope — deliberately the claim scan's own routes, and no more
+ *
+ * Post-run callbacks fire for exactly one family of runs: those the claim
+ * scan hands to `processIssue` (see `dispatchIssueCallbacks` in
+ * `run_core.ts`). That scan serves the implementation workflow — `work-on`,
+ * `top-priority`, `low-priority` — plus the idle-task wrapper route inside
+ * `processIssue` itself. The label routes at priorities 1.75–1.86 (grill-me,
+ * quorum, planning, question, refine-issue, the custom-label prompts) run
+ * through `findAndProcessByLabel`, which returns a bare `{ processed }` and
+ * fires no run callback at all.
+ *
+ * So this resolver reads **only** the labels that can name the workflow a
+ * `processIssue` run actually served. Reading the label routes' names here
+ * would be worse than useless: `grill-me` is not one of the labels the claim
+ * scan filters out, so a `work-on` issue that also carries `grill-me` — the
+ * grill-me route having declined it — is claimed and implemented by the
+ * scan, and would then be archived as a grill-me run. That is precisely the
+ * mis-count `mode` exists to prevent.
+ *
+ * `TerminalIssueRun.mode` itself is an open string: a route that later gains
+ * its own run callbacks reports its own label without touching this module.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -23,21 +38,15 @@ import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
  * The configured label names this resolver reads.
  *
  * A subset of `WorkerConfig` deliberately: the resolver is pure, so the
- * dispatch site passes only the `*Label` values it already holds.
+ * dispatch site passes only the `*Label` value it already holds.
  */
 export interface CallbackRunModeLabels {
-  /** Implementation label, and the fallback for a priority-only claim. */
-  workOnLabel: string;
-  refineIssueLabel?: string;
-  grillMeLabel?: string;
-  quorumLabel?: string;
-  planningLabel?: string;
-  questionLabel?: string;
   /**
-   * Operator-configured custom dispatch labels, in configuration order
-   * (Issue #846). Each is a workflow of its own, so its name is the mode.
+   * The implementation label (`work-on` by default). Also the answer for a
+   * claim taken on a priority label — `top-priority` and `low-priority` order
+   * the implementation queue, they are not workflows of their own.
    */
-  customLabels?: readonly string[];
+  workOnLabel: string;
 }
 
 /** Non-blank trimmed value, or undefined. */
@@ -47,33 +56,21 @@ function present(value: string | undefined): string | undefined {
 }
 
 /**
- * The workflow label the dispatch matched, or `undefined` when the fleet
- * configured no implementation label to fall back on.
+ * The workflow a claim-scan run served, or `undefined` when the fleet
+ * configured no implementation label to name it by.
  *
  * Matching is case-insensitive, as GitHub's own label handling is, and the
- * **configured** name is returned — an operator who renamed a label sees
- * their own name in the callback, not the built-in default.
+ * value returned is always one the **host** configured (or the fixed
+ * {@link IDLE_TASK_LABEL}) — never a string taken from the issue, so a label
+ * an untrusted party added cannot put its own text into the callback context.
  */
 export function resolveCallbackRunMode(
   issueLabels: readonly string[],
   labels: CallbackRunModeLabels,
 ): string | undefined {
-  // Dispatch order, most specific route first.
-  const ordered: (string | undefined)[] = [
-    labels.refineIssueLabel,
-    labels.grillMeLabel,
-    labels.quorumLabel,
-    labels.planningLabel,
-    labels.questionLabel,
-    ...(labels.customLabels ?? []),
-    IDLE_TASK_LABEL,
-  ];
-  const applied = new Set(
-    issueLabels.map((label) => label.trim().toLowerCase()),
-  );
-  for (const candidate of ordered) {
-    const name = present(candidate);
-    if (name && applied.has(name.toLowerCase())) return name;
-  }
+  const applied = issueLabels.map((label) => label.trim().toLowerCase());
+  // The wrapper route inside `processIssue` claims these before the standard
+  // implementation pipeline, so the wrapper label wins where both are on.
+  if (applied.includes(IDLE_TASK_LABEL)) return IDLE_TASK_LABEL;
   return present(labels.workOnLabel);
 }

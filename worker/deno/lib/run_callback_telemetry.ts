@@ -62,21 +62,26 @@ export function summariseCallbackTelemetry(
 
   for (const invocation of invocations) {
     const stats = invocation.runStats;
-    if (!stats?.tokenUsage) continue;
+    if (!stats) continue;
+    // Turns are summed independently of usage (Issue #2100), the same way
+    // `aggregateRunStats` does it: an invocation killed after reporting
+    // `num_turns` but before a parseable usage line still took those turns.
+    // Absent stays absent — a provider that reports none omits the field.
+    if (stats.numTurns !== undefined) turns = (turns ?? 0) + stats.numTurns;
+    if (!stats.tokenUsage) continue;
     inputTokens += stats.tokenUsage.inputTokens;
     outputTokens += stats.tokenUsage.outputTokens;
     cacheCreationTokens += stats.tokenUsage.cacheCreationTokens;
     cacheReadTokens += stats.tokenUsage.cacheReadTokens;
-    // Absent stays absent: only the invocations that reported a turn count
-    // contribute, so a provider that reports none omits the field (#2100).
-    if (stats.numTurns !== undefined) turns = (turns ?? 0) + stats.numTurns;
     // Attributed to the model the API actually served, falling back to the
     // requested one — the same rule the per-run stats comment applies.
     const model = stats.servedModels[0] ?? stats.requestedModel;
     entries.push({ model, usage: stats.tokenUsage });
     // Issue #2100: one run can be served by several models, so `model` names
-    // the one that dominated the cost — the invocation with the largest token
-    // total. Deterministic: strictly-greater, so an exact tie keeps the
+    // the one the largest share of the run went through — the invocation with
+    // the biggest token total. Tokens rather than estimated cost, because a
+    // model with no pricing row has no cost to rank by but always has a token
+    // count. Deterministic: strictly-greater, so an exact tie keeps the
     // earlier invocation rather than depending on iteration luck.
     const tokens = stats.tokenUsage.inputTokens +
       stats.tokenUsage.outputTokens +

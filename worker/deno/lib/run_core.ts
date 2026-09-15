@@ -775,10 +775,9 @@ export interface RunCoreDeps {
        */
       outcome?: RunOutcome;
       /**
-       * The workflow label the dispatch matched for this run (Issue #2100) —
-       * `work-on`, `grill-me`, `idle-task`, or the operator's own configured
-       * label. Carried into the post-run callback context so an archive can
-       * compare implementation runs only.
+       * The workflow this run served (Issue #2100) — the configured
+       * implementation label or `idle-task`. Carried into the post-run
+       * callback context so an archive can compare implementation runs only.
        */
       mode?: string;
       /**
@@ -2018,7 +2017,7 @@ async function releaseIssueClaim(
 interface TerminalRun {
   result: "success" | "failure";
   startedAtEpochMs: number;
-  /** The workflow label the dispatch matched, when known (Issue #2100). */
+  /** The workflow this run served, when the dispatch named one (#2100). */
   mode?: string;
   /** Token and cost telemetry the run reported, when it reported any. */
   telemetry?: CallbackRunTelemetry;
