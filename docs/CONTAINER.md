@@ -1251,8 +1251,10 @@ takes it:
    "already exists" (Issue #731).
 3. **The reset is never held back, and never silent.** What the volumes hold
    in the store is measured first: volumes holding less than
-   `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) are never destroyed, because
-   resetting them gains nothing — the host's missing space is elsewhere.
+   `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) are never destroyed, each judged on
+   its own size (Issue #2117), because resetting them gains nothing — and
+   the content-approval store, at ~70 MB, is the tamper baseline for every
+   issue the worker may claim; wiping it for disk cost GRQ-23 a whole run.
    Otherwise a host below the floor resets the volume on **every launch it is
    below it**, however recent the last reset: the volume is disposable and the
    host is not (Issue #2077 — a 24 h interval once left GRQ-23, re-ratcheted

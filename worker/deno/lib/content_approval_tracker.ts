@@ -575,24 +575,44 @@ async function readStateFile(
       if (!initialised.value) {
         return { ok: true, value: { snapshots: {} } };
       }
+      // Issue #2117: on a fresh store two slots race to capture the first
+      // baseline. A sibling can rename the state file into place and write
+      // the marker between the read that just failed and the stat that just
+      // found the store initialised — which reads exactly like a deleted
+      // baseline and, once latched, refused 59 issues for a whole run. Read
+      // once more; only a second NotFound is the deleted baseline.
+      try {
+        content = await readFile(path);
+      } catch (again) {
+        if (again instanceof Deno.errors.NotFound) {
+          return {
+            ok: false,
+            error: new Error(
+              `Content approval state deleted: ${path} is missing from the ` +
+                `initialised store ${stateDir}. Remove the store directory ` +
+                `to reset the approval baseline if this was intentional.`,
+            ),
+          };
+        }
+        return {
+          ok: false,
+          error: new Error(
+            `Unreadable content approval state at ${path}: ` +
+              `${again instanceof Error ? again.message : String(again)}`,
+          ),
+        };
+      }
+    } else {
+      // Issue #3651: the file is there but we cannot read it. Reporting that
+      // as "no snapshots" would disarm the TOCTOU gate for every issue.
       return {
         ok: false,
         error: new Error(
-          `Content approval state deleted: ${path} is missing from the ` +
-            `initialised store ${stateDir}. Remove the store directory to ` +
-            `reset the approval baseline if this was intentional.`,
+          `Unreadable content approval state at ${path}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
         ),
       };
     }
-    // Issue #3651: the file is there but we cannot read it. Reporting that
-    // as "no snapshots" would disarm the TOCTOU gate for every issue.
-    return {
-      ok: false,
-      error: new Error(
-        `Unreadable content approval state at ${path}: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-      ),
-    };
   }
 
   let parsed: ContentApprovalState;
