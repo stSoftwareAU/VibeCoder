@@ -248,3 +248,54 @@ Deno.test("verifyResolvedTree - an unreadable tree fails rather than being skipp
 
   assertEquals(outcome.status, "failed");
 });
+
+// ---------------------------------------------------------------------------
+// Issue #2138 — a Cargo workspace is verified with cargo, not skipped
+// ---------------------------------------------------------------------------
+
+Deno.test("verifyResolvedTree - a Cargo tree runs cargo test --workspace as its unit suite (Issue #2138)", async () => {
+  // NEAT-AI-Ockham: a Rust repo whose auto-resolved merge was refused every
+  // cycle because the gate only knew `deno task`.
+  const dir = await Deno.makeTempDir({ prefix: "issue-2138-gate-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    await Deno.writeTextFile(`${dir}/Cargo.lock`, "# Cargo.lock\n");
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve({ code: 0, output: "test result: ok" });
+      },
+      passingTypeCheck,
+    );
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(seen.length, 1);
+    assertEquals(seen[0]!.kind, "cargo");
+    assertEquals(seen[0]!.args, ["test", "--workspace", "--locked"]);
+    assertStringIncludes(outcome.detail, "cargo test --workspace --locked in");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - a Cargo tree whose tests fail is refused with the output (Issue #2138)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2138-gate-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const outcome = await verifyResolvedTree(
+      dir,
+      () =>
+        Promise.resolve({
+          code: 101,
+          output: "test prune::bias ... FAILED\ntest result: FAILED. 1 failed",
+        }),
+      passingTypeCheck,
+    );
+    assertEquals(outcome.status, "failed");
+    assertStringIncludes(outcome.detail, "cargo test --workspace in");
+    assertStringIncludes(outcome.output, "prune::bias");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
