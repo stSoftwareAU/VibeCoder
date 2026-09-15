@@ -4,7 +4,8 @@
 [#1698](https://github.com/stSoftwareAU/VibeCoder/issues/1698),
 [#1700](https://github.com/stSoftwareAU/VibeCoder/issues/1700),
 [#1703](https://github.com/stSoftwareAU/VibeCoder/issues/1703),
-[#1926](https://github.com/stSoftwareAU/VibeCoder/issues/1926)
+[#1926](https://github.com/stSoftwareAU/VibeCoder/issues/1926),
+[#1923](https://github.com/stSoftwareAU/VibeCoder/issues/1923)
 · **Parent:** #1694
 
 Claude remains the default. This page is the operator runbook for a
@@ -52,6 +53,65 @@ child (`buildIsolatedCodexChildEnv`). Other Codex accounts and every
 Claude secret stay out. The process-global `HOME` / `CODEX_HOME` are
 not rewritten.
 
+## Subscription-only billing policy
+
+VibeCoder is designed to run unattended for months on **fixed-price
+subscriptions**, so a subscription that is spent, stale or revoked must fail
+authentication rather than quietly become per-token API spend (Issue #1923).
+
+Each provider declares how its credentials are billed, on its own descriptor
+(`AgentProviderDescriptor.billing`), and one shared classifier
+(`worker/deno/lib/provider_billing.ts`) answers the question for every routing
+path. Nothing is inferred from a provider id.
+
+| Provider | Fixed-price subscription | Metered |
+| -------- | ------------------------ | ------- |
+| Claude | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
+| Codex | a ChatGPT login persisted under `CODEX_HOME` | `OPENAI_API_KEY`, `CODEX_API_KEY` |
+| Gemini | none | `GEMINI_API_KEY` |
+| DeepSeek | none | `DEEPSEEK_API_KEY` |
+
+Three rules follow, and they are separate:
+
+1. **Unknown is never fixed-price.** A provider that proves neither is
+   `unknown`, and only a positively proved subscription is eligible for
+   `agent_provider_mode: "auto"`. A failed probe cannot become API spend.
+2. **A subscription run withholds every other Anthropic credential.** When the
+   run holds a usable `CLAUDE_CODE_OAUTH_TOKEN`, `buildClaudeChildEnv` removes
+   `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the child, so the CLI
+   has nothing to fall back on. This mirrors `buildIsolatedCodexChildEnv`'s
+   `CODEX_HOME` guard. `ANTHROPIC_AUTH_TOKEN` is withheld but **not** declared
+   metered: it is a bearer for a proxied endpoint, so what it bills cannot be
+   proved — it classifies as `unknown`, which rule 1 already makes ineligible.
+   A host with **no** subscription token is untouched: an explicit API-key
+   deployment keeps working exactly as before.
+3. **`agent_provider_fallback` is metered-capable, and says so.** The opt-in
+   list is an explicit operator choice and is honoured as written, including a
+   metered alternative such as DeepSeek. It is **outside** the subscription-only
+   policy, which governs automatic routing. What it may not be is silent: the
+   health gate classifies the alternative before switching and logs
+   `billing=<mode>` on the switch, plus a `logError` line carrying the
+   evidence — the credential variable for a `metered` alternative, or the
+   state label (`subscription-credential-missing`,
+   `codex-auth-json-unreadable (…)`) for an `unknown` one, which the line
+   reports as billing that cannot be established rather than as per-token
+   spend. An operator
+   who wants the never-metered guarantee end to end leaves
+   `agent_provider_fallback` empty (the default) and uses
+   `agent_provider_mode: "auto"`, which defers rather than switching to metered.
+
+```mermaid
+flowchart TD
+    E["preferred subscription exhausted"] --> A{"agent_provider_mode"}
+    A -->|auto| Q["rank fixed-price subscriptions only"]
+    Q -->|one eligible| R["switch provider"]
+    Q -->|none eligible| W["wait — never metered"]
+    A -->|pinned| F{"agent_provider_fallback"}
+    F -->|empty, the default| K["skip cycle, stay pinned"]
+    F -->|operator opted in| B["classify billing, log it loudly"]
+    B --> R
+```
+
 ## Routing and fallback
 
 | Key | Default | Meaning |
@@ -83,8 +143,11 @@ unchanged.
 
 The older `agent_provider_fallback` path remains independently opt-in. It fires
 only on `subscription-exhausted`, `transient-rate-limit` or
-`model-unavailable`, and only when the alternative is already enabled. Neither
-automatic mechanism is turned on for the production fleet by default.
+`model-unavailable`, and only when the alternative is already enabled. It is
+not restricted to fixed-price subscriptions — see [Subscription-only billing
+policy](#subscription-only-billing-policy) for what it logs when the
+alternative is metered. Neither automatic mechanism is turned on for the
+production fleet by default.
 
 `agent_provider_mode: "auto"` is **not recommended as production-ready** until
 the restart/soak qualification in [Subscription soak](SUBSCRIPTION-SOAK.md)
@@ -127,3 +190,11 @@ WIP branches are untouched.
 - Automatic selection currently supports Claude OAuth and Codex ChatGPT
   subscriptions. Gemini, DeepSeek and every unknown or metered billing mode are
   ineligible. The shipped default remains pinned.
+- Quota *probing* is still per provider (`provider_auto_runtime.ts`), even
+  though billing classification is now descriptor-declared. Adding a
+  subscription provider means writing its status adapter as well as its
+  `billing` declaration. Those adapters (`claudeStatus`, `codexStatus`) still
+  test the same credential variables themselves while answering their own
+  question — remaining quota — so the same facts are written down twice.
+  Folding them into the shared classifier changes what is eligible for
+  `auto`, which this goal deliberately stages behind the soak qualification.

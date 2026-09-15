@@ -80,10 +80,13 @@ import {
   CODEX_ENV_SECRET_ALLOWLIST,
 } from "./codex_env.ts";
 import {
+  CODEX_API_KEY_ENV_VARS,
   CODEX_CREDENTIAL_ENV_VARS,
+  CODEX_HOME_ENV_VAR,
   codexAuthActionableMessage,
   isCodexAuthError,
 } from "./codex_auth.ts";
+import { resolveCodexAuthMode, resolveCodexHome } from "./codex_auth_mode.ts";
 import {
   buildGeminiArgs,
   resolveGeminiEffort,
@@ -219,6 +222,64 @@ export interface AgentProviderTokenPool {
   envVars: readonly string[];
 }
 
+/** What a billing classification is allowed to read (Issue #1923). */
+export interface AgentProviderBillingContext {
+  /** The worker's work directory, for state kept beside it. */
+  readonly workDir: string;
+  /**
+   * Environment lookup. A descriptor hook always receives one explicitly;
+   * the shared classifier is what decides whether that is the caller's own
+   * lookup or the process environment.
+   */
+  readonly env: EnvLookup;
+}
+
+/** A billing mode a provider proved, and the log-safe label that proves it. */
+export interface AgentProviderBillingProof {
+  /**
+   * `unknown` is how a probe reports that it **looked and failed** — a
+   * corrupt `auth.json`, not an absent one. It carries a reason so the fault
+   * reaches the operator instead of being flattened into the same silence as
+   * a host that simply never logged in, and it does not settle the question:
+   * the classifier still consults the declared metered variables after it.
+   */
+  readonly mode: "fixed-subscription" | "metered" | "unknown";
+  /** A variable NAME or a state label. Never a credential value. */
+  readonly reason: string;
+}
+
+/**
+ * How one provider's credentials are billed (Issue #1923).
+ *
+ * VibeCoder's routing policy is fixed-price subscriptions only, so every
+ * provider states which of its credentials prove a subscription and which
+ * prove metered, per-token spend. Declaring it here is what lets the shared
+ * classifier answer the question for a vendor it knows nothing about, instead
+ * of each routing path growing its own `if (providerId === "claude")` chain.
+ *
+ * A provider that proves neither is `unknown` — and unknown is never treated
+ * as fixed-price.
+ */
+export interface AgentProviderBilling {
+  /**
+   * Variables whose non-blank presence proves a fixed-price subscription.
+   * Empty means no environment variable can prove one for this provider.
+   */
+  readonly subscriptionEnvVars: readonly string[];
+  /** Variables whose non-blank presence proves metered, per-token billing. */
+  readonly meteredEnvVars: readonly string[];
+  /**
+   * Billing state this provider keeps **outside** the environment — Codex's
+   * persistent ChatGPT login under `CODEX_HOME`. Consulted before the
+   * declared metered variables, so a provider whose CLI gives an API key
+   * precedence can say so. Absent means the declared variables are the only
+   * proof; `undefined` means this probe proved nothing.
+   */
+  resolveStoredBilling?(
+    context: AgentProviderBillingContext,
+  ): AgentProviderBillingProof | undefined;
+}
+
 /** Where a provider's credentials live inside the Vibe credential directory. */
 export interface AgentProviderCredentials {
   /** Sub-directory name, e.g. `claude`. */
@@ -308,6 +369,8 @@ export interface AgentProviderDescriptor {
   /** Executable the image installs and the worker spawns. */
   binary: string;
   credentials: AgentProviderCredentials;
+  /** How this provider's credentials are billed (Issue #1923). */
+  billing: AgentProviderBilling;
   environment: AgentProviderEnvironment;
   install: AgentProviderInstall;
   /** How the prompt reaches the CLI (Issue #4385). */
@@ -538,6 +601,18 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
       envVars: ["CLAUDE_CODE_OAUTH_TOKEN"],
     },
   },
+  // Fixed-price subscription vs metered spend (Issue #1923). The OAuth token
+  // is the Claude subscription; `withholdNonSubscriptionCredentials` keeps
+  // every other Anthropic credential out of a subscription run's child.
+  billing: {
+    subscriptionEnvVars: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    // ANTHROPIC_AUTH_TOKEN is deliberately absent: it is a bearer for a
+    // proxied endpoint, so what it bills is the proxy's business and this
+    // module cannot prove it is metered. It stays `unknown`, which agrees
+    // with `claudeStatus`'s `non-subscription-bearer`, and is withheld from a
+    // subscription child anyway by CLAUDE_NON_SUBSCRIPTION_CREDENTIAL_ENV_VARS.
+    meteredEnvVars: ["ANTHROPIC_API_KEY"],
+  },
   environment: {
     secretAllowlist: CLAUDE_ENV_SECRET_ALLOWLIST,
     denylist: CLAUDE_ENV_DENYLIST,
@@ -616,6 +691,58 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     file: "provider.env",
     envVars: CODEX_CREDENTIAL_ENV_VARS,
     provisionEnvVar: "VIBE_LAUNCHAGENT_OPENAI_API_KEY",
+  },
+  // Fixed-price subscription vs metered spend (Issue #1923). No environment
+  // variable carries a ChatGPT subscription: it lives in the auth state the
+  // CLI persists under CODEX_HOME, so the proof is a probe rather than a
+  // name. `resolveCodexAuthMode` gives an environment API key precedence,
+  // exactly as the CLI does, so the probe answers metered in that case.
+  billing: {
+    subscriptionEnvVars: [],
+    meteredEnvVars: CODEX_API_KEY_ENV_VARS,
+    resolveStoredBilling(context) {
+      const home = resolveCodexHome(context.workDir, context.env);
+      if (!home) return undefined;
+      // Classify the way `buildChildEnv` above actually builds the child, or
+      // the two drift apart and the run is told the wrong billing mode.
+      // `buildIsolatedCodexChildEnv` honours an **explicit** CODEX_HOME: it
+      // hands that directory to the child and withholds OPENAI_API_KEY /
+      // CODEX_API_KEY, so a persisted ChatGPT login is what the run spends
+      // even when a metered key sits in the worker's own environment —
+      // asking `resolveCodexAuthMode` with no environment is what says so.
+      // Without an explicit CODEX_HOME those keys do reach the child, so
+      // there the environment keeps its precedence.
+      const explicitHome = (context.env(CODEX_HOME_ENV_VAR) ?? "").trim();
+      const modeEnv: EnvLookup = explicitHome ? () => undefined : context.env;
+      const { mode, source, detail } = resolveCodexAuthMode(home, modeEnv);
+      if (mode === "chatgpt") {
+        return { mode: "fixed-subscription", reason: "codex-chatgpt-login" };
+      }
+      if (mode === "api-key") {
+        // Name the credential that is actually in play. An unattended
+        // operator reads this reason to know what to change, so reporting
+        // OPENAI_API_KEY for a key held in CODEX_API_KEY — or in auth.json,
+        // where no variable is set at all — sends them to the wrong place.
+        const variable = source === "env"
+          ? CODEX_API_KEY_ENV_VARS.find(
+            (name) => (context.env(name) ?? "").trim().length > 0,
+          )
+          : undefined;
+        return {
+          mode: "metered",
+          reason: variable ?? "codex-auth-json-api-key",
+        };
+      }
+      if (source === "read-error") {
+        // A login that cannot be read is a fault, not an absent login. Say
+        // which fault, so it is not reported as "never authenticated".
+        return {
+          mode: "unknown",
+          reason: `codex-auth-json-unreadable (${detail ?? "no detail"})`,
+        };
+      }
+      return undefined;
+    },
   },
   environment: {
     secretAllowlist: CODEX_ENV_SECRET_ALLOWLIST,
@@ -733,6 +860,13 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
     envVars: GEMINI_CREDENTIAL_ENV_VARS,
     provisionEnvVar: "VIBE_LAUNCHAGENT_GEMINI_API_KEY",
   },
+  // Gemini bills per token against an API key (Issue #1923): there is no
+  // fixed-price subscription VibeCoder can run unattended, so it is never an
+  // automatic-routing candidate.
+  billing: {
+    subscriptionEnvVars: [],
+    meteredEnvVars: GEMINI_CREDENTIAL_ENV_VARS,
+  },
   environment: {
     secretAllowlist: GEMINI_ENV_SECRET_ALLOWLIST,
     denylist: GEMINI_ENV_DENYLIST,
@@ -818,6 +952,12 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     file: "provider.env",
     envVars: DEEPSEEK_CREDENTIAL_ENV_VARS,
     provisionEnvVar: "VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY",
+  },
+  // DeepSeek bills per token against an API key (Issue #1923), the same as
+  // Gemini: metered, and never an automatic-routing candidate.
+  billing: {
+    subscriptionEnvVars: [],
+    meteredEnvVars: DEEPSEEK_CREDENTIAL_ENV_VARS,
   },
   environment: {
     secretAllowlist: DEEPSEEK_ENV_SECRET_ALLOWLIST,
@@ -912,6 +1052,23 @@ const AGENT_PROVIDERS = new Map<string, AgentProviderDescriptor>([
  */
 export function agentProviderIds(): string[] {
   return [...AGENT_PROVIDERS.keys()];
+}
+
+/**
+ * Look up a registered provider without failing on an unknown id.
+ *
+ * {@link resolveAgentProvider} throws, which is right where an operator
+ * stated a provider and got it wrong. A caller merely *asking about* an id —
+ * the billing classifier (Issue #1923) — needs "no such provider" as an
+ * answer rather than an exception.
+ *
+ * @param id - Provider id, trimmed before lookup.
+ * @returns The descriptor, or undefined when nothing is registered under it.
+ */
+export function agentProviderById(
+  id: string,
+): AgentProviderDescriptor | undefined {
+  return AGENT_PROVIDERS.get(id.trim());
 }
 
 /**

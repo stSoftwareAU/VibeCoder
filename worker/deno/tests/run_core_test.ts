@@ -24,6 +24,7 @@ import {
   runProviderOverrideId,
   setRunProviderOverride,
 } from "../lib/agent_provider.ts";
+import type { ProviderBillingEvidence } from "../lib/provider_billing.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -632,6 +633,151 @@ Deno.test("run_core - an unhealthy alternative keeps the skip-cycle path (Issue 
     errors.some((e) => e.includes("skipping cycle")),
     "no healthy alternative means the existing skip-cycle path stands",
   );
+});
+
+Deno.test("run_core - switching to a metered fallback says so loudly (Issue #1923)", async () => {
+  // The subscription-only policy covers automatic routing. The opt-in
+  // `agent_provider_fallback` list is an explicit operator choice and is left
+  // alone — but a switch onto per-token billing must never be indistinguishable
+  // from a switch onto another fixed-price subscription.
+  const errors: string[] = [];
+  const asked: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) =>
+      Promise.resolve(
+        provider === undefined
+          ? { ok: true, value: { healthy: false, exitCode: 3 } }
+          : { ok: true, value: { healthy: true } },
+      ),
+    classifyProviderBilling: (providerId: string): ProviderBillingEvidence => {
+      asked.push(providerId);
+      return {
+        provider: providerId,
+        billingMode: "metered",
+        reason: "DEEPSEEK_API_KEY",
+      };
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  await runCoreLoop(config, deps);
+
+  assertEquals(asked.includes("deepseek"), true);
+  const warning = errors.find((e) => e.includes("billing=metered"));
+  assert(
+    warning,
+    `expected a metered-billing warning, got: ${errors.join(" | ")}`,
+  );
+  assertStringIncludes(warning, "deepseek");
+  assertStringIncludes(warning, "DEEPSEEK_API_KEY");
+});
+
+Deno.test("run_core - an unknown billing mode is not reported as per-token spend (Issue #1923)", async () => {
+  // Safety invariant 3: unknown is not metered. The warning must still fire —
+  // an unproved alternative is not a proved subscription — but it may not
+  // assert per-token spend the classifier deliberately refused to prove.
+  const errors: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) =>
+      Promise.resolve(
+        provider === undefined
+          ? { ok: true, value: { healthy: false, exitCode: 3 } }
+          : { ok: true, value: { healthy: true } },
+      ),
+    classifyProviderBilling: (providerId: string): ProviderBillingEvidence => ({
+      provider: providerId,
+      billingMode: "unknown",
+      reason: "codex-auth-json-unreadable (auth.json is not valid JSON)",
+    }),
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["codex"];
+
+  await runCoreLoop(config, deps);
+
+  const warning = errors.find((e) => e.includes("billing=unknown"));
+  assert(
+    warning,
+    `expected an unknown-billing warning, got: ${errors.join(" | ")}`,
+  );
+  assertStringIncludes(warning, "codex-auth-json-unreadable");
+  assertStringIncludes(warning, "cannot be established");
+  assertEquals(warning.includes("billed per token"), false);
+});
+
+Deno.test("run_core - switching to a fixed-price subscription raises no billing warning (Issue #1923)", async () => {
+  const errors: string[] = [];
+  const logs: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    log: (msg: string) => {
+      logs.push(msg);
+    },
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) =>
+      Promise.resolve(
+        provider === undefined
+          ? { ok: true, value: { healthy: false, exitCode: 3 } }
+          : { ok: true, value: { healthy: true } },
+      ),
+    classifyProviderBilling: (providerId: string): ProviderBillingEvidence => ({
+      provider: providerId,
+      billingMode: "fixed-subscription",
+      reason: "codex-chatgpt-login",
+    }),
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["codex"];
+
+  await runCoreLoop(config, deps);
+
+  assertEquals(errors.some((e) => e.includes("billing=")), false);
+  // The switch itself still states the billing mode, so an operator reading
+  // the log never has to infer it from the absence of a warning.
+  const switched = logs.find((l) => l.includes("[provider-fallback]"));
+  assert(switched, `expected a switch line, got: ${logs.join(" | ")}`);
+  assertStringIncludes(switched, "billing=fixed-subscription");
 });
 
 Deno.test("run_core - an auth failure never consults the fallback (Issue #2055)", async () => {

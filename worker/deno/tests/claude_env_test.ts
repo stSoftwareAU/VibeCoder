@@ -173,3 +173,58 @@ Deno.test("buildClaudeChildEnv - a real container stamp still redirects (Issue #
     `${resolveAgentStateDir("/home/vibe/auto-issue-work")}/claude-config`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Subscription billing guard (Issue #1923)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildClaudeChildEnv - a selected subscription token withholds the metered ANTHROPIC_API_KEY (Issue #1923)", () => {
+  // The fixed-price-only policy: when this run holds a Claude subscription
+  // token, a metered key present on the same host must not reach the child as
+  // a silent billing fallback. Codex has had this guard since #1924
+  // (`buildIsolatedCodexChildEnv`); Claude had none.
+  const parent = {
+    PATH: "/usr/bin",
+    GH_TOKEN: "gho_test",
+    CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-subscription",
+    ANTHROPIC_API_KEY: "sk-ant-metered",
+  };
+  const child = buildClaudeChildEnv(parent);
+  assertEquals(child.CLAUDE_CODE_OAUTH_TOKEN, "sk-ant-oat-subscription");
+  assertEquals(child.ANTHROPIC_API_KEY, undefined);
+});
+
+Deno.test("buildClaudeChildEnv - a selected subscription token withholds the ANTHROPIC_AUTH_TOKEN bearer (Issue #1923)", () => {
+  // A proxied bearer is not a subscription credential either, so it cannot
+  // stand in for the token this run selected.
+  const parent = {
+    CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-subscription",
+    ANTHROPIC_AUTH_TOKEN: "bearer-for-a-proxy",
+  };
+  const child = buildClaudeChildEnv(parent);
+  assertEquals(child.ANTHROPIC_AUTH_TOKEN, undefined);
+});
+
+Deno.test("buildClaudeChildEnv - a blank subscription token is no subscription at all (Issue #1923)", () => {
+  // Presence is read by value, not by key: an empty token authenticates
+  // nothing, so withholding the only usable credential would break the run.
+  const parent = {
+    CLAUDE_CODE_OAUTH_TOKEN: "   ",
+    ANTHROPIC_API_KEY: "sk-ant-metered",
+  };
+  const child = buildClaudeChildEnv(parent);
+  assertEquals(child.ANTHROPIC_API_KEY, "sk-ant-metered");
+});
+
+Deno.test("buildClaudeChildEnv - an API-key-only host is unchanged (Issue #1923)", () => {
+  // No subscription token means no subscription mode: the existing explicit
+  // API-key deployment keeps working exactly as before.
+  const parent = {
+    PATH: "/usr/bin",
+    ANTHROPIC_API_KEY: "sk-ant-metered",
+    ANTHROPIC_AUTH_TOKEN: "bearer-for-a-proxy",
+  };
+  const child = buildClaudeChildEnv(parent);
+  assertEquals(child.ANTHROPIC_API_KEY, "sk-ant-metered");
+  assertEquals(child.ANTHROPIC_AUTH_TOKEN, "bearer-for-a-proxy");
+});

@@ -48,6 +48,11 @@ Deno.test("SEC-7e148c3ba692 - drops the worker-only credentials and an extension
     EXTENSION_CI_URL: "https://ci.example.com",
     EXTENSION_CI_TOKEN: "11abcdef0123456789",
     GITHUB_APP_PRIVATE_KEY_PATH: "/keys/app.pem",
+    // A fixture value, not a real key — the denylist entry under test is the
+    // variable NAME, and the value only has to look credential-shaped enough
+    // to be worth stripping. nosemgrep keeps the SAST stage on the finding it
+    // is for, following `handle_no_changes_phase_test.ts`.
+    // nosemgrep: generic.secrets.security.detected-generic-api-key.detected-generic-api-key
     VIBE_IMGBB_API_KEY: "0123456789abcdef0123456789abcdef",
     PATH: "/usr/bin",
   });
@@ -74,14 +79,30 @@ Deno.test("SEC-7e148c3ba692 - denies unlisted secret-shaped variable names", () 
   assertEquals(child["REPO_NAME"], "org/repo");
 });
 
-Deno.test("SEC-7e148c3ba692 - keeps the credentials the agent legitimately needs", () => {
+// (Issue #1923) This case used to hand `buildClaudeChildEnv` both Anthropic
+// credentials at once and require both back. The subscription-only billing
+// policy changed that invariant: a run holding a usable OAuth token withholds
+// the metered key, so the CLI cannot silently fall back to per-token spend
+// when the subscription is spent. The property under test — the allowlist
+// keeps what the agent legitimately needs to authenticate, rather than
+// stripping everything secret-shaped — is unchanged, and is now asserted once
+// per deployment shape instead of on a host holding both.
+
+Deno.test("SEC-7e148c3ba692 - keeps the credentials an API-key deployment needs", () => {
   const child = buildClaudeChildEnv({
     GH_TOKEN: "gh-installation-token",
     ANTHROPIC_API_KEY: "sk-ant-test",
-    CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
   });
   assertEquals(child["GH_TOKEN"], "gh-installation-token");
   assertEquals(child["ANTHROPIC_API_KEY"], "sk-ant-test");
+});
+
+Deno.test("SEC-7e148c3ba692 - keeps the credentials a subscription deployment needs", () => {
+  const child = buildClaudeChildEnv({
+    GH_TOKEN: "gh-installation-token",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
+  });
+  assertEquals(child["GH_TOKEN"], "gh-installation-token");
   assertEquals(child["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-token");
 });
 

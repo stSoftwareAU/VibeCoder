@@ -1553,6 +1553,18 @@
       "paths": [
         "worker/deno/commands/toolchain_selfcheck.ts"
       ]
+    },
+    {
+      "issue": 1923,
+      "chunk": "top-up-1923",
+      "title": "top-up: the provider billing classifier",
+      "ledger": "docs/audits/security-sweep-1923-provider-billing.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: provider_billing.ts (#1923)",
+      "status": "swept",
+      "sweptAt": "915d45bb2c2ed9b5a92a3e47038f0dabc42eb448",
+      "paths": [
+        "worker/deno/lib/provider_billing.ts"
+      ]
     }
   ],
   "roots": [
