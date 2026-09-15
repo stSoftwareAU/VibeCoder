@@ -49,12 +49,26 @@
 
 import type { Result } from "../types.ts";
 
-/** Outcome conditions a callback may be registered against. */
-export const CALLBACK_EVENTS = [
+/**
+ * Events the worker invokes from **inside the container**, where every hook
+ * path is a container path.
+ */
+export const CONTAINER_CALLBACK_EVENTS = [
   "success",
   "failure",
   "always",
   "cycle",
+] as const;
+
+/**
+ * Outcome conditions a callback may be registered against.
+ *
+ * `host_failure` is the host launcher's (Issue #2107): it is the one key
+ * whose path is resolved on the host, and nothing inside the container
+ * invokes it.
+ */
+export const CALLBACK_EVENTS = [
+  ...CONTAINER_CALLBACK_EVENTS,
   "host_failure",
 ] as const;
 

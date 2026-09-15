@@ -148,6 +148,9 @@ and fails on a path that cannot run.
 The worker runs **inside the container** — that is the only run mode
 ([Containment](CONTAINMENT.md)) — so a hook path is resolved on the filesystem
 the container sees, and a host path that is not mounted in is not visible to it.
+The one exception is `host_failure`, which the host launcher spawns before any
+container exists: its path is resolved on the **host** — see
+[The host-failure hook](#the-host-failure-hook).
 
 ```mermaid
 flowchart LR
@@ -283,7 +286,7 @@ The same facts are exported as scalars, one variable each:
 | Environment variable                  | JSON field                      | Always present | Meaning                                                                                                              |
 | ------------------------------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `VIBECODER_CALLBACK_SCHEMA_VERSION`   | `schemaVersion`                 | yes            | Contract version — see [Versioning](#versioning--the-contract-is-additive)                                            |
-| `VIBECODER_CALLBACK_EVENT`            | `event`                         | yes            | `success`, `failure`, `always` or `cycle`                                                                            |
+| `VIBECODER_CALLBACK_EVENT`            | `event`                         | yes            | `success`, `failure`, `always`, `cycle` or `host_failure`                                                            |
 | `VIBECODER_CALLBACK_CONTEXT`          | —                               | yes            | Path to the JSON document for this invocation                                                                        |
 | `VIBECODER_RUN_ID`                    | `runId`                         | yes            | Worker run id                                                                                                        |
 | `VIBECODER_RESULT`                    | `result`                        | yes            | The run's own result: `success` or `failure`                                                                         |

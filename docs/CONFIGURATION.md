@@ -2862,7 +2862,9 @@ flowchart LR
 - The path is resolved on the filesystem the **worker process** sees. The
   worker runs inside the container ([Run Mode](#-run-mode) has one member), so
   the hook must exist at that absolute path **inside the container** — a host
-  path that is not mounted in is not visible to it.
+  path that is not mounted in is not visible to it. `host_failure` is the
+  exception: the host launcher spawns it, so its path must exist on the
+  **host**.
 - Every hook is bounded by `timeout_seconds` (default `60`, maximum `3600`);
   a hook that exceeds it is terminated with `SIGTERM` and recorded as
   `timed_out` with exit code `124`. A hook that ignores `SIGTERM`, or that
