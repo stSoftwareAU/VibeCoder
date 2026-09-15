@@ -53,6 +53,15 @@ flowchart TD
 The default branch's ruleset is configured **at setup time**, once per monitored
 repo, idempotently. It sets two things:
 
+- **One required check: `gate`.** The `Quality` workflow
+  (`.github/workflows/quality.yml`) calls each gated workflow as a reusable
+  workflow and ends with a `gate` job that `needs` all of them and fails
+  unless every one reported exactly `success` (`.github/scripts/gate.sh` —
+  a skipped or cancelled job closes the gate). The ruleset requires `gate`
+  alone, so adding a shard or renaming a job never means editing the
+  ruleset. `pr_check_contexts.ts` derives the called workflows' contexts as
+  *covered by* the gate, and the offline test still refuses a check nothing
+  requires. The pattern is GRQ-AutoTrader's.
 - **Require status checks to pass** — the merge is blocked until every required
   check is green.
 - **Require the branch to be up to date**

@@ -35,6 +35,13 @@ export interface DerivedContext {
   workflow: string;
   /** The job key inside that workflow. */
   job: string;
+  /**
+   * The aggregate check that requires this one on the ruleset's behalf: a
+   * `gate` job in a PR workflow that `needs` the job calling this context's
+   * workflow. A covered context is reported, read and gated — it is simply
+   * not listed in the ruleset itself.
+   */
+  coveredBy?: string;
 }
 
 /** A context that runs on every PR and is deliberately not required. */
@@ -205,8 +212,9 @@ function jobContexts(
     reject(
       workflow,
       job,
-      "calls a reusable workflow, whose check names this module does not " +
-        "derive — require its contexts explicitly",
+      "calls a reusable workflow that no aggregate gate job in this " +
+        "workflow needs — either add it to the gate's `needs` or require " +
+        "its contexts explicitly",
     );
   }
   const combinations = matrixCombinations(
@@ -235,20 +243,92 @@ function jobContexts(
  * ignored; the result is ordered by workflow path then job, so a caller's
  * assertions stay deterministic.
  */
+/**
+ * The workflow file a `uses: $/.github/workflows/x.yml` job calls — `$/` is
+ * GitHub's self-repository syntax (what zizmor asks for); `./` is the older
+ * spelling of the same thing.
+ */
+function calledWorkflowPath(definition: unknown): string | null {
+  if (!isRecord(definition)) return null;
+  const uses = definition["uses"];
+  if (typeof uses !== "string") return null;
+  const local = uses.replace(/^(\.|\$)\//, "");
+  return local.startsWith(".github/workflows/") ? local.split("@")[0]! : null;
+}
+
+/** The job ids a job's `needs` names. */
+function needsOf(definition: unknown): string[] {
+  if (!isRecord(definition)) return [];
+  const needs = definition["needs"];
+  if (typeof needs === "string") return [needs];
+  if (Array.isArray(needs)) return needs.filter((n) => typeof n === "string");
+  return [];
+}
+
+/**
+ * Aggregate gates: in each PR workflow, a job whose `needs` names every job
+ * of that workflow that calls a reusable workflow. Its own context stands
+ * for all of theirs (the quality gate pattern, GRQ-AutoTrader's `gate`).
+ *
+ * @returns Called workflow path → the gate context covering it, and the
+ *   calling jobs the gate covers
+ */
+function aggregateGates(
+  files: WorkflowFile[],
+  branch: string,
+): { covered: Map<string, string>; callers: Set<string> } {
+  const covered = new Map<string, string>();
+  const callers = new Set<string>();
+  for (const file of files) {
+    if (file.kind !== "workflow") continue;
+    if (!runsOnEveryPullRequest(file.parsed, branch)) continue;
+    const jobs = isRecord(file.parsed) ? file.parsed["jobs"] : undefined;
+    if (!isRecord(jobs)) continue;
+    const calls = Object.entries(jobs)
+      .map(([job, definition]) => [job, calledWorkflowPath(definition)])
+      .filter((entry): entry is [string, string] => entry[1] !== null);
+    if (calls.length === 0) continue;
+    for (const [job, definition] of Object.entries(jobs)) {
+      const needs = new Set(needsOf(definition));
+      if (!calls.every(([caller]) => needs.has(caller))) continue;
+      const contexts = jobContexts(file.path, job, definition);
+      if (contexts.length !== 1) continue;
+      for (const [caller, called] of calls) {
+        covered.set(called, contexts[0]!);
+        callers.add(`${file.path} (${caller})`);
+      }
+    }
+  }
+  return { covered, callers };
+}
+
 export function pullRequestCheckContexts(
   files: WorkflowFile[],
   branch: string,
 ): DerivedContext[] {
   const derived: DerivedContext[] = [];
   const seen = new Map<string, string>();
+  const gates = aggregateGates(files, branch);
 
   for (const file of files) {
     if (file.kind !== "workflow") continue;
-    if (!runsOnEveryPullRequest(file.parsed, branch)) continue;
+    const coveredBy = gates.covered.get(file.path);
+    // A called workflow is derived through its gate whether or not it still
+    // carries a pull_request trigger of its own (it does while the ruleset
+    // moves over); a workflow nothing calls is derived only when it runs on
+    // every PR, as before.
+    if (
+      coveredBy === undefined && !runsOnEveryPullRequest(file.parsed, branch)
+    ) {
+      continue;
+    }
     const jobs = isRecord(file.parsed) ? file.parsed["jobs"] : undefined;
     if (!isRecord(jobs)) continue;
 
     for (const [job, definition] of Object.entries(jobs)) {
+      // The calling job is the gate's business; its called workflow's jobs
+      // are the contexts.
+      if (gates.callers.has(`${file.path} (${job})`)) continue;
       for (const context of jobContexts(file.path, job, definition)) {
         const owner = seen.get(context);
         if (owner !== undefined) {
@@ -258,7 +338,12 @@ export function pullRequestCheckContexts(
           );
         }
         seen.set(context, `${file.path} (${job})`);
-        derived.push({ context, workflow: file.path, job });
+        derived.push({
+          context,
+          workflow: file.path,
+          job,
+          ...(coveredBy === undefined ? {} : { coveredBy }),
+        });
       }
     }
   }
@@ -282,7 +367,9 @@ export function reconcileRequiredContexts(
   const exemptSet = new Set(exempt.map((e) => e.context));
 
   return {
+    // A context a gate covers is required through the gate, not by name.
     missing: derived
+      .filter((d) => d.coveredBy === undefined || !requiredSet.has(d.coveredBy))
       .map((d) => d.context)
       .filter((c) => !requiredSet.has(c) && !exemptSet.has(c)),
     phantom: required.filter((c) => !derivedSet.has(c)),
