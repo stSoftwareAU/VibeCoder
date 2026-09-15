@@ -2,15 +2,15 @@
  * container-restart-backoff command (Issue #4072).
  *
  * The host supervisor (`loop.sh`, `loop.ps1`) calls this after every launcher
- * invocation. It records the outcome, escalates a repeatedly failing host
- * through the crash-notification channel, and prints the number of seconds the
- * supervisor should wait before re-invoking the launcher — one integer on
- * stdout, so the shell can use it directly.
+ * invocation. It records the outcome, delivers a repeatedly failing host to
+ * the operator's own `callbacks.host_failure` hook (Issue #2108), and prints
+ * the number of seconds the supervisor should wait before re-invoking the
+ * launcher — one integer on stdout, so the shell can use it directly.
  *
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run --allow-net \
  *     mod.ts container-restart-backoff --exit-status 91 \
- *     [--phase-file ~/.vibe-coder/last-launch-phase] [--repo-dir .] \
+ *     [--phase-file ~/.vibe-coder/last-launch-phase] \
  *     [--termination-file ~/.vibe-coder/last-launch-termination] \
  *     [--log-dir ~/logs] [--quota-pause-sleep-seconds 3600] \
  *     [--base-sleep-seconds 60] [--work-dir /path]
@@ -61,6 +61,7 @@ import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { pathStyleFor } from "../lib/host_path_style.ts";
 import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
+import { readHostFailureHook } from "../lib/host_failure_hook.ts";
 
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -193,6 +194,14 @@ export const containerRestartBackoffCommand: Command = {
         launchTerminationMarkerPath(stateDir()),
     );
 
+    // Issue #2108: the host's own escalation channel, read once here. A
+    // missing key means no hook and is not a fault; a malformed `callbacks`
+    // block is reported as `config_invalid` in the self-heal event rather
+    // than silently answered as "nothing configured".
+    const hostFailureHook = await readHostFailureHook(
+      resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup }),
+    );
+
     // Issue #633: the alert named `unknown-host` and quoted no log, so it
     // carried nothing that was not already in the state file. Both were
     // knowable.
@@ -264,10 +273,11 @@ export const containerRestartBackoffCommand: Command = {
       crashConfig,
       repo: optionalString(args["repo"]),
       issueNumber: optionalNumber(args["issue-number"]),
-      // A launcher failure has no issue in flight to report on, so the
-      // fallback channel is the worker's own repository — named by the
-      // checkout the supervisor invokes this from (Issue #556).
-      repoDir: optionalString(args["repo-dir"]) ?? Deno.cwd(),
+      // Issue #2108: the escalation channel is the host's own
+      // `callbacks.host_failure` hook. Read from the same `.config.json` the
+      // `log_dir` read above resolves, so both halves of this command agree
+      // on which file the host is configured by.
+      hostFailureHook,
     });
 
     // The message is the supervisor's sleep interval and nothing else.

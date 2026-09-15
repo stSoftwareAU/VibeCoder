@@ -203,17 +203,18 @@ $EgressLog = ""
 .DESCRIPTION
     Under Task Scheduler there is no supervising process between runs, so the
     launcher records its own outcome: consecutive failures grow the backoff
-    and, past the phase's threshold, escalate through GitHub. loop.ps1 (and
+    and, past the phase's threshold, escalate through the host's own
+    callbacks.host_failure hook - never GitHub (Issue #2108). loop.ps1 (and
     loop.sh) set VIBE_SUPERVISOR_RECORDS_OUTCOME because they record the same
     outcome themselves - one failure must be counted once, not twice.
     Best-effort: a recorder that cannot run says so on stderr and never
     changes this launcher's exit status.
 
-    --allow-sys=hostname: this record is what escalates, and the escalation is
-    titled for the host. Without the permission Deno.hostname() throws, the
-    report is filed as "unknown-host" - and the title is also its dedup key,
-    so every host in the fleet collapses onto one issue per phase and no
-    report can be traced to a machine (Issues #633, #709, #710).
+    --allow-sys=hostname: this record is what escalates, and the escalation
+    names the host it is about. Without the permission Deno.hostname() throws
+    and the report says "unknown-host", so every host in the fleet reports as
+    the same machine and no report can be traced to one (Issues #633, #709,
+    #710).
 
     $EvidenceLog carries the failing step's own output - the build's, when a
     build is what failed (Issue #709), or the container capture, for every

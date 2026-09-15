@@ -15,7 +15,11 @@
  *   - a suppressed escalation is queued and retried until the limiter allows
  *     it, and the delivered report carries the attempts that were lost;
  *   - an escalation still undeliverable after the attempt cap is recorded as
- *     a failure in the self-heal health report rather than dropped.
+ *     an `escalation_lost` failure in the self-heal health report rather than
+ *     dropped;
+ *   - with a `callbacks.host_failure` hook configured (Issue #2108), it is the
+ *     hook's status — not the crash channel's — that decides whether anybody
+ *     was told, while the crash channel's own result is still recorded.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -39,6 +43,8 @@ import type {
   CrashNotificationParams,
 } from "../lib/crash_notification.ts";
 import { summariseSelfHealEvents } from "../lib/self_heal_events.ts";
+import type { HostFailurePayload } from "../lib/host_failure_hook.ts";
+import type { CallbackInvocation } from "../lib/run_callbacks.ts";
 
 const HOUR = 3600;
 const DAY = 86400;
@@ -136,7 +142,7 @@ async function setupHarness(): Promise<Harness> {
       });
       return summary.recent
         .filter((e) =>
-          e.action === "escalated" || e.action === "escalation_undeliverable"
+          e.action === "escalated" || e.action === "escalation_lost"
         )
         .map((e) => ({
           reason: e.reason,
@@ -554,9 +560,7 @@ Deno.test("recordContainerRestartOutcome - an undeliverable escalation is record
 
     // The loss is a failure in the health report, not silence.
     const events = await harness.escalatedEvents();
-    const undeliverable = events.filter((e) =>
-      e.action === "escalation_undeliverable"
-    );
+    const undeliverable = events.filter((e) => e.action === "escalation_lost");
     assertEquals(undeliverable.length, 1);
     assertEquals(undeliverable[0]!.result, "failed");
     assertStringIncludes(undeliverable[0]!.reason, "rate_limited");
@@ -581,9 +585,7 @@ Deno.test("recordContainerRestartOutcome - a streak that ends undelivered is sti
     await harness.record(0, "container_run");
 
     const events = await harness.escalatedEvents();
-    const undeliverable = events.filter((e) =>
-      e.action === "escalation_undeliverable"
-    );
+    const undeliverable = events.filter((e) => e.action === "escalation_lost");
     assertEquals(undeliverable.length, 1);
     assertEquals(undeliverable[0]!.result, "failed");
     assertStringIncludes(undeliverable[0]!.reason, "never delivered");
@@ -610,9 +612,7 @@ Deno.test("recordContainerRestartOutcome - a fault that moves phase does not dro
     await harness.record(17, "runtime_detection");
 
     const events = await harness.escalatedEvents();
-    const undeliverable = events.filter((e) =>
-      e.action === "escalation_undeliverable"
-    );
+    const undeliverable = events.filter((e) => e.action === "escalation_lost");
     assertEquals(undeliverable.length, 1);
     assertEquals(undeliverable[0]!.result, "failed");
     assertStringIncludes(undeliverable[0]!.reason, "never delivered");
@@ -649,4 +649,92 @@ Deno.test("buildContainerEscalationParams - the marker identifies the streak", (
   assertStringIncludes(params.logTail, "update");
   assertStringIncludes(params.logTail, "3 earlier");
   assertStringIncludes(params.logTail, "rate_limited");
+});
+
+// ---------------------------------------------------------------------------
+// The hook decides delivery; the crash channel is still recorded (Issue #2108)
+// ---------------------------------------------------------------------------
+
+Deno.test("recordContainerRestartOutcome - the hook decides delivery while the crash channel is only recorded", async () => {
+  const harness = await setupHarness();
+  try {
+    const payloads: HostFailurePayload[] = [];
+    let hookStatus: CallbackInvocation["status"] = "failed";
+    const record = (exitStatus: number) =>
+      recordContainerRestartOutcome({
+        workDir: harness.workDir,
+        exitStatus,
+        phaseMarker: "container_run",
+        config: FAST_CONFIG,
+        crashConfig: harness.crashConfig,
+        now: () => harness.nowSeconds,
+        hostFailureHook: {
+          kind: "hook",
+          path: "/opt/vibe-hooks/host-failure.sh",
+          timeoutSeconds: 30,
+        },
+        invokeHook: (payload, hook) => {
+          payloads.push(payload);
+          return Promise.resolve({
+            event: "host_failure",
+            path: hook.path,
+            status: hookStatus,
+            exitCode: hookStatus === "ok" ? 0 : 1,
+            stdout: "",
+            stderr: "",
+            durationMs: 3,
+          } as CallbackInvocation);
+        },
+        // The crash channel delivers happily throughout — it must not be what
+        // closes the incident.
+        send: (_config, params) => {
+          harness.attempts.push({ params, notified: true });
+          return Promise.resolve({
+            ok: true as const,
+            value: { notified: true },
+          });
+        },
+      });
+
+    for (let i = 0; i < 3; i++) {
+      harness.nowSeconds += 60;
+      await record(17);
+    }
+    // The crash channel said "delivered" and the hook said "failed": the
+    // escalation is pending, because the hook is the operator's channel.
+    assertEquals(harness.attempts.length, 1);
+    assertEquals(payloads.length, 1);
+
+    harness.nowSeconds += 60;
+    const retry = await record(17);
+    assertEquals(retry.escalated, false);
+    assertEquals(retry.escalationPendingAttempts, 2);
+
+    // The hook comes good and the incident closes on its word alone.
+    hookStatus = "ok";
+    harness.nowSeconds += 60;
+    const delivered = await record(17);
+    assertEquals(delivered.escalated, true);
+    assertEquals(delivered.escalationPendingAttempts, 0);
+    // A retry is a repeat of a report nothing has yet delivered: the count
+    // is still 1, and `attempt` is what says this is the third try.
+    assertEquals(payloads[0]!.delivery, { kind: "first", count: 1 });
+    assertEquals(payloads[2]!.delivery, { kind: "repeat", count: 1 });
+    assertEquals(payloads[2]!.attempt, 3);
+
+    const summary = await summariseSelfHealEvents({
+      workDir: harness.workDir,
+      recentLimit: 500,
+    });
+    const escalated = summary.recent.filter((e) => e.action === "escalated");
+    assertEquals(escalated.length, 3);
+    // Every attempt records what the crash channel did, without letting it
+    // decide.
+    assert(
+      escalated.every((e) => e.details?.crashChannel === "delivered"),
+      "the crash channel's own result must still be recorded",
+    );
+  } finally {
+    await harness.cleanup();
+  }
 });
