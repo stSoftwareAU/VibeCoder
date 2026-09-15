@@ -1069,6 +1069,7 @@ reported as what it is — the work is done, the summary is short:
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
 | `summary_incomplete` | a PR exists and a summary rule is unmet | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
 With **no** PR for the run's branch the gate blocks exactly as before — the whole
@@ -1080,6 +1081,36 @@ is on the issue thread rather than only in one host's log.
 file checks above are the second: a workflow file carrying a finding is a defect
 in the change, so it stops the run PR or no PR, exactly as the security gate
 does.
+
+**An exception still has to report the PR it blocked.** Stopping the run is the
+gate's call; pretending no PR exists is not. On 2026-09-12 a run's agent raised
+its own PR, the changed-workflow gate refused thirty seconds later, and the
+worker commented "so no PR was raised" over that live PR, recorded the failure
+as category `unknown` — for a block it had written the reason for itself — and
+archived the host as having delivered nothing. The PR merged unchanged three
+hours later. So when the gate blocks and the run's own head already carries an
+open PR:
+
+| What | With no PR on the head | With a PR on the head |
+| --- | --- | --- |
+| Run result | `failure` | `failure` — the finding is still a defect |
+| Comment | "so no PR was raised" | names the PR and says the finding must be fixed on it |
+| Category | `workflow_gate` | `workflow_gate` — never `unknown` |
+| Outcome | `no_pr` | `pr` with `prNumber`, plus the block's phase and category |
+
+The outcome kind is what downstream health reporting counts, so "delivered, one
+finding outstanding" is now countable apart from "delivered nothing"
+(Issue #1947). `deriveRunOutcome` attaches the block to **any**
+PR-then-later-step failure, not only this gate's.
+
+**Implementation.** `lookupBlockedGatePr` and the gate block in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+`buildChangedWorkflowGateMessage` in
+[`changed_workflow_gate.ts`](../../worker/deno/lib/changed_workflow_gate.ts),
+the `workflow_gate` category in
+[`failure_diagnosis.ts`](../../worker/deno/lib/failure_diagnosis.ts), and
+`PrBlockedAfterRaise` in
+[`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts) (Issue #2044).
 
 **The security gate is the deliberate exception among the summary gates, and it
 runs first.** A PR that
@@ -1105,7 +1136,7 @@ rendering in [`heartbeat_storage.ts`](../../worker/deno/lib/heartbeat_storage.ts
 ```mermaid
 flowchart TD
     A["Branch pushed, quality gate passed"] --> SEC{"Security-fix gate<br/>vulnerability-fix evidence?"}
-    SEC -->|"missing"| F2["Run fails — PR or no PR"]
+    SEC -->|"missing"| F2["Run fails — PR or no PR<br/>a PR on the head is named,<br/>outcome pr + prNumber"]
     SEC -->|"satisfied or inactive"| WF{"Changed-workflow gate<br/>file checks clean?"}
     WF -->|"finding or unreadable"| F2
     WF -->|"clean or nothing in scope"| G{"Summary gates<br/>rule satisfied?"}

@@ -9,15 +9,11 @@ name: Container Build
 # each SHA corresponds to is captured in a leading comment.
 
 on:
-  # Called by quality.yml, whose `gate` job is the one required check; the
-  # pull_request trigger below is kept until the ruleset requires `gate`
-  # alone, then removed so each PR runs this once.
+  # Called by quality.yml, whose `gate` job is the one required check: on a
+  # pull request this workflow runs once, through that call. The branch
+  # filter it used to carry (Develop, main, milestone/* — Issues #3360,
+  # #3940) is quality.yml's now.
   workflow_call:
-  pull_request:
-    # Issue #3360 — milestone sub-issue PRs target a shared
-    # `milestone/<name>` branch (Issue #1300); include it so the container
-    # gate runs before those PRs merge, not only on Develop/main PRs.
-    branches: [Develop, main, milestone/*]
   # Issue #1929 — this is a test/lint workflow, so it gates the pull request
   # and does not re-run on the push that merges it: a required check that
   # already passed on the PR costs 11 minutes again post-merge for the same

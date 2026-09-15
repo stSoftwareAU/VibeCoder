@@ -53,6 +53,7 @@ import {
   validateReproductionStatus,
 } from "../reproduction_status_gate.ts";
 import {
+  type BlockedGatePr,
   buildChangedWorkflowGateMessage,
   evaluateChangedWorkflowGate,
 } from "../changed_workflow_gate.ts";
@@ -299,6 +300,48 @@ async function armAutoMergeAtCreation(
     repo,
     prNumber,
   });
+}
+
+/**
+ * The open PR already on this run's head, when the gate that just blocked was
+ * not, in fact, ahead of the PR (Issue #2044).
+ *
+ * The agent raises its own PR from inside the execute phase often enough that
+ * the completion phase carries a recovery path for it, and the changed-workflow
+ * gate runs whether or not that happened. Absent this lookup the block reported
+ * "no PR was raised" over a live PR on its own head.
+ *
+ * Returns `undefined` for "no open PR" and for a lookup fault alike — both mean
+ * this run cannot name a PR — but the two are logged apart, so an outage is
+ * never silently recorded as a run that raised nothing. A URL this phase cannot
+ * number is refused for the same reason `reportSummaryRuleBlock` refuses one:
+ * naming `#0` is worse than naming nothing.
+ */
+async function lookupBlockedGatePr(
+  repo: string,
+  branchName: string,
+  deps: WorkerDeps,
+): Promise<BlockedGatePr | undefined> {
+  const logger = deps.logger;
+  const existing = await deps.pr.findExistingPrForBranch(repo, branchName);
+  if (!existing.ok) {
+    logger.info(
+      "No open PR found for this run's branch — the gate block is reported " +
+        "as a run that raised no PR",
+      { repo, branch: branchName, lookup: existing.error.message },
+    );
+    return undefined;
+  }
+  const number = prNumberFromUrl(existing.value);
+  if (number <= 0) {
+    logger.warn(
+      "Could not read a PR number from the open PR URL — the gate block " +
+        "names no PR rather than naming #0",
+      { repo, branch: branchName, prUrl: existing.value },
+    );
+    return undefined;
+  }
+  return { number, url: existing.value };
 }
 
 /**
@@ -1564,11 +1607,25 @@ async function completionBody(
     });
 
     if (!workflowGate.ok) {
-      const message = buildChangedWorkflowGateMessage(workflowGate);
+      // The gate runs whether or not a PR already exists, so the run's own
+      // head may carry one the agent raised from inside the execute phase
+      // (Issue #2044). Which world this is decides what the comment says and
+      // what the outcome records — told "no PR was raised" over an open PR, a
+      // human read a delivered run as having delivered nothing.
+      const blockedPr = await lookupBlockedGatePr(
+        repo,
+        state.branchName,
+        deps,
+      );
+      const message = buildChangedWorkflowGateMessage(
+        workflowGate,
+        blockedPr,
+      );
       logger.warn("Changed-workflow file checks blocked PR creation", {
         files: workflowGate.scannedFiles,
         findings: workflowGate.findings.length,
         errors: workflowGate.errors.length,
+        ...(blockedPr ? { prNumber: blockedPr.number } : {}),
       });
       try {
         await deps.github.createClient(logger).postComment(
@@ -1583,6 +1640,16 @@ async function completionBody(
         logger.warn("Could not post the changed-workflow gate comment", {
           error: err instanceof Error ? err.message : String(err),
         });
+      }
+      if (blockedPr) {
+        // The run still fails — the finding is a defect in the change, not a
+        // documentation shortfall — but the outcome names the PR the work is
+        // on, so the archive reads "delivered, one finding outstanding"
+        // rather than "delivered nothing" (Issue #2044). `deriveRunOutcome`
+        // turns these two fields plus the failed result into a `pr` outcome
+        // carrying the diagnosed category of the block.
+        state.prUrl = blockedPr.url;
+        state.prNumber = blockedPr.number;
       }
       return { status: "failure", reason: message };
     }
