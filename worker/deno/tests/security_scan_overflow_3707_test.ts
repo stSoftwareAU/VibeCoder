@@ -74,14 +74,30 @@ Deno.test("SEC-7e148c3ba692 - denies unlisted secret-shaped variable names", () 
   assertEquals(child["REPO_NAME"], "org/repo");
 });
 
-Deno.test("SEC-7e148c3ba692 - keeps the credentials the agent legitimately needs", () => {
+// (Issue #1923) This case used to hand `buildClaudeChildEnv` both Anthropic
+// credentials at once and require both back. The subscription-only billing
+// policy changed that invariant: a run holding a usable OAuth token withholds
+// the metered key, so the CLI cannot silently fall back to per-token spend
+// when the subscription is spent. The property under test — the allowlist
+// keeps what the agent legitimately needs to authenticate, rather than
+// stripping everything secret-shaped — is unchanged, and is now asserted once
+// per deployment shape instead of on a host holding both.
+
+Deno.test("SEC-7e148c3ba692 - keeps the credentials an API-key deployment needs", () => {
   const child = buildClaudeChildEnv({
     GH_TOKEN: "gh-installation-token",
     ANTHROPIC_API_KEY: "sk-ant-test",
-    CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
   });
   assertEquals(child["GH_TOKEN"], "gh-installation-token");
   assertEquals(child["ANTHROPIC_API_KEY"], "sk-ant-test");
+});
+
+Deno.test("SEC-7e148c3ba692 - keeps the credentials a subscription deployment needs", () => {
+  const child = buildClaudeChildEnv({
+    GH_TOKEN: "gh-installation-token",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
+  });
+  assertEquals(child["GH_TOKEN"], "gh-installation-token");
   assertEquals(child["CLAUDE_CODE_OAUTH_TOKEN"], "oauth-token");
 });
 
