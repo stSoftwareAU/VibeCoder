@@ -661,3 +661,42 @@ Deno.test("normaliseFailureCategory - accepts scheduled_release (Issue #424)", (
     "scheduled_release",
   );
 });
+
+// ============================================================================
+// workflow_gate — a gate the worker itself applied (Issue #2044)
+// ============================================================================
+
+Deno.test("detectFailureCategory - the changed-workflow gate's refusal is workflow_gate, not unknown (Issue #2044)", () => {
+  const reason =
+    "Workflow files changed by this run did not pass the GitHub Actions " +
+    "file checks, so PR #2100 (https://github.com/o/r/pull/2100) cannot " +
+    "merge until the finding below is fixed on it (Issue #1859).\n\n" +
+    "Findings:\n- [BP-SHA-PIN-actions-checkout] .github/workflows/ci.yml:18 " +
+    "— Pin third-party action to a 40-char commit SHA";
+  assertEquals(detectFailureCategory(reason), "workflow_gate");
+});
+
+Deno.test("detectFailureCategory - a timeout that merely quotes the gate keeps its own category (Issue #2044, #249)", () => {
+  // The agent's quoted output reaches the failure message, and an agent
+  // writing ABOUT this gate must not turn its timeout into a gate block.
+  const reason = "Claude timed out after 3600s\nWatchdog: hard-timeout\n" +
+    "<details>\n<summary>Last output from Claude</summary>\n" +
+    "I checked that workflow files changed by this run did not pass the " +
+    "GitHub Actions file checks.\n</details>";
+  assertEquals(detectFailureCategory(reason), "timeout");
+});
+
+Deno.test("workflow_gate category - diagnosis, oneliner, display and validation all handle it (Issue #2044)", () => {
+  assertEquals(normaliseFailureCategory("workflow_gate"), "workflow_gate");
+  assertEquals(getFailureCategoryDisplay("workflow_gate"), "workflow-gate");
+  assertStringIncludes(
+    getFailureDiagnosis("workflow_gate"),
+    "best-practice-ignore",
+  );
+  assertStringIncludes(
+    getFailureDiagnosisOneliner("workflow_gate"),
+    "changed-workflow file checks",
+  );
+  // A defect in the change, not the environment: never retried as transient.
+  assertEquals(isInfrastructureFailure("workflow_gate"), false);
+});
