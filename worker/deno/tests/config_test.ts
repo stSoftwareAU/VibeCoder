@@ -24,9 +24,12 @@ import {
   validateConfig,
 } from "../lib/config.ts";
 import {
+  IMAGE_AGENT_PROVIDERS_ENV,
   resolveAgentProviderId,
+  setConfiguredAgentProviderId,
   setRunProviderOverride,
 } from "../lib/agent_provider.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
 import type { ConfigFile, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
@@ -47,6 +50,25 @@ async function withTempConfig(
   }
 }
 
+/**
+ * An environment whose image installed both providers (Issue #2086).
+ *
+ * `loadConfig` gates the providers it resolves on the set the *running image*
+ * installed, so reading the ambient environment made the provider cases below
+ * assert which agent CLIs this host's image happens to carry: on a
+ * `claude`-only image the override case failed with "did not install the
+ * deepseek provider" instead of exercising the override it is named for, and
+ * on a `deepseek`-only image the no-override case failed the same way. The
+ * installed set is stated here — the shape Issue #1977 established for
+ * `provider_auto_runtime_test.ts` — so the assertions hold on any image.
+ */
+function statedEnv(values: Record<string, string> = {}): EnvLookup {
+  return envFrom({
+    [IMAGE_AGENT_PROVIDERS_ENV]: "claude,deepseek",
+    ...values,
+  });
+}
+
 Deno.test("config - the per-run provider override applies to the loaded agent (Issue #2062)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
@@ -63,11 +85,11 @@ Deno.test("config - the per-run provider override applies to the loaded agent (I
     // dir).
     setRunProviderOverride("deepseek");
     await withTempConfig(testConfig, async (configPath) => {
-      const config = await loadConfig(configPath);
+      const config = await loadConfig(configPath, { env: statedEnv() });
       assertEquals(config.agentProvider, "deepseek");
       // And the seam records it, so invocations that resolve the active
       // provider see the switch too.
-      assertEquals(resolveAgentProviderId(), "deepseek");
+      assertEquals(resolveAgentProviderId({ env: statedEnv() }), "deepseek");
     });
   } finally {
     setRunProviderOverride(undefined);
@@ -81,9 +103,46 @@ Deno.test("config - no override leaves the configured provider alone (Issue #206
     agent_provider: "claude",
   };
   await withTempConfig(testConfig, async (configPath) => {
-    const config = await loadConfig(configPath);
+    const config = await loadConfig(configPath, { env: statedEnv() });
     assertEquals(config.agentProvider, "claude");
   });
+});
+
+Deno.test("config - loadConfig resolves the active provider through the injected lookup (Issue #2086)", async () => {
+  // The lookup states the installed set, so both halves below hold on a
+  // single-provider image as much as on a two-provider one. A loader that
+  // read the process environment here would answer from whichever agent CLIs
+  // this host's image happens to carry.
+  try {
+    await withTempConfig({
+      allowed_authors: ["testuser"],
+      repos: ["org/repo"],
+      agent_provider: "deepseek",
+      agent_providers: ["claude", "deepseek"],
+    }, async (configPath) => {
+      const config = await loadConfig(configPath, { env: statedEnv() });
+      assertEquals(config.agentProvider, "deepseek");
+    });
+
+    // And the stated set is authoritative the other way too: a provider it
+    // excludes is refused, naming the stated set rather than the host's.
+    await withTempConfig({
+      allowed_authors: ["testuser"],
+      repos: ["org/repo"],
+      agent_provider: "codex",
+    }, async (configPath) => {
+      const error = await assertRejects(
+        () => loadConfig(configPath, { env: statedEnv() }),
+        Error,
+      );
+      assertStringIncludes(error.message, 'did not install the "codex"');
+      assertStringIncludes(error.message, "Installed: claude, deepseek");
+    });
+  } finally {
+    // The resolved id is recorded on a module-level seam, so clear it rather
+    // than leaving "deepseek" as the default every later case loads under.
+    setConfiguredAgentProviderId(undefined);
+  }
 });
 
 Deno.test("config - getEnvOrDefault returns env var when set", () => {
