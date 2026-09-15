@@ -30,7 +30,7 @@
  * Australian English spelling used throughout (behaviour, recognised).
  */
 
-import type { Result } from "../types.ts";
+import type { Result, WorkerConfig } from "../types.ts";
 import {
   detectUnknownNestedKeys,
   formatUnknownKeyWarnings,
@@ -56,6 +56,16 @@ export interface GraftContextConfig {
  */
 export function graftContextOff(): GraftContextConfig {
   return { enabled: false };
+}
+
+/**
+ * Whether this host has Graft repo-context injection switched on.
+ *
+ * The one read point for the switch, so a caller never reaches into the block
+ * itself and the default — off — is stated in exactly one place.
+ */
+export function isGraftContextEnabled(config: WorkerConfig): boolean {
+  return config.graftContext.enabled;
 }
 
 /** Options for {@link parseGraftContextConfig}. */

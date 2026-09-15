@@ -14,8 +14,10 @@ import { loadConfig } from "../lib/config.ts";
 import {
   assertGraftContextConfig,
   graftContextOff,
+  isGraftContextEnabled,
   parseGraftContextConfig,
 } from "../lib/graft_context_config.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   detectUnknownConfigKeys,
   KNOWN_CONFIG_KEYS,
@@ -190,4 +192,17 @@ Deno.test("graft_context_config - assertGraftContextConfig throws on a fault", (
   }
   assert(thrown, "expected assertGraftContextConfig to throw");
   assert(thrown.message.includes("graft_context.enabled"), thrown.message);
+});
+
+// --- isGraftContextEnabled ---
+
+Deno.test("graft_context_config - isGraftContextEnabled reads the loaded switch", async () => {
+  await withConfig(async (path, write) => {
+    await write({ repos: ["org/repo"], graft_context: { enabled: true } });
+    assertEquals(isGraftContextEnabled(await loadConfig(path)), true);
+  });
+});
+
+Deno.test("graft_context_config - isGraftContextEnabled is false on the default config", () => {
+  assertEquals(isGraftContextEnabled(buildDefaultWorkerConfig()), false);
 });
