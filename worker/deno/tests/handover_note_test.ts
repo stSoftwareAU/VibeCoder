@@ -69,6 +69,15 @@ Deno.test("buildHandoverNote #769 - names the cause, branch, what was done and w
   assertStringIncludes(note, "Wind-down notice: delivered");
 });
 
+Deno.test("buildHandoverNote #2142 - what remains names the PR summary and its closure block", () => {
+  // VibeCoder#2110: the resumed run continued the diff, passed the quality
+  // gate, and was permanently failed for a summary nothing told it to write.
+  const note = buildHandoverNote(FACTS);
+  assertStringIncludes(note, "docs/archive/pr-summaries/pr-summary-769.md");
+  assertStringIncludes(note, "## Acceptance Criteria");
+  assertStringIncludes(note, "fails at the gate however complete the code is");
+});
+
 Deno.test("buildHandoverNote #769 - a scheduled release is not described as a timeout", () => {
   const note = buildHandoverNote({ ...FACTS, cause: "scheduled-release" });
   assertStringIncludes(note, "released on schedule");
