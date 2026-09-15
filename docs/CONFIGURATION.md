@@ -1292,26 +1292,41 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   operator debugging a launcher fault learns about the opt-out at the moment it
   discards their patch, rather than from this page. An update that changed
   nothing says nothing.
-- **Three consecutive failures spanning at least fifteen minutes raise one
-  GitHub issue** titled `Worker checkout update failing on <host>` against the
-  checkout's own origin repository, carrying the "active development tree"
-  diagnosis (Issue #4204). The span qualifies the count because three failures
+- **Three consecutive failures spanning at least fifteen minutes fire the
+  `callbacks.host_failure` hook** with a `checkout_update` payload — the host,
+  the consecutive-failure count, when the streak started, the failing git
+  step's exit status when it is known, the "active development tree" diagnosis
+  and the checkout's branch and dirty-file count (Issues #4204, #2107, #2110).
+  Nothing is filed on GitHub: a host-level fault belongs to whoever runs the
+  host, and the hook is where that operator already receives them — see
+  [Post-Run Callbacks](#-post-run-callbacks). The span qualifies the count because three failures
   eight seconds apart are one transient host fault, not the hour of stale code
   the threshold was written to report (Issue #1017). The streak lives in
   `~/logs/checkout-update-failure-streak` — the count and the first failure's
   timestamp, with the older bare-count format still read — and a successful
-  update resets it to zero. `--allow-sys=hostname` is what lets that title name
-  the host; without it every host would share one report.
-- **A report that could not be sent is retried and queued** (Issue #1018). The
-  escalation travels over the network whose loss is the commonest cause of the
-  streak, so a send that throws leaves the streak eligible — every later
-  failing run attempts delivery again — and the evidence is spooled in
-  `~/logs/checkout-update-escalation`, one entry per streak, overwritten. The
-  escalated-at marker is recorded only on a successful send, which is what
-  keeps the rest of the streak quiet. The run that recovers delivers whatever
-  is still queued — marked as an outage that has since ended — and then clears
-  the streak and the spool together, so an outage is reported after it ends and
-  a queued report never outlives the condition it describes.
+  update resets it to zero. `--allow-sys=hostname` is what lets the payload
+  name the host; without it every host would report as the same one.
+- **A report the hook did not take is retried, up to five attempts**
+  (Issues #1018, #2110). The hook runs on the host whose fault is being
+  reported, so it is exactly the thing that can be broken too: an invocation
+  that returns anything but `ok` leaves the streak eligible — every later
+  failing run tries again — and the evidence is spooled in
+  `~/logs/checkout-update-escalation`, one entry per streak, overwritten,
+  carrying the attempt count. The fifth failed attempt records
+  `escalation_lost` in `run_core.log` and in `~/logs/self-heal.jsonl` and stops
+  trying, so a permanently broken hook is not paid for on every launch.
+- **Recovery reports nothing.** A run that updates cleanly is proof the
+  condition has cleared, so it fires no hook: it clears
+  `~/logs/checkout-update-failure-streak` and `~/logs/checkout-update-escalation`
+  and writes one `run_core.log` line saying the streak ended and whether its
+  report was still undelivered (Issue #2110).
+- **A host with no hook says so locally.** No `callbacks.host_failure` in
+  `.config.json` records `no_hook_configured` once for the streak; a
+  `callbacks` block that will not parse records `config_invalid` with the
+  reason. Neither is retried — nothing about the host changes between runs —
+  and neither stops the update itself. Both are also `escalated` events under
+  the `checkout_update` module in `~/logs/self-heal.jsonl`, alongside the
+  delivering case, which carries the hook's status.
 - **A frozen host is held at its pin instead** (Issue #624). Under
   `update_mode: "frozen"` the reset to `origin/<default-branch>` would defeat
   the pin, so the command fetches (a tag pushed since the last launch has to

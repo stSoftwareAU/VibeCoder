@@ -321,13 +321,16 @@ doubling as somebody's development tree. Commit or stash the in-flight
 work — or better, move development elsewhere and leave the appliance clone
 alone (see [Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)).
 After three consecutive failures **spanning at least fifteen minutes** the host
-also files (or comments on) a `Worker checkout update failing on <host>` issue
-against the worker repository, so the stuck host is visible from GitHub rather
-than only in host logs. The span is part of the rule because the count alone
-was not measuring persistence: a transient host fault took the streak from 1 to
-3 in eight seconds and escalated a glitch that was already over (Issue #1017).
-The streak lives at `~/logs/checkout-update-failure-streak` — the count and the
-first failure's timestamp — and resets on the first successful update.
+fires the `callbacks.host_failure` hook once with a `checkout_update` payload —
+the host, the streak, when it started, the diagnosis above and the checkout's
+branch and dirty-file count (Issues #2107, #2110). Nothing is filed on GitHub:
+a stuck host is the operator's own business, and the hook is where the operator
+already receives host-level faults. The span is part of the rule because the
+count alone was not measuring persistence: a transient host fault took the
+streak from 1 to 3 in eight seconds and escalated a glitch that was already
+over (Issue #1017). The streak lives at
+`~/logs/checkout-update-failure-streak` — the count and the first failure's
+timestamp — and resets on the first successful update.
 
 `No user exists for uid <n>` in that log is the *host's* directory services
 failing to resolve the user the launcher is already running as, so git cannot
@@ -340,24 +343,41 @@ alone — a development tree, a CI merge commit — should set
 `VIBE_SKIP_CHECKOUT_UPDATE=1` instead, which skips the update loudly and
 raises nothing.
 
-That report has to reach `api.github.com`, and the commonest reason the
-checkout update fails is that the host cannot (Issue #1018). So a send that
-fails is retried on every later failing run until one lands, and the evidence
-is queued at `~/logs/checkout-update-escalation` — one entry per streak,
-overwritten — so an outage is reported once connectivity returns instead of
-never:
+That hook runs on the very host that is failing, so it is exactly the thing
+that can be broken too (Issues #1018, #2110). An invocation that returns
+anything but `ok` is retried on every later failing run, up to **five
+attempts**, and the evidence is queued at `~/logs/checkout-update-escalation` —
+one entry per streak, overwritten, carrying the attempt count:
 
 ```text
-Checkout update escalation failed, spooled for the next run with connectivity
-(Issue #1018): gh issue create exited 1: error connecting to api.github.com
+Checkout update escalation failed (hook status spawn_failed) on attempt 2 of 5,
+spooled for the next failing run (Issue #2110)
 ```
 
-The run that recovers is usually the first that can reach GitHub, so it
-delivers the queued report itself — marked as an outage that has **since
-ended**, naming the time it was queued — and then clears the streak and the
-queue together. A queued report therefore never outlives the condition it
-describes, and an outage that ends is reported rather than forgotten. A flush
-that still cannot be delivered is dropped, loudly, in `run_core.log`.
+The fifth failed attempt gives up, loudly, and stops trying for that streak:
+
+```text
+escalation_lost: 5 attempts to report this checkout-update streak through
+callbacks.host_failure have all failed — no further attempt will be made for
+this streak, and the evidence exists only in this log (Issue #2110)
+```
+
+Both outcomes are also `checkout_update` records in `~/logs/self-heal.jsonl` —
+`escalated` with the hook's status, the attempt and the streak, and
+`escalation_lost` — so `self-heal-summary` sees them.
+
+**Recovery reports nothing.** A run that updates cleanly proves the condition
+has cleared, so no hook fires: the streak file and the queue are cleared
+together and one line goes to `run_core.log` saying the streak ended and
+whether its report was still undelivered. A queued report therefore never
+outlives the condition it describes.
+
+A host with **no** `callbacks.host_failure` configured logs `no_hook_configured`
+once for the streak, and one whose `callbacks` block will not parse logs
+`config_invalid` with the reason. Neither is retried — nothing about the host
+changes between runs — and neither stops the update itself. If a stuck host is
+producing no alert at all, that line in `run_core.log` is the first thing to
+check; see [Callbacks](CALLBACKS.md#the-host-failure-hook).
 
 On a host running `update_mode: "frozen"` the same warning appears with a
 different message (Issue #624):
