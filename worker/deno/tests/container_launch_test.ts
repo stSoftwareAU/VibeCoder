@@ -1241,6 +1241,38 @@ Deno.test("buildContainerLaunchPlan - carries the runtime's own volume-removal v
   );
 });
 
+// --- The runtime's own image-removal verb (Issue #1956) --------------------
+
+Deno.test("buildContainerLaunchPlan - carries the runtime's own image-removal verb (Issue #1956)", () => {
+  // A container that failed its own toolchain self-check must not be run
+  // again from the same cached tag, so the launchers remove the reference —
+  // in the runtime's own dialect, exactly as the volume removal above.
+  assertEquals(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("podman") }))
+      .imageRemoveArgs,
+    ["image", "rm"],
+  );
+  assertEquals(
+    buildContainerLaunchPlan(inputs({ descriptor: descriptorFor("docker") }))
+      .imageRemoveArgs,
+    ["image", "rm"],
+  );
+  assertEquals(
+    buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor("apple-container") }),
+    ).imageRemoveArgs,
+    ["image", "delete"],
+  );
+});
+
+Deno.test("renderContainerLaunchPlan - the launchers receive the image-removal verb (Issue #1956)", () => {
+  const plan = buildContainerLaunchPlan(
+    inputs({ descriptor: descriptorFor("podman") }),
+  );
+  const parsed = parseContainerLaunchPlanText(renderContainerLaunchPlan(plan));
+  assertEquals(parsed.imageRemove, ["image", "rm"]);
+});
+
 Deno.test("renderContainerLaunchPlan - the keep token carries the whole image chain (Issue #1059)", () => {
   // The prune keeps what the launch depends on, not just what it runs: a
   // deployment's private extension layer is built FROM the standard image, and
