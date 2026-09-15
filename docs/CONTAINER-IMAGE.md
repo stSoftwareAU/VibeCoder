@@ -115,15 +115,15 @@ Three properties make that step trustworthy:
   rebuild is load-bearing on arm64: tree-sitter core, `python` and `kotlin`
   ship no linux-arm64 prebuild, and `go`, `java`, `javascript` and
   `typescript` ship x86-64 binaries mislabelled linux-arm64 (upstream
-  trailhq/Graft#119). Running the same step on amd64 is not by itself enough,
-  because `node-gyp-build` loads a working prebuild and skips the compile —
-  measured, a skipped module costs 0.2 s and writes no `build/` — and six of
-  the seven linux-x64 prebuilds are valid, so an amd64 build would prove
-  nothing about the C++20 compile. `npm_config_build_from_source=true` is what
-  makes the compile unconditional, so a C++20 or header regression fails
-  **every** build rather than only the Mac M-series one. Measured on
-  linux/arm64 (Node 24.19.0, g++ 14.2): the install is about 5 s and the seven
-  forced compiles about 15 s.
+  trailhq/Graft#119). Running the same step on amd64 is not by itself enough:
+  each grammar's install script is `node-gyp-build`, which compiles only when
+  the prebuild it finds will not load, and six of the seven ship a **valid**
+  linux-x64 prebuild — so an amd64 build would prove nothing about the C++20
+  compile. `node-gyp-build`'s own `bin.js` skips that check outright when
+  `npm_config_build_from_source` is `true`, which is what makes the compile
+  unconditional, so a C++20 or header regression fails **every** build rather
+  than only the Mac M-series one. Measured on linux/arm64 (Node 24.19.0, g++
+  14.2): the install is about 3 s and the seven forced compiles about 13 s.
 - **Nothing is fetched.** `npm_config_nodedir=/usr/local` points node-gyp at
   the headers the Node layer already extracted, so no header tarball is
   downloaded and no `~/.cache/node-gyp` is created. npm 12 no longer knows
