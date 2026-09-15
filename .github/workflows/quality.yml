@@ -1,0 +1,90 @@
+name: Quality
+
+# One required check. `gate` needs every gated workflow below and fails
+# unless each reported exactly `success` (.github/scripts/gate.sh), so the
+# ruleset (infra/rulesets/main.json) requires `gate` alone — adding a shard,
+# renaming a job or splitting a workflow no longer means editing the ruleset,
+# and a job that was skipped or cancelled can never leave a green PR that
+# nothing inspected. The pattern is GRQ-AutoTrader's quality.yml.
+#
+# Each gated workflow is a reusable workflow (`on: workflow_call`) called
+# here; GitHub only lets `needs` reach jobs of the same workflow, so this is
+# the one file that can aggregate them. The called workflows keep their own
+# schedule/dispatch triggers. Concurrency lives here, once: a called workflow
+# inherits `github.workflow` from its caller, so a group of its own would
+# collide with its siblings' and cancel them.
+#
+# Not gated, exactly as today's ruleset: dependency-audit (path-filtered),
+# dependency-review (advisory), and inside validate-scripts the integration
+# tests (continue-on-error) and milestone-resurrection (milestone PRs only).
+
+on:
+  pull_request:
+    branches: [Develop, main, milestone/*]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-scripts:
+    uses: ./.github/workflows/validate-scripts.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
+    permissions:
+      contents: read
+
+  container-build:
+    uses: ./.github/workflows/container-build.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
+    permissions:
+      contents: read
+
+  gitleaks:
+    uses: ./.github/workflows/gitleaks.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
+    # Named, never inherited (semgrep secrets-inherit): the called workflow
+    # declares exactly what it takes.
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+    permissions:
+      contents: read
+      pull-requests: read
+
+  markdown-lint:
+    uses: ./.github/workflows/markdown-lint.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
+    permissions:
+      contents: read
+
+  semgrep:
+    uses: ./.github/workflows/semgrep.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+    permissions:
+      contents: read
+
+  gate:
+    needs:
+      - validate-scripts
+      - container-build
+      - gitleaks
+      - markdown-lint
+      - semgrep
+    # Always runs, so a cancelled or skipped dependency is judged, not skipped
+    # past: the script treats anything but `success` as a closed gate.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Require every gated workflow to have succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: .github/scripts/gate.sh

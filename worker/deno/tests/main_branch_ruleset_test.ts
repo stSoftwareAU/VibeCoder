@@ -93,19 +93,14 @@ Deno.test("main ruleset - keeps the merge, deletion and force-push rules", async
   }
 });
 
-Deno.test("main ruleset - requires validate and every validate shard", async () => {
+Deno.test("main ruleset - requires the quality gate, and only the quality gate", async () => {
+  // One required check: `gate` needs every gated workflow and fails unless
+  // each reported success (.github/workflows/quality.yml). The per-job list
+  // it replaced is what let a renamed or added shard go unrequired (the
+  // 2026-09-05 regression: `validate` itself was missing from the applied
+  // ruleset, so a PR whose `deno lint` failed could still auto-merge).
   const contexts = requiredContexts(await loadMainBranchRuleset());
-  // The regression: both of these were absent from the applied ruleset, so a
-  // PR whose `deno lint` failed inside `validate` could still auto-merge.
-  assert(contexts.includes("validate"), "validate must be a required check");
-  assert(
-    contexts.includes("validate (no-runtime)"),
-    "validate (no-runtime) must be a required check",
-  );
-  for (const shard of [1, 2, 3, 4]) {
-    assert(contexts.includes(`validate (tests ${shard}/4)`));
-  }
-  assert(contexts.includes("validate (container)"));
+  assertEquals(contexts, ["gate"]);
 });
 
 Deno.test("main ruleset - strict policy keeps a stale branch from merging", async () => {
@@ -161,14 +156,16 @@ Deno.test("requiredContexts - fails loud when no status-check rule exists", () =
   );
 });
 
-Deno.test("diffLiveRuleset - the applied ruleset is missing validate (the bug)", async () => {
+Deno.test("diffLiveRuleset - the ruleset applied on 2026-09-05 does not require the gate", async () => {
+  // That snapshot predates the quality gate: it named eleven per-job
+  // contexts and missed `validate` (the bug of the day). Against the
+  // committed payload it now drifts on the one context that matters.
   const committed = await loadMainBranchRuleset();
   const drift = diffLiveRuleset(LIVE_RULESET_2026_09_05, committed);
   const contexts = drift.filter((d) => d.field === "required_status_checks");
-  assertEquals(contexts.length, 2);
+  assert(contexts.length >= 1, "the old snapshot must drift");
   const details = contexts.map((d) => d.detail).join("\n");
-  assertStringIncludes(details, "validate");
-  assertStringIncludes(details, "validate (no-runtime)");
+  assertStringIncludes(details, "gate");
   assert(details.includes("not required"), details);
 });
 

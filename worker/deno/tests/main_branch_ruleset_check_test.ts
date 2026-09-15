@@ -59,8 +59,10 @@ Deno.test("checkMainBranchRuleset - reports drift when a required check is missi
   const rule = live.rules.find((r) => r.type === "required_status_checks");
   const contexts = rule?.parameters
     ?.required_status_checks as Array<{ context: string }>;
+  // The one required check is `gate`; a live ruleset without it gates
+  // nothing at all.
   rule!.parameters!.required_status_checks = contexts.filter((c) =>
-    c.context !== "validate"
+    c.context !== "gate"
   );
   const { exec } = ghStub(SUMMARY, live);
   const result = await checkMainBranchRuleset({
@@ -69,7 +71,7 @@ Deno.test("checkMainBranchRuleset - reports drift when a required check is missi
   });
   assertEquals(result.status, "drift");
   assertEquals(result.findings.length, 1);
-  assertStringIncludes(result.message, "validate");
+  assertStringIncludes(result.message, "gate");
 });
 
 Deno.test("checkMainBranchRuleset - a missing ruleset fails loud, it does not skip", async () => {
