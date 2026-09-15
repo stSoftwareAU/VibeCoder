@@ -79,6 +79,12 @@ export type RulesetRuleBody =
     parameters: {
       strict_required_status_checks_policy: boolean;
       required_status_checks: Array<{ context: string }>;
+      /**
+       * When true the checks gate the MERGE but not branch creation. A branch
+       * that does not exist yet has no check runs, so without this the push
+       * that would create it is declined (Issue #2067).
+       */
+      do_not_enforce_on_create?: boolean;
     };
   }
   | { type: "deletion" | "non_fast_forward" };
@@ -403,6 +409,17 @@ export const MILESTONE_REF_PATTERN = "refs/heads/milestone/**";
  *
  * `deletion` and `non_fast_forward` mirror the default-branch ruleset: a
  * collection branch that can be force-pushed or deleted loses the chain.
+ *
+ * The checks are exempt on **creation** (Issue #2067). GitHub evaluates
+ * `required_status_checks` against the pushed commit, and a branch that does
+ * not exist yet has no check runs — so a ruleset written without
+ * `do_not_enforce_on_create` refuses the very push that would open the
+ * milestone branch it exists to protect. GRQ-FX-validation carried such a
+ * ruleset, created by this builder, and every run there died in `setup` with
+ * "push declined due to repository rule violations". The flag is the remedy
+ * rather than dropping the rule: the checks still gate every merge, and
+ * `required_status_checks` must stay present because that is what makes the
+ * base protected enough for auto-merge to be armed (`pr_auto_merge.ts`).
  */
 export function buildMilestoneRulesetBody(
   name: string,
@@ -423,6 +440,7 @@ export function buildMilestoneRulesetBody(
         type: "required_status_checks",
         parameters: {
           strict_required_status_checks_policy: true,
+          do_not_enforce_on_create: true,
           required_status_checks: contexts.map((context) => ({ context })),
         },
       },

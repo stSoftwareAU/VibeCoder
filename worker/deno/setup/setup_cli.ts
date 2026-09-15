@@ -91,6 +91,7 @@ import {
   MILESTONE_RULESET_NAME,
   planMilestoneRuleset,
   readRulesetDetails,
+  repairMilestoneRulesetCreateBlock,
   type RulesetDetail,
   rulesetReadFailedFinding,
 } from "../lib/milestone_ruleset_check.ts";
@@ -1107,6 +1108,40 @@ export async function reportMilestoneRuleset(
     { rulesets },
   );
 
+  // Issue #2067: a `milestone/**` ruleset that enforces its required checks
+  // on branch CREATION refuses the very push that would open the branch, so
+  // every run on that repository dies inside a minute in `setup`
+  // ("push declined due to repository rule violations"). The fleet wrote that
+  // ruleset itself before the builder set `do_not_enforce_on_create`, and the
+  // worker cannot clear it: a ruleset write needs `admin` and the service
+  // account holds `write`. Setup, running as the operator, can — so it does,
+  // rather than leaving a repository stranded behind a flag nobody flips.
+  let repairedCreateBlock = false;
+  if (findings.some((finding) => finding.code === "create-blocked")) {
+    // Re-read under the operator identity for the Issue #595 reason the
+    // create path re-reads: only that identity holds `admin`, so what it can
+    // see is what the write must be decided from.
+    const repair = await repairMilestoneRulesetCreateBlock(
+      repo,
+      seams.ghFor("operator"),
+    );
+    if (!repair.ok) {
+      seams.print(
+        "warning",
+        `${repo}: could not exempt the milestone ruleset from branch ` +
+          `creation: ${repair.error.message}`,
+      );
+    } else if (repair.repaired) {
+      repairedCreateBlock = true;
+      seams.print(
+        "success",
+        `${repo}: ruleset '${repair.ruleset}' no longer enforces its ` +
+          `required checks on branch creation — milestone branches can be ` +
+          `created again, and the checks still gate every merge`,
+      );
+    }
+  }
+
   // A question whose only possible outcome is a refusal must not be asked.
   // With no default-branch gate to mirror there is nothing to create, so
   // answering yes changed nothing and the same question came back on every
@@ -1171,6 +1206,9 @@ export async function reportMilestoneRuleset(
     if (suppressMissingWarning && finding.code === "no-milestone-ruleset") {
       continue;
     }
+    // Already fixed above — a repaired repository is a clean one, not one
+    // reported as broken (Issue #2067).
+    if (repairedCreateBlock && finding.code === "create-blocked") continue;
     const line = `${repo}: ${finding.message}`;
     if (finding.severity === "error") {
       seams.print("error", line);

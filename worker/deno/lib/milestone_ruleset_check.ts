@@ -30,6 +30,7 @@
 
 import {
   buildMilestoneRulesetBody,
+  isValidRepoSlug,
   MILESTONE_REF_PATTERN,
   type RulesetBypassActorBody,
 } from "./repo_rulesets.ts";
@@ -807,23 +808,171 @@ export async function createMilestoneRuleset(
     ], JSON.stringify(body));
     return { ok: true, created: true, contexts };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    // GitHub answers a ruleset write from a non-admin with 404, not 403, so
-    // the bare "Not Found" names neither the cause nor the fix (Issue #595).
-    // Every repository in a fleet run failed this way, identically, with
-    // nothing to act on.
-    if (/not found/i.test(message)) {
-      return {
-        ok: false,
-        error: new Error(
-          `${message} — creating a ruleset needs ADMIN on ${repo}, and ` +
-            `GitHub reports insufficient permission as 404. Check that the ` +
-            `identity running setup administers this repository (the ` +
-            `worker's service account holds 'write', which is not enough).`,
-        ),
-      };
-    }
-    return { ok: false, error: error as Error };
+    return { ok: false, error: explainRulesetWriteFailure(error, repo) };
+  }
+}
+
+/**
+ * Turn a refused ruleset write into an error that names the cause.
+ *
+ * GitHub answers a ruleset write from a non-admin with 404, not 403, so the
+ * bare "Not Found" names neither the cause nor the fix (Issue #595). Every
+ * repository in a fleet run failed this way, identically, with nothing to act
+ * on.
+ */
+function explainRulesetWriteFailure(error: unknown, repo: string): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/not found/i.test(message)) {
+    return error instanceof Error ? error : new Error(message);
+  }
+  return new Error(
+    `${message} — writing a ruleset needs ADMIN on ${repo}, and GitHub ` +
+      `reports insufficient permission as 404. Check that the identity ` +
+      `running setup administers this repository (the worker's service ` +
+      `account holds 'write', which is not enough).`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Repairing a ruleset that refuses branch CREATION (Issue #2067)
+// ---------------------------------------------------------------------------
+
+/** Outcome of {@link repairMilestoneRulesetCreateBlock}. */
+export type RepairMilestoneResult =
+  | { ok: true; repaired: true; ruleset: string }
+  | { ok: true; repaired: false; reason: string }
+  | { ok: false; error: Error };
+
+/**
+ * Whether every ref this ruleset matches is a milestone branch.
+ *
+ * The repair below writes without asking, so its blast radius has to be the
+ * fleet's own namespace. A ruleset including `~ALL` or the default branch
+ * gates refs the fleet does not own; that one is reported by
+ * {@link assessMilestoneRuleset} for a human to decide on instead.
+ */
+export function targetsOnlyMilestoneBranches(ruleset: RulesetDetail): boolean {
+  const include = ruleset.conditions?.ref_name?.include ?? [];
+  return include.length > 0 &&
+    include.every((pattern) => pattern.startsWith("refs/heads/milestone/"));
+}
+
+/**
+ * The milestone ruleset whose required checks refuse branch creation, if any.
+ *
+ * Read-only, so a caller can decide without writing. A rule whose
+ * `do_not_enforce_on_create` is absent counts as blocking: GitHub defaults it
+ * to false, which is exactly the shape this repo's own builder wrote before
+ * Issue #2067.
+ */
+export function planMilestoneRulesetRepair(
+  rulesets: readonly RulesetDetail[],
+): RulesetDetail | null {
+  return rulesets.find((ruleset) =>
+    typeof ruleset.id === "number" &&
+    (ruleset.enforcement ?? "active") === "active" &&
+    targetsOnlyMilestoneBranches(ruleset) &&
+    (ruleset.rules ?? []).some((rule) =>
+      rule.type === "required_status_checks" &&
+      (rule.parameters?.required_status_checks ?? []).length > 0 &&
+      rule.parameters?.do_not_enforce_on_create !== true
+    )
+  ) ?? null;
+}
+
+/**
+ * The full-document body that exempts a ruleset's checks from branch
+ * creation, carrying every other rule, condition and bypass actor through
+ * unchanged.
+ *
+ * A ruleset write is a PUT of the whole document, so a body rebuilt from the
+ * checks alone would silently drop `deletion`, `non_fast_forward` and any
+ * rule an admin added (the Issue #1290 lesson, in a second place).
+ */
+export function buildCreateExemptRulesetBody(
+  ruleset: RulesetDetail,
+): Record<string, unknown> {
+  return {
+    name: ruleset.name,
+    target: ruleset.target ?? "branch",
+    enforcement: ruleset.enforcement ?? "active",
+    bypass_actors: ruleset.bypass_actors ?? [],
+    conditions: ruleset.conditions,
+    rules: (ruleset.rules ?? []).map((rule) =>
+      rule.type === "required_status_checks"
+        ? {
+          ...rule,
+          parameters: {
+            ...(rule.parameters ?? {}),
+            do_not_enforce_on_create: true,
+          },
+        }
+        : rule
+    ),
+  };
+}
+
+/**
+ * Exempt a `milestone/**` ruleset's required checks from branch creation.
+ *
+ * This is the other half of the Issue #2067 fix. Setting the flag in
+ * {@link buildMilestoneRulesetBody} stops the trap being created; this clears
+ * it from the repositories already carrying one, which cannot clear
+ * themselves — the worker's service account holds `write`, and a ruleset
+ * write needs `admin`, so only setup (running as the operator) can do it.
+ *
+ * Idempotent: a repository whose ruleset is already exempt is not written.
+ *
+ * @param repo - `owner/repo` slug.
+ * @param ghFn - `gh` runner, which must hold `admin` on the repository.
+ * @param options.rulesets - Injected for tests; production reads the live
+ *   rulesets under the caller's own identity (Issue #595).
+ */
+export async function repairMilestoneRulesetCreateBlock(
+  repo: string,
+  ghFn: GhJson,
+  options: { rulesets?: RulesetDetail[] } = {},
+): Promise<RepairMilestoneResult> {
+  if (!isValidRepoSlug(repo)) {
+    return { ok: false, error: new Error(`Invalid repo slug: ${repo}`) };
+  }
+  let rulesets = options.rulesets;
+  if (!rulesets) {
+    // A read that failed must never be reported as "nothing to repair" —
+    // that would call a broken repository healthy (Issue #678).
+    const read = await readRulesetDetails(repo, ghFn);
+    if (!read.ok) return { ok: false, error: read.error };
+    rulesets = read.rulesets;
+  }
+
+  const target = planMilestoneRulesetRepair(rulesets);
+  if (!target) {
+    return {
+      ok: true,
+      repaired: false,
+      reason: "no milestone ruleset blocks branch creation",
+    };
+  }
+
+  try {
+    await ghFn(
+      [
+        "api",
+        "-X",
+        "PUT",
+        `repos/${repo}/rulesets/${target.id}`,
+        "--input",
+        "-",
+      ],
+      JSON.stringify(buildCreateExemptRulesetBody(target)),
+    );
+    return {
+      ok: true,
+      repaired: true,
+      ruleset: target.name ?? `#${target.id}`,
+    };
+  } catch (error) {
+    return { ok: false, error: explainRulesetWriteFailure(error, repo) };
   }
 }
 
