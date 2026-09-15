@@ -120,9 +120,9 @@ Deno.test("checkMergedTree - a non-compiling tree fails and carries the output (
   });
 });
 
-Deno.test("checkMergedTree - a repo with no Deno project is skipped, not run (Issue #974)", async () => {
+Deno.test("checkMergedTree - a repo with no project of either kind is skipped, not run (Issues #974, #2138)", async () => {
   await withTempDir(async (dir) => {
-    await writeFile(`${dir}/Cargo.toml`, "[package]\n");
+    await writeFile(`${dir}/README.md`, "# nothing to verify with\n");
     let ran = false;
     const outcome = await checkMergedTree(dir, () => {
       ran = true;
@@ -131,6 +131,51 @@ Deno.test("checkMergedTree - a repo with no Deno project is skipped, not run (Is
     assertEquals(outcome.status, "skipped");
     assertEquals(ran, false, "no check is spawned when there is none to run");
     assertStringIncludes(outcome.detail, "not type-checked");
+  });
+});
+
+Deno.test("findTypeCheckProjects - a Cargo workspace is a project checked with cargo, locked when a lockfile is committed (Issue #2138)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/Cargo.toml`,
+      '[workspace]\nmembers = ["crates/a"]\n',
+    );
+    await writeFile(`${dir}/crates/a/Cargo.toml`, '[package]\nname = "a"\n');
+    const unlocked = await findTypeCheckProjects(dir);
+    assertEquals(unlocked.length, 1, "the member is covered by --workspace");
+    assertEquals(unlocked[0]!.kind, "cargo");
+    assertEquals(unlocked[0]!.args, ["check", "--workspace", "--all-targets"]);
+
+    await writeFile(`${dir}/Cargo.lock`, "# Cargo.lock\n");
+    const locked = await findTypeCheckProjects(dir);
+    assertEquals(locked[0]!.args, [
+      "check",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+    ]);
+  });
+});
+
+Deno.test("checkMergedTree - a Cargo tree is verified with cargo check through the runner (Issue #2138)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const seen: string[] = [];
+    const passed = await checkMergedTree(dir, (project) => {
+      seen.push(`${project.kind} ${project.args.join(" ")}`);
+      return Promise.resolve({ code: 0, output: "Finished" });
+    });
+    assertEquals(passed.status, "passed");
+    assertEquals(seen, ["cargo check --workspace --all-targets"]);
+    assertStringIncludes(passed.detail, "cargo check --workspace");
+
+    const failed = await checkMergedTree(dir, () =>
+      Promise.resolve({
+        code: 101,
+        output: "error[E0425]: cannot find value `synapse` in this scope",
+      }));
+    assertEquals(failed.status, "failed");
+    assertStringIncludes(failed.output, "E0425");
   });
 });
 
