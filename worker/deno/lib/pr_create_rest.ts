@@ -60,6 +60,18 @@ export function isPrAlreadyExistsError(message: string): boolean {
   return message.toLowerCase().includes("pull request already exists");
 }
 
+/**
+ * Is this a 422 from the create at all? `gh api` reports the status and the
+ * top-level message only — `gh: Validation Failed (HTTP 422)` — and drops
+ * the detail that names the existing PR, so a duplicate is not recognisable
+ * from the text (Issue #2125: VibeCoder#2107 lost an hour's work to this while
+ * its PR sat open). Any 422 is worth a REST look-up of the head before it
+ * is reported as a failure.
+ */
+export function isValidationFailedError(message: string): boolean {
+  return /\b422\b/.test(message) || /validation failed/i.test(message);
+}
+
 /** Validate the fields that go into the endpoint path and the body. */
 function validateOptions(options: RestPrCreateOptions): Result<void> {
   if (!REPO_PATTERN.test(options.repo)) {
@@ -216,7 +228,7 @@ export async function createPullRequestViaRest(
     url = created;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (isPrAlreadyExistsError(message)) {
+    if (isPrAlreadyExistsError(message) || isValidationFailedError(message)) {
       const existing = await findOpenPrUrlViaRest(repo, head, ghCommandFn);
       if (existing.ok) {
         deps.log?.(
@@ -224,13 +236,17 @@ export async function createPullRequestViaRest(
         );
         return existing;
       }
-      return {
-        ok: false,
-        error: new Error(
-          `REST PR creation in ${repo} reported an existing PR for '${head}' ` +
-            `but it could not be read back: ${existing.error.message}`,
-        ),
-      };
+      if (isPrAlreadyExistsError(message)) {
+        return {
+          ok: false,
+          error: new Error(
+            `REST PR creation in ${repo} reported an existing PR for '${head}' ` +
+              `but it could not be read back: ${existing.error.message}`,
+          ),
+        };
+      }
+      // A 422 that names no duplicate and has no open PR behind it is a
+      // genuine validation failure (Issue #2125); report it as it came.
     }
     return {
       ok: false,
