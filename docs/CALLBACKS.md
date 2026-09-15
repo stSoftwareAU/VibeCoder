@@ -211,6 +211,7 @@ invocation (mode `0600`) and removed after it exits:
   "issueNumber": 807,
   "host": "worker-1",
   "workerName": "fleet-a",
+  "mode": "work-on",
   "provider": "claude",
   "sessionId": "…",
   "sessionLogPath": "/home/vibe/logs/agent-vibe-mtk92vcu-ebcc11-807.jsonl",
@@ -223,7 +224,9 @@ invocation (mode `0600`) and removed after it exits:
     "outputTokens": 340,
     "cacheCreationTokens": 90,
     "cacheReadTokens": 20,
-    "estimatedCostUsd": 0.42
+    "estimatedCostUsd": 0.42,
+    "turns": 34,
+    "model": "claude-opus-4-6"
   },
   "outcome": {
     "kind": "pr",
@@ -246,6 +249,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_ISSUE_NUMBER`              | `issueNumber`                   | yes            | Issue number the run worked                                                                                          |
 | `VIBECODER_HOST`                      | `host`                          | yes            | Host the worker runs on                                                                                              |
 | `VIBECODER_WORKER_NAME`               | `workerName`                    | no             | Operator-configured worker name                                                                                      |
+| `VIBECODER_MODE`                      | `mode`                          | no             | Workflow label the dispatch matched: `work-on`, `grill-me`, `question`, `planning`, `idle-task`, or a custom label   |
 | `VIBECODER_PROVIDER`                  | `provider`                      | no             | Agent provider that served the run                                                                                   |
 | `VIBECODER_SESSION_ID`                | `sessionId`                     | no             | Agent session id                                                                                                     |
 | `VIBECODER_SESSION_LOG_PATH`          | `sessionLogPath`                | no             | Absolute path to this run's transcript, verified on disk                                                             |
@@ -259,6 +263,8 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_CACHE_CREATION_TOKENS`     | `telemetry.cacheCreationTokens` | no             | Cache-creation tokens                                                                                                |
 | `VIBECODER_CACHE_READ_TOKENS`         | `telemetry.cacheReadTokens`     | no             | Cache-read tokens                                                                                                    |
 | `VIBECODER_ESTIMATED_COST_USD`        | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
+| `VIBECODER_TURNS`                     | `telemetry.turns`               | no             | Turns the run took, summed across its invocations                                                                    |
+| `VIBECODER_MODEL`                     | `telemetry.model`               | no             | Model that dominated the run's cost — the served model of the invocation with the largest token total                |
 | `VIBECODER_TELEMETRY_ABSENT_REASON`   | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
 | `VIBECODER_OUTCOME_KIND`              | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
 | `VIBECODER_OUTCOME_CATEGORY`          | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`                                                                             |
@@ -272,6 +278,13 @@ A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `rate_limited`, `shutdown`, `error`). It does **not** receive run-only scalars
 (`RESULT`, `REPOSITORY`, `ISSUE_NUMBER`, `EXIT_CODE`, …), so it cannot be
 mistaken for a run hook.
+
+`mode`, `telemetry.turns` and `telemetry.model` were **added** to schema 2
+without a version bump (Issue #2100), exactly as
+[Versioning](#versioning--the-contract-is-additive) requires. All three are
+optional: `mode` is absent when the dispatch named no workflow label, `turns`
+when no invocation reported a turn count, and `model` when the run made no
+priced invocation. A hook written before they existed is unaffected.
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).

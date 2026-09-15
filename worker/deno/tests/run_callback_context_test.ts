@@ -89,6 +89,30 @@ Deno.test("run_callback_context - telemetry is carried through when supplied", (
   assertEquals(context.telemetry, { inputTokens: 7, estimatedCostUsd: 0.1 });
 });
 
+Deno.test("run_callback_context - the run's mode is carried through (Issue #2100)", () => {
+  const context = buildIssueRunCallbackContext(
+    run({ mode: "grill-me" }),
+    IDENTITY,
+  );
+  assertEquals(context.mode, "grill-me");
+});
+
+Deno.test("run_callback_context - a blank or absent mode is omitted (Issue #2100)", () => {
+  assert(!("mode" in buildIssueRunCallbackContext(run(), IDENTITY)));
+  assert(
+    !("mode" in buildIssueRunCallbackContext(run({ mode: "  " }), IDENTITY)),
+  );
+});
+
+Deno.test("run_callback_context - turns and the dominant model ride the telemetry (Issue #2100)", () => {
+  const context = buildIssueRunCallbackContext(
+    run({ telemetry: { inputTokens: 7, turns: 12, model: "claude-opus-4-6" } }),
+    IDENTITY,
+  );
+  assertEquals(context.telemetry?.turns, 12);
+  assertEquals(context.telemetry?.model, "claude-opus-4-6");
+});
+
 Deno.test("run_callback_context - no transcript path when the tee is off", () => {
   assertEquals(
     resolveSessionLogPath({ ...IDENTITY, home: "/home/vibe" }, 806, {

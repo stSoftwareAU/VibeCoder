@@ -10,7 +10,9 @@
  * Absent rather than zero: a run whose invocations reported no parseable
  * usage yields `undefined`, and a run whose models have no pricing row yields
  * token counts with no `estimatedCostUsd`. An implied zero would read as
- * "this run was free".
+ * "this run was free". `turns` follows the same rule (Issue #2100) — a
+ * provider that never reported `num_turns` reports no turn count, not nought
+ * turns.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -31,6 +33,8 @@ export interface TelemetrySource {
   runStats?: {
     servedModels: string[];
     requestedModel: string;
+    /** Turns the provider reported for this invocation, when it reported any. */
+    numTurns?: number;
     tokenUsage?: {
       inputTokens: number;
       outputTokens: number;
@@ -52,6 +56,9 @@ export function summariseCallbackTelemetry(
   let outputTokens = 0;
   let cacheCreationTokens = 0;
   let cacheReadTokens = 0;
+  let turns: number | undefined;
+  /** The dominant invocation so far: most tokens wins, first-seen on a tie. */
+  let dominant: { model: string; tokens: number } | undefined;
 
   for (const invocation of invocations) {
     const stats = invocation.runStats;
@@ -60,12 +67,24 @@ export function summariseCallbackTelemetry(
     outputTokens += stats.tokenUsage.outputTokens;
     cacheCreationTokens += stats.tokenUsage.cacheCreationTokens;
     cacheReadTokens += stats.tokenUsage.cacheReadTokens;
-    entries.push({
-      // Attributed to the model the API actually served, falling back to the
-      // requested one — the same rule the per-run stats comment applies.
-      model: stats.servedModels[0] ?? stats.requestedModel,
-      usage: stats.tokenUsage,
-    });
+    // Absent stays absent: only the invocations that reported a turn count
+    // contribute, so a provider that reports none omits the field (#2100).
+    if (stats.numTurns !== undefined) turns = (turns ?? 0) + stats.numTurns;
+    // Attributed to the model the API actually served, falling back to the
+    // requested one — the same rule the per-run stats comment applies.
+    const model = stats.servedModels[0] ?? stats.requestedModel;
+    entries.push({ model, usage: stats.tokenUsage });
+    // Issue #2100: one run can be served by several models, so `model` names
+    // the one that dominated the cost — the invocation with the largest token
+    // total. Deterministic: strictly-greater, so an exact tie keeps the
+    // earlier invocation rather than depending on iteration luck.
+    const tokens = stats.tokenUsage.inputTokens +
+      stats.tokenUsage.outputTokens +
+      stats.tokenUsage.cacheCreationTokens +
+      stats.tokenUsage.cacheReadTokens;
+    if (dominant === undefined || tokens > dominant.tokens) {
+      dominant = { model, tokens };
+    }
   }
 
   if (entries.length === 0) return undefined;
@@ -81,6 +100,8 @@ export function summariseCallbackTelemetry(
     ...(estimate.hasUnknownPricing
       ? {}
       : { estimatedCostUsd: estimate.totalCost }),
+    ...(turns !== undefined ? { turns } : {}),
+    ...(dominant ? { model: dominant.model } : {}),
   };
 }
 
