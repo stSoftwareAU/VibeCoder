@@ -188,7 +188,7 @@ on:
     branches: [Develop, main, milestone/*]
 jobs:
   validate-scripts:
-    uses: ./.github/workflows/validate-scripts.yml
+    uses: $/.github/workflows/validate-scripts.yml
   lint:
     uses: ./.github/workflows/lint.yml
   gate:

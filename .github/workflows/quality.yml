@@ -32,33 +32,34 @@ concurrency:
 
 jobs:
   validate-scripts:
-    uses: ./.github/workflows/validate-scripts.yml
-    secrets: inherit
+    uses: ./.github/workflows/validate-scripts.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     permissions:
       contents: read
 
   container-build:
-    uses: ./.github/workflows/container-build.yml
-    secrets: inherit
+    uses: ./.github/workflows/container-build.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     permissions:
       contents: read
 
   gitleaks:
-    uses: ./.github/workflows/gitleaks.yml
-    secrets: inherit
+    uses: ./.github/workflows/gitleaks.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
+    # Named, never inherited (semgrep secrets-inherit): the called workflow
+    # declares exactly what it takes.
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
     permissions:
       contents: read
       pull-requests: read
 
   markdown-lint:
-    uses: ./.github/workflows/markdown-lint.yml
-    secrets: inherit
+    uses: ./.github/workflows/markdown-lint.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     permissions:
       contents: read
 
   semgrep:
-    uses: ./.github/workflows/semgrep.yml
-    secrets: inherit
+    uses: ./.github/workflows/semgrep.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
     permissions:
       contents: read
 

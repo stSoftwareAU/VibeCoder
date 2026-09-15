@@ -243,12 +243,16 @@ function jobContexts(
  * ignored; the result is ordered by workflow path then job, so a caller's
  * assertions stay deterministic.
  */
-/** The workflow file a `uses: ./.github/workflows/x.yml` job calls. */
+/**
+ * The workflow file a `uses: $/.github/workflows/x.yml` job calls — `$/` is
+ * GitHub's self-repository syntax (what zizmor asks for); `./` is the older
+ * spelling of the same thing.
+ */
 function calledWorkflowPath(definition: unknown): string | null {
   if (!isRecord(definition)) return null;
   const uses = definition["uses"];
   if (typeof uses !== "string") return null;
-  const local = uses.replace(/^\.\//, "");
+  const local = uses.replace(/^(\.|\$)\//, "");
   return local.startsWith(".github/workflows/") ? local.split("@")[0]! : null;
 }
 

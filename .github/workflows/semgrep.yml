@@ -10,6 +10,9 @@ on:
   # pull_request trigger below is kept until the ruleset requires `gate`
   # alone, then removed so each PR runs this once.
   workflow_call:
+    secrets:
+      SEMGREP_APP_TOKEN:
+        required: false
   pull_request:
     # Issue #3940 — this was `["*"]`, which reads as "every branch" but a
     # GitHub `*` never matches `/`, so SAST never ran on milestone
