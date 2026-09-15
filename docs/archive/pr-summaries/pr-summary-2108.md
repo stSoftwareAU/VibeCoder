@@ -66,6 +66,18 @@ flowchart TD
   below, all observed passing after the change.
 - **regression test** — `worker/deno/tests/container_escalation_streak_test.ts::recordContainerRestartOutcome - no hook configured spawns nothing and records locally`
 
+## Quality gate
+
+`./quality.sh` passes every check except `deno tests`, which reports two
+failures that are **environmental and outside this diff**:
+`agent_provider_test.ts::agent provider - the per-run provider override beats
+the configured file value (Issue #2062)` and `config_test.ts::config - the
+per-run provider override applies to the loaded agent (Issue #2062)`. Both
+throw `The running container image did not install the "deepseek" coding-agent
+provider. Installed: claude.` — this container was built with `claude` alone.
+Neither file is touched by this change, and both fail identically when run on
+their own.
+
 ## Test Plan
 
 `worker/deno/tests/container_restart_backoff_test.ts` — the three Issue #556
@@ -84,13 +96,12 @@ have kept the new cases out of the merge gate — by:
 - `a hook that fails is retried to the cap, then recorded lost` — `failed`,
   `timed_out` and `spawn_failed` each queue a retry; the fifth attempt emits one
   `escalation_lost` (`result: failed`) and nothing more is spawned.
-- `no hook configured spawns nothing and records locally` — `Deno.Command` is
-  stubbed to throw; `hookStatus: no_hook_configured`, `crashChannel:
-  no_channel`, no retry, no `escalation_lost`.
+- `no hook configured spawns nothing and records locally` — an injected
+  `invokeHook` that must never be called; `hookStatus: no_hook_configured`,
+  `crashChannel: no_channel`, no retry, no `escalation_lost`.
 - `a malformed callbacks block is reported, and the backoff still stands` —
   `config_invalid` with the read's error, nothing spawned, backoff unchanged.
 - `the payload's log tail is redacted before it reaches the hook`.
-
 - `a hook seam that throws is recorded, never swallowed` — a seam that rejects
   surfaces as `hook_spawn_failed: <message>`, queues a retry, and leaves the
   backoff untouched.
