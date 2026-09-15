@@ -24,7 +24,7 @@
  *
  * | manifest surface | probe | match |
  * |---|---|---|
- * | `versionCommand` | `<command> --version` | the pinned version appears in the output |
+ * | `versionCommand` | `<command> --version`, or `<command> <versionArgs>` | the pinned version appears in the output as a whole token |
  * | `versionModule` | `python3 -c "import <m>; print(<m>.__version__)"` | the output equals the pin |
  *
  * The probe list is **derived from the manifest**, never written down twice,
@@ -208,7 +208,12 @@ function probesFor(toolchain: ContainerToolchainPin): ToolchainProbe[] {
       id: toolchain.id,
       version: toolchain.version,
       kind: "command",
-      argv: [toolchain.versionCommand, "--version"],
+      // `--version` unless the manifest says otherwise (Issues #2070–#2073):
+      // markdownlint-cli2 has no version flag and lints what it is given.
+      argv: [
+        toolchain.versionCommand,
+        ...(toolchain.versionArgs ?? ["--version"]),
+      ],
     });
   }
   if (toolchain.versionModule !== undefined) {

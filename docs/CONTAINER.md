@@ -365,7 +365,7 @@ the prompt-immutability check):
 ```mermaid
 flowchart TD
     M["container/tools.json<br/>(the checkout's pins)"] --> P["one probe per toolchain"]
-    P -->|versionCommand| C["&lt;command&gt; --version"]
+    P -->|versionCommand| C["&lt;command&gt; --version<br/>(or the entry's versionArgs)"]
     P -->|versionModule| Y["python3 -c 'import m; print(m.__version__)'"]
     C --> J{"reports the pinned version?"}
     Y --> J
@@ -380,7 +380,12 @@ flowchart TD
   `versionCommand` (or `versionModule`, for a library like PyYAML) is what is
   run, and the pinned `version` is what the output is compared against. Adding
   a toolchain to `container/tools.json` adds its probe with no other edit, so
-  the check cannot drift out of step with the install list.
+  the check cannot drift out of step with the install list. A command with no
+  `--version` flag names its own arguments in `versionArgs`:
+  `markdownlint-cli2` treats every argument as a glob, and a bare `--version`
+  linted the worker's whole checkout on every launch — one lint finding on
+  `main` away from parking the fleet (Issues #2070–#2073). Its entry probes
+  with `--no-globs --version`, which prints the banner and lints nothing.
 - **Concurrent and bounded.** The probes run together and each is bounded by
   `TOOLCHAIN_PROBE_TIMEOUT_MS`, so the launch pays the slowest probe rather
   than the sum of thirteen. Measured in the image, all thirteen together cost

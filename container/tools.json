@@ -1,5 +1,5 @@
 {
-  "description": "Pinned tool manifest for the Vibe Coder container image (Issue #4061). Every version the image installs is recorded here; container/Containerfile only restates these values as build ARGs, and worker/deno/tests/container_manifest_test.ts fails the quality gate when the two disagree. `providers` is the catalogue of pinned coding-agent providers and `installedProviders` is the set a default image build actually installs, which the Containerfile restates as the AGENT_PROVIDERS default (Issue #4105). A `toolchains` entry carries exactly one of `versionArg` (the Containerfile installs it and restates the pin as ARGs) or `fragment` (container/install-toolchains.sh runs container/toolchains/<id>.sh, which reads the pin from here with jq — Issue #1594). A toolchain declares the `commands` it puts on the PATH, or — for a library such as PyYAML, which ships no console script — the Python `modules` it makes importable (Issue #1628).",
+  "description": "Pinned tool manifest for the Vibe Coder container image (Issue #4061). Every version the image installs is recorded here; container/Containerfile only restates these values as build ARGs, and worker/deno/tests/container_manifest_test.ts fails the quality gate when the two disagree. `providers` is the catalogue of pinned coding-agent providers and `installedProviders` is the set a default image build actually installs, which the Containerfile restates as the AGENT_PROVIDERS default (Issue #4105). A `toolchains` entry carries exactly one of `versionArg` (the Containerfile installs it and restates the pin as ARGs) or `fragment` (container/install-toolchains.sh runs container/toolchains/<id>.sh, which reads the pin from here with jq — Issue #1594). A toolchain whose `versionCommand` has no `--version` flag names the arguments that make it report its version in `versionArgs` (Issues #2070–#2073). A toolchain declares the `commands` it puts on the PATH, or — for a library such as PyYAML, which ships no console script — the Python `modules` it makes importable (Issue #1628).",
   "workdir": "/workspace",
   "user": {
     "name": "vibe",
@@ -233,12 +233,13 @@
       "versionArg": "MARKDOWNLINT_CLI2_VERSION",
       "commands": ["markdownlint-cli2"],
       "versionCommand": "markdownlint-cli2",
+      "versionArgs": ["--no-globs", "--version"],
       "source": "https://registry.npmjs.org/markdownlint-cli2",
       "sha256": {
         "noarch": "b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09"
       },
       "repos": ["stSoftwareAU/VibeCoder"],
-      "notes": "Drives the check-markdownlint gate stage against .markdownlint-cli2.jsonc; without it the stage SKIPs and structural Markdown breakage reaches merge. Pure JavaScript, so one noarch checksum covers both architectures — the pin matches .github/workflows/markdown-lint.yml so the container and CI report identical findings."
+      "notes": "Drives the check-markdownlint gate stage against .markdownlint-cli2.jsonc; without it the stage SKIPs and structural Markdown breakage reaches merge. Pure JavaScript, so one noarch checksum covers both architectures — the pin matches .github/workflows/markdown-lint.yml so the container and CI report identical findings. It has no version flag: every argument is a glob, and a bare `--version` lints whatever the working directory's .markdownlint-cli2.* names — 134 files in the worker's own checkout, failing the start-up self-check on the first lint finding (Issues #2070–#2073). `--no-globs` drops the configured globs and `--version` matches no file, so the probe prints the banner (`markdownlint-cli2 v0.23.2 (…)`), lints nothing and exits 0 wherever it runs."
     },
     {
       "id": "rust",
