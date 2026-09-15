@@ -71,8 +71,10 @@ flowchart LR
   reviewer saw one failing test, `tests/config_test.ts::config - the per-run
   provider override applies to the loaded agent (Issue #2062)`, which fails on
   this host because the running container image installed only the `claude`
-  provider (`lib/agent_provider.ts:1359`); it is environmental and untouched by
-  this diff
+  provider (`lib/agent_provider.ts:1359`), as does the matching case in
+  `tests/agent_provider_test.ts`. Both were confirmed failing on the unmodified
+  milestone base in a scratch worktree, so they are pre-existing and
+  environmental; nothing in this diff touches `agent_provider.ts`
 - **unrequested** — the generic nested-key machinery in
   `worker/deno/lib/config_unknown_keys.ts` (`suggestKeyFrom`,
   `detectUnknownNestedKeys`) — reviewer: unrequested — reason: the issue asks
@@ -84,6 +86,12 @@ flowchart LR
   `assertGraftContextConfig`) — reviewer: unrequested — reason: the repo's test
   coverage standard requires an error path and edge cases per new public
   function
+- **unrequested** — `isGraftContextEnabled(config)` in
+  `worker/deno/lib/graft_context_config.ts` — reviewer: unrequested — reason:
+  not flagged by the Spec reviewer (added after its run) but required by
+  `tests/unused_config_fields_test.ts`, which fails a `WorkerConfig` field no
+  library file reads; it is the single read point the injection change
+  consumes, rather than callers reaching into the block
 - **unrequested** — `docs/audits/lib-sweep-coverage.json` slice `top-up-2098`
   and `docs/audits/security-sweep-2098-graft-context-config.md` — reviewer:
   unrequested — reason: not flagged by the Spec reviewer (added after its run)
@@ -143,7 +151,9 @@ Added `worker/deno/tests/config_graft_context_test.ts` (14 cases):
 - Module unit cases: absent and `null` → the off default; empty block → off; an
   array block and a `null` `enabled` rejected naming the key; unknown nested
   keys warn through an injected sink; `graftContextOff()` returns a fresh
-  object each call; `assertGraftContextConfig` throws naming the key.
+  object each call; `assertGraftContextConfig` throws naming the key;
+  `isGraftContextEnabled` reads the loaded switch and is false on the default
+  config.
 
 Extended `worker/deno/tests/config_unknown_keys_test.ts` (5 cases) for
 `detectUnknownNestedKeys`: recognised key → no warning; unknown key → dotted
