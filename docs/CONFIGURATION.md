@@ -2815,13 +2815,17 @@ archival, spend accounting — so none of that policy has to live in VibeCoder.
     "failure": "/opt/vibe-hooks/failure.sh",
     "always": "/opt/vibe-hooks/always.sh",
     "cycle": "/opt/vibe-hooks/cycle.sh",
+    "host_failure": "/opt/vibe-hooks/host-failure.sh",
     "timeout_seconds": 60
   }
 }
 ```
 
-All five entries are optional, and a configuration without a `callbacks` block
-behaves exactly as before.
+All six entries are optional, and a configuration without a `callbacks` block
+behaves exactly as before. `host_failure` (Issue #2107) reports a host-level
+failure that happens before any issue is claimed, and is the one key whose
+path is resolved on the **host** rather than inside the container — the
+launcher spawns it, so a container path is the wrong answer.
 
 ```mermaid
 flowchart LR
@@ -2858,7 +2862,9 @@ flowchart LR
 - The path is resolved on the filesystem the **worker process** sees. The
   worker runs inside the container ([Run Mode](#-run-mode) has one member), so
   the hook must exist at that absolute path **inside the container** — a host
-  path that is not mounted in is not visible to it.
+  path that is not mounted in is not visible to it. `host_failure` is the
+  exception: the host launcher spawns it, so its path must exist on the
+  **host**.
 - Every hook is bounded by `timeout_seconds` (default `60`, maximum `3600`);
   a hook that exceeds it is terminated with `SIGTERM` and recorded as
   `timed_out` with exit code `124`. A hook that ignores `SIGTERM`, or that
