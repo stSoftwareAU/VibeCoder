@@ -1317,8 +1317,11 @@ export const GRAFT_NATIVE_MODULES: readonly string[] = [
   "tree-sitter-kotlin",
 ];
 
+/** The Containerfile `ARG` the version probe is checked against. */
+const GRAFT_VERSION_ARG = "GRAFT_VERSION";
+
 /** The shell variable carrying the rebuild list, found by its contents. */
-const NATIVE_LIST_ASSIGNMENT_RE = /(\w+)="([^"]*\btree-sitter\b[^"]*)"/;
+const NATIVE_LIST_ASSIGNMENT_RE = /(\w+)="[^"]*\btree-sitter\b[^"]*"/;
 
 /**
  * `--allow-scripts`, capturing just its own shell word.
@@ -1341,18 +1344,12 @@ const CXX20_RE = /CXXFLAGS=["']?-std=c\+\+20\b/;
  * Report every reason the Graft layer would not compile what it must
  * (Issue #2097, parent #2060).
  *
- * This is the image's only compile, and a no-op one is silent: npm reports
- * `rebuilt dependencies successfully` for a run whose install scripts it
- * blocked, and `graft --version` is pure JavaScript that loads no grammar —
- * so both would pass over an image whose grammars cannot load. Every rule
- * here closes one route by which that could reach a claim.
- *
- * The rules match intent rather than spelling: which modules are rebuilt,
- * that the allow-list is *derived* from the same variable the rebuild
- * expands, that the compile is forced and offline, that one code path serves
- * both architectures, and that the result is loaded before it is trusted. A
- * layer written with different quoting or a different loop variable passes;
- * one that quietly skips the compile does not.
+ * A no-op compile is silent — npm reports `rebuilt dependencies successfully`
+ * for a run whose install scripts it blocked — so each rule below closes one
+ * route by which an image with unloadable grammars could reach a claim. The
+ * rules match intent rather than spelling, so a layer written with different
+ * quoting or a different loop variable passes. The full rationale is in
+ * docs/CONTAINER-IMAGE.md, "Graft — the one layer that compiles".
  *
  * @param containerfile - Raw Containerfile text.
  * @returns Human-readable violations; empty when the layer is sound.
@@ -1385,7 +1382,7 @@ export function findGraftRebuildViolations(containerfile: string): string[] {
       "the rebuild names no --allow-scripts list, so npm 12 would block " +
         "every compile it exists to run",
     );
-  } else if (!listVariable || !allowScripts.includes(`${listVariable}`)) {
+  } else if (!listVariable || !allowScripts.includes(listVariable)) {
     violations.push(
       "the --allow-scripts list is not derived from the variable the " +
         "rebuild expands, so it can drift from the modules it names",
@@ -1422,10 +1419,21 @@ export function findGraftRebuildViolations(containerfile: string): string[] {
         "still report success",
     );
   }
-  if (!/\bgraft\s+--version\b/.test(step)) {
+  const probe = /\bgraft\s+--version\b/.exec(step);
+  if (!probe) {
     violations.push("the layer never probes graft --version");
-  } else if (!step.includes("DO_NOT_TRACK=1")) {
-    violations.push("the version probe would ping upstream from the build");
+  } else {
+    if (!step.includes("DO_NOT_TRACK=1")) {
+      violations.push("the version probe would ping upstream from the build");
+    }
+    // A probe nothing compares is a liveness check: it would pass over an
+    // image carrying a Graft the manifest never pinned.
+    if (!step.slice(probe.index).includes(GRAFT_VERSION_ARG)) {
+      violations.push(
+        `the version probe is not compared against ${GRAFT_VERSION_ARG}, so ` +
+          "any version that runs would pass it",
+      );
+    }
   }
 
   return violations;

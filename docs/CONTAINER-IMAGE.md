@@ -104,10 +104,18 @@ lifecycle scripts that would have built the native modules, so the layer
 rebuilds by name the seven with no usable linux prebuild — tree-sitter core
 and the `go`, `java`, `javascript`, `typescript`, `python` and `kotlin`
 grammars — with `CXXFLAGS=-std=c++20`. Graft's remaining grammars ship working
-prebuilds and are deliberately left alone. Naming them is what keeps the remaining packages'
-scripts suppressed: npm 12 blocks install scripts unless `--allow-scripts`
-names the package, and the allow-list is derived from the same shell variable
-the rebuild list comes from, so the two cannot drift.
+prebuilds and are deliberately left alone. Naming the seven is what keeps the
+rest of the tree's scripts suppressed: npm 12 blocks install scripts unless
+`--allow-scripts` names the package, and the allow-list is derived from the
+same shell variable the rebuild list comes from, so the two cannot drift.
+
+That naming is also the change's one new build-time exposure, and it is
+deliberate. The `sha256` pins the Graft tarball; its dependencies resolve from
+the registry, so `--allow-scripts` grants those resolved packages code
+execution as root during the build — something `markdownlint-cli2`'s layer,
+which stops at `--ignore-scripts`, never does. Seven named packages is the
+smallest list that compiles what Graft needs, which is why the allow-list names
+them rather than being dropped altogether.
 
 Three properties make that step trustworthy:
 
@@ -142,11 +150,15 @@ Three properties make that step trustworthy:
   `require`s all seven modules through the image's own Node before it probes
   the version, which turns that case into a failed build.
 
-`DO_NOT_TRACK=1` is set on the version probe so an unattended build sends no
-usage ping, and the probe itself is `graft --version | grep -qxF` against the
-pinned version. `graft --version` prints the bare version, so the
-manifest-derived start-up self-check probes it with no `versionArgs` and no
-code change.
+`DO_NOT_TRACK=1` is set image-wide, as `POWERSHELL_TELEMETRY_OPTOUT` is, so
+neither the build's probe nor the start-up self-check's own `graft --version`
+on a fleet host sends a usage ping. The probe reads the version into a variable
+and compares it to the pin rather than piping into `grep`: without `pipefail` a
+pipeline reports only the last command's status, so a `graft` that printed the
+right version and then failed would have been swallowed into a green layer.
+
+`graft --version` prints the bare version, so the manifest-derived start-up
+self-check probes it with no `versionArgs` and no code change.
 
 ## Coding-agent providers
 

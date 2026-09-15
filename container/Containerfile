@@ -222,6 +222,12 @@ RUN set -eu; \
 ARG GRAFT_VERSION="0.18.0"
 ARG GRAFT_SHA256_NOARCH="729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc"
 
+# No telemetry round trip from an unattended container, the same reasoning as
+# POWERSHELL_TELEMETRY_OPTOUT above: as an image-wide setting this covers the
+# start-up self-check's own `graft --version` on every fleet host too, not
+# just the build's probe below.
+ENV DO_NOT_TRACK="1"
+
 RUN set -eu; \
     tarball="/tmp/graft.tgz"; \
     native="tree-sitter tree-sitter-go tree-sitter-java tree-sitter-javascript tree-sitter-typescript tree-sitter-python tree-sitter-kotlin"; \
@@ -234,7 +240,9 @@ RUN set -eu; \
     rm -rf /tmp/npmc "${tarball}"; \
     NODE_PATH="$(npm root -g)/@nanonets/graft/node_modules" \
       node -e 'for (const m of process.argv.slice(1)) require(m); console.log("graft native modules ok: " + process.argv.slice(1).join(" "))' ${native}; \
-    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"
+    reported="$(DO_NOT_TRACK=1 graft --version)"; \
+    test "${reported}" = "${GRAFT_VERSION}" || \
+      { echo "graft reports ${reported}, expected ${GRAFT_VERSION}" >&2; exit 1; }
 
 # The Rust toolchain the fleet's crates build and test with — its own layer,
 # rebuilt on a Rust bump without disturbing the smaller toolchains above.

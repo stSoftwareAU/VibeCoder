@@ -1948,7 +1948,7 @@ Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift
     "      npm_config_build_from_source=true \\",
     '      npm rebuild -g --allow-scripts="${mods// /,}" ${mods}; \\',
     "    node -e 'for (const name of process.argv.slice(1)) require(name)' ${mods}; \\",
-    "    DO_NOT_TRACK=1 graft --version",
+    '    v=$(DO_NOT_TRACK=1 graft --version); [ "$v" = "${GRAFT_VERSION}" ]',
     "",
   ].join("\n");
   assertEquals(findGraftRebuildViolations(respelt), []);
@@ -2029,6 +2029,16 @@ Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift
     "ping upstream",
   );
 
+  // A probe nothing compares would pass over any version that merely runs.
+  const uncompared = sound.replace(
+    '    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"',
+    "    DO_NOT_TRACK=1 graft --version",
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(uncompared).join("\n"),
+    "not compared against GRAFT_VERSION",
+  );
+
   // A layer that compiles but never runs the binary proves half the job.
   const unprobed = sound.replace(
     '    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"',
@@ -2040,7 +2050,7 @@ Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift
   );
 });
 
-Deno.test("container/ - the committed Graft layer compiles its native modules offline on both architectures (Issue #2097)", async () => {
+Deno.test("container/ - the committed Graft layer states every invariant a real compile depends on (Issue #2097)", async () => {
   const containerfile = await Deno.readTextFile(
     new URL("container/Containerfile", REPO_ROOT),
   );
