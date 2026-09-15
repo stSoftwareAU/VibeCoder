@@ -1836,6 +1836,44 @@ Deno.test("run.sh - a refused trim below the claiming floor recreates the volume
   }
 });
 
+Deno.test("run.sh - a refused trim below the floor resets only volumes big enough to matter, never the approval store (Issue #2117)", async () => {
+  // GRQ-23: the heal recreated the 67 MB content-approval store alongside
+  // a 44 GB work volume, and the worker refused 59 issues for the run.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+    // 32 MB: the 64 MB work volume is worth resetting, the 8 MB store is not.
+    VIBE_WORK_VOLUME_HEAL_MIN_KB: String(32 * 1024),
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    for (
+      const [name, mb] of [
+        [WORK_VOLUME_NAME, 64],
+        [APPROVAL_STATE_VOLUME_NAME, 8],
+      ] as const
+    ) {
+      await Deno.mkdir(`${store}/volumes/${name}`, { recursive: true });
+      await Deno.writeFile(
+        `${store}/volumes/${name}/volume.img`,
+        new Uint8Array(mb * 1024 * 1024),
+      );
+    }
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, `leaving ${APPROVAL_STATE_VOLUME_NAME} alone`);
+    assertStringIncludes(log, `recreating ${WORK_VOLUME_NAME}`);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - a refused trim on a host with room to spare destroys nothing (Issue #478)", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",

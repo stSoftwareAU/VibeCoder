@@ -283,7 +283,27 @@ Deno.test(
         "(Issue #3332)",
     );
 
-    const prBranches = onBlock!["pull_request"]?.branches ?? [];
+    // The pull-request trigger that survives is quality.yml's: it calls
+    // markdown-lint.yml as a reusable workflow and its `gate` is the one
+    // required check, so the branch filter is read off the caller.
+    assertNotEquals(
+      onBlock!["workflow_call"],
+      undefined,
+      "markdown-lint.yml must be callable by quality.yml",
+    );
+    const callerUrl = new URL(
+      "../../../.github/workflows/quality.yml",
+      import.meta.url,
+    );
+    const caller = parseYaml(await Deno.readTextFile(callerUrl)) as Record<
+      string,
+      unknown
+    >;
+    const callerOn = (caller["on"] ?? caller[true as unknown as string]) as
+      | Record<string, { branches?: string[] }>
+      | undefined;
+    assertNotEquals(callerOn, undefined, "quality.yml missing on: block");
+    const prBranches = callerOn!["pull_request"]?.branches ?? [];
     assertEquals(
       prBranches.includes("Develop"),
       true,

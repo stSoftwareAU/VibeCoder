@@ -19,17 +19,11 @@ name: Markdown Lint
 # enforcement value (see docs/MERGE.md — "No post-merge re-run of required
 # checks"). Deploy/publish workflows are different and keep firing on push.
 on:
-  # Called by quality.yml, whose `gate` job is the one required check; the
-  # pull_request trigger below is kept until the ruleset requires `gate`
-  # alone, then removed so each PR runs this once.
+  # Called by quality.yml, whose `gate` job is the one required check: on a
+  # pull request this workflow runs once, through that call. The branch
+  # filter it used to carry (Develop, main, milestone/* — Issues #3360,
+  # #3940) is quality.yml's now.
   workflow_call:
-  pull_request:
-    # Issue #3940 — this was `["*"]`, which reads as "every branch" but a
-    # GitHub `*` never matches `/`, so the Markdown gate never ran on
-    # milestone sub-issue PRs. Those PRs target a shared `milestone/<name>`
-    # branch (Issue #1300) and are the dominant merge path, so the glob is
-    # listed explicitly (Issue #3360).
-    branches: [Develop, main, milestone/*]
 
 permissions:
   contents: read
