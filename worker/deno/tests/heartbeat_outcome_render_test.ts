@@ -12,6 +12,7 @@ import {
   OUTCOME_BLOCK_MAX_LENGTH,
   OUTCOME_DETAIL_MAX_LENGTH,
   parseHeartbeatMarker,
+  parseReleaseAttemptFromBody,
   renderHeartbeatBody,
   renderRunOutcomeClause,
 } from "../lib/heartbeat_storage.ts";
@@ -293,4 +294,52 @@ Deno.test("outcome render - pr_deferred: the release says the PR is pending and 
     describeAttemptOutcome(deferred),
     "PR pending on `issue-1951-secondary-limit`",
   );
+});
+
+Deno.test("outcome render - a PR a later step blocked renders both halves and reads back the same (Issue #2044)", () => {
+  const outcome: RunOutcome = {
+    kind: "pr",
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/2100",
+    prNumber: 2100,
+    blocked: {
+      phase: "completion",
+      category: "workflow_gate",
+      reason:
+        "Workflow files changed by this run did not pass the GitHub Actions file checks",
+    },
+  };
+  const body = render(outcome);
+
+  // A PR exists, so the line is the ✅ delivered one, not "with no PR".
+  assertStringIncludes(body, "✅ **Vibe Coder released this claim**");
+  assert(!body.includes("with no PR"), body);
+  assertStringIncludes(body, "Raised #2100");
+  assertStringIncludes(body, "then blocked in phase `completion`");
+  assertStringIncludes(body, "`workflow-gate`");
+  assertEquals(isHeartbeatOnlyBody(body), true);
+
+  // The reconstruction a later attempt tallies from keeps both halves.
+  assertEquals(
+    parseReleaseAttemptFromBody(body)?.text,
+    "raised #2100, blocked (`workflow-gate`)",
+  );
+  assertEquals(
+    describeAttemptOutcome(outcome),
+    "raised #2100, blocked (`workflow-gate`)",
+  );
+});
+
+Deno.test("outcome render - a blocked PR block stays bounded (Issue #2044)", () => {
+  const clause = renderRunOutcomeClause({
+    kind: "pr",
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/2100",
+    prNumber: 2100,
+    blocked: {
+      phase: "completion",
+      category: "workflow_gate",
+      reason: "y".repeat(6000),
+    },
+  });
+  assert(clause.length <= OUTCOME_BLOCK_MAX_LENGTH, `clause ${clause.length}`);
+  assert(clause.includes("…"), "truncated with an ellipsis");
 });

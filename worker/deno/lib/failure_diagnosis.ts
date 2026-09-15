@@ -33,6 +33,13 @@ export type FailureCategory =
   | "token_scope"
   | "no_changes"
   | "evidence_missing"
+  /**
+   * A pre-PR gate the worker itself applied refused the run (Issue #2044) —
+   * today the changed-workflow file checks. The worker wrote the refusal, so
+   * its cause is known: recording it as `unknown` blamed an unexplained
+   * failure for a block the worker had already explained.
+   */
+  | "workflow_gate"
   | "internal_error"
   | "missing_tools"
   /**
@@ -65,6 +72,8 @@ export type CategoryDisplay =
   | "missing-tools"
   /** Issue #1475: the host's token lacks the `workflow` scope. */
   | "token-scope"
+  /** Issue #2044: a pre-PR gate the worker applied refused the run. */
+  | "workflow-gate"
   | "infrastructure-error"
   | "task-not-understood"
   | "scheduled-release"
@@ -109,6 +118,19 @@ export type ScheduledReleaseReason = "cycle-ended" | "hard-cap";
  * timeout shares.
  */
 export const SCHEDULED_RELEASE_MARKER = "Released on schedule:";
+
+/**
+ * Phrase the changed-workflow gate opens its refusal with (Issue #2044).
+ *
+ * The gate is the worker's own, so the reason it fails a run with is one the
+ * worker wrote — and a worker-authored refusal must never be diagnosed
+ * `unknown`. The message builder in `changed_workflow_gate.ts` and the
+ * category detector below therefore share this one phrase rather than each
+ * carrying its own copy, which is what let the wording drift apart from the
+ * diagnosis in the first place.
+ */
+export const WORKFLOW_GATE_MARKER =
+  "did not pass the GitHub Actions file checks";
 
 /**
  * The operator-facing reason line for a scheduled release (Issue #424).
@@ -208,6 +230,15 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // is exact rather than sniffing arbitrary agent prose.
   if (lowered.includes("interrupted before completing")) {
     return "interrupted";
+  }
+
+  // A gate the worker itself applied (Issue #2044). Deliberately checked
+  // AFTER the kill, timeout, rate-limit and interrupted rules: those messages
+  // quote the tail of the agent's output, and an agent writing *about* this
+  // gate must not turn its timeout into a gate block (the #249 lesson). By
+  // here the message is the worker's own refusal.
+  if (failureMessage.includes(WORKFLOW_GATE_MARKER)) {
+    return "workflow_gate";
   }
 
   if (
@@ -331,6 +362,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "missing_tools",
   "interrupted",
   "scheduled_release",
+  "workflow_gate",
   "unknown",
 ]);
 
@@ -412,6 +444,8 @@ export function getFailureCategoryDisplay(
       return "missing-tools";
     case "token_scope":
       return "token-scope";
+    case "workflow_gate":
+      return "workflow-gate";
     case "push_failure":
     case "evidence_missing":
     case "internal_error":
@@ -717,6 +751,12 @@ export function getFailureDiagnosis(
 - The issue description may need more detail about what changes are expected
 - Consider adding specific file paths, expected behaviour, or acceptance criteria`;
 
+    case "workflow_gate":
+      return `- A workflow file this run added or changed carries a GitHub Actions finding the base commit did not, so the changed-workflow gate refused the run (Issue #1859)
+- The finding is a defect in the change, not a documentation shortfall: it stops the run whether or not a pull request already exists
+- Fix the named file \u2014 or, for a scanner finding that genuinely does not apply, add a \`# best-practice-ignore: <finding-id>\` comment beside the offending line
+- When the run had already raised its pull request, that PR stays open and carries the outstanding finding \u2014 the work is delivered, the finding is not`;
+
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
@@ -801,6 +841,10 @@ export function getFailureDiagnosisOneliner(
       return "Likely cause: Claude could not determine what changes to make.";
     case "evidence_missing":
       return "Likely cause: screenshot evidence required but not provided.";
+    // Deliberately not "Likely cause": nothing was guessed. The worker's own
+    // gate refused the run and named the finding (Issue #2044).
+    case "workflow_gate":
+      return "Blocked by the changed-workflow file checks: a workflow file this run touched carries a finding the base commit did not.";
     case "internal_error":
       return "Likely cause: internal tooling or CLI error (not related to issue complexity).";
     case "unknown":
