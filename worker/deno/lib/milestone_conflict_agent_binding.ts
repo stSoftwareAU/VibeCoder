@@ -41,6 +41,8 @@ export interface MilestoneConflictAgentBinding {
   runAgent?: typeof runClaudeWithRetry;
   /** Reads the clock. Injected in tests so the grant ledger is deterministic. */
   now?: () => number;
+  /** Override the prompts directory (tests); production resolves its own. */
+  promptsDir?: string;
 }
 
 /**
@@ -85,7 +87,10 @@ export function bindMilestoneConflictAgent(
           ),
         });
       }
-      claudeTimeout = Math.max(1, remaining);
+      // A repair takes what the first run and the verification left; the
+      // resolution run itself keeps the whole grant, exactly as before.
+      if (request.repair) claudeTimeout = remaining;
+      else claudeTimeout = grantSeconds;
     }
     return runMergeConflictAgent({
       repo,
@@ -94,6 +99,7 @@ export function bindMilestoneConflictAgent(
       conflictedFiles: request.conflictedFiles,
       // It runs in the very clone the merge conflicted in.
       workDir: request.workDir,
+      ...(binding.promptsDir ? { promptsDir: binding.promptsDir } : {}),
       qualityInstructions: buildQualityInstructions(config.repoConfig, repo),
       customInstructions: getCustomInstructions(config.repoConfig, repo),
       timeouts: {

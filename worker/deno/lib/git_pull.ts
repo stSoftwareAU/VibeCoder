@@ -40,15 +40,12 @@ import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import {
-  describeGateRepair,
   type MilestoneSyncOutcome,
   summariseGateRepair,
 } from "./milestone_sync_conflict.ts";
 import {
   describeRepairEscalation,
-  type GateRepairOutcome,
-  readMergedCommitSubjects,
-  repairGatedResolution,
+  runGateWithRepair,
 } from "./milestone_gate_repair.ts";
 import {
   analyseConflictedFile,
@@ -1129,69 +1126,30 @@ export async function syncMilestoneBranchWithDefault(
   // (Issue #1559): the repository's own check, its manifest check and its
   // unit suite. A tree that defines none of them verified nothing, so
   // `skipped` refuses the push rather than reading as a pass.
-  const runResolutionGate = async (): Promise<MergeGateOutcome> => {
-    const outcome = await resolutionGate(options.cwd ?? ".");
-    return outcome.status === "skipped"
-      ? {
-        ...outcome,
-        status: "failed" as const,
-        detail: `${outcome.detail} — an automatic conflict resolution that ` +
-          `cannot be verified is not a resolution (Issue #1559)`,
-      }
-      : outcome;
-  };
+  const runResolutionGate = (): Promise<MergeGateOutcome> =>
+    resolutionGate(options.cwd ?? ".");
 
-  // The gate runs here rather than inside the push, so a failure still has
-  // the merged tree to work on (Issue #1965): the push path resets the branch
-  // away the moment it is refused, and a resolution reset away cannot be
-  // repaired. What reaches the push is the verdict this produced.
-  const firstGate = await runResolutionGate();
-  let repair: GateRepairOutcome | undefined;
-  let finalGate = firstGate;
-  if (firstGate.status === "failed") {
-    // Issue #1965: a gate failure after a resolution is usually a semantic
-    // conflict git never reported — the default branch changed an interface
-    // this branch implements where no hunk overlapped. That goes back to the
-    // agent rung with the compiler's own output, not straight to a human.
-    repair = await repairGatedResolution({
-      firstFailure: firstGate,
-      gate: runResolutionGate,
-      ...(agentFn ? { agentFn } : {}),
-      options,
-      milestoneBranch,
-      defaultBranch,
-      mergeSha: await readRef("HEAD", options),
-      mergedCommitSubjects: await readMergedCommitSubjects(
-        options,
-        preMergeSha,
-        defaultSha || defaultBranch,
-      ),
-      conflictedFiles,
-      ...(logger ? { logger } : {}),
-    });
-    finalGate = repair.gate;
-    if (repair.status === "repaired") {
-      // The repair is part of the merge, and the commit says which files it
-      // touched — they are rarely the conflicted ones.
-      const amended = await runGitCommand(
-        [
-          "commit",
-          "--amend",
-          "-m",
-          `${resolutionMessage}\n\n${describeGateRepair(repair.record)}`,
-        ],
-        options,
-      );
-      if (!amended.ok || amended.value.code !== 0) {
-        return await refuseResolution(
-          `the repaired resolution could not be committed (Issue #1965): ${
-            describeGitFailure(amended)
-          }`,
-          true,
-        );
-      }
-    }
+  // Issue #1965: a gate failure after a resolution is usually a semantic
+  // conflict git never reported — the default branch changed an interface
+  // this branch implements where no hunk overlapped. It goes back to the
+  // agent rung with the compiler's own output, not straight to a human, and
+  // a repair that works is folded into the merge commit.
+  const verified = await runGateWithRepair({
+    gate: runResolutionGate,
+    ...(agentFn ? { agentFn } : {}),
+    options,
+    milestoneBranch,
+    defaultBranch,
+    preMergeSha,
+    defaultRef: defaultSha || defaultBranch,
+    resolutionMessage,
+    conflictedFiles,
+    ...(logger ? { logger } : {}),
+  });
+  if (verified.amendFailure) {
+    return await refuseResolution(verified.amendFailure, true);
   }
+  const { gate: finalGate, firstGate, repair } = verified;
 
   const gatedResolved = await gateThenPushMilestoneBranch(
     milestoneBranch,

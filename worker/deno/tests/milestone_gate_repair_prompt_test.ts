@@ -163,23 +163,6 @@ Deno.test("merge conflict prompt - an ordinary resolution renders no repair bloc
   assertEquals(/\{\{[A-Z_]+\}\}/.test(prompt), false);
 });
 
-/**
- * Point the binding at this checkout's prompts.
- *
- * The binding builds its prompt through the default resolver, and a worker
- * run can point that at another checkout via `VIBE_BASE_DIR` — so the test
- * names the templates it means rather than whichever tree the environment
- * happens to hold.
- */
-function withLocalPrompts<T>(fn: () => Promise<T>): Promise<T> {
-  const previous = Deno.env.get("PROMPTS_DIR");
-  Deno.env.set("PROMPTS_DIR", PROMPTS_DIR);
-  return fn().finally(() => {
-    if (previous === undefined) Deno.env.delete("PROMPTS_DIR");
-    else Deno.env.set("PROMPTS_DIR", previous);
-  });
-}
-
 /** A config carrying only what the binding reads. */
 function config(claudeTimeout: number): WorkerConfig {
   return {
@@ -190,46 +173,46 @@ function config(claudeTimeout: number): WorkerConfig {
   } as unknown as WorkerConfig;
 }
 
-Deno.test("bindMilestoneConflictAgent - a repair gets what is left of the cycle's grant (Issue #1965)", () =>
-  withLocalPrompts(async () => {
-    const captured: Captured = { prompts: [], options: [] };
-    let nowMs = 1_000_000;
-    const agentFn = bindMilestoneConflictAgent({
-      repo: "stSoftwareAU/GRQ-AutoTrader",
-      grant: { agentAllowed: true, agentTimeoutSeconds: 900 },
-      config: config(3600),
-      logger: silentLogger(),
-      runAgent: makeRunner(captured),
-      now: () => nowMs,
-    });
-    assert(agentFn, "an allowed grant binds the rung");
+Deno.test("bindMilestoneConflictAgent - a repair gets what is left of the cycle's grant (Issue #1965)", async () => {
+  const captured: Captured = { prompts: [], options: [] };
+  let nowMs = 1_000_000;
+  const agentFn = bindMilestoneConflictAgent({
+    repo: "stSoftwareAU/GRQ-AutoTrader",
+    grant: { agentAllowed: true, agentTimeoutSeconds: 900 },
+    config: config(3600),
+    logger: silentLogger(),
+    promptsDir: PROMPTS_DIR,
+    runAgent: makeRunner(captured),
+    now: () => nowMs,
+  });
+  assert(agentFn, "an allowed grant binds the rung");
 
-    const request = {
-      conflictedFiles: ["docs/development.md"],
-      milestoneBranch: "milestone/168-execution",
-      defaultBranch: "Develop",
-      workDir: "/tmp/nonexistent-gate-repair",
-    };
-    await agentFn(request);
-    assertEquals(
-      captured.options[0]!.timeoutSeconds,
-      900,
-      "the first run gets the whole grant, exactly as before",
-    );
+  const request = {
+    conflictedFiles: ["docs/development.md"],
+    milestoneBranch: "milestone/168-execution",
+    defaultBranch: "Develop",
+    workDir: "/tmp/nonexistent-gate-repair",
+  };
+  await agentFn(request);
+  assertEquals(
+    captured.options[0]!.timeoutSeconds,
+    900,
+    "the first run gets the whole grant, exactly as before",
+  );
 
-    // Ten minutes of agent run and verification later.
-    nowMs += 600_000;
-    await agentFn({
-      ...request,
-      repair: { ...REPAIR, mergedCommitSubjects: [] },
-    });
-    assertEquals(
-      captured.options[1]!.timeoutSeconds,
-      300,
-      "the repair gets what the first run and the gate left, not a fresh grant",
-    );
-    assertStringIncludes(captured.prompts[1]!, "Repair Mode");
-  }));
+  // Ten minutes of agent run and verification later.
+  nowMs += 600_000;
+  await agentFn({
+    ...request,
+    repair: { ...REPAIR, mergedCommitSubjects: [] },
+  });
+  assertEquals(
+    captured.options[1]!.timeoutSeconds,
+    300,
+    "the repair gets what the first run and the gate left, not a fresh grant",
+  );
+  assertStringIncludes(captured.prompts[1]!, "Repair Mode");
+});
 
 Deno.test("bindMilestoneConflictAgent - a repair the grant cannot cover is refused by name (Issue #1965)", async () => {
   const captured: Captured = { prompts: [], options: [] };
@@ -239,6 +222,7 @@ Deno.test("bindMilestoneConflictAgent - a repair the grant cannot cover is refus
     grant: { agentAllowed: true, agentTimeoutSeconds: 600 },
     config: config(3600),
     logger: silentLogger(),
+    promptsDir: PROMPTS_DIR,
     runAgent: makeRunner(captured),
     now: () => nowMs,
   })!;
@@ -277,6 +261,7 @@ Deno.test("bindMilestoneConflictAgent - an unbounded pass keeps the configured t
     grant: { agentAllowed: true },
     config: config(1800),
     logger: silentLogger(),
+    promptsDir: PROMPTS_DIR,
     runAgent: makeRunner(captured),
   })!;
 

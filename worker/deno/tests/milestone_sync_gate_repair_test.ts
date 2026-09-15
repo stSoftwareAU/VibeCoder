@@ -163,7 +163,11 @@ async function setup(): Promise<Fixture> {
 
   return {
     clone,
-    cleanup: () => Deno.remove(root, { recursive: true }).catch(() => {}),
+    cleanup: () =>
+      Deno.remove(root, { recursive: true }).catch((err) =>
+        // A temp tree that outlives the run is worth saying out loud.
+        console.error(`could not remove ${root}: ${err}`)
+      ),
   };
 }
 
@@ -464,6 +468,47 @@ Deno.test(
         calls.filter((c) => c.repair).length,
         1,
         "the rung was asked once and refused; it is not asked again",
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a repository with no verification to run buys no repair run (Issues #1559, #1965)",
+  async () => {
+    const fx = await setup();
+    try {
+      const preMergeSha = (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim();
+      const calls: Calls = [];
+      const skippingGate: MergeGateFn = () =>
+        Promise.resolve({
+          status: "skipped" as const,
+          detail: "no test:unit task under the merged tree",
+          output: "",
+        });
+
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1965",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        skippingGate,
+        undefined,
+        rung(calls, FAKE_REPAIRED),
+      );
+
+      assert(!result.ok, "a resolution nothing verified is not pushed");
+      assertEquals(
+        calls.filter((c) => c.repair).length,
+        0,
+        "no agent time is spent asking for a fix to a check that never ran",
+      );
+      assertStringIncludes(result.error.message, "Issue #1559");
+      assertEquals(
+        (await gitOk(["rev-parse", "HEAD"], fx.clone)).trim(),
+        preMergeSha,
       );
     } finally {
       await fx.cleanup();

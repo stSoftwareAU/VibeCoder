@@ -2220,7 +2220,7 @@ What to do, in order:
 2. Fix it under the same contract as any other conflict: **both sides survive**. Carry this branch's intent through the default branch's new interface. Deleting one side's behaviour, stubbing a method to \`unimplemented!()\`/\`throw\`, weakening an assertion, or reverting either side's commits to make the check pass are all forbidden — they are the side-pick this mode exists to prevent, arriving by another route.
 3. Add or update the tests the repair needs, so the reconciliation is covered rather than merely compiling.
 4. \`git add\` your fix and stop, or commit it — the worker folds whichever it finds into the existing merge commit. Do **not** \`git revert\`, \`git reset --hard\`, rebase, or force-push: the merge and both sides' commits must still be there when you finish.
-5. If the two sides genuinely contradict each other and no reconciliation keeps both, change nothing, write the analysis into \`.pr_response_message\` and finish. The check will refuse the tree again and a human takes it from there — an honest hand-off is a good outcome.
+5. If the two sides genuinely contradict each other and no reconciliation keeps both, **change nothing** and finish, saying in your reply which two intents collide and what a human must decide. The check will refuse the tree again, the worker resets the branch to where it stood, and the escalation carries both check outputs — an honest hand-off is a good outcome.
 `;
 }
 

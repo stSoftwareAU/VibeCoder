@@ -44,19 +44,37 @@ export interface GateRepairRecord {
 }
 
 /**
+ * List what each repair round touched, one line apiece (Issue #1965).
+ *
+ * One renderer, two sinks: the merge commit and the report comment want the
+ * paths in backticks, the escalation's plain-text note does not, and writing
+ * the list twice is how the two drift.
+ *
+ * @param rounds - The rounds that ran, in order
+ * @param opts.code - Wrap each path in backticks (Markdown sinks)
+ * @returns One bullet per round, or "" when no round ran
+ */
+export function listGateRepairRounds(
+  rounds: readonly GateRepairRound[],
+  opts: { code?: boolean } = {},
+): string {
+  return rounds.map((r) =>
+    `- round ${r.round} — ${
+      r.files.length > 0
+        ? r.files.map((f) => opts.code ? `\`${f}\`` : f).join(", ")
+        : "no file changed"
+    }`
+  ).join("\n");
+}
+
+/**
  * Name the repair on the merge commit and in the sync's report (Issue #1965).
  *
  * @param record - What the repair rounds touched
  * @returns The block, naming the failure, each round's files and the outcome
  */
 export function describeGateRepair(record: GateRepairRecord): string {
-  const rounds = record.rounds.map((r) =>
-    `- round ${r.round} — ${
-      r.files.length > 0
-        ? r.files.map((f) => `\`${f}\``).join(", ")
-        : "no file changed"
-    }`
-  ).join("\n");
+  const rounds = listGateRepairRounds(record.rounds, { code: true });
   return `The verification refused the first resolution (${record.failingCommand}), ` +
     `so it went back to the resolution agent rather than to a human ` +
     `(Issue #1965) — a semantic conflict git never reported as one. ` +
