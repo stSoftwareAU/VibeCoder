@@ -23,6 +23,7 @@ import {
   findProjectManifests,
   type MergeGateFn,
   type MergeGateOutcome,
+  type ProjectKind,
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
@@ -58,10 +59,35 @@ const UNIT_SUITE_TASKS = ["test:unit", "test"] as const;
 export interface ResolutionTask {
   /** Directory the task runs in. */
   dir: string;
-  /** The manifest task name, e.g. `check:manifests`. */
+  /** `deno task <task>`, or `cargo <args>` for a Cargo workspace (#2138). */
+  kind: ProjectKind;
+  /** The manifest task name, e.g. `check:manifests`; `test` for cargo. */
   task: string;
+  /** The argv after the executable. */
+  args: string[];
   /** What is left of {@link RESOLUTION_GATE_BUDGET_MS} when it starts. */
   timeoutMs: number;
+}
+
+/** How a task is spelled in a log line or an escalation. */
+export function describeTask(task: ResolutionTask): string {
+  return task.kind === "cargo"
+    ? `cargo ${task.args.join(" ")}`
+    : `deno task ${task.task}`;
+}
+
+/**
+ * `cargo test` over the whole workspace as the unit suite (Issue #2138) —
+ * `--locked` only when a `Cargo.lock` is committed, as the type check does.
+ */
+export async function cargoTestArgs(dir: string): Promise<string[]> {
+  const args = ["test", "--workspace"];
+  try {
+    if ((await Deno.stat(`${dir}/Cargo.lock`)).isFile) args.push("--locked");
+  } catch {
+    // no lockfile: an unlocked crate is verified unlocked
+  }
+  return args;
 }
 
 /** Runs one task. Injected in tests; spawns `deno task <name>` in production. */
@@ -102,8 +128,8 @@ function isUnitSuite(task: string): boolean {
 /** Spawn one of the repository's own tasks within the remaining budget. */
 const spawnTask: ResolutionTaskRunner = async (task) => {
   const result = await runWithTimeout(
-    Deno.execPath(),
-    ["task", task.task],
+    task.kind === "cargo" ? "cargo" : Deno.execPath(),
+    task.args,
     { cwd: task.dir, timeoutMs: task.timeoutMs },
   );
   if (!result.ok) return { code: 1, output: result.error.message };
@@ -113,9 +139,10 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
   if (timedOut) {
     return {
       code: 124,
-      output:
-        `${output}\n'deno task ${task.task}' timed out after ${task.timeoutMs}ms`
-          .trim(),
+      output: `${output}\n'${
+        describeTask(task)
+      }' timed out after ${task.timeoutMs}ms`
+        .trim(),
     };
   }
   return { code, output };
@@ -174,9 +201,28 @@ export async function verifyResolvedTree(
   const ran: string[] = [typed.detail];
   let unitSuiteRan = false;
   for (const project of await findProjectManifests(repoDir)) {
-    const defined = await readManifestTasks(project.manifest);
-    for (const task of resolutionTasksFor(defined)) {
-      const where = `deno task ${task} in ${project.dir}`;
+    // Issue #2138: a Cargo workspace's unit suite is `cargo test`; a Deno
+    // project's is whichever of its tasks resolutionTasksFor names.
+    const planned: ResolutionTask[] = project.kind === "cargo"
+      ? [{
+        dir: project.dir,
+        kind: "cargo",
+        task: "test",
+        args: await cargoTestArgs(project.dir),
+        timeoutMs: 0,
+      }]
+      : resolutionTasksFor(await readManifestTasks(project.manifest)).map(
+        (task) => ({
+          dir: project.dir,
+          kind: "deno" as const,
+          task,
+          args: ["task", task],
+          timeoutMs: 0,
+        }),
+      );
+    for (const step of planned) {
+      const task = step.task;
+      const where = `${describeTask(step)} in ${project.dir}`;
       const timeoutMs = deadline - now();
       if (timeoutMs <= 0) {
         return {
@@ -189,7 +235,7 @@ export async function verifyResolvedTree(
       }
       let result: { code: number; output: string };
       try {
-        result = await runner({ dir: project.dir, task, timeoutMs });
+        result = await runner({ ...step, timeoutMs });
       } catch (err) {
         // Unrunnable is not clean — the resolution stays unverified.
         return {
@@ -206,7 +252,7 @@ export async function verifyResolvedTree(
         };
       }
       ran.push(where);
-      if (isUnitSuite(task)) unitSuiteRan = true;
+      if (step.kind === "cargo" || isUnitSuite(task)) unitSuiteRan = true;
     }
   }
 
@@ -215,8 +261,9 @@ export async function verifyResolvedTree(
     // behaviour, so the type check alone does not verify a resolution.
     return {
       status: "skipped",
-      detail: `no ${UNIT_SUITE_TASKS.join("/")} task under '${repoDir}' — ` +
-        `nothing ran the cases that would show a dropped implementation`,
+      detail: `no ${UNIT_SUITE_TASKS.join("/")} task or Cargo.toml under ` +
+        `'${repoDir}' — nothing ran the cases that would show a dropped ` +
+        "implementation",
       output: "",
     };
   }
