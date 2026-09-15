@@ -235,9 +235,8 @@ function Write-LoopLine {
 
     --allow-sys=hostname: the escalation names the host it is about. Without
     the permission Deno.hostname() throws and the report says
-    "unknown-host", so every host in the fleet
-    collapses onto one issue per phase (Issues #633, #709, #710). loop.sh has
-    carried the flag since Issue #633.
+    "unknown-host", so every host in the fleet reports as the same machine
+    (Issues #633, #709, #710). loop.sh has carried the flag since Issue #633.
 
     --launch-log: this cycle's own record, so an escalation can quote the
     supervisor's account of the failure rather than only its exit status

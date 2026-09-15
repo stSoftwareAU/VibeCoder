@@ -184,7 +184,7 @@ export interface ContainerRestartConfig {
   baseSleepSeconds: number;
   /** Ceiling on the grown backoff. */
   maxBackoffSeconds: number;
-  /** Consecutive failures before a failure is escalated to GitHub. */
+  /** Consecutive failures before a failure is escalated. */
   escalationThreshold: number;
   /** Lower threshold used when the image itself cannot be built. */
   imageBuildEscalationThreshold: number;
@@ -1369,7 +1369,7 @@ export interface ContainerRestartOutcome {
   backoffSeconds: number;
   /** True when this clean run followed at least one failure. */
   recovered: boolean;
-  /** True when a GitHub/webhook escalation was actually sent. */
+  /** True when the escalation was actually delivered. */
   escalated: boolean;
   /**
    * Why an escalation was not sent — a delivery reason (`rate_limited`) or
@@ -1385,7 +1385,8 @@ export interface ContainerRestartOutcome {
 
 /**
  * Record one launcher outcome: update the backoff, emit the self-heal events,
- * and escalate through GitHub once the phase's threshold is crossed.
+ * and escalate through the host's own `callbacks.host_failure` hook once the
+ * phase's threshold is crossed (Issue #2108).
  *
  * Telemetry and escalation failures never change the returned backoff — the
  * supervisor must keep supervising even when it cannot report.
