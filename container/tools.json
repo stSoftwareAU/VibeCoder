@@ -212,7 +212,7 @@
         "arm64": "01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc"
       },
       "repos": ["stSoftwareAU/VibeCoder"],
-      "notes": "The runtime markdownlint-cli2, Playwright and the Gemini CLI provider need; the worker itself is Deno. Node 24 is the current LTS line. Its Containerfile layer sits before the coding-agent provider layer because a provider fragment whose CLI is a JavaScript bundle needs it at install time (Issue #4107). It ships an npm of its own, but the `npm` toolchain below owns that command (Issue #475) — one pin per command, so the version the image carries is never whatever the Node tarball happened to bundle."
+      "notes": "The runtime markdownlint-cli2, Graft, Playwright and the Gemini CLI provider need; the worker itself is Deno. Graft is the one consumer that also needs the headers this layer leaves in /usr/local/include/node, which is where its own rebuild compiles against (Issue #2097). Node 24 is the current LTS line. Its Containerfile layer sits before the coding-agent provider layer because a provider fragment whose CLI is a JavaScript bundle needs it at install time (Issue #4107). It ships an npm of its own, but the `npm` toolchain below owns that command (Issue #475) — one pin per command, so the version the image carries is never whatever the Node tarball happened to bundle."
     },
     {
       "id": "npm",
@@ -240,6 +240,19 @@
       },
       "repos": ["stSoftwareAU/VibeCoder"],
       "notes": "Drives the check-markdownlint gate stage against .markdownlint-cli2.jsonc; without it the stage SKIPs and structural Markdown breakage reaches merge. Pure JavaScript, so one noarch checksum covers both architectures — the pin matches .github/workflows/markdown-lint.yml so the container and CI report identical findings. It has no version flag: every argument is a glob, and a bare `--version` lints whatever the working directory's .markdownlint-cli2.* names — 134 files in the worker's own checkout, failing the start-up self-check on the first lint finding (Issues #2070–#2073). `--no-globs` drops the configured globs and `--version` matches no file, so the probe prints the banner (`markdownlint-cli2 v0.23.2 (…)`), lints nothing and exits 0 wherever it runs."
+    },
+    {
+      "id": "graft",
+      "version": "0.18.0",
+      "versionArg": "GRAFT_VERSION",
+      "commands": ["graft"],
+      "versionCommand": "graft",
+      "source": "https://registry.npmjs.org/@nanonets/graft",
+      "sha256": {
+        "noarch": "729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "A worker RUNTIME tool, not a repo gate tool (Issue #2097, parent #2060): Graft builds the tree-sitter code graph the repo-context injection reads, so no monitored repository's quality.sh calls it and it is deliberately absent from REQUIRED_REPO_TOOLCHAIN_COMMANDS. The checksum covers the @nanonets/graft tarball only, exactly as markdownlint-cli2's does; its dependencies resolve from the registry at build time. Pure JavaScript itself, so one noarch checksum covers both architectures — what differs per architecture is compiled in the image rather than downloaded, by a rebuild of the native modules with no usable linux prebuild (upstream trailhq/Graft#119). Which modules those are and why every part of that step is load-bearing is in docs/CONTAINER-IMAGE.md, \"Graft — the one layer that compiles\"; findGraftRebuildViolations enforces it. `graft --version` prints the bare version, so the manifest-derived start-up self-check needs no versionArgs."
     },
     {
       "id": "rust",

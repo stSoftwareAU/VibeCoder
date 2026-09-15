@@ -291,6 +291,9 @@ const REAL_IMAGE_OUTPUT: Record<
     command: "markdownlint-cli2 v0.23.2 (markdownlint v0.41.1)\n" +
       "Finding: --version\nLinting: 0 files\nSummary: 0 issues in 0 files\n",
   },
+  // Captured from the image's own binary (Issue #2097): `graft --version`
+  // prints the bare version, so the manifest entry needs no versionArgs.
+  graft: { command: "0.18.0\n" },
   rust: { command: "cargo 1.98.0 (797e8a9bc 2026-08-05)\n" },
   semgrep: { command: "1.173.0\n" },
   pyyaml: { module: "6.0.3\n" },

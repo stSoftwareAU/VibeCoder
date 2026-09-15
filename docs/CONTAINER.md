@@ -42,6 +42,7 @@ setting and [Containment](CONTAINMENT.md) for the boundary.
 | `jq`                             | GitHub release binary                               | Version + SHA-256 per architecture |
 | the coding-agent binaries (`claude`, …) | one `container/providers/<id>.sh` per id in `AGENT_PROVIDERS` | Version + SHA-256 per architecture |
 | the monitored-repository toolchains (below) | `toolchains` layers            | Version + SHA-256 per architecture |
+| `graft` (`@nanonets/graft`, worker runtime — the repo-context code graph) | npm tarball, then a rebuild of its seven native modules in the image | Version + SHA-256 (noarch tarball; the native modules are compiled, not downloaded) |
 | `playwright-core` + headless Chromium | npm tarball, then checksum-verified Chromium zip, then `install --with-deps` | Version + SHA-256 (noarch tarball + chromium_amd64 / chromium_arm64); apt deps residual |
 
 Every version lives in [`container/tools.json`](../container/tools.json);
@@ -77,6 +78,12 @@ toolchains below were enumerated by reading each `repos` entry in
 leaving the fleet makes its toolchain removable rather than permanent image
 weight.
 
+One entry in the table is not a gate tool at all: `graft` is a worker
+**runtime** tool (Issue #2097), pinned and probed through the same manifest
+machinery because that is what makes it checked, not because a `quality.sh`
+calls it. Its row says so, and it is deliberately absent from
+`REQUIRED_REPO_TOOLCHAIN_COMMANDS`.
+
 | Toolchain                                          | Commands (or modules)                     | Exists for                                                                                    |
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `rust` 1.98.0 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
@@ -90,6 +97,7 @@ weight.
 | `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
+| `graft` 0.18.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
 `rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
 `bats-core`, `codespell` and `pyyaml` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
@@ -181,8 +189,10 @@ Seven consequences worth knowing:
   restating it, so a base-image interpreter bump 404s the fetch instead of
   installing bytes the manifest never pinned.
 
-Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
-provider need; the worker itself is Deno. Its layer is built **before** the
+Node.js is the runtime `markdownlint-cli2`, Graft, Playwright and the Gemini
+CLI provider need; the worker itself is Deno. Graft is the one consumer that
+also needs the headers this layer leaves in `/usr/local/include/node`, which
+is what lets its own rebuild compile offline. Its layer is built **before** the
 coding-agent provider layer, because a provider whose CLI ships as a
 JavaScript bundle needs the runtime at install time to prove the agent runs
  — the image contents are the same either way, only the layer
@@ -335,7 +345,7 @@ Containerfile states no version at all. `shellcheck`, `actionlint`,
 `cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml` and
 `rust` are fragments (Issues #1594, #1595, #1596, #1628) — they are the fetch-verify-extract
 toolchains, whose `ARG` blocks and `RUN` bodies were the bulk of the
-Containerfile's size. `node`, `npm`, `markdownlint-cli2` and
+Containerfile's size. `node`, `npm`, `markdownlint-cli2`, `graft` and
 `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
 the npm- and pip-installed tools have their own steps.
 
@@ -388,7 +398,8 @@ flowchart TD
   with `--no-globs --version`, which prints the banner and lints nothing.
 - **Concurrent and bounded.** The probes run together and each is bounded by
   `TOOLCHAIN_PROBE_TIMEOUT_MS`, so the launch pays the slowest probe rather
-  than the sum of thirteen. Measured in the image, all thirteen together cost
+  than the sum of all of them. Measured in the image when it carried thirteen
+  toolchains — Graft is the fourteenth — all thirteen together cost
   **0.64 s** against a warm page cache and **1.99 s** on the first run after
   the image is written — the tools' own start-up, not the check's:
   `markdownlint-cli2` alone is 1.9 s of a cold run and `semgrep` 0.65 s. A
