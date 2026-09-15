@@ -914,71 +914,43 @@ export function agentProviderIds(): string[] {
   return [...AGENT_PROVIDERS.keys()];
 }
 
-/** File beside `.config.json` carrying this run's provider override (Issue #2062). */
-export const PROVIDER_OVERRIDE_FILE_NAME = ".provider-override";
+/**
+ * The provider standing in for the configured one **for this run**
+ * (Issue #2062), set by the health gate's fallback switch.
+ *
+ * Module-level rather than a file (Issue #2065): the observed revert was
+ * in-process — the best-effort config loaders reload the config and reset
+ * the module state to the file's preferred id — so a module record the
+ * resolver consults **before** the file's value survives every reload and
+ * needs no filesystem write (the file beside the read-only config staging
+ * dir crashed the run).
+ */
+let _runProviderOverrideId: string | undefined;
 
 /**
- * Read the per-run provider override from `dir` (Issue #2062).
+ * Record the per-run provider override (Issue #2062).
  *
- * The health gate's fallback writes the switched provider beside the
- * config file so **child processes**, whose config load otherwise resets
- * the active provider to the file's preferred id, load the same switch the
- * parent made. Absent or unreadable → undefined; an unregistered id reads
- * as absent rather than failing a run that is already past its gate.
+ * The health gate sets it when its fallback switch fires; the run-core
+ * command clears it at run start so each run re-evaluates the configured
+ * preferred provider first. An unregistered id fails loudly — the gate
+ * only sets ids it probed healthy.
  *
- * @param dir - Directory that holds the config file.
+ * @param id - The provider id to stand in for the configured one, or
+ *   undefined to clear.
+ */
+export function setRunProviderOverride(id: string | undefined): void {
+  _runProviderOverrideId = id === undefined
+    ? undefined
+    : resolveAgentProvider(id).id;
+}
+
+/**
+ * The per-run provider override currently in force (Issue #2062).
+ *
  * @returns The canonical override id, or undefined when there is none.
  */
-export async function readProviderOverrideFile(
-  dir: string,
-): Promise<string | undefined> {
-  try {
-    const raw = await Deno.readTextFile(
-      `${dir}/${PROVIDER_OVERRIDE_FILE_NAME}`,
-    );
-    const id = raw.trim();
-    if (!id) return undefined;
-    return AGENT_PROVIDERS.get(id)?.id;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Write the per-run provider override beside the config (Issue #2062).
- *
- * Fails loudly on an unregistered id — the gate only writes ids it probed
- * healthy, so a bad write is a code defect, not an operator typo.
- *
- * @param dir - Directory that holds the config file.
- * @param id - The provider id to stand in for the configured one this run.
- */
-export async function writeProviderOverrideFile(
-  dir: string,
-  id: string,
-): Promise<void> {
-  const canonical = resolveAgentProvider(id).id;
-  await Deno.writeTextFile(
-    `${dir}/${PROVIDER_OVERRIDE_FILE_NAME}`,
-    canonical,
-  );
-}
-
-/**
- * Clear the per-run provider override (Issue #2062).
- *
- * Called once, at run start, so each run re-evaluates the configured
- * preferred provider before the health gate may write a fresh switch.
- * Absent file is a no-op.
- *
- * @param dir - Directory that holds the config file.
- */
-export async function clearProviderOverrideFile(dir: string): Promise<void> {
-  try {
-    await Deno.remove(`${dir}/${PROVIDER_OVERRIDE_FILE_NAME}`);
-  } catch {
-    // Absent — nothing to clear.
-  }
+export function runProviderOverrideId(): string | undefined {
+  return _runProviderOverrideId;
 }
 
 /**
@@ -1127,7 +1099,14 @@ function resolveSelectedProviderId(
   selection: AgentProviderSelection,
   env: (name: string) => string | undefined,
 ): string {
-  const configured = (selection.configured ?? configuredProviderId)?.trim();
+  // The per-run override (Issue #2062) beats the file and the recorded
+  // configured value: the health gate's fallback switch must survive every
+  // in-process config reload, which would otherwise reset the choice to
+  // the file's preferred id (Issue #2065's crash came from the file
+  // variant). An explicit per-invocation selector never reaches here.
+  const configured = (
+    _runProviderOverrideId ?? selection.configured ?? configuredProviderId
+  )?.trim();
   const resolved = resolveSetting<string>({
     configKey: AGENT_PROVIDER_CONFIG_KEY,
     envVar: AGENT_PROVIDER_ENV,
