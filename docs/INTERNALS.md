@@ -3913,7 +3913,13 @@ rulesets. Setup now closes that gap from the other end (Issue #2067): the
 `milestone/**` ruleset it *creates* carries the flag, and the
 `branch-protection-sync` step repairs an existing milestone-scoped ruleset that
 lacks it, so the refusal clears on the next setup run rather than waiting for
-an admin to find it. The self-heal used to log the refusal and push again every cycle for
+an admin to find it. **The worker makes that same repair mid-run (Issue
+#2079)**: setup is operator-run, and `stSoftwareAU/GRQ-FX-validation` kept its
+blocking ruleset because nobody re-ran setup against it, so three fast setup
+failures backed the repository off. The setup phase now meets the refusal,
+exempts the ruleset from branch creation itself, and retries the push once; a
+refused repair is never swallowed — the run still fails and the handoff names
+what was tried and why it could not finish. The self-heal used to log the refusal and push again every cycle for
 days (116 times on one host) and file nothing. It now classifies the failure
 with `milestone_branch_rejection.ts`; a repository-level refusal is said once
 with the remedy, one deduplicated diagnostic is filed in the repository
