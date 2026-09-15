@@ -146,6 +146,7 @@ import { creditSummaryCommand } from "./commands/credit_summary.ts";
 import { backlogReportCommand } from "./commands/backlog_report.ts";
 import { greenGateReportCommand } from "./commands/green_gate_report.ts";
 import { stripContainerfileCommand } from "./commands/strip_containerfile.ts";
+import { toolchainSelfcheckCommand } from "./commands/toolchain_selfcheck.ts";
 import { repoSettingsHardenCommand } from "./commands/repo_settings_harden.ts";
 import { auditLogTailCommand } from "./commands/audit_log_tail.ts";
 import { auditChainVerifyCommand } from "./commands/audit_chain_verify.ts";
@@ -372,6 +373,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(sweepHeartbeatCommentsCommand);
   registry.register(sweepDriftCommand);
   registry.register(containerImageHashCommand);
+  registry.register(toolchainSelfcheckCommand);
   registry.register(firstRunVerifyCommand);
   registry.register(containerRuntimeDetectCommand);
   registry.register(containerLaunchPlanCommand);
@@ -607,6 +609,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "backlog-report",
       "green-gate-report",
       "strip-containerfile",
+      // CI proves the built image the way the worker will, with no config
+      // (Issues #1956, #2070).
+      "toolchain-selfcheck",
       "repo-settings-harden",
       // The verification harness runs before any config exists (Issue #736).
       "first-run-verify",
@@ -733,6 +738,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "backlog-report",
       "green-gate-report",
       "strip-containerfile",
+      // CI proves the built image the way the worker will, with no config
+      // (Issues #1956, #2070).
+      "toolchain-selfcheck",
       "repo-settings-harden",
       // The verification harness runs before any config exists (Issue #736).
       "first-run-verify",

@@ -41,6 +41,13 @@ readonly IMAGE_PATHS=(
   '.github/workflows/container-build.yml'
   'worker/deno/setup/screenshot.ts'
   'worker/deno/tests/setup_screenshot_test.ts'
+  # Issues #2070–#2073: the worker's start-up self-check judges the image, so
+  # a change to its rule, its manifest parser or its CI entry point must be
+  # proved against a built image before it merges — the fleet went down on a
+  # worker-only change this filter had waved through.
+  'worker/deno/lib/toolchain_selfcheck.ts'
+  'worker/deno/lib/container_manifest.ts'
+  'worker/deno/commands/toolchain_selfcheck.ts'
 )
 
 usage() {

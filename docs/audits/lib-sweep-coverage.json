@@ -1529,6 +1529,18 @@
       "paths": [
         "worker/deno/lib/toolchain_selfcheck.ts"
       ]
+    },
+    {
+      "issue": 2070,
+      "chunk": "top-up-2070",
+      "title": "top-up: the toolchain-selfcheck command",
+      "ledger": "docs/audits/security-sweep-2070-toolchain-selfcheck-command.md",
+      "definition": "modules added to worker/deno/commands/ after 12a-12af recorded their coverage: toolchain_selfcheck.ts (#2070)",
+      "status": "swept",
+      "sweptAt": "cdc3fa34a2f58fdbc44a5f53a5daf8ad8473feb5",
+      "paths": [
+        "worker/deno/commands/toolchain_selfcheck.ts"
+      ]
     }
   ],
   "roots": [
