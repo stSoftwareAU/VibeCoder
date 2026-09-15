@@ -1894,6 +1894,128 @@ Deno.test("container/ - the image supplies every monitored-repo Python module", 
 });
 
 // ---------------------------------------------------------------------------
+// Issue #2097 — Graft is pinned, and its native modules are built in the image
+// ---------------------------------------------------------------------------
+
+/**
+ * The native modules Graft loads that no usable linux prebuild covers.
+ *
+ * On arm64 tree-sitter core, python and kotlin ship no prebuild at all, and
+ * go, java, javascript and typescript ship x86-64 binaries mislabelled
+ * linux-arm64 (upstream trailhq/Graft#119). The image compiles all seven.
+ */
+const GRAFT_NATIVE_MODULES = [
+  "tree-sitter",
+  "tree-sitter-go",
+  "tree-sitter-java",
+  "tree-sitter-javascript",
+  "tree-sitter-typescript",
+  "tree-sitter-python",
+  "tree-sitter-kotlin",
+];
+
+/** The joined bodies of the `RUN` steps whose text contains `needle`. */
+function runStepsContaining(containerfile: string, needle: string): string[] {
+  const steps: string[] = [];
+  let current: string | undefined;
+
+  for (const rawLine of containerfile.split("\n")) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const continues = line.endsWith("\\");
+    const body = continues ? line.slice(0, -1).trim() : line;
+
+    if (current !== undefined) {
+      current = `${current} ${body}`;
+      if (!continues) {
+        steps.push(current);
+        current = undefined;
+      }
+      continue;
+    }
+
+    const run = /^RUN\s+(.*)$/i.exec(body);
+    if (!run) continue;
+    if (continues) current = run[1]!;
+    else steps.push(run[1]!);
+  }
+  if (current !== undefined) steps.push(current);
+
+  return steps.filter((step) => step.includes(needle));
+}
+
+Deno.test("container/ - Graft is pinned as one noarch artefact probed by the manifest-derived self-check (Issue #2097)", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+  const graft = manifest.toolchains.find((t) => t.id === "graft");
+  assert(graft, "container/tools.json must pin the graft toolchain");
+
+  // The tarball is pure JavaScript: what differs per architecture is compiled
+  // in the image, not downloaded, so a second per-architecture digest would
+  // be pinning an artefact the build never fetches.
+  assertEquals(Object.keys(graft.sha256), ["noarch"]);
+  assertEquals(graft.versionArg, "GRAFT_VERSION");
+  assertEquals(graft.commands, ["graft"]);
+  // The self-check derives its probe from these two, so `graft --version`
+  // runs at start-up with no edit to toolchain_selfcheck.ts. `graft
+  // --version` prints the bare version, so it needs no versionArgs to strip a
+  // banner the way markdownlint-cli2 does.
+  assertEquals(graft.versionCommand, "graft");
+  assertEquals(graft.versionArgs, undefined);
+
+  // A worker runtime tool, not a repo gate tool: no monitored repository's
+  // quality.sh calls it, so it must not join the gate-command invariant.
+  assert(!REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("graft"));
+});
+
+Deno.test("container/ - the Graft layer compiles its native modules offline on both architectures (Issue #2097)", async () => {
+  const containerfile = await Deno.readTextFile(
+    new URL("container/Containerfile", REPO_ROOT),
+  );
+  const steps = runStepsContaining(containerfile, "npm rebuild");
+  assertEquals(
+    steps.length,
+    1,
+    "exactly one build step may rebuild native modules",
+  );
+  const step = steps[0]!;
+
+  // The rebuild is the whole point of the layer: --ignore-scripts suppressed
+  // the compile, so without this the image ships grammars that cannot load.
+  for (const module of GRAFT_NATIVE_MODULES) {
+    assertStringIncludes(step, module);
+  }
+  // npm 12 blocks install scripts unless the package is named, and a blocked
+  // run still reports success — so the allow-list must name the seven, and
+  // only the seven, leaving the rest of the tree suppressed.
+  assert(
+    /--allow-scripts="\$\(printf [^)]*\$\{native\}[^)]*\)"/.test(step),
+    `the allow-list must be derived from \${native}, so it cannot drift from ` +
+      `the modules the rebuild names: ${step}`,
+  );
+
+  // The grammars need C++20, and node-gyp must take its headers from the
+  // Node layer already in the image rather than fetching them.
+  assertStringIncludes(step, 'CXXFLAGS="-std=c++20"');
+  assertStringIncludes(step, "npm_config_nodedir=/usr/local");
+
+  // ONE code path: a `uname` branch would make an amd64 build skip the
+  // compile, so a fault would only ever surface on the Mac M-series host.
+  assert(
+    !step.includes("uname"),
+    `the rebuild must not branch on architecture: ${step}`,
+  );
+
+  // Absence of a failure is not success: npm reports "rebuilt dependencies
+  // successfully" for a run whose scripts it blocked, and `graft --version`
+  // loads no grammar. Requiring the modules is what fails such a build.
+  assertStringIncludes(step, "require(m)");
+  // The version probe must not ping upstream from an unattended build.
+  assertStringIncludes(step, "DO_NOT_TRACK=1 graft --version");
+});
+
+// ---------------------------------------------------------------------------
 // Issue #1596 — the image and this repo's own secret scan run one gitleaks
 // ---------------------------------------------------------------------------
 

@@ -51,8 +51,10 @@ The fetch-verify-extract toolchains in that block are **fragments**
 `RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
-blocks. `markdownlint-cli2` sits between the two runs, unchanged — it is
-installed from npm, not fetched and extracted. The Rust run removes the
+blocks. `markdownlint-cli2` and `graft` sit between the two runs, unchanged —
+both are installed from npm, not fetched and extracted, and both are after the
+Node/npm layer they depend on rather than immediately after it, so bumping
+either reuses the provider and fragment layers' cache. The Rust run removes the
 installer and the fragments once it is done, so none of them survive into the
 finished image.
 
@@ -82,6 +84,58 @@ to land a Node that npm's `engines` still accepts. The build fails loud on
 either half — the install step asserts `npm --version` reports `NPM_VERSION`,
 and `.github/workflows/container-build.yml` re-checks every toolchain's pinned
 version against the built image.
+
+## Graft — the one layer that compiles
+
+Graft (`@nanonets/graft`, Issue #2097) is a worker **runtime** tool rather than
+a repo gate tool: it builds the tree-sitter code graph the repo-context
+injection reads, so no monitored repository's `quality.sh` calls it and it is
+deliberately absent from `REQUIRED_REPO_TOOLCHAIN_COMMANDS`.
+
+Its install follows the `markdownlint-cli2` shape — fetch the registry tarball,
+`sha256sum -c` it, then `npm install -g --ignore-scripts` from the local file —
+and the checksum covers that tarball only; its dependencies resolve from the
+registry at build time, exactly as they do for the other npm-sourced tools. The
+tarball is pure JavaScript, so one `noarch` digest covers both architectures:
+what differs per architecture is **compiled here, not downloaded**.
+
+That compile is the part no other layer has. `--ignore-scripts` suppressed the
+lifecycle scripts that would have built the native modules, so the layer
+rebuilds seven of them by name — tree-sitter core and the `go`, `java`,
+`javascript`, `typescript`, `python` and `kotlin` grammars — with
+`CXXFLAGS=-std=c++20`. Naming them is what keeps the remaining packages'
+scripts suppressed: npm 12 blocks install scripts unless `--allow-scripts`
+names the package, and the allow-list is derived from the same shell variable
+the rebuild list comes from, so the two cannot drift.
+
+Three properties make that step trustworthy:
+
+- **One code path, no `uname` branch.** The rebuild is load-bearing on arm64 —
+  tree-sitter core, `python` and `kotlin` ship no linux-arm64 prebuild, and
+  `go`, `java`, `javascript` and `typescript` ship x86-64 binaries mislabelled
+  linux-arm64 (upstream trailhq/Graft#119) — but running it on amd64 too means
+  a compile fault fails **every** build rather than only the Mac M-series one.
+  Measured on linux/arm64 (Node 24.19.0, g++ 14.2): the install is about 5 s
+  and the seven compiles about 16 s.
+- **Nothing is fetched.** `npm_config_nodedir=/usr/local` points node-gyp at
+  the headers the Node layer already extracted, so no header tarball is
+  downloaded and no `~/.cache/node-gyp` is created. npm 12 no longer knows
+  `nodedir` as one of its own settings and prints one `Unknown env config`
+  warning; node-gyp reads it from the environment regardless, and stating it
+  explicitly is what makes the offline compile a guarantee rather than a
+  side-effect of node-gyp's header discovery.
+- **The rebuild is proven, not assumed.** A no-op rebuild is silent: npm
+  reports `rebuilt dependencies successfully` for a run whose scripts it
+  blocked, and `graft --version` is pure JavaScript that loads no grammar, so
+  both would pass over an image whose grammars cannot load. The layer therefore
+  `require`s all seven modules through the image's own Node before it probes
+  the version, which turns that case into a failed build.
+
+`DO_NOT_TRACK=1` is set on the version probe so an unattended build sends no
+usage ping, and the probe itself is `graft --version | grep -qxF` against the
+pinned version. `graft --version` prints the bare version, so the
+manifest-derived start-up self-check probes it with no `versionArgs` and no
+code change.
 
 ## Coding-agent providers
 

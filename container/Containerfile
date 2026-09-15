@@ -210,6 +210,43 @@ RUN set -eu; \
     rm -rf /tmp/npmc "${tarball}"; \
     markdownlint-cli2 --version
 
+# Graft (Issue #2097, parent #2060) is a worker RUNTIME tool, not a repo gate
+# tool: it builds the tree-sitter code graph the repo-context injection reads.
+# Same shape as markdownlint-cli2 above — verify the tarball, install from the
+# local file, and keep lifecycle scripts from running as root.
+#
+# The native modules are then compiled by an explicit rebuild naming only the
+# seven Graft loads; npm 12 blocks install scripts unless --allow-scripts names
+# the package, so the rest of the tree stays suppressed. ONE code path, no
+# `uname` branch: a compile fault fails every build, not only the arm64 one.
+# It is load-bearing on arm64 — tree-sitter core, python and kotlin ship no
+# prebuild there and go/java/javascript/typescript ship x86-64 binaries
+# mislabelled arm64 (trailhq/Graft#119). npm_config_nodedir points node-gyp at
+# the headers the Node layer already extracted, so nothing is downloaded, and
+# `set -eu` makes a failed compile fail the image build. DO_NOT_TRACK stops the
+# version probe pinging upstream.
+#
+# The rebuild must then be PROVEN, because a no-op one is silent: npm reports
+# "rebuilt dependencies successfully" for a run whose scripts it blocked, and
+# `graft --version` is pure JavaScript that loads no grammar, so both would
+# pass over an image whose grammars cannot load. Requiring the seven is what
+# turns that into a failed build.
+ARG GRAFT_VERSION="0.18.0"
+ARG GRAFT_SHA256_NOARCH="729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc"
+
+RUN set -eu; \
+    tarball="/tmp/graft.tgz"; \
+    native="tree-sitter tree-sitter-go tree-sitter-java tree-sitter-javascript tree-sitter-typescript tree-sitter-python tree-sitter-kotlin"; \
+    curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/@nanonets/graft/-/graft-${GRAFT_VERSION}.tgz"; \
+    echo "${GRAFT_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
+    npm install -g --ignore-scripts "${tarball}"; \
+    CXXFLAGS="-std=c++20" npm_config_nodedir=/usr/local \
+      npm rebuild -g --allow-scripts="$(printf '%s' "${native}" | tr ' ' ',')" ${native}; \
+    rm -rf /tmp/npmc "${tarball}"; \
+    NODE_PATH="$(npm root -g)/@nanonets/graft/node_modules" \
+      node -e 'for (const m of process.argv.slice(1)) require(m); console.log("graft native modules ok: " + process.argv.slice(1).join(" "))' ${native}; \
+    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"
+
 # The Rust toolchain the fleet's crates build and test with — its own layer,
 # rebuilt on a Rust bump without disturbing the smaller toolchains above.
 # container/toolchains/rust.sh holds the detail (standalone rust-lang
