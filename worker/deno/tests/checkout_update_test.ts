@@ -1174,16 +1174,18 @@ Deno.test("buildCheckoutHostFailurePayload - omits what the host could not obser
 });
 
 Deno.test("buildCheckoutHostFailurePayload - redacts a tokenised remote before the hook sees it (Issue #1258)", () => {
+  // Split so the fixture is not itself a credential a scanner must flag.
+  const token = `ghs_${"A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"}`;
   const payload = buildCheckoutHostFailurePayload(
     escalationContext({
       error: "git fetch origin failed (exit code 128): could not read " +
-        "https://x-access-token:ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@github.com/o/r",
+        `https://x-access-token:${token}@github.com/owner/repo.git`,
     }),
     "grq-23",
   );
 
   assertEquals(
-    (payload.detail ?? "").includes("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    (payload.detail ?? "").includes(token),
     false,
     "a hook the operator wrote never receives the token git leaked",
   );
