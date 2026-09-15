@@ -230,7 +230,8 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // lists modules added or modified since each sweep slice's `sweptAt`.
   // Issue #1697 added `codex-budget`, the opt-in read-only diagnostic that
   // prints redacted Codex budget metadata (count 149 -> 150).
-  assertEquals(commands.length, 150);
+  // Issues #2070–#2073 added `toolchain-selfcheck` (count 150 → 151).
+  assertEquals(commands.length, 151);
   assertEquals(commands.includes("sweep-drift"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);

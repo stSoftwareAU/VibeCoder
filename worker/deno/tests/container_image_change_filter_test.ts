@@ -199,6 +199,29 @@ Deno.test("image filter - an image-definition change builds", async () => {
   });
 });
 
+Deno.test("image filter - the worker's toolchain self-check builds (Issues #2070–#2073)", async () => {
+  // A worker-only change to the self-check rule took the fleet down against
+  // an image CI had passed; the rule is now proved inside a built image.
+  for (
+    const path of [
+      "worker/deno/lib/toolchain_selfcheck.ts",
+      "worker/deno/lib/container_manifest.ts",
+      "worker/deno/commands/toolchain_selfcheck.ts",
+    ]
+  ) {
+    await withTempDir(async (dir) => {
+      const base = await repoWithBase(dir);
+      const head = await commitFile(dir, path, "export const changed = 1;\n");
+
+      const run = await filter(dir, base, head);
+
+      assertEquals(run.code, 0, run.stdout + run.stderr);
+      assertStringIncludes(run.githubOutput, "image=true");
+      assertStringIncludes(run.stdout, path);
+    });
+  }
+});
+
 Deno.test("image filter - the screenshot generator builds (Issue #1584)", async () => {
   await withTempDir(async (dir) => {
     const base = await repoWithBase(dir);

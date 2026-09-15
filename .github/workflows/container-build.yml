@@ -263,6 +263,31 @@ jobs:
             exit 1
           fi
 
+      - name: Run the worker's own start-up toolchain self-check inside the image
+        if: env.IMAGE_CHANGED == 'true'
+        run: |
+          set -euo pipefail
+          echo "=== worker toolchain self-check (Issues #1956, #2070-#2073) ==="
+          # The substring comparison above and the worker's whole-token rule
+          # were two implementations of "does the image report the pin". The
+          # shell one passed `v24.19.0`; the worker's did not; only the
+          # worker's ran on the hosts, and the whole fleet refused to claim
+          # against an image this job had passed. So the worker's own check
+          # runs here too: inside the image it will run in, over the checkout
+          # mounted where the launchers mount it, through the same command
+          # path the worker takes before its first claim. Exit 89 is the
+          # worker's "image does not provide a pin"; 1 is a manifest fault or
+          # a run that verified nothing — neither is green.
+          docker run --rm --entrypoint bash \
+            -v "${PWD}:/workspace:ro" -w /workspace \
+            -e DENO_DIR=/tmp/deno-cache \
+            "${IMAGE}" -c '
+              set -euo pipefail
+              deno run --frozen --lock=worker/deno/deno.lock \
+                --allow-env --allow-read --allow-run \
+                worker/deno/mod.ts toolchain-selfcheck --base-dir /workspace
+            ' < /dev/null
+
       - name: Verify the baked Playwright and headless Chromium
         if: env.IMAGE_CHANGED == 'true'
         run: |
