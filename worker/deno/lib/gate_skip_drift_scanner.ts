@@ -39,6 +39,8 @@ import {
   type ContainerManifest,
   parseContainerManifest,
 } from "./container_manifest.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { BASE_DIR_ENV } from "./guard_module_path.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -122,9 +124,12 @@ export interface ScanGateSkipDriftOptions {
   repo: string;
   /**
    * `container/tools.json` contents. Defaults to this repository's own
-   * committed manifest — the image the fleet actually runs on.
+   * committed manifest — the image the fleet actually runs on — read from
+   * the checkout `VIBE_BASE_DIR` names (see {@link ownManifestPath}).
    */
   manifestText?: string;
+  /** Environment reader; `VIBE_BASE_DIR` locates the checkout. */
+  env?: EnvLookup;
   /** Gate scripts to inspect, in order. Defaults to `["quality.sh"]`. */
   gateScriptNames?: readonly string[];
 }
@@ -645,8 +650,26 @@ async function workflowReadFailure(
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/** This repository's own committed container manifest. */
-const OWN_MANIFEST = new URL("../../../container/tools.json", import.meta.url);
+/**
+ * Where this repository's own committed container manifest is.
+ *
+ * In container mode the driver runs from a VM-local staged copy of
+ * `worker/deno` alone (entrypoint.sh, Issue #515), so a module-relative
+ * `../../../container/tools.json` names a file that does not exist there —
+ * observed live on every host as `container/tools.json could not be read:
+ * … /tmp/vibe-scratch/worker-src/container/tools.json`, which failed every
+ * idle-task scan for six days (Issue #2081). The checkout the launcher names
+ * in `VIBE_BASE_DIR` is where the manifest is; the module-relative path is
+ * only the developer-host fallback, exactly as `prompt_manager.ts` resolves
+ * `prompts/`.
+ */
+export function ownManifestPath(env: EnvLookup = processEnvLookup): string {
+  const baseDir = env(BASE_DIR_ENV)?.trim();
+  if (baseDir) {
+    return `${baseDir.replace(/[/\\]+$/, "")}/container/tools.json`;
+  }
+  return new URL("../../../container/tools.json", import.meta.url).pathname;
+}
 
 /**
  * Scan one repository checkout for gates that skip a tool its own CI
@@ -657,17 +680,18 @@ export async function scanGateSkipDrift(
   opts: ScanGateSkipDriftOptions,
 ): Promise<GateSkipDriftResult> {
   let manifest: ContainerManifest;
+  const manifestPath = ownManifestPath(opts.env);
   try {
-    const text = opts.manifestText ?? await Deno.readTextFile(OWN_MANIFEST);
+    const text = opts.manifestText ?? await Deno.readTextFile(manifestPath);
     manifest = parseContainerManifest(text);
   } catch (error) {
     return {
       ok: false,
       error: {
         kind: "manifest",
-        message: `container/tools.json could not be read: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        message: `container/tools.json could not be read${
+          opts.manifestText === undefined ? ` from ${manifestPath}` : ""
+        }: ${error instanceof Error ? error.message : String(error)}`,
       },
     };
   }

@@ -1519,6 +1519,18 @@
       ]
     },
     {
+      "issue": 1965,
+      "chunk": "top-up-1965",
+      "title": "top-up: the milestone sync's gate repair",
+      "ledger": "docs/audits/security-sweep-1965-milestone-gate-repair.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_gate_repair.ts (#1965)",
+      "status": "swept",
+      "sweptAt": "aa6e138edd260da47c854a0815799f4b14136628",
+      "paths": [
+        "worker/deno/lib/milestone_gate_repair.ts"
+      ]
+    },
+    {
       "issue": 1956,
       "chunk": "top-up-1956",
       "title": "top-up: the container toolchain self-check",
