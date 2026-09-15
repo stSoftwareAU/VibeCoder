@@ -1501,8 +1501,10 @@ async function completionBody(
   // from the file text, so the same checks run here on the branch diff in
   // milliseconds.
   //
-  // Only the workflow files this run added or changed are in scope: a
-  // pre-existing offender is the audit's business, not this PR's. Like the
+  // Only the workflow files this run added or changed are in scope, and within
+  // those only the findings absent from the base commit's version of the same
+  // file (Issue #2043): a pre-existing offender is the audit's business, not
+  // this PR's, whether or not the run happened to touch its file. Like the
   // security gate above and unlike the three summary gates below, a finding is
   // a defect in the change rather than a documentation shortfall, so it stops
   // the run whether or not a PR already exists.
@@ -1539,6 +1541,25 @@ async function completionBody(
           return stdout.split("\n").map((l) => l.trim()).filter(Boolean);
         },
         readFile: (path) => Deno.readTextFile(`${state.repoPath}/${path}`),
+        // The baseline (Issue #2043): a finding already on the base commit is
+        // the repository's, not this run's, even in a file the run touched.
+        readBaseFile: async (path) => {
+          const base = comparableBase.value;
+          // `ls-tree` exits zero with empty output when the path is absent at
+          // base, which separates "the run added this file" from a read that
+          // genuinely failed — `git show` alone conflates the two.
+          const listed = await runGitOrThrow(
+            ["ls-tree", "--name-only", base, "--", path],
+            state.repoPath,
+            deps,
+          );
+          if (listed.trim() === "") return null;
+          return await runGitOrThrow(
+            ["show", `${base}:${path}`],
+            state.repoPath,
+            deps,
+          );
+        },
       },
     });
 

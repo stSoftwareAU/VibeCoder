@@ -290,8 +290,10 @@ implementer what to do with it:
 The same table is the pre-PR gate a worker run is held to: before `gh pr create`
 [`changed_workflow_gate.ts`](../worker/deno/lib/changed_workflow_gate.ts) runs
 every check over the `.github/workflows/` files the branch added or changed and
-blocks the PR on any finding, so a workflow the run embellished never reaches
-the repository — see
+blocks the PR on any finding the branch **introduced** — a finding already
+present in the base commit's version of the same file is the idle-task audit's
+business, not this PR's (Issue #2043) — so a workflow the run embellished never
+reaches the repository — see
 [Issue processing § Changed workflow files](workflows/issue-processing.md#-changed-workflow-files-are-checked-before-the-pr).
 
 ```mermaid

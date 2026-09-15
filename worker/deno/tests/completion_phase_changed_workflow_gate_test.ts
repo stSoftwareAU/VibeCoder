@@ -94,11 +94,19 @@ interface Outcome {
  *   reported by the stubbed `git diff`
  * @param changed - What the branch diff reports; defaults to every written
  *   file, so an entry omitted here is an untouched pre-existing file
+ * @param opts.base - The base commit's version of a path, keyed by path; a
+ *   path absent from it is one the branch added (Issue #2043)
+ * @param opts.baseReadFails - Make `git show <base>:<path>` exit non-zero, so
+ *   the baseline read fails rather than reporting an absent file
  */
 async function runCompletion(
   files: Record<string, string>,
   changed?: string[],
-  opts: { unresolvableBase?: boolean } = {},
+  opts: {
+    unresolvableBase?: boolean;
+    base?: Record<string, string>;
+    baseReadFails?: boolean;
+  } = {},
 ): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
@@ -179,6 +187,27 @@ async function runCompletion(
         }
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok(diffOutput);
+        }
+        // The baseline reads (Issue #2043): `ls-tree` says whether the path
+        // existed at base, `show` hands back that version's text.
+        if (cmdArgs[0] === "ls-tree") {
+          const path = cmdArgs[cmdArgs.length - 1]!;
+          if (opts.baseReadFails) return ok(`${path}\n`);
+          return ok(opts.base?.[path] === undefined ? "" : `${path}\n`);
+        }
+        if (cmdArgs[0] === "show") {
+          if (opts.baseReadFails) {
+            return Promise.resolve({
+              ok: true as const,
+              value: {
+                code: 128,
+                stdout: "",
+                stderr: "fatal: path does not exist in 'main'",
+              },
+            });
+          }
+          const path = (cmdArgs[1] ?? "").split(":").slice(1).join(":");
+          return ok(opts.base?.[path] ?? "");
         }
         return ok("");
       },
@@ -286,5 +315,60 @@ Deno.test(
 
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.prCreateCalls, 1);
+  },
+);
+
+Deno.test(
+  "completion - a finding already on the base commit raises the PR",
+  async () => {
+    // The reported shape (Issue #2043): the workflow already carried the
+    // finding, and this run only appended an unrelated step.
+    const appended = TAG_PINNED_WORKFLOW.replace(
+      "          echo done\n",
+      "          echo done\n" +
+        "      - name: Reclaim runner disk\n" +
+        "        run: |\n" +
+        "          set -euo pipefail\n" +
+        "          df -h\n",
+    );
+    const outcome = await runCompletion(
+      { ".github/workflows/ci.yml": appended },
+      undefined,
+      { base: { ".github/workflows/ci.yml": TAG_PINNED_WORKFLOW } },
+    );
+
+    assertEquals(outcome.status, "continue", outcome.reason ?? "");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.comments.length, 0);
+  },
+);
+
+Deno.test(
+  "completion - a finding this run adds to an existing workflow still blocks",
+  async () => {
+    const outcome = await runCompletion(
+      { ".github/workflows/ci.yml": TAG_PINNED_WORKFLOW },
+      undefined,
+      { base: { ".github/workflows/ci.yml": CLEAN_WORKFLOW } },
+    );
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertStringIncludes(outcome.reason ?? "", "BP-SHA-PIN-actions-checkout");
+  },
+);
+
+Deno.test(
+  "completion - an unreadable base version fails loud",
+  async () => {
+    const outcome = await runCompletion(
+      { ".github/workflows/ci.yml": CLEAN_WORKFLOW },
+      undefined,
+      { baseReadFails: true },
+    );
+
+    assertEquals(outcome.status, "failure", "an unknown baseline is no pass");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertStringIncludes(outcome.reason ?? "", "could not read the base");
   },
 );
