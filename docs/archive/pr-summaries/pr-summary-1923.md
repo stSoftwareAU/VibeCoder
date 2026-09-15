@@ -55,9 +55,22 @@ flowchart TD
 Backend/CLI change with no web interface, so there is nothing to screenshot.
 The evidence is the test suite and the full quality gate.
 
-- `./quality.sh` — all checks PASSED (`deno tests`, `deno lint`,
+- `./quality.sh` — **PASSED**, every check green (`deno tests`, `deno lint`,
   `deno type check`, `deno fmt`, `semgrep`, `markdownlint`, `mermaid`,
-  completeness and chokepoint checks).
+  completeness and chokepoint checks; `config integration` SKIPPED for want of
+  a `.config.json`, as it is on any dev host).
+
+  Run as `env -u VIBE_IMAGE_AGENT_PROVIDERS ./quality.sh --sequential`. This
+  worker container's image stamp is `VIBE_IMAGE_AGENT_PROVIDERS=claude`, and
+  `config_test.ts::config - a provider override beside the config applies to
+  the loaded agent (Issue #2062)` asks `loadConfig` for `deepseek`, so it
+  fails on any single-provider image with "the running container image did not
+  install the deepseek coding-agent provider". That failure is **not from this
+  branch** — the branch touches neither `config.ts`, `config_test.ts` nor
+  `assertImageInstalledProvider` (`git diff <base>...HEAD` on those paths is
+  empty), and the case passes with the stamp unset. It is the Issue #1977
+  class of host-dependent test, filed as **#2086**; CI has no image stamp and
+  is unaffected.
 - New behaviour is pinned by `worker/deno/tests/provider_billing_test.ts`
   (22 tests), four cases in `worker/deno/tests/claude_env_test.ts` and three in
   `worker/deno/tests/run_core_test.ts`, all calling the real functions
