@@ -1742,6 +1742,7 @@ export async function recordContainerRestartOutcome(
       ...(options.logTail ? { logTail: redactSecrets(options.logTail) } : {}),
     };
     const invoke = options.invokeHook ?? invokeConfiguredHostFailureHook;
+    let fault: string | null = null;
     try {
       const invocation = await invoke(payload, {
         path: hookConfig.path,
@@ -1753,12 +1754,13 @@ export async function recordContainerRestartOutcome(
       // misbehaving — recorded as the delivery failure it is, never as a
       // silent success.
       hookStatus = "spawn_failed";
-      crashReason = crashReason ??
-        (err instanceof Error ? err.message : String(err));
+      fault = err instanceof Error ? err.message : String(err);
     }
     // The hook's status alone decides whether anyone was told.
     notified = hookStatus === "ok";
-    reason = notified ? null : `hook_${hookStatus}`;
+    reason = notified
+      ? null
+      : `hook_${hookStatus}${fault === null ? "" : `: ${fault}`}`;
   } else {
     // No hook to ask: the crash channel's own bookkeeping stands, and the
     // event below records locally that nobody could be asked.

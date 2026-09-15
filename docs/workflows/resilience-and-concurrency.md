@@ -108,8 +108,8 @@ flowchart TD
   Threshold{"Failures ≥ phase threshold?<br/>egress 1, image build 2, otherwise 3"}
   Due{"New streak, retry due,<br/>or re-notify due?<br/>(crossing → hourly → daily)"}
   Dedup["Suppressed — this streak<br/>is already reported"]
-  Escalate["callbacks.host_failure hook<br/>naming the failure phase<br/>(delivery: first / repeat)"]
-  Delivered{"Delivered?"}
+  Escalate["Crash channel, then the<br/>callbacks.host_failure hook<br/>(delivery: first / repeat)"]
+  Delivered{"Hook exited 0?<br/>(no hook: nothing left to try)"}
   Queue["Queue for retry next cycle<br/>self-heal: escalated (skipped)"]
   Lost["self-heal: escalation_lost<br/>(failed — nobody was told)"]
   Cadence["Sleep the fixed quota cadence<br/>(~1 hour, never grown)"]

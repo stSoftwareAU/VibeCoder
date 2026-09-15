@@ -135,10 +135,11 @@ that says whether anybody was told.
 
 **With no hook configured**, the failure is reported to the host log and the
 self-heal events and nowhere else: `self-heal-summary` shows an `escalated`
-event carrying `hookStatus: no_hook_configured`, on the same crossing → hourly
-→ daily schedule. Nothing is retried, because there is nothing left to try. A
-malformed `callbacks` block is not the same thing and is never treated as one —
-it is reported as `config_invalid`, with the read's own error beside it.
+event carrying `hookStatus: no_hook_configured`, on the crossing and then on
+the streak's re-notify schedule. Nothing is retried, because there is nothing
+left to try. A malformed `callbacks` block is not the same thing and is never
+treated as one — it is reported as `config_invalid`, with the read's own error
+beside it.
 
 **With a hook configured**, a hook that exits non-zero, times out or cannot be
 spawned is retried on the next cycles, up to five attempts. Still undelivered
