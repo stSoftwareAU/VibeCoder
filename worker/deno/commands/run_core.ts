@@ -9,7 +9,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
-import { clearProviderOverrideFile } from "../lib/agent_provider.ts";
+import { setRunProviderOverride } from "../lib/agent_provider.ts";
 import { createDefaultRunCoreConfig, runCoreLoop } from "../lib/run_core.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import {
@@ -134,15 +134,11 @@ export const runCoreCommand: Command = {
       }
 
       // (Issue #2062) Each run re-evaluates the configured preferred
-      // provider before the health gate may write a fresh switch; the
+      // provider before the health gate may record a fresh switch; the
       // previous run's override must not outlive it. Cleared BEFORE the
       // deps build, whose config load would otherwise apply the stale
       // override to the module state.
-      const configPath = Deno.env.get("CONFIG_PATH") ??
-        `${repoDir}/.config.json`;
-      await clearProviderOverrideFile(
-        configPath.slice(0, configPath.lastIndexOf("/")),
-      );
+      setRunProviderOverride(undefined);
 
       const { deps, config: coreConfig } = await createProductionRunCoreDeps({
         repoDir,
