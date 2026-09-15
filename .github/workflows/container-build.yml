@@ -211,7 +211,7 @@ jobs:
 
           expected=$(jq -r '[.toolchains[] | select((.commands // []) | length > 0)] | length' container/tools.json)
           verified=0
-          while read -r id version version_command commands; do
+          while read -r id version version_command version_args commands; do
             read -r -a command_list <<< "${commands}"
             for command in "${command_list[@]}"; do
               if ! docker run --rm --entrypoint bash "${IMAGE}" \
@@ -220,14 +220,18 @@ jobs:
                 exit 1
               fi
             done
-            reported=$(docker run --rm --entrypoint "${version_command}" "${IMAGE}" --version < /dev/null)
-            echo "${id}: ${version_command} -> ${reported}"
+            # The manifest's own probe arguments (Issues #2070-#2073), joined
+            # with commas by the jq below because a space already separates
+            # the fields; `--version` when the entry names none.
+            IFS=',' read -r -a version_arg_list <<< "${version_args}"
+            reported=$(docker run --rm --entrypoint "${version_command}" "${IMAGE}" "${version_arg_list[@]}" < /dev/null)
+            echo "${id}: ${version_command} ${version_arg_list[*]} -> ${reported}"
             if [[ "${reported}" != *"${version}"* ]]; then
               echo "FAILED: ${version_command} reports '${reported}', expected ${version}" >&2
               exit 1
             fi
             verified=$((verified + 1))
-          done < <(jq -r '.toolchains[] | select((.commands // []) | length > 0) | "\(.id) \(.version) \(.versionCommand) \(.commands | join(" "))"' container/tools.json)
+          done < <(jq -r '.toolchains[] | select((.commands // []) | length > 0) | "\(.id) \(.version) \(.versionCommand) \((.versionArgs // ["--version"]) | join(",")) \(.commands | join(" "))"' container/tools.json)
           if [[ "${verified}" -ne "${expected}" ]]; then
             echo "FAILED: verified ${verified} of ${expected} command toolchain(s)" >&2
             exit 1

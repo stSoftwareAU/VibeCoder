@@ -140,11 +140,32 @@ Deno.test("toolchainProbes - the committed manifest yields one probe per toolcha
   assertEquals(actionlint.kind, "command");
   assertEquals(actionlint.argv, ["actionlint", "--version"]);
 
+  // A command with no version flag probes with the manifest's own arguments
+  // (Issues #2070–#2073): a bare `--version` made markdownlint-cli2 lint the
+  // checkout, and the probe's exit status became main's lint status.
+  const markdownlint = probes.find((probe) => probe.id === "markdownlint-cli2");
+  assert(markdownlint, "markdownlint-cli2 must be probed");
+  assertEquals(markdownlint.argv, [
+    "markdownlint-cli2",
+    "--no-globs",
+    "--version",
+  ]);
+
   const pyyaml = probes.find((probe) => probe.id === "pyyaml");
   assert(pyyaml, "pyyaml must be probed");
   assertEquals(pyyaml.kind, "module");
   assertEquals(pyyaml.argv[0], "python3");
   assertStringIncludes(pyyaml.argv.join(" "), "import yaml");
+});
+
+Deno.test("toolchainProbes - versionArgs replace --version, verbatim and in order", () => {
+  const manifest = parseContainerManifest(manifestText([{
+    ...commandToolchain("globby", "3.1.4"),
+    versionArgs: ["--no-globs", "--version"],
+  }]));
+
+  const [probe] = toolchainProbes(manifest);
+  assertEquals(probe?.argv, ["globby", "--no-globs", "--version"]);
 });
 
 Deno.test("toolchainProbes - a toolchain declaring both surfaces is probed through both", () => {
@@ -243,7 +264,8 @@ Deno.test("checkContainerToolchains - a letter after the pin still makes it a di
  * shipped untested against a shape the image actually prints.
  *
  * Keyed by toolchain id, then by probe kind (`command` output from
- * `<versionCommand> --version`, `module` output from the python3 probe).
+ * `<versionCommand> --version`, or the entry's own `versionArgs`; `module`
+ * output from the python3 probe).
  */
 const REAL_IMAGE_OUTPUT: Record<
   string,
