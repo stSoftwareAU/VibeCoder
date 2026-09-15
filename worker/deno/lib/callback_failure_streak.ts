@@ -186,8 +186,10 @@ function failureRecord(report: CallbackFailureReport): string {
  * a streak long enough to have been recorded writes one line saying so; a
  * success that ends a shorter streak has nothing to say.
  *
- * Never throws: a fault in the recording path must not alter the run's own
- * outcome, which is the boundary the whole callback layer holds.
+ * A fault in the count file never alters the run's own outcome — the read and
+ * the write are both best-effort, because the log is the record and the count
+ * only an optimisation over it. That boundary is the one the whole callback
+ * layer holds.
  *
  * @param workDir - The worker's work directory, where the streaks live
  * @param invocations - What {@link CallbackInvocation}s this run produced

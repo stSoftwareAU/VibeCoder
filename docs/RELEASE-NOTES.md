@@ -43,9 +43,11 @@ that stops it happening again.
 
 Upgrade any post-run callback extension so it accepts schema version 2 (and,
 per the new rule, any later version, on the fields it knows). Nothing in
-`.config.json` changes. A host whose hooks still refuse the version carries
-one open `Post-run … callback failing on …` issue per hook; the worker closes
-each one on the hook's next success after the upgrade.
+`.config.json` changes. A host whose hooks still refuse the version writes one
+`ERROR` record per hook to its own worker log, naming the version the worker
+exports; the record stops once the hook succeeds again after the upgrade. (The
+report was a GitHub issue the worker filed and closed until Issue #2111 made it
+a local record.)
 
 ### Rollback
 

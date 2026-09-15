@@ -334,29 +334,47 @@ Deno.test(
 );
 
 Deno.test(
-  "#2111 - the module exposes no seam that could reach GitHub",
+  "#2111 - a whole streak and its recovery spawn no process, so nothing can reach gh",
+  async () => {
+    // Any `gh` call would go through Deno.Command; swap it for one that
+    // refuses, so a re-added GitHub seam fails this test rather than the
+    // fleet. Restored in `finally` so no later test inherits the stub.
+    const realCommand = Deno.Command;
+    const spawned: string[] = [];
+    // deno-lint-ignore no-explicit-any
+    (Deno as any).Command = class {
+      constructor(command: string | URL) {
+        spawned.push(String(command));
+        throw new Error(`the streak must spawn nothing, got ${command}`);
+      }
+    };
+    try {
+      const store = memoryStore();
+      const { logs, errors, deps } = sinks();
+      const record = (inv: CallbackInvocation) =>
+        recordCallbackOutcomes("/work", [inv], RUN, { ...store, ...deps });
+      for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
+        await record(invocation());
+      }
+      await record(invocation({ status: "ok", exitCode: 0 }));
+      assertEquals(spawned, []);
+      assertEquals(errors.length, 1, "the record still went to the log");
+      assertEquals(logs.length, 1, "the recovery still went to the log");
+    } finally {
+      Deno.Command = realCommand;
+    }
+  },
+);
+
+Deno.test(
+  "#2111 - the module's only callable export is the recorder itself",
   () => {
-    // The only callable export is the recorder itself: no escalator, no
-    // resolver, no body or title builder for an issue that is never filed.
+    // No escalator, no resolver, no title or body builder for an issue that
+    // is never filed: a caller has nothing here it could point at GitHub.
     const callable = Object.entries(streakModule)
       .filter(([, value]) => typeof value === "function")
       .map(([name]) => name)
       .sort();
     assertEquals(callable, ["recordCallbackOutcomes"]);
-
-    // And its injectable seams are storage and logging only, so no caller can
-    // hand it something that writes to GitHub.
-    const deps: Required<streakModule.CallbackFailureStreakDeps> = {
-      readStreaks: () => Promise.resolve({}),
-      writeStreaks: () => Promise.resolve(),
-      log: () => {},
-      logError: () => {},
-    };
-    assertEquals(Object.keys(deps).sort(), [
-      "log",
-      "logError",
-      "readStreaks",
-      "writeStreaks",
-    ]);
   },
 );
