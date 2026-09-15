@@ -5499,6 +5499,40 @@ export async function runCoreLoop(
               ? await probeHealthGateFallback(deps, config)
               : undefined;
             if (!fallbackId) {
+              // Issue #2119: this is the one branch that knows every
+              // configured provider is down. The mid-loop signal wait above
+              // is provider-scoped, so with a fallback configured it let the
+              // loop through to here, where a 30 s sleep re-probed both
+              // providers ~700 times across a seven-hour weekly-limit pause
+              // the health check had itself just written. When the signal
+              // has time left, wait for it (capped, so a topped-up fallback
+              // is noticed at the next probe); a plain failure with no
+              // signal is still worth re-probing soon.
+              const remaining = await deps.getRateLimitRemainingSeconds();
+              if (remaining > 0) {
+                const nowSec = Math.floor(deps.now() / 1000);
+                const resetEpoch = nowSec + remaining;
+                deps.logError(
+                  "Claude health check failed and no configured alternative " +
+                    "is healthy — pausing until the usage window reopens " +
+                    `${formatRateLimitReset(resetEpoch, nowSec)} rather than ` +
+                    `re-probing every ${config.sleepInterval}s (Issue #2119)`,
+                );
+                const wait = await pauseUntilRateLimitReset(
+                  resetEpoch,
+                  "Health gate",
+                  "usage_blocked",
+                );
+                if (
+                  wait.outcome === "shutdown" || wait.outcome === "duration"
+                ) {
+                  await fireCycleCallback(
+                    wait.outcome === "shutdown" ? "shutdown" : "quota_paused",
+                  );
+                  break;
+                }
+                continue;
+              }
               deps.logError("Claude health check failed — skipping cycle");
               await deps.sleep(config.sleepInterval * 1000);
               continue;

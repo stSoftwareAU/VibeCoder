@@ -1062,6 +1062,27 @@ report_unrecovered() {
   log_run_core "[WORK_VOLUME_UNRECOVERED] $1 (Issues #478, #226)"
 }
 
+# The size below which a volume is never reset (Issue #2117). Resetting a
+# small volume returns nothing worth having to the host, and one of them —
+# the content-approval store, ~70 MB — is the tamper baseline for every issue
+# the worker may claim; wiping it for disk cost GRQ-23 a whole run. GB from
+# the operator knob; VIBE_WORK_VOLUME_HEAL_MIN_KB is the fine-grained form
+# the launcher tests use.
+volume_reset_min_kb() {
+  local kb="${VIBE_WORK_VOLUME_HEAL_MIN_KB:-}" gb="${VIBE_WORK_VOLUME_HEAL_MIN_GB:-1}"
+  if [[ "${kb}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${kb}"
+    return 0
+  fi
+  [[ "${gb}" =~ ^[0-9]+$ ]] || gb=1
+  printf '%s' "$((gb * 1024 * 1024))"
+}
+
+volume_too_small_detail() {
+  printf 'work-volume: leaving %s alone - it holds %s MB, below the %s MB reset minimum; resetting it would return nothing to the host and, for the content-approval store, would discard the tamper baseline (Issue #2117)' \
+    "$1" "$(($2 / 1024))" "$(($3 / 1024))"
+}
+
 # Issue #2092: a host below its claiming floor resets any work volume big
 # enough to matter BEFORE the image build. The reset the volume init drives
 # (below) needs an image — the init runs inside it — so a host whose build is
@@ -1071,19 +1092,22 @@ report_unrecovered() {
 # makes; only the order changes. A recreated volume is root-owned, and the
 # init that follows the build re-owns it exactly as it does after that heal.
 reset_work_volumes_before_build() {
-  local avail_kb total_kb floor_kb floor_detail volume kb min_gb
+  local avail_kb total_kb floor_kb floor_detail volume kb
   avail_kb="$(host_disk_field_kb 2)"
   total_kb="$(host_disk_field_kb 4)"
   [[ "${avail_kb}" =~ ^[0-9]+$ && "${total_kb}" =~ ^[1-9][0-9]*$ ]] || return 0
   floor_kb="$(claim_floor_kb "${total_kb}")"
   ((avail_kb >= floor_kb)) && return 0
   floor_detail="$(claim_floor_detail "${total_kb}")"
-  min_gb="${VIBE_WORK_VOLUME_HEAL_MIN_GB:-1}"
-  [[ "${min_gb}" =~ ^[0-9]+$ ]] || min_gb=1
+  local min_kb
+  min_kb="$(volume_reset_min_kb)"
   for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     kb="$(volume_store_kb "${volume}" || true)"
     [[ "${kb}" =~ ^[0-9]+$ ]] || continue
-    ((kb >= min_gb * 1024 * 1024)) || continue
+    if ((kb < min_kb)); then
+      log_run_core "$(volume_too_small_detail "${volume}" "${kb}" "${min_kb}")"
+      continue
+    fi
     echo "[run.sh] resetting volume ${volume} before the build: $((avail_kb / 1024)) MB free is below the claiming ${floor_detail} and it holds $((kb / 1024)) MB (Issue #2092)" >&2
     log_run_core "work-volume: pre-build reset of ${volume} - $((avail_kb / 1024)) MB free is below the claiming ${floor_detail} and ${volume} holds $((kb / 1024)) MB in ${container_store}; the build comes first, and a host that cannot build must still reclaim its disk (Issue #2092)"
     if recreate_volume "${volume}"; then
@@ -1455,8 +1479,8 @@ heal_untrimmable_volumes() {
   # Measure before deciding (Issue #2077): what the volumes hold on the host
   # is the one fact that says whether a recreate can clear the floor. Only a
   # volume big enough to hold the missing space is worth destroying.
-  local kb held_kb=0 measured=0 min_gb="${VIBE_WORK_VOLUME_HEAL_MIN_GB:-1}"
-  [[ "${min_gb}" =~ ^[0-9]+$ ]] || min_gb=1
+  local kb held_kb=0 measured=0 sum_min_kb
+  sum_min_kb="$(volume_reset_min_kb)"
   for volume in "${trim_refused_volumes[@]}"; do
     kb="$(volume_store_kb "${volume}" || true)"
     if [[ "${kb}" =~ ^[0-9]+$ ]]; then
@@ -1464,7 +1488,7 @@ heal_untrimmable_volumes() {
       held_kb=$((held_kb + kb))
     fi
   done
-  if ((measured)) && ((held_kb < min_gb * 1024 * 1024)); then
+  if ((measured)) && ((held_kb < sum_min_kb)); then
     report_unrecovered "${trim_refused_volumes[*]} hold only $((held_kb / 1024)) MB in ${container_store} - the host's missing space is somewhere else, so recreating them would destroy the clones for nothing"
     return 0
   fi
@@ -1482,7 +1506,16 @@ heal_untrimmable_volumes() {
     log_run_core "work-volume: ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB and the last reset was $(((now - last) / 60)) minutes ago - the host is below its floor again, so the volume is reset again; it is disposable and the host is not (Issue #2077)"
   fi
 
+  local reset_min_kb
+  reset_min_kb="$(volume_reset_min_kb)"
   for volume in "${trim_refused_volumes[@]}"; do
+    # Each volume on its own size (Issue #2117): the sum above says the host
+    # has something to gain; this says whether THIS volume is part of it.
+    kb="$(volume_store_kb "${volume}" || true)"
+    if [[ "${kb}" =~ ^[0-9]+$ ]] && ((kb < reset_min_kb)); then
+      log_run_core "$(volume_too_small_detail "${volume}" "${kb}" "${reset_min_kb}")"
+      continue
+    fi
     echo "[run.sh] recreating volume ${volume}: the runtime refuses to trim it and the host is below its claiming floor (Issue #478)" >&2
     log_run_core "work-volume: recreating ${volume} - trim refused and $((avail_kb / 1024)) MB free is below the $((floor_kb / 1024)) MB claiming floor (Issue #478)"
     if ! recreate_volume "${volume}"; then
