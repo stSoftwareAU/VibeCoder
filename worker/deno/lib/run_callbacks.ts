@@ -87,6 +87,16 @@ export interface CallbackRunTelemetry {
   cacheReadTokens?: number;
   /** Estimated spend in USD; absent when no model had a pricing row. */
   estimatedCostUsd?: number;
+  /**
+   * Turns the run took, summed across its invocations (Issue #2100). Absent
+   * when no invocation reported a turn count — never nought.
+   */
+  turns?: number;
+  /**
+   * The model the largest share of the run went through (Issue #2100): the
+   * served model of the invocation with the biggest token total.
+   */
+  model?: string;
 }
 
 /**
@@ -109,6 +119,14 @@ export interface IssueRunCallbackContext {
   host: string;
   /** Operator-configured worker name, when set. */
   workerName?: string;
+  /**
+   * The workflow the run served (Issue #2100) — the configured
+   * implementation label (`work-on` by default) or `idle-task`, so an
+   * archive can compare implementation runs only. An open string: a route
+   * that later gains its own run callbacks reports its own label here, which
+   * is additive. Absent when the dispatch could not name one.
+   */
+  mode?: string;
   /** Agent provider that served the run, when known. */
   provider?: string;
   /** Agent session id, when the run had one. */
@@ -250,6 +268,8 @@ export interface TerminalIssueRun {
   startedAtEpochMs: number;
   /** Epoch ms the run terminated. */
   finishedAtEpochMs: number;
+  /** The workflow the run served, when the dispatch named one (#2100). */
+  mode?: string;
   /** Token and cost telemetry, when the run's invocations reported it. */
   telemetry?: CallbackRunTelemetry;
   /** What the run achieved, when the worker computed a {@link RunOutcome}. */
@@ -349,6 +369,7 @@ export function buildCallbackContextDocument(
   if (context.workerName !== undefined) {
     document.workerName = context.workerName;
   }
+  if (context.mode !== undefined) document.mode = context.mode;
   if (context.provider !== undefined) document.provider = context.provider;
   if (context.sessionId !== undefined) document.sessionId = context.sessionId;
   if (context.sessionLogPath !== undefined) {
@@ -425,6 +446,7 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_ISSUE_NUMBER", context.issueNumber);
   put(env, "VIBECODER_HOST", context.host);
   put(env, "VIBECODER_WORKER_NAME", context.workerName);
+  put(env, "VIBECODER_MODE", context.mode);
   put(env, "VIBECODER_PROVIDER", context.provider);
   put(env, "VIBECODER_SESSION_ID", context.sessionId);
   put(env, "VIBECODER_SESSION_LOG_PATH", context.sessionLogPath);
@@ -446,6 +468,8 @@ export function buildCallbackEnv(
   );
   put(env, "VIBECODER_CACHE_READ_TOKENS", context.telemetry?.cacheReadTokens);
   put(env, "VIBECODER_ESTIMATED_COST_USD", context.telemetry?.estimatedCostUsd);
+  put(env, "VIBECODER_TURNS", context.telemetry?.turns);
+  put(env, "VIBECODER_MODEL", context.telemetry?.model);
   put(
     env,
     "VIBECODER_TELEMETRY_ABSENT_REASON",

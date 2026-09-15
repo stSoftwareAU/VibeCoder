@@ -1579,6 +1579,18 @@
       ]
     },
     {
+      "issue": 2100,
+      "chunk": "top-up-2100",
+      "title": "top-up: the callback mode resolver",
+      "ledger": "docs/audits/security-sweep-2100-callback-run-mode.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: callback_run_mode.ts (#2100)",
+      "status": "swept",
+      "sweptAt": "a6fa91de8dc59150630379cf5517c0d7198ade44",
+      "paths": [
+        "worker/deno/lib/callback_run_mode.ts"
+      ]
+    },
+    {
       "issue": 2098,
       "chunk": "top-up-2098",
       "title": "top-up: the graft_context host switch",
