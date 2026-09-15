@@ -299,6 +299,16 @@ export function buildHandoverNote(facts: HandoverFacts): string {
       "file(s) named above, continue from them, and do not revert them " +
       "unless they are wrong.",
     "",
+    // Issue #2142: a resumed run continued the diff, finished, passed the
+    // quality gate and was permanently failed at completion for a summary it
+    // never wrote — nothing had told it the code is not the whole deliverable.
+    "The closing deliverables are outstanding too unless the list above " +
+      "names them: completion reads " +
+      `\`docs/archive/pr-summaries/pr-summary-${facts.issueNumber}.md\` — ` +
+      "with its `## Acceptance Criteria` closure block when the issue " +
+      "states criteria — and a run that finishes without it fails at the " +
+      "gate however complete the code is.",
+    "",
     "## Known blockers",
     "",
     "None were recorded. The run was stopped by the interruption named above,",
