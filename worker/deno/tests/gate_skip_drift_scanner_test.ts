@@ -17,7 +17,7 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   bakedToolsForRepo,
   type CiToolEnforcement,
@@ -28,6 +28,7 @@ import {
   type GateSkipDriftValue,
   gateSkipFindingId,
   type GateToolSkip,
+  ownManifestPath,
   scanGateSkipDrift,
 } from "../lib/gate_skip_drift_scanner.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
@@ -231,6 +232,75 @@ Deno.test("bakedToolsForRepo - lists the commands the image carries for a repo",
 // ---------------------------------------------------------------------------
 // scanGateSkipDrift — end to end over a checkout
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Where the manifest is read from (Issue #2081)
+// ---------------------------------------------------------------------------
+//
+// Every other scan case injects `manifestText`, which is how a default that
+// could not work in the container shipped: in container mode the driver runs
+// from a staged copy of worker/deno alone, and the module-relative path named
+// a file that did not exist. These cases drive the DEFAULT read.
+
+Deno.test("ownManifestPath - resolves under VIBE_BASE_DIR when the launcher names a checkout (Issue #2081)", () => {
+  const path = ownManifestPath((name) =>
+    name === "VIBE_BASE_DIR" ? "/workspace/" : undefined
+  );
+  assertEquals(path, "/workspace/container/tools.json");
+});
+
+Deno.test("ownManifestPath - falls back to this checkout's own manifest on a developer host", async () => {
+  const path = ownManifestPath(() => undefined);
+  assertStringIncludes(path, "/container/tools.json");
+  // The fallback is real: it names the committed manifest, which parses.
+  parseContainerManifest(await Deno.readTextFile(path));
+});
+
+Deno.test("scanGateSkipDrift - the default read uses the checkout VIBE_BASE_DIR names (Issue #2081)", async () => {
+  const base = await Deno.makeTempDir({ prefix: "gate-skip-base-" });
+  const dir = await checkoutFixture("neat_ai_core");
+  try {
+    // A checkout root that carries the manifest and nothing the module path
+    // could find: only VIBE_BASE_DIR reaches it.
+    await Deno.mkdir(`${base}/container`);
+    await Deno.copyFile(
+      new URL("container/tools.json", REPO_ROOT),
+      `${base}/container/tools.json`,
+    );
+    const result = await scanGateSkipDrift({
+      repoPath: dir,
+      repo: "stSoftwareAU/NEAT-AI-core",
+      env: (name) => name === "VIBE_BASE_DIR" ? base : undefined,
+    });
+    assert(result.ok, JSON.stringify(result));
+  } finally {
+    await Deno.remove(base, { recursive: true });
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("scanGateSkipDrift - a checkout without the manifest fails naming the path it tried (Issue #2081)", async () => {
+  const base = await Deno.makeTempDir({ prefix: "gate-skip-empty-" });
+  const dir = await checkoutFixture("neat_ai_core");
+  try {
+    const result = await scanGateSkipDrift({
+      repoPath: dir,
+      repo: "stSoftwareAU/NEAT-AI-core",
+      env: (name) => name === "VIBE_BASE_DIR" ? base : undefined,
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertEquals(result.error.kind, "manifest");
+      assertStringIncludes(
+        result.error.message,
+        `${base}/container/tools.json`,
+      );
+    }
+  } finally {
+    await Deno.remove(base, { recursive: true });
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 
 Deno.test("scanGateSkipDrift - reports NEAT-AI-core's bats and codespell drift", async () => {
   const dir = await checkoutFixture("neat_ai_core");

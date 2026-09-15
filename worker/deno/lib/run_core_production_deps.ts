@@ -65,7 +65,6 @@ import {
 import {
   activeAgentProvider,
   type AgentProviderSelector,
-  writeProviderOverrideFile,
 } from "./agent_provider.ts";
 import { checkGhAuth as ghAuthCheck } from "./gh_auth.ts";
 import {
@@ -432,7 +431,10 @@ import {
 } from "./work_volume_prune.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
-import { describeGuestReclaimToHost } from "./work_volume_ratchet.ts";
+import {
+  describeGuestReclaimToHost,
+  judgeGuestReclaim,
+} from "./work_volume_ratchet.ts";
 
 /**
  * Home directory, in the order `agent_transcript.ts` resolves it.
@@ -1538,15 +1540,6 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Health checks --
-    // (Issue #2062) The health-gate switch must reach child processes:
-    // their config loads read the file's preferred id. The override lives
-    // beside the config file and every load applies it.
-    async writeProviderOverride(id: string) {
-      await writeProviderOverrideFile(
-        configPath.slice(0, configPath.lastIndexOf("/")),
-        id,
-      );
-    },
     async checkClaudeHealth(
       provider?: AgentProviderSelector,
       model?: string,
@@ -3443,6 +3436,23 @@ export async function createProductionRunCoreDeps(
       // idle clone or lane worktree (a live heartbeat for the repository
       // protects both). Only what is still short after that comes out of
       // the disposable tier, whose clones cost a re-download.
+      // Issue #2080: on a runtime that returns nothing the guest frees,
+      // deleting build artefacts here only makes the next maintenance pass
+      // rebuild them into fresh image blocks — that loop IS the ratchet.
+      const guestVerdict = judgeGuestReclaim(
+        hostDisk.workVolumeTrimRefused,
+        hostDisk.workVolumeRatchet,
+      );
+      if (guestVerdict.futile) {
+        logger.warn(
+          `[HOST_DISK_LOW] guest reclaim skipped: ${guestVerdict.reason}`,
+        );
+        return {
+          bytesReclaimed: 0,
+          detail: `guest reclaim skipped — ${guestVerdict.reason}`,
+          healed: false,
+        };
+      }
       const artefacts = await pruneWorkVolume({
         workDir,
         artefactsOnly: true,

@@ -19,7 +19,11 @@ import {
   recordRepoProbe,
   resetRepoAccessState,
 } from "../lib/monitored_repo_access.ts";
-import type { AgentProviderSelector } from "../lib/agent_provider.ts";
+import {
+  type AgentProviderSelector,
+  runProviderOverrideId,
+  setRunProviderOverride,
+} from "../lib/agent_provider.ts";
 import type { ProviderBillingEvidence } from "../lib/provider_billing.ts";
 
 // ---------------------------------------------------------------------------
@@ -35,7 +39,6 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     logError: (_msg: string) => {},
     logTiming: (_op: string, _dur: number) => {},
     logWorkerSummary: (_processed: number, _dur: number) => {},
-    writeProviderOverride: (_id: string) => Promise.resolve(),
 
     // PID management
     checkPidFile: () => Promise.resolve({ canProceed: true, message: "OK" }),
@@ -581,12 +584,19 @@ Deno.test("run_core - an exhausted preferred provider falls back to a healthy al
   config.runDurationSeconds = 3600;
   config.agentProviderFallback = ["deepseek"];
 
-  await runCoreLoop(config, deps);
+  try {
+    await runCoreLoop(config, deps);
 
-  assert(
-    probed.includes("deepseek"),
-    "the gate must probe the configured alternative",
-  );
+    assert(
+      probed.includes("deepseek"),
+      "the gate must probe the configured alternative",
+    );
+    // (Issue #2062) The switch must outlive in-process config reloads:
+    // the gate records it as the module-level run override.
+    assertEquals(runProviderOverrideId(), "deepseek");
+  } finally {
+    setRunProviderOverride(undefined);
+  }
   assertEquals(
     errors.some((e) => e.includes("skipping cycle")),
     false,

@@ -349,6 +349,11 @@ export interface HostDiskRefresh {
   totalBytes: number;
   /** When the launcher measured, Unix seconds. */
   measuredAt: number;
+  /**
+   * Whether the runtime refused to trim the work volume this launch
+   * (Issue #2080). Absent from older launchers, which reads as `false`.
+   */
+  workVolumeTrimRefused?: boolean;
 }
 
 /** Parse a `host-disk.json` body; anything malformed reads as no reading. */
@@ -372,7 +377,14 @@ export function parseHostDiskRefresh(text: string): HostDiskRefresh | null {
   ) {
     return null;
   }
-  return { availableBytes: avail, totalBytes: total, measuredAt: at };
+  const refused = o.workVolumeTrimRefused;
+  if (refused !== undefined && typeof refused !== "boolean") return null;
+  return {
+    availableBytes: avail,
+    totalBytes: total,
+    measuredAt: at,
+    ...(refused === undefined ? {} : { workVolumeTrimRefused: refused }),
+  };
 }
 
 /** Read the launcher's reading file; missing or unreadable is no reading. */
@@ -505,6 +517,8 @@ export class HostDiskMonitor {
   private volumeUsedPeak: number | null = null;
   /** Most recent volume usage, for the ratchet split (#384). */
   private volumeUsedNow: number | null = null;
+  /** The launcher's word that the runtime refused the trim (#2080). */
+  private trimRefused = false;
   private baselined = false;
   private lastSampleAt: number | undefined;
   private lastStatus: HostDiskStatus = {
@@ -551,6 +565,9 @@ export class HostDiskMonitor {
       refresh = null;
     }
     if (refresh === null) return;
+    // Taken from any reading the launcher wrote, before the recency rules
+    // below: the flag is a property of this launch, not of one sample.
+    this.trimRefused = refresh.workVolumeTrimRefused === true;
     const measuredMs = refresh.measuredAt * 1000;
     if (measuredMs <= this.adoptedMeasuredAtMs) return;
     if (t - measuredMs > this.refreshMaxAgeMs) return;
@@ -604,6 +621,15 @@ export class HostDiskMonitor {
    * host itself, so freed space is genuinely free and there is no ratchet to
    * claim.
    */
+  /**
+   * Did the launcher report that the runtime refused to trim the work volume
+   * this launch (Issue #2080)? When it did, nothing the guest frees reaches
+   * the host.
+   */
+  get workVolumeTrimRefused(): boolean {
+    return this.trimRefused;
+  }
+
   get workVolumeRatchet(): WorkVolumeRatchet {
     if (this.baseline === null) return classifyWorkVolumeRatchet(null, null);
     return classifyWorkVolumeRatchet(this.volumeUsedNow, this.volumeUsedPeak);

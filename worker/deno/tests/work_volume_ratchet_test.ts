@@ -16,6 +16,7 @@ import {
   DEFAULT_RATCHET_FLOOR_BYTES,
   describeGuestReclaimToHost,
   describeWorkVolumeRatchet,
+  judgeGuestReclaim,
   WORK_VOLUME_RATCHET_NAME,
 } from "../lib/work_volume_ratchet.ts";
 import { WORK_VOLUME_NAME } from "../lib/container_launch.ts";
@@ -128,4 +129,36 @@ Deno.test("work-volume name - the ratchet message names the volume the launcher 
     WORK_VOLUME_NAME,
     "the remedy an operator is told to run must name the real volume",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2080 — is deleting inside the guest worth anything to the host?
+// ---------------------------------------------------------------------------
+
+Deno.test("judgeGuestReclaim - a refused trim makes guest reclaim futile, whatever the ratchet says", () => {
+  const verdict = judgeGuestReclaim(
+    true,
+    classifyWorkVolumeRatchet(1 * GIB, 1 * GIB),
+  );
+  assertEquals(verdict.futile, true);
+  assertStringIncludes(verdict.reason, "refused to trim");
+  assertStringIncludes(verdict.reason, "#2080");
+});
+
+Deno.test("judgeGuestReclaim - a ratcheted image makes guest reclaim futile", () => {
+  // GRQ-23: 45 GB of image for 1.2 GB live.
+  const verdict = judgeGuestReclaim(
+    false,
+    classifyWorkVolumeRatchet(1.2 * GIB, 45 * GIB),
+  );
+  assertEquals(verdict.futile, true);
+  assertStringIncludes(verdict.reason, "already space the guest freed");
+});
+
+Deno.test("judgeGuestReclaim - a healthy volume on a trimming runtime reclaims as before", () => {
+  const verdict = judgeGuestReclaim(
+    false,
+    classifyWorkVolumeRatchet(10 * GIB, 10.5 * GIB),
+  );
+  assertEquals(verdict, { futile: false, reason: "" });
 });

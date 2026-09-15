@@ -71,6 +71,7 @@ import {
   type QuotaPauseMarker,
 } from "./quota_pause.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "./container_extension_start.ts";
+import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "./toolchain_selfcheck.ts";
 import {
   escalationHostId,
   fileOrCommentIssue,
@@ -1091,6 +1092,9 @@ export function buildContainerEscalationParams(
         // escalation must not send the reader hunting the runtime client for
         // a status the worker chose deliberately.
         HOST_EGRESS_BLOCKED_EXIT_STATUS,
+        // The refused claim of Issue #1956, for the same reason: the worker
+        // chose this status when the image failed its toolchain self-check.
+        TOOLCHAIN_SELFCHECK_EXIT_STATUS,
       ),
     ),
     `Next attempt after a ${input.backoffSeconds}s backoff`,

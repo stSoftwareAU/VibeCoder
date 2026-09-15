@@ -30,7 +30,10 @@ import {
   type ConflictGitRunner,
   type DependencyRuleApplier,
 } from "./dependency_conflict_apply.ts";
-import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
+import type {
+  MergeConflictAgentOutcome,
+  MergeConflictRepairContext,
+} from "./merge_conflict_agent.ts";
 import { unstageWorkerStateFiles } from "./git_push.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { describeGitFailure } from "./milestone_merge_state.ts";
@@ -45,6 +48,13 @@ export interface MilestoneConflictAgentRequest {
   defaultBranch: string;
   /** The clone the conflicted merge is in progress in. */
   workDir: string;
+  /**
+   * Set when this run repairs a resolution the verification refused
+   * (Issue #1965) rather than resolving the conflict itself. The merge is
+   * already committed in the clone; what the run answers is the gate's
+   * failing command and its output.
+   */
+  repair?: MergeConflictRepairContext;
 }
 
 /**
@@ -198,10 +208,13 @@ export async function hasConflictMarkers(
  * cost the commit), and the pre-commit safety gate then refuses any hidden or
  * secret-bearing path exactly as it does on every other commit path.
  *
+ * The gate-repair rung stages the same way (Issue #1965): a repair that adds
+ * a file is the same shape as a resolution that extracts a helper.
+ *
  * @param options - Git options; `cwd` is the clone holding the merge
  * @returns Nothing on success, or the failure that stopped the staging
  */
-async function stageAgentResolution(
+export async function stageAgentResolution(
   options: GitCommandOptions,
 ): Promise<Result<void>> {
   const added = await runGitCommand(["add", "-A"], options);

@@ -1281,6 +1281,68 @@ Deno.test("parseContainerManifest - rejects an empty toolchain command list", ()
   );
 });
 
+Deno.test("parseContainerManifest - versionArgs are optional and absent by default", () => {
+  const manifest = parseContainerManifest(toolchainManifestText());
+  assertEquals(manifest.toolchains[0]?.versionArgs, undefined);
+});
+
+Deno.test("parseContainerManifest - accepts versionArgs on a command toolchain (Issues #2070–#2073)", () => {
+  const manifest = parseContainerManifest(
+    toolchainManifestText((t) => {
+      t.versionArgs = ["--no-globs", "--version"];
+    }),
+  );
+  assertEquals(manifest.toolchains[0]?.versionArgs, [
+    "--no-globs",
+    "--version",
+  ]);
+});
+
+Deno.test("parseContainerManifest - rejects an empty versionArgs", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        toolchainManifestText((t) => {
+          t.versionArgs = [];
+        }),
+      ),
+    Error,
+    "toolchains[0].versionArgs",
+  );
+});
+
+Deno.test("parseContainerManifest - rejects a versionArgs entry that could reach a shell", () => {
+  for (const bad of ["--version; rm -rf /", "a b", "$(id)", "", "-"]) {
+    assertThrows(
+      () =>
+        parseContainerManifest(
+          toolchainManifestText((t) => {
+            t.versionArgs = [bad];
+          }),
+        ),
+      Error,
+      "toolchains[0].versionArgs[0]",
+    );
+  }
+});
+
+Deno.test("parseContainerManifest - rejects versionArgs on a toolchain that installs no command", () => {
+  assertThrows(
+    () =>
+      parseContainerManifest(
+        toolchainManifestText((t) => {
+          delete t.commands;
+          delete t.versionCommand;
+          t.modules = ["rusty"];
+          t.versionModule = "rusty";
+          t.versionArgs = ["--version"];
+        }),
+      ),
+    Error,
+    "toolchains[0].versionArgs",
+  );
+});
+
 Deno.test("parseContainerManifest - rejects a versionCommand the toolchain does not install", () => {
   assertThrows(
     () =>

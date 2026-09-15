@@ -160,3 +160,55 @@ export function describeGuestReclaimToHost(
     `snapshots re-baseline. A recreate that does not clear the floor is ` +
     `logged as [WORK_VOLUME_UNRECOVERED] (Issues #384, #478)`;
 }
+
+/** Whether freeing space inside the guest can help the host at all. */
+export interface GuestReclaimVerdict {
+  /** True when deleting inside the volume returns nothing to the host. */
+  futile: boolean;
+  /** Why, in one line for the disk-low log. Empty when not futile. */
+  reason: string;
+}
+
+/**
+ * Should the disk-low pass delete anything inside the work volume?
+ *
+ * On a runtime that refuses the discard, nothing the guest frees returns to
+ * the host — and a deleted build artefact is rebuilt by the next maintenance
+ * pass into fresh blocks of the sparse image. GRQ-23 (Issue #2080) deleted a
+ * 3.3 GB `target/` every eight minutes and rebuilt it in between: 45 GB of
+ * image for 1.2 GB of live data in eleven hours. So when the launcher says
+ * the trim was refused, or the image is already measurably ratcheted, the
+ * pass leaves the guest alone and the host to the launcher's volume reset
+ * (Issue #2077).
+ *
+ * @param trimRefused - The launcher's word that the runtime refused the trim
+ * @param ratchet - What the image holds that the guest has already freed
+ * @param volumeName - For the log line
+ * @returns Whether to skip, and the reason to log
+ */
+export function judgeGuestReclaim(
+  trimRefused: boolean,
+  ratchet: WorkVolumeRatchet,
+  volumeName: string = WORK_VOLUME_RATCHET_NAME,
+): GuestReclaimVerdict {
+  if (trimRefused) {
+    return {
+      futile: true,
+      reason: `the runtime refused to trim the ${volumeName} volume this ` +
+        "launch, so nothing freed inside the guest returns to the host, and " +
+        "a deleted build artefact is only rebuilt into fresh image blocks " +
+        "— the launcher resets the volume instead (Issues #2077, #2080)",
+    };
+  }
+  if (ratchet.ratcheted) {
+    return {
+      futile: true,
+      reason: `${formatGb(ratchet.deadBytes)} of the ${volumeName} image is ` +
+        "already space the guest freed and the host never got back, so " +
+        "freeing more inside the guest returns nothing and a deleted build " +
+        "artefact is only rebuilt into fresh image blocks — the launcher " +
+        "resets the volume instead (Issues #2077, #2080)",
+    };
+  }
+  return { futile: false, reason: "" };
+}

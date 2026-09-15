@@ -348,6 +348,92 @@ and that each fragment verifies its download with `sha256sum -c`, carries the
 shared `${CURL_RETRY}` policy, pipes nothing into a shell, and restates no
 version the manifest already pins.
 
+## The image proves itself at start-up (Issue #1956)
+
+The build-time assertions above run inside a `RUN` layer, so a cached layer
+skips them and a forced-platform build passes them under emulation. The tag
+guarantees a rebuild when the *inputs* change, not that the *running* image is
+the one those inputs describe — and two tooling faults in one week cost whole
+runs: an `actionlint` that would not execute on the host's CPU architecture,
+and a `python3` that could not import `yaml`. Both were discovered by the agent
+mid-run, after the claim.
+
+So the worker probes the image before it claims anything
+(`worker/deno/lib/toolchain_selfcheck.ts`, run from `run_worker.ts` ahead of
+the prompt-immutability check):
+
+```mermaid
+flowchart TD
+    M["container/tools.json<br/>(the checkout's pins)"] --> P["one probe per toolchain"]
+    P -->|versionCommand| C["&lt;command&gt; --version<br/>(or the entry's versionArgs)"]
+    P -->|versionModule| Y["python3 -c 'import m; print(m.__version__)'"]
+    C --> J{"reports the pinned version?"}
+    Y --> J
+    J -->|yes, all of them| W["▶️ the worker claims work"]
+    J -->|no| X["❌ exit 89 before any claim<br/>[TOOLCHAIN-SELFCHECK-FAILED] &lt;ids&gt;"]
+    X --> R["run.sh / run.ps1 remove the image<br/>→ the next launch rebuilds"]
+    style W fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style X fill:#c9184a,stroke:#800f2f,color:#fff
+```
+
+- **The probe list is the manifest**, never a second copy: a toolchain's
+  `versionCommand` (or `versionModule`, for a library like PyYAML) is what is
+  run, and the pinned `version` is what the output is compared against. Adding
+  a toolchain to `container/tools.json` adds its probe with no other edit, so
+  the check cannot drift out of step with the install list. A command with no
+  `--version` flag names its own arguments in `versionArgs`:
+  `markdownlint-cli2` treats every argument as a glob, and a bare `--version`
+  linted the worker's whole checkout on every launch — one lint finding on
+  `main` away from parking the fleet (Issues #2070–#2073). Its entry probes
+  with `--no-globs --version`, which prints the banner and lints nothing.
+- **Concurrent and bounded.** The probes run together and each is bounded by
+  `TOOLCHAIN_PROBE_TIMEOUT_MS`, so the launch pays the slowest probe rather
+  than the sum of thirteen. Measured in the image, all thirteen together cost
+  **0.64 s** against a warm page cache and **1.99 s** on the first run after
+  the image is written — the tools' own start-up, not the check's:
+  `markdownlint-cli2` alone is 1.9 s of a cold run and `semgrep` 0.65 s. A
+  binary that hangs on this architecture costs seconds, not the run.
+- **One line per toolchain** reaches the run log — `toolchain-selfcheck: ok
+  actionlint 1.7.12`, or `FAILED …` with the probe's own words.
+- **A failure is refused, not charged.** The worker exits
+  `TOOLCHAIN_SELFCHECK_EXIT_STATUS` (89) before resolving its GitHub identity,
+  so no issue is claimed and no attempt is spent.
+- **A manifest fault is not an image fault.** An unreadable
+  `container/tools.json`, or one pinning nothing, fails loud on the ordinary
+  status 1 and prints no marker: a rebuilt image would meet exactly the same
+  manifest, so it must not cost the host its image.
+- **The host rebuilds on the next launch.** The launchers read the failing ids
+  out of the container's captured stderr, name them in `run_core.log`, and
+  remove the content-derived image reference — an absent reference is exactly
+  the rebuild signal the launch reads. The removal verb rides the launch plan
+  (`image-remove=`), so Apple `container`'s `image delete` is not guessed at.
+- **Exactly one rebuild per reference.** The tag is derived from the
+  definition, so a rebuild produces the same tag; the reference removed is
+  recorded under `~/.vibe-coder/toolchain-selfcheck-rebuild`, and a second
+  failure of the same reference is reported as
+  `[TOOLCHAIN_SELFCHECK_UNRECOVERED]` rather than removing and rebuilding a
+  multi-gigabyte image on every cycle for ever. A launch that gets past the
+  check clears the record.
+- **Outside the image there is nothing to verify.** On a developer's own host
+  the check reports itself skipped, the same boundary
+  `prompt_immutability.ts` draws.
+- **The pin must stand as a whole token, and a letter prefix is not part of
+  it.** `1.7.1` does not match an installed `1.7.12`, and `11.7.12` does not
+  match `1.7.12`; but `node --version` prints `v24.19.0` and
+  `markdownlint-cli2` prints `v0.23.2`, and counting that `v` as part of the
+  token took every host out of service against a correctly built image
+  (Issues #2070–#2073). The real output of every pinned toolchain, captured
+  inside the image, is a fixture in `toolchain_selfcheck_test.ts` that the
+  committed manifest is checked against; a toolchain pinned without its
+  fixture fails the test.
+- **CI runs the same check, in the built image.** `container-build.yml`
+  invokes `worker/deno/mod.ts toolchain-selfcheck` inside the image it has just
+  built, over the checkout mounted at `/workspace` — the command path the
+  worker itself takes — so the verdict the fleet will reach is reached on the
+  pull request. A change to the check, its manifest parser or its command is
+  an image-affecting change (`detect-image-changes.sh`), so a worker-only PR
+  can no longer alter the rule without a build proving it.
+
 ## Image identity — the tag is the definition's hash
 
 The image reference is derived from the container definition itself, so a
@@ -1094,6 +1180,15 @@ snapshots re-baseline. A recreate that does not clear the floor is logged as
 [WORK_VOLUME_UNRECOVERED] (Issues #384, #478)
 ```
 
+Once the launcher has reported the trim refused (`workVolumeTrimRefused` in
+its `host-disk.json` reading), or the image is measurably ratcheted, the
+disk-low pass **does not delete inside the guest at all** (Issue #2080): on
+GRQ-23 it was deleting a 3.3 GB Rust `target/` every eight minutes that the
+next maintenance pass rebuilt into fresh image blocks — 45 GB of image for
+1.2 GB of live data in eleven hours. The log says `[HOST_DISK_LOW] guest
+reclaim skipped: …` and the host is left to the launcher's volume reset
+(Issue #2077).
+
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
 On the Apple `container` runtime the trim above has **never** worked. As
@@ -1136,12 +1231,19 @@ takes it:
    leaves the volume in place is reported in the runtime's own words rather
    than followed by a `volume create` that is certain to fail with
    "already exists" (Issue #731).
-3. **The attempt is bounded and never silent.** At most one recreate per
-   `VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS` (24), recorded in
-   `~/.vibe-coder/work-volume-heal`; volumes holding less than
-   `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) in the store are never destroyed,
-   because the host's missing space is elsewhere. Free space is **re-measured**
-   after the recreate: a heal that did not clear the floor is reported as
+3. **The attempt is measured, bounded and never silent.** What the volumes
+   hold in the store is measured first: volumes holding less than
+   `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) are never destroyed, because the
+   host's missing space is elsewhere. A recreate is then repeated inside
+   `VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS` (24, recorded in
+   `~/.vibe-coder/work-volume-heal`) only when free space plus what the
+   volumes hold reaches the floor — that is, when the measurement says the
+   recreate will clear it. The interval guards the host whose space went
+   elsewhere from wiping its clones every launch; it does not hold back a
+   recreate that will work (Issue #2077: GRQ-23 re-ratcheted 45 GB in eleven
+   hours with 1.2 GB live, sat at 3% free, and was told to wait out the
+   remaining thirteen claiming nothing). Free space is **re-measured** after
+   the recreate: a heal that did not clear the floor is reported as
    `[WORK_VOLUME_UNRECOVERED]` on stderr and in `run_core.log`, never as a fix.
 4. **The launch still proceeds.** Only the hard floor refuses a launch — a
    host that cannot claim must still run and report, or it vanishes from the
@@ -1153,8 +1255,10 @@ flowchart TD
     I -->|"FITRIM refused"| R["VOLUME_TRIM_REFUSED &lt;target&gt;<br/>on stdout"]
     R --> G{"host below the<br/>claiming floor?"}
     G -->|"no"| N["recorded in run_core.log;<br/>nothing destroyed"]
-    G -->|"yes"| B{"recreated within<br/>24 h, or volume &lt; 1 GB?"}
-    B -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]"]
+    G -->|"yes"| S{"volumes hold<br/>&lt; 1 GB?"}
+    S -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]"]
+    S -->|"no"| B{"recreated within 24 h<br/>AND free + held &lt; floor?"}
+    B -->|"yes"| E
     B -->|"no"| D["delete + create volume,<br/>re-run the init"]
     D --> M{"floor cleared?<br/>(re-measured)"}
     M -->|"yes"| H["host recovered<br/>without an operator"]

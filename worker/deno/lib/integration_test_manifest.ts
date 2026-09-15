@@ -164,6 +164,12 @@ export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
     "holds run.ps1's egress probe to the same behaviour as run.sh's " +
     "wherever PowerShell is installed — 6s",
   ],
+  [
+    "tests/launcher_toolchain_selfcheck_test.ts",
+    "holds run.ps1 to run.sh's handling of an image that failed its " +
+    "toolchain self-check (Issue #1956) — the rebuild a Windows host must " +
+    "not skip; 17s",
+  ],
 ]);
 
 /**

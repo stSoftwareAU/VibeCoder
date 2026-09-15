@@ -34,9 +34,10 @@
 /**
  * Exit statuses the worker itself can produce.
  *
- * Keep in step with `run_worker.ts` (0, 1, `QUOTA_PAUSE_EXIT_STATUS`), the
- * commands that name their own — `container_build_heal` and `container_reap` —
- * and the entrypoint's `EXTENSION_START_ABORT_EXIT_STATUS` (Issue #981).
+ * Keep in step with `run_worker.ts` (0, 1, `QUOTA_PAUSE_EXIT_STATUS`,
+ * `TOOLCHAIN_SELFCHECK_EXIT_STATUS`), the commands that name their own —
+ * `container_build_heal` and `container_reap` — and the entrypoint's
+ * `EXTENSION_START_ABORT_EXIT_STATUS` (Issue #981).
  * Being wrong here costs a misleading sentence in an alert, so the wording
  * below hedges to "not a status the worker is known to produce" rather than
  * claiming the runtime is definitely at fault.
@@ -55,6 +56,7 @@ export function knownWorkerStatuses(
   anotherWorkerRunningStatus: number,
   extensionStartAbortStatus: number,
   hostEgressBlockedStatus: number,
+  toolchainSelfCheckStatus: number,
 ): KnownWorkerStatuses {
   const table = new Map<number, string>([
     [0, "a clean run"],
@@ -78,6 +80,14 @@ export function knownWorkerStatuses(
     [
       hostEgressBlockedStatus,
       "a host parked because its containers cannot reach the network",
+    ],
+    // Issue #1956: the worker refused to claim anything because the running
+    // image does not provide the toolchains `container/tools.json` pins. The
+    // container log names them, and the launcher has already removed the tag
+    // so the next launch rebuilds.
+    [
+      toolchainSelfCheckStatus,
+      "an image that failed its own toolchain self-check before claiming",
     ],
   ]);
   return {

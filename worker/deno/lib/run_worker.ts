@@ -67,6 +67,10 @@ import type { AgentProviderDescriptor } from "./agent_provider.ts";
 import { getPromptsDir } from "./prompt_manager.ts";
 import { checkPromptsImmutable } from "./prompt_immutability.ts";
 import {
+  checkContainerToolchains,
+  TOOLCHAIN_SELFCHECK_EXIT_STATUS,
+} from "./toolchain_selfcheck.ts";
+import {
   createClaudeCredentialPool,
   primeClaudePoolFromUsageSignal,
 } from "./claude_credential_pool.ts";
@@ -99,6 +103,8 @@ export type RunWorkerOutcome =
   | "credentials-invalid"
   /** The worker's own prompt templates were writable (Issue #1445). */
   | "prompts-writable"
+  /** The image does not provide the toolchains tools.json pins (#1956). */
+  | "toolchains-unusable"
   | "github-user-failed"
   | "identity-mismatch"
   | "completed"
@@ -704,6 +710,49 @@ ${credentialFailure}`);
         outcome: "credentials-invalid",
         exitCode: 1,
         reason: credentialFailure,
+      };
+    }
+
+    // Step 4.55: The image must provide the toolchains `container/tools.json`
+    // pins (Issue #1956). Two tooling faults in one week cost whole runs —
+    // an `actionlint` that would not execute on the host's architecture, and
+    // a `python3` that could not import `yaml` — and both were discovered by
+    // the agent mid-run, after the claim. Probed here, before anything is
+    // claimed, so a mismatched image costs a launch rather than a run; the
+    // status the worker exits with is what tells the launcher to rebuild the
+    // image instead of reusing the cached tag.
+    //
+    // Ahead of the prompt-immutability probe below because that probe reads
+    // an arrangement this same image makes (a read-only mount, an entrypoint
+    // that stages only `worker/deno`): an image that is not the one the
+    // checkout describes must be reported as the wrong image, not as a
+    // security fault in the mount it laid out.
+    const toolchainVerdict = await checkContainerToolchains({
+      repoRoot: repoDir,
+      env,
+    });
+    for (const line of toolchainVerdict.lines) deps.log(`[run-worker] ${line}`);
+    if (!toolchainVerdict.ok) {
+      const reason = toolchainVerdict.reason ??
+        "the container toolchain self-check failed";
+      deps.logError(`[run-worker] toolchain self-check failed: ${reason}`);
+      // The marker goes to the ERROR sink as well as the log above: the
+      // launchers read it out of the container's captured stderr to name the
+      // toolchain in the host log, and at LOG_LEVEL=WARNING the informational
+      // copy never leaves the process.
+      if (toolchainVerdict.marker) {
+        deps.logError(`[run-worker] ${toolchainVerdict.marker}`);
+      }
+      return {
+        outcome: "toolchains-unusable",
+        // Only an image fault is worth a rebuild, and the status is what the
+        // launchers act on: a manifest this checkout cannot supply is an
+        // ordinary loud bootstrap failure, because removing the image would
+        // cost a multi-gigabyte rebuild that meets the same manifest.
+        exitCode: toolchainVerdict.fault === "manifest"
+          ? 1
+          : TOOLCHAIN_SELFCHECK_EXIT_STATUS,
+        reason,
       };
     }
 

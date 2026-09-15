@@ -689,6 +689,7 @@ ensure_dirs=()
 volume_names=()
 init_args=()
 volume_remove_args=()
+image_remove_args=()
 claim_floor_gb=""
 claim_floor_percent=""
 claim_floor_origin=""
@@ -714,6 +715,7 @@ while IFS= read -r -d '' token; do
     volume) volume_names+=("${value}") ;;
     init) init_args+=("${value}") ;;
     volume-remove) volume_remove_args+=("${value}") ;;
+    image-remove) image_remove_args+=("${value}") ;;
     claim-floor-gb) claim_floor_gb="${value}" ;;
     claim-floor-percent) claim_floor_percent="${value}" ;;
     claim-floor-origin) claim_floor_origin="${value}" ;;
@@ -735,6 +737,7 @@ if [[ -z "${RUNTIME}" || -z "${IMAGE}" || -z "${KEEP_IMAGES}" ]] ||
   [[ ${#build_args[@]} -eq 0 ]] || [[ ${#exists_args[@]} -eq 0 ]] ||
   [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]] ||
   [[ ${#volume_remove_args[@]} -eq 0 ]] ||
+  [[ ${#image_remove_args[@]} -eq 0 ]] ||
   [[ -z "${claim_floor_gb}" ]] || [[ -z "${claim_floor_percent}" ]]; then
   echo "Error: incomplete container launch plan - refusing to launch" >&2
   exit 1
@@ -790,6 +793,10 @@ done
 # until the worker exits. On GRQ-25 the file stayed at its launch value for a
 # whole run while the host freed 23 GB, and the worker refused claims 12 GB
 # above its floor on the strength of a reading it could not refresh.
+# Declared here so the first reading below can consult it under `set -u`; the
+# volume init later resets and fills it (Issue #478).
+trim_refused_volumes=()
+
 write_host_disk_reading() {
   local gate="${HOME}" store="${HOME:-}/Library/Application Support/com.apple.container"
   [[ -d "${store}" ]] && gate="${store}"
@@ -804,8 +811,14 @@ write_host_disk_reading() {
   mkdir -p "${RUN_CORE_LOG_DIR}" 2>/dev/null || return 0
   local file="${RUN_CORE_LOG_DIR}/host-disk.json" tmp
   tmp="${file}.tmp.$$"
-  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s"}\n' \
-    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" >"${tmp}" 2>/dev/null &&
+  # Issue #2080: whether the runtime refused to trim the work volume this
+  # launch. When it did, nothing the guest frees returns to the host, so the
+  # worker's disk-low pass must not delete build artefacts it will only
+  # rebuild — that rebuild is the ratchet.
+  local trim_refused=false
+  ((${#trim_refused_volumes[@]})) && trim_refused=true
+  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s","workVolumeTrimRefused":%s}\n' \
+    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" "${trim_refused}" >"${tmp}" 2>/dev/null &&
     mv -f "${tmp}" "${file}" 2>/dev/null; then
     return 0
   fi
@@ -1397,18 +1410,9 @@ heal_untrimmable_volumes() {
   fi
   log_run_core "host-disk: $((avail_kb / 1024)) MB free on ${disk_gate_path} is below the claiming ${floor_detail} (Issues #226, #732)"
 
-  local now last interval_hours
-  now="$(date +%s)"
-  interval_hours="${VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS:-24}"
-  [[ "${interval_hours}" =~ ^[0-9]+$ ]] || interval_hours=24
-  last="$(cat "${HEAL_STATE_FILE}" 2>/dev/null || echo 0)"
-  [[ "${last}" =~ ^[0-9]+$ ]] || last=0
-  if ((last > 0 && now - last < interval_hours * 3600)); then
-    report_unrecovered "the last recreate was $(((now - last) / 60)) minutes ago and ${disk_gate_path} still has $((avail_kb / 1024)) MB free, below the $((floor_kb / 1024)) MB claiming floor - recreating again would destroy the clones without clearing the floor"
-    return 0
-  fi
-
-  # Only a volume big enough to hold the missing space is worth destroying.
+  # Measure before deciding (Issue #2077): what the volumes hold on the host
+  # is the one fact that says whether a recreate can clear the floor. Only a
+  # volume big enough to hold the missing space is worth destroying.
   local kb held_kb=0 measured=0 min_gb="${VIBE_WORK_VOLUME_HEAL_MIN_GB:-1}"
   [[ "${min_gb}" =~ ^[0-9]+$ ]] || min_gb=1
   for volume in "${trim_refused_volumes[@]}"; do
@@ -1421,6 +1425,27 @@ heal_untrimmable_volumes() {
   if ((measured)) && ((held_kb < min_gb * 1024 * 1024)); then
     report_unrecovered "${trim_refused_volumes[*]} hold only $((held_kb / 1024)) MB in ${container_store} - the host's missing space is somewhere else, so recreating them would destroy the clones for nothing"
     return 0
+  fi
+
+  # The interval guards the host whose space went somewhere else: a recreate
+  # that did not clear the floor must not be repeated every launch, wiping the
+  # clones for nothing. It must not guard a recreate the measurement says WILL
+  # clear the floor. GRQ-23 (Issue #2077) re-ratcheted 45 GB in eleven hours
+  # with 1.2 GB live, sat at 3% free, and was told to wait out the remaining
+  # thirteen — claiming nothing, and heading for the disk-full crash of #226.
+  local now last interval_hours
+  now="$(date +%s)"
+  interval_hours="${VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS:-24}"
+  [[ "${interval_hours}" =~ ^[0-9]+$ ]] || interval_hours=24
+  last="$(cat "${HEAL_STATE_FILE}" 2>/dev/null || echo 0)"
+  [[ "${last}" =~ ^[0-9]+$ ]] || last=0
+  if ((last > 0 && now - last < interval_hours * 3600)); then
+    if ((measured)) && ((avail_kb + held_kb >= floor_kb)); then
+      log_run_core "work-volume: ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB, enough to lift ${disk_gate_path} from $((avail_kb / 1024)) MB free to above the $((floor_kb / 1024)) MB claiming floor - recreating although the last recreate was only $(((now - last) / 60)) minutes ago (Issue #2077)"
+    else
+      report_unrecovered "the last recreate was $(((now - last) / 60)) minutes ago and ${disk_gate_path} still has $((avail_kb / 1024)) MB free, below the $((floor_kb / 1024)) MB claiming floor; ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB, not enough to clear it - recreating again would destroy the clones without clearing the floor"
+      return 0
+    fi
   fi
 
   for volume in "${trim_refused_volumes[@]}"; do
@@ -1695,6 +1720,96 @@ if [[ -s "${WEDGE_MARKER}" ]]; then
     "${WATCHDOG_SECONDS}s watchdog deadline and was reaped - exiting" \
     "${CONTAINER_WEDGED_EXIT_STATUS} so the next cycle runs (Issue #4173)" >&2
   status="${CONTAINER_WEDGED_EXIT_STATUS}"
+fi
+
+# The image did not provide the toolchains the checkout pins (Issue #1956).
+#
+# The worker probes every toolchain `container/tools.json` pins before it
+# claims anything, so this status means the run was refused rather than
+# charged: an `actionlint` that would not execute on this architecture, or a
+# `python3` that could not import `yaml`, used to be discovered by the agent
+# mid-run. The container named the toolchains on its own stderr, which the
+# capture above holds, so the host log names them too.
+#
+# The cached tag is what gets removed: the image reference is content-derived,
+# so an absent reference is exactly the rebuild signal the launch above reads
+# (Issue #4062). Removing it is the only way this host stops reusing an image
+# the worker has just refused.
+#
+# Exactly one rebuild per reference. The tag is derived from the definition,
+# so a rebuild produces the same tag - and a fault the rebuild cannot clear
+# would otherwise have this launcher removing and rebuilding a multi-gigabyte
+# image on every cycle for ever. The second occurrence says so instead.
+#
+# Kept in step with TOOLCHAIN_SELFCHECK_EXIT_STATUS and
+# TOOLCHAIN_SELFCHECK_FAILURE_MARKER in
+# worker/deno/lib/toolchain_selfcheck.ts by the launcher tests.
+TOOLCHAIN_SELFCHECK_EXIT_STATUS=89
+TOOLCHAIN_SELFCHECK_FAILURE_MARKER="[TOOLCHAIN-SELFCHECK-FAILED]"
+TOOLCHAIN_REBUILD_STATE="${VIBE_TOOLCHAIN_REBUILD_STATE:-${VIBE_STATE_DIR}/toolchain-selfcheck-rebuild}"
+
+# Did this host already remove THIS reference over a failed self-check?
+#
+# An unreadable record reads as "no" deliberately: the bound it carries is a
+# guard against a rebuild loop, and refusing the first removal because the
+# record could not be read would leave a genuinely broken image in place.
+toolchain_rebuild_recorded() {
+  [[ -f "${TOOLCHAIN_REBUILD_STATE}" ]] || return 1
+  [[ "$(cat "${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true)" == "${IMAGE}" ]]
+}
+
+if ((status == TOOLCHAIN_SELFCHECK_EXIT_STATUS)); then
+  failed_line=""
+  if [[ -n "${RUN_LOG}" && -s "${RUN_LOG}" ]]; then
+    failed_line="$(grep -F "${TOOLCHAIN_SELFCHECK_FAILURE_MARKER}" \
+      "${RUN_LOG}" 2>/dev/null | tail -n 1 || true)"
+  fi
+  failed_ids=()
+  if [[ -n "${failed_line}" ]]; then
+    # Whitespace-split and rejoined, so the log line carries the ids alone.
+    read -r -a failed_ids \
+      <<<"${failed_line#*"${TOOLCHAIN_SELFCHECK_FAILURE_MARKER}"}" || true
+  fi
+  if ((${#failed_ids[@]})); then
+    failed_detail="${failed_ids[*]}"
+  else
+    failed_detail="a toolchain the container did not name"
+  fi
+
+  echo "[run.sh] ${IMAGE} failed its toolchain self-check (${failed_detail})" \
+    "- the worker claimed nothing (Issue #1956)" >&2
+  log_run_core "toolchain-selfcheck: ${IMAGE} does not provide ${failed_detail} as pinned in container/tools.json - no issue was claimed (Issue #1956)"
+
+  if toolchain_rebuild_recorded; then
+    echo "[run.sh] [TOOLCHAIN_SELFCHECK_UNRECOVERED] ${IMAGE} still fails the" \
+      "self-check after a rebuild - not removing it again (Issue #1956)" >&2
+    log_run_core "[TOOLCHAIN_SELFCHECK_UNRECOVERED] ${IMAGE} still does not provide ${failed_detail} after a rebuild - the definition, not the cached tag, is what is wrong (Issue #1956)"
+  else
+    # The runtime's own words are kept: a removal that failed for want of a
+    # running container, or a reference another tag still holds, is the whole
+    # account of why the next launch will reuse this image.
+    image_remove_err="$(mktemp "${TMPDIR:-/tmp}/vibe-image-rm.XXXXXX")"
+    if "${RUNTIME}" "${image_remove_args[@]}" "${IMAGE}" \
+      </dev/null >/dev/null 2>"${image_remove_err}"; then
+      log_run_core "toolchain-selfcheck: removed ${IMAGE} - the next launch rebuilds it rather than reusing the cached tag (Issue #1956)"
+      mkdir -p "$(dirname "${TOOLCHAIN_REBUILD_STATE}")" 2>/dev/null || true
+      printf '%s\n' "${IMAGE}" >"${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true
+    else
+      image_remove_detail="$(runtime_error_detail "${image_remove_err}")"
+      echo "[run.sh] warning: could not remove ${IMAGE} (${image_remove_detail})" \
+        "- the next launch will reuse the image that just failed its" \
+        "self-check" >&2
+      log_run_core "toolchain-selfcheck: could not remove ${IMAGE}: ${image_remove_detail} - the next launch reuses the image that just failed (Issue #1956)"
+    fi
+    rm -f "${image_remove_err}"
+  fi
+elif ((status == 0)) && toolchain_rebuild_recorded; then
+  # This reference ran clean, so it got past the self-check and the rebuild
+  # worked: the record must not go on suppressing a removal for a later fault.
+  # Only a CLEAN run clears it - a crashed worker, a refused container start
+  # or a failed rebuild says nothing about the self-check, and clearing on
+  # those would hand the rebuild loop back the cycle this bound took from it.
+  rm -f "${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true
 fi
 
 # A launch that failed hands this capture over as its evidence, whatever the

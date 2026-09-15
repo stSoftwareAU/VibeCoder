@@ -692,6 +692,8 @@ Deno.test("run.sh - refuses to launch when another worker is already running on 
     assertEquals(typeof reading.availableBytes, "number");
     assertEquals(typeof reading.totalBytes, "number");
     assertEquals(typeof reading.measuredAt, "number");
+    // Issue #2080: a launch whose init did not report a refused trim says so.
+    assertEquals(reading.workVolumeTrimRefused, false);
     assert((reading.totalBytes as number) > 0, "a measured total");
     assert(
       Math.abs((reading.measuredAt as number) - Date.now() / 1000) < 300,
@@ -1822,6 +1824,13 @@ Deno.test("run.sh - a refused trim below the claiming floor recreates the volume
     // The worker still launched: a host that cannot claim must still run and
     // report (Issue #477). Only the hard floor stops a launch.
     assert(await recorded(harness, "run"), "the worker must still start");
+
+    // Issue #2080: the reading handed to that worker says the trim was
+    // refused, so its disk-low pass leaves the guest alone.
+    const reading = JSON.parse(
+      await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
+    ) as Record<string, unknown>;
+    assertEquals(reading.workVolumeTrimRefused, true);
   } finally {
     await harness.cleanup();
   }
@@ -1881,6 +1890,96 @@ Deno.test("run.sh - a recreate that did not clear the floor is not retried on th
       await runCoreLog(harness),
       "recreating again would destroy the clones",
     );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a recreate that would clear the floor is not held back by the interval (Issue #2077)", async () => {
+  // GRQ-23: recreated eleven hours earlier, 45 GB re-ratcheted with 1.2 GB
+  // live, 14 GB free against a 46 GB floor — and told to wait out the
+  // remaining thirteen hours claiming nothing. Here: 32 MB below a 15 GB
+  // floor, a recreate one minute ago, and a work volume holding 64 MB — so
+  // the recreate demonstrably lifts the host above the floor and must run.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+    // 15 GB floor, 32 MB below it, on a 460 GB disk (percent floor off).
+    STUB_DF_AVAIL_KB: String(15 * 1024 * 1024 - 32 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    // The fixture is megabytes, not the gigabytes the real guard asks for.
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+  });
+  try {
+    await Deno.mkdir(`${harness.tmpDir}/home/.vibe-coder`, { recursive: true });
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/home/.vibe-coder/work-volume-heal`,
+      `${Math.floor(Date.now() / 1000) - 60}\n`,
+    );
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    const log = await runCoreLog(harness);
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    assertEquals(await initCount(harness), 2);
+    assertStringIncludes(log, "enough to lift");
+    assertStringIncludes(log, `recreating ${WORK_VOLUME_NAME}`);
+    assertEquals(
+      log.includes("recreating again would destroy the clones"),
+      false,
+      log,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a recreate that cannot clear the floor still waits out the interval (Issue #2077)", async () => {
+  // The same host with only 8 MB in the work volume: 32 MB short, 8 MB held,
+  // still below the floor — so the clones stay and the launch escalates.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+    // 15 GB floor, 32 MB below it, on a 460 GB disk (percent floor off).
+    STUB_DF_AVAIL_KB: String(15 * 1024 * 1024 - 32 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+  });
+  try {
+    await Deno.mkdir(`${harness.tmpDir}/home/.vibe-coder`, { recursive: true });
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/home/.vibe-coder/work-volume-heal`,
+      `${Math.floor(Date.now() / 1000) - 60}\n`,
+    );
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(8 * 1024 * 1024),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    const log = await runCoreLog(harness);
+    assertEquals(await removedVolumes(harness), []);
+    assertStringIncludes(log, "not enough to clear it");
+    assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
   } finally {
     await harness.cleanup();
   }

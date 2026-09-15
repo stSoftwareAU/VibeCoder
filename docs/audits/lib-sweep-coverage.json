@@ -1519,6 +1519,42 @@
       ]
     },
     {
+      "issue": 1965,
+      "chunk": "top-up-1965",
+      "title": "top-up: the milestone sync's gate repair",
+      "ledger": "docs/audits/security-sweep-1965-milestone-gate-repair.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_gate_repair.ts (#1965)",
+      "status": "swept",
+      "sweptAt": "aa6e138edd260da47c854a0815799f4b14136628",
+      "paths": [
+        "worker/deno/lib/milestone_gate_repair.ts"
+      ]
+    },
+    {
+      "issue": 1956,
+      "chunk": "top-up-1956",
+      "title": "top-up: the container toolchain self-check",
+      "ledger": "docs/audits/security-sweep-1956-toolchain-selfcheck.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: toolchain_selfcheck.ts (#1956)",
+      "status": "swept",
+      "sweptAt": "f21b89b153fe50e85827e8aa813084357df7137f",
+      "paths": [
+        "worker/deno/lib/toolchain_selfcheck.ts"
+      ]
+    },
+    {
+      "issue": 2070,
+      "chunk": "top-up-2070",
+      "title": "top-up: the toolchain-selfcheck command",
+      "ledger": "docs/audits/security-sweep-2070-toolchain-selfcheck-command.md",
+      "definition": "modules added to worker/deno/commands/ after 12a-12af recorded their coverage: toolchain_selfcheck.ts (#2070)",
+      "status": "swept",
+      "sweptAt": "cdc3fa34a2f58fdbc44a5f53a5daf8ad8473feb5",
+      "paths": [
+        "worker/deno/commands/toolchain_selfcheck.ts"
+      ]
+    },
+    {
       "issue": 1923,
       "chunk": "top-up-1923",
       "title": "top-up: the provider billing classifier",

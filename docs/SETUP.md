@@ -149,6 +149,20 @@ background service is offered, where files land — is covered in
      scope or an organisation policy would (Issue #733). Any other failure
      names the repository and the HTTP status. Setup finishes either way; the
      branch is simply left unprotected.
+
+     It also **repairs a `milestone/**` ruleset that refuses branch creation**
+     (Issue #2067). GitHub evaluates `required_status_checks` against the
+     pushed commit, so a branch that does not exist yet has no check runs and
+     the push that would open it is declined — every run on that repository
+     then dies inside a minute in `setup` with "push declined due to
+     repository rule violations". Setup sets `do_not_enforce_on_create` on
+     that rule in place, preserving every other rule, condition and bypass
+     actor, and prints what it changed; the checks still gate every merge, and
+     the rule stays present so auto-merge can still be armed. Only a ruleset
+     whose ref patterns are *all* under `refs/heads/milestone/` is written —
+     one reaching wider (`~ALL`, the default branch) is reported for a human
+     instead. The worker cannot do this itself: a ruleset write needs `admin`
+     and the service account holds `write`.
    - `backfill-idle-task-labels` — adds the `idle-task` label to existing
      security-scan wrapper issues that lack it; already-labelled wrappers are
      not touched again.

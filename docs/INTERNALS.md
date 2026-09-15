@@ -3305,8 +3305,45 @@ have lost real coverage by side-taking, one of them silently).
 the merged tree must pass the repository's own Issue #974 type check — reused,
 fallback and all, rather than reimplemented — its `check:manifests` task and
 its unit suite, inside one 15-minute budget so a sync cannot block the event
-loop. A red tree is reset to the pre-merge commit and escalated with **both**
-halves: what the verification said and both sides prepared — what each side
+loop.
+
+**A red tree goes back to the agent rung before it goes to a human**
+(Issue #1965, [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)).
+A verification failure after a resolution is rarely a bad resolution: it is a
+*semantic* conflict git never reported, where the default branch changed an
+interface the milestone branch implements somewhere no hunk overlapped. On
+`GRQ-AutoTrader#292` git reported one conflicted paragraph of
+`docs/development.md`, and `cargo check` then failed in a test fake missing a
+trait method the default branch had added — four lines, and nothing a human
+needed to decide. So the gate runs *before* the push path, which resets a
+refused merge away, and a failure is offered back to the same agent on the same
+clone with the gate's failing command, its output tail and the merged-in
+commits' subjects, under the unchanged never-side-pick contract. The agent
+edits whatever the check names — often not a conflicted file at all — and
+whatever it stages *or* commits is folded into the merge commit, which then
+names the repaired files and the rung that repaired them.
+
+```mermaid
+flowchart TD
+    G["resolution gate"] -->|passed| P["push"]
+    G -->|failed| R{"repair round<br/>left, and budget<br/>for one?"}
+    R -->|"no"| E["escalate — both gate outputs,<br/>and why no repair ran"]
+    R -->|"yes"| A["agent rung<br/>(gate output + merged commits)"]
+    A --> F["fold into the merge commit"]
+    F --> G
+```
+
+The loop is bounded at **two** rounds a cycle: one is demonstrably not enough
+(`GRQ-AutoTrader#304` surfaced a second semantic conflict once the first was
+reconciled), and an unbounded loop would spend the cycle. It spends the
+cycle's *single* agent grant (Issue #1693) rather than a fresh one, so a repair
+the budget cannot cover is refused by name and the escalation says the repair
+was never attempted. A tree the gate still refuses after the repair escalates
+once, carrying **both** gate outputs — the first failure and the last — so a
+reader can tell a repair that helped nothing from one that made it worse.
+
+A tree the repair could not save is reset to the pre-merge commit and escalated
+with **both** halves: what the verification said and both sides prepared — what each side
 exports, what each side tests, and which cases exist on one side only, rather
 than the wall of `TS2304` that made #1542 nearly useless. This is the one
 escalation Issue #1778 kept: a gate refusal is not a conflict the budget can
@@ -3872,7 +3909,11 @@ cycle (Issue #2007).** A milestone ruleset that enforces `required_status_checks
 on branch *creation* refuses every push that would create the branch
 (`GH013`, the Issue #3912 failure), identically on every cycle until an admin
 sets `do_not_enforce_on_create` on that rule — the fleet account cannot write
-rulesets. The self-heal used to log the refusal and push again every cycle for
+rulesets. Setup now closes that gap from the other end (Issue #2067): the
+`milestone/**` ruleset it *creates* carries the flag, and the
+`branch-protection-sync` step repairs an existing milestone-scoped ruleset that
+lacks it, so the refusal clears on the next setup run rather than waiting for
+an admin to find it. The self-heal used to log the refusal and push again every cycle for
 days (116 times on one host) and file nothing. It now classifies the failure
 with `milestone_branch_rejection.ts`; a repository-level refusal is said once
 with the remedy, one deduplicated diagnostic is filed in the repository
@@ -4344,6 +4385,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |
 |                             | [milestone_conflict_git.ts](../worker/deno/lib/milestone_conflict_git.ts)                                         | Reads both sides out of the conflicted index, gathers the per-issue test evidence, union-merges a test file and stages what the triage decided                                        |
 |                             | [milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)                                   | Climbs the rungs the triage left: the dependency rules, then the resolution agent, naming the rung that settled each file                                        |
+|                             | [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)                                           | Offers a failed verification back to the agent rung — bounded repair rounds on the same clone, carrying the gate's output — before any human sees it (Issue #1965)                     |
 |                             | [milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)                                   | Verifies a resolution the worker made itself against the repo's own check, manifest check and unit suite before it can be pushed                                                      |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |

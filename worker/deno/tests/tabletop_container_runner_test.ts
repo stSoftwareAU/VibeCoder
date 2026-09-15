@@ -42,8 +42,9 @@ function plan(): ContainerLaunchPlan {
     buildArgs: ["build"],
     // No private extension: the tabletop runs the standard image (#980).
     extensionBuildArgs: [],
-    // The runtime's own removal verb rides in the plan (Issue #731).
+    // The runtime's own removal verbs ride in the plan (Issues #731, #1956).
     volumeRemoveArgs: ["volume", "rm"],
+    imageRemoveArgs: ["image", "rm"],
     // The claiming floor rides the plan too (Issue #732).
     claimFloorGb: 20,
     claimFloorPercent: 10,
