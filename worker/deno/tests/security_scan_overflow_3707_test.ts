@@ -48,6 +48,11 @@ Deno.test("SEC-7e148c3ba692 - drops the worker-only credentials and an extension
     EXTENSION_CI_URL: "https://ci.example.com",
     EXTENSION_CI_TOKEN: "11abcdef0123456789",
     GITHUB_APP_PRIVATE_KEY_PATH: "/keys/app.pem",
+    // A fixture value, not a real key — the denylist entry under test is the
+    // variable NAME, and the value only has to look credential-shaped enough
+    // to be worth stripping. nosemgrep keeps the SAST stage on the finding it
+    // is for, following `handle_no_changes_phase_test.ts`.
+    // nosemgrep: generic.secrets.security.detected-generic-api-key.detected-generic-api-key
     VIBE_IMGBB_API_KEY: "0123456789abcdef0123456789abcdef",
     PATH: "/usr/bin",
   });

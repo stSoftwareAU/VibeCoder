@@ -83,6 +83,16 @@ child that cannot authenticate at all is still a failure), each carrying this
 vendor's value, and the cross-vendor isolation assertion — safety invariant 4,
 "no provider sees another provider's credentials" — is untouched.
 
+`worker/deno/tests/security_scan_overflow_3707_test.ts::SEC-7e148c3ba692 -
+keeps the credentials the agent legitimately needs` handed
+`buildClaudeChildEnv` both Anthropic credentials at once and required both
+back, which the guard deliberately no longer does. The property under test —
+the allowlist keeps what the agent needs to authenticate rather than stripping
+everything secret-shaped — is unchanged, and is now asserted once per
+deployment shape (`- keeps the credentials an API-key deployment needs`,
+`- keeps the credentials a subscription deployment needs`) instead of on a
+host holding both.
+
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
@@ -167,6 +177,13 @@ vendor's value, and the cross-vendor isolation assertion — safety invariant 4,
   `worker/deno/tests/quorum_orchestrator_test.ts` — reviewer: unrequested —
   reason: forced by making `billing` a required descriptor field; without it
   `deno check` fails
+- **unrequested** — a `nosemgrep` annotation on a pre-existing fixture value in
+  `worker/deno/tests/security_scan_overflow_3707_test.ts` — reviewer:
+  unrequested — reason: semgrep scans the *changed* file set, so editing this
+  file for the guard surfaced a pre-existing `detected-generic-api-key`
+  finding on a fixture that was already there; the annotation follows the
+  established convention in `handle_no_changes_phase_test.ts` and is scoped to
+  that one rule on that one line
 
 ## Standards Review
 
@@ -264,6 +281,8 @@ Added:
 Modified:
 
 - `worker/deno/tests/multi_provider_credentials_test.ts` — documented
+  business-logic change, described under **Evidence** above.
+- `worker/deno/tests/security_scan_overflow_3707_test.ts` — documented
   business-logic change, described under **Evidence** above.
 - `worker/deno/tests/quorum_orchestrator_test.ts` — its fake descriptor gains
   the now-required `billing` field.
