@@ -9,6 +9,10 @@ name: Container Build
 # each SHA corresponds to is captured in a leading comment.
 
 on:
+  # Called by quality.yml, whose `gate` job is the one required check; the
+  # pull_request trigger below is kept until the ruleset requires `gate`
+  # alone, then removed so each PR runs this once.
+  workflow_call:
   pull_request:
     # Issue #3360 — milestone sub-issue PRs target a shared
     # `milestone/<name>` branch (Issue #1300); include it so the container
@@ -32,9 +36,9 @@ permissions:
 
 # Issue #2972: cancel superseded runs — only the latest commit's result
 # matters for a check.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No concurrency group here: as a called workflow this file inherits its
+# caller's `github.workflow`, so a group of its own would cancel its
+# siblings. quality.yml holds the one group.
 
 jobs:
   # Issue #4334: decide whether this change can affect the image at all.

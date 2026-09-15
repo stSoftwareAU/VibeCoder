@@ -181,6 +181,102 @@ jobs:
   );
 });
 
+const GATED_CALLER = `
+name: Quality
+on:
+  pull_request:
+    branches: [Develop, main, milestone/*]
+jobs:
+  validate-scripts:
+    uses: ./.github/workflows/validate-scripts.yml
+  lint:
+    uses: ./.github/workflows/lint.yml
+  gate:
+    needs: [validate-scripts, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps: []
+`;
+
+const CALLED_LINT = `
+name: Lint
+on:
+  workflow_call:
+jobs:
+  markdownlint:
+    runs-on: ubuntu-latest
+    steps: []
+`;
+
+Deno.test("pullRequestCheckContexts - a gate that needs every reusable call covers the called workflows' contexts", () => {
+  const derived = pullRequestCheckContexts(
+    [
+      workflow("quality.yml", GATED_CALLER),
+      workflow("validate-scripts.yml", SHARDED),
+      workflow("lint.yml", CALLED_LINT),
+    ],
+    "main",
+  );
+  const gate = derived.find((d) => d.context === "gate");
+  assert(gate, "the gate job is a context of its own");
+  assertEquals(gate.coveredBy, undefined);
+  const covered = derived.filter((d) => d.coveredBy === "gate").map((d) =>
+    d.context
+  );
+  assertEquals(covered.sort(), [
+    "markdownlint",
+    "validate",
+    "validate (container)",
+    "validate (no-runtime)",
+    "validate (tests 1/4)",
+    "validate (tests 2/4)",
+    "validate (tests 3/4)",
+    "validate (tests 4/4)",
+  ]);
+  // The calling jobs themselves report no context of their own.
+  assertEquals(
+    derived.filter((d) => d.workflow === ".github/workflows/quality.yml")
+      .map((d) => d.context),
+    ["gate"],
+  );
+});
+
+Deno.test("pullRequestCheckContexts - a called workflow keeping its own pull_request trigger is derived once, through the gate", () => {
+  const stillTriggered = CALLED_LINT.replace(
+    "on:\n  workflow_call:",
+    "on:\n  workflow_call:\n  pull_request:\n    branches: [main]",
+  );
+  const derived = pullRequestCheckContexts(
+    [
+      workflow("quality.yml", GATED_CALLER),
+      workflow("lint.yml", stillTriggered),
+      workflow("validate-scripts.yml", SHARDED),
+    ],
+    "main",
+  );
+  const lint = derived.filter((d) => d.context === "markdownlint");
+  assertEquals(lint.length, 1);
+  assertEquals(lint[0]!.coveredBy, "gate");
+});
+
+Deno.test("reconcileRequiredContexts - a covered context is neither missing nor phantom when its gate is required", () => {
+  const derived = pullRequestCheckContexts(
+    [
+      workflow("quality.yml", GATED_CALLER),
+      workflow("validate-scripts.yml", SHARDED),
+      workflow("lint.yml", CALLED_LINT),
+    ],
+    "main",
+  );
+  const withGate = reconcileRequiredContexts(["gate"], derived, []);
+  assertEquals(withGate.missing, []);
+  assertEquals(withGate.phantom, []);
+  // …and is missing again the moment the ruleset stops requiring the gate.
+  const withoutGate = reconcileRequiredContexts([], derived, []);
+  assert(withoutGate.missing.includes("gate"));
+  assert(withoutGate.missing.includes("validate (tests 1/4)"));
+});
+
 Deno.test("pullRequestCheckContexts - a reusable-workflow job fails loud", () => {
   const reusable = `
 name: Reusable

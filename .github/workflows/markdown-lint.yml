@@ -19,6 +19,10 @@ name: Markdown Lint
 # enforcement value (see docs/MERGE.md — "No post-merge re-run of required
 # checks"). Deploy/publish workflows are different and keep firing on push.
 on:
+  # Called by quality.yml, whose `gate` job is the one required check; the
+  # pull_request trigger below is kept until the ruleset requires `gate`
+  # alone, then removed so each PR runs this once.
+  workflow_call:
   pull_request:
     # Issue #3940 — this was `["*"]`, which reads as "every branch" but a
     # GitHub `*` never matches `/`, so the Markdown gate never ran on
@@ -33,9 +37,9 @@ permissions:
 # Issue #2972: cancel superseded PR runs. Only the latest commit's
 # result matters for a check, so a per-ref group with cancellation
 # stops rapid pushes spawning parallel, redundant runs.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No concurrency group here: as a called workflow this file inherits its
+# caller's `github.workflow`, so a group of its own would cancel its
+# siblings. quality.yml holds the one group.
 
 jobs:
   markdownlint:
