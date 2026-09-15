@@ -179,3 +179,8 @@ Deno.test("#771 - the note carries no host-local path and no session id", () => 
   assertEquals(note.toLowerCase().includes("session id"), false);
   assertEquals(note.includes("--resume"), false);
 });
+
+Deno.test("HANDOVER_FRAMING #2142 - reminds the resuming run of the closing deliverables", () => {
+  assertStringIncludes(HANDOVER_FRAMING, "docs/archive/pr-summaries/");
+  assertStringIncludes(HANDOVER_FRAMING, "## Acceptance Criteria");
+});
