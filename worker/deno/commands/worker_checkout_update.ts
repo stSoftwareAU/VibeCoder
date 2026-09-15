@@ -58,7 +58,6 @@
 
 import type { Command, CommandResult, Result, UpdateMode } from "../types.ts";
 import {
-  createDefaultCheckoutUpdateDeps,
   SKIP_CHECKOUT_UPDATE_ENV,
   updateCheckout,
 } from "../lib/checkout_update.ts";
@@ -251,9 +250,8 @@ export function resolveSelfHealEventsWorkDir(
   args: Record<string, unknown>,
   env: EnvLookup = processEnvLookup,
 ): string | undefined {
-  const resolved = optionalString(args["work-dir"]) ??
+  return optionalString(args["work-dir"]) ??
     optionalString(env("WORK_DIR")) ?? optionalString(env("HOME"));
-  return resolved;
 }
 
 export const workerCheckoutUpdateCommand: Command = {
@@ -343,7 +341,7 @@ export async function updateWorkerCheckout(
     defaultBranch: optionalString(args["default-branch"]),
     updateMode: settings.value.mode,
     pinnedRef: settings.value.ref,
-  }, createDefaultCheckoutUpdateDeps(hostFailureHook));
+  }, { hostFailureHook });
 
   const data: WorkerCheckoutUpdateResult = {
     repoDir,
