@@ -16,20 +16,14 @@ name: Gitleaks
 # published SHA-256 checksum so a tampered release cannot run in CI.
 
 on:
-  # Called by quality.yml, whose `gate` job is the one required check; the
-  # pull_request trigger below is kept until the ruleset requires `gate`
-  # alone, then removed so each PR runs this once.
+  # Called by quality.yml, whose `gate` job is the one required check: on a
+  # pull request this workflow runs once, through that call. The branch
+  # filter it used to carry (Develop, main, milestone/* — Issues #3360,
+  # #3940) is quality.yml's now.
   workflow_call:
     secrets:
       GITLEAKS_LICENSE:
         required: false
-  pull_request:
-    # Issue #3940 — this was `["*"]`, which reads as "every branch" but a
-    # GitHub `*` never matches `/`, so secret detection never ran on
-    # milestone sub-issue PRs. Those PRs target a shared `milestone/<name>`
-    # branch (Issue #1300) and are the dominant merge path, so the glob is
-    # listed explicitly (Issue #3360).
-    branches: [Develop, main, milestone/*]
   # Issue #4190 — the PR job above only ever sees a commit range, so a
   # credential that leaked into an old commit on a dead branch (or into a
   # tag) is never re-examined. The weekly full-history sweep below scans

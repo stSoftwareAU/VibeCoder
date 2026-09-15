@@ -420,7 +420,7 @@ Deno.test("HostDiskMonitor - growth after an adopted reading still lowers the es
   assertEquals(grown.availableBytes, 46 * GIB, "66 GB less 20 GB of growth");
 });
 
-Deno.test("HostDiskMonitor - a launcher reading older than the one held, or stale, or from before launch, is ignored (Issue #1550)", async () => {
+Deno.test("HostDiskMonitor - a launcher reading older than the one held, or stale, is ignored; one from launch time is adopted (Issues #1550, #2115)", async () => {
   let file: HostDiskRefresh | null = null;
   const { m, advance } = monitor({
     baseline: { avail: 39 * GIB, total: 460 * GIB },
@@ -430,14 +430,15 @@ Deno.test("HostDiskMonitor - a launcher reading older than the one held, or stal
     refresh: () => file,
     refreshMaxAgeMs: 15 * 60_000,
   });
-  // The monitor was constructed at t=0; the launcher's launch-time file
-  // (measured at or before that) is the same figure the env baseline holds.
+  // The monitor was constructed at t=0; the launcher's launch-time file was
+  // written after the volume heal the env baseline predates, so it is the
+  // truer figure and is adopted (Issue #2115).
   advance(60_000);
   file = { availableBytes: 66 * GIB, totalBytes: 460 * GIB, measuredAt: 0 };
   assertEquals(
     (await m.check()).availableBytes,
-    39 * GIB,
-    "not newer than launch",
+    66 * GIB,
+    "the launch-time file post-dates the plan's baseline",
   );
 
   // Adopt a fresh one.
@@ -455,6 +456,29 @@ Deno.test("HostDiskMonitor - a launcher reading older than the one held, or stal
   advance(30 * 60_000);
   file = { availableBytes: 10 * GIB, totalBytes: 460 * GIB, measuredAt: 400 };
   assertEquals((await m.check()).availableBytes, 66 * GIB, "stale is ignored");
+});
+
+Deno.test("HostDiskMonitor - the launcher's post-reset reading, written seconds before start, is adopted on the first check (Issue #2115)", async () => {
+  // GRQ-23, 13:32Z: the plan measured 29 GB, the launcher reset the volume
+  // and wrote 78 GB, and the worker started five seconds later still
+  // believing 29 — below the 46 GB floor — and claimed nothing until the
+  // next refresh. The file is the truth at start.
+  const file: HostDiskRefresh = {
+    availableBytes: 78 * GIB,
+    totalBytes: 460 * GIB,
+    measuredAt: -5,
+  };
+  const { m } = monitor({
+    baseline: { avail: 29 * GIB, total: 460 * GIB },
+    readings: [
+      { availableBytes: 0, usedBytes: 0, totalBytes: 504 * GIB },
+    ],
+    refresh: () => file,
+    refreshMaxAgeMs: 15 * 60_000,
+  });
+  const status = await m.check({ force: true });
+  assertEquals(status.availableBytes, 78 * GIB);
+  assertEquals(status.level, "ok");
 });
 
 Deno.test("HostDiskMonitor - native mode ignores the launcher file: df on the work dir is the truth (Issue #1550)", async () => {
