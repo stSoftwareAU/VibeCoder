@@ -79,7 +79,25 @@ export const BUILDER_STORAGE_SIGNATURES: readonly string[] = [
 ];
 
 /** What a failed build turned out to be. */
-export type BuildFailureClass = "builder-storage" | "other";
+/**
+ * `builder-storage`: the builder's own storage failed (the signatures above).
+ * `silent-step`: the failing step exited without printing a byte
+ * (Issue #2089). `other`: the build failed for its own reasons.
+ */
+export type BuildFailureClass = "builder-storage" | "silent-step" | "other";
+
+/**
+ * BuildKit's excerpt of a failed step: the ` > [stage] RUN …:` header, then
+ * the step's output, then a `------` rule. A header followed directly by the
+ * rule is a step that produced nothing at all — and every step this image
+ * builds prints on failure (`set -eu` shells, `deno`, `curl`, `apt`), so a
+ * mute exit is the builder failing to run or report the process, not the
+ * definition failing. GRQ-23 (Issue #2089): the deno-seed step exited 1 in
+ * the same second it started, three launches running, on a builder the
+ * store prune had recreated; the identical step passed inside that image,
+ * inside a fresh builder, and in CI. Deleting the builder fixed it.
+ */
+const SILENT_STEP_EXCERPT = /^ > (\[[^\]\n]*\][^\n]*)\r?\n-{3,}\s*$/m;
 
 /** The classifier's verdict on one failed build. */
 export interface BuildFailureClassification {
@@ -111,6 +129,14 @@ export function classifyBuildFailure(
     if (haystack.includes(signature)) {
       return { class: "builder-storage", signature };
     }
+  }
+  const silent = SILENT_STEP_EXCERPT.exec(text);
+  if (silent) {
+    const step = silent[1]!.replace(/\s+/g, " ").trim();
+    return {
+      class: "silent-step",
+      signature: `step exited without output: ${step.slice(0, 120)}`,
+    };
   }
   return { class: "other" };
 }
@@ -202,9 +228,9 @@ export async function healBuilderStorage(
   options: BuildHealOptions,
 ): Promise<BuildHealOutcome> {
   const classification = classifyBuildFailure(options.buildLog);
-  if (classification.class !== "builder-storage") {
-    const detail = "the build did not fail on builder storage — leaving it " +
-      "to fail as it always has";
+  if (classification.class === "other") {
+    const detail = "the build did not fail on builder storage, and its " +
+      "failing step reported itself — leaving it to fail as it always has";
     deps.log(`[container-build-heal] ${detail}`);
     return { healable: false, steps: [], ok: false, detail };
   }
@@ -230,8 +256,13 @@ export async function healBuilderStorage(
   }
 
   deps.log(
-    `[container-build-heal] the build failed on builder storage ` +
-      `(${classification.signature}) — performing a builder ${action}`,
+    classification.class === "builder-storage"
+      ? `[container-build-heal] the build failed on builder storage ` +
+        `(${classification.signature}) — performing a builder ${action}`
+      : `[container-build-heal] the build's failing step exited without a ` +
+        `word (${classification.signature}) — a builder that cannot run or ` +
+        `report a step is healed like one whose storage failed (Issue ` +
+        `#2089) — performing a builder ${action}`,
   );
 
   const steps: BuilderHealStep[] = [];

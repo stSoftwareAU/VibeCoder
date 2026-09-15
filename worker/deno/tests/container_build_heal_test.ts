@@ -31,6 +31,26 @@ Error: resourceExhausted: "failed to solve: failed to compute cache key: ` +
 const READ_ONLY_BUILDER = `[run.sh] building vibe-coder:1224218f38a0
 Error: unknown: "open /tmp/1326465203: read-only file system"`;
 
+/** GRQ-23, 2026-09-15 (Issue #2089): the step's excerpt is empty. */
+const SILENT_STEP =
+  `#27 [linux/arm64 stage-1 20/28] RUN set -eu; s=/opt/deno-seed-src; m="npm:@playwright/mcp@0.0.75";     grep -q ""$m"" $s/deno.json
+#27 ERROR: process "/bin/sh -c set -eu; s=/opt/deno-seed-src" did not complete successfully: exit code: 1
+------
+ > [linux/arm64 stage-1 20/28] RUN set -eu; s=/opt/deno-seed-src; m="npm:@playwright/mcp@0.0.75";     grep -q ""$m"" $s/deno.json:
+------
+Error: unknown: "failed to solve: process \"/bin/sh -c set -eu; s=/opt/deno-seed-src\" did not complete successfully: exit code: 1"
+[container-build-heal] the build did not fail on builder storage — leaving it to fail as it always has
+Error: failed to build vibe-coder:b73c88348446`;
+
+/** The same shape when the step DID say why — an ordinary failure. */
+const REPORTED_STEP =
+  `#6 ERROR: process "/bin/sh -c echo BOOM >&2; exit 1" did not complete successfully: exit code: 1
+------
+ > [linux/arm64 2/3] RUN echo BOOM >&2; exit 1:
+0.047 BOOM
+------
+Error: unknown: "failed to solve: process \"/bin/sh -c echo BOOM >&2; exit 1\" did not complete successfully: exit code: 1"`;
+
 /** A recording stand-in for the container runtime. */
 function stubDeps(
   responses: (args: readonly string[]) => RuntimeInvocation = () => ({
@@ -102,6 +122,50 @@ Deno.test("classifyBuildFailure - matches a signature wrapped across lines", () 
   // Runtime CLIs wrap long diagnostics; the signature must survive it.
   const wrapped = "write /var/lib/x/out.tar: no space left\n   on device";
   assertEquals(classifyBuildFailure(wrapped).class, "builder-storage");
+});
+
+Deno.test("classifyBuildFailure - a step that exited without a word is the builder's fault (Issue #2089)", () => {
+  const result = classifyBuildFailure(SILENT_STEP);
+  assertEquals(result.class, "silent-step");
+  assert(
+    result.signature?.includes("stage-1 20/28"),
+    `the signature must name the step: ${result.signature}`,
+  );
+});
+
+Deno.test("classifyBuildFailure - a step that reported its failure is an ordinary failure", () => {
+  assertEquals(classifyBuildFailure(REPORTED_STEP), { class: "other" });
+});
+
+Deno.test("classifyBuildFailure - a storage signature outranks a mute step", () => {
+  const result = classifyBuildFailure(
+    `${SILENT_STEP}\nno space left on device`,
+  );
+  assertEquals(result.class, "builder-storage");
+});
+
+Deno.test("healBuilderStorage - restarts, then recreates, the builder for a mute step (Issue #2089)", async () => {
+  const first = stubDeps();
+  const restart = await healBuilderStorage(
+    first.deps,
+    healOptions({ buildLog: SILENT_STEP }),
+  );
+  assertEquals(restart.healable, true);
+  assertEquals(restart.action, "restart");
+  assertEquals(restart.ok, true);
+  assertEquals(first.calls, [["builder", "stop"], ["builder", "start"]]);
+  assert(
+    first.logs.some((line) => line.includes("#2089")),
+    first.logs.join("\n"),
+  );
+
+  const second = stubDeps();
+  const recreate = await healBuilderStorage(
+    second.deps,
+    healOptions({ buildLog: SILENT_STEP, attempt: 2 }),
+  );
+  assertEquals(recreate.action, "recreate");
+  assertEquals(second.calls, [["builder", "delete"], ["builder", "start"]]);
 });
 
 Deno.test("classifyBuildFailure - leaves an ordinary build failure alone", () => {
