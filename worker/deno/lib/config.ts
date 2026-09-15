@@ -524,8 +524,15 @@ export async function loadConfig(
   // before the file's value: the health gate's fallback switch therefore
   // survives every in-process config reload, which would otherwise reset
   // the choice to the file's preferred id (Issue #2065).
+  // `env` goes through for the same reason it does below (Issue #2086): the
+  // `VIBE_AGENT_PROVIDER` fallback and the running image's installed-provider
+  // stamp decide this id, so a loader given an explicit lookup must not have
+  // them answered by the process environment instead — the seam #956 added
+  // stopped one call short here, exactly as it did at `resolveRunMode`
+  // (Issue #969).
   const agentProvider = resolveAgentProviderId({
     configured: file.agent_provider,
+    env,
   });
   setConfiguredAgentProviderId(agentProvider);
 
