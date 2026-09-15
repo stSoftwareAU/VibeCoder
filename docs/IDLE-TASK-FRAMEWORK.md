@@ -1058,7 +1058,9 @@ splits the inverted repos in two:
 
 ```mermaid
 flowchart TD
-    S["Inversion signal on repo"] --> B{"Did a slot on this host<br/>hold this repo?"}
+    S["Inversion signal on repo"] --> A{"Has this host backed<br/>this repo off?"}
+    A -- yes --> N["backedOffInversionRepos<br/>→ NOTE inversion_repo_backed_off"]
+    A -- no --> B{"Did a slot on this host<br/>hold this repo?"}
     B -- yes --> G["heldInversionRepos<br/>→ NOTE inversion_repo_held"]
     B -- no --> C{"Claim scan completed<br/>an eligibility pass?"}
     C -- no --> D["deferredInversionRepos<br/>→ NOTE inversion_not_escalated"]
@@ -1068,6 +1070,7 @@ flowchart TD
     E --> F["3 consecutive cycles → file an issue in VibeCoder"]
     D --> H["streak held: neither counted nor cleared"]
     G --> H
+    N --> H
     W --> H2["streak cleared: the repo was served"]
     S --> I["inversionDetected → idle-task filer suppressed<br/>(unchanged: the work is real either way)"]
 ```
@@ -1146,6 +1149,50 @@ from its `mis_classification` ALERT, for the same reason the claim gate silences
 it (Issue #479): the scan and the audit cannot disagree about a repository the
 scan was not allowed to see. Both readers keep the claimable counts, so the
 idle-task filer stays suppressed while the work waits (Issue #2813).
+
+#### A repo this host has backed off (Issue #2085)
+
+`excludeRepos` is not the only way a repository goes unscanned, and the other
+way never reached the census at all. `findNextIssue` unions
+`backedOffRepos()` — the durable fast-failure tracker's verdict (Issue #1950) —
+into `findOldestIssue`'s `excludeRepos`, so a repository whose runs keep dying
+at setup is skipped before any collector runs. That union is computed **inside**
+the scan, so unlike a maintenance-lane lease it was never part of
+`scanExcludedRepos`, and the census read the repository as scanned and refused.
+
+On 2026-09-15 `stSoftwareAU/GRQ-FX-validation` escalated on three consecutive
+cycles with eight claimable `low-priority` issues and **no** "what the claim
+scan did with them" section at all — not even an empty one, because the scan had
+recorded no reason for a single one of the eight:
+
+```text
+[idle-census] host=vibe-coder-76707:80 decision_point=filing
+repo=stSoftwareAU/GRQ-FX-validation monitored=true scanned=true
+skip_reason=scanned low_priority=8 run_local_hold=10 inversion_signal=true
+```
+
+Three of that repository's runs had died at setup inside a minute, so the
+tracker had backed it off until 2026-09-16T09:10:31Z and VibeCoder#2079 already
+named the fault on the same host. Both idle instruments now read the same
+durable sidecar the scan reads — a local file, no API call, exactly as they
+already do for the run-local holds. The census records such a repo as
+`scanned=false skip_reason=repo_backed_off` and reports it in its own bucket,
+kept apart from the hold's note because a lease clears itself in minutes while a
+back-off holds until its 24 h window lapses or its diagnostic issue is closed:
+
+```text
+[idle-census] … NOTE inversion_repo_backed_off repos=stSoftwareAU/GRQ-FX-validation
+— this host has backed these repositories off for fast failures (Issue #1950),
+so the claim scan skipped them before any eligibility check ran; the fix is the
+repository's own fast-failure diagnostic, not this backlog
+```
+
+The idle-detect audit unions the same set into its `heldRepos`, for the reason
+the lease already uses it: the scan and the audit cannot disagree about a
+repository the scan was not shown. The claimable counts are untouched on both
+sides, so the idle-task filer stays suppressed while the backlog waits
+(Issue #2813) — and the one issue that should be worked is the repository's
+fast-failure diagnostic, which the tracker has already filed.
 
 #### The escalation is filed in VibeCoder
 

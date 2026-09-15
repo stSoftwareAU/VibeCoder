@@ -4613,6 +4613,13 @@ export async function createProductionRunCoreDeps(
         // own `claimableTotal` suppressing the idle-task filer, for the life
         // of the process.
         const runLocalHold = await loadRunLocalHolds();
+        // Issue #2085: the repositories this host has backed off for fast
+        // failures (Issue #1950), which `findNextIssue` unions into the
+        // scan's `excludeRepos`. The scan was never shown them, so it cannot
+        // have disagreed with the audit about them — the same reasoning
+        // `heldRepos` already applies to a maintenance-lane lease. Read from
+        // the same durable sidecar the scan reads: a local file, no API call.
+        const scanBackedOff = await backedOffRepos(fastFailureOptions);
         const result = await auditClaimableState({
           repos,
           workerUser: githubUser,
@@ -4672,7 +4679,9 @@ export async function createProductionRunCoreDeps(
           // no longer in this set — the scan evaluated that repository and
           // refused only the held stream, so a disagreement about the rest of
           // it is real.
-          heldRepos: scanExcludedRepos,
+          heldRepos: scanBackedOff.size > 0
+            ? [...new Set([...scanExcludedRepos, ...scanBackedOff])]
+            : scanExcludedRepos,
           log: (line: string) => logger.info(line),
         });
         // Return the claimable total so the run-core gate can skip
@@ -4714,6 +4723,16 @@ export async function createProductionRunCoreDeps(
         // Issue #655: the same holds the claim scan filtered its candidates
         // against, so the two instruments cannot disagree about them.
         const runLocalHold = await loadRunLocalHolds();
+        // Issue #2085: the repositories this host has backed off for fast
+        // failures (Issue #1950). `findNextIssue` unions them into
+        // `findOldestIssue`'s `excludeRepos`, which drops a repository before
+        // any collector runs — so it records no per-issue skip reason, and
+        // reading it as "scanned and refused" is what escalated
+        // stSoftwareAU/GRQ-FX-validation's eight-issue backlog on three
+        // consecutive cycles while VibeCoder#2079 already named the real
+        // fault. Read from the same durable sidecar the scan reads, exactly
+        // as the run-local holds above are.
+        const scanBackedOff = await backedOffRepos(fastFailureOptions);
         const perRepo = await Promise.all(
           repos.map(async (repo) => {
             const issues = await fetchAllIssues(repo, issueCache);
@@ -4764,10 +4783,16 @@ export async function createProductionRunCoreDeps(
               // Issue #898: and a repo a slot held is not covered by either
               // verdict — the scan skipped it before any eligibility check
               // ran, so it recorded no reason for a single one of its issues.
+              //
+              // Issue #2085: and a repo this host has backed off is not
+              // covered by any of them — the scan skipped the whole
+              // repository, for a cause that persists across cycles and
+              // already carries its own diagnostic issue.
               ...resolveRepoScanState({
                 repo,
                 claimScanCompleted,
                 scanExcludedRepos: heldRepos,
+                scanBackedOffRepos: scanBackedOff,
                 claimGateReason,
               }),
               nice: getRepoNice(config.repoConfig, repo),
