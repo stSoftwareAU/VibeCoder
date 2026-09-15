@@ -1565,6 +1565,18 @@
       "paths": [
         "worker/deno/lib/provider_billing.ts"
       ]
+    },
+    {
+      "issue": 2079,
+      "chunk": "top-up-2079",
+      "title": "top-up: the in-run milestone create-block repair",
+      "ledger": "docs/audits/security-sweep-2079-milestone-create-block.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_create_block_repair.ts (#2079)",
+      "status": "swept",
+      "sweptAt": "f0ede81ed152ca2337c75fe94aabf85b30d26f9e",
+      "paths": [
+        "worker/deno/lib/milestone_create_block_repair.ts"
+      ]
     }
   ],
   "roots": [
