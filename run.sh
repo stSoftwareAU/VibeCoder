@@ -1400,18 +1400,9 @@ heal_untrimmable_volumes() {
   fi
   log_run_core "host-disk: $((avail_kb / 1024)) MB free on ${disk_gate_path} is below the claiming ${floor_detail} (Issues #226, #732)"
 
-  local now last interval_hours
-  now="$(date +%s)"
-  interval_hours="${VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS:-24}"
-  [[ "${interval_hours}" =~ ^[0-9]+$ ]] || interval_hours=24
-  last="$(cat "${HEAL_STATE_FILE}" 2>/dev/null || echo 0)"
-  [[ "${last}" =~ ^[0-9]+$ ]] || last=0
-  if ((last > 0 && now - last < interval_hours * 3600)); then
-    report_unrecovered "the last recreate was $(((now - last) / 60)) minutes ago and ${disk_gate_path} still has $((avail_kb / 1024)) MB free, below the $((floor_kb / 1024)) MB claiming floor - recreating again would destroy the clones without clearing the floor"
-    return 0
-  fi
-
-  # Only a volume big enough to hold the missing space is worth destroying.
+  # Measure before deciding (Issue #2077): what the volumes hold on the host
+  # is the one fact that says whether a recreate can clear the floor. Only a
+  # volume big enough to hold the missing space is worth destroying.
   local kb held_kb=0 measured=0 min_gb="${VIBE_WORK_VOLUME_HEAL_MIN_GB:-1}"
   [[ "${min_gb}" =~ ^[0-9]+$ ]] || min_gb=1
   for volume in "${trim_refused_volumes[@]}"; do
@@ -1424,6 +1415,27 @@ heal_untrimmable_volumes() {
   if ((measured)) && ((held_kb < min_gb * 1024 * 1024)); then
     report_unrecovered "${trim_refused_volumes[*]} hold only $((held_kb / 1024)) MB in ${container_store} - the host's missing space is somewhere else, so recreating them would destroy the clones for nothing"
     return 0
+  fi
+
+  # The interval guards the host whose space went somewhere else: a recreate
+  # that did not clear the floor must not be repeated every launch, wiping the
+  # clones for nothing. It must not guard a recreate the measurement says WILL
+  # clear the floor. GRQ-23 (Issue #2077) re-ratcheted 45 GB in eleven hours
+  # with 1.2 GB live, sat at 3% free, and was told to wait out the remaining
+  # thirteen — claiming nothing, and heading for the disk-full crash of #226.
+  local now last interval_hours
+  now="$(date +%s)"
+  interval_hours="${VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS:-24}"
+  [[ "${interval_hours}" =~ ^[0-9]+$ ]] || interval_hours=24
+  last="$(cat "${HEAL_STATE_FILE}" 2>/dev/null || echo 0)"
+  [[ "${last}" =~ ^[0-9]+$ ]] || last=0
+  if ((last > 0 && now - last < interval_hours * 3600)); then
+    if ((measured)) && ((avail_kb + held_kb >= floor_kb)); then
+      log_run_core "work-volume: ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB, enough to lift ${disk_gate_path} from $((avail_kb / 1024)) MB free to above the $((floor_kb / 1024)) MB claiming floor - recreating although the last recreate was only $(((now - last) / 60)) minutes ago (Issue #2077)"
+    else
+      report_unrecovered "the last recreate was $(((now - last) / 60)) minutes ago and ${disk_gate_path} still has $((avail_kb / 1024)) MB free, below the $((floor_kb / 1024)) MB claiming floor; ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB, not enough to clear it - recreating again would destroy the clones without clearing the floor"
+      return 0
+    fi
   fi
 
   for volume in "${trim_refused_volumes[@]}"; do

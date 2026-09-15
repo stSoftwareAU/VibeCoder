@@ -1201,12 +1201,19 @@ takes it:
    leaves the volume in place is reported in the runtime's own words rather
    than followed by a `volume create` that is certain to fail with
    "already exists" (Issue #731).
-3. **The attempt is bounded and never silent.** At most one recreate per
-   `VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS` (24), recorded in
-   `~/.vibe-coder/work-volume-heal`; volumes holding less than
-   `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) in the store are never destroyed,
-   because the host's missing space is elsewhere. Free space is **re-measured**
-   after the recreate: a heal that did not clear the floor is reported as
+3. **The attempt is measured, bounded and never silent.** What the volumes
+   hold in the store is measured first: volumes holding less than
+   `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) are never destroyed, because the
+   host's missing space is elsewhere. A recreate is then repeated inside
+   `VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS` (24, recorded in
+   `~/.vibe-coder/work-volume-heal`) only when free space plus what the
+   volumes hold reaches the floor — that is, when the measurement says the
+   recreate will clear it. The interval guards the host whose space went
+   elsewhere from wiping its clones every launch; it does not hold back a
+   recreate that will work (Issue #2077: GRQ-23 re-ratcheted 45 GB in eleven
+   hours with 1.2 GB live, sat at 3% free, and was told to wait out the
+   remaining thirteen claiming nothing). Free space is **re-measured** after
+   the recreate: a heal that did not clear the floor is reported as
    `[WORK_VOLUME_UNRECOVERED]` on stderr and in `run_core.log`, never as a fix.
 4. **The launch still proceeds.** Only the hard floor refuses a launch — a
    host that cannot claim must still run and report, or it vanishes from the
@@ -1218,8 +1225,10 @@ flowchart TD
     I -->|"FITRIM refused"| R["VOLUME_TRIM_REFUSED &lt;target&gt;<br/>on stdout"]
     R --> G{"host below the<br/>claiming floor?"}
     G -->|"no"| N["recorded in run_core.log;<br/>nothing destroyed"]
-    G -->|"yes"| B{"recreated within<br/>24 h, or volume &lt; 1 GB?"}
-    B -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]"]
+    G -->|"yes"| S{"volumes hold<br/>&lt; 1 GB?"}
+    S -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]"]
+    S -->|"no"| B{"recreated within 24 h<br/>AND free + held &lt; floor?"}
+    B -->|"yes"| E
     B -->|"no"| D["delete + create volume,<br/>re-run the init"]
     D --> M{"floor cleared?<br/>(re-measured)"}
     M -->|"yes"| H["host recovered<br/>without an operator"]
