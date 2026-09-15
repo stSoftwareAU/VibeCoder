@@ -25,10 +25,12 @@ import {
   AGENT_PROVIDER_ENV,
   setConfiguredAgentProviderId,
 } from "./agent_provider.ts";
-import { resolveAgentStateDir } from "./agent_state_dir.ts";
 import { subscriptionStatusFromClaudeBudget } from "./claude_pool_budget.ts";
 import { probeClaudeTokenBudget } from "./claude_token_budget.ts";
-import { resolveCodexAuthMode } from "./codex_auth_mode.ts";
+import {
+  resolveCodexAuthMode,
+  resolveCodexHome as codexHome,
+} from "./codex_auth_mode.ts";
 import { CodexBudgetAdapter } from "./codex_budget.ts";
 import { subscriptionStatusFromCodexSnapshot } from "./codex_quota.ts";
 import type { EnvLookup } from "./env_lookup.ts";
@@ -250,13 +252,6 @@ async function claudeStatus(
     "unknown",
     "subscription-credential-missing",
   );
-}
-
-function codexHome(workDir: string, env: EnvLookup): string {
-  const explicit = env("CODEX_HOME")?.trim();
-  if (explicit) return explicit;
-  const root = resolveAgentStateDir(workDir);
-  return root ? `${root}/codex` : "";
 }
 
 async function codexStatus(

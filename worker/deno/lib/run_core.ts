@@ -22,6 +22,10 @@ import {
   type AgentProviderSelector,
   setConfiguredAgentProviderId,
 } from "./agent_provider.ts";
+import {
+  classifyProviderBilling,
+  type ProviderBillingEvidence,
+} from "./provider_billing.ts";
 import type { CooldownFailureKind } from "./cooldown_state.ts";
 import {
   advanceLaneRotation,
@@ -478,6 +482,15 @@ export interface RunCoreDeps {
    * `{ adapted: false }`) → the fallback-provider and skip paths stand.
    */
   tryModelAdaptation?: () => Promise<{ adapted: boolean; detail?: string }>;
+  /**
+   * How a candidate fallback provider is billed (Issue #1923).
+   *
+   * The health-gate fallback is a provider switch no human authorises at the
+   * time it happens, so it must never be silent about moving work off a
+   * fixed-price subscription and onto per-token billing. Absent → the shared
+   * descriptor-driven classifier, reading credential presence only.
+   */
+  classifyProviderBilling?: (providerId: string) => ProviderBillingEvidence;
   checkGhAuth: () => Promise<Result<{ valid: boolean }>>;
   /**
    * Fable-availability probe (Issue #3230, parent #3217).
@@ -5478,9 +5491,29 @@ export async function runCoreLoop(
               await deps.sleep(config.sleepInterval * 1000);
               continue;
             }
+            // (Issue #1923) Name the billing mode before the switch. The
+            // subscription-only policy governs `agent_provider_mode: "auto"`;
+            // this list is an explicit operator opt-in and is honoured as
+            // written — but an unattended move onto per-token billing must be
+            // loud, not indistinguishable from a move onto another
+            // fixed-price subscription.
+            const billing = (deps.classifyProviderBilling ??
+              ((id: string) =>
+                classifyProviderBilling(id, {
+                  workDir: config.workDir ?? "",
+                })))(fallbackId);
+            if (billing.billingMode !== "fixed-subscription") {
+              deps.logError(
+                `[provider-fallback] ${fallbackId} billing=` +
+                  `${billing.billingMode} (${billing.reason}) — this ` +
+                  `configured alternative is not a fixed-price subscription, ` +
+                  `so work switched to it is billed per token (Issue #1923)`,
+              );
+            }
             deps.log(
               `[provider-fallback] ${fallbackId} is healthy — switching ` +
-                `active provider for this run (Issue #2055)`,
+                `active provider for this run (billing=` +
+                `${billing.billingMode}, Issue #2055)`,
             );
             setConfiguredAgentProviderId(fallbackId);
             // (Issue #2062) The switch must reach child processes too:

@@ -24,7 +24,8 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { CODEX_API_KEY_ENV_VARS } from "./codex_auth.ts";
+import { resolveAgentStateDir } from "./agent_state_dir.ts";
+import { CODEX_API_KEY_ENV_VARS, CODEX_HOME_ENV_VAR } from "./codex_auth.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** How Codex is authenticated, as far as the budget question is concerned. */
@@ -151,4 +152,28 @@ export function resolveCodexAuthMode(
       ? `auth_mode "${declared}" carries no subscription-window meaning`
       : "auth.json names neither tokens nor an API key",
   };
+}
+
+/**
+ * Where this host keeps Codex's persistent login state (Issue #1923).
+ *
+ * `CODEX_HOME` wins when the operator set one. Otherwise the login lives on
+ * the durable agent-state volume beside the work directory, which is what
+ * lets a ChatGPT subscription survive the roughly hourly container refresh.
+ *
+ * Stated here — beside the auth-mode question it answers — so the routing
+ * paths that need it do not each re-derive the path.
+ *
+ * @param workDir - The worker's work directory.
+ * @param env - Environment lookup (defaults to the process environment).
+ * @returns The Codex home, or `""` when no directory can be named.
+ */
+export function resolveCodexHome(
+  workDir: string,
+  env: EnvLookup = processEnvLookup,
+): string {
+  const explicit = env(CODEX_HOME_ENV_VAR)?.trim();
+  if (explicit) return explicit;
+  const root = resolveAgentStateDir(workDir);
+  return root ? `${root}/codex` : "";
 }
