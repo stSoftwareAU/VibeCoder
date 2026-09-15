@@ -148,11 +148,17 @@ export interface IssueRunCallbackContext {
  */
 export interface CallbackRunOutcome {
   kind: RunOutcome["kind"];
-  /** {@link FailureCategory} when `kind` is `no_pr`. */
+  /**
+   * {@link FailureCategory} when `kind` is `no_pr`, or when a `pr` run was
+   * failed by a later step (Issue #2044).
+   */
   category?: FailureCategory;
   /** Phase that terminated the run. */
   phase?: string;
-  /** Classifier slug when one was computed for a no-PR run. */
+  /**
+   * Classifier slug, when one was computed — for a no-PR run, or for a PR a
+   * later step then blocked (Issue #2044).
+   */
   failureClass?: string;
   /** PR number when a PR exists, including a later-step failure. */
   prNumber?: number;

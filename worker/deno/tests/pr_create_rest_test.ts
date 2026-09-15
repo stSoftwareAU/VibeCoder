@@ -161,6 +161,49 @@ Deno.test("createPullRequestViaRest - recovers the existing PR on a 422 already-
   assertEquals(result.value, "https://github.com/acme/widgets/pull/11");
 });
 
+Deno.test("createPullRequestViaRest - recovers the existing PR on a bare 'Validation Failed (HTTP 422)' (Issue #2125)", async () => {
+  // What `gh api` really prints for a duplicate: the status and top-level
+  // message, never the detail naming the existing PR. VibeCoder#2107 had
+  // its PR open for 33 s before completion reported "PR creation failed".
+  const rec = recorder((args) => {
+    if (args.includes("POST")) {
+      throw new Error(
+        "gh command failed (exit 1): gh: Validation Failed (HTTP 422)",
+      );
+    }
+    return "https://github.com/acme/widgets/pull/2124";
+  });
+  const result = await createPullRequestViaRest({
+    repo: "acme/widgets",
+    title: "T",
+    body: "B",
+    head: "issue-2107-fix",
+    base: "milestone/2088",
+  }, { ghCommandFn: rec.fn });
+  assert(result.ok, `expected recovery, got: ${!result.ok && result.error}`);
+  assertEquals(result.value, "https://github.com/acme/widgets/pull/2124");
+});
+
+Deno.test("createPullRequestViaRest - a 422 with no open PR behind it is still the original failure (Issue #2125)", async () => {
+  const rec = recorder((args) => {
+    if (args.includes("POST")) {
+      throw new Error(
+        "gh command failed (exit 1): gh: Validation Failed (HTTP 422)",
+      );
+    }
+    return "null";
+  });
+  const result = await createPullRequestViaRest({
+    repo: "acme/widgets",
+    title: "T",
+    body: "B",
+    head: "issue-1-nothing-open",
+    base: "main",
+  }, { ghCommandFn: rec.fn });
+  assert(!result.ok, "no open PR means the 422 was a real validation failure");
+  assertStringIncludes(result.error.message, "Validation Failed (HTTP 422)");
+});
+
 Deno.test("createPullRequestViaRest - surfaces the underlying error on failure", async () => {
   const rec = recorder(() => {
     throw new Error("HTTP 403: Resource not accessible by integration");

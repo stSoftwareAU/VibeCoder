@@ -75,30 +75,56 @@ Deno.test(
 );
 
 Deno.test(
-  "validate-scripts.yml still gates Develop, main and milestone/* PRs (Issue #3333)",
+  "validate-scripts.yml still gates Develop, main and milestone/* PRs, through the quality gate (Issue #3333)",
   async () => {
+    // The workflow no longer triggers on pull_request itself: quality.yml
+    // calls it, and quality.yml's `gate` is the one required check. The
+    // invariant moves with it — the caller carries the branch filter this
+    // workflow used to (Issue #3360), and this workflow must be callable.
     const files = await readWorkflowFiles(REPO_ROOT);
     const workflow = files.find((f) => f.path === WORKFLOW_PATH);
     assert(workflow, `expected to read ${WORKFLOW_PATH}`);
     assert(isRecord(workflow.parsed), `${WORKFLOW_PATH} must parse as a map`);
-
     const onBlock = workflow.parsed["on"] ?? workflow.parsed["true"];
     assert(isRecord(onBlock), `${WORKFLOW_PATH} must have an \`on:\` map`);
-
-    const pullRequest = onBlock["pull_request"];
     assert(
-      isRecord(pullRequest),
-      "dropping the push trigger must not drop the pull_request trigger",
+      "workflow_call" in onBlock,
+      `${WORKFLOW_PATH} must be callable by quality.yml`,
     );
+    assertEquals(
+      "pull_request" in onBlock,
+      false,
+      `${WORKFLOW_PATH} must not also run standalone on pull requests — ` +
+        "that is two runs per PR",
+    );
+
+    const caller = files.find((f) =>
+      f.path === ".github/workflows/quality.yml"
+    );
+    assert(caller, "expected to read quality.yml");
+    assert(isRecord(caller.parsed), "quality.yml must parse as a map");
+    const callerOn = caller.parsed["on"] ?? caller.parsed["true"];
+    assert(isRecord(callerOn), "quality.yml must have an `on:` map");
+    const pullRequest = callerOn["pull_request"];
+    assert(isRecord(pullRequest), "quality.yml must trigger on pull_request");
     const branches = pullRequest["branches"];
     assert(Array.isArray(branches), "pull_request must filter branches");
     for (const expected of ["Develop", "main", "milestone/*"]) {
       assertEquals(
         branches.includes(expected),
         true,
-        `pull_request.branches must keep \`${expected}\` (Issue #3360); ` +
-          `got: ${JSON.stringify(branches)}`,
+        `quality.yml pull_request.branches must keep \`${expected}\` ` +
+          `(Issue #3360); got: ${JSON.stringify(branches)}`,
       );
     }
+    const jobs = caller.parsed["jobs"];
+    assert(isRecord(jobs), "quality.yml must declare jobs");
+    assert(
+      Object.values(jobs).some((job) =>
+        isRecord(job) && typeof job["uses"] === "string" &&
+        job["uses"].endsWith(WORKFLOW_PATH)
+      ),
+      `quality.yml must call ${WORKFLOW_PATH}`,
+    );
   },
 );
