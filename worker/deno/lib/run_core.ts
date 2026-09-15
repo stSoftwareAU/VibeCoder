@@ -5507,11 +5507,19 @@ export async function runCoreLoop(
                 }));
             const billing = classify(fallbackId);
             if (billing.billingMode !== "fixed-subscription") {
+              // Say only what was proved. `metered` is per-token spend;
+              // `unknown` is a credential whose billing this worker could
+              // not establish — calling that "billed per token" would be the
+              // same over-claim the classifier refuses to make.
+              const consequence = billing.billingMode === "metered"
+                ? `so work switched to it is billed per token`
+                : `so what work switched to it costs cannot be established ` +
+                  `from here`;
               deps.logError(
                 `[provider-fallback] ${fallbackId} billing=` +
                   `${billing.billingMode} (${billing.reason}) — this ` +
-                  `configured alternative is not a fixed-price subscription, ` +
-                  `so work switched to it is billed per token (Issue #1923)`,
+                  `configured alternative is not a proved fixed-price ` +
+                  `subscription, ${consequence} (Issue #1923)`,
               );
             }
             deps.log(

@@ -10,7 +10,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   classifyProviderBilling,
   isFixedPriceSubscription,
@@ -141,9 +141,12 @@ Deno.test("classifyProviderBilling - a persisted ChatGPT login is a fixed-price 
   }
 });
 
-Deno.test("classifyProviderBilling - an API key beside a ChatGPT login still bills metered (Issue #1923)", async () => {
-  // The Codex CLI gives the environment key precedence, so the classifier
-  // must not report the subscription the run will not actually use.
+Deno.test("classifyProviderBilling - an explicit CODEX_HOME withholds the metered key, so the login is what bills (Issue #1923)", async () => {
+  // The classification must match the child environment the descriptor
+  // actually builds. `buildIsolatedCodexChildEnv` hands an explicit
+  // CODEX_HOME to the child and strips OPENAI_API_KEY / CODEX_API_KEY, so
+  // this run spends the ChatGPT subscription — reporting it as metered would
+  // raise a false billing alarm on every such fallback.
   const home = await Deno.makeTempDir({ prefix: "vibe-codex-home-" });
   try {
     await Deno.writeTextFile(
@@ -154,7 +157,72 @@ Deno.test("classifyProviderBilling - an API key beside a ChatGPT login still bil
       workDir: UNUSED_WORK_DIR,
       env: envOf({ CODEX_HOME: home, OPENAI_API_KEY: "sk-openai-metered" }),
     });
+    assertEquals(evidence.billingMode, "fixed-subscription");
+    assertEquals(evidence.reason, "codex-chatgpt-login");
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("classifyProviderBilling - without an explicit CODEX_HOME the environment key reaches the child and bills (Issue #1923)", async () => {
+  // The other half of the same rule: no explicit CODEX_HOME means the child
+  // keeps OPENAI_API_KEY, so a login sitting on the state volume is not what
+  // the run will spend and must not be reported as a subscription.
+  await withTempWorkDir(async (workDir) => {
+    const stateHome = `${workDir}-agent-state/codex`;
+    await Deno.mkdir(stateHome, { recursive: true });
+    try {
+      await Deno.writeTextFile(
+        `${stateHome}/auth.json`,
+        JSON.stringify({ auth_mode: "chatgpt", tokens: { id_token: "x" } }),
+      );
+      const evidence = classifyProviderBilling("codex", {
+        workDir,
+        env: envOf({ OPENAI_API_KEY: "sk-openai-metered" }),
+      });
+      assertEquals(evidence.billingMode, "metered");
+      assertEquals(evidence.reason, "OPENAI_API_KEY");
+    } finally {
+      await Deno.remove(`${workDir}-agent-state`, { recursive: true });
+    }
+  });
+});
+
+Deno.test("classifyProviderBilling - an unreadable Codex login is a named fault, not a silent 'never configured' (Issue #1923)", async () => {
+  // Fail loud: a corrupt auth.json must not reach an unattended operator as
+  // the same label a host that simply never logged in produces.
+  const home = await Deno.makeTempDir({ prefix: "vibe-codex-home-" });
+  try {
+    await Deno.writeTextFile(`${home}/auth.json`, "{ this is not json");
+    const evidence = classifyProviderBilling("codex", {
+      workDir: UNUSED_WORK_DIR,
+      env: envOf({ CODEX_HOME: home }),
+    });
+    assertEquals(evidence.billingMode, "unknown");
+    assertEquals(isFixedPriceSubscription(evidence), false);
+    assertStringIncludes(evidence.reason, "codex-auth-json-unreadable");
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("classifyProviderBilling - an unreadable login does not hide a metered key that will be spent (Issue #1923)", async () => {
+  // An `unknown` probe settles nothing, so the declared metered variables are
+  // still consulted. Short-circuiting on the fault would report `unknown` for
+  // a run that is about to spend a key.
+  //
+  // An explicit CODEX_HOME is what makes the probe ignore the environment and
+  // reach the read-error branch; the classifier then falls through to the
+  // declared metered variables on its own.
+  const home = await Deno.makeTempDir({ prefix: "vibe-codex-home-" });
+  try {
+    await Deno.writeTextFile(`${home}/auth.json`, "{ this is not json");
+    const evidence = classifyProviderBilling("codex", {
+      workDir: UNUSED_WORK_DIR,
+      env: envOf({ CODEX_HOME: home, CODEX_API_KEY: "sk-codex-metered" }),
+    });
     assertEquals(evidence.billingMode, "metered");
+    assertEquals(evidence.reason, "CODEX_API_KEY");
   } finally {
     await Deno.remove(home, { recursive: true });
   }

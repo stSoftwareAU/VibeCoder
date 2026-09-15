@@ -58,9 +58,11 @@ function firstPresent(
  *   1. A declared subscription variable with a non-blank value — the run
  *      holds a fixed-price subscription.
  *   2. The provider's own stored-state probe (Codex's persistent ChatGPT
- *      login), which may report either mode. It runs before the declared
- *      metered variables so a provider whose CLI gives an API key precedence
- *      can say so itself.
+ *      login), when it proves a mode. It runs before the declared metered
+ *      variables so a provider whose CLI gives an API key precedence can say
+ *      so itself. A probe that reports `unknown` looked and failed: it
+ *      settles nothing, so the metered variables are still consulted, but
+ *      its reason survives to name the fault.
  *   3. A declared metered variable with a non-blank value — per-token spend.
  *   4. Otherwise `unknown`. Unknown is **not** exhausted and **not**
  *      fixed-price; it simply proves nothing.
@@ -100,7 +102,7 @@ export function classifyProviderBilling(
     workDir: context.workDir,
     env,
   });
-  if (stored) {
+  if (stored && stored.mode !== "unknown") {
     return {
       provider,
       billingMode: stored.mode,
@@ -116,7 +118,10 @@ export function classifyProviderBilling(
   return {
     provider,
     billingMode: "unknown",
-    reason: "subscription-credential-missing",
+    // A probe that looked and failed says why. Reporting its fault as the
+    // same "never configured" silence as an untouched host is the silent
+    // failure this module exists to avoid.
+    reason: stored?.reason ?? "subscription-credential-missing",
   };
 }
 

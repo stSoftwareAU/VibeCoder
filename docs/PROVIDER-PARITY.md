@@ -90,8 +90,12 @@ Three rules follow, and they are separate:
    metered alternative such as DeepSeek. It is **outside** the subscription-only
    policy, which governs automatic routing. What it may not be is silent: the
    health gate classifies the alternative before switching and logs
-   `billing=<mode>` on the switch, plus a `logError` line naming the credential
-   variable when the alternative is not a fixed-price subscription. An operator
+   `billing=<mode>` on the switch, plus a `logError` line carrying the
+   evidence — the credential variable for a `metered` alternative, or the
+   state label (`subscription-credential-missing`,
+   `codex-auth-json-unreadable (…)`) for an `unknown` one, which the line
+   reports as billing that cannot be established rather than as per-token
+   spend. An operator
    who wants the never-metered guarantee end to end leaves
    `agent_provider_fallback` empty (the default) and uses
    `agent_provider_mode: "auto"`, which defers rather than switching to metered.

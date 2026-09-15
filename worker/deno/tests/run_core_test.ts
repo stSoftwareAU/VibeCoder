@@ -677,6 +677,53 @@ Deno.test("run_core - switching to a metered fallback says so loudly (Issue #192
   assertStringIncludes(warning, "DEEPSEEK_API_KEY");
 });
 
+Deno.test("run_core - an unknown billing mode is not reported as per-token spend (Issue #1923)", async () => {
+  // Safety invariant 3: unknown is not metered. The warning must still fire —
+  // an unproved alternative is not a proved subscription — but it may not
+  // assert per-token spend the classifier deliberately refused to prove.
+  const errors: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) =>
+      Promise.resolve(
+        provider === undefined
+          ? { ok: true, value: { healthy: false, exitCode: 3 } }
+          : { ok: true, value: { healthy: true } },
+      ),
+    classifyProviderBilling: (providerId: string): ProviderBillingEvidence => ({
+      provider: providerId,
+      billingMode: "unknown",
+      reason: "codex-auth-json-unreadable (auth.json is not valid JSON)",
+    }),
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["codex"];
+
+  await runCoreLoop(config, deps);
+
+  const warning = errors.find((e) => e.includes("billing=unknown"));
+  assert(
+    warning,
+    `expected an unknown-billing warning, got: ${errors.join(" | ")}`,
+  );
+  assertStringIncludes(warning, "codex-auth-json-unreadable");
+  assertStringIncludes(warning, "cannot be established");
+  assertEquals(warning.includes("billed per token"), false);
+});
+
 Deno.test("run_core - switching to a fixed-price subscription raises no billing warning (Issue #1923)", async () => {
   const errors: string[] = [];
   const logs: string[] = [];

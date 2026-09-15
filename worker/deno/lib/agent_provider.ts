@@ -82,6 +82,7 @@ import {
 import {
   CODEX_API_KEY_ENV_VARS,
   CODEX_CREDENTIAL_ENV_VARS,
+  CODEX_HOME_ENV_VAR,
   codexAuthActionableMessage,
   isCodexAuthError,
 } from "./codex_auth.ts";
@@ -235,7 +236,14 @@ export interface AgentProviderBillingContext {
 
 /** A billing mode a provider proved, and the log-safe label that proves it. */
 export interface AgentProviderBillingProof {
-  readonly mode: "fixed-subscription" | "metered";
+  /**
+   * `unknown` is how a probe reports that it **looked and failed** — a
+   * corrupt `auth.json`, not an absent one. It carries a reason so the fault
+   * reaches the operator instead of being flattened into the same silence as
+   * a host that simply never logged in, and it does not settle the question:
+   * the classifier still consults the declared metered variables after it.
+   */
+  readonly mode: "fixed-subscription" | "metered" | "unknown";
   /** A variable NAME or a state label. Never a credential value. */
   readonly reason: string;
 }
@@ -695,7 +703,18 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     resolveStoredBilling(context) {
       const home = resolveCodexHome(context.workDir, context.env);
       if (!home) return undefined;
-      const { mode, source } = resolveCodexAuthMode(home, context.env);
+      // Classify the way `buildChildEnv` above actually builds the child, or
+      // the two drift apart and the run is told the wrong billing mode.
+      // `buildIsolatedCodexChildEnv` honours an **explicit** CODEX_HOME: it
+      // hands that directory to the child and withholds OPENAI_API_KEY /
+      // CODEX_API_KEY, so a persisted ChatGPT login is what the run spends
+      // even when a metered key sits in the worker's own environment —
+      // asking `resolveCodexAuthMode` with no environment is what says so.
+      // Without an explicit CODEX_HOME those keys do reach the child, so
+      // there the environment keeps its precedence.
+      const explicitHome = (context.env(CODEX_HOME_ENV_VAR) ?? "").trim();
+      const modeEnv: EnvLookup = explicitHome ? () => undefined : context.env;
+      const { mode, source, detail } = resolveCodexAuthMode(home, modeEnv);
       if (mode === "chatgpt") {
         return { mode: "fixed-subscription", reason: "codex-chatgpt-login" };
       }
@@ -712,6 +731,14 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
         return {
           mode: "metered",
           reason: variable ?? "codex-auth-json-api-key",
+        };
+      }
+      if (source === "read-error") {
+        // A login that cannot be read is a fault, not an absent login. Say
+        // which fault, so it is not reported as "never authenticated".
+        return {
+          mode: "unknown",
+          reason: `codex-auth-json-unreadable (${detail ?? "no detail"})`,
         };
       }
       return undefined;

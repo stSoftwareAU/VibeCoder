@@ -525,8 +525,25 @@ Deno.test("provider child environments carry only their own vendor's secret", ()
   for (const provider of ALL_PROVIDERS) {
     const childEnv = provider.buildChildEnv(parentEnv);
 
-    // Its own credential survives — the CLI cannot authenticate without it.
-    for (const name of provider.credentials.envVars) {
+    // Its own credentials survive — the CLI cannot authenticate without one.
+    //
+    // (Issue #1923) A provider may deliberately withhold one of its *own*
+    // declared credentials: the subscription-only billing policy means a run
+    // holding a fixed-price subscription credential passes that one alone and
+    // withholds the vendor's metered alternatives, so the CLI cannot quietly
+    // fall back to per-token spend when the subscription is spent. Claude
+    // does this with `CLAUDE_CODE_OAUTH_TOKEN` and Codex with `CODEX_HOME`.
+    // What must never happen is that *every* own credential is dropped,
+    // leaving a child that cannot authenticate at all — so the survivors are
+    // asserted to be non-empty, and each one to carry this vendor's value.
+    const survivors = provider.credentials.envVars.filter((name) =>
+      childEnv[name] !== undefined
+    );
+    assert(
+      survivors.length > 0,
+      `${provider.id} must keep at least one of its own credentials`,
+    );
+    for (const name of survivors) {
       assertEquals(
         childEnv[name],
         `secret-for-${provider.id}`,
