@@ -54,21 +54,29 @@ flowchart TD
 ## Reproduction
 
 - **symptom** — a launcher that failed before claiming work escalated by filing
-  or commenting on an issue in the worker's own origin repository, publishing a
-  host's outage to a public repository
-- **status** — `verified` — `recordContainerRestartOutcome - no hook configured
-  spawns nothing and records locally` stubs `Deno.Command` across a whole
-  streak; against the unfixed recorder the GitHub fallback path is reached via
-  `escalateHostFailure` and the acceptance grep for `fileOrCommentIssue` /
-  `resolveOriginRepo` / `escalateHostFailure` in the two files is non-empty.
-  Both are now clean, and the suite was observed passing after the change.
-- **regression test** — `worker/deno/tests/container_restart_backoff_test.ts::recordContainerRestartOutcome - no hook configured spawns nothing and records locally`
+  (or commenting on) an issue in the worker's own origin repository, publishing
+  a host's outage to a public repository
+- **status** — `partial` — reason: the symptom is a *design* property of the
+  unfixed recorder rather than a runtime fault, and the only command that goes
+  red against the old code is the issue's own acceptance grep
+  (`grep -n "fileOrCommentIssue\|resolveOriginRepo\|escalateHostFailure"` over
+  the two files — non-empty before, empty after). No test could be written that
+  failed against the old code without also reaching GitHub, which is exactly
+  what this change forbids. The replacement behaviour is covered by the tests
+  below, all observed passing after the change.
+- **regression test** — `worker/deno/tests/container_escalation_streak_test.ts::recordContainerRestartOutcome - no hook configured spawns nothing and records locally`
 
 ## Test Plan
 
 `worker/deno/tests/container_restart_backoff_test.ts` — the three Issue #556
-fallback tests are replaced (the behaviour they pinned is the behaviour this
-issue removes; documented here rather than silently dropped) by:
+fallback tests are **removed**: `a crossing with no in-flight issue reports to
+the worker's own repo`, `a fallback that cannot deliver is recorded as
+undelivered` and `the fallback stays inert without a checkout to file into` all
+pinned the GitHub fallback this issue deletes, so there is no longer any
+behaviour for them to assert. They are replaced, in
+`worker/deno/tests/container_escalation_streak_test.ts` — a unit suite, whereas
+`container_restart_backoff_test.ts` is in `INTEGRATION_TEST_FILES` and would
+have kept the new cases out of the merge gate — by:
 
 - `a delivered hook holds the crossing, hourly then daily cadence` — crossing,
   +3600 s, then 86400 s, with `delivery` `first/1`, `repeat/2`, `repeat/3` and
@@ -83,7 +91,12 @@ issue removes; documented here rather than silently dropped) by:
   `config_invalid` with the read's error, nothing spawned, backoff unchanged.
 - `the payload's log tail is redacted before it reaches the hook`.
 
-`worker/deno/tests/container_escalation_streak_test.ts` — the renamed
-`escalation_lost` action throughout, plus `the hook decides delivery while the
-crash channel is only recorded`: the crash channel delivers on every cycle while
-the hook refuses, and the escalation stays pending until the hook says `ok`.
+- `a hook seam that throws is recorded, never swallowed` — a seam that rejects
+  surfaces as `hook_spawn_failed: <message>`, queues a retry, and leaves the
+  backoff untouched.
+- `the hook decides delivery while the crash channel is only recorded` — the
+  crash channel delivers on every cycle while the hook refuses, and the
+  escalation stays pending until the hook says `ok`.
+
+The same file carries the `escalation_undeliverable` → `escalation_lost` rename
+throughout its existing assertions.

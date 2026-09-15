@@ -106,6 +106,16 @@ function stateDir(): string {
 }
 
 /**
+ * The one `.config.json` this host is configured by (Issue #750).
+ *
+ * Both reads below — `log_dir` and `callbacks.host_failure` — resolve it the
+ * same way, so the two halves of this command can never read different files.
+ */
+function hostConfigPath(): string {
+  return resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup });
+}
+
+/**
  * Log directory the run writes its quota-pause marker to (Issue #342).
  *
  * This command runs on the **host**, called by the supervisor between launcher
@@ -121,9 +131,7 @@ function logDir(): string {
     processEnvLookup,
     pathStyleFor(home),
     undefined,
-    readConfiguredLogDirSync(
-      resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup }),
-    ),
+    readConfiguredLogDirSync(hostConfigPath()),
   );
 }
 
@@ -198,9 +206,7 @@ export const containerRestartBackoffCommand: Command = {
     // missing key means no hook and is not a fault; a malformed `callbacks`
     // block is reported as `config_invalid` in the self-heal event rather
     // than silently answered as "nothing configured".
-    const hostFailureHook = await readHostFailureHook(
-      resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup }),
-    );
+    const hostFailureHook = await readHostFailureHook(hostConfigPath());
 
     // Issue #633: the alert named `unknown-host` and quoted no log, so it
     // carried nothing that was not already in the state file. Both were

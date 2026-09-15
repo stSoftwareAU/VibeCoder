@@ -27,6 +27,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildContainerEscalationParams,
+  computeBackoffSeconds,
+  CONTAINER_RESTART_DEFAULTS,
   type ContainerRestartConfig,
   type ContainerRestartDecision,
   ESCALATION_MAX_ATTEMPTS,
@@ -43,6 +45,7 @@ import type {
   CrashNotificationParams,
 } from "../lib/crash_notification.ts";
 import { summariseSelfHealEvents } from "../lib/self_heal_events.ts";
+import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import type { HostFailurePayload } from "../lib/host_failure_hook.ts";
 import type { CallbackInvocation } from "../lib/run_callbacks.ts";
 
@@ -734,6 +737,397 @@ Deno.test("recordContainerRestartOutcome - the hook decides delivery while the c
       escalated.every((e) => e.details?.crashChannel === "delivered"),
       "the crash channel's own result must still be recorded",
     );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+/** A temp work directory and crash config for the hook tests below. */
+async function setupHookHarness(): Promise<{
+  workDir: string;
+  crashConfig: CrashNotificationConfig;
+  cleanup: () => Promise<void>;
+}> {
+  const workDir = await Deno.makeTempDir({ prefix: "vibe_host_failure_hook_" });
+  return {
+    workDir,
+    crashConfig: {
+      workerName: "test-worker",
+      cooldownSeconds: 600,
+      logTailMaxBytes: 50000,
+      stateDir: `${workDir}/state`,
+    },
+    cleanup: async () => {
+      try {
+        await Deno.remove(workDir, { recursive: true });
+      } catch { /* best-effort */ }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The host's own escalation channel (Issue #2108). A launcher failure used to
+// file (or comment on) an issue in the worker's own repository when the crash
+// channel had nobody to tell (Issue #556) — a host's outage published to a
+// public repository. The channel is now the host's own
+// `callbacks.host_failure` hook, and a host with no hook records locally.
+// ---------------------------------------------------------------------------
+
+/** One recorded hook invocation from the injected seam. */
+interface RecordedHook {
+  payload: HostFailurePayload;
+  hook: { path: string; timeoutSeconds: number };
+}
+
+/** An injected hook seam that records every payload and answers `status`. */
+function recordingHook(
+  statuses: CallbackInvocation["status"][],
+): {
+  calls: RecordedHook[];
+  invoke: (
+    payload: HostFailurePayload,
+    hook: { path: string; timeoutSeconds: number },
+  ) => Promise<CallbackInvocation>;
+} {
+  const calls: RecordedHook[] = [];
+  const queue = [...statuses];
+  return {
+    calls,
+    invoke: (payload, hook) => {
+      calls.push({ payload, hook });
+      const status = queue.shift() ?? statuses[statuses.length - 1] ?? "ok";
+      return Promise.resolve({
+        event: "host_failure",
+        path: hook.path,
+        status,
+        exitCode: status === "ok" ? 0 : status === "timed_out" ? 124 : 1,
+        stdout: "",
+        stderr: "",
+        durationMs: 12,
+      } as CallbackInvocation);
+    },
+  };
+}
+
+const CONFIGURED_HOOK = {
+  kind: "hook" as const,
+  path: "/opt/vibe-hooks/host-failure.sh",
+  timeoutSeconds: 30,
+};
+
+Deno.test("recordContainerRestartOutcome - a delivered hook holds the crossing, hourly then daily cadence", async () => {
+  const harness = await setupHookHarness();
+  try {
+    let nowSeconds = 1_700_000_000;
+    const { calls, invoke } = recordingHook(["ok"]);
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => nowSeconds,
+      hostId: "GRQ-23",
+      hostFailureHook: CONFIGURED_HOOK,
+      invokeHook: invoke,
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    const crossing = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+
+    // The hook's `ok` is what says somebody was told — the crash channel here
+    // has no issue in flight and no webhook, and no longer decides.
+    assertEquals(crossing.escalated, true);
+    assertEquals(crossing.escalationReason, null);
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]!.hook.path, CONFIGURED_HOOK.path);
+    assertEquals(calls[0]!.payload.condition, "launcher");
+    assertEquals(calls[0]!.payload.phase, "worker_run");
+    assertEquals(calls[0]!.payload.host, "GRQ-23");
+    assertEquals(calls[0]!.payload.consecutiveFailures, 3);
+    assertEquals(calls[0]!.payload.lastExitStatus, 17);
+    assertEquals(calls[0]!.payload.backoffSeconds, crossing.backoffSeconds);
+    assertEquals(calls[0]!.payload.attempt, 1);
+    assertEquals(calls[0]!.payload.delivery, { kind: "first", count: 1 });
+    // The streak start is the ISO spelling of the recorder's Unix seconds.
+    assertEquals(
+      calls[0]!.payload.streakStartedAt,
+      new Date(nowSeconds * 1000).toISOString(),
+    );
+
+    // The very next failure is the same incident and fires nothing.
+    nowSeconds += 60;
+    const suppressed = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+    assertEquals(suppressed.escalationReason, "suppressed_same_streak");
+    assertEquals(calls.length, 1);
+
+    // An hour on, the streak is repeated rather than re-reported.
+    nowSeconds += 3600;
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    assertEquals(calls.length, 2);
+    assertEquals(calls[1]!.payload.delivery, { kind: "repeat", count: 2 });
+
+    // And from there, daily: an hour later is too soon.
+    nowSeconds += 3600;
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    assertEquals(calls.length, 2);
+    nowSeconds += 86400;
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    assertEquals(calls.length, 3);
+    assertEquals(calls[2]!.payload.delivery, { kind: "repeat", count: 3 });
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - a hook that fails is retried to the cap, then recorded lost", async () => {
+  const harness = await setupHookHarness();
+  try {
+    let nowSeconds = 1_700_000_000;
+    const { calls, invoke } = recordingHook([
+      "failed",
+      "timed_out",
+      "spawn_failed",
+      "failed",
+      "failed",
+    ]);
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => nowSeconds,
+      hostFailureHook: CONFIGURED_HOOK,
+      invokeHook: invoke,
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    const crossing = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+    assertEquals(crossing.escalated, false);
+    assertEquals(crossing.escalationReason, "hook_failed");
+    assertEquals(crossing.escalationPendingAttempts, 1);
+
+    // Retried on the next cycle rather than waiting an hour — a channel
+    // refusing us is not a reason to stop trying.
+    for (let i = 1; i < ESCALATION_MAX_ATTEMPTS; i++) {
+      nowSeconds += 60;
+      await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    }
+    assertEquals(calls.length, ESCALATION_MAX_ATTEMPTS);
+    // The attempt number rides the payload, so the hook can tell a retry from
+    // a fresh report.
+    assertEquals(calls[ESCALATION_MAX_ATTEMPTS - 1]!.payload.attempt, 5);
+
+    // Past the cap nothing more is spawned for this streak.
+    nowSeconds += 60;
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    assertEquals(calls.length, ESCALATION_MAX_ATTEMPTS);
+
+    const summary = await summariseSelfHealEvents({
+      workDir: harness.workDir,
+      recentLimit: 500,
+    });
+    const lost = summary.recent.filter((e) => e.action === "escalation_lost");
+    assertEquals(lost.length, 1);
+    assertEquals(lost[0]!.result, "failed");
+    const escalated = summary.recent.filter((e) => e.action === "escalated");
+    assertEquals(escalated.length, ESCALATION_MAX_ATTEMPTS);
+    // Each spawn outcome the contract defines queues a retry of its own.
+    const statuses = new Set(escalated.map((e) => e.details?.hookStatus));
+    for (const status of ["failed", "timed_out", "spawn_failed"]) {
+      assert(statuses.has(status), `${status} must queue a retry of its own`);
+    }
+    assert(escalated.every((e) => e.result === "skipped"));
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - no hook configured spawns nothing and records locally", async () => {
+  const harness = await setupHookHarness();
+  try {
+    // `hostFailureHook` defaults to `none`, so the spawn seam is the one
+    // thing that could reach a process — and it is never reached. Injected
+    // rather than stubbed over a global: nothing here mutates process state
+    // that the rest of the suite shares.
+    const { calls, invoke } = recordingHook(["ok"]);
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => 1_700_000_000,
+      invokeHook: invoke,
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    const crossing = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+    assertEquals(calls.length, 0);
+    assertEquals(crossing.escalated, false);
+    // The crash channel has nobody to tell, and with no hook there is
+    // nothing left to try — so it is terminal, not five retries per streak.
+    assertEquals(crossing.escalationReason, "no_channel");
+    assertEquals(crossing.escalationPendingAttempts, 0);
+
+    const summary = await summariseSelfHealEvents({
+      workDir: harness.workDir,
+      recentLimit: 500,
+    });
+    const escalated = summary.recent.filter((e) => e.action === "escalated");
+    assertEquals(escalated.length, 1);
+    assertEquals(escalated[0]!.details?.hookStatus, "no_hook_configured");
+    assertEquals(escalated[0]!.details?.crashChannel, "no_channel");
+    assertEquals(
+      summary.recent.filter((e) => e.action === "escalation_lost").length,
+      0,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - a malformed callbacks block is reported, and the backoff still stands", async () => {
+  const harness = await setupHookHarness();
+  try {
+    const { calls, invoke } = recordingHook(["ok"]);
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => 1_700_000_000,
+      hostFailureHook: {
+        kind: "invalid" as const,
+        error: "callbacks.host_failure must be a string",
+      },
+      invokeHook: invoke,
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    const crossing = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+
+    // Nothing is spawned against a configuration that could not be read ...
+    assertEquals(calls.length, 0);
+    // ... and the supervisor still gets its backoff: the escalation failing
+    // never changes what the host does next.
+    assertEquals(
+      crossing.backoffSeconds,
+      computeBackoffSeconds(3, {
+        ...CONTAINER_RESTART_DEFAULTS,
+        ...FAST_CONFIG,
+      }),
+    );
+
+    const summary = await summariseSelfHealEvents({
+      workDir: harness.workDir,
+      recentLimit: 500,
+    });
+    const escalated = summary.recent.filter((e) => e.action === "escalated");
+    assertEquals(escalated.length, 1);
+    assertEquals(escalated[0]!.details?.hookStatus, "config_invalid");
+    assertEquals(
+      escalated[0]!.details?.hookError,
+      "callbacks.host_failure must be a string",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - the payload's log tail is redacted before it reaches the hook", async () => {
+  const harness = await setupHookHarness();
+  try {
+    const { calls, invoke } = recordingHook(["ok"]);
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => 1_700_000_000,
+      hostFailureHook: CONFIGURED_HOOK,
+      invokeHook: invoke,
+      logTail: "worker start failed\nGITHUB_TOKEN=ghp_" + "A".repeat(36),
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+
+    assertEquals(calls.length, 1);
+    const tail = calls[0]!.payload.logTail ?? "";
+    assertStringIncludes(tail, "worker start failed");
+    assertStringIncludes(tail, REDACTION_PLACEHOLDER);
+    assert(
+      !tail.includes("ghp_"),
+      `the hook must never receive a credential: ${tail}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - a hook seam that throws is recorded, never swallowed", async () => {
+  const harness = await setupHookHarness();
+  try {
+    // `invokeHostFailureHook` never throws, so a throw is a seam misbehaving.
+    // It must surface as a delivery failure carrying the fault, not vanish.
+    const options = {
+      workDir: harness.workDir,
+      phaseMarker: "container_run",
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+      now: () => 1_700_000_000,
+      hostFailureHook: CONFIGURED_HOOK,
+      invokeHook: () => Promise.reject(new Error("hook seam exploded")),
+    };
+
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    await recordContainerRestartOutcome({ ...options, exitStatus: 17 });
+    const crossing = await recordContainerRestartOutcome({
+      ...options,
+      exitStatus: 17,
+    });
+
+    assertEquals(crossing.escalated, false);
+    assertStringIncludes(crossing.escalationReason ?? "", "hook_spawn_failed");
+    assertStringIncludes(crossing.escalationReason ?? "", "hook seam exploded");
+    assertEquals(crossing.escalationPendingAttempts, 1);
+    // The supervisor still gets its backoff: the escalation failing never
+    // changes what the host does next.
+    assertEquals(
+      crossing.backoffSeconds,
+      computeBackoffSeconds(3, {
+        ...CONTAINER_RESTART_DEFAULTS,
+        ...FAST_CONFIG,
+      }),
+    );
+
+    const summary = await summariseSelfHealEvents({
+      workDir: harness.workDir,
+      recentLimit: 500,
+    });
+    const escalated = summary.recent.filter((e) => e.action === "escalated");
+    assertEquals(escalated.length, 1);
+    assertEquals(escalated[0]!.details?.hookStatus, "spawn_failed");
+    assertStringIncludes(String(escalated[0]!.details?.reason), "exploded");
   } finally {
     await harness.cleanup();
   }
