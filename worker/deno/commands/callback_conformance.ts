@@ -29,10 +29,19 @@ import {
   runCallbackConformance,
 } from "../lib/callback_conformance.ts";
 import {
-  CALLBACK_EVENTS,
   type CallbacksConfig,
   parseCallbacksConfig,
 } from "../lib/run_callbacks_config.ts";
+
+/**
+ * The hooks this fixture can drive.
+ *
+ * Every container-side event. `callbacks.host_failure` is deliberately absent
+ * (Issue #2107): it is a **host** path invoked by the host launcher, and the
+ * fixture runs where the worker runs — inside the container — so it could
+ * only ever report a spawn failure for a path it cannot see.
+ */
+const CONFORMANCE_EVENTS = ["success", "failure", "always", "cycle"] as const;
 
 /**
  * Validate the arguments through the **production** `callbacks` parser.
@@ -46,7 +55,7 @@ function parseArguments(
   args: Record<string, unknown>,
 ): Result<CallbacksConfig, string> {
   const block: Record<string, unknown> = {};
-  for (const event of CALLBACK_EVENTS) {
+  for (const event of CONFORMANCE_EVENTS) {
     if (args[event] !== undefined) block[event] = args[event];
   }
   if (args["timeout-seconds"] !== undefined) {
@@ -85,7 +94,7 @@ export const callbackConformanceCommand: Command = {
     if (!parsed.ok) return { success: false, message: parsed.error };
 
     const hooks: ConformanceHooks = {};
-    for (const event of CALLBACK_EVENTS) {
+    for (const event of CONFORMANCE_EVENTS) {
       const path = parsed.value[event];
       if (path !== undefined) hooks[event] = path;
     }
