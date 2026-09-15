@@ -161,8 +161,12 @@ background service is offered, where files land — is covered in
      the rule stays present so auto-merge can still be armed. Only a ruleset
      whose ref patterns are *all* under `refs/heads/milestone/` is written —
      one reaching wider (`~ALL`, the default branch) is reported for a human
-     instead. The worker cannot do this itself: a ruleset write needs `admin`
-     and the service account holds `write`.
+     instead. Setup is not the only place this is repaired: the worker makes
+     the same repair in the run that meets the refusal (Issue #2079), because
+     a repository nobody re-runs setup against stays trapped — it clears the
+     block, retries the branch creation once, and when the write is refused
+     (a ruleset write needs `admin`; an account holding only `write` gets a
+     404) it hands the issue to a human with what it tried.
    - `backfill-idle-task-labels` — adds the `idle-task` label to existing
      security-scan wrapper issues that lack it; already-labelled wrappers are
      not touched again.

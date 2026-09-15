@@ -51,7 +51,7 @@ function optionalNumber(value: unknown): number | undefined {
 
 /** What the command reports back to the launcher. */
 export interface ContainerBuildHealResult {
-  /** True when the build output carried a builder-storage signature. */
+  /** True when the failure is the builder's — storage, or a mute step (#2089). */
   healable: boolean;
   /** The signature that matched, when one did. */
   signature?: string;

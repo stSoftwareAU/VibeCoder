@@ -725,13 +725,20 @@ ever; a human ran `container builder stop && container builder start` and the
 host came back at once.
 
 So a failed build is now classified from its own output, and only a
-builder-storage failure is healed:
+failure that is the **builder's** is healed: one carrying a builder-storage
+signature, or — Issue #2089 — one whose failing step exited **without
+printing a byte**. Every step this image builds says why it failed; on GRQ-23
+the deno-seed step exited 1 in the same second it started, three launches
+running, on a builder the store prune had recreated, while the identical step
+passed inside that image, inside a fresh builder, and in CI. The excerpt
+BuildKit prints (`> [stage] RUN …:` followed straight by `------`) is the
+signature, and deleting the builder was the fix.
 
 ```mermaid
 flowchart TD
     B["🐳 container build"] --> Q{"failed?"}
     Q -->|no| G["🚀 launch"]
-    Q -->|yes| C{"builder-storage<br/>signature?"}
+    Q -->|yes| C{"builder-storage signature,<br/>or a step that exited<br/>without a word?"}
     C -->|no| F["❌ fail, exactly as before"]
     C -->|yes| H["🔧 builder restart"]
     H --> R["🐳 retry the build — once"]

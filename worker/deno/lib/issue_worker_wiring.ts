@@ -27,6 +27,11 @@ import { safeGhCommand } from "./gh_wrapper.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { handleIssueFailure } from "./label_failure.ts";
 import { checkGhAuth } from "./gh_auth.ts";
+import {
+  type RepairMilestoneResult,
+  repairMilestoneRulesetCreateBlock,
+} from "./milestone_ruleset_check.ts";
+import { runGhOrThrow } from "./gh_spawn.ts";
 
 // Git operations
 import {
@@ -188,6 +193,15 @@ export interface GitHubDeps {
   ensureLabelExists: typeof ensureLabelExists;
   handleIssueFailure: typeof handleIssueFailure;
   checkGhAuth: typeof checkGhAuth;
+  /**
+   * Exempt a create-blocking `milestone/**` ruleset from branch creation
+   * (Issue #2079).
+   *
+   * A seam rather than a direct call: the setup phase reaches it only after
+   * a push the repository refused, and a test driving that path must not
+   * spawn `gh` at github.com.
+   */
+  repairMilestoneCreateBlock: (repo: string) => Promise<RepairMilestoneResult>;
 }
 
 /** Git operations — branching, push, conflict resolution, state recovery. */
@@ -503,6 +517,16 @@ export function createDefaultDeps(
       ensureLabelExists,
       handleIssueFailure,
       checkGhAuth,
+      // Issue #2079: the worker's own identity writes the ruleset. GitHub
+      // answers a write from a non-admin with 404, which
+      // `repairMilestoneRulesetCreateBlock` explains rather than swallows,
+      // so a repository the fleet cannot repair still reaches a human.
+      repairMilestoneCreateBlock: (repo: string) =>
+        repairMilestoneRulesetCreateBlock(
+          repo,
+          (args, stdin) =>
+            runGhOrThrow(args, stdin === undefined ? {} : { stdin }),
+        ),
     },
 
     git: {
@@ -789,6 +813,17 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
       Promise.resolve({
         ok: true,
         value: { valid: true, message: "Mock auth OK" },
+      })
+    ),
+    // Issue #2079: a mocked repository carries no create-blocking ruleset, so
+    // the default writes nothing. A test that wants the repair overrides it.
+    repairMilestoneCreateBlock: mockFn<
+      GitHubDeps["repairMilestoneCreateBlock"]
+    >(() =>
+      Promise.resolve({
+        ok: true,
+        repaired: false,
+        reason: "mock: no ruleset read",
       })
     ),
     ...overrides?.github,
