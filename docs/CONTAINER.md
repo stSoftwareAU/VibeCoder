@@ -1180,6 +1180,15 @@ snapshots re-baseline. A recreate that does not clear the floor is logged as
 [WORK_VOLUME_UNRECOVERED] (Issues #384, #478)
 ```
 
+Once the launcher has reported the trim refused (`workVolumeTrimRefused` in
+its `host-disk.json` reading), or the image is measurably ratcheted, the
+disk-low pass **does not delete inside the guest at all** (Issue #2080): on
+GRQ-23 it was deleting a 3.3 GB Rust `target/` every eight minutes that the
+next maintenance pass rebuilt into fresh image blocks — 45 GB of image for
+1.2 GB of live data in eleven hours. The log says `[HOST_DISK_LOW] guest
+reclaim skipped: …` and the host is left to the launcher's volume reset
+(Issue #2077).
+
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
 On the Apple `container` runtime the trim above has **never** worked. As

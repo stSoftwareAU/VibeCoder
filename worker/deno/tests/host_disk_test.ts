@@ -482,6 +482,24 @@ Deno.test("parseHostDiskRefresh - accepts the launcher's shape and nothing loose
     { availableBytes: 1024, totalBytes: 4096, measuredAt: 1700000000 },
   );
   assertEquals(parseHostDiskRefresh(""), null);
+  // Issue #2080: the launcher's trim-refused flag rides the same reading.
+  assertEquals(
+    parseHostDiskRefresh(
+      '{"availableBytes":1024,"totalBytes":4096,"measuredAt":1700000000,"workVolumeTrimRefused":true}',
+    ),
+    {
+      availableBytes: 1024,
+      totalBytes: 4096,
+      measuredAt: 1700000000,
+      workVolumeTrimRefused: true,
+    },
+  );
+  assertEquals(
+    parseHostDiskRefresh(
+      '{"availableBytes":1024,"totalBytes":4096,"measuredAt":1700000000,"workVolumeTrimRefused":"yes"}',
+    ),
+    null,
+  );
   assertEquals(parseHostDiskRefresh("not json"), null);
   assertEquals(parseHostDiskRefresh("[]"), null);
   assertEquals(

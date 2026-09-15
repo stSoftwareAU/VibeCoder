@@ -793,6 +793,10 @@ done
 # until the worker exits. On GRQ-25 the file stayed at its launch value for a
 # whole run while the host freed 23 GB, and the worker refused claims 12 GB
 # above its floor on the strength of a reading it could not refresh.
+# Declared here so the first reading below can consult it under `set -u`; the
+# volume init later resets and fills it (Issue #478).
+trim_refused_volumes=()
+
 write_host_disk_reading() {
   local gate="${HOME}" store="${HOME:-}/Library/Application Support/com.apple.container"
   [[ -d "${store}" ]] && gate="${store}"
@@ -807,8 +811,14 @@ write_host_disk_reading() {
   mkdir -p "${RUN_CORE_LOG_DIR}" 2>/dev/null || return 0
   local file="${RUN_CORE_LOG_DIR}/host-disk.json" tmp
   tmp="${file}.tmp.$$"
-  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s"}\n' \
-    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" >"${tmp}" 2>/dev/null &&
+  # Issue #2080: whether the runtime refused to trim the work volume this
+  # launch. When it did, nothing the guest frees returns to the host, so the
+  # worker's disk-low pass must not delete build artefacts it will only
+  # rebuild — that rebuild is the ratchet.
+  local trim_refused=false
+  ((${#trim_refused_volumes[@]})) && trim_refused=true
+  if printf '{"availableBytes":%s,"totalBytes":%s,"measuredAt":%s,"path":"%s","workVolumeTrimRefused":%s}\n' \
+    "$((avail_kb * 1024))" "$((total_kb * 1024))" "$(date +%s)" "${gate}" "${trim_refused}" >"${tmp}" 2>/dev/null &&
     mv -f "${tmp}" "${file}" 2>/dev/null; then
     return 0
   fi
