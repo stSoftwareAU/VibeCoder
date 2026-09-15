@@ -1265,14 +1265,10 @@ const TOOLS_ARG_RE = new RegExp(`^ARG\\s+${CONTAINER_TOOLS_ARG}(?:=|$)`);
 /**
  * `RUN` bodies with `\` continuations joined and comment lines dropped.
  *
- * Exported so a test asserting on one build step reads it the way the gate
- * does — a second parser would disagree with this one about where a step
- * starts and what a trailing `# …` comment hides.
- *
  * @param containerfile - Raw Containerfile text.
  * @returns One string per `RUN` instruction, continuations joined by a space.
  */
-export function runInstructions(containerfile: string): string[] {
+function runInstructions(containerfile: string): string[] {
   const runs: string[] = [];
   let current: string | undefined;
 
@@ -1301,6 +1297,138 @@ export function runInstructions(containerfile: string): string[] {
   // An unterminated continuation is still a step; report on what it does.
   if (current !== undefined) runs.push(current);
   return runs;
+}
+
+/**
+ * The Graft native modules no usable linux prebuild covers (Issue #2097).
+ *
+ * On arm64 `tree-sitter` core, `python` and `kotlin` ship no prebuild at all,
+ * and `go`, `java`, `javascript` and `typescript` ship x86-64 binaries
+ * mislabelled `linux-arm64` (upstream trailhq/Graft#119). The image compiles
+ * all seven; Graft's remaining grammars ship working prebuilds.
+ */
+export const GRAFT_NATIVE_MODULES: readonly string[] = [
+  "tree-sitter",
+  "tree-sitter-go",
+  "tree-sitter-java",
+  "tree-sitter-javascript",
+  "tree-sitter-typescript",
+  "tree-sitter-python",
+  "tree-sitter-kotlin",
+];
+
+/** The shell variable carrying the rebuild list, found by its contents. */
+const NATIVE_LIST_ASSIGNMENT_RE = /(\w+)="([^"]*\btree-sitter\b[^"]*)"/;
+
+/**
+ * `--allow-scripts`, capturing just its own shell word.
+ *
+ * The argument is routinely a quoted substitution containing spaces
+ * (`"$(printf … | tr ' ' ',')"`), so `\S+` would stop inside it and read a
+ * derived list as a literal one. The alternatives are mutually exclusive —
+ * quoted runs, or a character that is neither a space nor a quote — so no
+ * position has two ways to match and the scan stays linear.
+ */
+const ALLOW_SCRIPTS_RE = /--allow-scripts=((?:"[^"]*"|'[^']*'|[^\s"'])+)/;
+
+/** A `node -e` that loads modules, whatever it names its loop variable. */
+const NODE_REQUIRE_PROBE_RE = /\bnode\s+-e\b[^;]*\brequire\s*\(/;
+
+/** `CXXFLAGS=-std=c++20`, quoted or not. */
+const CXX20_RE = /CXXFLAGS=["']?-std=c\+\+20\b/;
+
+/**
+ * Report every reason the Graft layer would not compile what it must
+ * (Issue #2097, parent #2060).
+ *
+ * This is the image's only compile, and a no-op one is silent: npm reports
+ * `rebuilt dependencies successfully` for a run whose install scripts it
+ * blocked, and `graft --version` is pure JavaScript that loads no grammar —
+ * so both would pass over an image whose grammars cannot load. Every rule
+ * here closes one route by which that could reach a claim.
+ *
+ * The rules match intent rather than spelling: which modules are rebuilt,
+ * that the allow-list is *derived* from the same variable the rebuild
+ * expands, that the compile is forced and offline, that one code path serves
+ * both architectures, and that the result is loaded before it is trusted. A
+ * layer written with different quoting or a different loop variable passes;
+ * one that quietly skips the compile does not.
+ *
+ * @param containerfile - Raw Containerfile text.
+ * @returns Human-readable violations; empty when the layer is sound.
+ */
+export function findGraftRebuildViolations(containerfile: string): string[] {
+  const violations: string[] = [];
+  const steps = runInstructions(containerfile)
+    .filter((step) => /\bnpm\s+rebuild\b/.test(step));
+
+  if (steps.length !== 1) {
+    return [
+      `expected exactly one build step to rebuild native modules, found ${steps.length}`,
+    ];
+  }
+  const step = steps[0]!;
+
+  for (const module of GRAFT_NATIVE_MODULES) {
+    if (!step.includes(module)) {
+      violations.push(`the rebuild never names ${module}`);
+    }
+  }
+
+  // npm 12 blocks install scripts unless the package is named, and a blocked
+  // run still reports success — so the allow-list must expand the same
+  // variable the rebuild does, never restate the names beside it.
+  const listVariable = NATIVE_LIST_ASSIGNMENT_RE.exec(step)?.[1];
+  const allowScripts = ALLOW_SCRIPTS_RE.exec(step)?.[1];
+  if (!allowScripts) {
+    violations.push(
+      "the rebuild names no --allow-scripts list, so npm 12 would block " +
+        "every compile it exists to run",
+    );
+  } else if (!listVariable || !allowScripts.includes(`${listVariable}`)) {
+    violations.push(
+      "the --allow-scripts list is not derived from the variable the " +
+        "rebuild expands, so it can drift from the modules it names",
+    );
+  }
+
+  if (!CXX20_RE.test(step)) {
+    violations.push("the rebuild does not compile with -std=c++20");
+  }
+  // node-gyp must take its headers from the Node layer already in the image.
+  if (!step.includes("npm_config_nodedir=/usr/local")) {
+    violations.push(
+      "the rebuild does not point node-gyp at /usr/local, so it would " +
+        "download Node headers at build time",
+    );
+  }
+  // Without this node-gyp-build loads the shipped prebuild and skips the
+  // compile, so an amd64 build — where six of the seven prebuilds are valid —
+  // would prove nothing about the C++20 compile.
+  if (!step.includes("npm_config_build_from_source=true")) {
+    violations.push(
+      "the rebuild does not force a build from source, so a valid prebuild " +
+        "would skip the compile it exists to prove",
+    );
+  }
+  // ONE code path: a `uname` branch would let an amd64 build skip the
+  // compile, so a fault would only ever surface on the Mac M-series host.
+  if (step.includes("uname")) {
+    violations.push("the rebuild branches on architecture");
+  }
+  if (!NODE_REQUIRE_PROBE_RE.test(step)) {
+    violations.push(
+      "nothing loads the rebuilt modules, so a blocked rebuild would " +
+        "still report success",
+    );
+  }
+  if (!/\bgraft\s+--version\b/.test(step)) {
+    violations.push("the layer never probes graft --version");
+  } else if (!step.includes("DO_NOT_TRACK=1")) {
+    violations.push("the version probe would ping upstream from the build");
+  }
+
+  return violations;
 }
 
 /**
