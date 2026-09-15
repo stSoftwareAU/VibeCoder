@@ -84,6 +84,62 @@ The evidence is the test suite and the full quality gate.
   `docs/audits/security-sweep-1923-provider-billing.md`, and the module is
   claimed in `docs/audits/lib-sweep-coverage.json`.
 
+### Security fix: the regression test and the closed trigger
+
+**Regression test.** Added
+`worker/deno/tests/claude_env_test.ts::buildClaudeChildEnv - a selected
+subscription token withholds the metered ANTHROPIC_API_KEY (Issue #1923)`,
+which reproduces the flaw — it hands `buildClaudeChildEnv` a host
+holding both `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` and requires the
+metered key to be absent from the child. It **fails against the unfixed code
+and passes after the fix**. Its sibling
+`worker/deno/tests/claude_env_test.ts::buildClaudeChildEnv - a selected
+subscription token withholds the ANTHROPIC_AUTH_TOKEN bearer (Issue #1923)`
+carries the same linkage for the proxied bearer.
+
+The linkage was verified, not assumed: reverting `worker/deno/lib/claude_env.ts`
+to its base-branch content and re-running the file gives `2 failed | 15 passed`,
+the failure being `"sk-ant-metered" != undefined` — the metered key reaching the
+child — and `17 passed | 0 failed` with the fix restored. The two new guard
+cases are exactly the two that flip; the other fifteen pass in both states, so
+the tests pin the fix rather than the file.
+
+**The original trigger is closed, with no trivial bypass.** The trigger was a
+Claude child inheriting a metered Anthropic credential alongside the
+subscription token, so a spent, stale or revoked subscription silently became
+per-token API spend instead of failing authentication. `buildClaudeChildEnv` now
+routes its whole result through `withholdNonSubscriptionCredentials`, which
+deletes every name in `CLAUDE_NON_SUBSCRIPTION_CREDENTIAL_ENV_VARS`
+(`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`) whenever the run holds a non-blank
+`CLAUDE_CODE_OAUTH_TOKEN`. The original attack input — a host holding both
+credentials at once — is now rejected, and no equivalent bypass exists on this
+path:
+
+- **Not reachable around the guard.** The withholding wraps the single `return`
+  value of `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:205`), so no
+  caller can obtain an unguarded map. Both callers go through it —
+  `agent_provider.ts:664` (the descriptor's `buildChildEnv`) and
+  `claude_runner.ts`, which spawns with `clearEnv: true` and exactly this map
+  (`claude_runner.ts:1175`), so the child inherits nothing from the parent
+  process. The optional `gh`-guard shim only spreads `baseEnv` and overrides
+  `PATH` (`gh_guard_shim.ts:648`), so it cannot reintroduce a withheld name.
+- **Not bypassable by aliasing.** Deletion is by exact key on the two declared
+  names, and `CLAUDE_ENV_SECRET_ALLOWLIST` is itself exact-match (Issue #920): a
+  name that merely *starts* with a credential name — `ANTHROPIC_API_KEY_BACKUP`,
+  `CLAUDE_CODE_OAUTH_TOKEN_2` — is already denied by `isDeniedClaudeEnvVar` and
+  never enters the map to be withheld. No alternative spelling of the same
+  credential survives.
+- **Not bypassable through the `denylist` parameter.** A caller-supplied
+  denylist can only remove further variables, never re-add one, and it is
+  applied before the guard runs.
+- **Not bypassable by a blank token.** A whitespace-only
+  `CLAUDE_CODE_OAUTH_TOKEN` authenticates nothing, so it deliberately engages no
+  guard — that is the existing API-key deployment, not a bypass of subscription
+  mode. The two remaining new cases (`buildClaudeChildEnv - a blank
+  subscription token is no subscription at all` and `buildClaudeChildEnv - an
+  API-key-only host is unchanged`) pin that boundary so it cannot widen
+  unnoticed.
+
 ### Documented business-logic change to an existing test
 
 `worker/deno/tests/multi_provider_credentials_test.ts::provider child
