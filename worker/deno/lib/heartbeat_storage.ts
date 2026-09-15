@@ -278,7 +278,14 @@ export function describeAttemptOutcome(
   if (!outcome) return "released";
   switch (outcome.kind) {
     case "pr":
-      return `raised #${outcome.prNumber}`;
+      // Issue #2044: a PR a later step then blocked is still a delivered PR —
+      // the tally says both, so it is not read as a run that delivered
+      // nothing.
+      return outcome.blocked
+        ? `raised #${outcome.prNumber}, blocked (\`${
+          getFailureCategoryDisplay(outcome.blocked.category)
+        }\`)`
+        : `raised #${outcome.prNumber}`;
     case "no_pr":
       return `no PR (\`${
         getFailureCategoryDisplay(outcome.category)
@@ -379,8 +386,17 @@ export function parseReleaseAttemptFromBody(
   const raised = /Raised #(\d+)/.exec(rest);
   const outcome = /\*\*Outcome:\*\* no PR raised — `([^`]+)`/.exec(body);
   const phase = /\*\*Diagnosis:\*\* died in phase `([^`]+)`/.exec(body);
-  if (raised) text = `raised #${raised[1]}`;
-  else if (outcome) {
+  // Issue #2044: a PR a later step blocked renders both halves, so the
+  // reconstruction reads both — otherwise the tally would show the delivered
+  // PR and silently drop the outstanding finding.
+  const blocked =
+    /\*\*Outcome:\*\* PR raised, then blocked in phase `[^`]+` — `([^`]+)`/
+      .exec(body);
+  if (raised) {
+    text = blocked
+      ? `raised #${raised[1]}, blocked (\`${blocked[1]}\`)`
+      : `raised #${raised[1]}`;
+  } else if (outcome) {
     text = `no PR (\`${outcome[1]}\`${phase ? `, phase \`${phase[1]}\`` : ""})`;
   } else if (/no PR expected for this phase/.test(rest)) {
     text = "no PR expected";
@@ -541,7 +557,23 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
   switch (outcome.kind) {
     case "pr": {
       const url = boundOutcomeText(outcome.prUrl, OUTCOME_DETAIL_MAX_LENGTH);
-      return ` Raised #${outcome.prNumber} — ${url}`;
+      if (!outcome.blocked) return ` Raised #${outcome.prNumber} — ${url}`;
+      // Issue #2044 — the work reached the PR and a later step then failed
+      // the run. Name both halves: the PR, so nobody redoes delivered work,
+      // and the block, so the outstanding finding is fixable on that PR.
+      const display = getFailureCategoryDisplay(outcome.blocked.category);
+      const phase = boundOutcomeText(outcome.blocked.phase, 60);
+      const detail = boundOutcomeText(
+        outcome.blocked.reason,
+        OUTCOME_DETAIL_MAX_LENGTH,
+      );
+      const block = ` Raised #${outcome.prNumber} — ${url}.\n` +
+        `**Outcome:** PR raised, then blocked in phase \`${phase}\` — ` +
+        `\`${display}\`. Fix the finding on that PR; the work is not lost.` +
+        (detail ? `\n**Detail:** ${detail}` : "");
+      return block.length <= OUTCOME_BLOCK_MAX_LENGTH
+        ? block
+        : `${block.substring(0, OUTCOME_BLOCK_MAX_LENGTH - 1)}…`;
     }
     case "no_pr_expected": {
       const summary = boundOutcomeText(

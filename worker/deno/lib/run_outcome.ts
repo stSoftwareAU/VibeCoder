@@ -34,10 +34,38 @@ export interface RunOutcomeNotes {
   notes?: string[];
 }
 
+/**
+ * A step *after* the PR existed failed the run (Issue #2044, part of #1947).
+ *
+ * The changed-workflow gate is the case that named it: it runs whether or not
+ * a PR already exists, by design, so an agent-raised PR on the run's own head
+ * was recorded as a run that delivered nothing and diagnosed `unknown` — for
+ * a block the worker itself had written the reason for. The work is on the
+ * PR; one finding is outstanding, and both halves are stated.
+ */
+export interface PrBlockedAfterRaise {
+  /** Phase the block came from. */
+  phase: string;
+  /** Diagnosed category of the block — never `unknown` for a worker gate. */
+  category: FailureCategory;
+  /** The blocking step's own reason, as it reached the issue thread. */
+  reason: string;
+}
+
 /** What a run achieved, as reported in the claim-release comment. */
 export type RunOutcome =
   & (
-    | { kind: "pr"; prUrl: string; prNumber: number }
+    | {
+      kind: "pr";
+      prUrl: string;
+      prNumber: number;
+      /**
+       * Set only when the run raised (or recovered) this PR and a later step
+       * then failed the run (Issue #2044). Absent on the ordinary PR path, so
+       * a delivered run reads exactly as it did before.
+       */
+      blocked?: PrBlockedAfterRaise;
+    }
     | {
       kind: "no_pr";
       /** Failure category from failure_diagnosis.ts (#4298's corrected diagnosis). */
@@ -214,6 +242,16 @@ export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
       prNumber: source.prNumber && source.prNumber > 0
         ? source.prNumber
         : prNumberFromUrl(source.prUrl),
+      // A PR-then-later-step failure keeps the PR *and* says what blocked
+      // (Issue #2044): reporting only the PR loses the outstanding finding,
+      // and reporting only the failure loses the delivered work.
+      ...(source.success ? {} : {
+        blocked: {
+          phase: source.phase,
+          category: detectFailureCategory(source.reason),
+          reason: source.reason,
+        },
+      }),
     };
   }
   if (source.success) {
@@ -243,7 +281,9 @@ export function describeRunOutcome(outcome: RunOutcome | undefined): string {
   if (!outcome) return "none";
   switch (outcome.kind) {
     case "pr":
-      return `pr:#${outcome.prNumber}`;
+      return outcome.blocked
+        ? `pr:#${outcome.prNumber}:blocked:${outcome.blocked.category}`
+        : `pr:#${outcome.prNumber}`;
     case "no_pr":
       return `no_pr:${outcome.category}:${outcome.phase}`;
     case "no_pr_expected":
@@ -302,6 +342,40 @@ export function summaryIncompleteOutcome(options: {
     prUrl: options.prUrl,
     prNumber: options.prNumber,
     problem: options.problem,
+  };
+}
+
+/**
+ * Outcome for a run that had already raised (or recovered) its PR when a
+ * later step failed the run (Issue #2044).
+ *
+ * Unlike {@link summaryIncompleteOutcome} this IS a failure — the caller
+ * returns `status: "failure"` and the ladder runs as before — so the two are
+ * not interchangeable: a summary shortfall is a documentation gap, and this
+ * is a defect in the change that must be fixed on the PR before it merges.
+ * What it fixes is the *reporting*: the outcome names the PR the work is on
+ * and the diagnosed category of the block, instead of a `no_pr` failure with
+ * no number and an `unknown` cause.
+ *
+ * @param options.category - The block's category; diagnosed from `reason`
+ *   when the caller does not already hold it.
+ */
+export function prBlockedAfterRaiseOutcome(options: {
+  phase: string;
+  prUrl: string;
+  prNumber: number;
+  reason: string;
+  category?: FailureCategory;
+}): RunOutcome {
+  return {
+    kind: "pr",
+    prUrl: options.prUrl,
+    prNumber: options.prNumber,
+    blocked: {
+      phase: options.phase,
+      category: options.category ?? detectFailureCategory(options.reason),
+      reason: options.reason,
+    },
   };
 }
 
