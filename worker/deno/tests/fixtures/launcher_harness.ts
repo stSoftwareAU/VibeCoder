@@ -30,6 +30,17 @@ export const REPO_ROOT = FIXTURE_PATH.replace(
  * `$VIBE_STUB_RECORD/<sub-command>.args`, and answers each sub-command the
  * way the surrounding test needs.
  */
+const DF_STUB = `#!/bin/bash
+set -u
+if [[ -n "\${STUB_DF_AVAIL_KB:-}" && -n "\${STUB_DF_TOTAL_KB:-}" ]]; then
+  used=$(( STUB_DF_TOTAL_KB - STUB_DF_AVAIL_KB ))
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+  printf 'stub %s %s %s 50%% /\\n' "\${STUB_DF_TOTAL_KB}" "\${used}" "\${STUB_DF_AVAIL_KB}"
+  exit 0
+fi
+exec /bin/df "\$@"
+`;
+
 const RUNTIME_STUB = `#!/bin/bash
 set -u
 record_dir="\${VIBE_STUB_RECORD}"
@@ -533,6 +544,13 @@ export async function setupHarness(
     await Deno.writeTextFile(path, RUNTIME_STUB);
     await Deno.chmod(path, 0o755);
   }
+
+  // An opt-in host-disk reading (Issue #2077): with STUB_DF_AVAIL_KB and
+  // STUB_DF_TOTAL_KB set, `df -kP <path>` answers those numbers, so a test can
+  // put the launcher exactly as far below its claiming floor as it needs
+  // without a multi-gigabyte fixture. Unset, the real df runs.
+  await Deno.writeTextFile(`${stubDir}/df`, DF_STUB);
+  await Deno.chmod(`${stubDir}/df`, 0o755);
 
   // Always installed: the checkout update must never really run against this
   // repository (Issue #512). `denoStub` widens the same stub to the worker
