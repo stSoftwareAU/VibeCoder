@@ -371,3 +371,140 @@ Deno.test("a Response whose headers throw yields unknown, not an exception", asy
   assertEquals(result.reason, "unrecognised-response-shape");
   assert(!allStrings(result).includes(TOKEN));
 });
+
+// ---------------------------------------------------------------------------
+// A 429 carrying the quota answer (Issue #2040)
+// ---------------------------------------------------------------------------
+
+/** Headers a spent subscription token answers a `429` with (Issue #2040). */
+const SPENT_HEADERS: Record<string, string> = {
+  "anthropic-ratelimit-unified-status": "rejected",
+  "anthropic-ratelimit-unified-5h-status": "rejected",
+  "anthropic-ratelimit-unified-5h-reset": "1788483600",
+  "anthropic-ratelimit-unified-5h-utilization": "1",
+  "anthropic-ratelimit-unified-7d-status": "rejected",
+  "anthropic-ratelimit-unified-7d-reset": "1789441200",
+  "anthropic-ratelimit-unified-7d-utilization": "1",
+  "anthropic-ratelimit-unified-representative-claim": "seven_day",
+};
+
+Deno.test("a 429 carrying the unified headers is the quota answer, not an unknown (Issue #2040)", async () => {
+  const fetcher = countingFetch(() =>
+    Promise.resolve(stubResponse(SPENT_HEADERS, 429))
+  );
+
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: fetcher.fetchFn,
+  });
+
+  assertEquals(fetcher.calls(), 1, "a 429 must not be retried either");
+  assert(result.known, "a spent token has a budget of zero, not no budget");
+  assertEquals(result.remainingFraction, 0);
+  assertEquals(result.window, "five_hour", "soonest reset breaks the 0% tie");
+  assertEquals(result.resetAt, 1788483600 * 1000);
+  assertEquals(result.representativeClaim, "seven_day");
+  assertEquals(result.windows, [
+    {
+      window: "five_hour",
+      remainingFraction: 0,
+      resetAt: 1788483600 * 1000,
+    },
+    {
+      window: "seven_day",
+      remainingFraction: 0,
+      resetAt: 1789441200 * 1000,
+    },
+  ], "both windows and both resets survive the 429");
+});
+
+Deno.test("a 429 with partial budget headers reports the budget they carry (Issue #2040)", async () => {
+  // Not every 429 is a fully spent token: the five-hour window can be the one
+  // that rejected the request while the week still holds budget. The figures
+  // are read as reported, never assumed to be zero because the status was 429.
+  const fetcher = countingFetch(() =>
+    Promise.resolve(stubResponse({
+      "anthropic-ratelimit-unified-5h-utilization": "1",
+      "anthropic-ratelimit-unified-5h-reset": "1788483600",
+      "anthropic-ratelimit-unified-7d-utilization": "0.40",
+      "anthropic-ratelimit-unified-7d-reset": "1789441200",
+    }, 429))
+  );
+
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider-2",
+    fetchFn: fetcher.fetchFn,
+  });
+
+  assert(result.known);
+  assertEquals(result.window, "five_hour");
+  assertEquals(result.remainingFraction, 0);
+  assertEquals(result.windows.length, 2);
+  assertEquals(result.windows.at(1)?.window, "seven_day");
+  assertEquals(result.windows.at(1)?.remainingFraction.toFixed(2), "0.60");
+});
+
+Deno.test("a 429 with no rate-limit headers stays a throttled probe (Issue #2040)", async () => {
+  const fetcher = countingFetch(() =>
+    Promise.resolve(stubResponse({ "retry-after": "60" }, 429))
+  );
+
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider-3",
+    fetchFn: fetcher.fetchFn,
+  });
+
+  assertEquals(fetcher.calls(), 1);
+  assert(!result.known, "a throttled probe measured nothing");
+  assertEquals(result.reason, "http-429");
+  assertEquals(result.label, "provider-3");
+});
+
+Deno.test("a 401 carrying rate-limit headers is still unknown (Issue #2040)", async () => {
+  // A revoked token's headers are not trusted: only the 429 status means
+  // "this is the quota answer".
+  const fetcher = countingFetch(() =>
+    Promise.resolve(stubResponse(SPENT_HEADERS, 401))
+  );
+
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: fetcher.fetchFn,
+  });
+
+  assert(!result.known, "a 401 must never present as a known budget");
+  assertEquals(result.reason, "http-401");
+});
+
+Deno.test("a 5xx carrying rate-limit headers is still unknown (Issue #2040)", async () => {
+  const fetcher = countingFetch(() =>
+    Promise.resolve(stubResponse(SPENT_HEADERS, 503))
+  );
+
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: fetcher.fetchFn,
+  });
+
+  assert(!result.known);
+  assertEquals(result.reason, "http-503");
+});
+
+Deno.test("the token value reaches no returned value on the 429 paths (Issue #2040)", async () => {
+  for (
+    const path of [
+      { name: "spent", headers: SPENT_HEADERS },
+      { name: "throttled", headers: { "retry-after": "60" } },
+    ]
+  ) {
+    const result = await probeClaudeTokenBudget(TOKEN, {
+      label: "provider-2",
+      fetchFn: () => Promise.resolve(stubResponse(path.headers, 429)),
+    });
+    const serialised = allStrings(result);
+    assert(
+      !serialised.includes("UNIQUE-PROBE-TOKEN-VALUE"),
+      `${path.name}: a fragment of the token leaked: ${serialised}`,
+    );
+  }
+});
