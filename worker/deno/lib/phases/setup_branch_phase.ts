@@ -53,6 +53,7 @@ import {
   claimObjectStoreRepair,
   isObjectStoreCorruption,
 } from "../object_store_repair.ts";
+import { repairMilestoneCreateBlockAndRetry } from "../milestone_create_block_repair.ts";
 
 /**
  * What a human must do when a milestone branch cannot be ensured
@@ -261,11 +262,56 @@ export async function workOnIssueSetupBranch(
     });
 
     // Ensure the milestone branch exists on remote, creating from default if needed (Issue #1241)
-    const ensureResult = await deps.git.ensureMilestoneBranchExists(
-      state.milestoneBranch,
-      state.defaultBranch,
-      { cwd: repoPath },
-    );
+    const milestoneBranch = state.milestoneBranch;
+    const ensureMilestoneBranch = () =>
+      deps.git.ensureMilestoneBranchExists(
+        milestoneBranch,
+        defaultBranch,
+        { cwd: repoPath },
+      );
+    let ensureResult = await ensureMilestoneBranch();
+
+    // Issue #2079: a `milestone/**` ruleset enforcing its required checks on
+    // branch CREATION refuses the very push that opens the branch, so every
+    // claim on that repository died in `setup` inside a minute until the
+    // repository was backed off. Issue #2067 put the remedy in the
+    // operator-run `setup` command; nothing re-ran it, so the worker clears
+    // the block in the run that meets it and retries once.
+    let repairNote: string | null = null;
+    if (!ensureResult.ok) {
+      const recovery = await repairMilestoneCreateBlockAndRetry({
+        repo,
+        milestoneBranch,
+        detail: ensureResult.error.message,
+        repair: (target) => deps.github.repairMilestoneCreateBlock(target),
+        retry: ensureMilestoneBranch,
+      });
+      if (recovery.kind === "recovered") {
+        logger.info(
+          "Milestone ruleset no longer blocks branch creation — branch opened after an in-run repair (Issue #2079)",
+          {
+            repo,
+            issueNumber,
+            milestoneBranch: state.milestoneBranch,
+            ruleset: recovery.ruleset,
+          },
+        );
+        ensureResult = { ok: true, value: recovery.value };
+      } else if (recovery.kind === "failed") {
+        // Never swallowed: the handoff below carries what was tried.
+        repairNote = recovery.note;
+        logger.warn(
+          "In-run milestone ruleset repair did not clear the refusal",
+          {
+            repo,
+            issueNumber,
+            milestoneBranch: state.milestoneBranch,
+            note: recovery.note,
+          },
+        );
+      }
+    }
+
     if (!ensureResult.ok) {
       // Issue #3910: never retarget a milestone-assigned issue at the
       // default branch. The milestone branch exists so a milestone lands
@@ -322,7 +368,8 @@ export async function workOnIssueSetupBranch(
         reason:
           `This issue belongs to milestone '${milestoneTitle}', but its milestone branch ` +
           `\`${state.milestoneBranch}\` could not be created or fetched: ${detail}` +
-          (repoLevelNote === null ? "" : `\n\n${repoLevelNote}`),
+          (repoLevelNote === null ? "" : `\n\n${repoLevelNote}`) +
+          (repairNote === null ? "" : `\n\n${repairNote}`),
         nextStep: MILESTONE_BRANCH_NEXT_STEP,
         dedupKey: `milestone-branch-${state.milestoneBranch}`,
         githubUser,
