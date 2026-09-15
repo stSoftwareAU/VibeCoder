@@ -998,6 +998,21 @@ out of scope too — the diff is collected with `--diff-filter=ACMR`, so a remov
 workflow has no text to check and its absence is never read as an unreadable
 file.
 
+**And only what the run *introduced*** (Issue #2043). Scoping to changed *files*
+was not enough: a file a run appended two steps to was still checked whole, so a
+`push:` trigger that had sat on the base commit for months blocked the PR that
+touched the file for an unrelated reason — a `severity:low` audit finding turned
+into a hard block on unrelated work, and each block recorded as a host failure.
+Every check therefore runs **twice**: once over the branch's text, once over
+`git show <base>:<path>`, and a finding is the run's only when it is absent at
+base. The comparison is per check, by `(finding id, file)`, and it counts — two
+findings sharing an id where base carried one report the extra one, so a second
+offender is never masked by the first. Line numbers are excluded from the key,
+because appending a step shifts every line below it without changing what is
+wrong. A path absent at base is one the branch **added**, so it is checked whole;
+a base version that cannot be **read** is a fault and blocks, while one that
+cannot be **parsed** is not — that is often the very state the run is fixing.
+
 **Not deciding is a failure, not a pass** (see
 [Never fail silently](../../CODING-STANDARDS.md)). A diff that cannot be
 collected, a changed file that cannot be read, and a file whose YAML does not
@@ -1014,15 +1029,17 @@ flowchart TD
     D -->|"diff failed"| X["Blocked: fail loud —<br/>an unknown diff is not a pass"]
     D --> F{"Any changed<br/>.github/workflows/*.yml?"}
     F -->|no| PR["PR creation continues"]
-    F -->|yes| R{"Read + parse each<br/>changed file"}
+    F -->|yes| R{"Read + parse each<br/>changed file, and its<br/>base version"}
     R -->|"read or parse failed"| X
-    R --> C{"WORKFLOW_FILE_CHECKS<br/>over the changed files"}
-    C -->|"no findings"| PR
-    C -->|"findings"| B["Blocked: comment names<br/>check id, file, line, detail"]
+    R --> C{"WORKFLOW_FILE_CHECKS<br/>over branch text and base text"}
+    C --> DF{"Finding also<br/>present at base?"}
+    DF -->|"yes — pre-existing"| PR
+    DF -->|"no — introduced here"| B["Blocked: comment names<br/>check id, file, line, detail"]
     U["Untouched offending workflow"] -.->|"out of scope — audit files it"| PR
     style F fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style C fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style DF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style B fill:#c45858,stroke:#6b2020,color:#fff
     style X fill:#c45858,stroke:#6b2020,color:#fff
@@ -1052,6 +1069,7 @@ reported as what it is — the work is done, the summary is short:
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
 | `summary_incomplete` | a PR exists and a summary rule is unmet | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
 With **no** PR for the run's branch the gate blocks exactly as before — the whole
@@ -1063,6 +1081,36 @@ is on the issue thread rather than only in one host's log.
 file checks above are the second: a workflow file carrying a finding is a defect
 in the change, so it stops the run PR or no PR, exactly as the security gate
 does.
+
+**An exception still has to report the PR it blocked.** Stopping the run is the
+gate's call; pretending no PR exists is not. On 2026-09-12 a run's agent raised
+its own PR, the changed-workflow gate refused thirty seconds later, and the
+worker commented "so no PR was raised" over that live PR, recorded the failure
+as category `unknown` — for a block it had written the reason for itself — and
+archived the host as having delivered nothing. The PR merged unchanged three
+hours later. So when the gate blocks and the run's own head already carries an
+open PR:
+
+| What | With no PR on the head | With a PR on the head |
+| --- | --- | --- |
+| Run result | `failure` | `failure` — the finding is still a defect |
+| Comment | "so no PR was raised" | names the PR and says the finding must be fixed on it |
+| Category | `workflow_gate` | `workflow_gate` — never `unknown` |
+| Outcome | `no_pr` | `pr` with `prNumber`, plus the block's phase and category |
+
+The outcome kind is what downstream health reporting counts, so "delivered, one
+finding outstanding" is now countable apart from "delivered nothing"
+(Issue #1947). `deriveRunOutcome` attaches the block to **any**
+PR-then-later-step failure, not only this gate's.
+
+**Implementation.** `lookupBlockedGatePr` and the gate block in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+`buildChangedWorkflowGateMessage` in
+[`changed_workflow_gate.ts`](../../worker/deno/lib/changed_workflow_gate.ts),
+the `workflow_gate` category in
+[`failure_diagnosis.ts`](../../worker/deno/lib/failure_diagnosis.ts), and
+`PrBlockedAfterRaise` in
+[`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts) (Issue #2044).
 
 **The security gate is the deliberate exception among the summary gates, and it
 runs first.** A PR that
@@ -1088,7 +1136,7 @@ rendering in [`heartbeat_storage.ts`](../../worker/deno/lib/heartbeat_storage.ts
 ```mermaid
 flowchart TD
     A["Branch pushed, quality gate passed"] --> SEC{"Security-fix gate<br/>vulnerability-fix evidence?"}
-    SEC -->|"missing"| F2["Run fails — PR or no PR"]
+    SEC -->|"missing"| F2["Run fails — PR or no PR<br/>a PR on the head is named,<br/>outcome pr + prNumber"]
     SEC -->|"satisfied or inactive"| WF{"Changed-workflow gate<br/>file checks clean?"}
     WF -->|"finding or unreadable"| F2
     WF -->|"clean or nothing in scope"| G{"Summary gates<br/>rule satisfied?"}

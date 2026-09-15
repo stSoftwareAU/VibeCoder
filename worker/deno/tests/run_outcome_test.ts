@@ -9,6 +9,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   deriveRunOutcome,
   describeRunOutcome,
+  prBlockedAfterRaiseOutcome,
   prDeferredOutcome,
   prNumberFromUrl,
   summaryIncompleteOutcome,
@@ -294,5 +295,69 @@ Deno.test("run outcome - a deferred PR keeps its resume state for the next claim
       reason: "secondary rate limit",
     })),
     true,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A PR-then-later-step failure (Issue #2044)
+// ---------------------------------------------------------------------------
+
+const BLOCK_REASON =
+  "Workflow files changed by this run did not pass the GitHub Actions file " +
+  "checks, so PR #2100 cannot merge until the finding below is fixed on it.";
+
+Deno.test("run outcome - a failed run that already had a PR keeps the PR and names the block (Issue #2044)", () => {
+  const outcome = deriveRunOutcome({
+    success: false,
+    phase: "completion",
+    reason: BLOCK_REASON,
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/2100",
+    prNumber: 2100,
+    elapsedSeconds: 900,
+  });
+
+  assertEquals(outcome.kind, "pr");
+  assert(outcome.kind === "pr", "narrowing");
+  assertEquals(outcome.prNumber, 2100);
+  // The category is diagnosed by the single diagnosis path, never `unknown`
+  // for a gate the worker itself applied.
+  assertEquals(outcome.blocked?.category, "workflow_gate");
+  assertEquals(outcome.blocked?.phase, "completion");
+  assertEquals(describeRunOutcome(outcome), "pr:#2100:blocked:workflow_gate");
+});
+
+Deno.test("run outcome - a delivered run carries no block and reads exactly as before (Issue #2044)", () => {
+  const outcome = deriveRunOutcome({
+    success: true,
+    phase: "completion",
+    reason: "Issue processed successfully",
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/2101",
+    prNumber: 2101,
+  });
+
+  assert(outcome.kind === "pr", "narrowing");
+  assertEquals(outcome.blocked, undefined);
+  assertEquals(describeRunOutcome(outcome), "pr:#2101");
+});
+
+Deno.test("run outcome - the release comment states both the PR and the block (Issue #2044)", () => {
+  const outcome = prBlockedAfterRaiseOutcome({
+    phase: "completion",
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/2100",
+    prNumber: 2100,
+    reason: BLOCK_REASON,
+  });
+
+  const clause = renderRunOutcomeClause(outcome);
+  assertStringIncludes(clause, "Raised #2100");
+  assertStringIncludes(clause, "pull/2100");
+  assertStringIncludes(clause, "then blocked in phase `completion`");
+  assertStringIncludes(clause, "workflow-gate");
+  assertStringIncludes(clause, "the work is not lost");
+
+  // And the tally says the same in one line.
+  assertEquals(
+    describeAttemptOutcome(outcome),
+    "raised #2100, blocked (`workflow-gate`)",
   );
 });

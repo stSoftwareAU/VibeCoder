@@ -69,6 +69,7 @@ export const RUN_FAILURE_CLASSES = [
   "timeout",
   "no-output",
   "agent-outcome",
+  "workflow-gate",
   "unknown",
 ] as const;
 
@@ -205,7 +206,10 @@ export function splitAgentNarration(
  * 7. `timeout` / `zero_output` — cause unproven → unknown.
  * 8. `quality_check` / `no_changes` / `evidence_missing` — the AGENT not
  *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
- * 9. Anything else → unknown.
+ * 9. `workflow_gate` — a pre-PR gate the worker applied refused the change
+ *    (Issue #2044): not a worker defect either, and it keeps its own class so
+ *    an archive can tell a gate block from an unexplained failure.
+ * 10. Anything else → unknown.
  */
 export function classifyRunFailure(
   category: FailureCategory,
@@ -369,6 +373,18 @@ export function classifyRunFailure(
         failureClass: "agent-outcome",
         rationale:
           "The agent did not deliver (quality gate, no changes, missing evidence) — not a worker defect.",
+      };
+    case "workflow_gate":
+      // Issue #2044: the changed-workflow gate refused the run over a finding
+      // in a workflow file the change introduced. A property of the change,
+      // never a worker defect — so it is stated plainly and never auto-filed,
+      // and it keeps its own class so an archive can tell a gate block from
+      // an unexplained failure.
+      return {
+        fixability: "not_code_fixable",
+        failureClass: "workflow-gate",
+        rationale:
+          "A pre-PR gate refused the run over a GitHub Actions finding in a workflow file the change introduced — not a worker defect.",
       };
     case "token_scope":
       // Issue #1475: the host's credential lacks the `workflow` scope. An

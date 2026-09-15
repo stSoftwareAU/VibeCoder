@@ -150,6 +150,16 @@ export function callbackOutcomeFromRun(
       outcome.category,
       outcome.message,
     ).failureClass;
+  } else if (outcome.kind === "pr" && outcome.blocked) {
+    // A PR-then-later-step failure (Issue #2044): the archive reads the PR
+    // number AND why the run still failed, so "delivered, one finding
+    // outstanding" is countable separately from "delivered nothing".
+    result.phase = outcome.blocked.phase;
+    result.category = outcome.blocked.category;
+    result.failureClass = classifyRunFailure(
+      outcome.blocked.category,
+      outcome.blocked.reason,
+    ).failureClass;
   }
   if ("prNumber" in outcome && typeof outcome.prNumber === "number") {
     result.prNumber = outcome.prNumber;
