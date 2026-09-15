@@ -29,6 +29,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import {
+  resolveSelfHealEventsWorkDir,
   SKIP_CHECKOUT_UPDATE_ENV,
   updateWorkerCheckout,
 } from "../commands/worker_checkout_update.ts";
@@ -871,4 +872,32 @@ Deno.test("worker-checkout-update - a callbacks block that will not parse is con
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
+});
+
+Deno.test("resolveSelfHealEventsWorkDir - --work-dir, then WORK_DIR, then HOME (Issue #2110)", () => {
+  assertEquals(
+    resolveSelfHealEventsWorkDir(
+      { "work-dir": "/explicit" },
+      envFrom({ WORK_DIR: "/from-env", HOME: "/home/vibe" }),
+    ),
+    "/explicit",
+  );
+  assertEquals(
+    resolveSelfHealEventsWorkDir(
+      {},
+      envFrom({ WORK_DIR: "/from-env", HOME: "/home/vibe" }),
+    ),
+    "/from-env",
+  );
+  assertEquals(
+    resolveSelfHealEventsWorkDir({}, envFrom({ HOME: "/home/vibe" })),
+    "/home/vibe",
+  );
+  // Nothing to resolve means do not emit — never the process's own cwd, and
+  // never a blank path the sink would treat as a directory (Issue #4250).
+  assertEquals(resolveSelfHealEventsWorkDir({}, emptyEnv), undefined);
+  assertEquals(
+    resolveSelfHealEventsWorkDir({ "work-dir": "   " }, envFrom({ HOME: "" })),
+    undefined,
+  );
 });

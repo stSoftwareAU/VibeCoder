@@ -618,6 +618,88 @@ Deno.test("updateCheckout - a spool that cannot be written is reported as unqueu
   });
 });
 
+Deno.test("updateCheckout - the streak's outcome is recorded as self-heal events (Issue #2110)", async () => {
+  const { setSelfHealEventsWorkDir } = await import(
+    "../lib/self_heal_events.ts"
+  );
+  await withLogDir(async (options) => {
+    const workDir = `${options.logDir}/..`;
+    // Wired explicitly, and unwired again afterwards: an emitting module that
+    // falls back to the environment forges events into the operator's real
+    // log (Issue #4250), so the sink is the only route into this directory.
+    setSelfHealEventsWorkDir(workDir);
+    try {
+      // Runs 3-7 spend the five attempts; the fifth loses the report.
+      for (let run = 0; run < 7; run++) {
+        await updateCheckout(options, {
+          ...FAILING_RESET,
+          escalate: () => Promise.resolve(HOOK_FAILED),
+        });
+      }
+
+      const log = await Deno.readTextFile(`${workDir}/logs/self-heal.jsonl`);
+      const events = log.trim().split("\n").map((line) =>
+        JSON.parse(line) as {
+          module: string;
+          action: string;
+          result: string;
+          details?: Record<string, unknown>;
+        }
+      );
+      const escalated = events.filter((event) => event.action === "escalated");
+      assertEquals(escalated.length, CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS);
+      assertEquals(escalated[0]?.module, "checkout_update");
+      assertEquals(escalated[0]?.result, "failed");
+      assertEquals(escalated[0]?.details?.hookStatus, "failed");
+      assertEquals(escalated[0]?.details?.attempt, 1);
+      assertEquals(escalated[0]?.details?.streak, 3);
+
+      const lost = events.filter((event) => event.action === "escalation_lost");
+      assertEquals(lost.length, 1, "the loss is recorded exactly once");
+      assertEquals(lost[0]?.module, "checkout_update");
+      assertEquals(
+        lost[0]?.details?.attempts,
+        CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS,
+      );
+    } finally {
+      setSelfHealEventsWorkDir(undefined);
+    }
+  });
+});
+
+Deno.test("updateCheckout - an absent hook is recorded as an escalated event too (Issue #2110)", async () => {
+  const { setSelfHealEventsWorkDir } = await import(
+    "../lib/self_heal_events.ts"
+  );
+  await withLogDir(async (options) => {
+    const workDir = `${options.logDir}/..`;
+    setSelfHealEventsWorkDir(workDir);
+    try {
+      for (let run = 0; run < 4; run++) {
+        await updateCheckout(options, {
+          ...FAILING_RESET,
+          hostFailureHook: { kind: "none" },
+        });
+      }
+
+      const log = await Deno.readTextFile(`${workDir}/logs/self-heal.jsonl`);
+      const events = log.trim().split("\n").map((line) =>
+        JSON.parse(line) as {
+          action: string;
+          result: string;
+          details?: Record<string, unknown>;
+        }
+      );
+      assertEquals(events.length, 1, "said once, not on every failing run");
+      assertEquals(events[0]?.action, "escalated");
+      assertEquals(events[0]?.result, "skipped");
+      assertEquals(events[0]?.details?.hookStatus, "no_hook_configured");
+    } finally {
+      setSelfHealEventsWorkDir(undefined);
+    }
+  });
+});
+
 Deno.test("updateCheckout - no escalation path spawns a process (Issues #2110, #2088)", async () => {
   await withLogDir(async (options) => {
     const originalCommand = Deno.Command;

@@ -3,9 +3,11 @@
  * escalation (Issue #2110).
  *
  * The update no longer files a GitHub issue: it hands a `checkout_update`
- * payload to the operator's hook and reads the invocation's status. Three
- * test files drive that path, so the hook config and the canned invocations
- * live here rather than being re-declared — and re-drifting — in each.
+ * payload to the operator's hook and reads the invocation's status. The two
+ * unit suites that drive `updateCheckout` share the hook config and the
+ * canned invocations from here rather than re-declaring — and re-drifting —
+ * them. (`worker_checkout_update_test.ts` drives a real shell hook instead,
+ * because the command-level test is the one that must prove the spawn.)
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -32,7 +34,7 @@ export const CONFIGURED_HOOK: HostFailureHookConfig = {
  * @param status - What the hook did; `ok` is the only status that delivers
  * @returns The invocation record the escalate seam returns
  */
-export function hookInvocation(status: CallbackStatus): CallbackInvocation {
+function hookInvocation(status: CallbackStatus): CallbackInvocation {
   return {
     event: "host_failure",
     path: HOOK_PATH,

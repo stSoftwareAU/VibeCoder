@@ -101,7 +101,6 @@ import { escalationHostId, parseOriginRepo } from "./host_escalation.ts";
 import type { CallbackInvocation } from "./run_callbacks.ts";
 import {
   type HostFailureHookConfig,
-  type HostFailureHookSeams,
   type HostFailurePayload,
   invokeHostFailureHook,
 } from "./host_failure_hook.ts";
@@ -1100,12 +1099,10 @@ export function buildCheckoutHostFailurePayload(
 export function invokeCheckoutUpdateFailureHook(
   context: CheckoutUpdateEscalationContext,
   hook: { path: string; timeoutSeconds: number },
-  seams: Partial<HostFailureHookSeams> = {},
 ): Promise<CallbackInvocation> {
   return invokeHostFailureHook(buildCheckoutHostFailurePayload(context), hook, {
     log: (message) => console.error(`[worker-checkout-update] ${message}`),
     logError: (message) => console.error(`[worker-checkout-update] ${message}`),
-    ...seams,
   });
 }
 
@@ -1222,6 +1219,80 @@ async function saveEscalationState(
 }
 
 /**
+ * Record a streak that has nowhere to report to (Issue #2110).
+ *
+ * A host with no `callbacks.host_failure`, or one whose `callbacks` block
+ * will not parse, is not a fault of the update — but it must not be silent
+ * either, or a wedged host produces no signal at all. So it is said once, in
+ * `run_core.log` and as a self-heal event, and the streak is **settled**
+ * rather than left eligible: nothing about the configuration will change
+ * between now and the next failing run, so a retry would only repeat the
+ * line.
+ */
+async function recordUnusableHook(
+  deps: CheckoutUpdateDeps,
+  logDir: string,
+  streak: number,
+  hook: { kind: "none" } | { kind: "invalid"; error: string },
+): Promise<void> {
+  const hookStatus = hook.kind === "none"
+    ? "no_hook_configured"
+    : "config_invalid";
+  await deps.log(
+    logDir,
+    `The worker checkout update has failed ${streak} consecutive runs — ` +
+      (hook.kind === "none"
+        ? `no callbacks.host_failure hook is configured on this host, so ` +
+          `there is nowhere to report it (${hookStatus}, Issue #2110)`
+        : `callbacks.host_failure could not be read, so there is nowhere ` +
+          `to report it (${hookStatus}, Issue #2110): ${hook.error}`),
+  );
+  await emitSelfHealEventAuto({
+    module: "checkout_update",
+    action: "escalated",
+    reason: `checkout update failed ${streak} consecutive runs`,
+    result: "skipped",
+    details: { hookStatus, attempt: 0, streak },
+  });
+  await saveEscalationState(deps, logDir, {
+    escalatedStreak: streak,
+    pending: null,
+  });
+}
+
+/**
+ * Abandon this streak's report after the attempt bound (Issue #2110).
+ *
+ * Said out loud in both records, so "nobody was told" is itself something the
+ * operator can find, rather than a silence indistinguishable from a host that
+ * never failed.
+ */
+async function recordEscalationLost(
+  deps: CheckoutUpdateDeps,
+  logDir: string,
+  streak: number,
+  hookStatus: string,
+  attempts: number,
+): Promise<void> {
+  await deps.log(
+    logDir,
+    `escalation_lost: ${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} attempts ` +
+      `to report this checkout-update streak through ` +
+      `callbacks.host_failure have all failed — no further attempt will be ` +
+      `made for this streak, and the evidence exists only in this log ` +
+      `(Issue #2110)`,
+  );
+  await emitSelfHealEventAuto({
+    module: "checkout_update",
+    action: "escalation_lost",
+    reason:
+      `${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} hook attempts all failed`,
+    result: "failed",
+    details: { hookStatus, attempts, streak },
+  });
+}
+
+/**
  * Deliver this streak's report through the `callbacks.host_failure` hook
  * (Issues #4204, #1018, #2110).
  *
@@ -1270,31 +1341,7 @@ async function deliverEscalation(
 
   const hook = deps.hostFailureHook;
   if (hook.kind !== "hook") {
-    const hookStatus = hook.kind === "none"
-      ? "no_hook_configured"
-      : "config_invalid";
-    await deps.log(
-      logDir,
-      `The worker checkout update has failed ${streak} consecutive runs — ` +
-        (hook.kind === "none"
-          ? `no callbacks.host_failure hook is configured on this host, so ` +
-            `there is nowhere to report it (${hookStatus}, Issue #2110)`
-          : `callbacks.host_failure could not be read, so there is nowhere ` +
-            `to report it (${hookStatus}, Issue #2110): ${hook.error}`),
-    );
-    await emitSelfHealEventAuto({
-      module: "checkout_update",
-      action: "escalated",
-      reason: `checkout update failed ${streak} consecutive runs`,
-      result: "skipped",
-      details: { hookStatus, attempt: 0, streak },
-    });
-    // Settled, not delivered: nothing about this host will change between now
-    // and the next failing run, so retrying would only repeat the line above.
-    await saveEscalationState(deps, logDir, {
-      escalatedStreak: streak,
-      pending: null,
-    });
+    await recordUnusableHook(deps, logDir, streak, hook);
     return false;
   }
 
@@ -1367,22 +1414,7 @@ async function deliverEscalation(
   );
 
   if (lost) {
-    await deps.log(
-      logDir,
-      `escalation_lost: ${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} attempts ` +
-        `to report this checkout-update streak through ` +
-        `callbacks.host_failure have all failed — no further attempt will be ` +
-        `made for this streak, and the evidence exists only in this log ` +
-        `(Issue #2110)`,
-    );
-    await emitSelfHealEventAuto({
-      module: "checkout_update",
-      action: "escalation_lost",
-      reason:
-        `${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} hook attempts all failed`,
-      result: "failed",
-      details: { hookStatus, attempts: attempt, streak },
-    });
+    await recordEscalationLost(deps, logDir, streak, hookStatus, attempt);
   }
   return false;
 }

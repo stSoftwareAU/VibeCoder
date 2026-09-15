@@ -233,6 +233,29 @@ function defaultLogDir(env: EnvLookup): string {
   );
 }
 
+/**
+ * Where this command's self-heal events go (Issues #2110, #4250).
+ *
+ * This command is its own host-side process — the launchers invoke it before
+ * every container launch — so it supplies the sink's wiring itself, with the
+ * same `--work-dir`, then `WORK_DIR`, then `HOME` resolution
+ * `container-restart-backoff` applies. `undefined` means "do not emit": the
+ * sink never falls back to the environment on its own, because a module that
+ * did forged events into the operator's real `~/logs/self-heal.jsonl`.
+ *
+ * @param args - The command's parsed arguments
+ * @param env - Environment lookup; defaults to the process environment
+ * @returns The work directory, or undefined when none can be resolved
+ */
+export function resolveSelfHealEventsWorkDir(
+  args: Record<string, unknown>,
+  env: EnvLookup = processEnvLookup,
+): string | undefined {
+  const resolved = optionalString(args["work-dir"]) ??
+    optionalString(env("WORK_DIR")) ?? optionalString(env("HOME"));
+  return resolved;
+}
+
 export const workerCheckoutUpdateCommand: Command = {
   name: "worker-checkout-update",
   description:
@@ -241,14 +264,7 @@ export const workerCheckoutUpdateCommand: Command = {
   execute(
     args: Record<string, unknown>,
   ): Promise<CommandResult<WorkerCheckoutUpdateResult>> {
-    // This command is its own host-side process (the launchers invoke it
-    // before every container launch), so it supplies the self-heal sink's
-    // wiring itself — the same --work-dir, then WORK_DIR, then HOME
-    // resolution `container-restart-backoff` applies (Issue #4250: the sink
-    // no longer falls back to the environment on its own).
-    const workDir = optionalString(args["work-dir"]) ??
-      Deno.env.get("WORK_DIR") ?? Deno.env.get("HOME") ?? "";
-    setSelfHealEventsWorkDir(workDir || undefined);
+    setSelfHealEventsWorkDir(resolveSelfHealEventsWorkDir(args));
     return updateWorkerCheckout(args);
   },
 };
