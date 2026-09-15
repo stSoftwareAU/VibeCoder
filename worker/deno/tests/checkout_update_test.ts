@@ -22,27 +22,26 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildCheckoutHostFailurePayload,
   CHECKOUT_UPDATE_ESCALATION_MIN_SPAN_SECONDS,
   CHECKOUT_UPDATE_ESCALATION_THRESHOLD,
   CHECKOUT_UPDATE_FAILURE_STREAK_FILE,
   checkoutOverwriteNotice,
   checkoutStreakEscalates,
   type CheckoutUpdateDeps,
+  type CheckoutUpdateEscalationContext,
   type CheckoutUpdateStreak,
   diagnoseUpdateFailure,
   DIRECTORY_SERVICES_RETRY_DELAYS_MS,
   directoryServicesUid,
   emptyCheckoutStreak,
+  gitStepExitStatus,
   parseCheckoutStreak,
   parseOriginRepo,
   resetCheckoutToDefaultBranch,
   runGitStepWithRetry,
   SKIP_CHECKOUT_UPDATE_ENV,
   updateCheckout,
-} from "../lib/checkout_update.ts";
-import {
-  buildCheckoutHostFailurePayload,
-  gitStepExitStatus,
 } from "../lib/checkout_update.ts";
 import type { Result } from "../types.ts";
 import {
@@ -1112,9 +1111,8 @@ const STREAK_STARTED_AT = 1_700_000_000;
 
 /** A crash-loop as the update hands it to the hook. */
 function escalationContext(
-  overrides: Partial<Parameters<typeof buildCheckoutHostFailurePayload>[0]> =
-    {},
-) {
+  overrides: Partial<CheckoutUpdateEscalationContext> = {},
+): CheckoutUpdateEscalationContext {
   return {
     repoDir: "/srv/VibeCoder",
     logDir: "/srv/logs",
