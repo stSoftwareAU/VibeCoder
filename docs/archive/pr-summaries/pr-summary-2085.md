@@ -6,25 +6,27 @@ unscanned, so it escalated a backlog the claim scan had never looked at.
 `findNextIssue` unions `backedOffRepos()` — the durable fast-failure tracker's
 verdict (Issue #1950) — into `findOldestIssue`'s `excludeRepos`, which drops the
 repository before any collector runs. Unlike the maintenance lane's leases, that
-union is computed **inside** the scan and never reached `pool.scanExcludedRepos`,
-so the census read `scanned=true skip_reason=scanned`, counted the backlog as
-claimable, and after three consecutive cycles filed an idle-inversion issue —
-with no "what the claim scan did with them" section at all, because the scan had
-recorded no reason for a single one of the eight issues.
+union is computed **inside** the scan and never reached
+`pool.scanExcludedRepos`, so the census read `scanned=true skip_reason=scanned`,
+counted the backlog as claimable, and after three consecutive cycles filed an
+idle-inversion issue — with no "what the claim scan did with them" section at
+all, because the scan had recorded no reason for a single one of the eight
+issues.
 
 Both idle instruments now read the same durable sidecar the scan reads (a local
 file, no API call — exactly as they already do for the run-local holds):
 
 - the census records such a repo as `scanned=false skip_reason=repo_backed_off`,
-  reports it as `backedOffInversionRepos` with its own `NOTE
-  inversion_repo_backed_off` line, and keeps it out of `escalationRepos`;
-- the idle-detect audit unions the set into `heldRepos`, so `ALERT
-  mis_classification` stops firing about a repository the scan was not shown.
+  reports it as `backedOffInversionRepos` with its own note line
+  (`inversion_repo_backed_off`), and keeps it out of `escalationRepos`;
+- the idle-detect audit unions the set into `heldRepos`, so the
+  `mis_classification` ALERT stops firing about a repository the scan was never
+  shown.
 
-Claimable counts are deliberately unchanged on both sides, so the idle-task filer
-stays suppressed while the backlog waits (Issue #2813). The work that should be
-done on such a repository is its own fast-failure diagnostic, which the tracker
-has already filed.
+Claimable counts are deliberately unchanged on both sides, so the idle-task
+filer stays suppressed while the backlog waits (Issue #2813). The work that
+should be done on such a repository is its own fast-failure diagnostic, which
+the tracker has already filed.
 
 Closes #2085.
 
@@ -36,14 +38,14 @@ reproduction below plus the tests listed in the test plan.
 **The incident, reproduced from the real numbers.** VibeCoder#2085 named
 `stSoftwareAU/GRQ-FX-validation` (issues #149, #147, #145, #144, #143, #142,
 #141, #140) on `host=vibe-coder-76707:80`. VibeCoder#2079 — the fast-failure
-diagnostic for the *same repository on the same host* — records "3 fast failures
-in the last 24 h … **Backed off until:** 2026-09-16T09:10:31.000Z", failing phase
-`setup`. The two sides never disagreed: the scan never saw the repository.
+diagnostic for the _same repository on the same host_ — records "3 fast failures
+in the last 24 h … **Backed off until:** 2026-09-16T09:10:31.000Z", failing
+phase `setup`. The two sides never disagreed: the scan never saw the repository.
 
 `tests/idle_census_backed_off_wiring_2085_test.ts` drives the real
 `createProductionRunCoreDeps` with the sidecar seeded exactly as a previous
-worker process would have. Against the **unfixed** deps it reproduces the issue's
-own census line verbatim:
+worker process would have. Against the **unfixed** deps it reproduces the
+issue's own census line verbatim:
 
 ```text
 [idle-census] … repo=org/backed-off-fixture monitored=true scanned=true
@@ -76,11 +78,11 @@ flowchart TD
 
 - Added `worker/deno/tests/idle_census_repo_backed_off_2085_test.ts` — 11 cases
   over the census module: the new `repo_backed_off` skip reason, its own
-  inversion bucket, its exclusion from `escalationRepos` /
-  `heldInversionRepos` / `deferredInversionRepos`, the `NOTE
-  inversion_repo_backed_off` line, `isRepoBackedOffSkipReason`, and
-  `resolveRepoScanState`'s precedence (the back-off outranks a lease; an omitted
-  set preserves today's behaviour).
+  inversion bucket, its exclusion from `escalationRepos` / `heldInversionRepos`
+  / `deferredInversionRepos`, the `NOTE
+  inversion_repo_backed_off` line,
+  `isRepoBackedOffSkipReason`, and `resolveRepoScanState`'s precedence (the
+  back-off outranks a lease; an omitted set preserves today's behaviour).
 - Added `worker/deno/tests/idle_census_backed_off_wiring_2085_test.ts` — 3 cases
   driving the real production factory, seeding the durable fast-failure sidecar
   and asserting on the lines the real `runIdleDetectAudit` and
@@ -88,9 +90,18 @@ flowchart TD
   failing against the unfixed deps (reproducing the issue's own census line and
   the `mis_classification` ALERT) and passing after the fix. Offline — the audit
   runs first and warms the shared issue/PR caches the census reads.
-- Re-ran the neighbouring suites unchanged:
-  `idle_decision_census_test.ts`, `idle_census_repo_held_898_test.ts`,
+- Re-ran the neighbouring suites unchanged: `idle_decision_census_test.ts`,
+  `idle_census_repo_held_898_test.ts`,
   `stream_scoped_slot_exclusion_1091_test.ts`, `idle_inversion_streak_test.ts`,
   `run_core_idle_census_test.ts`, `idle_audit_wiring_1050_test.ts`,
   `run_core_production_deps_fast_failure_test.ts` — 141 passed, 0 failed.
-- `./quality.sh` run in full after the final edit.
+- `./quality.sh` run in full after the final edit: every check passes except
+  `deno tests`, which fails on two cases unrelated to this change —
+  `agent_provider_test.ts` and `config_test.ts`'s `per-run provider override`
+  cases, both raising _"The running container image did not install the
+  `deepseek` coding-agent provider"_. Verified pre-existing: the same two cases
+  fail identically on a clean `origin/main` worktree at `8583959c`, and this
+  diff touches neither file. Already tracked as stSoftwareAU/VibeCoder#2086.
+  Everything else is green — `21662 passed | 2 failed`, plus semgrep, deno lint,
+  deno type check, deno fmt, markdownlint, mermaid and the repo's own chokepoint
+  scanners.
