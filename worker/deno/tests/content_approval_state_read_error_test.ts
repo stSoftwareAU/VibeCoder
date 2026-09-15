@@ -19,6 +19,7 @@ import {
   captureContentSnapshot,
   type ContentApprovalDeps,
   type ContentApprovalState,
+  isContentStateUnusable,
   readContentApprovalState,
   removeContentSnapshot,
   resetContentApprovalRunState,
@@ -516,6 +517,63 @@ Deno.test(
       [],
       "a store known to be unusable this run must not be re-baselined",
     );
+    resetContentApprovalRunState();
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #2117 — a sibling slot's first write lands between the read and the
+// initialised check
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "readContentApprovalState - a state file that appears between the failed read and the initialised check is read, not called deleted (Issue #2117)",
+  async () => {
+    resetContentApprovalRunState();
+    let reads = 0;
+    const deps = {
+      readFile: (path: string) => {
+        reads += 1;
+        if (reads === 1) {
+          return Promise.reject(
+            new Deno.errors.NotFound(`No such file: ${path}`),
+          );
+        }
+        return Promise.resolve(JSON.stringify({ snapshots: {} }));
+      },
+      stateDirExists: () => Promise.resolve(true),
+    };
+
+    const result = await readContentApprovalState(WORK_DIR, deps);
+
+    assert(
+      result.ok,
+      `the second read must win: ${!result.ok && result.error.message}`,
+    );
+    assertEquals(reads, 2, "exactly one more read, no polling");
+    assertEquals(
+      isContentStateUnusable(WORK_DIR),
+      false,
+      "a store that was simply being written must not be latched unusable",
+    );
+  },
+);
+
+Deno.test(
+  "readContentApprovalState - a state file still absent on the second read is the deleted baseline, and latches (Issue #2117)",
+  async () => {
+    resetContentApprovalRunState();
+    const deps = {
+      readFile: (path: string) =>
+        Promise.reject(new Deno.errors.NotFound(`No such file: ${path}`)),
+      stateDirExists: () => Promise.resolve(true),
+    };
+
+    const result = await readContentApprovalState(WORK_DIR, deps);
+
+    assert(!result.ok, "a marker without a state file is a deleted baseline");
+    assert(result.error.message.includes("deleted"), result.error.message);
+    assertEquals(isContentStateUnusable(WORK_DIR), true);
     resetContentApprovalRunState();
   },
 );
