@@ -144,6 +144,59 @@ export async function findOpenPrUrlViaRest(
   }
 }
 
+/**
+ * Find the PR for a head branch that has already **merged**, over REST
+ * (Issue #2150).
+ *
+ * A run's PR can land before its completion phase runs — the agent opened it
+ * itself mid-run and auto-merge took it — and under a latched GraphQL quota
+ * every merged-PR read the phase makes is blind. The REST `pulls` list with
+ * `state=closed` (which includes merged) rides the core quota and answers
+ * in one call. Closed-but-unmerged PRs are not returned: they are not the
+ * run's PR.
+ */
+export async function findMergedPrUrlViaRest(
+  repo: string,
+  head: string,
+  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+): Promise<Result<string>> {
+  if (!REPO_PATTERN.test(repo)) {
+    return {
+      ok: false,
+      error: new Error(`Invalid repo '${repo}' (expected owner/repo)`),
+    };
+  }
+  const owner = repo.split("/")[0]!;
+  try {
+    const raw = await ghCommandFn([
+      "api",
+      "-X",
+      "GET",
+      `repos/${repo}/pulls`,
+      "-f",
+      `head=${owner}:${head}`,
+      "-f",
+      "state=closed",
+      "--jq",
+      "[.[] | select(.merged_at != null)][0].html_url",
+    ]);
+    const url = firstUrl(raw);
+    if (url) return { ok: true, value: url };
+    return {
+      ok: false,
+      error: new Error(`No merged PR found for branch '${head}' in ${repo}`),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: new Error(
+        `REST merged-PR lookup failed for branch '${head}' in ${repo}: ${message}`,
+      ),
+    };
+  }
+}
+
 /** Request reviewers over REST. Best-effort: a failure is logged, not fatal. */
 async function requestReviewersViaRest(
   repo: string,
@@ -235,6 +288,17 @@ export async function createPullRequestViaRest(
           `REST PR creation found an existing PR for '${head}' in ${repo}: ${existing.value}`,
         );
         return existing;
+      }
+      // Issue #2150: the run's PR may already have merged — the agent opened
+      // it mid-run and auto-merge took it before completion ran. That PR is
+      // this run's PR; the work is landed, not lost.
+      const merged = await findMergedPrUrlViaRest(repo, head, ghCommandFn);
+      if (merged.ok) {
+        deps.log?.(
+          `REST PR creation found the PR for '${head}' in ${repo} already ` +
+            `merged: ${merged.value} (Issue #2150)`,
+        );
+        return merged;
       }
       if (isPrAlreadyExistsError(message)) {
         return {

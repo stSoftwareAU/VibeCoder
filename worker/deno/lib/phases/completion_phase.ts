@@ -643,7 +643,10 @@ async function runCompletionAttempt(
     result.reason,
     state,
     deps.logger,
-    { backoffMs: ctx.config.infraRetryBackoffMs },
+    {
+      backoffMs: ctx.config.infraRetryBackoffMs,
+      cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
+    },
   );
   return shouldRetry ? await completionBody(ctx, state, deps) : result;
 }

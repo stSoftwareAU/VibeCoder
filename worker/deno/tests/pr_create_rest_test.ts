@@ -13,6 +13,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createPullRequestViaRest,
+  findMergedPrUrlViaRest,
   findOpenPrUrlViaRest,
   isPrAlreadyExistsError,
 } from "../lib/pr_create_rest.ts";
@@ -317,4 +318,99 @@ Deno.test("isPrAlreadyExistsError - matches GitHub's 422 wording only", () => {
     isPrAlreadyExistsError("GraphQL: API rate limit already exceeded"),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2150 — the run's PR already merged before completion ran
+// ---------------------------------------------------------------------------
+
+/** The REST list call's `state=` value, or null for a non-list call. */
+function listedState(args: string[]): string | null {
+  if (args[0] !== "api" || args[3] !== "repos/acme/widgets/pulls") return null;
+  if (args[1] !== "-X" || args[2] !== "GET") return null;
+  const i = args.findIndex((a) => a.startsWith("state="));
+  return i === -1 ? null : args[i]!.slice("state=".length);
+}
+
+Deno.test("createPullRequestViaRest - a 422 with no open PR but a merged one for the head returns the merged PR (Issue #2150)", async () => {
+  // NEAT-AI-core#673: the agent opened the PR mid-run, auto-merge took it
+  // 37 s before completion ran under a latched GraphQL quota, and the REST
+  // create's 422 was reported as a failure of a run whose work had landed.
+  const logs: string[] = [];
+  const rec = recorder((args) => {
+    const state = listedState(args);
+    if (state === "open") return "null\n";
+    if (state === "closed") return "https://github.com/acme/widgets/pull/694\n";
+    throw new Error(
+      "gh command failed (exit 1): gh: Validation Failed (HTTP 422)",
+    );
+  });
+
+  const result = await createPullRequestViaRest({
+    repo: "acme/widgets",
+    title: "One per-variant data list",
+    body: "Closes #673",
+    head: "issue-673-one-list",
+    base: "milestone/scan",
+  }, { ghCommandFn: rec.fn, log: (m) => logs.push(m) });
+
+  assert(
+    result.ok,
+    `expected the merged PR, got: ${!result.ok && result.error}`,
+  );
+  assertEquals(result.value, "https://github.com/acme/widgets/pull/694");
+  assertEquals(
+    rec.calls.map(listedState).filter((s) => s !== null),
+    ["open", "closed"],
+    "the open lookup runs first, the merged lookup only after it finds nothing",
+  );
+  assert(logs.some((l) => l.includes("already merged")), logs.join("\n"));
+});
+
+Deno.test("createPullRequestViaRest - a 422 with neither an open nor a merged PR for the head is still the validation failure (Issue #2150)", async () => {
+  const rec = recorder((args) => {
+    if (listedState(args) !== null) return "null\n";
+    throw new Error(
+      "gh command failed (exit 1): gh: Validation Failed (HTTP 422)",
+    );
+  });
+
+  const result = await createPullRequestViaRest({
+    repo: "acme/widgets",
+    title: "t",
+    body: "b",
+    head: "issue-1-x",
+    base: "main",
+  }, { ghCommandFn: rec.fn });
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "422");
+});
+
+Deno.test("findMergedPrUrlViaRest - asks for closed PRs of the head and keeps only merged ones", async () => {
+  const rec = recorder(() => "https://github.com/acme/widgets/pull/694\n");
+  const result = await findMergedPrUrlViaRest(
+    "acme/widgets",
+    "issue-673-x",
+    rec.fn,
+  );
+  assert(result.ok);
+  assertEquals(result.value, "https://github.com/acme/widgets/pull/694");
+  const args = rec.calls[0]!;
+  assertEquals(listedState(args), "closed");
+  assert(args.includes("head=acme:issue-673-x"));
+  const jq = args[args.indexOf("--jq") + 1]!;
+  assertStringIncludes(jq, "merged_at != null");
+});
+
+Deno.test("findMergedPrUrlViaRest - a closed-but-unmerged PR is not the run's PR", async () => {
+  // The jq keeps only merged rows; an empty list comes back as `null`.
+  const rec = recorder(() => "null\n");
+  const result = await findMergedPrUrlViaRest(
+    "acme/widgets",
+    "issue-673-x",
+    rec.fn,
+  );
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "No merged PR");
 });
