@@ -382,15 +382,21 @@ flowchart TD
   a toolchain to `container/tools.json` adds its probe with no other edit, so
   the check cannot drift out of step with the install list.
 - **Concurrent and bounded.** The probes run together and each is bounded by
-  `TOOLCHAIN_PROBE_TIMEOUT_MS`, so a healthy image costs well under a second
-  (measured in the image: 0.64 s for all thirteen, against 1.10 s run one after
-  another) and a binary that hangs on this architecture costs seconds, not the
-  run.
+  `TOOLCHAIN_PROBE_TIMEOUT_MS`, so the launch pays the slowest probe rather
+  than the sum of thirteen. Measured in the image, all thirteen together cost
+  **0.64 s** against a warm page cache and **1.99 s** on the first run after
+  the image is written — the tools' own start-up, not the check's:
+  `markdownlint-cli2` alone is 1.9 s of a cold run and `semgrep` 0.65 s. A
+  binary that hangs on this architecture costs seconds, not the run.
 - **One line per toolchain** reaches the run log — `toolchain-selfcheck: ok
   actionlint 1.7.12`, or `FAILED …` with the probe's own words.
 - **A failure is refused, not charged.** The worker exits
   `TOOLCHAIN_SELFCHECK_EXIT_STATUS` (89) before resolving its GitHub identity,
   so no issue is claimed and no attempt is spent.
+- **A manifest fault is not an image fault.** An unreadable
+  `container/tools.json`, or one pinning nothing, fails loud on the ordinary
+  status 1 and prints no marker: a rebuilt image would meet exactly the same
+  manifest, so it must not cost the host its image.
 - **The host rebuilds on the next launch.** The launchers read the failing ids
   out of the container's captured stderr, name them in `run_core.log`, and
   remove the content-derived image reference — an absent reference is exactly

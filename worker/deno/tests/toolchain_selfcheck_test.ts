@@ -119,8 +119,13 @@ Deno.test("toolchainProbes - the committed manifest yields one probe per toolcha
   );
   const probes = toolchainProbes(manifest);
 
-  assertEquals(probes.length, manifest.toolchains.length);
   assert(probes.length > 0, "the committed manifest must pin toolchains");
+  for (const toolchain of manifest.toolchains) {
+    assert(
+      probes.some((probe) => probe.id === toolchain.id),
+      `${toolchain.id} is pinned but never probed`,
+    );
+  }
   for (const probe of probes) {
     assert(
       probe.argv.length > 0,
@@ -140,6 +145,75 @@ Deno.test("toolchainProbes - the committed manifest yields one probe per toolcha
   assertEquals(pyyaml.kind, "module");
   assertEquals(pyyaml.argv[0], "python3");
   assertStringIncludes(pyyaml.argv.join(" "), "import yaml");
+});
+
+Deno.test("toolchainProbes - a toolchain declaring both surfaces is probed through both", () => {
+  // The manifest allows an entry to supply commands AND importable modules.
+  // Probing only the first would leave the PyYAML fault this check exists for
+  // unverified on exactly such an entry.
+  const manifest = parseContainerManifest(manifestText([{
+    id: "both",
+    version: "2.0.0",
+    versionArg: "BOTH_VERSION",
+    commands: ["both"],
+    versionCommand: "both",
+    modules: ["both_mod"],
+    versionModule: "both_mod",
+    source: "https://example.invalid/both",
+    repos: ["stSoftwareAU/VibeCoder"],
+    sha256: FIXTURE_SHA256,
+  }]));
+
+  const probes = toolchainProbes(manifest);
+  assertEquals(probes.length, 2);
+  assertEquals(probes.map((probe) => probe.kind), ["command", "module"]);
+});
+
+Deno.test("checkContainerToolchains - a pin that is a prefix of the installed version fails", () => {
+  // `1.7.1` appears inside `1.7.12`, so a plain substring test would report
+  // the one version mismatch this check exists to catch as healthy.
+  return check(
+    [commandToolchain("actionlint", "1.7.1")],
+    () => Promise.resolve({ code: 0, stdout: "1.7.12\n", stderr: "" }),
+  ).then((verdict) => {
+    assertEquals(verdict.ok, false);
+    assertEquals(verdict.failed, ["actionlint"]);
+  });
+});
+
+Deno.test("checkContainerToolchains - the pinned version is matched as a whole token", async () => {
+  // …and the same rule must not reject a version that really is reported,
+  // whatever punctuation surrounds it.
+  const verdict = await check(
+    [commandToolchain("gitleaks", "8.30.1")],
+    () =>
+      Promise.resolve({
+        code: 0,
+        stdout: "gitleaks version 8.30.1\n",
+        stderr: "",
+      }),
+  );
+  assertEquals(verdict.ok, true);
+});
+
+Deno.test("checkContainerToolchains - a manifest with no toolchains key blames the manifest, not the image", async () => {
+  // The parser rejects `"toolchains": []` but takes an ABSENT key as none, so
+  // this is the shape that would otherwise report "0 toolchains verified" as
+  // a pass.
+  const { toolchains: _dropped, ...withoutToolchains } = COMMITTED_MANIFEST;
+  const verdict = await checkContainerToolchains({
+    repoRoot: "/nowhere",
+    env: IN_IMAGE,
+    readManifest: () => Promise.resolve(JSON.stringify(withoutToolchains)),
+    runProbe: () => Promise.resolve({ code: 0, stdout: "", stderr: "" }),
+  });
+
+  assertEquals(verdict.ok, false);
+  assertEquals(verdict.fault, "manifest");
+  // No marker: the launchers rebuild on the failing ids, and a rebuilt image
+  // would meet exactly the same manifest.
+  assertEquals(verdict.marker, undefined);
+  assertStringIncludes(verdict.reason ?? "", "pins no toolchain");
 });
 
 // ---------------------------------------------------------------------------
@@ -186,6 +260,7 @@ Deno.test("checkContainerToolchains - a binary that cannot execute fails, naming
   );
 
   assertEquals(verdict.ok, false);
+  assertEquals(verdict.fault, "image");
   assertEquals(verdict.failed, ["actionlint"]);
   assertStringIncludes(verdict.reason ?? "", "actionlint");
   assertStringIncludes(
@@ -313,6 +388,7 @@ Deno.test("checkContainerToolchains - an unreadable manifest fails loud rather t
   });
 
   assertEquals(verdict.ok, false);
+  assertEquals(verdict.fault, "manifest");
   assertStringIncludes(verdict.reason ?? "", "no such file");
 });
 
@@ -331,10 +407,7 @@ Deno.test("checkContainerToolchains - a manifest pinning no toolchain fails loud
     verdict.reason ?? "",
     "toolchains must list at least one entry",
   );
-  assertStringIncludes(
-    verdict.marker ?? "",
-    TOOLCHAIN_SELFCHECK_FAILURE_MARKER,
-  );
+  assertEquals(verdict.fault, "manifest");
 });
 
 // ---------------------------------------------------------------------------

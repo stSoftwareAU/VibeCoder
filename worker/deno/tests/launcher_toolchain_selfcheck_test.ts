@@ -30,6 +30,7 @@ import {
   TOOLCHAIN_SELFCHECK_EXIT_STATUS,
   TOOLCHAIN_SELFCHECK_FAILURE_MARKER,
 } from "../lib/toolchain_selfcheck.ts";
+import { executableLines } from "../lib/launcher_source.ts";
 
 const LAUNCHERS: LauncherInvocation[] = [
   BASH_LAUNCHER,
@@ -168,3 +169,44 @@ for (const launcher of LAUNCHERS) {
     },
   );
 }
+
+// The cases above drive both launchers end to end wherever PowerShell is
+// installed. This one holds the constants themselves: the status and the
+// marker are a contract in three languages that no single process executes,
+// and the module's own documentation promises the launcher tests keep them in
+// step.
+// Each launcher is named as a literal path, never interpolated: that is the
+// construction `integration_test_manifest.ts` classifies on, and a suite it
+// stops recognising drops out of its manifest.
+Deno.test("the launchers restate the self-check status and marker correctly", async () => {
+  for (
+    const [name, dialect, url, statusPattern] of [
+      [
+        "run.sh",
+        "bash",
+        new URL("../../../run.sh", import.meta.url),
+        /TOOLCHAIN_SELFCHECK_EXIT_STATUS=(\d+)/,
+      ],
+      [
+        "run.ps1",
+        "powershell",
+        new URL("../../../run.ps1", import.meta.url),
+        /\$ToolchainSelfCheckExitStatus\s*=\s*(\d+)/,
+      ],
+    ] as const
+  ) {
+    const body = executableLines(await Deno.readTextFile(url), dialect).join(
+      "\n",
+    );
+
+    const status = statusPattern.exec(body);
+    assert(status, `${name} does not name the self-check exit status`);
+    assertEquals(Number(status[1]), TOOLCHAIN_SELFCHECK_EXIT_STATUS);
+
+    assert(
+      body.includes(TOOLCHAIN_SELFCHECK_FAILURE_MARKER),
+      `${name} does not read the marker the container prints, so its host ` +
+        "log cannot name the failing toolchain",
+    );
+  }
+});

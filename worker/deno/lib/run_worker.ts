@@ -736,9 +736,22 @@ ${credentialFailure}`);
       const reason = toolchainVerdict.reason ??
         "the container toolchain self-check failed";
       deps.logError(`[run-worker] toolchain self-check failed: ${reason}`);
+      // The marker goes to the ERROR sink as well as the log above: the
+      // launchers read it out of the container's captured stderr to name the
+      // toolchain in the host log, and at LOG_LEVEL=WARNING the informational
+      // copy never leaves the process.
+      if (toolchainVerdict.marker) {
+        deps.logError(`[run-worker] ${toolchainVerdict.marker}`);
+      }
       return {
         outcome: "toolchains-unusable",
-        exitCode: TOOLCHAIN_SELFCHECK_EXIT_STATUS,
+        // Only an image fault is worth a rebuild, and the status is what the
+        // launchers act on: a manifest this checkout cannot supply is an
+        // ordinary loud bootstrap failure, because removing the image would
+        // cost a multi-gigabyte rebuild that meets the same manifest.
+        exitCode: toolchainVerdict.fault === "manifest"
+          ? 1
+          : TOOLCHAIN_SELFCHECK_EXIT_STATUS,
         reason,
       };
     }

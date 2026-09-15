@@ -457,6 +457,35 @@ Deno.test("runWorker - an image missing a pinned toolchain aborts before any cla
   }
 });
 
+Deno.test("runWorker - a manifest the checkout cannot supply is not an image fault (Issue #1956)", async () => {
+  const rec = newRecorder();
+  // No container/tools.json at all: nothing can be verified, and it must fail
+  // loud — but on the ordinary status, because removing and rebuilding a
+  // multi-gigabyte image would meet exactly the same missing manifest.
+  const repoDir = await Deno.makeTempDir({ prefix: "run-worker-manifest-" });
+  try {
+    const result = await runWorker(
+      {
+        ...baseOptions(),
+        baseDir: repoDir,
+        env: (name: string) => ({
+          HOME: "/home/worker",
+          PATH: "/bin",
+          WORK_DIR: "/work",
+          [CONTAINER_IMAGE_STAMP_ENV]: "claude",
+        }[name]),
+      },
+      stubDeps(rec),
+    );
+
+    assertEquals(result.outcome, "toolchains-unusable");
+    assertEquals(result.exitCode, 1);
+    assertEquals(rec.calls.includes("loop"), false);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+  }
+});
+
 Deno.test("runWorker - a host run has no image to verify and starts normally (Issue #1956)", async () => {
   const rec = newRecorder();
   // baseOptions() carries no image stamp, and /repo holds no manifest at

@@ -1726,7 +1726,11 @@ TOOLCHAIN_SELFCHECK_EXIT_STATUS=89
 TOOLCHAIN_SELFCHECK_FAILURE_MARKER="[TOOLCHAIN-SELFCHECK-FAILED]"
 TOOLCHAIN_REBUILD_STATE="${VIBE_TOOLCHAIN_REBUILD_STATE:-${VIBE_STATE_DIR}/toolchain-selfcheck-rebuild}"
 
-# The reference this host last removed over a failed self-check, if any.
+# Did this host already remove THIS reference over a failed self-check?
+#
+# An unreadable record reads as "no" deliberately: the bound it carries is a
+# guard against a rebuild loop, and refusing the first removal because the
+# record could not be read would leave a genuinely broken image in place.
 toolchain_rebuild_recorded() {
   [[ -f "${TOOLCHAIN_REBUILD_STATE}" ]] || return 1
   [[ "$(cat "${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true)" == "${IMAGE}" ]]
@@ -1758,19 +1762,31 @@ if ((status == TOOLCHAIN_SELFCHECK_EXIT_STATUS)); then
     echo "[run.sh] [TOOLCHAIN_SELFCHECK_UNRECOVERED] ${IMAGE} still fails the" \
       "self-check after a rebuild - not removing it again (Issue #1956)" >&2
     log_run_core "[TOOLCHAIN_SELFCHECK_UNRECOVERED] ${IMAGE} still does not provide ${failed_detail} after a rebuild - the definition, not the cached tag, is what is wrong (Issue #1956)"
-  elif "${RUNTIME}" "${image_remove_args[@]}" "${IMAGE}" \
-    </dev/null >/dev/null 2>&1; then
-    log_run_core "toolchain-selfcheck: removed ${IMAGE} - the next launch rebuilds it rather than reusing the cached tag (Issue #1956)"
-    mkdir -p "$(dirname "${TOOLCHAIN_REBUILD_STATE}")" 2>/dev/null || true
-    printf '%s\n' "${IMAGE}" >"${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true
   else
-    echo "[run.sh] warning: could not remove ${IMAGE} - the next launch will" \
-      "reuse the image that just failed its self-check" >&2
-    log_run_core "toolchain-selfcheck: could not remove ${IMAGE} - the next launch reuses the image that just failed (Issue #1956)"
+    # The runtime's own words are kept: a removal that failed for want of a
+    # running container, or a reference another tag still holds, is the whole
+    # account of why the next launch will reuse this image.
+    image_remove_err="$(mktemp "${TMPDIR:-/tmp}/vibe-image-rm.XXXXXX")"
+    if "${RUNTIME}" "${image_remove_args[@]}" "${IMAGE}" \
+      </dev/null >/dev/null 2>"${image_remove_err}"; then
+      log_run_core "toolchain-selfcheck: removed ${IMAGE} - the next launch rebuilds it rather than reusing the cached tag (Issue #1956)"
+      mkdir -p "$(dirname "${TOOLCHAIN_REBUILD_STATE}")" 2>/dev/null || true
+      printf '%s\n' "${IMAGE}" >"${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true
+    else
+      image_remove_detail="$(runtime_error_detail "${image_remove_err}")"
+      echo "[run.sh] warning: could not remove ${IMAGE} (${image_remove_detail})" \
+        "- the next launch will reuse the image that just failed its" \
+        "self-check" >&2
+      log_run_core "toolchain-selfcheck: could not remove ${IMAGE}: ${image_remove_detail} - the next launch reuses the image that just failed (Issue #1956)"
+    fi
+    rm -f "${image_remove_err}"
   fi
-elif toolchain_rebuild_recorded; then
-  # This reference got past the self-check, so the rebuild worked and the
-  # record must not go on suppressing a removal for a later, different fault.
+elif ((status == 0)) && toolchain_rebuild_recorded; then
+  # This reference ran clean, so it got past the self-check and the rebuild
+  # worked: the record must not go on suppressing a removal for a later fault.
+  # Only a CLEAN run clears it - a crashed worker, a refused container start
+  # or a failed rebuild says nothing about the self-check, and clearing on
+  # those would hand the rebuild loop back the cycle this bound took from it.
   rm -f "${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true
 fi
 

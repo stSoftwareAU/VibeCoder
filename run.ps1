@@ -1447,6 +1447,11 @@ if (-not $ToolchainRebuildState) {
     $ToolchainRebuildState = Join-Path $StateDir "toolchain-selfcheck-rebuild"
 }
 
+# Did this host already remove this reference over a failed self-check?
+#
+# An unreadable record reads as "no" deliberately: the bound it carries is a
+# guard against a rebuild loop, and refusing the first removal because the
+# record could not be read would leave a genuinely broken image in place.
 function Test-ToolchainRebuildRecorded {
     param([Parameter(Mandatory = $true)][string] $Reference)
 
@@ -1503,17 +1508,29 @@ if ($runStatus -eq $ToolchainSelfCheckExitStatus) {
                 # the launch.
             }
         } else {
+            # The runtime's own words are kept: a removal that failed for want
+            # of a running container, or a reference another tag still holds,
+            # is the whole account of why the next launch reuses this image.
+            $removeDetail = if ($removedImage.StdErr) {
+                $removedImage.StdErr.Trim()
+            } elseif ($removedImage.StdOut) {
+                $removedImage.StdOut.Trim()
+            } else { "no explanation given" }
             [Console]::Error.WriteLine(
-                "[run.ps1] warning: could not remove $Image - the next launch " +
-                "will reuse the image that just failed its self-check")
-            Write-RunCoreLog ("toolchain-selfcheck: could not remove $Image - " +
-                "the next launch reuses the image that just failed " +
-                "(Issue #1956)")
+                "[run.ps1] warning: could not remove $Image ($removeDetail) - " +
+                "the next launch will reuse the image that just failed its " +
+                "self-check")
+            Write-RunCoreLog ("toolchain-selfcheck: could not remove $Image" +
+                ": $removeDetail - the next launch reuses the image that just " +
+                "failed (Issue #1956)")
         }
     }
-} elseif (Test-ToolchainRebuildRecorded -Reference $Image) {
-    # This reference got past the self-check, so the rebuild worked and the
-    # record must not go on suppressing a removal for a later, different fault.
+} elseif ($runStatus -eq 0 -and (Test-ToolchainRebuildRecorded -Reference $Image)) {
+    # This reference ran clean, so it got past the self-check and the rebuild
+    # worked: the record must not go on suppressing a removal for a later
+    # fault. Only a CLEAN run clears it - a crashed worker, a refused container
+    # start or a failed rebuild says nothing about the self-check, and clearing
+    # on those would hand the rebuild loop back the cycle this bound took.
     Remove-Item -LiteralPath $ToolchainRebuildState -Force `
         -ErrorAction SilentlyContinue
 }

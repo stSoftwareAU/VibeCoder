@@ -115,10 +115,23 @@ export interface ToolchainProbeResult {
   detail?: string;
 }
 
+/**
+ * What a failed self-check blames.
+ *
+ * `image` is the fault this check exists for — a toolchain the running image
+ * does not provide as pinned — and it is the one the launchers act on by
+ * rebuilding. `manifest` is the checkout's own `container/tools.json` being
+ * unreadable or pinning nothing: no rebuild can fix that, so it must not cost
+ * the host its image.
+ */
+export type ToolchainSelfCheckFault = "image" | "manifest";
+
 /** What one self-check concluded. */
 export interface ToolchainSelfCheckVerdict {
   /** True when every pinned toolchain reported its pinned version. */
   ok: boolean;
+  /** What a failure blames; absent when the verdict is `ok`. */
+  fault?: ToolchainSelfCheckFault;
   /** Why nothing was probed, when nothing was — e.g. a host run. */
   skipped?: string;
   /** One result per probe, in manifest order. */
@@ -178,23 +191,29 @@ function summarise(text: string): string {
 }
 
 /**
- * Derive the probe for one pinned toolchain.
+ * Derive the probes for one pinned toolchain.
+ *
+ * Every surface the entry declares is probed, not the first: a toolchain that
+ * supplies both a command and an importable module (the manifest allows both)
+ * would otherwise have the module — the PyYAML fault this check exists for —
+ * silently unverified.
  *
  * @param toolchain - The manifest entry
- * @returns The probe, or null when the entry declares no version surface
+ * @returns One probe per declared version surface, empty when it declares none
  */
-function probeFor(toolchain: ContainerToolchainPin): ToolchainProbe | null {
+function probesFor(toolchain: ContainerToolchainPin): ToolchainProbe[] {
+  const probes: ToolchainProbe[] = [];
   if (toolchain.versionCommand !== undefined) {
-    return {
+    probes.push({
       id: toolchain.id,
       version: toolchain.version,
       kind: "command",
       argv: [toolchain.versionCommand, "--version"],
-    };
+    });
   }
   if (toolchain.versionModule !== undefined) {
     const module = toolchain.versionModule;
-    return {
+    probes.push({
       id: toolchain.id,
       version: toolchain.version,
       kind: "module",
@@ -203,34 +222,34 @@ function probeFor(toolchain: ContainerToolchainPin): ToolchainProbe | null {
         "-c",
         `import ${module}; print(${module}.__version__)`,
       ],
-    };
+    });
   }
-  return null;
+  return probes;
 }
 
 /**
  * The probes a manifest implies, in manifest order.
  *
- * Every pinned toolchain yields exactly one probe: the manifest parser
+ * Every pinned toolchain yields at least one probe: the manifest parser
  * guarantees a version surface, so an entry without one is a manifest this
  * function refuses rather than silently drops.
  *
  * @param manifest - The parsed container manifest
- * @returns One probe per pinned toolchain
+ * @returns The probes, one per declared version surface
  * @throws When a pinned toolchain declares no version surface
  */
 export function toolchainProbes(
   manifest: ContainerManifest,
 ): ToolchainProbe[] {
-  return manifest.toolchains.map((toolchain) => {
-    const probe = probeFor(toolchain);
-    if (probe === null) {
+  return manifest.toolchains.flatMap((toolchain) => {
+    const probes = probesFor(toolchain);
+    if (probes.length === 0) {
       throw new Error(
         `Toolchain "${toolchain.id}" declares neither versionCommand nor ` +
           "versionModule — it cannot be verified at start-up",
       );
     }
-    return probe;
+    return probes;
   });
 }
 
@@ -293,7 +312,7 @@ function judge(
   }
 
   const matched = probe.kind === "command"
-    ? `${outcome.stdout}\n${outcome.stderr}`.includes(probe.version)
+    ? reportsVersion(`${outcome.stdout}\n${outcome.stderr}`, probe.version)
     : outcome.stdout.trim() === probe.version;
   if (!matched) {
     return {
@@ -305,6 +324,46 @@ function judge(
     };
   }
   return { probe, ok: true, reported };
+}
+
+/**
+ * Does this output report exactly the pinned version?
+ *
+ * A plain substring test passes a pin that is a PREFIX of what the image
+ * carries — pin 1.7.1 against an installed 1.7.12 — which is the one version
+ * mismatch this check would be reporting as healthy. The pin must therefore
+ * stand as a whole version token, bounded by something that cannot continue
+ * it.
+ *
+ * @param output - Everything the probe printed
+ * @param version - The pinned version
+ * @returns True when the output carries the pin as a complete token
+ */
+function reportsVersion(output: string, version: string): boolean {
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^0-9A-Za-z.])${escaped}([^0-9A-Za-z.]|$)`).test(
+    output,
+  );
+}
+
+/**
+ * The verdict for a manifest this check cannot judge an image against.
+ *
+ * No marker and no failing toolchain id: the launchers rebuild on the ids,
+ * and a rebuilt image would meet the same unreadable manifest.
+ *
+ * @param reason - What is wrong with the manifest
+ * @returns The failed verdict
+ */
+function manifestFault(reason: string): ToolchainSelfCheckVerdict {
+  return {
+    ok: false,
+    fault: "manifest",
+    results: [],
+    failed: [],
+    reason,
+    lines: [`toolchain-selfcheck: FAILED — ${reason}`],
+  };
 }
 
 /** The probe result for an argv this check refuses to execute. */
@@ -319,6 +378,9 @@ function refuse(probe: ToolchainProbe, detail: string): ToolchainProbeResult {
  * toolchain, a name that is not a command or module name, a probe that will
  * not run, one that times out, and one that reports a version other than the
  * pin. The absence of a failure is never taken for a pass.
+ *
+ * What a failure blames is {@link ToolchainSelfCheckVerdict.fault}: only an
+ * `image` fault is worth rebuilding for.
  *
  * @param options - Repository root and the injectable seams
  * @returns The verdict, including one log line per toolchain
@@ -343,16 +405,23 @@ export async function checkContainerToolchains(
     manifest = parseContainerManifest(await read());
     probes = toolchainProbes(manifest);
   } catch (error) {
-    const reason = `${manifestPath} could not be read as a toolchain ` +
-      `manifest: ${error instanceof Error ? error.message : String(error)}`;
-    return {
-      ok: false,
-      results: [],
-      failed: [],
-      reason,
-      marker: `${TOOLCHAIN_SELFCHECK_FAILURE_MARKER} manifest`,
-      lines: [`toolchain-selfcheck: FAILED — ${reason}`],
-    };
+    return manifestFault(
+      `${manifestPath} could not be read as a toolchain manifest: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  // A manifest that pins nothing verifies nothing, and "0 toolchains
+  // verified" reported as a pass is the absence-of-a-failure-is-not-success
+  // rule inverted. `parseContainerManifest` rejects an empty `toolchains`
+  // array but takes an ABSENT key as none, so this is the branch that refuses
+  // it.
+  if (probes.length === 0) {
+    return manifestFault(
+      `${manifestPath} pins no toolchain — the image supplies nothing this ` +
+        "check can verify",
+    );
   }
 
   const timeoutMs = options.timeoutMs ?? TOOLCHAIN_PROBE_TIMEOUT_MS;
@@ -403,5 +472,13 @@ export async function checkContainerToolchains(
     `the running image does not provide ${ids.join(", ")} as pinned in ` +
     manifestPath;
   lines.push(marker);
-  return { ok: false, results, failed: ids, reason, marker, lines };
+  return {
+    ok: false,
+    fault: "image",
+    results,
+    failed: ids,
+    reason,
+    marker,
+    lines,
+  };
 }
