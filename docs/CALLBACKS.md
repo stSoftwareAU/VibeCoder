@@ -327,9 +327,9 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_ESTIMATED_COST_USD`        | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
 | `VIBECODER_TELEMETRY_ABSENT_REASON`   | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
 | `VIBECODER_OUTCOME_KIND`              | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
-| `VIBECODER_OUTCOME_CATEGORY`          | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`                                                                             |
+| `VIBECODER_OUTCOME_CATEGORY`          | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                 |
 | `VIBECODER_OUTCOME_PHASE`             | `outcome.phase`                 | no             | Phase that terminated the run                                                                                        |
-| `VIBECODER_OUTCOME_FAILURE_CLASS`     | `outcome.failureClass`          | no             | Classifier slug for a no-PR run                                                                                      |
+| `VIBECODER_OUTCOME_FAILURE_CLASS`     | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked                                                    |
 | `VIBECODER_PR_NUMBER`                 | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                            |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
