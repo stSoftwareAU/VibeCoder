@@ -17,10 +17,12 @@ import {
   CONTAINER_TOOLS_ARG,
   findBrowserInstallViolations,
   findContainerfileViolations,
+  findGraftRebuildViolations,
   findMissingRuntimePythonModules,
   findMissingRuntimeTools,
   findProviderInstallViolations,
   findToolchainInstallViolations,
+  GRAFT_NATIVE_MODULES,
   isRegistryQualifiedImage,
   parseContainerManifest,
   REQUIRED_REPO_TOOLCHAIN_COMMANDS,
@@ -1891,6 +1893,177 @@ Deno.test("container/ - the image supplies every monitored-repo Python module", 
     [],
   );
   assert(REQUIRED_REPO_TOOLCHAIN_MODULES.includes("yaml"));
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2097 — Graft is pinned, and its native modules are built in the image
+// ---------------------------------------------------------------------------
+
+Deno.test("container/ - Graft is pinned as one noarch artefact probed by the manifest-derived self-check (Issue #2097)", async () => {
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
+  );
+  const graft = manifest.toolchains.find((t) => t.id === "graft");
+  assert(graft, "container/tools.json must pin the graft toolchain");
+
+  // The tarball is pure JavaScript: what differs per architecture is compiled
+  // in the image, not downloaded, so a second per-architecture digest would
+  // be pinning an artefact the build never fetches.
+  assertEquals(Object.keys(graft.sha256), ["noarch"]);
+  assertEquals(graft.versionArg, "GRAFT_VERSION");
+  assertEquals(graft.commands, ["graft"]);
+  // The self-check derives its probe from these two, so `graft --version`
+  // runs at start-up with no edit to toolchain_selfcheck.ts. `graft
+  // --version` prints the bare version, so it needs no versionArgs to strip a
+  // banner the way markdownlint-cli2 does.
+  assertEquals(graft.versionCommand, "graft");
+  assertEquals(graft.versionArgs, undefined);
+
+  // A worker runtime tool, not a repo gate tool: no monitored repository's
+  // quality.sh calls it, so it must not join the gate-command invariant.
+  assert(!REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("graft"));
+});
+
+Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift or go unproven (Issue #2097)", () => {
+  const sound = [
+    "RUN set -eu; \\",
+    `    native="${GRAFT_NATIVE_MODULES.join(" ")}"; \\`,
+    '    CXXFLAGS="-std=c++20" npm_config_nodedir=/usr/local \\',
+    "      npm_config_build_from_source=true \\",
+    `      npm rebuild -g --allow-scripts="$(printf '%s' "\${native}" | tr ' ' ',')" \${native}; \\`,
+    "    node -e 'for (const m of process.argv.slice(1)) require(m)' ${native}; \\",
+    '    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"',
+    "",
+  ].join("\n");
+  assertEquals(findGraftRebuildViolations(sound), []);
+
+  // The rules are about what the layer does, not how it is spelt: a different
+  // shell idiom for the allow-list, unquoted CXXFLAGS, another loop variable
+  // and a reordered probe are all still sound. A rule that failed here would
+  // be pinning this Containerfile's prose rather than its behaviour.
+  const respelt = [
+    "RUN set -eu; \\",
+    `    mods="${GRAFT_NATIVE_MODULES.join(" ")}"; \\`,
+    "    CXXFLAGS=-std=c++20 npm_config_nodedir=/usr/local \\",
+    "      npm_config_build_from_source=true \\",
+    '      npm rebuild -g --allow-scripts="${mods// /,}" ${mods}; \\',
+    "    node -e 'for (const name of process.argv.slice(1)) require(name)' ${mods}; \\",
+    '    v=$(DO_NOT_TRACK=1 graft --version); [ "$v" = "${GRAFT_VERSION}" ]',
+    "",
+  ].join("\n");
+  assertEquals(findGraftRebuildViolations(respelt), []);
+
+  // A step nobody rebuilds in is the fault the layer exists to prevent.
+  assertEquals(findGraftRebuildViolations("RUN graft --version\n"), [
+    "expected exactly one build step to rebuild Graft's native modules, found 0",
+  ]);
+
+  // An arm64-only compile hides a fault from every amd64 build...
+  const branched = sound.replace(
+    "RUN set -eu; \\",
+    'RUN set -eu; case "$(uname -m)" in aarch64) : ;; esac; \\',
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(branched).join("\n"),
+    "branches on architecture",
+  );
+
+  // ...a hard-coded allow-list drifts from the modules actually rebuilt...
+  const drifted = sound.replace(
+    `--allow-scripts="$(printf '%s' "\${native}" | tr ' ' ',')"`,
+    '--allow-scripts="tree-sitter"',
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(drifted).join("\n"),
+    "is not derived from the variable",
+  );
+
+  // ...no allow-list at all means npm 12 blocks every compile, silently...
+  const blocked = sound.replace(
+    `--allow-scripts="$(printf '%s' "\${native}" | tr ' ' ',')" `,
+    "",
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(blocked).join("\n"),
+    "names no --allow-scripts list",
+  );
+
+  // ...and without the load proof a blocked rebuild still reports success.
+  const unproven = sound.replace(
+    "    node -e 'for (const m of process.argv.slice(1)) require(m)' ${native}; \\\n",
+    "",
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(unproven).join("\n"),
+    "nothing loads the rebuilt modules",
+  );
+
+  // Dropping a grammar is named by the grammar it dropped.
+  const short = sound.replace(" tree-sitter-kotlin", "");
+  assertStringIncludes(
+    findGraftRebuildViolations(short).join("\n"),
+    "never names tree-sitter-kotlin",
+  );
+
+  // Dropping the bare tree-sitter core is the case a substring test misses:
+  // every remaining name still *contains* "tree-sitter", yet the one module
+  // that ships no arm64 prebuild at all would no longer be compiled.
+  const noCore = sound.replace(`native="tree-sitter `, 'native="');
+  assert(noCore !== sound, "the core-dropping fixture must differ");
+  assertEquals(findGraftRebuildViolations(noCore), [
+    "the rebuild never names tree-sitter",
+  ]);
+
+  // Headers fetched at build time break an offline builder.
+  const online = sound.replace("npm_config_nodedir=/usr/local ", "");
+  assertStringIncludes(
+    findGraftRebuildViolations(online).join("\n"),
+    "download Node headers",
+  );
+
+  // A rebuild that accepts a prebuild compiles nothing on amd64.
+  const prebuilt = sound.replace(
+    "      npm_config_build_from_source=true \\\n",
+    "",
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(prebuilt).join("\n"),
+    "would skip the compile",
+  );
+
+  // An unattended build must not phone home to read a version back.
+  const tracked = sound.replace("DO_NOT_TRACK=1 ", "");
+  assertStringIncludes(
+    findGraftRebuildViolations(tracked).join("\n"),
+    "ping upstream",
+  );
+
+  // A probe nothing compares would pass over any version that merely runs.
+  const uncompared = sound.replace(
+    '    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"',
+    "    DO_NOT_TRACK=1 graft --version",
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(uncompared).join("\n"),
+    "not compared against GRAFT_VERSION",
+  );
+
+  // A layer that compiles but never runs the binary proves half the job.
+  const unprobed = sound.replace(
+    '    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"',
+    "    true",
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(unprobed).join("\n"),
+    "never probes graft --version",
+  );
+});
+
+Deno.test("container/ - the committed Graft layer states every invariant a real compile depends on (Issue #2097)", async () => {
+  const containerfile = await Deno.readTextFile(
+    new URL("container/Containerfile", REPO_ROOT),
+  );
+  assertEquals(findGraftRebuildViolations(containerfile), []);
 });
 
 // ---------------------------------------------------------------------------
