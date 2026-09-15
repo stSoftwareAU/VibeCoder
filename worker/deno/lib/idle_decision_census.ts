@@ -184,6 +184,29 @@
  * hold rather than repeating "nothing refused this work", which is true but
  * sends a reader looking at cycle duration (Issue #479).
  *
+ * # A repo this host has backed off (Issue #2085)
+ *
+ * The scan drops a repository for a second reason the census could not see.
+ * `findNextIssue` unions `backedOffRepos()` — the durable fast-failure
+ * tracker's verdict (Issue #1950) — into `findOldestIssue`'s `excludeRepos`,
+ * so a repository whose runs keep dying at setup is skipped before any
+ * collector runs and records no per-issue skip reason at all. Unlike a
+ * maintenance-lane lease, that exclusion is computed inside the scan and was
+ * never reported back, so `scanExcludedRepos` did not carry it and the census
+ * read `scanned=true`.
+ *
+ * On 2026-09-15 `stSoftwareAU/GRQ-FX-validation` logged `low_priority=8
+ * run_local_hold=10 inversion_signal=true` on cycle after cycle and filed
+ * VibeCoder#2085 — with no "what the claim scan did with them" section at
+ * all, because the scan had looked at none of the eight. Three of that
+ * repository's runs had died at setup inside a minute, and VibeCoder#2079
+ * already named the fault and recorded the back-off. Such a repo is recorded
+ * as `repo_backed_off` and reported as
+ * {@link IdleDecisionCensus.backedOffInversionRepos}: kept out of
+ * {@link IdleDecisionCensus.escalationRepos}, because the scan refused
+ * nothing, and out of {@link IdleDecisionCensus.heldInversionRepos}, whose
+ * note names a lease that clears itself in minutes.
+ *
  * The builder is **pure** — it takes already-fetched issues (read through
  * the existing per-iteration `IssueCache` so a quiet cycle costs no extra
  * `gh issue list` call) and returns a structured census. The caller wraps
@@ -354,6 +377,21 @@ export type RepoCensusSkipReason =
    * to this cycle's scan, and returns the moment the lease clears.
    */
   | "repo_held_in_flight"
+  /**
+   * The claim scan skipped the whole repository because this host has backed
+   * it off for fast failures (Issue #2085).
+   *
+   * `findNextIssue` unions `backedOffRepos()` (Issue #1950) into
+   * `findOldestIssue`'s `excludeRepos`, so a repository whose runs keep dying
+   * at setup is dropped before any collector runs and records no per-issue
+   * skip reason at all — the same invisibility as
+   * {@link RepoCensusSkipReason `repo_held_in_flight`}, from a different
+   * cause and on a much longer clock. Named separately because the two send a
+   * reader to different places: a lease clears in minutes on its own, while a
+   * back-off holds until its 24 h window lapses or its diagnostic issue is
+   * closed, and it is the one an operator must act on.
+   */
+  | "repo_backed_off"
   | "unknown";
 
 /**
@@ -388,14 +426,27 @@ export function isRepoHeldSkipReason(
 }
 
 /**
+ * Whether a skip reason means this host has backed the repository off for
+ * fast failures, so the claim scan was never shown it (Issue #2085).
+ */
+export function isRepoBackedOffSkipReason(
+  reason: RepoCensusSkipReason | undefined,
+): boolean {
+  return reason === "repo_backed_off";
+}
+
+/**
  * The census input for one repo's scan state (Issue #898).
  *
- * Three facts decide it, in this order:
+ * Four facts decide it, in this order:
  *
- *   1. the repo was excluded from the scan by an in-flight hold — it was
+ *   1. this host has backed the repo off for fast failures (Issue #2085) —
+ *      the scan drops it before any collector runs, and the back-off outlives
+ *      the cycle, so it is named ahead of a lease that clears in minutes;
+ *   2. the repo was excluded from the scan by an in-flight hold — it was
  *      never evaluated, whatever the rest of the fleet did;
- *   2. the scan completed an eligibility pass — the repo was evaluated;
- *   3. otherwise the host-level reason the scan stopped (Issue #479).
+ *   3. the scan completed an eligibility pass — the repo was evaluated;
+ *   4. otherwise the host-level reason the scan stopped (Issue #479).
  *
  * Extracted so the loop's wiring is testable on its own: the census can only
  * be as honest as the scan state it is handed.
@@ -410,9 +461,19 @@ export function resolveRepoScanState(opts: {
    * scan does look at and refuses per issue).
    */
   scanExcludedRepos: ReadonlySet<string>;
+  /**
+   * Repos this host has backed off for fast failures (Issue #1950), which
+   * `findNextIssue` unions into the scan's `excludeRepos` (Issue #2085).
+   * Omitted → no repo is treated as backed off, preserving the pre-#2085
+   * behaviour.
+   */
+  scanBackedOffRepos?: ReadonlySet<string>;
   /** The host-level reason the scan stopped, when it did not complete. */
   claimGateReason: () => RepoCensusSkipReason;
 }): { scannedThisCycle: boolean; skipReason?: RepoCensusSkipReason } {
+  if (opts.scanBackedOffRepos?.has(opts.repo)) {
+    return { scannedThisCycle: false, skipReason: "repo_backed_off" };
+  }
   if (opts.scanExcludedRepos.has(opts.repo)) {
     return { scannedThisCycle: false, skipReason: "repo_held_in_flight" };
   }
@@ -608,6 +669,19 @@ export interface IdleDecisionCensus {
    * carried an empty "what the claim scan did with them" section.
    */
   heldInversionRepos: string[];
+  /**
+   * Repos with claimable work this host has backed off for fast failures,
+   * so the claim scan skipped them before any collector ran (Issue #2085).
+   *
+   * Kept apart from {@link heldInversionRepos}, whose note names a
+   * maintenance-lane lease that is not what happened, and out of
+   * {@link escalationRepos}: a repository the scan was never shown cannot
+   * have refused anything, which is exactly why the escalation it filed
+   * carried no "what the claim scan did with them" section at all. The
+   * back-off already has its own diagnostic issue (Issue #1950), so a second
+   * issue about the same repository says nothing new.
+   */
+  backedOffInversionRepos: string[];
   /**
    * Repos with claimable work that a host-level claim gate refused this
    * cycle (Issue #479).
@@ -1115,10 +1189,20 @@ export function buildIdleDecisionCensus(opts: {
   const heldInversionRepos = inverted
     .filter((r) => !r.scannedThisCycle && isRepoHeldSkipReason(r.skipReason))
     .map((r) => r.repo);
+  // Issue #2085: this host backed the repo off for fast failures, so the
+  // scan skipped it before any collector ran — invisible, like a lease, but
+  // for a cause that persists across cycles and already carries its own
+  // diagnostic issue.
+  const backedOffInversionRepos = inverted
+    .filter((r) =>
+      !r.scannedThisCycle && isRepoBackedOffSkipReason(r.skipReason)
+    )
+    .map((r) => r.repo);
   const deferredInversionRepos = inverted
     .filter((r) =>
       !r.scannedThisCycle && !isClaimGateSkipReason(r.skipReason) &&
-      !isRepoHeldSkipReason(r.skipReason)
+      !isRepoHeldSkipReason(r.skipReason) &&
+      !isRepoBackedOffSkipReason(r.skipReason)
     )
     .map((r) => r.repo);
   const servedInversionRepos = inverted
@@ -1134,6 +1218,7 @@ export function buildIdleDecisionCensus(opts: {
     escalationRepos,
     deferredInversionRepos,
     heldInversionRepos,
+    backedOffInversionRepos,
     gatedInversionRepos,
     servedInversionRepos,
   };
@@ -1214,6 +1299,22 @@ export function formatIdleDecisionCensus(
         `was held on this host, so the claim scan skipped it before any ` +
         `eligibility check ran; this work was never evaluated, and returns ` +
         `when the hold clears`,
+    );
+  }
+  // Issue #2085: this host has backed the repository off for fast failures,
+  // so the scan never looked at it. Named on its own line, because the hold
+  // note's "held on this host" reads as a maintenance lease an operator will
+  // wait out, while this clears only when the window lapses or the
+  // repository's own diagnostic issue is closed.
+  if (census.backedOffInversionRepos.length > 0) {
+    lines.push(
+      `[idle-census]${hostField} decision_point=${census.decisionPoint} ` +
+        `NOTE inversion_repo_backed_off ` +
+        `repos=${census.backedOffInversionRepos.join(",")} — this host has ` +
+        `backed these repositories off for fast failures (Issue #1950), so ` +
+        `the claim scan skipped them before any eligibility check ran; the ` +
+        `fix is the repository's own fast-failure diagnostic, not this ` +
+        `backlog`,
     );
   }
   // Issue #479: a host-level gate refused this work. Said plainly, and with
