@@ -335,6 +335,17 @@ function judge(
  * therefore stand as a whole token, bounded on both sides by something that
  * cannot continue it.
  *
+ * What can continue it differs by side (Issues #2070–#2073). AFTER the pin,
+ * a digit, a dot or a letter all extend the token: `1.7.12`, `1.7.1.2` and
+ * `1.7.1rc1` are each a different version from `1.7.1`. BEFORE the pin, only
+ * a digit or a dot does: `11.7.12` and `0.1.7.12` are different versions, but
+ * a letter is the conventional prefix — `node --version` prints `v24.19.0`
+ * and `markdownlint-cli2` prints `v0.23.2` — and treating it as part of the
+ * token took every host in the fleet out of service against a correctly
+ * built image. The real output of every pinned toolchain is a fixture in
+ * `toolchain_selfcheck_test.ts`, so this rule is judged against what the
+ * image prints, not against what a version flag is assumed to print.
+ *
  * @param output - Everything the probe printed
  * @param version - The pinned version
  * @returns True when the output carries the pin as a complete token
@@ -353,15 +364,31 @@ function reportsVersion(output: string, version: string): boolean {
   ) {
     const before = at === 0 ? "" : output[at - 1]!;
     const after = output[at + version.length] ?? "";
-    if (!continuesVersion(before) && !continuesVersion(after)) return true;
+    if (!extendsVersionBefore(before) && !extendsVersionAfter(after)) {
+      return true;
+    }
   }
   return false;
 }
 
-/** Could this character be part of the same version token? */
-function continuesVersion(character: string): boolean {
-  if (character === "") return false;
-  return /[0-9A-Za-z.]/.test(character);
+/**
+ * Could this character, immediately BEFORE the pin, make it a longer version?
+ *
+ * Only a digit or a dot: `1` before `1.7.12` reads `11.7.12`. A letter is a
+ * prefix (`v24.19.0`), not a longer version.
+ */
+function extendsVersionBefore(character: string): boolean {
+  return /^[0-9.]$/.test(character);
+}
+
+/**
+ * Could this character, immediately AFTER the pin, make it a longer version?
+ *
+ * A digit, a dot or a letter: `2` after `1.7.1` reads `1.7.12`, and `rc1`
+ * after `1.7.1` is a pre-release of something else.
+ */
+function extendsVersionAfter(character: string): boolean {
+  return /^[0-9A-Za-z.]$/.test(character);
 }
 
 /**
