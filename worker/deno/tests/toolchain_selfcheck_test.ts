@@ -196,6 +196,117 @@ Deno.test("checkContainerToolchains - the pinned version is matched as a whole t
   assertEquals(verdict.ok, true);
 });
 
+Deno.test("checkContainerToolchains - a conventional letter prefix does not hide the pinned version (Issues #2070–#2073)", async () => {
+  // `node --version` prints `v24.19.0`. Treating the `v` as part of the token
+  // rejected a correctly built image on every host in the fleet.
+  const verdict = await check(
+    [commandToolchain("node", "24.19.0")],
+    () => Promise.resolve({ code: 0, stdout: "v24.19.0\n", stderr: "" }),
+  );
+  assertEquals(verdict.ok, true, verdict.lines.join("\n"));
+});
+
+Deno.test("checkContainerToolchains - a digit or dot before the pin still makes it a different version", async () => {
+  for (const reported of ["11.7.12\n", "0.1.7.12\n", "v11.7.12\n"]) {
+    const verdict = await check(
+      [commandToolchain("actionlint", "1.7.12")],
+      () => Promise.resolve({ code: 0, stdout: reported, stderr: "" }),
+    );
+    assertEquals(verdict.ok, false, `${reported} must not pass for 1.7.12`);
+  }
+});
+
+Deno.test("checkContainerToolchains - a letter after the pin still makes it a different version", async () => {
+  for (const reported of ["1.7.1rc1\n", "1.7.1a\n", "v1.7.1b2\n"]) {
+    const verdict = await check(
+      [commandToolchain("actionlint", "1.7.1")],
+      () => Promise.resolve({ code: 0, stdout: reported, stderr: "" }),
+    );
+    assertEquals(verdict.ok, false, `${reported} must not pass for 1.7.1`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The committed manifest against what the image really prints
+// ---------------------------------------------------------------------------
+
+/**
+ * What each pinned toolchain's probe printed inside the fleet image
+ * (vibe-coder:6824bdd1574c, 2026-09-15), captured verbatim.
+ *
+ * The version-token rule is judged against THESE shapes, not against what a
+ * `--version` flag is assumed to print: the `v` on node's and
+ * markdownlint-cli2's output is what took the fleet down (Issues
+ * #2070–#2073), and no fixture carried it. A toolchain added to
+ * `container/tools.json` must add its real output here — the test below
+ * refuses a manifest entry with no fixture — so the rule can never again be
+ * shipped untested against a shape the image actually prints.
+ *
+ * Keyed by toolchain id, then by probe kind (`command` output from
+ * `<versionCommand> --version`, `module` output from the python3 probe).
+ */
+const REAL_IMAGE_OUTPUT: Record<
+  string,
+  Partial<Record<ToolchainProbe["kind"], string>>
+> = {
+  shellcheck: {
+    command: "ShellCheck - shell script analysis tool\nversion: 0.11.0\n" +
+      "license: GNU General Public License, version 3\n" +
+      "website: https://www.shellcheck.net\n",
+  },
+  actionlint: {
+    command: "1.7.12\ninstalled by downloading from release page\n" +
+      "built with go1.26.1 compiler for linux/arm64\n",
+  },
+  "cargo-deny": { command: "cargo-deny 0.20.2\n" },
+  gitleaks: { command: "gitleaks version 8.30.1\n" },
+  pwsh: { command: "PowerShell 7.6.5\n" },
+  "bats-core": { command: "Bats 1.14.0\n" },
+  codespell: { command: "2.4.3\n" },
+  node: { command: "v24.19.0\n" },
+  npm: { command: "12.0.2\n" },
+  "markdownlint-cli2": {
+    command: "markdownlint-cli2 v0.23.2 (markdownlint v0.41.1)\n" +
+      "Finding: --version\nLinting: 0 files\nSummary: 0 issues in 0 files\n",
+  },
+  rust: { command: "cargo 1.98.0 (797e8a9bc 2026-08-05)\n" },
+  semgrep: { command: "1.173.0\n" },
+  pyyaml: { module: "6.0.3\n" },
+};
+
+Deno.test("checkContainerToolchains - every probe of the committed manifest passes against what the image really prints", async () => {
+  const committed = COMMITTED_MANIFEST["toolchains"] as Array<
+    Record<string, unknown>
+  >;
+  const probed = new Set<string>();
+  const verdict = await check(committed, (probe) => {
+    probed.add(`${probe.id}/${probe.kind}`);
+    const fixture = REAL_IMAGE_OUTPUT[probe.id]?.[probe.kind];
+    if (fixture === undefined) {
+      throw new Error(
+        `container/tools.json pins "${probe.id}" (${probe.kind} probe) but ` +
+          "REAL_IMAGE_OUTPUT carries no fixture for it — capture what the " +
+          "image prints and record it here",
+      );
+    }
+    return Promise.resolve({ code: 0, stdout: fixture, stderr: "" });
+  });
+
+  assertEquals(verdict.failed, [], verdict.lines.join("\n"));
+  assertEquals(verdict.ok, true);
+
+  // Every fixture belongs to a toolchain the manifest still pins, so a
+  // toolchain removed from the manifest takes its fixture with it.
+  for (const [id, byKind] of Object.entries(REAL_IMAGE_OUTPUT)) {
+    for (const kind of Object.keys(byKind)) {
+      assert(
+        probed.has(`${id}/${kind}`),
+        `REAL_IMAGE_OUTPUT carries "${id}" (${kind}) but container/tools.json no longer pins it`,
+      );
+    }
+  }
+});
+
 Deno.test("checkContainerToolchains - a manifest with no toolchains key blames the manifest, not the image", async () => {
   // The parser rejects `"toolchains": []` but takes an ABSENT key as none, so
   // this is the shape that would otherwise report "0 toolchains verified" as
