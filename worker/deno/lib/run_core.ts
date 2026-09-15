@@ -775,6 +775,12 @@ export interface RunCoreDeps {
        */
       outcome?: RunOutcome;
       /**
+       * The workflow this run served (Issue #2100) — the configured
+       * implementation label or `idle-task`. Carried into the post-run
+       * callback context so an archive can compare implementation runs only.
+       */
+      mode?: string;
+      /**
        * Token and cost telemetry for the post-run callback context
        * (Issue #806). Absent when no agent invocation reported parseable
        * usage.
@@ -2011,6 +2017,8 @@ async function releaseIssueClaim(
 interface TerminalRun {
   result: "success" | "failure";
   startedAtEpochMs: number;
+  /** The workflow this run served, when the dispatch named one (#2100). */
+  mode?: string;
   /** Token and cost telemetry the run reported, when it reported any. */
   telemetry?: CallbackRunTelemetry;
   /** What the run achieved, when the worker computed a RunOutcome. */
@@ -2027,12 +2035,16 @@ interface TerminalRun {
   guard: IssueCallbackGuard;
 }
 
-/** Copy outcome / telemetry / phase from a processIssue result onto a TerminalRun. */
+/**
+ * Copy mode / outcome / telemetry / phase from a processIssue result onto a
+ * TerminalRun (`mode` added by Issue #2100).
+ */
 function withProcessCallbackFacts(
   ran: TerminalRun,
   processResult: {
     ok: boolean;
     value?: {
+      mode?: string;
       telemetry?: CallbackRunTelemetry;
       outcome?: RunOutcome;
       phase?: string;
@@ -2049,6 +2061,7 @@ function withProcessCallbackFacts(
   const value = processResult.value;
   return {
     ...ran,
+    ...(value.mode ? { mode: value.mode } : {}),
     ...(value.telemetry ? { telemetry: value.telemetry } : {}),
     ...(value.outcome ? { outcome: value.outcome } : {}),
     ...(value.phase ? { phase: value.phase } : {}),
@@ -2094,6 +2107,7 @@ function dispatchIssueCallbacks(
         result: ran.result,
         startedAtEpochMs: ran.startedAtEpochMs,
         finishedAtEpochMs: deps.now(),
+        ...(ran.mode ? { mode: ran.mode } : {}),
         ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
         ...(ran.outcome ? { outcome: ran.outcome } : {}),
         ...(ran.phase ? { phase: ran.phase } : {}),

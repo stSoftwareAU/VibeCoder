@@ -2963,6 +2963,7 @@ invocation and removed after it exits:
   "issueNumber": 806,
   "host": "worker-1",
   "workerName": "fleet-a",
+  "mode": "work-on",
   "provider": "claude",
   "sessionId": "…",
   "sessionLogPath": "/home/vibe/logs/agent-….log",
@@ -2975,7 +2976,9 @@ invocation and removed after it exits:
     "outputTokens": 340,
     "cacheCreationTokens": 90,
     "cacheReadTokens": 20,
-    "estimatedCostUsd": 0.42
+    "estimatedCostUsd": 0.42,
+    "turns": 34,
+    "model": "claude-opus-4-6"
   },
   "outcome": {
     "kind": "pr",
@@ -2989,12 +2992,14 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_CALLBACK_SCHEMA_VERSION`, `VIBECODER_CALLBACK_EVENT`,
 `VIBECODER_CALLBACK_CONTEXT`, `VIBECODER_RUN_ID`, `VIBECODER_RESULT`,
 `VIBECODER_REPOSITORY`, `VIBECODER_ISSUE_NUMBER`, `VIBECODER_HOST`,
-`VIBECODER_WORKER_NAME`, `VIBECODER_PROVIDER`, `VIBECODER_SESSION_ID`,
+`VIBECODER_WORKER_NAME`, `VIBECODER_MODE`, `VIBECODER_PROVIDER`,
+`VIBECODER_SESSION_ID`,
 `VIBECODER_SESSION_LOG_PATH`, `VIBECODER_SESSION_LOG_ABSENT_REASON`,
 `VIBECODER_STARTED_AT`, `VIBECODER_FINISHED_AT`,
 `VIBECODER_DURATION_SECONDS`, `VIBECODER_EXIT_CODE`, `VIBECODER_INPUT_TOKENS`,
 `VIBECODER_OUTPUT_TOKENS`, `VIBECODER_CACHE_CREATION_TOKENS`,
 `VIBECODER_CACHE_READ_TOKENS`, `VIBECODER_ESTIMATED_COST_USD`,
+`VIBECODER_TURNS`, `VIBECODER_MODEL`,
 `VIBECODER_TELEMETRY_ABSENT_REASON`, `VIBECODER_OUTCOME_KIND`,
 `VIBECODER_OUTCOME_CATEGORY`, `VIBECODER_OUTCOME_PHASE`,
 `VIBECODER_OUTCOME_FAILURE_CLASS`, `VIBECODER_PR_NUMBER`. A cycle hook also

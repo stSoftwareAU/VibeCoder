@@ -148,3 +148,180 @@ Deno.test("run_callback_telemetry - reported usage has no absence reason (Issue 
     undefined,
   );
 });
+
+// -- Turns and model attribution (Issue #2100, part of #2060) --
+
+Deno.test("run_callback_telemetry - turns are summed across invocations", () => {
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        numTurns: 7,
+        tokenUsage: usage(100, 10),
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        numTurns: 5,
+        tokenUsage: usage(200, 20),
+      },
+    },
+  ]);
+  assertEquals(telemetry?.turns, 12);
+});
+
+Deno.test("run_callback_telemetry - no invocation reporting turns omits the field", () => {
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        tokenUsage: usage(100, 10),
+      },
+    },
+  ]);
+  assertEquals(telemetry?.turns, undefined);
+  assert(
+    !("turns" in (telemetry ?? {})),
+    "turns is omitted, never emitted as a zero that reads as 'no turns'",
+  );
+});
+
+Deno.test("run_callback_telemetry - turns are summed over only the invocations that reported them", () => {
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        numTurns: 4,
+        tokenUsage: usage(100, 10),
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        tokenUsage: usage(200, 20),
+      },
+    },
+  ]);
+  assertEquals(telemetry?.turns, 4);
+});
+
+Deno.test("run_callback_telemetry - an invocation that reported turns but no usage still contributes them", () => {
+  // A run killed after its turn count but before a parseable usage line took
+  // those turns; dropping them would under-report the run (Issue #2100).
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        numTurns: 3,
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        numTurns: 6,
+        tokenUsage: usage(200, 20),
+      },
+    },
+  ]);
+  assertEquals(telemetry?.turns, 9);
+  assertEquals(telemetry?.inputTokens, 200);
+});
+
+Deno.test("run_callback_telemetry - the model is the served model of the invocation with the most tokens", () => {
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-haiku-4-5"],
+        requestedModel: "claude-haiku-4-5",
+        tokenUsage: usage(100, 10),
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-opus-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        tokenUsage: usage(9000, 900, 50, 10),
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        tokenUsage: usage(300, 30),
+      },
+    },
+  ]);
+  assertEquals(telemetry?.model, "claude-opus-4-6");
+});
+
+Deno.test("run_callback_telemetry - the model falls back to the requested one for the dominant invocation", () => {
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: [],
+        requestedModel: "claude-sonnet-4-6",
+        tokenUsage: usage(5000, 500),
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-haiku-4-5"],
+        requestedModel: "claude-haiku-4-5",
+        tokenUsage: usage(10, 1),
+      },
+    },
+  ]);
+  assertEquals(telemetry?.model, "claude-sonnet-4-6");
+});
+
+Deno.test("run_callback_telemetry - cache tokens count towards which invocation dominates", () => {
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        tokenUsage: usage(100, 10),
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-opus-4-6"],
+        requestedModel: "claude-opus-4-6",
+        tokenUsage: usage(50, 5, 400, 900),
+      },
+    },
+  ]);
+  assertEquals(telemetry?.model, "claude-opus-4-6");
+});
+
+Deno.test("run_callback_telemetry - an equal-token tie is broken deterministically by invocation order", () => {
+  const equal = [
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-4-6"],
+        requestedModel: "claude-sonnet-4-6",
+        tokenUsage: usage(100, 10),
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["claude-opus-4-6"],
+        requestedModel: "claude-opus-4-6",
+        tokenUsage: usage(100, 10),
+      },
+    },
+  ];
+  assertEquals(summariseCallbackTelemetry(equal)?.model, "claude-sonnet-4-6");
+  assertEquals(
+    summariseCallbackTelemetry([...equal].reverse())?.model,
+    "claude-opus-4-6",
+  );
+});
