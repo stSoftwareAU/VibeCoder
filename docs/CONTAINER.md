@@ -365,7 +365,7 @@ the prompt-immutability check):
 ```mermaid
 flowchart TD
     M["container/tools.json<br/>(the checkout's pins)"] --> P["one probe per toolchain"]
-    P -->|versionCommand| C["&lt;command&gt; --version"]
+    P -->|versionCommand| C["&lt;command&gt; --version<br/>(or the entry's versionArgs)"]
     P -->|versionModule| Y["python3 -c 'import m; print(m.__version__)'"]
     C --> J{"reports the pinned version?"}
     Y --> J
@@ -380,7 +380,12 @@ flowchart TD
   `versionCommand` (or `versionModule`, for a library like PyYAML) is what is
   run, and the pinned `version` is what the output is compared against. Adding
   a toolchain to `container/tools.json` adds its probe with no other edit, so
-  the check cannot drift out of step with the install list.
+  the check cannot drift out of step with the install list. A command with no
+  `--version` flag names its own arguments in `versionArgs`:
+  `markdownlint-cli2` treats every argument as a glob, and a bare `--version`
+  linted the worker's whole checkout on every launch — one lint finding on
+  `main` away from parking the fleet (Issues #2070–#2073). Its entry probes
+  with `--no-globs --version`, which prints the banner and lints nothing.
 - **Concurrent and bounded.** The probes run together and each is bounded by
   `TOOLCHAIN_PROBE_TIMEOUT_MS`, so the launch pays the slowest probe rather
   than the sum of thirteen. Measured in the image, all thirteen together cost
@@ -412,6 +417,22 @@ flowchart TD
 - **Outside the image there is nothing to verify.** On a developer's own host
   the check reports itself skipped, the same boundary
   `prompt_immutability.ts` draws.
+- **The pin must stand as a whole token, and a letter prefix is not part of
+  it.** `1.7.1` does not match an installed `1.7.12`, and `11.7.12` does not
+  match `1.7.12`; but `node --version` prints `v24.19.0` and
+  `markdownlint-cli2` prints `v0.23.2`, and counting that `v` as part of the
+  token took every host out of service against a correctly built image
+  (Issues #2070–#2073). The real output of every pinned toolchain, captured
+  inside the image, is a fixture in `toolchain_selfcheck_test.ts` that the
+  committed manifest is checked against; a toolchain pinned without its
+  fixture fails the test.
+- **CI runs the same check, in the built image.** `container-build.yml`
+  invokes `worker/deno/mod.ts toolchain-selfcheck` inside the image it has just
+  built, over the checkout mounted at `/workspace` — the command path the
+  worker itself takes — so the verdict the fleet will reach is reached on the
+  pull request. A change to the check, its manifest parser or its command is
+  an image-affecting change (`detect-image-changes.sh`), so a worker-only PR
+  can no longer alter the rule without a build proving it.
 
 ## Image identity — the tag is the definition's hash
 

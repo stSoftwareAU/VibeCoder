@@ -122,6 +122,18 @@ export interface ContainerToolchainPin {
    */
   versionCommand?: string;
   /**
+   * The arguments that make {@link versionCommand} report its version
+   * (Issues #2070–#2073). Absent means `--version`.
+   *
+   * Only for a command that has no version flag: `markdownlint-cli2` treats
+   * every argument as a glob, so a bare `--version` lints whatever the
+   * working directory's configuration names and fails the probe on the
+   * first lint finding in the checkout. Each entry is one argv element —
+   * never a shell string — and may carry no whitespace or shell
+   * metacharacter.
+   */
+  versionArgs?: string[];
+  /**
    * The module whose `__version__` must report {@link version}.
    *
    * Present exactly when {@link modules} is non-empty.
@@ -531,6 +543,11 @@ function parseToolchain(value: unknown, index: number): ContainerToolchainPin {
     modules,
     "module",
   );
+  const versionArgs = parseVersionArgs(
+    raw.versionArgs,
+    `${field}.versionArgs`,
+    versionCommand,
+  );
 
   // A toolchain exists for named monitored repositories: without that the
   // image accumulates weight nobody can prove is still needed.
@@ -555,9 +572,45 @@ function parseToolchain(value: unknown, index: number): ContainerToolchainPin {
     commands,
     modules,
     ...(versionCommand === undefined ? {} : { versionCommand }),
+    ...(versionArgs === undefined ? {} : { versionArgs }),
     ...(versionModule === undefined ? {} : { versionModule }),
     repos,
   };
+}
+
+/** One argv element of a version probe: no whitespace, no shell metacharacter. */
+const VERSION_ARG_RE = /^-{0,2}[A-Za-z0-9][A-Za-z0-9._+=:/-]*$/;
+
+/**
+ * Parse the optional `versionArgs` of a toolchain (Issues #2070–#2073).
+ *
+ * The probe's argv is built from this list verbatim, so each entry is held
+ * to the same shape the self-check holds a command name to: something that
+ * cannot smuggle a second command past `Deno.Command`.
+ */
+function parseVersionArgs(
+  value: unknown,
+  field: string,
+  versionCommand: string | undefined,
+): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (versionCommand === undefined) {
+    fail(field, "must be absent: the toolchain declares no versionCommand");
+  }
+  const args = asArray(value, field).map((entry, i) => {
+    const arg = asString(entry, `${field}[${i}]`);
+    if (!VERSION_ARG_RE.test(arg)) {
+      fail(
+        `${field}[${i}]`,
+        `must be a single argument with no whitespace or shell metacharacter (got "${arg}")`,
+      );
+    }
+    return arg;
+  });
+  if (args.length === 0) {
+    fail(field, "must list at least one argument, or be absent for --version");
+  }
+  return args;
 }
 
 const PROVIDER_ID_RE = /^[a-z][a-z0-9-]*$/;
