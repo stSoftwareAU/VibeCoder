@@ -348,6 +348,71 @@ and that each fragment verifies its download with `sha256sum -c`, carries the
 shared `${CURL_RETRY}` policy, pipes nothing into a shell, and restates no
 version the manifest already pins.
 
+## The image proves itself at start-up (Issue #1956)
+
+The build-time assertions above run inside a `RUN` layer, so a cached layer
+skips them and a forced-platform build passes them under emulation. The tag
+guarantees a rebuild when the *inputs* change, not that the *running* image is
+the one those inputs describe — and two tooling faults in one week cost whole
+runs: an `actionlint` that would not execute on the host's CPU architecture,
+and a `python3` that could not import `yaml`. Both were discovered by the agent
+mid-run, after the claim.
+
+So the worker probes the image before it claims anything
+(`worker/deno/lib/toolchain_selfcheck.ts`, run from `run_worker.ts` ahead of
+the prompt-immutability check):
+
+```mermaid
+flowchart TD
+    M["container/tools.json<br/>(the checkout's pins)"] --> P["one probe per toolchain"]
+    P -->|versionCommand| C["&lt;command&gt; --version"]
+    P -->|versionModule| Y["python3 -c 'import m; print(m.__version__)'"]
+    C --> J{"reports the pinned version?"}
+    Y --> J
+    J -->|yes, all of them| W["▶️ the worker claims work"]
+    J -->|no| X["❌ exit 89 before any claim<br/>[TOOLCHAIN-SELFCHECK-FAILED] &lt;ids&gt;"]
+    X --> R["run.sh / run.ps1 remove the image<br/>→ the next launch rebuilds"]
+    style W fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style X fill:#c9184a,stroke:#800f2f,color:#fff
+```
+
+- **The probe list is the manifest**, never a second copy: a toolchain's
+  `versionCommand` (or `versionModule`, for a library like PyYAML) is what is
+  run, and the pinned `version` is what the output is compared against. Adding
+  a toolchain to `container/tools.json` adds its probe with no other edit, so
+  the check cannot drift out of step with the install list.
+- **Concurrent and bounded.** The probes run together and each is bounded by
+  `TOOLCHAIN_PROBE_TIMEOUT_MS`, so the launch pays the slowest probe rather
+  than the sum of thirteen. Measured in the image, all thirteen together cost
+  **0.64 s** against a warm page cache and **1.99 s** on the first run after
+  the image is written — the tools' own start-up, not the check's:
+  `markdownlint-cli2` alone is 1.9 s of a cold run and `semgrep` 0.65 s. A
+  binary that hangs on this architecture costs seconds, not the run.
+- **One line per toolchain** reaches the run log — `toolchain-selfcheck: ok
+  actionlint 1.7.12`, or `FAILED …` with the probe's own words.
+- **A failure is refused, not charged.** The worker exits
+  `TOOLCHAIN_SELFCHECK_EXIT_STATUS` (89) before resolving its GitHub identity,
+  so no issue is claimed and no attempt is spent.
+- **A manifest fault is not an image fault.** An unreadable
+  `container/tools.json`, or one pinning nothing, fails loud on the ordinary
+  status 1 and prints no marker: a rebuilt image would meet exactly the same
+  manifest, so it must not cost the host its image.
+- **The host rebuilds on the next launch.** The launchers read the failing ids
+  out of the container's captured stderr, name them in `run_core.log`, and
+  remove the content-derived image reference — an absent reference is exactly
+  the rebuild signal the launch reads. The removal verb rides the launch plan
+  (`image-remove=`), so Apple `container`'s `image delete` is not guessed at.
+- **Exactly one rebuild per reference.** The tag is derived from the
+  definition, so a rebuild produces the same tag; the reference removed is
+  recorded under `~/.vibe-coder/toolchain-selfcheck-rebuild`, and a second
+  failure of the same reference is reported as
+  `[TOOLCHAIN_SELFCHECK_UNRECOVERED]` rather than removing and rebuilding a
+  multi-gigabyte image on every cycle for ever. A launch that gets past the
+  check clears the record.
+- **Outside the image there is nothing to verify.** On a developer's own host
+  the check reports itself skipped, the same boundary
+  `prompt_immutability.ts` draws.
+
 ## Image identity — the tag is the definition's hash
 
 The image reference is derived from the container definition itself, so a

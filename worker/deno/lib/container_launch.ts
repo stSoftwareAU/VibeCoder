@@ -482,6 +482,17 @@ export interface ContainerLaunchPlan {
    */
   volumeRemoveArgs: string[];
   /**
+   * Arguments that remove one image reference, before the reference
+   * (Issue #1956).
+   *
+   * The verb is the runtime's, exactly as `volumeRemoveArgs` is: Docker and
+   * Podman spell it `image rm`, Apple `container` spells it `image delete`.
+   * The launchers use it on a container that failed its own toolchain
+   * self-check, so the next launch rebuilds the image rather than reusing
+   * the cached tag the check just refused.
+   */
+  imageRemoveArgs: string[];
+  /**
    * The claiming floor the launcher's own disk decisions use (Issue #732):
    * the gigabyte term, the percentage term, and where each came from.
    *
@@ -1338,6 +1349,7 @@ export function buildContainerLaunchPlan(
     volumes: volumeMounts.map((mount) => mount.source),
     initArgs,
     volumeRemoveArgs: [...dialect.volumeRemoveArgs],
+    imageRemoveArgs: [...dialect.imageRemoveArgs],
     claimFloorGb: floors.lowFloorGb,
     claimFloorPercent: floors.lowFloorPercent,
     claimFloorOrigin: diskFloorOrigin(floors),
@@ -1385,6 +1397,8 @@ export interface ParsedContainerLaunchPlan {
   init: string[];
   /** The runtime's own "remove one volume" verb (Issue #731). */
   volumeRemove: string[];
+  /** The runtime's own "remove one image" verb (Issue #1956). */
+  imageRemove: string[];
   /** The claiming floor's terms and their origin (Issue #732). */
   claimFloorGb: string;
   claimFloorPercent: string;
@@ -1418,6 +1432,7 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     ...plan.volumes.map((name) => `volume=${name}`),
     ...plan.initArgs.map((arg) => `init=${arg}`),
     ...plan.volumeRemoveArgs.map((arg) => `volume-remove=${arg}`),
+    ...plan.imageRemoveArgs.map((arg) => `image-remove=${arg}`),
     `claim-floor-gb=${plan.claimFloorGb}`,
     `claim-floor-percent=${plan.claimFloorPercent}`,
     `claim-floor-origin=${plan.claimFloorOrigin}`,
@@ -1466,6 +1481,7 @@ export function parseContainerLaunchPlanText(
     volume: [],
     init: [],
     volumeRemove: [],
+    imageRemove: [],
     claimFloorGb: "",
     claimFloorPercent: "",
     claimFloorOrigin: "",
@@ -1510,6 +1526,9 @@ export function parseContainerLaunchPlanText(
         break;
       case "volume-remove":
         parsed.volumeRemove.push(value);
+        break;
+      case "image-remove":
+        parsed.imageRemove.push(value);
         break;
       case "claim-floor-gb":
         parsed.claimFloorGb = value;

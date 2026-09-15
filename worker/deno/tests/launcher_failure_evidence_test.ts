@@ -19,6 +19,7 @@ import { BUILD_NOT_HEALABLE_EXIT } from "../commands/container_build_heal.ts";
 import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
 import { HOST_EGRESS_BLOCKED_EXIT_STATUS } from "../lib/container_egress_probe.ts";
+import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "../lib/toolchain_selfcheck.ts";
 
 const KNOWN = knownWorkerStatuses(
   QUOTA_PAUSE_EXIT_STATUS,
@@ -26,6 +27,7 @@ const KNOWN = knownWorkerStatuses(
   ANOTHER_WORKER_RUNNING_EXIT,
   EXTENSION_START_ABORT_EXIT_STATUS,
   HOST_EGRESS_BLOCKED_EXIT_STATUS,
+  TOOLCHAIN_SELFCHECK_EXIT_STATUS,
 );
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,11 @@ Deno.test("knownWorkerStatuses - the table matches the real exit constants", () 
   // table beside them; the milestone merge kept only the extension abort of
   // the two, and an alert then blamed 88 on the runtime client.
   assertEquals(HOST_EGRESS_BLOCKED_EXIT_STATUS, 88);
+  // The refused claim of Issue #1956 is the worker's own status too: the
+  // image failed its toolchain self-check, and an alert that blamed 89 on the
+  // runtime client would send the reader to the wrong half of the search
+  // space.
+  assertEquals(TOOLCHAIN_SELFCHECK_EXIT_STATUS, 89);
   assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [
     0,
     1,
@@ -80,7 +87,14 @@ Deno.test("knownWorkerStatuses - the table matches the real exit constants", () 
     75,
     76,
     88,
+    89,
   ]);
+});
+
+Deno.test("explainExitStatus - a failed toolchain self-check is named, not blamed on the runtime (Issue #1956)", () => {
+  const explanation = explainExitStatus(TOOLCHAIN_SELFCHECK_EXIT_STATUS, KNOWN);
+  assertStringIncludes(explanation, "toolchain self-check");
+  assertEquals(explanation.includes("container runtime client"), false);
 });
 
 Deno.test("explainExitStatus - an aborted extension start is named, not blamed on the runtime (Issue #981)", () => {

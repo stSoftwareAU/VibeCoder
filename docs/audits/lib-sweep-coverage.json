@@ -1517,6 +1517,18 @@
       "paths": [
         "worker/deno/lib/subscription_soak_status.ts"
       ]
+    },
+    {
+      "issue": 1956,
+      "chunk": "top-up-1956",
+      "title": "top-up: the container toolchain self-check",
+      "ledger": "docs/audits/security-sweep-1956-toolchain-selfcheck.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: toolchain_selfcheck.ts (#1956)",
+      "status": "swept",
+      "sweptAt": "f21b89b153fe50e85827e8aa813084357df7137f",
+      "paths": [
+        "worker/deno/lib/toolchain_selfcheck.ts"
+      ]
     }
   ],
   "roots": [

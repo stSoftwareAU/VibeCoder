@@ -535,6 +535,9 @@ $EnsureDirs = [System.Collections.Generic.List[string]]::new()
 $VolumeNames = [System.Collections.Generic.List[string]]::new()
 $InitArgs = [System.Collections.Generic.List[string]]::new()
 $VolumeRemoveArgs = [System.Collections.Generic.List[string]]::new()
+# The runtime's own "remove one image" verb (Issue #1956), used on a container
+# that failed its toolchain self-check so the next launch rebuilds.
+$ImageRemoveArgs = [System.Collections.Generic.List[string]]::new()
 # Issue #732: the claiming floor rides the plan so both launchers and the
 # worker agree on it. Windows has no counterpart to the low-disk heal, so
 # these are parsed and carried rather than acted on here.
@@ -602,6 +605,7 @@ try {
             "volume" { $VolumeNames.Add($value) }
             "init" { $InitArgs.Add($value) }
             "volume-remove" { $VolumeRemoveArgs.Add($value) }
+            "image-remove" { $ImageRemoveArgs.Add($value) }
             "claim-floor-gb" { $ClaimFloorGb = $value }
             "claim-floor-percent" { $ClaimFloorPercent = $value }
             "claim-floor-origin" { $ClaimFloorOrigin = $value }
@@ -626,7 +630,7 @@ if (-not $Runtime -or -not $Image -or -not $KeepImages -or
     $RunArgs.Count -eq 0 -or
     $BuildArgs.Count -eq 0 -or $ExistsArgs.Count -eq 0 -or
     $VolumeNames.Count -eq 0 -or $InitArgs.Count -eq 0 -or
-    $VolumeRemoveArgs.Count -eq 0) {
+    $VolumeRemoveArgs.Count -eq 0 -or $ImageRemoveArgs.Count -eq 0) {
     [Console]::Error.WriteLine(
         "Error: incomplete container launch plan - refusing to launch")
     Exit-Launcher 1
@@ -1418,6 +1422,119 @@ if ($wedged) {
     Exit-Launcher $ContainerWedgedExitStatus
 }
 
+# The image did not provide the toolchains the checkout pins (Issue #1956).
+#
+# The worker probes every toolchain `container/tools.json` pins before it
+# claims anything, so this status means the run was refused rather than
+# charged. The container named the toolchains on its own stderr, which the
+# capture above holds, so the host log names them too - and the cached tag is
+# removed, because the content-derived reference is exactly the rebuild signal
+# the launch above reads (Issue #4062).
+#
+# Exactly one rebuild per reference: the tag is derived from the definition, so
+# a rebuild produces the same tag, and a fault the rebuild cannot clear would
+# otherwise have this launcher removing and rebuilding a multi-gigabyte image
+# on every cycle for ever.
+#
+# Kept in step with TOOLCHAIN_SELFCHECK_EXIT_STATUS and
+# TOOLCHAIN_SELFCHECK_FAILURE_MARKER in
+# worker/deno/lib/toolchain_selfcheck.ts by the launcher tests.
+$ToolchainSelfCheckExitStatus = 89
+$ToolchainSelfCheckFailureMarker = "[TOOLCHAIN-SELFCHECK-FAILED]"
+$ToolchainRebuildState = [Environment]::GetEnvironmentVariable(
+    "VIBE_TOOLCHAIN_REBUILD_STATE")
+if (-not $ToolchainRebuildState) {
+    $ToolchainRebuildState = Join-Path $StateDir "toolchain-selfcheck-rebuild"
+}
+
+# Did this host already remove this reference over a failed self-check?
+#
+# An unreadable record reads as "no" deliberately: the bound it carries is a
+# guard against a rebuild loop, and refusing the first removal because the
+# record could not be read would leave a genuinely broken image in place.
+function Test-ToolchainRebuildRecorded {
+    param([Parameter(Mandatory = $true)][string] $Reference)
+
+    try {
+        if (-not (Test-Path -LiteralPath $ToolchainRebuildState)) { return $false }
+        $recorded = (Get-Content -LiteralPath $ToolchainRebuildState -Raw).Trim()
+        return $recorded -eq $Reference
+    } catch {
+        return $false
+    }
+}
+
+$runStatus = $container.ExitCode
+if ($runStatus -eq $ToolchainSelfCheckExitStatus) {
+    $failedDetail = "a toolchain the container did not name"
+    if ($RunLog -and (Test-Path -LiteralPath $RunLog)) {
+        foreach ($line in (Get-Content -LiteralPath $RunLog)) {
+            $index = $line.IndexOf($ToolchainSelfCheckFailureMarker)
+            if ($index -lt 0) { continue }
+            $ids = $line.Substring(
+                $index + $ToolchainSelfCheckFailureMarker.Length).Trim()
+            if ($ids) { $failedDetail = ($ids -split '\s+') -join ' ' }
+        }
+    }
+
+    [Console]::Error.WriteLine(
+        "[run.ps1] $Image failed its toolchain self-check ($failedDetail) - " +
+        "the worker claimed nothing (Issue #1956)")
+    Write-RunCoreLog ("toolchain-selfcheck: $Image does not provide " +
+        "$failedDetail as pinned in container/tools.json - no issue was " +
+        "claimed (Issue #1956)")
+
+    if (Test-ToolchainRebuildRecorded -Reference $Image) {
+        [Console]::Error.WriteLine(
+            "[run.ps1] [TOOLCHAIN_SELFCHECK_UNRECOVERED] $Image still fails " +
+            "the self-check after a rebuild - not removing it again " +
+            "(Issue #1956)")
+        Write-RunCoreLog ("[TOOLCHAIN_SELFCHECK_UNRECOVERED] $Image still " +
+            "does not provide $failedDetail after a rebuild - the " +
+            "definition, not the cached tag, is what is wrong (Issue #1956)")
+    } else {
+        $removedImage = Invoke-HostCommand -FilePath $Runtime `
+            -ArgumentList ($ImageRemoveArgs + $Image) -Capture
+        if ($removedImage.ExitCode -eq 0) {
+            Write-RunCoreLog ("toolchain-selfcheck: removed $Image - the " +
+                "next launch rebuilds it rather than reusing the cached tag " +
+                "(Issue #1956)")
+            try {
+                New-Item -ItemType Directory -Force `
+                    -Path (Split-Path -Parent $ToolchainRebuildState) | Out-Null
+                Set-Content -LiteralPath $ToolchainRebuildState -Value $Image
+            } catch {
+                # Best-effort: an unrecorded removal costs the bound, never
+                # the launch.
+            }
+        } else {
+            # The runtime's own words are kept: a removal that failed for want
+            # of a running container, or a reference another tag still holds,
+            # is the whole account of why the next launch reuses this image.
+            $removeDetail = if ($removedImage.StdErr) {
+                $removedImage.StdErr.Trim()
+            } elseif ($removedImage.StdOut) {
+                $removedImage.StdOut.Trim()
+            } else { "no explanation given" }
+            [Console]::Error.WriteLine(
+                "[run.ps1] warning: could not remove $Image ($removeDetail) - " +
+                "the next launch will reuse the image that just failed its " +
+                "self-check")
+            Write-RunCoreLog ("toolchain-selfcheck: could not remove $Image" +
+                ": $removeDetail - the next launch reuses the image that just " +
+                "failed (Issue #1956)")
+        }
+    }
+} elseif ($runStatus -eq 0 -and (Test-ToolchainRebuildRecorded -Reference $Image)) {
+    # This reference ran clean, so it got past the self-check and the rebuild
+    # worked: the record must not go on suppressing a removal for a later
+    # fault. Only a CLEAN run clears it - a crashed worker, a refused container
+    # start or a failed rebuild says nothing about the self-check, and clearing
+    # on those would hand the rebuild loop back the cycle this bound took.
+    Remove-Item -LiteralPath $ToolchainRebuildState -Force `
+        -ErrorAction SilentlyContinue
+}
+
 # A launch that failed hands this capture over as its evidence, whatever the
 # status (Issue #1029).
 #
@@ -1441,7 +1558,6 @@ if ($wedged) {
 #
 # A launch that succeeded is still never quoted: there is no failure for its
 # output to be the evidence of.
-$runStatus = $container.ExitCode
 if ($RunLog -and $runStatus -ne 0) {
     $EvidenceLog = $RunLog
 }

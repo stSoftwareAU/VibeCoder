@@ -689,6 +689,7 @@ ensure_dirs=()
 volume_names=()
 init_args=()
 volume_remove_args=()
+image_remove_args=()
 claim_floor_gb=""
 claim_floor_percent=""
 claim_floor_origin=""
@@ -714,6 +715,7 @@ while IFS= read -r -d '' token; do
     volume) volume_names+=("${value}") ;;
     init) init_args+=("${value}") ;;
     volume-remove) volume_remove_args+=("${value}") ;;
+    image-remove) image_remove_args+=("${value}") ;;
     claim-floor-gb) claim_floor_gb="${value}" ;;
     claim-floor-percent) claim_floor_percent="${value}" ;;
     claim-floor-origin) claim_floor_origin="${value}" ;;
@@ -735,6 +737,7 @@ if [[ -z "${RUNTIME}" || -z "${IMAGE}" || -z "${KEEP_IMAGES}" ]] ||
   [[ ${#build_args[@]} -eq 0 ]] || [[ ${#exists_args[@]} -eq 0 ]] ||
   [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]] ||
   [[ ${#volume_remove_args[@]} -eq 0 ]] ||
+  [[ ${#image_remove_args[@]} -eq 0 ]] ||
   [[ -z "${claim_floor_gb}" ]] || [[ -z "${claim_floor_percent}" ]]; then
   echo "Error: incomplete container launch plan - refusing to launch" >&2
   exit 1
@@ -1695,6 +1698,96 @@ if [[ -s "${WEDGE_MARKER}" ]]; then
     "${WATCHDOG_SECONDS}s watchdog deadline and was reaped - exiting" \
     "${CONTAINER_WEDGED_EXIT_STATUS} so the next cycle runs (Issue #4173)" >&2
   status="${CONTAINER_WEDGED_EXIT_STATUS}"
+fi
+
+# The image did not provide the toolchains the checkout pins (Issue #1956).
+#
+# The worker probes every toolchain `container/tools.json` pins before it
+# claims anything, so this status means the run was refused rather than
+# charged: an `actionlint` that would not execute on this architecture, or a
+# `python3` that could not import `yaml`, used to be discovered by the agent
+# mid-run. The container named the toolchains on its own stderr, which the
+# capture above holds, so the host log names them too.
+#
+# The cached tag is what gets removed: the image reference is content-derived,
+# so an absent reference is exactly the rebuild signal the launch above reads
+# (Issue #4062). Removing it is the only way this host stops reusing an image
+# the worker has just refused.
+#
+# Exactly one rebuild per reference. The tag is derived from the definition,
+# so a rebuild produces the same tag - and a fault the rebuild cannot clear
+# would otherwise have this launcher removing and rebuilding a multi-gigabyte
+# image on every cycle for ever. The second occurrence says so instead.
+#
+# Kept in step with TOOLCHAIN_SELFCHECK_EXIT_STATUS and
+# TOOLCHAIN_SELFCHECK_FAILURE_MARKER in
+# worker/deno/lib/toolchain_selfcheck.ts by the launcher tests.
+TOOLCHAIN_SELFCHECK_EXIT_STATUS=89
+TOOLCHAIN_SELFCHECK_FAILURE_MARKER="[TOOLCHAIN-SELFCHECK-FAILED]"
+TOOLCHAIN_REBUILD_STATE="${VIBE_TOOLCHAIN_REBUILD_STATE:-${VIBE_STATE_DIR}/toolchain-selfcheck-rebuild}"
+
+# Did this host already remove THIS reference over a failed self-check?
+#
+# An unreadable record reads as "no" deliberately: the bound it carries is a
+# guard against a rebuild loop, and refusing the first removal because the
+# record could not be read would leave a genuinely broken image in place.
+toolchain_rebuild_recorded() {
+  [[ -f "${TOOLCHAIN_REBUILD_STATE}" ]] || return 1
+  [[ "$(cat "${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true)" == "${IMAGE}" ]]
+}
+
+if ((status == TOOLCHAIN_SELFCHECK_EXIT_STATUS)); then
+  failed_line=""
+  if [[ -n "${RUN_LOG}" && -s "${RUN_LOG}" ]]; then
+    failed_line="$(grep -F "${TOOLCHAIN_SELFCHECK_FAILURE_MARKER}" \
+      "${RUN_LOG}" 2>/dev/null | tail -n 1 || true)"
+  fi
+  failed_ids=()
+  if [[ -n "${failed_line}" ]]; then
+    # Whitespace-split and rejoined, so the log line carries the ids alone.
+    read -r -a failed_ids \
+      <<<"${failed_line#*"${TOOLCHAIN_SELFCHECK_FAILURE_MARKER}"}" || true
+  fi
+  if ((${#failed_ids[@]})); then
+    failed_detail="${failed_ids[*]}"
+  else
+    failed_detail="a toolchain the container did not name"
+  fi
+
+  echo "[run.sh] ${IMAGE} failed its toolchain self-check (${failed_detail})" \
+    "- the worker claimed nothing (Issue #1956)" >&2
+  log_run_core "toolchain-selfcheck: ${IMAGE} does not provide ${failed_detail} as pinned in container/tools.json - no issue was claimed (Issue #1956)"
+
+  if toolchain_rebuild_recorded; then
+    echo "[run.sh] [TOOLCHAIN_SELFCHECK_UNRECOVERED] ${IMAGE} still fails the" \
+      "self-check after a rebuild - not removing it again (Issue #1956)" >&2
+    log_run_core "[TOOLCHAIN_SELFCHECK_UNRECOVERED] ${IMAGE} still does not provide ${failed_detail} after a rebuild - the definition, not the cached tag, is what is wrong (Issue #1956)"
+  else
+    # The runtime's own words are kept: a removal that failed for want of a
+    # running container, or a reference another tag still holds, is the whole
+    # account of why the next launch will reuse this image.
+    image_remove_err="$(mktemp "${TMPDIR:-/tmp}/vibe-image-rm.XXXXXX")"
+    if "${RUNTIME}" "${image_remove_args[@]}" "${IMAGE}" \
+      </dev/null >/dev/null 2>"${image_remove_err}"; then
+      log_run_core "toolchain-selfcheck: removed ${IMAGE} - the next launch rebuilds it rather than reusing the cached tag (Issue #1956)"
+      mkdir -p "$(dirname "${TOOLCHAIN_REBUILD_STATE}")" 2>/dev/null || true
+      printf '%s\n' "${IMAGE}" >"${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true
+    else
+      image_remove_detail="$(runtime_error_detail "${image_remove_err}")"
+      echo "[run.sh] warning: could not remove ${IMAGE} (${image_remove_detail})" \
+        "- the next launch will reuse the image that just failed its" \
+        "self-check" >&2
+      log_run_core "toolchain-selfcheck: could not remove ${IMAGE}: ${image_remove_detail} - the next launch reuses the image that just failed (Issue #1956)"
+    fi
+    rm -f "${image_remove_err}"
+  fi
+elif ((status == 0)) && toolchain_rebuild_recorded; then
+  # This reference ran clean, so it got past the self-check and the rebuild
+  # worked: the record must not go on suppressing a removal for a later fault.
+  # Only a CLEAN run clears it - a crashed worker, a refused container start
+  # or a failed rebuild says nothing about the self-check, and clearing on
+  # those would hand the rebuild loop back the cycle this bound took from it.
+  rm -f "${TOOLCHAIN_REBUILD_STATE}" 2>/dev/null || true
 fi
 
 # A launch that failed hands this capture over as its evidence, whatever the

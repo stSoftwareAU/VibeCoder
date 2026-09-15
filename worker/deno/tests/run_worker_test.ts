@@ -35,6 +35,8 @@ import {
   QUOTA_PAUSE_EXIT_STATUS,
   type QuotaPauseMarker,
 } from "../lib/quota_pause.ts";
+import { CONTAINER_IMAGE_STAMP_ENV } from "../lib/container_stamp.ts";
+import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "../lib/toolchain_selfcheck.ts";
 
 /** Recording harness capturing the order and arguments of every seam. */
 interface Recorder {
@@ -392,6 +394,106 @@ Deno.test("runWorker - missing credentials abort before any work (Issue #4064)",
   assertEquals(rec.calls.includes("github-user"), false);
   assertEquals(rec.calls.includes("loop"), false);
   assertEquals(rec.cleanupCalled, true);
+});
+
+Deno.test("runWorker - an image missing a pinned toolchain aborts before any claim (Issue #1956)", async () => {
+  const rec = newRecorder();
+  const repoDir = await Deno.makeTempDir({ prefix: "run-worker-toolchain-" });
+  try {
+    // A checkout whose manifest pins a toolchain no image supplies: the
+    // probe cannot run it, which is exactly the mismatch the check exists
+    // to catch.
+    const committed = JSON.parse(
+      await Deno.readTextFile(
+        new URL("../../../container/tools.json", import.meta.url).pathname,
+      ),
+    ) as Record<string, unknown>;
+    await Deno.mkdir(`${repoDir}/container`, { recursive: true });
+    await Deno.writeTextFile(
+      `${repoDir}/container/tools.json`,
+      JSON.stringify({
+        ...committed,
+        toolchains: [{
+          id: "vibe-absent",
+          version: "1.0.0",
+          versionArg: "VIBE_ABSENT_VERSION",
+          commands: ["vibe-absent"],
+          versionCommand: "vibe-absent",
+          source: "https://example.invalid/vibe-absent",
+          repos: ["stSoftwareAU/VibeCoder"],
+          sha256: { amd64: "a".repeat(64), arm64: "b".repeat(64) },
+        }],
+      }),
+    );
+
+    const result = await runWorker(
+      {
+        ...baseOptions(),
+        baseDir: repoDir,
+        env: (name: string) => ({
+          HOME: "/home/worker",
+          PATH: "/bin",
+          WORK_DIR: "/work",
+          // The in-image stamp: on a host there is no image to verify.
+          [CONTAINER_IMAGE_STAMP_ENV]: "claude",
+        }[name]),
+      },
+      stubDeps(rec),
+    );
+
+    assertEquals(result.outcome, "toolchains-unusable");
+    // The status the launchers act on by rebuilding the image.
+    assertEquals(result.exitCode, TOOLCHAIN_SELFCHECK_EXIT_STATUS);
+    assert(
+      result.reason.includes("vibe-absent"),
+      `the reason must name the toolchain, got: ${result.reason}`,
+    );
+    // Nothing was claimed and no work started.
+    assertEquals(rec.calls.includes("github-user"), false);
+    assertEquals(rec.calls.includes("loop"), false);
+    assertEquals(rec.cleanupCalled, true);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+  }
+});
+
+Deno.test("runWorker - a manifest the checkout cannot supply is not an image fault (Issue #1956)", async () => {
+  const rec = newRecorder();
+  // No container/tools.json at all: nothing can be verified, and it must fail
+  // loud — but on the ordinary status, because removing and rebuilding a
+  // multi-gigabyte image would meet exactly the same missing manifest.
+  const repoDir = await Deno.makeTempDir({ prefix: "run-worker-manifest-" });
+  try {
+    const result = await runWorker(
+      {
+        ...baseOptions(),
+        baseDir: repoDir,
+        env: (name: string) => ({
+          HOME: "/home/worker",
+          PATH: "/bin",
+          WORK_DIR: "/work",
+          [CONTAINER_IMAGE_STAMP_ENV]: "claude",
+        }[name]),
+      },
+      stubDeps(rec),
+    );
+
+    assertEquals(result.outcome, "toolchains-unusable");
+    assertEquals(result.exitCode, 1);
+    assertEquals(rec.calls.includes("loop"), false);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+  }
+});
+
+Deno.test("runWorker - a host run has no image to verify and starts normally (Issue #1956)", async () => {
+  const rec = newRecorder();
+  // baseOptions() carries no image stamp, and /repo holds no manifest at
+  // all: a host run must not be refused over an image it is not running.
+  const result = await runWorker(baseOptions(), stubDeps(rec));
+
+  assertEquals(result.outcome, "completed");
+  assertEquals(rec.calls.includes("loop"), true);
 });
 
 Deno.test("runWorker - unresolvable GitHub user aborts before the loop (fail-loud)", async () => {
