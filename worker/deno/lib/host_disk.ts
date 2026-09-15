@@ -541,9 +541,15 @@ export class HostDiskMonitor {
     this.readRefresh = options.readRefresh ?? readHostDiskRefreshFile;
     this.refreshMaxAgeMs = options.refreshMaxAgeMs ??
       DEFAULT_REFRESH_MAX_AGE_MS;
-    // The launch baseline is as old as this process; only a reading the
-    // launcher took after it can replace it.
-    this.adoptedMeasuredAtMs = this.now();
+    // The environment baseline was measured by the launch plan BEFORE the
+    // image build and the volume heal, and the launcher writes its reading
+    // file again after them, seconds before this process starts (Issue
+    // #2115: a volume reset returned 78 GB, the baseline still said 29, and
+    // the worker claimed nothing for fifteen minutes). So any reading within
+    // the refresh window is newer than the baseline in the sense that
+    // matters and is adopted on the first check; the baseline is only what
+    // stands until a file arrives.
+    this.adoptedMeasuredAtMs = this.now() - this.refreshMaxAgeMs;
   }
 
   /**
