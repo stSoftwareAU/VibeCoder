@@ -1577,6 +1577,18 @@
       "paths": [
         "worker/deno/lib/milestone_create_block_repair.ts"
       ]
+    },
+    {
+      "issue": 2098,
+      "chunk": "top-up-2098",
+      "title": "top-up: the graft_context host switch",
+      "ledger": "docs/audits/security-sweep-2098-graft-context-config.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: graft_context_config.ts (#2098)",
+      "status": "swept",
+      "sweptAt": "39f9a71dfc2d2ceef7158627e414f58431115056",
+      "paths": [
+        "worker/deno/lib/graft_context_config.ts"
+      ]
     }
   ],
   "roots": [

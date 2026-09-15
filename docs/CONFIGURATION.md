@@ -1752,13 +1752,14 @@ repository: an enabled host uses Graft for every repository it works on.
 **30 seconds**. Past either limit the run continues without the bundle and
 records a `failed` Graft status — the bundle is an accelerator, so losing it
 never fails the run, and the loss is recorded rather than passed off as a
-clean run.
+clean run. These are the limits the injection change implements; they are
+stated here so the switch is documented against the behaviour it turns on.
 
 **Where the graph lives.** Graft writes its graph to `graft/` at the root of
 the repository checkout, which is persistent between runs, so an unchanged
 file replays from Graft's own cache on the next build instead of being
-re-parsed. The worker never deletes `graft/`, and the directory is ignored by
-git so the graph is never staged.
+re-parsed. The worker never deletes `graft/`; keeping the graph out of git is
+part of the injection change, not of this switch.
 
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a
