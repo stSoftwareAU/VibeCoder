@@ -1717,8 +1717,56 @@ unless explicitly overridden.
 | Comment flood threshold | `comment_flood_threshold` | `10` | Threshold of untrusted comments that triggers a flood audit event |
 | Include untrusted comments | `include_untrusted_comments` | `true` | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely. |
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
+| Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+
+### 🌱 Graft repo-context injection
+
+```json
+{
+  "graft_context": {
+    "enabled": true
+  }
+}
+```
+
+`graft_context.enabled` is the **host** switch for Graft repo-context
+injection (Issue #2060). It defaults to **`false`**, and a host whose
+`.config.json` carries no `graft_context` block behaves exactly as it does
+today — nothing is built, nothing is injected, and no prompt changes.
+
+This key is the configuration surface, landed ahead of the injection itself
+(Issue #2098); the build, bundle and run-stats fields it governs land with the
+rest of #2060. Setting it to `true` before then is accepted and changes
+nothing.
+
+**What it turns on.** On an enabled host, each run builds a
+[Graft](https://github.com/trailhq/Graft) tree-sitter code graph of the
+repository checkout and injects the resulting source bundle as an extra prompt
+section beside the existing `CLAUDE.md` / `AGENTS.md` repo-context docs, in
+every phase that already receives those docs. The switch is per host, not per
+repository: an enabled host uses Graft for every repository it works on.
+
+**Time limits.** The graph build is given **300 seconds** and the bundle query
+**30 seconds**. Past either limit the run continues without the bundle and
+records a `failed` Graft status — the bundle is an accelerator, so losing it
+never fails the run, and the loss is recorded rather than passed off as a
+clean run. These are the limits the injection change implements; they are
+stated here so the switch is documented against the behaviour it turns on.
+
+**Where the graph lives.** Graft writes its graph to `graft/` at the root of
+the repository checkout, which is persistent between runs, so an unchanged
+file replays from Graft's own cache on the next build instead of being
+re-parsed. The worker never deletes `graft/`; keeping the graph out of git is
+part of the injection change, not of this switch.
+
+**Validation.** The block is validated at config load. An unrecognised key
+inside it warns and is ignored, the way an unknown top-level key does, but a
+block that is not an object — or an `enabled` that is not a boolean, such as
+`"yes"` — **stops the worker** with an error naming `graft_context.enabled`.
+A host whose operator believes Graft is on must never silently run with it
+off.
 
 ### 📝 Agent transcripts
 
