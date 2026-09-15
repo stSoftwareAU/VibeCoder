@@ -679,10 +679,14 @@ Deno.test("run_core - switching to a metered fallback says so loudly (Issue #192
 
 Deno.test("run_core - switching to a fixed-price subscription raises no billing warning (Issue #1923)", async () => {
   const errors: string[] = [];
+  const logs: string[] = [];
   let nowValue = 0;
   let cycleCount = 0;
 
   const deps = createMockDeps({
+    log: (msg: string) => {
+      logs.push(msg);
+    },
     now: () => nowValue,
     sleep: () => {
       cycleCount++;
@@ -712,6 +716,11 @@ Deno.test("run_core - switching to a fixed-price subscription raises no billing 
   await runCoreLoop(config, deps);
 
   assertEquals(errors.some((e) => e.includes("billing=")), false);
+  // The switch itself still states the billing mode, so an operator reading
+  // the log never has to infer it from the absence of a warning.
+  const switched = logs.find((l) => l.includes("[provider-fallback]"));
+  assert(switched, `expected a switch line, got: ${logs.join(" | ")}`);
+  assertStringIncludes(switched, "billing=fixed-subscription");
 });
 
 Deno.test("run_core - an auth failure never consults the fallback (Issue #2055)", async () => {

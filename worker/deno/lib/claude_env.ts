@@ -139,21 +139,23 @@ export function isDeniedClaudeEnvVar(
 }
 
 /**
- * The Anthropic credentials that bill per token rather than against a
- * fixed-price subscription (Issue #1923).
+ * The Anthropic credentials that are not this run's fixed-price subscription
+ * (Issue #1923).
  *
  * `ANTHROPIC_API_KEY` is metered by definition. `ANTHROPIC_AUTH_TOKEN` is a
- * bearer for a proxied endpoint — whatever it bills, it is not this run's
- * subscription, so it cannot stand in for the token the run selected.
+ * bearer for a proxied endpoint, so what it bills is the proxy's business —
+ * but it is still not the subscription this run selected, and that is the
+ * property this list is about. Named for what is provable rather than for
+ * "metered", which would over-claim on the bearer.
  */
-export const CLAUDE_METERED_CREDENTIAL_ENV_VARS: readonly string[] = [
+export const CLAUDE_NON_SUBSCRIPTION_CREDENTIAL_ENV_VARS: readonly string[] = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
 ];
 
 /**
- * Withhold metered Anthropic credentials from a subscription run
- * (Issue #1923).
+ * Withhold every non-subscription Anthropic credential from a subscription
+ * run (Issue #1923).
  *
  * The fixed-price-only policy: VibeCoder runs unattended for months, so a
  * subscription that is spent, stale or revoked must **fail authentication**
@@ -172,11 +174,13 @@ export const CLAUDE_METERED_CREDENTIAL_ENV_VARS: readonly string[] = [
  * @returns The same object, with metered credentials removed in
  *   subscription mode.
  */
-export function withholdMeteredAnthropicCredentials(
+export function withholdNonSubscriptionCredentials(
   env: Record<string, string>,
 ): Record<string, string> {
   if ((env["CLAUDE_CODE_OAUTH_TOKEN"] ?? "").trim().length === 0) return env;
-  for (const name of CLAUDE_METERED_CREDENTIAL_ENV_VARS) delete env[name];
+  for (const name of CLAUDE_NON_SUBSCRIPTION_CREDENTIAL_ENV_VARS) {
+    delete env[name];
+  }
   return env;
 }
 
@@ -189,7 +193,7 @@ export function withholdMeteredAnthropicCredentials(
  * `Deno.Command`'s `clearEnv: true` so the child receives exactly this map.
  *
  * A usable `CLAUDE_CODE_OAUTH_TOKEN` also engages the subscription billing
- * guard (Issue #1923) — see {@link withholdMeteredAnthropicCredentials}.
+ * guard (Issue #1923) — see {@link withholdNonSubscriptionCredentials}.
  *
  * @param parentEnv - The environment to inherit from (defaults to the current
  *   process environment).
@@ -201,7 +205,7 @@ export function buildClaudeChildEnv(
   parentEnv: Record<string, string> = Deno.env.toObject(),
   denylist: readonly string[] = CLAUDE_ENV_DENYLIST,
 ): Record<string, string> {
-  const env = withholdMeteredAnthropicCredentials(
+  const env = withholdNonSubscriptionCredentials(
     buildAgentChildEnv(parentEnv, {
       denylist,
       secretAllowlist: CLAUDE_ENV_SECRET_ALLOWLIST,

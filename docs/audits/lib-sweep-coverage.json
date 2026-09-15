@@ -1517,6 +1517,18 @@
       "paths": [
         "worker/deno/lib/subscription_soak_status.ts"
       ]
+    },
+    {
+      "issue": 1923,
+      "chunk": "top-up-1923",
+      "title": "top-up: the provider billing classifier",
+      "ledger": "docs/audits/security-sweep-1923-provider-billing.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: provider_billing.ts (#1923)",
+      "status": "swept",
+      "sweptAt": "8b7d13958ac101348beed8dcd3d2ea22cba22c31",
+      "paths": [
+        "worker/deno/lib/provider_billing.ts"
+      ]
     }
   ],
   "roots": [

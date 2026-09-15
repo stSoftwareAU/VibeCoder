@@ -57,6 +57,9 @@ function fakeProvider(id: string): AgentProviderDescriptor {
       envVars: [],
       provisionEnvVar: `VIBE_LAUNCHAGENT_${id.toUpperCase()}_API_KEY`,
     },
+    // A fake vendor proves no subscription and no metered key (Issue #1923):
+    // the classifier answers "unknown", which is never fixed-price.
+    billing: { subscriptionEnvVars: [], meteredEnvVars: [] },
     environment: { secretAllowlist: [], denylist: [] },
     install: { fragment: `providers/${id}.sh` },
     promptTransport: "argv",

@@ -488,7 +488,10 @@ export interface RunCoreDeps {
    * The health-gate fallback is a provider switch no human authorises at the
    * time it happens, so it must never be silent about moving work off a
    * fixed-price subscription and onto per-token billing. Absent → the shared
-   * descriptor-driven classifier, reading credential presence only.
+   * descriptor-driven classifier. That classifier reads environment presence
+   * for most providers, but Codex's declared probe also reads its `auth.json`
+   * synchronously — one small file, on a path already taken only after a
+   * failed health check, never in the hot loop.
    */
   classifyProviderBilling?: (providerId: string) => ProviderBillingEvidence;
   checkGhAuth: () => Promise<Result<{ valid: boolean }>>;
@@ -5497,11 +5500,12 @@ export async function runCoreLoop(
             // written — but an unattended move onto per-token billing must be
             // loud, not indistinguishable from a move onto another
             // fixed-price subscription.
-            const billing = (deps.classifyProviderBilling ??
+            const classify = deps.classifyProviderBilling ??
               ((id: string) =>
                 classifyProviderBilling(id, {
                   workDir: config.workDir ?? "",
-                })))(fallbackId);
+                }));
+            const billing = classify(fallbackId);
             if (billing.billingMode !== "fixed-subscription") {
               deps.logError(
                 `[provider-fallback] ${fallbackId} billing=` +

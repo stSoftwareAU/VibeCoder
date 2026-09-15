@@ -52,7 +52,6 @@ import {
   buildClaudeChildEnv,
   CLAUDE_ENV_DENYLIST,
   CLAUDE_ENV_SECRET_ALLOWLIST,
-  CLAUDE_METERED_CREDENTIAL_ENV_VARS,
 } from "./claude_env.ts";
 import {
   claudeAuthActionableMessage,
@@ -226,7 +225,11 @@ export interface AgentProviderTokenPool {
 export interface AgentProviderBillingContext {
   /** The worker's work directory, for state kept beside it. */
   readonly workDir: string;
-  /** Environment lookup — never the ambient process environment. */
+  /**
+   * Environment lookup. A descriptor hook always receives one explicitly;
+   * the shared classifier is what decides whether that is the caller's own
+   * lookup or the process environment.
+   */
   readonly env: EnvLookup;
 }
 
@@ -591,12 +594,16 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
     },
   },
   // Fixed-price subscription vs metered spend (Issue #1923). The OAuth token
-  // is the Claude subscription; the other two bill per token, which is why
-  // `withholdMeteredAnthropicCredentials` keeps them out of a subscription
-  // run's child.
+  // is the Claude subscription; `withholdNonSubscriptionCredentials` keeps
+  // every other Anthropic credential out of a subscription run's child.
   billing: {
     subscriptionEnvVars: ["CLAUDE_CODE_OAUTH_TOKEN"],
-    meteredEnvVars: CLAUDE_METERED_CREDENTIAL_ENV_VARS,
+    // ANTHROPIC_AUTH_TOKEN is deliberately absent: it is a bearer for a
+    // proxied endpoint, so what it bills is the proxy's business and this
+    // module cannot prove it is metered. It stays `unknown`, which agrees
+    // with `claudeStatus`'s `non-subscription-bearer`, and is withheld from a
+    // subscription child anyway by CLAUDE_NON_SUBSCRIPTION_CREDENTIAL_ENV_VARS.
+    meteredEnvVars: ["ANTHROPIC_API_KEY"],
   },
   environment: {
     secretAllowlist: CLAUDE_ENV_SECRET_ALLOWLIST,
@@ -688,12 +695,24 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     resolveStoredBilling(context) {
       const home = resolveCodexHome(context.workDir, context.env);
       if (!home) return undefined;
-      const mode = resolveCodexAuthMode(home, context.env).mode;
+      const { mode, source } = resolveCodexAuthMode(home, context.env);
       if (mode === "chatgpt") {
         return { mode: "fixed-subscription", reason: "codex-chatgpt-login" };
       }
       if (mode === "api-key") {
-        return { mode: "metered", reason: "OPENAI_API_KEY" };
+        // Name the credential that is actually in play. An unattended
+        // operator reads this reason to know what to change, so reporting
+        // OPENAI_API_KEY for a key held in CODEX_API_KEY — or in auth.json,
+        // where no variable is set at all — sends them to the wrong place.
+        const variable = source === "env"
+          ? CODEX_API_KEY_ENV_VARS.find(
+            (name) => (context.env(name) ?? "").trim().length > 0,
+          )
+          : undefined;
+        return {
+          mode: "metered",
+          reason: variable ?? "codex-auth-json-api-key",
+        };
       }
       return undefined;
     },

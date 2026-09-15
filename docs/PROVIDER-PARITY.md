@@ -4,9 +4,9 @@
 [#1698](https://github.com/stSoftwareAU/VibeCoder/issues/1698),
 [#1700](https://github.com/stSoftwareAU/VibeCoder/issues/1700),
 [#1703](https://github.com/stSoftwareAU/VibeCoder/issues/1703),
-[#1926](https://github.com/stSoftwareAU/VibeCoder/issues/1926)
-· **Parent:** [#1923](https://github.com/stSoftwareAU/VibeCoder/issues/1923)
-/ #1694
+[#1926](https://github.com/stSoftwareAU/VibeCoder/issues/1926),
+[#1923](https://github.com/stSoftwareAU/VibeCoder/issues/1923)
+· **Parent:** #1694
 
 Claude remains the default. This page is the operator runbook for a
 Codex-only host and for an **opt-in** mixed Claude/Codex host. Nothing
@@ -66,7 +66,7 @@ path. Nothing is inferred from a provider id.
 
 | Provider | Fixed-price subscription | Metered |
 | -------- | ------------------------ | ------- |
-| Claude | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` |
+| Claude | `CLAUDE_CODE_OAUTH_TOKEN` | `ANTHROPIC_API_KEY` |
 | Codex | a ChatGPT login persisted under `CODEX_HOME` | `OPENAI_API_KEY`, `CODEX_API_KEY` |
 | Gemini | none | `GEMINI_API_KEY` |
 | DeepSeek | none | `DEEPSEEK_API_KEY` |
@@ -76,13 +76,15 @@ Three rules follow, and they are separate:
 1. **Unknown is never fixed-price.** A provider that proves neither is
    `unknown`, and only a positively proved subscription is eligible for
    `agent_provider_mode: "auto"`. A failed probe cannot become API spend.
-2. **A subscription run withholds the metered credential.** When the run holds
-   a usable `CLAUDE_CODE_OAUTH_TOKEN`, `buildClaudeChildEnv` removes
+2. **A subscription run withholds every other Anthropic credential.** When the
+   run holds a usable `CLAUDE_CODE_OAUTH_TOKEN`, `buildClaudeChildEnv` removes
    `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the child, so the CLI
-   has no metered credential to fall back on. This mirrors
-   `buildIsolatedCodexChildEnv`'s `CODEX_HOME` guard. A host with **no**
-   subscription token is untouched — an explicit API-key deployment keeps
-   working exactly as before.
+   has nothing to fall back on. This mirrors `buildIsolatedCodexChildEnv`'s
+   `CODEX_HOME` guard. `ANTHROPIC_AUTH_TOKEN` is withheld but **not** declared
+   metered: it is a bearer for a proxied endpoint, so what it bills cannot be
+   proved — it classifies as `unknown`, which rule 1 already makes ineligible.
+   A host with **no** subscription token is untouched: an explicit API-key
+   deployment keeps working exactly as before.
 3. **`agent_provider_fallback` is metered-capable, and says so.** The opt-in
    list is an explicit operator choice and is honoured as written, including a
    metered alternative such as DeepSeek. It is **outside** the subscription-only

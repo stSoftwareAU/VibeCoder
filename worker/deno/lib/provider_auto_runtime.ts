@@ -27,11 +27,10 @@ import {
 } from "./agent_provider.ts";
 import { subscriptionStatusFromClaudeBudget } from "./claude_pool_budget.ts";
 import { probeClaudeTokenBudget } from "./claude_token_budget.ts";
-import {
-  resolveCodexAuthMode,
-  resolveCodexHome as codexHome,
-} from "./codex_auth_mode.ts";
+
+import { resolveCodexHome as codexHome } from "./codex_auth_mode.ts";
 import { CodexBudgetAdapter } from "./codex_budget.ts";
+import { classifyProviderBilling } from "./provider_billing.ts";
 import { subscriptionStatusFromCodexSnapshot } from "./codex_quota.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { invalidateHealthCache } from "./health_check_cache.ts";
@@ -294,65 +293,28 @@ async function codexStatus(
  * Authentication evidence for the soak observability surface, stripped of every
  * credential value (Issue #1927).
  *
- * Presence is inspected, never the value: `CLAUDE_CODE_OAUTH_TOKEN` and a
- * `chatgpt`-mode `CODEX_HOME` are the two durable subscription logins, while a
- * `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` presence is a metered credential. The
- * `reason` is a label (the variable *name*, not its value), safe to log.
+ * Presence is inspected, never the value. Which credential proves what is not
+ * decided here: it is read off each provider's declared `billing` capability
+ * through the shared classifier (Issue #1923), so a vendor added later needs
+ * no edit to this shared orchestration. The `reason` is a label (the variable
+ * *name*, or a state label), safe to log.
  */
 function subscriptionAuthEvidence(
   providerId: string,
   workDir: string,
   env: EnvLookup,
 ): SubscriptionAuthEvidence {
-  const has = (name: string) => (env(name) ?? "").trim().length > 0;
-  if (providerId === "claude") {
-    if (has("CLAUDE_CODE_OAUTH_TOKEN")) {
-      return { kind: "subscription-login", persistedDurably: true };
-    }
-    if (has("ANTHROPIC_API_KEY")) {
-      return {
-        kind: "metered",
-        persistedDurably: false,
-        reason: "ANTHROPIC_API_KEY",
-      };
-    }
-    return {
-      kind: "none",
-      persistedDurably: false,
-      reason: "subscription-credential-missing",
-    };
-  }
-  if (providerId === "codex") {
-    const home = codexHome(workDir, env);
-    if (!home) {
-      const metered = has("OPENAI_API_KEY") || has("CODEX_API_KEY");
-      return {
-        kind: metered ? "metered" : "none",
-        persistedDurably: false,
-        reason: metered ? "OPENAI_API_KEY" : "codex-home-missing",
-      };
-    }
-    const mode = resolveCodexAuthMode(home, env).mode;
-    if (mode === "chatgpt") {
-      return { kind: "subscription-login", persistedDurably: true };
-    }
-    if (mode === "api-key") {
-      return {
-        kind: "metered",
-        persistedDurably: false,
-        reason: "OPENAI_API_KEY",
-      };
-    }
-    return {
-      kind: "none",
-      persistedDurably: false,
-      reason: "subscription-credential-missing",
-    };
+  const billing = classifyProviderBilling(providerId, { workDir, env });
+  if (billing.billingMode === "fixed-subscription") {
+    // A proved subscription is a durable login by construction: it is either
+    // the OAuth token mounted from the credential volume or the auth state
+    // persisted under CODEX_HOME, both of which outlive the container.
+    return { kind: "subscription-login", persistedDurably: true };
   }
   return {
-    kind: "none",
+    kind: billing.billingMode === "metered" ? "metered" : "none",
     persistedDurably: false,
-    reason: "fixed-subscription-status-not-supported",
+    reason: billing.reason,
   };
 }
 
