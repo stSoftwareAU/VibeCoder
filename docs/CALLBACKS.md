@@ -25,6 +25,7 @@ Every property below is provable where you deploy — see
     "failure": "/opt/vibe-hooks/failure.sh",
     "always": "/opt/vibe-hooks/always.sh",
     "cycle": "/opt/vibe-hooks/cycle.sh",
+    "host_failure": "/opt/vibe-hooks/host-failure.sh",
     "timeout_seconds": 60
   }
 }
@@ -33,6 +34,10 @@ Every property below is provable where you deploy — see
 Every entry is optional, and a configuration without a `callbacks` block behaves
 exactly as before. A **malformed** block fails the config load rather than
 leaving an operator with a hook that silently never runs.
+
+`host_failure` is the one **host** path in the block (Issue #2107) — see
+[The host-failure hook](#the-host-failure-hook). Every other key is resolved
+inside the container.
 
 ## Ordering and exactly-once scope
 
@@ -70,6 +75,46 @@ flowchart LR
 - Concurrent issue slots each receive their own context; hooks never share state
   between slots, and each slot's `always` runs for that slot alone.
 
+## The host-failure hook
+
+A host-level failure — the container launcher crash-looping, the checkout
+update failing run after run — happens **before** any issue is claimed and
+before a container exists, so none of the hooks above can report it.
+`callbacks.host_failure` is that report, under the same contract: a versioned
+JSON document at `VIBECODER_CALLBACK_CONTEXT`, scalar `VIBECODER_*` facts, a
+cleared environment, and the same `timeout_seconds` budget.
+
+```mermaid
+flowchart LR
+    F["Host failure persists"] --> R["Targeted read of<br/>callbacks.host_failure"]
+    R -- absent --> N["No hook — not a fault"]
+    R -- malformed --> E["config_invalid — reported, never repaired"]
+    R -- configured --> I["Hook spawned on the host"]
+    I --> O["ok / failed / timed_out / spawn_failed"]
+```
+
+Two properties are specific to it:
+
+- **It is a host path.** The launcher spawns it on the host's own filesystem,
+  so — unlike every other key — a path inside the container is the wrong
+  answer. The [conformance fixture](#the-conformance-fixture) cannot drive it
+  for the same reason: the fixture runs where the worker runs.
+- **The read is targeted.** The host validates `host_failure` and
+  `timeout_seconds` only, so a `success` hook naming a container path it
+  cannot see never stops the host hook from firing. An absent key means no
+  hook; a malformed one is reported rather than quietly answered as absent.
+
+The document adds `condition` (`launcher` or `checkout_update`), `phase`,
+`consecutiveFailures`, `streakStartedAt`, `delivery` (`first` or `repeat`, plus
+a count), `attempt`, and — when the host has them — `lastExitStatus`,
+`backoffSeconds`, `logTail`, `detail` and `checkout`. The same facts are
+exported as `VIBECODER_HOST`, `VIBECODER_HOST_FAILURE_CONDITION`,
+`VIBECODER_HOST_FAILURE_PHASE`, `VIBECODER_CONSECUTIVE_FAILURES`,
+`VIBECODER_LAST_EXIT_STATUS`, `VIBECODER_BACKOFF_SECONDS`,
+`VIBECODER_STREAK_STARTED_AT`, `VIBECODER_DELIVERY_KIND`,
+`VIBECODER_DELIVERY_COUNT` and `VIBECODER_ATTEMPT`. The multi-line facts
+(`logTail`, `detail`) live in the document only.
+
 ## Invocation and path rules
 
 - The configured path is executed **directly** — no shell, no `sh -c`, no
@@ -103,6 +148,9 @@ and fails on a path that cannot run.
 The worker runs **inside the container** — that is the only run mode
 ([Containment](CONTAINMENT.md)) — so a hook path is resolved on the filesystem
 the container sees, and a host path that is not mounted in is not visible to it.
+The one exception is `host_failure`, which the host launcher spawns before any
+container exists: its path is resolved on the **host** — see
+[The host-failure hook](#the-host-failure-hook).
 
 ```mermaid
 flowchart LR
@@ -238,7 +286,7 @@ The same facts are exported as scalars, one variable each:
 | Environment variable                  | JSON field                      | Always present | Meaning                                                                                                              |
 | ------------------------------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `VIBECODER_CALLBACK_SCHEMA_VERSION`   | `schemaVersion`                 | yes            | Contract version — see [Versioning](#versioning--the-contract-is-additive)                                            |
-| `VIBECODER_CALLBACK_EVENT`            | `event`                         | yes            | `success`, `failure`, `always` or `cycle`                                                                            |
+| `VIBECODER_CALLBACK_EVENT`            | `event`                         | yes            | `success`, `failure`, `always`, `cycle` or `host_failure`                                                            |
 | `VIBECODER_CALLBACK_CONTEXT`          | —                               | yes            | Path to the JSON document for this invocation                                                                        |
 | `VIBECODER_RUN_ID`                    | `runId`                         | yes            | Worker run id                                                                                                        |
 | `VIBECODER_RESULT`                    | `result`                        | yes            | The run's own result: `success` or `failure`                                                                         |
@@ -517,6 +565,7 @@ Two differences to plan for:
 | -------------------------------- | ---------------------------------------------- |
 | `callbacks` block and validation | `worker/deno/lib/run_callbacks_config.ts`      |
 | The runner, environment, capture | `worker/deno/lib/run_callbacks.ts`             |
+| Host-failure payload and invoker | `worker/deno/lib/host_failure_hook.ts`         |
 | Context assembly and transcript  | `worker/deno/lib/run_callback_context.ts`      |
 | Exactly-once guard               | `worker/deno/lib/issue_callback_guard.ts`      |
 | Conformance fixture              | `worker/deno/lib/callback_conformance.ts`      |
