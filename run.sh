@@ -1324,11 +1324,13 @@ fi
 # container runs, so no work is in flight; the clones re-clone and the
 # approval snapshots re-baseline, exactly as #384 documents.
 #
-# Bounded and never silent: at most one recreate per
-# VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS, never for volumes too small to hold
-# the host's missing space, and a recreate that leaves the host below the
-# floor is reported as `[WORK_VOLUME_UNRECOVERED]` rather than as a fix. The
-# launch continues either way: a host that cannot claim must still run and
+# Never held back and never silent (Issue #2077): the work volume is
+# disposable and the host is not, so a host below the floor resets the volume
+# on every launch it is below it — however recent the last reset — except for
+# volumes too small to hold the host's missing space, which are left alone
+# because resetting them gains nothing. A recreate that leaves the host below
+# the floor is reported as `[WORK_VOLUME_UNRECOVERED]` rather than as a fix.
+# The launch continues either way: a host that cannot claim must still run and
 # report (Issue #477), and the hard floor below is what stops it.
 HEAL_STATE_FILE="${VIBE_WORK_VOLUME_HEAL_STATE:-${HOME}/.vibe-coder/work-volume-heal}"
 
@@ -1417,25 +1419,17 @@ heal_untrimmable_volumes() {
     return 0
   fi
 
-  # The interval guards the host whose space went somewhere else: a recreate
-  # that did not clear the floor must not be repeated every launch, wiping the
-  # clones for nothing. It must not guard a recreate the measurement says WILL
-  # clear the floor. GRQ-23 (Issue #2077) re-ratcheted 45 GB in eleven hours
-  # with 1.2 GB live, sat at 3% free, and was told to wait out the remaining
-  # thirteen — claiming nothing, and heading for the disk-full crash of #226.
-  local now last interval_hours
+  # No interval holds a reset back (Issue #2077). The old 24 h guard left
+  # GRQ-23 — 45 GB re-ratcheted in eleven hours with 1.2 GB live, 3% free —
+  # claiming nothing for thirteen hours and heading for the disk-full crash of
+  # #226. The volume is disposable; the host is not. The last reset is still
+  # recorded so the log says how fast the image is ratcheting.
+  local now last
   now="$(date +%s)"
-  interval_hours="${VIBE_WORK_VOLUME_HEAL_INTERVAL_HOURS:-24}"
-  [[ "${interval_hours}" =~ ^[0-9]+$ ]] || interval_hours=24
   last="$(cat "${HEAL_STATE_FILE}" 2>/dev/null || echo 0)"
   [[ "${last}" =~ ^[0-9]+$ ]] || last=0
-  if ((last > 0 && now - last < interval_hours * 3600)); then
-    if ((measured)) && ((avail_kb + held_kb >= floor_kb)); then
-      log_run_core "work-volume: ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB, enough to lift ${disk_gate_path} from $((avail_kb / 1024)) MB free to above the $((floor_kb / 1024)) MB claiming floor - recreating although the last recreate was only $(((now - last) / 60)) minutes ago (Issue #2077)"
-    else
-      report_unrecovered "the last recreate was $(((now - last) / 60)) minutes ago and ${disk_gate_path} still has $((avail_kb / 1024)) MB free, below the $((floor_kb / 1024)) MB claiming floor; ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB, not enough to clear it - recreating again would destroy the clones without clearing the floor"
-      return 0
-    fi
+  if ((last > 0)); then
+    log_run_core "work-volume: ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB and the last reset was $(((now - last) / 60)) minutes ago - the host is below its floor again, so the volume is reset again; it is disposable and the host is not (Issue #2077)"
   fi
 
   for volume in "${trim_refused_volumes[@]}"; do

@@ -1856,42 +1856,12 @@ Deno.test("run.sh - a refused trim on a host with room to spare destroys nothing
   }
 });
 
-Deno.test("run.sh - a recreate that did not clear the floor is not retried on the next launch (Issue #478)", async () => {
-  const harness = await setupHarness({
-    STUB_IMAGE_INSPECT_EXIT: "0",
-    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
-    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
-  });
-  try {
-    // A recreate from a minute ago: this launch must escalate, not wipe the
-    // clones again every hour for ever.
-    await Deno.mkdir(`${harness.tmpDir}/home/.vibe-coder`, { recursive: true });
-    await Deno.writeTextFile(
-      `${harness.tmpDir}/home/.vibe-coder/work-volume-heal`,
-      `${Math.floor(Date.now() / 1000) - 60}\n`,
-    );
-
-    const outcome = await runLauncher(harness);
-    assertEquals(outcome.code, 0, outcome.stderr);
-
-    assertEquals(await removedVolumes(harness), []);
-    assertEquals(await initCount(harness), 1);
-    assertStringIncludes(outcome.stderr, "[WORK_VOLUME_UNRECOVERED]");
-    assertStringIncludes(
-      await runCoreLog(harness),
-      "recreating again would destroy the clones",
-    );
-  } finally {
-    await harness.cleanup();
-  }
-});
-
-Deno.test("run.sh - a recreate that would clear the floor is not held back by the interval (Issue #2077)", async () => {
+Deno.test("run.sh - a host below its floor resets the volume however recent the last reset (Issue #2077)", async () => {
   // GRQ-23: recreated eleven hours earlier, 45 GB re-ratcheted with 1.2 GB
-  // live, 14 GB free against a 46 GB floor — and told to wait out the
-  // remaining thirteen hours claiming nothing. Here: 32 MB below a 15 GB
-  // floor, a recreate one minute ago, and a work volume holding 64 MB — so
-  // the recreate demonstrably lifts the host above the floor and must run.
+  // live, 14 GB free against a 46 GB floor — and told by a 24 h interval to
+  // wait out the remaining thirteen hours claiming nothing. The volume is
+  // disposable and the host is not: a reset one minute ago holds nothing
+  // back. Here: 32 MB below a 15 GB floor, a work volume holding 64 MB.
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
@@ -1924,7 +1894,7 @@ Deno.test("run.sh - a recreate that would clear the floor is not held back by th
     const log = await runCoreLog(harness);
     assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
     assertEquals(await initCount(harness), 2);
-    assertStringIncludes(log, "enough to lift");
+    assertStringIncludes(log, "the last reset was");
     assertStringIncludes(log, `recreating ${WORK_VOLUME_NAME}`);
     assertEquals(
       log.includes("recreating again would destroy the clones"),
@@ -1936,9 +1906,10 @@ Deno.test("run.sh - a recreate that would clear the floor is not held back by th
   }
 });
 
-Deno.test("run.sh - a recreate that cannot clear the floor still waits out the interval (Issue #2077)", async () => {
-  // The same host with only 8 MB in the work volume: 32 MB short, 8 MB held,
-  // still below the floor — so the clones stay and the launch escalates.
+Deno.test("run.sh - a reset that cannot clear the floor still runs, and is reported as unrecovered (Issue #2077)", async () => {
+  // The same host with only 8 MB in the work volume: 32 MB short, 8 MB held.
+  // Low on disk means the volume goes; that it did not clear the floor is
+  // then reported as unrecovered, never as a fix.
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
@@ -1968,8 +1939,9 @@ Deno.test("run.sh - a recreate that cannot clear the floor still waits out the i
     const outcome = await runLauncher(harness);
     assertEquals(outcome.code, 0, outcome.stderr);
     const log = await runCoreLog(harness);
-    assertEquals(await removedVolumes(harness), []);
-    assertStringIncludes(log, "not enough to clear it");
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    assertStringIncludes(log, `recreating ${WORK_VOLUME_NAME}`);
+    assertStringIncludes(log, "the recreate left");
     assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
   } finally {
     await harness.cleanup();
