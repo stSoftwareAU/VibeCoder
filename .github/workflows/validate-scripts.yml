@@ -11,15 +11,11 @@ name: Validate Scripts
 # value (see docs/MERGE.md — "No post-merge re-run of required checks").
 # Deploy/publish workflows are different and keep firing on push.
 on:
-  # Called by quality.yml, whose `gate` job is the one required check; the
-  # pull_request trigger below is kept until the ruleset requires `gate`
-  # alone, then removed so each PR runs this once.
+  # Called by quality.yml, whose `gate` job is the one required check: on a
+  # pull request this workflow runs once, through that call. The branch
+  # filter it used to carry (Develop, main, milestone/* — Issues #3360,
+  # #3940) is quality.yml's now.
   workflow_call:
-  pull_request:
-    # Issue #3360 — milestone sub-issue PRs target a shared
-    # `milestone/<name>` branch (Issue #1300); include it so the quality
-    # gate runs before those PRs merge, not only on Develop/main PRs.
-    branches: [Develop, main, milestone/*]
 
 # Issue #2382 — Rule of Two: minimise workflow token capability. This
 # job only runs static checks (bash -n, shellcheck, actionlint, deno
