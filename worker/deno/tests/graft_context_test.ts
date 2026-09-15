@@ -18,9 +18,10 @@ import {
   GRAFT_EXCLUDE_PATTERN,
   GRAFT_LAYOUT_DIRS,
   MAX_GRAFT_QUERY_BYTES,
+  truncateUtf8,
 } from "../lib/graft_context.ts";
 import type { GraftGitRunner, GraftRunner } from "../lib/graft_context.ts";
-import { EXECUTABLE_IGNORED_DIRS } from "../lib/ignored_path_clean.ts";
+import { ignoredExecutableCleanArgs } from "../lib/ignored_path_clean.ts";
 import type { Result } from "../types.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 
@@ -381,6 +382,127 @@ Deno.test("collectGraftContext - unparseable wiring.json fails", async () => {
   }, { wiring: "{ not json" });
 });
 
+Deno.test("collectGraftContext - a wiring.json that is not an object fails", async () => {
+  await withRepo(async (repoDir) => {
+    const { warns, logger } = recordingLogger();
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: fakeRunner([ok(""), ok("bundle")]).run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "failed");
+    assertEquals(result.nodeCount, undefined);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "not a JSON object");
+  }, { wiring: '[{"id":"a"}]' });
+});
+
+Deno.test("collectGraftContext - a wiring.json without readable nodes and edges fails", async () => {
+  await withRepo(async (repoDir) => {
+    const { warns, logger } = recordingLogger();
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: fakeRunner([ok(""), ok("bundle")]).run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "failed");
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "no readable");
+  }, { wiring: '{"schema":2,"nodes":7}' });
+});
+
+Deno.test("collectGraftContext - counts an id-keyed wiring.json as well as a list", async () => {
+  const keyed = JSON.stringify({
+    nodes: { a: { id: "a" }, b: { id: "b" } },
+    edges: {
+      "a->b": { relation: "calls" },
+      "b->a": { relation: "imports" },
+    },
+  });
+  await withRepo(async (repoDir) => {
+    const { logger } = recordingLogger();
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: fakeRunner([ok(""), ok("bundle")]).run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "ok");
+    assertEquals(result.nodeCount, 2);
+    assertEquals(result.callEdgeCount, 1);
+  }, { wiring: keyed });
+});
+
+Deno.test("collectGraftContext - refuses a symlinked exclude file rather than writing through it", async () => {
+  await withRepo(async (repoDir) => {
+    // A planted link is how an agent-writable, run-persistent clone attacks a
+    // read-modify-write (Issue #1234/#1239).
+    const outside = await Deno.makeTempFile({ prefix: "graft_exclude_link_" });
+    try {
+      await Deno.symlink(outside, `${repoDir}/.git/info/exclude`);
+      const runner = fakeRunner([]);
+      const { warns, logger } = recordingLogger();
+
+      const result = await collectGraftContext({
+        repoDir,
+        query: "q",
+        enabled: true,
+        logger,
+        run: runner.run,
+        git: fakeGit().git,
+      });
+
+      assertEquals(result.status, "failed");
+      assertEquals(runner.calls.length, 0);
+      assertEquals(warns.length, 1);
+      assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
+      // The link target is left untouched.
+      assertEquals(await Deno.readTextFile(outside), "");
+    } finally {
+      await Deno.remove(outside);
+    }
+  });
+});
+
+Deno.test("collectGraftContext - refuses a symlinked wiring.json", async () => {
+  await withRepo(async (repoDir) => {
+    const outside = await Deno.makeTempFile({ prefix: "graft_wiring_link_" });
+    await Deno.writeTextFile(outside, WIRING);
+    try {
+      await Deno.mkdir(`${repoDir}/graft/.graph`, { recursive: true });
+      await Deno.symlink(outside, `${repoDir}/graft/.graph/wiring.json`);
+      const { warns, logger } = recordingLogger();
+
+      const result = await collectGraftContext({
+        repoDir,
+        query: "q",
+        enabled: true,
+        logger,
+        run: fakeRunner([ok(""), ok("bundle")]).run,
+        git: fakeGit().git,
+      });
+
+      assertEquals(result.status, "failed");
+      assertEquals(result.nodeCount, undefined);
+      assertEquals(warns.length, 1);
+      assertStringIncludes(warns[0]!, "wiring.json");
+    } finally {
+      await Deno.remove(outside);
+    }
+  }, { wiring: null });
+});
+
 Deno.test("collectGraftContext - a failed git-path lookup fails loud and spawns no graft", async () => {
   await withRepo(async (repoDir) => {
     const runner = fakeRunner([]);
@@ -566,18 +688,42 @@ Deno.test("formatGraftContextSection - a bundle carrying delimiter-shaped text c
 // `graft/` survives the scoped ignored-path clean
 // ---------------------------------------------------------------------------
 
-Deno.test("graft is not an executable-ignored directory name (Issue #1443 scoped clean)", () => {
-  assertEquals(EXECUTABLE_IGNORED_DIRS.includes("graft"), false);
-});
-
-Deno.test("no directory in the graft/ layout is erased by the scoped ignored clean", () => {
-  // The clean matches these names at any depth, so every component of the
-  // documented `graft/` layout must be absent from the list.
-  for (const dir of GRAFT_LAYOUT_DIRS) {
+Deno.test("the scoped ignored clean erases no part of the graft/ layout (Issue #1443)", () => {
+  // The real pathspecs the per-run clean is given. Every component of the
+  // `graft/` layout must be absent from them, at any depth.
+  const args = ignoredExecutableCleanArgs();
+  for (const dir of [...GRAFT_LAYOUT_DIRS, "graft"]) {
     assertEquals(
-      EXECUTABLE_IGNORED_DIRS.includes(dir),
+      args.includes(`:(glob)**/${dir}`),
       false,
-      `graft/ layout component '${dir}' would be erased by the scoped clean`,
+      `the scoped clean would erase '${dir}'`,
+    );
+    assertEquals(
+      args.includes(`:(glob)**/${dir}/**`),
+      false,
+      `the scoped clean would erase the contents of '${dir}'`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// truncateUtf8 — boundaries
+// ---------------------------------------------------------------------------
+
+Deno.test("truncateUtf8 - returns text that already fits, including the exact limit", () => {
+  assertEquals(truncateUtf8("", 8), "");
+  assertEquals(truncateUtf8("abc", 8), "abc");
+  assertEquals(truncateUtf8("abcdefgh", 8), "abcdefgh");
+  // Four bytes of UTF-8 in two characters, at a four-byte limit.
+  assertEquals(truncateUtf8("éé", 4), "éé");
+});
+
+Deno.test("truncateUtf8 - cuts on a code-point boundary, never mid-character", () => {
+  // "é" is two bytes, so a five-byte limit lands inside the third character.
+  assertEquals(truncateUtf8("ééé", 5), "éé");
+  // A four-byte emoji at a limit that splits it drops it whole.
+  assertEquals(truncateUtf8("a🌱", 3), "a");
+  assertEquals(truncateUtf8("a🌱", 5), "a🌱");
+  // A zero limit yields nothing rather than a replacement character.
+  assertEquals(truncateUtf8("ééé", 0), "");
 });

@@ -75,10 +75,10 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 
-/** Seconds the graph build is given before it is killed. */
+/** Milliseconds the graph build is given before it is killed (300 s). */
 export const GRAFT_BUILD_TIMEOUT_MS = 300_000;
 
-/** Seconds the bundle query is given before it is killed. */
+/** Milliseconds the bundle query is given before it is killed (30 s). */
 export const GRAFT_ASK_TIMEOUT_MS = 30_000;
 
 /**
@@ -257,7 +257,10 @@ export async function collectGraftContext(
   const figures = await readGraphFigures(repoDir);
 
   if (!ask.ok) {
-    return fail(`graft ask ${ask.reason}`, {
+    // Both faults are reported: a failed ask whose graph is also unreadable is
+    // two problems, and dropping the second hides half the diagnosis.
+    const alsoFigures = figures.ok ? "" : ` (and ${figures.error.message})`;
+    return fail(`graft ask ${ask.reason}${alsoFigures}`, {
       buildSeconds,
       ...(figures.ok ? figures.value : {}),
     });
@@ -522,8 +525,11 @@ async function readGraphFigures(
 /**
  * Normalise a `wiring.json` collection to a list of its entries.
  *
- * Graft may write either a list or an id-keyed map, so both are accepted;
- * anything else yields `null` so the caller can fail loud.
+ * Both a list and an id-keyed map are accepted, because Graft is not on the
+ * image this was written against and those are the two shapes a node/edge
+ * index takes. That tolerance is deliberately the *only* latitude given:
+ * anything else yields `null` and the caller fails loud, so an index this
+ * module genuinely cannot read is never reported as a graph of zero nodes.
  */
 function entriesOf(value: unknown): unknown[] | null {
   if (Array.isArray(value)) return value;
