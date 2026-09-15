@@ -2,17 +2,17 @@
  * Gate: a launcher outcome record must be able to name its host (Issue #709).
  *
  * `container-restart-backoff` is what escalates a host that cannot launch. Its
- * report is titled for the machine — `resolveRunHostId()` and
- * `escalationHostId()` both read `Deno.hostname()`, and both fall back to
- * `unknown` when they cannot. Deno refuses that read without
- * `--allow-sys=hostname`, so an invocation missing the flag files a report
- * titled `Vibe Coder launcher failing on unknown-host (<phase>)`.
+ * report names the machine — `resolveRunHostId()` and `escalationHostId()`
+ * both read `Deno.hostname()`, and both fall back to `unknown` when they
+ * cannot. Deno refuses that read without `--allow-sys=hostname`, so an
+ * invocation missing the flag reports `unknown-host` for its `<phase>`
+ * failure.
  *
- * That is not a cosmetic loss. The title is also the deduplication key
- * (`host_escalation.ts`), so every host in the fleet collapses onto one issue
- * per phase and no report can be traced to a machine. Issues #709, #710 and
- * #711 are the three that arrived that way: three phases, one nameless host,
- * nothing to act on.
+ * That is not a cosmetic loss. The host is how a reader — and, since Issue
+ * #2108, the operator's own `callbacks.host_failure` hook — tells one
+ * machine's outage from another's, so every host in the fleet collapses onto
+ * one nameless report per phase. Issues #709, #710 and #711 are the three
+ * that arrived that way: three phases, one nameless host, nothing to act on.
  *
  * `loop.sh` has carried the flag since Issue #633; the other three call sites
  * were never updated with it. One flag across four scripts is exactly the

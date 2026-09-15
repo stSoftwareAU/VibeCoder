@@ -18,21 +18,31 @@
  *      failed image build means the environment cannot be reconstructed on
  *      this host, so it escalates sooner than a crashed worker.
  *   3. **Escalation.** Once the consecutive-failure count crosses the phase's
- *      threshold, the failure is reported through the existing
- *      crash-notification channel (GitHub issue comment plus optional
- *      webhook), whose cooldown is the channel's own last line of defence.
+ *      threshold, the failure is delivered to the host's own
+ *      `callbacks.host_failure` hook (Issue #2108) — the operator's channel,
+ *      whatever it is. The recorder used to file (or comment on) an issue in
+ *      the worker's own repository when the crash channel had nobody to tell
+ *      (Issue #556), which published a host's outage to a public repository;
+ *      that fallback is gone. The crash channel still runs exactly as before
+ *      — a comment on whatever issue was in flight, plus `CRASH_WEBHOOK_URL`
+ *      — but once a hook is configured it is the hook's exit status alone
+ *      that says whether anyone was told.
  *   4. **One report per streak, not one per failure** (Issue #343). The
  *      threshold used to be re-evaluated every cycle, so failures 3, 4, 5 …
  *      54 of a single ongoing condition each filed their own report — 59
  *      `escalated` events for a handful of incidents. A streak is now
  *      identified by its phase and its start, escalates once on the crossing,
  *      and re-notifies on a decaying schedule (crossing, then hourly, then
- *      daily) by editing the existing report through its body marker rather
- *      than filing another. And a suppressed escalation is queued and retried
- *      rather than dropped: being rate-limited by GitHub is exactly the state
- *      in which a worker most needs to raise its hand, so an escalation that
- *      never lands is recorded as a failure in the self-heal health report and
- *      carried into the next report that does.
+ *      daily), marking each delivery `first` or `repeat` so the hook can tell
+ *      a new incident from an update of one it already has. And a delivery
+ *      that did not land is queued and retried rather than dropped: a channel
+ *      refusing us is exactly the state in which a worker most needs to raise
+ *      its hand, so an escalation still undelivered after
+ *      {@link ESCALATION_MAX_ATTEMPTS} attempts is recorded as an
+ *      `escalation_lost` failure in the self-heal health report. A host with
+ *      no hook configured has nothing left to try, so it records the
+ *      `escalated` event locally and keeps the re-notify schedule instead of
+ *      burning five retries per streak.
  *   5. **A stop is not a failure either** (Issue #1072). `run.sh` forwards a
  *      termination signal to the runtime client and exits with that client's
  *      status — 255 on the fleet's macOS hosts — so an operator's `kill`, a
@@ -72,11 +82,14 @@ import {
 } from "./quota_pause.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "./container_extension_start.ts";
 import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "./toolchain_selfcheck.ts";
+import { escalationHostId } from "./host_escalation.ts";
+import type { CallbackInvocation, CallbackStatus } from "./run_callbacks.ts";
 import {
-  escalationHostId,
-  fileOrCommentIssue,
-  resolveOriginRepo,
-} from "./host_escalation.ts";
+  type HostFailureHookConfig,
+  type HostFailurePayload,
+  invokeHostFailureHook,
+} from "./host_failure_hook.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import {
   explainExitStatus,
   knownWorkerStatuses,
@@ -171,7 +184,7 @@ export interface ContainerRestartConfig {
   baseSleepSeconds: number;
   /** Ceiling on the grown backoff. */
   maxBackoffSeconds: number;
-  /** Consecutive failures before a failure is escalated to GitHub. */
+  /** Consecutive failures before a failure is escalated. */
   escalationThreshold: number;
   /** Lower threshold used when the image itself cannot be built. */
   imageBuildEscalationThreshold: number;
@@ -1275,17 +1288,18 @@ export interface RecordContainerOutcomeOptions {
   /** Notification seam (tests inject a recorder). */
   send?: CrashNotifier;
   /**
-   * Fallback escalation seam (Issue #556) — the worker's own repository,
-   * used when the crash channel has nobody to tell. Tests inject a recorder;
-   * production uses {@link escalateHostFailure}.
+   * The host's `callbacks.host_failure` hook, as read by
+   * `readHostFailureHook` (Issue #2107).
+   *
+   * Defaults to `none`, so a caller that did not read the configuration —
+   * every unit test that is not about this path — spawns nothing at all.
    */
-  escalateHost?: (report: HostFailureReport) => Promise<unknown>;
+  hostFailureHook?: HostFailureHookConfig;
   /**
-   * Checkout whose `origin` names the repository the fallback files into.
-   * Defaults to the working directory: the supervisor invokes this command
-   * from the worker checkout.
+   * Hook-invocation seam (Issue #2108). Tests inject a recorder; production
+   * uses {@link invokeHostFailureHook}.
    */
-  repoDir?: string;
+  invokeHook?: HostFailureHookInvoker;
   /** Sink for warnings (defaults to `console.error` via the state reporter). */
   warn?: (message: string) => void;
   /**
@@ -1307,37 +1321,39 @@ export interface RecordContainerOutcomeOptions {
 }
 
 /**
- * A launcher failure with no issue to report on (Issue #556).
+ * How the host-failure hook answered, or why it was never asked
+ * (Issue #2108).
  *
- * The crash channel comments on the issue the worker was working on. A
- * launcher that dies before claiming one has no such target — and that is the
- * case an operator most needs to hear about, because the host is doing
- * nothing at all. This report goes to the worker's own repository instead.
+ * The four spawn outcomes are the callback contract's own
+ * {@link CallbackStatus}; the two extra values are the states in which no
+ * hook ran — nothing is configured, or what is configured could not be read.
+ * Both are terminal for a plan step: there is nothing to retry.
  */
-export interface HostFailureReport {
-  /** Checkout whose `origin` names the repository to file into. */
-  repoDir: string;
-  /** Exact issue title — also the deduplication key. */
-  title: string;
-  /** Markdown body. */
-  body: string;
-}
+export type HostFailureHookStatus =
+  | CallbackStatus
+  | "no_hook_configured"
+  | "config_invalid";
 
 /**
- * Production escalator: file (or comment on) the host's own failure issue.
+ * Hook-invocation seam (Issue #2108).
  *
- * Separated from the caller so tests can record the report without a git or
- * GitHub round trip, and so a failure to resolve the repository is reported
- * as an undelivered escalation rather than a silent success.
+ * Narrower than {@link invokeHostFailureHook} itself: the recorder supplies
+ * the log seams, so a test injects a two-argument recorder and no unit test
+ * can spawn a process by accident.
  */
-export async function escalateHostFailure(
-  report: HostFailureReport,
-): Promise<void> {
-  const repo = await resolveOriginRepo(report.repoDir);
-  await fileOrCommentIssue({
-    repo,
-    title: report.title,
-    body: report.body,
+export type HostFailureHookInvoker = (
+  payload: HostFailurePayload,
+  hook: { path: string; timeoutSeconds: number },
+) => Promise<CallbackInvocation>;
+
+/** Production invoker: spawn the host hook, reporting through the host log. */
+function invokeConfiguredHostFailureHook(
+  payload: HostFailurePayload,
+  hook: { path: string; timeoutSeconds: number },
+): Promise<CallbackInvocation> {
+  return invokeHostFailureHook(payload, hook, {
+    log: (message: string) => console.error(message),
+    logError: (message: string) => console.error(message),
   });
 }
 
@@ -1353,7 +1369,7 @@ export interface ContainerRestartOutcome {
   backoffSeconds: number;
   /** True when this clean run followed at least one failure. */
   recovered: boolean;
-  /** True when a GitHub/webhook escalation was actually sent. */
+  /** True when the escalation was actually delivered. */
   escalated: boolean;
   /**
    * Why an escalation was not sent — a delivery reason (`rate_limited`) or
@@ -1369,7 +1385,8 @@ export interface ContainerRestartOutcome {
 
 /**
  * Record one launcher outcome: update the backoff, emit the self-heal events,
- * and escalate through GitHub once the phase's threshold is crossed.
+ * and escalate through the host's own `callbacks.host_failure` hook once the
+ * phase's threshold is crossed (Issue #2108).
  *
  * Telemetry and escalation failures never change the returned backoff — the
  * supervisor must keep supervising even when it cannot report.
@@ -1467,7 +1484,7 @@ export async function recordContainerRestartOutcome(
     const lost = previous.escalation.pending;
     await emitSelfHealEvent({
       module: SELF_HEAL_MODULE,
-      action: "escalation_undeliverable",
+      action: "escalation_lost",
       reason: `${lost.attempts} escalation attempt(s) for the ` +
         `${previous.escalation.phase} streak were never delivered ` +
         `(${lost.lastReason}) — the streak ended before the operator ` +
@@ -1676,62 +1693,101 @@ export async function recordContainerRestartOutcome(
       : {}),
   });
 
-  let notified = false;
-  let reason: string | null = null;
+  // The crash channel runs exactly as it always has — a comment on whatever
+  // issue was in flight plus `CRASH_WEBHOOK_URL` — and its result is recorded
+  // as `crashChannel`. What changed in Issue #2108 is that it no longer
+  // decides whether anyone was told when a hook is configured.
+  let crashNotified = false;
+  let crashReason: string | null = null;
   try {
     const result = await send(options.crashConfig, params);
     if (result.ok) {
-      notified = result.value.notified;
-      reason = result.value.reason ?? null;
+      crashNotified = result.value.notified;
+      crashReason = result.value.reason ?? null;
     } else {
-      reason = result.error.message;
+      crashReason = result.error.message;
     }
   } catch (err) {
-    reason = err instanceof Error ? err.message : String(err);
+    crashReason = err instanceof Error ? err.message : String(err);
   }
+  const crashChannel = crashNotified ? "delivered" : (crashReason ?? "unknown");
 
-  // Issue #556: the crash channel reports on the issue the worker was
-  // working on, and a launcher that never got that far has none — the exact
-  // case an operator most needs to hear about, because nothing is being
-  // worked and nothing will be. Fall back to the worker's own repository.
-  // Only for `no_channel`: `rate_limited` is a deliberate silence.
-  // The fallback is opt-in by construction: the library files nothing unless
-  // the caller named the checkout to file into (the command does) or injected
-  // its own escalator (tests do), so no unit test can reach GitHub by
-  // default.
-  const canEscalateToHostRepo = options.escalateHost !== undefined ||
-    options.repoDir !== undefined;
-  if (!notified && reason === "no_channel" && canEscalateToHostRepo) {
-    const host = escalationHostId();
+  // Issue #2108: the host's own `callbacks.host_failure` hook is the
+  // escalation channel. The recorder used to file an issue in the worker's
+  // own repository when the crash channel had nobody to tell (Issue #556),
+  // which published a host's outage to a public repository; nothing here
+  // reaches GitHub any more.
+  const hookConfig = options.hostFailureHook ?? { kind: "none" as const };
+  const carriedAttempts = carried?.attempts ?? 0;
+  let hookStatus: HostFailureHookStatus;
+  let notified: boolean;
+  let reason: string | null;
+
+  if (hookConfig.kind === "hook") {
+    const payload: HostFailurePayload = {
+      host: options.hostId ?? escalationHostId(),
+      condition: "launcher",
+      phase: decision.phase,
+      consecutiveFailures: decision.state.consecutiveFailures,
+      lastExitStatus: options.exitStatus,
+      backoffSeconds: decision.backoffSeconds,
+      streakStartedAt: new Date(decision.state.streakStartedAt * 1000)
+        .toISOString(),
+      delivery: {
+        kind: plan.kind === "crossing" ? "first" : "repeat",
+        count: plan.delivered + 1,
+      },
+      attempt: carriedAttempts + 1,
+      // The launcher's own 40-line tail, redacted before it leaves this
+      // process: a hook is an operator's channel, not a trusted vault.
+      ...(options.logTail ? { logTail: redactSecrets(options.logTail) } : {}),
+    };
+    const invoke = options.invokeHook ?? invokeConfiguredHostFailureHook;
+    let fault: string | null = null;
     try {
-      await (options.escalateHost ?? escalateHostFailure)({
-        repoDir: options.repoDir ?? ".",
-        title: `Vibe Coder launcher failing on ${host} (${decision.phase})`,
-        body: [
-          `The launcher on \`${host}\` has failed ` +
-          `${decision.state.consecutiveFailures} consecutive runs and has no ` +
-          `issue in flight to report on, so this is the report.`,
-          "",
-          params.logTail,
-        ].join("\n"),
+      const invocation = await invoke(payload, {
+        path: hookConfig.path,
+        timeoutSeconds: hookConfig.timeoutSeconds,
       });
-      notified = true;
-      reason = null;
+      hookStatus = invocation.status;
     } catch (err) {
-      reason = `host_escalation_failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
+      // `invokeHostFailureHook` never throws, so this is an injected seam
+      // misbehaving — recorded as the delivery failure it is, never as a
+      // silent success.
+      hookStatus = "spawn_failed";
+      fault = err instanceof Error ? err.message : String(err);
     }
+    // The hook's status alone decides whether anyone was told.
+    notified = hookStatus === "ok";
+    reason = notified
+      ? null
+      : `hook_${hookStatus}${fault === null ? "" : `: ${fault}`}`;
+  } else {
+    // No hook to ask: the crash channel's own bookkeeping stands, and the
+    // event below records locally that nobody could be asked.
+    hookStatus = hookConfig.kind === "invalid"
+      ? "config_invalid"
+      : "no_hook_configured";
+    notified = crashNotified;
+    reason = notified ? null : crashReason;
   }
 
-  // A suppressed escalation is queued, not dropped: the next cycle retries it
-  // and the report that finally lands names what was lost.
-  const pending: PendingEscalation | null = notified ? null : {
-    attempts: (carried?.attempts ?? 0) + 1,
-    lastReason: reason ?? "unknown",
-    firstAttemptedAt: carried?.firstAttemptedAt ?? nowSec,
-    reported: carried?.reported ?? false,
-  };
+  // `no_channel` with no hook is terminal: there is nothing left to try, so
+  // retrying it five times per streak would only burn cycles. The re-notify
+  // schedule still governs, so an unconfigured host keeps its own record.
+  const nothingLeftToTry = hookConfig.kind !== "hook" && !notified &&
+    reason === "no_channel";
+
+  // A delivery that did not land is queued, not dropped: the next cycle
+  // retries it and the report that finally lands names what was lost.
+  const pending: PendingEscalation | null = notified || nothingLeftToTry
+    ? null
+    : {
+      attempts: carriedAttempts + 1,
+      lastReason: reason ?? "unknown",
+      firstAttemptedAt: carried?.firstAttemptedAt ?? nowSec,
+      reported: carried?.reported ?? false,
+    };
   const escalation: StreakEscalationState = {
     phase: decision.phase,
     streakStartedAt: decision.state.streakStartedAt,
@@ -1750,16 +1806,25 @@ export async function recordContainerRestartOutcome(
   outcome.escalationsDelivered = escalation.delivered;
   outcome.escalationPendingAttempts = pending?.attempts ?? 0;
 
+  // Every attempt is recorded, whatever the hook said — including the host
+  // that has no hook at all, whose only record this is.
+  const channel = hookConfig.kind === "hook"
+    ? "callbacks.host_failure"
+    : "the crash channel";
   await emitSelfHealEvent({
     module: SELF_HEAL_MODULE,
     action: "escalated",
     reason: notified
       ? (plan.kind === "crossing"
-        ? `reported ${decision.phase} failure to GitHub after ` +
+        ? `reported the ${decision.phase} failure through ${channel} after ` +
           `${decision.state.consecutiveFailures} consecutive failures`
-        : `updated the ${decision.phase} escalation (update ` +
+        : `updated the ${decision.phase} report through ${channel} (update ` +
           `${escalation.delivered}) at ` +
           `${decision.state.consecutiveFailures} consecutive failures`)
+      : nothingLeftToTry
+      ? `no channel for the ${decision.phase} failure (${hookStatus}, crash ` +
+        `channel ${crashChannel}) — recorded here and re-notified on the ` +
+        "streak's own schedule"
       : `escalation for ${decision.phase} not sent (${reason ?? "unknown"}) ` +
         `— queued for retry (attempt ${pending?.attempts ?? 0} of ` +
         `${ESCALATION_MAX_ATTEMPTS})`,
@@ -1768,8 +1833,11 @@ export async function recordContainerRestartOutcome(
       phase: decision.phase,
       consecutiveFailures: decision.state.consecutiveFailures,
       threshold: decision.threshold,
-      repo: params.repo,
-      issueNumber: params.issueNumber,
+      hookStatus,
+      // Fail loud: a malformed `callbacks` block is never repaired here, so
+      // the message an operator needs is carried rather than swallowed.
+      ...(hookConfig.kind === "invalid" ? { hookError: hookConfig.error } : {}),
+      crashChannel,
       reason,
       streakStartedAt: escalation.streakStartedAt,
       escalationKind: plan.kind,
@@ -1786,7 +1854,7 @@ export async function recordContainerRestartOutcome(
     pending.reported = true;
     await emitSelfHealEvent({
       module: SELF_HEAL_MODULE,
-      action: "escalation_undeliverable",
+      action: "escalation_lost",
       reason: `${decision.phase} escalation undeliverable after ` +
         `${pending.attempts} attempts (${pending.lastReason}) — the operator ` +
         "has not been told about this outage",
