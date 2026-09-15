@@ -167,6 +167,14 @@ const ROWS: {
     failureClass: "unknown",
   },
   {
+    name: "workflow_gate → workflow-gate (Issue #2044)",
+    category: "workflow_gate",
+    message:
+      "Workflow files changed by this run did not pass the GitHub Actions file checks, so PR #2100 cannot merge until the finding below is fixed on it (Issue #1859).",
+    fixability: "not_code_fixable",
+    failureClass: "workflow-gate",
+  },
+  {
     name: "anything else → unknown",
     category: "unknown",
     message: "Something unexpected happened",
