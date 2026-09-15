@@ -1321,7 +1321,7 @@ export const GRAFT_NATIVE_MODULES: readonly string[] = [
 const GRAFT_VERSION_ARG = "GRAFT_VERSION";
 
 /** The shell variable carrying the rebuild list, found by its contents. */
-const NATIVE_LIST_ASSIGNMENT_RE = /(\w+)="[^"]*\btree-sitter\b[^"]*"/;
+const NATIVE_LIST_ASSIGNMENT_RE = /(\w+)="([^"]*\btree-sitter\b[^"]*)"/;
 
 /**
  * `--allow-scripts`, capturing just its own shell word.
@@ -1356,18 +1356,31 @@ const CXX20_RE = /CXXFLAGS=["']?-std=c\+\+20\b/;
  */
 export function findGraftRebuildViolations(containerfile: string): string[] {
   const violations: string[] = [];
+  // The Graft layer is the `npm rebuild` that names tree-sitter modules, so
+  // an unrelated rebuild added later is neither checked by these rules nor
+  // mistaken for this one.
   const steps = runInstructions(containerfile)
-    .filter((step) => /\bnpm\s+rebuild\b/.test(step));
+    .filter((step) =>
+      /\bnpm\s+rebuild\b/.test(step) && step.includes("tree-sitter")
+    );
 
   if (steps.length !== 1) {
     return [
-      `expected exactly one build step to rebuild native modules, found ${steps.length}`,
+      `expected exactly one build step to rebuild Graft's native modules, found ${steps.length}`,
     ];
   }
   const step = steps[0]!;
 
+  // Read the shell list the rebuild expands and compare it word for word. A
+  // substring test would let `tree-sitter-go` stand in for the bare
+  // `tree-sitter` core, which ships no arm64 prebuild at all.
+  const assignment = NATIVE_LIST_ASSIGNMENT_RE.exec(step);
+  const listVariable = assignment?.[1];
+  const rebuilt = new Set(
+    (assignment?.[2] ?? "").split(/\s+/).filter((name) => name.length > 0),
+  );
   for (const module of GRAFT_NATIVE_MODULES) {
-    if (!step.includes(module)) {
+    if (!rebuilt.has(module)) {
       violations.push(`the rebuild never names ${module}`);
     }
   }
@@ -1375,7 +1388,6 @@ export function findGraftRebuildViolations(containerfile: string): string[] {
   // npm 12 blocks install scripts unless the package is named, and a blocked
   // run still reports success — so the allow-list must expand the same
   // variable the rebuild does, never restate the names beside it.
-  const listVariable = NATIVE_LIST_ASSIGNMENT_RE.exec(step)?.[1];
   const allowScripts = ALLOW_SCRIPTS_RE.exec(step)?.[1];
   if (!allowScripts) {
     violations.push(

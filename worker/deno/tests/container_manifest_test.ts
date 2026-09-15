@@ -1955,7 +1955,7 @@ Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift
 
   // A step nobody rebuilds in is the fault the layer exists to prevent.
   assertEquals(findGraftRebuildViolations("RUN graft --version\n"), [
-    "expected exactly one build step to rebuild native modules, found 0",
+    "expected exactly one build step to rebuild Graft's native modules, found 0",
   ]);
 
   // An arm64-only compile hides a fault from every amd64 build...
@@ -2004,6 +2004,15 @@ Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift
     findGraftRebuildViolations(short).join("\n"),
     "never names tree-sitter-kotlin",
   );
+
+  // Dropping the bare tree-sitter core is the case a substring test misses:
+  // every remaining name still *contains* "tree-sitter", yet the one module
+  // that ships no arm64 prebuild at all would no longer be compiled.
+  const noCore = sound.replace(`native="tree-sitter `, 'native="');
+  assert(noCore !== sound, "the core-dropping fixture must differ");
+  assertEquals(findGraftRebuildViolations(noCore), [
+    "the rebuild never names tree-sitter",
+  ]);
 
   // Headers fetched at build time break an offline builder.
   const online = sound.replace("npm_config_nodedir=/usr/local ", "");

@@ -138,11 +138,12 @@ Three properties make that step trustworthy:
   `ELF 64-bit LSB shared object, x86-64`.
 - **Nothing is fetched.** `npm_config_nodedir=/usr/local` points node-gyp at
   the headers the Node layer already extracted, so no header tarball is
-  downloaded and no `~/.cache/node-gyp` is created. npm 12 no longer knows
-  `nodedir` as one of its own settings and prints one `Unknown env config`
-  warning; node-gyp reads it from the environment regardless, and stating it
-  explicitly is what makes the offline compile a guarantee rather than a
-  side-effect of node-gyp's header discovery.
+  downloaded and no `~/.cache/node-gyp` is created. npm 12 knows neither
+  `nodedir` nor `build-from-source` as one of its own settings and prints an
+  `Unknown env config` warning for each; node-gyp and node-gyp-build read both
+  from the environment regardless, and stating them explicitly is what makes
+  the offline compile a guarantee rather than a side-effect of node-gyp's
+  header discovery.
 - **The rebuild is proven, not assumed.** A no-op rebuild is silent: npm
   reports `rebuilt dependencies successfully` for a run whose scripts it
   blocked, and `graft --version` is pure JavaScript that loads no grammar, so
