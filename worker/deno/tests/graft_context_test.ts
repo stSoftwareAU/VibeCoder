@@ -19,6 +19,7 @@ import {
   GRAFT_LAYOUT_DIRS,
   MAX_GRAFT_QUERY_BYTES,
   truncateUtf8,
+  utf8Length,
 } from "../lib/graft_context.ts";
 import type { GraftGitRunner, GraftRunner } from "../lib/graft_context.ts";
 import { ignoredExecutableCleanArgs } from "../lib/ignored_path_clean.ts";
@@ -641,6 +642,47 @@ Deno.test("collectGraftContext - a short query is passed through untouched", asy
   });
 });
 
+Deno.test("collectGraftContext - a cut query is reported, an untouched one is not", async () => {
+  await withRepo(async (repoDir) => {
+    const { logger, warns } = recordingLogger();
+    await collectGraftContext({
+      repoDir,
+      query: "é".repeat(60_000),
+      enabled: true,
+      logger,
+      run: fakeRunner([ok(""), ok("bundle")]).run,
+      git: fakeGit().git,
+    });
+
+    // A degraded ask says so: one line, naming the real byte count.
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_QUERY_TRUNCATED]");
+    assertStringIncludes(warns[0]!, `${120_000}`);
+    assertStringIncludes(warns[0]!, `${MAX_GRAFT_QUERY_BYTES}`);
+  });
+
+  await withRepo(async (repoDir) => {
+    const { logger, warns } = recordingLogger();
+    await collectGraftContext({
+      repoDir,
+      query: "où est le parseur",
+      enabled: true,
+      logger,
+      run: fakeRunner([ok(""), ok("bundle")]).run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(warns, []);
+  });
+});
+
+Deno.test("utf8Length - counts bytes, not code points", () => {
+  assertEquals(utf8Length(""), 0);
+  assertEquals(utf8Length("abc"), 3);
+  assertEquals(utf8Length("é"), 2);
+  assertEquals(utf8Length("🌱"), 4);
+});
+
 // ---------------------------------------------------------------------------
 // Prompt rendering
 // ---------------------------------------------------------------------------
@@ -692,7 +734,7 @@ Deno.test("the scoped ignored clean erases no part of the graft/ layout (Issue #
   // The real pathspecs the per-run clean is given. Every component of the
   // `graft/` layout must be absent from them, at any depth.
   const args = ignoredExecutableCleanArgs();
-  for (const dir of [...GRAFT_LAYOUT_DIRS, "graft"]) {
+  for (const dir of GRAFT_LAYOUT_DIRS) {
     assertEquals(
       args.includes(`:(glob)**/${dir}`),
       false,

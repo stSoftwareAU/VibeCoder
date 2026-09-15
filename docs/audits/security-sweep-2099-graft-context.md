@@ -22,7 +22,7 @@ Each is read below.
 
 | Input | Source | How it is handled |
 | ----- | ------ | ----------------- |
-| `query` | the worker, derived from the issue under work — untrusted | passed as **one argv element** to `graft ask --source`, never through a shell, and truncated to 64 KiB of UTF-8 on a code-point boundary so an over-long query cannot fail the whole `execve` with `E2BIG` |
+| `query` | the worker, derived from the issue under work — untrusted | passed as **one argv element** to `graft ask --source`, never through a shell, and truncated to 64 KiB of UTF-8 on a code-point boundary so an over-long query cannot fail the whole `execve` with `E2BIG`. A cut is announced on a `[GRAFT_QUERY_TRUNCATED]` line rather than hidden |
 | `repoDir` | the worker's own checkout path | used only as `cwd` and as the prefix of the two paths read/written; never interpolated into an argv element |
 | `git rev-parse --git-path` stdout | git | trimmed, refused when empty, and used as a path only — a relative answer is joined onto `repoDir`, an absolute one is taken as given (the lane-worktree case) |
 | `wiring.json` | written by `graft` into the agent-writable clone | read link-free, `JSON.parse`d inside a `try`, and type-tested before any property is read. Only two integers are derived from it; no string from it reaches an argv, a path or a prompt |

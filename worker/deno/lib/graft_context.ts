@@ -21,7 +21,10 @@
  * `[GRAFT_UNAVAILABLE] <reason>` line at `warn`, returns `status: "failed"`
  * with whatever figures were gathered, and never throws. The status is
  * reported rather than swallowed: `failed` is a recorded outcome, not a
- * silently clean run.
+ * silently clean run. The one non-fatal degradation — a query cut to
+ * {@link MAX_GRAFT_QUERY_BYTES} — is announced the same way, on its own
+ * `[GRAFT_QUERY_TRUNCATED]` line, so a thin bundle is never mistaken for a
+ * full one.
  *
  * ## Why `info/exclude` and not `.gitignore`
  *
@@ -243,8 +246,16 @@ export async function collectGraftContext(
   const buildSeconds = elapsedSeconds(startedAt);
   if (!build.ok) return fail(`graft build ${build.reason}`, { buildSeconds });
 
-  // 3. Ask for the bundle.
+  // 3. Ask for the bundle. An over-long query is cut rather than failing the
+  //    whole `execve`, but a cut query is a degraded ask — said out loud, so a
+  //    thin bundle is diagnosable rather than indistinguishable from a full one.
   const truncated = truncateUtf8(query, MAX_GRAFT_QUERY_BYTES);
+  if (truncated.length < query.length) {
+    logger.warn(
+      `[GRAFT_QUERY_TRUNCATED] query cut from ${utf8Length(query)} to ` +
+        `${MAX_GRAFT_QUERY_BYTES} bytes for graft ask`,
+    );
+  }
   const ask = await runGraft(
     run,
     ["ask", "--source", truncated],
@@ -585,6 +596,11 @@ ${delimiters.untrustedEnd}
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
+
+/** Bytes `text` occupies once encoded as UTF-8. */
+export function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
 
 /**
  * Truncate text to at most `maxBytes` of UTF-8, on a code-point boundary.

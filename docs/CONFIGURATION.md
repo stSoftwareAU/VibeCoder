@@ -1757,7 +1757,9 @@ worker log for `[GRAFT_UNAVAILABLE]` to see why.
 
 **Query size.** The bundle query is passed to `graft ask --source` as a single
 argument, truncated to **64 KiB** of UTF-8 on a character boundary, so it
-stays well under Linux's 128 KiB single-argument limit. The bundle Graft
+stays well under Linux's 128 KiB single-argument limit. A query that is
+actually cut logs one `[GRAFT_QUERY_TRUNCATED]` line at `warn`, so a thin
+bundle can be traced to a cut query rather than guessed at. The bundle Graft
 returns is not capped.
 
 **Time limits.** The graph build is given **300 seconds** and the bundle query
@@ -1776,7 +1778,11 @@ before each build — per-clone, unstageable, and unlike a `.gitignore` edit it
 survives the `git reset --hard` + `git clean -fd` every run starts with — and
 `/graft/` is in the canonical `.gitignore` pattern set the worker enforces, so
 the graph can never be committed. Graft itself is run with `--no-gitignore
---no-ignore` and never edits `.gitignore`.
+--no-ignore`, which #2060 records as the flags that stop it editing
+`.gitignore`; that is an assumption from Graft's documentation rather than one
+observed here, because Graft is not installed on the image this was written
+against. The two entries above are what actually guarantee the graph is never
+committed, and they hold either way.
 
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a
