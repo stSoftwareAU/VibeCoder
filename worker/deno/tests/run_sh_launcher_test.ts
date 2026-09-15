@@ -692,6 +692,8 @@ Deno.test("run.sh - refuses to launch when another worker is already running on 
     assertEquals(typeof reading.availableBytes, "number");
     assertEquals(typeof reading.totalBytes, "number");
     assertEquals(typeof reading.measuredAt, "number");
+    // Issue #2080: a launch whose init did not report a refused trim says so.
+    assertEquals(reading.workVolumeTrimRefused, false);
     assert((reading.totalBytes as number) > 0, "a measured total");
     assert(
       Math.abs((reading.measuredAt as number) - Date.now() / 1000) < 300,
@@ -1822,6 +1824,13 @@ Deno.test("run.sh - a refused trim below the claiming floor recreates the volume
     // The worker still launched: a host that cannot claim must still run and
     // report (Issue #477). Only the hard floor stops a launch.
     assert(await recorded(harness, "run"), "the worker must still start");
+
+    // Issue #2080: the reading handed to that worker says the trim was
+    // refused, so its disk-low pass leaves the guest alone.
+    const reading = JSON.parse(
+      await Deno.readTextFile(`${harness.logDir}/host-disk.json`),
+    ) as Record<string, unknown>;
+    assertEquals(reading.workVolumeTrimRefused, true);
   } finally {
     await harness.cleanup();
   }
