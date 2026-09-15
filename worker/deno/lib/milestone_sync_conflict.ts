@@ -20,6 +20,83 @@ import type { GhCommandFn } from "./milestone_branch_sync.ts";
 import { describeDecisionRung } from "./milestone_conflict_triage.ts";
 import type { FileDecision } from "./milestone_conflict_triage.ts";
 
+/** One repair round the verification failure sent back to the agent rung. */
+export interface GateRepairRound {
+  /** Which round this was, 1-based. */
+  round: number;
+  /** Repository-relative paths the round changed. */
+  files: string[];
+}
+
+/**
+ * A resolution the verification refused and the agent rung then repaired
+ * (Issue #1965).
+ *
+ * Recorded because a semantic resolution reads nothing like a textual one:
+ * the files it touched are the ones the compiler named, which are routinely
+ * files git never reported as conflicted at all.
+ */
+export interface GateRepairRecord {
+  /** The gate command that refused the first resolution. */
+  failingCommand: string;
+  /** The rounds that ran, in order. */
+  rounds: GateRepairRound[];
+}
+
+/**
+ * List what each repair round touched, one line apiece (Issue #1965).
+ *
+ * One renderer, two sinks: the merge commit and the report comment want the
+ * paths in backticks, the escalation's plain-text note does not, and writing
+ * the list twice is how the two drift.
+ *
+ * @param rounds - The rounds that ran, in order
+ * @param opts.code - Wrap each path in backticks (Markdown sinks)
+ * @returns One bullet per round, or "" when no round ran
+ */
+export function listGateRepairRounds(
+  rounds: readonly GateRepairRound[],
+  opts: { code?: boolean } = {},
+): string {
+  return rounds.map((r) =>
+    `- round ${r.round} — ${
+      r.files.length > 0
+        ? r.files.map((f) => opts.code ? `\`${f}\`` : f).join(", ")
+        : "no file changed"
+    }`
+  ).join("\n");
+}
+
+/**
+ * Name the repair on the merge commit and in the sync's report (Issue #1965).
+ *
+ * @param record - What the repair rounds touched
+ * @returns The block, naming the failure, each round's files and the outcome
+ */
+export function describeGateRepair(record: GateRepairRecord): string {
+  const rounds = listGateRepairRounds(record.rounds, { code: true });
+  return `The verification refused the first resolution (${record.failingCommand}), ` +
+    `so it went back to the resolution agent rather than to a human ` +
+    `(Issue #1965) — a semantic conflict git never reported as one. ` +
+    `Repaired in ${record.rounds.length} round(s):\n\n` +
+    `${rounds || "- (no round recorded)"}\n\n` +
+    `The verification passed after the repair.`;
+}
+
+/**
+ * The one-line form of {@link describeGateRepair}, for the sync's log line.
+ *
+ * @param record - What the repair rounds touched
+ * @returns One line naming the rounds and the files they touched
+ */
+export function summariseGateRepair(record: GateRepairRecord): string {
+  const files = record.rounds.flatMap((r) => r.files);
+  return `Issue #1965: the verification refused the resolution and the agent ` +
+    `rung repaired it in ${record.rounds.length} round(s) — ${
+      files.length > 0 ? files.join(", ") : "no file changed"
+    }`;
+}
+
 /** What collided when the default branch was merged down, and how it landed. */
 export interface MilestoneSyncConflict {
   /** Repository-relative paths git reported as conflicted. */
@@ -42,6 +119,12 @@ export interface MilestoneSyncConflict {
    * `auto` resolution, and the reason each decision was safe to take.
    */
   decisions?: FileDecision[];
+  /**
+   * Present when the verification refused the first resolution and the agent
+   * rung repaired it (Issue #1965), so a reader can tell a textual resolution
+   * from a semantic one.
+   */
+  repair?: GateRepairRecord;
 }
 
 /** Outcome of a milestone sync merge. */
@@ -198,6 +281,12 @@ export function buildConflictEscalationComment(
         })
       }`
     ).join("\n");
+    // A resolution the gate refused and the agent rung then repaired is a
+    // different story again (Issue #1965): the reader is told which files the
+    // compiler named, because they are rarely the conflicted ones.
+    const repairNote = e.conflict.repair
+      ? `\n\n${describeGateRepair(e.conflict.repair)}`
+      : "";
     return `## Milestone sync resolved a conflict automatically\n\n` +
       `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
       `\`${e.repo}\` conflicted, and every conflicted file was settled by a ` +
@@ -205,7 +294,7 @@ export function buildConflictEscalationComment(
       `resolution agent (Issues #1559, #1777). The merged tree passed the ` +
       `repository's own check, its manifest check and its unit suite before ` +
       `it was pushed — a red tree would have been rolled back instead.\n\n` +
-      `${decisions || "- (no decision was recorded)"}\n\n` +
+      `${decisions || "- (no decision was recorded)"}${repairNote}\n\n` +
       `${describeBranchTips(e.tips)}\n\n` +
       `No conflicted test file was resolved by taking a side that drops ` +
       `cases: a test file resolves only when one side keeps every case and ` +
