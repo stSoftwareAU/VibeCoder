@@ -3305,7 +3305,11 @@ have lost real coverage by side-taking, one of them silently).
 the merged tree must pass the repository's own Issue #974 type check — reused,
 fallback and all, rather than reimplemented — its `check:manifests` task and
 its unit suite, inside one 15-minute budget so a sync cannot block the event
-loop.
+loop. Both gates are ecosystem-aware (Issue #2138): a `Cargo.toml` is verified
+with `cargo check --workspace --all-targets` and `cargo test --workspace`,
+`--locked` when a `Cargo.lock` is committed, exactly as a `deno.json(c)` is
+verified with `deno task`; a tree that defines neither is still refused, as
+the next paragraph says.
 
 **A red tree goes back to the agent rung before it goes to a human**
 (Issue #1965, [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)).
