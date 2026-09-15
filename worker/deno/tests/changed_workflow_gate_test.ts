@@ -90,12 +90,24 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
 `;
 
-/** Run the gate over an in-memory file set. */
+/**
+ * Run the gate over an in-memory file set.
+ *
+ * `opts.base` is the base commit's version of each path; a path missing from
+ * it is a file the branch **added**, so none of its findings are pre-existing.
+ * With no `base` at all every in-scope path is treated as added, which is the
+ * shape every pre-baseline test was written against.
+ */
 function runGate(
   files: Record<string, string>,
-  opts: { changed?: string[]; deps?: Partial<ChangedWorkflowGateDeps> } = {},
+  opts: {
+    changed?: string[];
+    base?: Record<string, string>;
+    deps?: Partial<ChangedWorkflowGateDeps>;
+  } = {},
 ) {
   const reads: string[] = [];
+  const baseReads: string[] = [];
   const result = evaluateChangedWorkflowGate({
     defaultBranch: "main",
     deps: {
@@ -109,10 +121,14 @@ function runGate(
         }
         return Promise.resolve(text);
       },
+      readBaseFile: (path: string) => {
+        baseReads.push(path);
+        return Promise.resolve(opts.base?.[path] ?? null);
+      },
       ...opts.deps,
     },
   });
-  return { result, reads };
+  return { result, reads, baseReads };
 }
 
 Deno.test("changed-workflow gate - a clean changed workflow passes", async () => {
@@ -414,4 +430,128 @@ Deno.test("changed-workflow gate - one bad file does not hide the others", async
   assert(verdict.findings.length > 0, "the readable files were still checked");
   assertEquals(verdict.errors.length, 1, "the unreadable one is reported too");
   assertEquals(verdict.scannedFiles, [CI_PATH, GITLEAKS_PATH]);
+});
+
+// ---------------------------------------------------------------------------
+// Baseline diffing (Issue #2043) — a finding already present at base is not
+// this run's, even when the run touched the file carrying it.
+// ---------------------------------------------------------------------------
+
+/** `CLEAN` with a `push:` trigger on the default branch, as at base. */
+const PUSH_TRIGGERED = seed(
+  "  pull_request:\n    branches: [main, milestone/*]",
+  "  push:\n    branches: [main]\n  pull_request:\n    branches: [main, milestone/*]",
+);
+
+/** The same workflow with one unrelated step appended, as on the branch. */
+const PUSH_TRIGGERED_PLUS_STEP = PUSH_TRIGGERED.replace(
+  "          echo done\n",
+  "          echo done\n" +
+    "      - name: Reclaim runner disk\n" +
+    "        run: |\n" +
+    "          set -euo pipefail\n" +
+    "          df -h\n",
+);
+
+Deno.test("changed-workflow gate - a finding already at base does not block an unrelated change", async () => {
+  // The real shape from the report: `push: [main]` was already there, and the
+  // run only appended a step.
+  const { result, baseReads } = runGate(
+    { [CI_PATH]: PUSH_TRIGGERED_PLUS_STEP },
+    { base: { [CI_PATH]: PUSH_TRIGGERED } },
+  );
+  const verdict = await result;
+
+  assertEquals(
+    verdict.findings.map((f) => f.id),
+    [],
+    "a pre-existing finding is the audit's business, not this PR's",
+  );
+  assertEquals(verdict.errors, []);
+  assertEquals(verdict.ok, true);
+  assertEquals(verdict.scannedFiles, [CI_PATH]);
+  assertEquals(baseReads, [CI_PATH], "the base version is read once");
+});
+
+Deno.test("changed-workflow gate - a finding the run introduces still blocks", async () => {
+  const { result } = runGate(
+    { [CI_PATH]: PUSH_TRIGGERED },
+    { base: { [CI_PATH]: CLEAN } },
+  );
+  const verdict = await result;
+
+  assertEquals(verdict.ok, false, "the run added the trigger, so it blocks");
+  assert(
+    verdict.findings.some((f) => f.id.startsWith("BP-TRIGGER-")),
+    `expected a trigger finding, got: ${
+      verdict.findings.map((f) => f.id).join(", ") || "none"
+    }`,
+  );
+});
+
+Deno.test("changed-workflow gate - a new offender beside a pre-existing one is reported", async () => {
+  const baseText = seed(
+    "      - name: Run tests",
+    "      - name: Setup\n        uses: denoland/setup-deno@v2\n" +
+      "      - name: Run tests",
+  );
+  const headText = baseText.replace(
+    "      - name: Run tests",
+    "      - name: Cache\n        uses: actions/cache@v4\n" +
+      "      - name: Run tests",
+  );
+
+  const { result } = runGate({ [CI_PATH]: headText }, {
+    base: { [CI_PATH]: baseText },
+  });
+  const verdict = await result;
+
+  assertEquals(verdict.ok, false);
+  const ids = verdict.findings.map((f) => f.id);
+  assert(
+    ids.some((id) => id.includes("cache")),
+    `the pin the run added must be reported, got: ${ids.join(", ") || "none"}`,
+  );
+  assert(
+    !ids.some((id) => id.includes("setup-deno")),
+    `the pre-existing pin must be dropped, got: ${ids.join(", ")}`,
+  );
+});
+
+Deno.test("changed-workflow gate - a file added by the run is checked whole", async () => {
+  // Nothing at base, so every finding in it is this run's.
+  const { result } = runGate({ [CI_PATH]: TAG_PINNED }, { base: {} });
+  const verdict = await result;
+
+  assertEquals(verdict.ok, false);
+  assert(verdict.findings.some((f) => f.id.startsWith("BP-SHA-PIN-")));
+});
+
+Deno.test("changed-workflow gate - an unreadable base version fails loud", async () => {
+  const { result } = runGate({ [CI_PATH]: CLEAN }, {
+    deps: {
+      readBaseFile: () =>
+        Promise.reject(new Error("fatal: bad object main:ci.yml")),
+    },
+  });
+  const verdict = await result;
+
+  assertEquals(verdict.ok, false, "an unknown baseline is never a pass");
+  assertEquals(verdict.errors.length, 1);
+  assertStringIncludes(verdict.errors[0]!, "could not read the base version");
+  assertStringIncludes(verdict.errors[0]!, CI_PATH);
+  assertStringIncludes(verdict.errors[0]!, "bad object");
+});
+
+Deno.test("changed-workflow gate - an unparseable base version is not a fault", async () => {
+  // Fixing a broken workflow must not be blocked by the broken version it
+  // replaces: only the raw-text checks can baseline against it, and the head
+  // file is the one that has to parse.
+  const { result } = runGate({ [CI_PATH]: CLEAN }, {
+    base: { [CI_PATH]: "on: [push\n  bad: : yaml\n" },
+  });
+  const verdict = await result;
+
+  assertEquals(verdict.errors, [], "a broken base version is not this gate's");
+  assertEquals(verdict.ok, true);
 });
