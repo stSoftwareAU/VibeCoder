@@ -65,6 +65,7 @@ import {
 } from "./workflow_file_checks.ts";
 import { isWorkflowPath, WORKFLOWS_DIR } from "./workflow_scope.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { WORKFLOW_GATE_MARKER } from "./failure_diagnosis.ts";
 
 /** The two reads the gate needs, injected so the whole path unit-tests. */
 export interface ChangedWorkflowGateDeps {
@@ -288,6 +289,14 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The open PR already on the run's head when the gate blocked (Issue #2044). */
+export interface BlockedGatePr {
+  /** PR number, as GitHub numbers it. */
+  number: number;
+  /** PR URL, so the comment links what it names. */
+  url: string;
+}
+
 /**
  * The failure message for a blocked run: every finding named by check id,
  * file, line and detail, and every fault that stopped a check from deciding.
@@ -296,15 +305,32 @@ function messageOf(err: unknown): string {
  * can carry a tail of `git` stderr, so the whole thing goes through the
  * `redactSecrets()` chokepoint before it leaves.
  *
+ * The gate runs whether or not a PR already exists — the finding is a defect
+ * in the change, not a documentation shortfall — so the message has two
+ * openings and says which world it is in (Issue #2044). Told "no PR was
+ * raised" while its own head carried an agent-created PR, a human read the
+ * run as having delivered nothing; the PR merged unchanged three hours later.
+ *
  * @param result - A verdict whose `ok` is false
+ * @param existingPr - The open PR on the run's head, when there is one
  * @returns One multi-line message for the phase failure and the issue thread
  */
 export function buildChangedWorkflowGateMessage(
   result: ChangedWorkflowGateResult,
+  existingPr?: BlockedGatePr,
 ): string {
+  // One phrase, shared with `detectFailureCategory` (Issue #2044), so a
+  // worker-authored refusal is never diagnosed `unknown` whichever opening
+  // it takes.
+  const opening = existingPr
+    ? `Workflow files changed by this run ${WORKFLOW_GATE_MARKER}, so PR ` +
+      `#${existingPr.number} (${existingPr.url}) cannot merge until the ` +
+      "finding below is fixed on it (Issue #1859). The work is on that PR — " +
+      "nothing needs redoing; push the fix to the same branch."
+    : `Workflow files changed by this run ${WORKFLOW_GATE_MARKER}, so no PR ` +
+      "was raised (Issue #1859).";
   const lines: string[] = [
-    "Workflow files changed by this run did not pass the GitHub Actions " +
-    "file checks, so no PR was raised (Issue #1859). Only files this run " +
+    `${opening} Only files this run ` +
     "touched are checked, so the fix is in the file itself: correct it, or — " +
     "for a scanner finding that genuinely does not apply — add a " +
     "`# best-practice-ignore: <finding-id>` comment beside the offending " +

@@ -20,6 +20,7 @@ import {
   evaluateChangedWorkflowGate,
 } from "../lib/changed_workflow_gate.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 
 const CI_PATH = ".github/workflows/ci.yml";
 const GITLEAKS_PATH = ".github/workflows/gitleaks.yml";
@@ -353,6 +354,37 @@ Deno.test("changed-workflow gate - a long finding list is truncated, and says so
   assert(verdict.findings.length > 20, "the fixture must overflow the cap");
   const message = buildChangedWorkflowGateMessage(verdict);
   assertStringIncludes(message, `…and ${verdict.findings.length - 20} more`);
+});
+
+Deno.test("changed-workflow gate - the message names the PR the block lands on (Issue #2044)", async () => {
+  const { result } = runGate({ [CI_PATH]: TAG_PINNED });
+  const verdict = await result;
+  assertEquals(verdict.ok, false);
+
+  const withPr = buildChangedWorkflowGateMessage(verdict, {
+    number: 2100,
+    url: "https://github.com/o/r/pull/2100",
+  });
+  assertStringIncludes(withPr, "PR #2100");
+  assertStringIncludes(withPr, "https://github.com/o/r/pull/2100");
+  assertStringIncludes(withPr, "cannot merge until the finding below is fixed");
+  assert(
+    !withPr.includes("no PR was raised"),
+    "a live PR on the run's head must not be reported as no PR",
+  );
+  // Both openings carry the phrase the category detector keys off, so the
+  // block is never diagnosed `unknown`.
+  assertEquals(detectFailureCategory(withPr), "workflow_gate");
+
+  const withoutPr = buildChangedWorkflowGateMessage(verdict);
+  assertStringIncludes(withoutPr, "no PR was raised");
+  assertEquals(detectFailureCategory(withoutPr), "workflow_gate");
+
+  // The remediation is identical either way.
+  for (const message of [withPr, withoutPr]) {
+    assertStringIncludes(message, `[${verdict.findings[0]!.id}]`);
+    assertStringIncludes(message, "best-practice-ignore");
+  }
 });
 
 Deno.test("changed-workflow gate - an offending file the run did not touch is ignored", async () => {
