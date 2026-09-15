@@ -184,6 +184,57 @@ Deno.test(
 );
 
 Deno.test(
+  "buildConflictEscalationComment - a resolution the gate refused and the agent repaired names the repair (Issue #1965)",
+  () => {
+    const body = buildConflictEscalationComment({
+      repo: "owner/repo",
+      milestoneBranch: MILESTONE_BRANCH,
+      defaultBranch: "main",
+      conflict: {
+        ...CONFLICT,
+        resolution: "auto",
+        decisions: [
+          {
+            path: "docs/development.md",
+            case: "superset",
+            action: "theirs",
+            reason: "the default branch's side keeps every line of the other",
+          },
+        ],
+        repair: {
+          failingCommand: "deno task check in . failed (exit 1)",
+          rounds: [{ round: 1, files: ["crates/control/tests/runtime.rs"] }],
+        },
+      },
+      tips: [],
+    });
+
+    assertStringIncludes(body, "deno task check in . failed (exit 1)");
+    assertStringIncludes(body, "crates/control/tests/runtime.rs");
+    assertStringIncludes(body, "went back to the resolution agent");
+    assertStringIncludes(body, "The verification passed after the repair.");
+  },
+);
+
+Deno.test(
+  "buildConflictEscalationComment - a resolution the gate never refused reports no repair (Issue #1965)",
+  () => {
+    const body = buildConflictEscalationComment({
+      repo: "owner/repo",
+      milestoneBranch: MILESTONE_BRANCH,
+      defaultBranch: "main",
+      conflict: { ...CONFLICT, resolution: "auto", decisions: [] },
+      tips: [],
+    });
+
+    assert(
+      !body.includes("went back to the resolution agent"),
+      "an ordinary resolution reads exactly as it did before the repair rung",
+    );
+  },
+);
+
+Deno.test(
   "buildConflictEscalationComment - an automatic resolution with no recorded decision still says so (Issue #1559)",
   () => {
     const body = buildConflictEscalationComment({

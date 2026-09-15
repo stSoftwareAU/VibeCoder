@@ -19,6 +19,7 @@ import type { Logger, Result } from "../types.ts";
 import type { runClaudeWithRetry } from "./claude_runner.ts";
 import {
   buildMergeConflictPrompt,
+  type MergeConflictRepairContext,
   type MergeConflictTarget,
 } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
@@ -26,7 +27,10 @@ import { readPrResponseMessage } from "./pr_branch_preparation.ts";
 import type { ConflictIssueContext } from "./conflict_issue_context.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 
-export type { MergeConflictTarget } from "./prompt_builder.ts";
+export type {
+  MergeConflictRepairContext,
+  MergeConflictTarget,
+} from "./prompt_builder.ts";
 
 /** Claude hard timeout in seconds when the caller names none. */
 export const DEFAULT_CONFLICT_AGENT_TIMEOUT =
@@ -73,6 +77,12 @@ export interface MergeConflictAgentRequest {
   customInstructions?: string;
   /** Logger for diagnostic output. */
   logger: Logger;
+  /**
+   * The verification failure this run repairs (Issue #1965). Present only
+   * for a gate-repair run, where the merge is already resolved and committed
+   * and what failed is the check that runs before the push.
+   */
+  repair?: MergeConflictRepairContext;
   /** The agent runner — `deps.claude.runClaudeWithRetry` in production. */
   runAgent: typeof runClaudeWithRetry;
 }
@@ -112,6 +122,7 @@ export async function runMergeConflictAgent(
     qualityInstructions,
     customInstructions,
     logger,
+    repair,
     runAgent,
   } = request;
   const claudeTimeout = request.timeouts?.claudeTimeout ??
@@ -136,6 +147,9 @@ export async function runMergeConflictAgent(
     repoContextContent,
     promptsDir,
     issueContext,
+    // Issue #1965: absent for an ordinary resolution, so the prompt is the
+    // one this runner has always built.
+    ...(repair ? { repair } : {}),
   });
   if (!promptResult.ok) {
     return {

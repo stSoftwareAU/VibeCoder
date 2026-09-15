@@ -19,6 +19,10 @@ import type {
   MilestoneConflictAgentRequest,
 } from "./milestone_conflict_ladder.ts";
 import { runMergeConflictAgent } from "./merge_conflict_agent.ts";
+import {
+  gateRepairBudgetExhausted,
+  MIN_GATE_REPAIR_SECONDS,
+} from "./milestone_gate_repair.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
 import {
   buildQualityInstructions,
@@ -35,6 +39,8 @@ export interface MilestoneConflictAgentBinding {
   logger: Logger;
   /** The agent runner — `deps.claude.runClaudeWithRetry` in production. */
   runAgent?: typeof runClaudeWithRetry;
+  /** Reads the clock. Injected in tests so the grant ledger is deterministic. */
+  now?: () => number;
 }
 
 /**
@@ -53,8 +59,35 @@ export function bindMilestoneConflictAgent(
   const { repo, grant, config, logger } = binding;
   if (!grant.agentAllowed) return undefined;
   const runAgent = binding.runAgent ?? runClaudeWithRetry;
-  return (request: MilestoneConflictAgentRequest) =>
-    runMergeConflictAgent({
+  const now = binding.now ?? (() => Date.now());
+  // The grant is a budget for the whole cycle's agent work, not per run
+  // (Issue #1965): a gate repair is a second run against the same grant, so
+  // what it may have is what the first run and the verification between them
+  // left. A pass that stated no deadline granted no bound, and stays
+  // unbounded.
+  const grantSeconds = grant.agentTimeoutSeconds;
+  let grantStartedAtMs: number | undefined;
+  return (request: MilestoneConflictAgentRequest) => {
+    let claudeTimeout = config.claudeTimeout;
+    if (grantSeconds !== undefined) {
+      grantStartedAtMs ??= now();
+      const spentSeconds = Math.floor((now() - grantStartedAtMs) / 1000);
+      const remaining = grantSeconds - spentSeconds;
+      if (request.repair && remaining < MIN_GATE_REPAIR_SECONDS) {
+        // Refused by name, so the sync reports a repair that was never
+        // attempted rather than one that failed.
+        return Promise.resolve({
+          ok: false as const,
+          error: gateRepairBudgetExhausted(
+            `the cycle's agent grant of ${grantSeconds}s has ` +
+              `${Math.max(0, remaining)}s left, and a repair run needs at ` +
+              `least ${MIN_GATE_REPAIR_SECONDS}s (Issues #1693, #1965)`,
+          ),
+        });
+      }
+      claudeTimeout = Math.max(1, remaining);
+    }
+    return runMergeConflictAgent({
       repo,
       target: { kind: "branch", intoBranch: request.milestoneBranch },
       baseBranch: request.defaultBranch,
@@ -66,12 +99,17 @@ export function bindMilestoneConflictAgent(
       timeouts: {
         // The grant sized to the budget actually left (Issue #1693), not the
         // configured timeout: an agent promised more time than the caller
-        // holds is an agent the watchdog kills mid-edit.
-        claudeTimeout: grant.agentTimeoutSeconds ?? config.claudeTimeout,
+        // holds is an agent the watchdog kills mid-edit. A repair gets what
+        // is left of that same grant (Issue #1965).
+        claudeTimeout,
         claudeNoOutputTimeout: config.claudeNoOutputTimeout,
         maxRateLimitRetries: config.maxRateLimitRetries,
       },
       logger,
+      // Issue #1965: present only for a repair run, and what makes the
+      // prompt the repair prompt.
+      ...(request.repair ? { repair: request.repair } : {}),
       runAgent,
     });
+  };
 }

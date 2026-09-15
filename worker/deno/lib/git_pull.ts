@@ -39,7 +39,17 @@ import {
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
-import type { MilestoneSyncOutcome } from "./milestone_sync_conflict.ts";
+import {
+  describeGateRepair,
+  type MilestoneSyncOutcome,
+  summariseGateRepair,
+} from "./milestone_sync_conflict.ts";
+import {
+  describeRepairEscalation,
+  type GateRepairOutcome,
+  readMergedCommitSubjects,
+  repairGatedResolution,
+} from "./milestone_gate_repair.ts";
 import {
   analyseConflictedFile,
   buildResolutionCommitMessage,
@@ -65,6 +75,7 @@ import {
   checkMergedTree,
   mergeGateFailureError,
   type MergeGateFn,
+  type MergeGateOutcome,
 } from "./milestone_merge_gate.ts";
 
 /**
@@ -1118,22 +1129,76 @@ export async function syncMilestoneBranchWithDefault(
   // (Issue #1559): the repository's own check, its manifest check and its
   // unit suite. A tree that defines none of them verified nothing, so
   // `skipped` refuses the push rather than reading as a pass.
+  const runResolutionGate = async (): Promise<MergeGateOutcome> => {
+    const outcome = await resolutionGate(options.cwd ?? ".");
+    return outcome.status === "skipped"
+      ? {
+        ...outcome,
+        status: "failed" as const,
+        detail: `${outcome.detail} — an automatic conflict resolution that ` +
+          `cannot be verified is not a resolution (Issue #1559)`,
+      }
+      : outcome;
+  };
+
+  // The gate runs here rather than inside the push, so a failure still has
+  // the merged tree to work on (Issue #1965): the push path resets the branch
+  // away the moment it is refused, and a resolution reset away cannot be
+  // repaired. What reaches the push is the verdict this produced.
+  const firstGate = await runResolutionGate();
+  let repair: GateRepairOutcome | undefined;
+  let finalGate = firstGate;
+  if (firstGate.status === "failed") {
+    // Issue #1965: a gate failure after a resolution is usually a semantic
+    // conflict git never reported — the default branch changed an interface
+    // this branch implements where no hunk overlapped. That goes back to the
+    // agent rung with the compiler's own output, not straight to a human.
+    repair = await repairGatedResolution({
+      firstFailure: firstGate,
+      gate: runResolutionGate,
+      ...(agentFn ? { agentFn } : {}),
+      options,
+      milestoneBranch,
+      defaultBranch,
+      mergeSha: await readRef("HEAD", options),
+      mergedCommitSubjects: await readMergedCommitSubjects(
+        options,
+        preMergeSha,
+        defaultSha || defaultBranch,
+      ),
+      conflictedFiles,
+      ...(logger ? { logger } : {}),
+    });
+    finalGate = repair.gate;
+    if (repair.status === "repaired") {
+      // The repair is part of the merge, and the commit says which files it
+      // touched — they are rarely the conflicted ones.
+      const amended = await runGitCommand(
+        [
+          "commit",
+          "--amend",
+          "-m",
+          `${resolutionMessage}\n\n${describeGateRepair(repair.record)}`,
+        ],
+        options,
+      );
+      if (!amended.ok || amended.value.code !== 0) {
+        return await refuseResolution(
+          `the repaired resolution could not be committed (Issue #1965): ${
+            describeGitFailure(amended)
+          }`,
+          true,
+        );
+      }
+    }
+  }
+
   const gatedResolved = await gateThenPushMilestoneBranch(
     milestoneBranch,
     defaultBranch,
     options,
     repo,
-    async (repoDir) => {
-      const outcome = await resolutionGate(repoDir);
-      return outcome.status === "skipped"
-        ? {
-          ...outcome,
-          status: "failed" as const,
-          detail: `${outcome.detail} — an automatic conflict resolution that ` +
-            `cannot be verified is not a resolution (Issue #1559)`,
-        }
-        : outcome;
-    },
+    () => Promise.resolve(finalGate),
     preMergeSha,
   );
   if (!gatedResolved.ok) {
@@ -1142,10 +1207,19 @@ export async function syncMilestoneBranchWithDefault(
     // that produced it — rather than the wall of compiler output that made
     // #1542 nearly useless for deciding anything. The branch was already
     // reset by the gate, so nothing was pushed.
+    // Both gate outputs travel with the escalation (Issue #1965): the
+    // refusal above carries the last one, and the note carries the first,
+    // so a reader can tell a repair that helped nothing from one that made
+    // it worse — or see that no repair was attempted, and why.
+    const gateFailure = repair
+      ? `${gatedResolved.error.message}\n\n${
+        describeRepairEscalation(firstGate, repair)
+      }`
+      : gatedResolved.error.message;
     return {
       ok: false,
       error: new MilestoneConflictEscalation(
-        gatedResolved.error.message,
+        gateFailure,
         // The rung that actually settled each file, not the triage's
         // pre-ladder verdict on it: a file the rules or the agent decided
         // would otherwise be presented as one nothing could decide.
@@ -1157,7 +1231,7 @@ export async function syncMilestoneBranchWithDefault(
         ),
         resolved,
         defaultSha,
-        gatedResolved.error.message,
+        gateFailure,
         preMergeSha,
       ),
     };
@@ -1175,17 +1249,23 @@ export async function syncMilestoneBranchWithDefault(
       })`
     )
     .join(", ");
+  // A resolution the gate refused and the agent rung then repaired says so
+  // wherever it is read (Issue #1965).
+  const repaired = repair?.status === "repaired" ? repair.record : undefined;
   return {
     ok: true,
     value: {
       message:
-        `${selfHealNote}${gatedResolved.value}Issues #1559, #1777: resolved ${resolved.length} conflict(s) automatically — ${summary}`,
+        `${selfHealNote}${gatedResolved.value}Issues #1559, #1777: resolved ${resolved.length} conflict(s) automatically — ${summary}${
+          repaired ? ` — ${summariseGateRepair(repaired)}` : ""
+        }`,
       conflict: {
         files: conflictedFiles,
         milestoneSha: preMergeSha,
         defaultSha,
         resolution: "auto",
         decisions: resolved,
+        ...(repaired ? { repair: repaired } : {}),
       },
     },
   };

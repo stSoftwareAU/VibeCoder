@@ -290,7 +290,11 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   // sides of the conflict. It is optional rather than required — a conflict
   // with nothing to consult substitutes it away, and an operator override
   // written before this change is still a valid template.
-  merge_conflict: ["VERBOSITY_INSTRUCTIONS", "ISSUE_CONTEXT"],
+  // Issue #1965: `REPAIR_CONTEXT` carries the verification failure a repair
+  // run answers. Optional for the same reason as `ISSUE_CONTEXT` — an
+  // ordinary resolution substitutes it away, and an operator override written
+  // before the repair rung existed is still a valid template.
+  merge_conflict: ["VERBOSITY_INSTRUCTIONS", "ISSUE_CONTEXT", "REPAIR_CONTEXT"],
   // Issue #2439: `ATTRIBUTION_FOOTER` is the attribution-footer
   // placeholder the four idle-task templates always supply at file time.
   // Issue #3014: `LLM_GATE` carries the worker's deterministic LLM-usage
