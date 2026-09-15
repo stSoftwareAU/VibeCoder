@@ -62,9 +62,10 @@ docker image rm "$IMAGE"        # podman image rm / container images delete
 
 A rebuild takes several minutes. If the build itself fails, `run.sh` records
 `image_build` in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, and the
-self-heal escalation reports that phase through GitHub after two consecutive
-failures. That report quotes the failing build's own output, so the cause is in
-the issue itself rather than only in whatever the scheduler captured of stderr.
+self-heal escalation reports that phase to this host's `callbacks.host_failure`
+hook after two consecutive failures. That report quotes the failing build's own
+output — redacted — so the cause is in the payload itself rather than only in
+whatever the scheduler captured of stderr.
 
 ### The host is parked: `container_egress`
 
@@ -123,13 +124,28 @@ for that host leads with it:
 ### Where a launcher failure is reported
 
 A launcher that fails before claiming work has no issue to comment on, so the
-escalation files (or comments on) an issue in the worker's own repository,
-titled `Vibe Coder launcher failing on <host> (<phase>)` — one issue per host
-per phase, updated on the decaying re-notify schedule rather than re-filed
-(Issue #556). A crash *during* an issue still reports on that issue. If neither
-channel can deliver, the attempt is queued and the streak carries it, and
-`self-heal-summary` shows it as `escalation_undeliverable` — a host that cannot
-report is itself the thing to look at.
+escalation goes to this host's own `callbacks.host_failure` hook — the
+operator's channel, whatever it is (Issue #2108, see
+[Callbacks](CALLBACKS.md#the-host-failure-hook)). It used to file (or comment
+on) an issue in the worker's own repository, which published a host's outage to
+a public repository; it no longer writes to GitHub at all. A crash *during* an
+issue still comments on that issue through the crash channel, which runs
+unchanged — but once a hook is configured it is the hook's exit status alone
+that says whether anybody was told.
+
+**With no hook configured**, the failure is reported to the host log and the
+self-heal events and nowhere else: `self-heal-summary` shows an `escalated`
+event carrying `hookStatus: no_hook_configured`, on the crossing and then on
+the streak's re-notify schedule. Nothing is retried, because there is nothing
+left to try. A malformed `callbacks` block is not the same thing and is never
+treated as one — it is reported as `config_invalid`, with the read's own error
+beside it.
+
+**With a hook configured**, a hook that exits non-zero, times out or cannot be
+spawned is retried on the next cycles, up to five attempts. Still undelivered
+at the cap, or a streak that ends before one ever landed, is recorded as an
+`escalation_lost` event with result **failed** — a host that cannot report is
+itself the thing to look at.
 
 A run **you** stopped is not reported at all. `run.sh` exits with the runtime
 client's own status — 255 on macOS when the container is stopped under it —
@@ -142,12 +158,12 @@ is unchanged, and nothing is filed. If you see a `worker_run` escalation for a
 run you stopped by hand, that marker was not written — the launcher says so on
 stderr when it cannot write it.
 
-A report titled `unknown-host` is a fault in the reporter, not a nameless
+A report naming `unknown-host` is a fault in the reporter, not a nameless
 machine: the outcome recorder was invoked without `--allow-sys=hostname`, so
-`Deno.hostname()` threw. Because the title is also the deduplication key, every
-host in the fleet then shares one issue per phase. All four call sites pass the
-flag and a test holds them there (Issue #709); a recurrence means a fifth caller
-was added without it.
+`Deno.hostname()` threw. The hook payload's `host` is how an operator's channel
+tells one machine's outage from another's, so every host in the fleet then
+reports as the same one. All four call sites pass the flag and a test holds
+them there (Issue #709); a recurrence means a fifth caller was added without it.
 
 ### The image store is filling the disk
 

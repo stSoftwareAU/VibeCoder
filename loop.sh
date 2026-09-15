@@ -40,7 +40,8 @@ set -uo pipefail
 #   #4072 — a failed launcher is now recorded rather than retried blindly: the
 #           worker's `container-restart-backoff` command grows the wait across
 #           consecutive failures, records the recovery as a self-heal event and
-#           escalates a repeatedly failing host through GitHub.
+#           escalates a repeatedly failing host through the host's own
+#           `callbacks.host_failure` hook (Issue #2108) - never GitHub.
 ################################################################################
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
