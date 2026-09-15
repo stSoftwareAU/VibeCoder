@@ -189,8 +189,10 @@ Seven consequences worth knowing:
   restating it, so a base-image interpreter bump 404s the fetch instead of
   installing bytes the manifest never pinned.
 
-Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
-provider need; the worker itself is Deno. Its layer is built **before** the
+Node.js is the runtime `markdownlint-cli2`, Graft, Playwright and the Gemini
+CLI provider need; the worker itself is Deno. Graft is the one consumer that
+also needs the headers this layer leaves in `/usr/local/include/node`, which
+is what lets its own rebuild compile offline. Its layer is built **before** the
 coding-agent provider layer, because a provider whose CLI ships as a
 JavaScript bundle needs the runtime at install time to prove the agent runs
  — the image contents are the same either way, only the layer

@@ -101,9 +101,10 @@ what differs per architecture is **compiled here, not downloaded**.
 
 That compile is the part no other layer has. `--ignore-scripts` suppressed the
 lifecycle scripts that would have built the native modules, so the layer
-rebuilds seven of them by name — tree-sitter core and the `go`, `java`,
-`javascript`, `typescript`, `python` and `kotlin` grammars — with
-`CXXFLAGS=-std=c++20`. Naming them is what keeps the remaining packages'
+rebuilds by name the seven with no usable linux prebuild — tree-sitter core
+and the `go`, `java`, `javascript`, `typescript`, `python` and `kotlin`
+grammars — with `CXXFLAGS=-std=c++20`. Graft's remaining grammars ship working
+prebuilds and are deliberately left alone. Naming them is what keeps the remaining packages'
 scripts suppressed: npm 12 blocks install scripts unless `--allow-scripts`
 names the package, and the allow-list is derived from the same shell variable
 the rebuild list comes from, so the two cannot drift.

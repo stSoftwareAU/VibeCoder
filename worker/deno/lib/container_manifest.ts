@@ -1262,8 +1262,17 @@ const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|]*\|\s*(?:ba)?sh\b/;
 /** `ARG VIBE_CONTAINER_TOOLS`, with or without a default. */
 const TOOLS_ARG_RE = new RegExp(`^ARG\\s+${CONTAINER_TOOLS_ARG}(?:=|$)`);
 
-/** `RUN` bodies with `\` continuations joined and comment lines dropped. */
-function runInstructions(containerfile: string): string[] {
+/**
+ * `RUN` bodies with `\` continuations joined and comment lines dropped.
+ *
+ * Exported so a test asserting on one build step reads it the way the gate
+ * does — a second parser would disagree with this one about where a step
+ * starts and what a trailing `# …` comment hides.
+ *
+ * @param containerfile - Raw Containerfile text.
+ * @returns One string per `RUN` instruction, continuations joined by a space.
+ */
+export function runInstructions(containerfile: string): string[] {
   const runs: string[] = [];
   let current: string | undefined;
 

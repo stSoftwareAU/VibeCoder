@@ -26,6 +26,7 @@ import {
   REQUIRED_REPO_TOOLCHAIN_COMMANDS,
   REQUIRED_REPO_TOOLCHAIN_MODULES,
   REQUIRED_RUNTIME_TOOLS,
+  runInstructions,
 } from "../lib/container_manifest.ts";
 import {
   CONTAINERFILE_SIZE_CAP_BYTES,
@@ -1914,34 +1915,72 @@ const GRAFT_NATIVE_MODULES = [
   "tree-sitter-kotlin",
 ];
 
-/** The joined bodies of the `RUN` steps whose text contains `needle`. */
-function runStepsContaining(containerfile: string, needle: string): string[] {
-  const steps: string[] = [];
-  let current: string | undefined;
+/**
+ * Report every reason the Graft layer would not compile what it must
+ * (Issue #2097).
+ *
+ * The rebuild is the only compile in the whole image, and a no-op one is
+ * silent: npm reports `rebuilt dependencies successfully` for a run whose
+ * install scripts it blocked, and `graft --version` is pure JavaScript that
+ * loads no grammar — so both would pass over an image whose grammars cannot
+ * load. Every rule here closes one way that could happen.
+ *
+ * @param containerfile - Raw Containerfile text.
+ * @returns Human-readable violations; empty when the layer is sound.
+ */
+function findGraftRebuildViolations(containerfile: string): string[] {
+  const violations: string[] = [];
+  // The gate's own RUN parser, so this reads a step exactly as the gate does.
+  const steps = runInstructions(containerfile)
+    .filter((step) => step.includes("npm rebuild"));
 
-  for (const rawLine of containerfile.split("\n")) {
-    const line = rawLine.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    const continues = line.endsWith("\\");
-    const body = continues ? line.slice(0, -1).trim() : line;
-
-    if (current !== undefined) {
-      current = `${current} ${body}`;
-      if (!continues) {
-        steps.push(current);
-        current = undefined;
-      }
-      continue;
-    }
-
-    const run = /^RUN\s+(.*)$/i.exec(body);
-    if (!run) continue;
-    if (continues) current = run[1]!;
-    else steps.push(run[1]!);
+  if (steps.length !== 1) {
+    return [
+      `expected exactly one build step to rebuild native modules, found ${steps.length}`,
+    ];
   }
-  if (current !== undefined) steps.push(current);
+  const step = steps[0]!;
 
-  return steps.filter((step) => step.includes(needle));
+  for (const module of GRAFT_NATIVE_MODULES) {
+    if (!step.includes(module)) {
+      violations.push(`the rebuild never names ${module}`);
+    }
+  }
+  // npm 12 blocks install scripts unless the package is named, and a blocked
+  // run still reports success — so the allow-list must be derived from the
+  // same list the rebuild names, never restated beside it.
+  if (!/--allow-scripts="\$\(printf [^)]*\$\{native\}[^)]*\)"/.test(step)) {
+    violations.push(
+      "the --allow-scripts list is not derived from ${native}, so it can " +
+        "drift from the modules the rebuild names",
+    );
+  }
+  if (!step.includes('CXXFLAGS="-std=c++20"')) {
+    violations.push("the rebuild does not compile with -std=c++20");
+  }
+  // node-gyp must take its headers from the Node layer already in the image.
+  if (!step.includes("npm_config_nodedir=/usr/local")) {
+    violations.push(
+      "the rebuild does not point node-gyp at /usr/local, so it would " +
+        "download Node headers at build time",
+    );
+  }
+  // ONE code path: a `uname` branch would let an amd64 build skip the
+  // compile, so a fault would only ever surface on the Mac M-series host.
+  if (step.includes("uname")) {
+    violations.push("the rebuild branches on architecture");
+  }
+  if (!step.includes("require(m)")) {
+    violations.push(
+      "nothing requires the rebuilt modules, so a blocked rebuild would " +
+        "still report success",
+    );
+  }
+  if (!step.includes("DO_NOT_TRACK=1 graft --version")) {
+    violations.push("the version probe would ping upstream from the build");
+  }
+
+  return violations;
 }
 
 Deno.test("container/ - Graft is pinned as one noarch artefact probed by the manifest-derived self-check (Issue #2097)", async () => {
@@ -1969,50 +2008,73 @@ Deno.test("container/ - Graft is pinned as one noarch artefact probed by the man
   assert(!REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("graft"));
 });
 
-Deno.test("container/ - the Graft layer compiles its native modules offline on both architectures (Issue #2097)", async () => {
+Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift or go unproven (Issue #2097)", () => {
+  const sound = [
+    "RUN set -eu; \\",
+    '    native="tree-sitter tree-sitter-go tree-sitter-java tree-sitter-javascript tree-sitter-typescript tree-sitter-python tree-sitter-kotlin"; \\',
+    '    CXXFLAGS="-std=c++20" npm_config_nodedir=/usr/local \\',
+    `      npm rebuild -g --allow-scripts="$(printf '%s' "\${native}" | tr ' ' ',')" \${native}; \\`,
+    "    node -e 'for (const m of process.argv.slice(1)) require(m)' ${native}; \\",
+    '    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"',
+    "",
+  ].join("\n");
+  assertEquals(findGraftRebuildViolations(sound), []);
+
+  // A step nobody rebuilds in is the fault the layer exists to prevent.
+  assertEquals(findGraftRebuildViolations("RUN graft --version\n"), [
+    "expected exactly one build step to rebuild native modules, found 0",
+  ]);
+
+  // An arm64-only compile hides a fault from every amd64 build...
+  const branched = sound.replace(
+    "RUN set -eu; \\",
+    'RUN set -eu; case "$(uname -m)" in aarch64) : ;; esac; \\',
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(branched).join("\n"),
+    "branches on architecture",
+  );
+
+  // ...a hard-coded allow-list drifts from the modules actually rebuilt...
+  const drifted = sound.replace(
+    `--allow-scripts="$(printf '%s' "\${native}" | tr ' ' ',')"`,
+    '--allow-scripts="tree-sitter"',
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(drifted).join("\n"),
+    "is not derived from ${native}",
+  );
+
+  // ...and without the load proof a blocked rebuild still reports success.
+  const unproven = sound.replace(
+    "    node -e 'for (const m of process.argv.slice(1)) require(m)' ${native}; \\\n",
+    "",
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(unproven).join("\n"),
+    "nothing requires the rebuilt modules",
+  );
+
+  // Dropping a grammar is named by the grammar it dropped.
+  const short = sound.replace(" tree-sitter-kotlin", "");
+  assertStringIncludes(
+    findGraftRebuildViolations(short).join("\n"),
+    "never names tree-sitter-kotlin",
+  );
+
+  // Headers fetched at build time break an offline builder.
+  const online = sound.replace("npm_config_nodedir=/usr/local ", "");
+  assertStringIncludes(
+    findGraftRebuildViolations(online).join("\n"),
+    "download Node headers",
+  );
+});
+
+Deno.test("container/ - the committed Graft layer compiles its native modules offline on both architectures (Issue #2097)", async () => {
   const containerfile = await Deno.readTextFile(
     new URL("container/Containerfile", REPO_ROOT),
   );
-  const steps = runStepsContaining(containerfile, "npm rebuild");
-  assertEquals(
-    steps.length,
-    1,
-    "exactly one build step may rebuild native modules",
-  );
-  const step = steps[0]!;
-
-  // The rebuild is the whole point of the layer: --ignore-scripts suppressed
-  // the compile, so without this the image ships grammars that cannot load.
-  for (const module of GRAFT_NATIVE_MODULES) {
-    assertStringIncludes(step, module);
-  }
-  // npm 12 blocks install scripts unless the package is named, and a blocked
-  // run still reports success — so the allow-list must name the seven, and
-  // only the seven, leaving the rest of the tree suppressed.
-  assert(
-    /--allow-scripts="\$\(printf [^)]*\$\{native\}[^)]*\)"/.test(step),
-    `the allow-list must be derived from \${native}, so it cannot drift from ` +
-      `the modules the rebuild names: ${step}`,
-  );
-
-  // The grammars need C++20, and node-gyp must take its headers from the
-  // Node layer already in the image rather than fetching them.
-  assertStringIncludes(step, 'CXXFLAGS="-std=c++20"');
-  assertStringIncludes(step, "npm_config_nodedir=/usr/local");
-
-  // ONE code path: a `uname` branch would make an amd64 build skip the
-  // compile, so a fault would only ever surface on the Mac M-series host.
-  assert(
-    !step.includes("uname"),
-    `the rebuild must not branch on architecture: ${step}`,
-  );
-
-  // Absence of a failure is not success: npm reports "rebuilt dependencies
-  // successfully" for a run whose scripts it blocked, and `graft --version`
-  // loads no grammar. Requiring the modules is what fails such a build.
-  assertStringIncludes(step, "require(m)");
-  // The version probe must not ping upstream from an unattended build.
-  assertStringIncludes(step, "DO_NOT_TRACK=1 graft --version");
+  assertEquals(findGraftRebuildViolations(containerfile), []);
 });
 
 // ---------------------------------------------------------------------------

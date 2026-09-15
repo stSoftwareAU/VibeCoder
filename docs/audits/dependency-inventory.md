@@ -43,6 +43,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | cargo-deny | toolchain | 0.20.2 | amd64: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f<br>arm64: 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d | exact version + SHA-256 verified |
 | codespell | toolchain | 2.4.3 | noarch: af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a | exact version + SHA-256 verified |
 | gitleaks | toolchain | 8.30.1 | amd64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb<br>arm64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | exact version + SHA-256 verified |
+| graft | toolchain | 0.18.0 | noarch: 729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc | exact version + SHA-256 verified |
 | markdownlint-cli2 | toolchain | 0.23.2 | noarch: b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09 | exact version + SHA-256 verified |
 | node | toolchain | 24.19.0 | amd64: 14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647<br>arm64: 01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc | exact version + SHA-256 verified |
 | npm | toolchain | 12.0.2 | noarch: 5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a21d364e1 | exact version + SHA-256 verified |

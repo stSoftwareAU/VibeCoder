@@ -216,15 +216,16 @@ RUN set -eu; \
 # local file, and keep lifecycle scripts from running as root.
 #
 # The native modules are then compiled by an explicit rebuild naming only the
-# seven Graft loads; npm 12 blocks install scripts unless --allow-scripts names
-# the package, so the rest of the tree stays suppressed. ONE code path, no
-# `uname` branch: a compile fault fails every build, not only the arm64 one.
-# It is load-bearing on arm64 — tree-sitter core, python and kotlin ship no
-# prebuild there and go/java/javascript/typescript ship x86-64 binaries
-# mislabelled arm64 (trailhq/Graft#119). npm_config_nodedir points node-gyp at
-# the headers the Node layer already extracted, so nothing is downloaded, and
-# `set -eu` makes a failed compile fail the image build. DO_NOT_TRACK stops the
-# version probe pinging upstream.
+# seven with no usable linux prebuild — the rest of Graft's grammars ship
+# working ones and are left alone. npm 12 blocks install scripts unless
+# --allow-scripts names the package, so the rest of the tree stays suppressed.
+# ONE code path, no `uname` branch: a compile fault fails every build, not only
+# the arm64 one. It is load-bearing on arm64 — tree-sitter core, python and
+# kotlin ship no prebuild there and go/java/javascript/typescript ship x86-64
+# binaries mislabelled arm64 (trailhq/Graft#119). npm_config_nodedir points
+# node-gyp at the headers the Node layer already extracted, so nothing is
+# downloaded, and `set -eu` makes a failed compile fail the image build.
+# DO_NOT_TRACK stops the version probe pinging upstream.
 #
 # The rebuild must then be PROVEN, because a no-op one is silent: npm reports
 # "rebuilt dependencies successfully" for a run whose scripts it blocked, and
