@@ -1589,6 +1589,18 @@
       "paths": [
         "worker/deno/lib/graft_context_config.ts"
       ]
+    },
+    {
+      "issue": 2099,
+      "chunk": "top-up-2099",
+      "title": "top-up: the Graft runner",
+      "ledger": "docs/audits/security-sweep-2099-graft-context.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: graft_context.ts (#2099)",
+      "status": "swept",
+      "sweptAt": "a6fa91de8dc59150630379cf5517c0d7198ade44",
+      "paths": [
+        "worker/deno/lib/graft_context.ts"
+      ]
     }
   ],
   "roots": [

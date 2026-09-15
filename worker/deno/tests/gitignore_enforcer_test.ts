@@ -93,8 +93,48 @@ Deno.test("REQUIRED_GITIGNORE_PATTERNS - contains hidden-files defence in depth 
     "id_rsa.*",
     "credentials.json",
     "service-account*.json",
+    "/graft/",
   ];
   assertEquals([...REQUIRED_GITIGNORE_PATTERNS], expected);
+});
+
+Deno.test("ensureGitignorePatterns - ignores Graft's code graph (Issue #2099)", async () => {
+  await withTempDir(async (dir) => {
+    await initGitRepo(dir);
+    const result = await ensureGitignorePatterns(dir);
+    assert(result.ok);
+
+    // The graph itself is never committed — it is a per-run build artefact.
+    assert(
+      await gitCheckIgnore(dir, "graft/.graph/wiring.json"),
+      "expected 'graft/.graph/wiring.json' to be ignored",
+    );
+    // Anchored at the root, so a repo's own source named `graft` elsewhere is
+    // still tracked.
+    assertEquals(
+      await gitCheckIgnore(dir, "src/graft/parser.ts"),
+      false,
+      "expected 'src/graft/parser.ts' not to be ignored",
+    );
+  });
+});
+
+Deno.test("ensureGitignorePatterns - /graft/ is written exactly once across two passes (Issue #2099)", async () => {
+  await withTempDir(async (dir) => {
+    const first = await ensureGitignorePatterns(dir);
+    assert(first.ok);
+    assert(first.value.added.includes("/graft/"));
+
+    const second = await ensureGitignorePatterns(dir);
+    assert(second.ok);
+    assertEquals(second.value.added, []);
+    assert(second.value.existed.includes("/graft/"));
+
+    const occurrences = (await readGitignore(dir))
+      .split("\n")
+      .filter((line) => line.trim() === "/graft/");
+    assertEquals(occurrences.length, 1);
+  });
 });
 
 Deno.test("ensureGitignorePatterns - ignores private key material (Issue #3660)", async () => {

@@ -1758,8 +1758,13 @@ stated here so the switch is documented against the behaviour it turns on.
 **Where the graph lives.** Graft writes its graph to `graft/` at the root of
 the repository checkout, which is persistent between runs, so an unchanged
 file replays from Graft's own cache on the next build instead of being
-re-parsed. The worker never deletes `graft/`; keeping the graph out of git is
-part of the injection change, not of this switch.
+re-parsed. The worker never deletes `graft/`. Two entries keep it that way
+(Issue #2099): `/graft/` is added to the clone's own `.git/info/exclude`
+before each build — per-clone, unstageable, and unlike a `.gitignore` edit it
+survives the `git reset --hard` + `git clean -fd` every run starts with — and
+`/graft/` is in the canonical `.gitignore` pattern set the worker enforces, so
+the graph can never be committed. Graft itself is run with `--no-gitignore
+--no-ignore` and never edits `.gitignore`.
 
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a
