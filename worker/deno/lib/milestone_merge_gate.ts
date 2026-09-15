@@ -49,8 +49,22 @@ const MAX_OUTPUT_CHARS = 4000;
 export interface TypeCheckProject {
   /** Directory the check runs in. */
   dir: string;
-  /** Arguments passed to the `deno` executable. */
+  /** Arguments passed to the executable {@link kind} names. */
   args: string[];
+  /**
+   * Which toolchain checks this project (Issue #2138): a `deno.json(c)` is
+   * checked with `deno`, a `Cargo.toml` with `cargo`. A tree with neither is
+   * still refused as unverifiable, exactly as Issue #1559 set it.
+   */
+  kind: ProjectKind;
+}
+
+/** The build ecosystems the milestone gates can verify a tree with. */
+export type ProjectKind = "deno" | "cargo";
+
+/** How a project's check is spelled in a log line or an escalation. */
+export function describeProject(project: TypeCheckProject): string {
+  return `${project.kind} ${project.args.join(" ")}`;
 }
 
 /** What the gate concluded about the merged tree. */
@@ -105,6 +119,18 @@ async function resolveCheckArgs(manifestPath: string): Promise<string[]> {
 }
 
 /**
+ * `cargo check` over the whole workspace, every target (Issue #2138) —
+ * `--locked` only when a `Cargo.lock` is committed, so a merged lockfile
+ * that no longer matches is a failure and an unlocked crate is not refused
+ * for a file it never had.
+ */
+export async function cargoCheckArgs(dir: string): Promise<string[]> {
+  const args = ["check", "--workspace", "--all-targets"];
+  if (await isFile(`${dir}/Cargo.lock`)) args.push("--locked");
+  return args;
+}
+
+/**
  * The task names a Deno manifest defines.
  *
  * Only tasks with a non-empty command string count: a manifest whose `tasks`
@@ -139,12 +165,20 @@ export async function readManifestTasks(
 }
 
 /** The manifest in a directory, or null when it holds none. */
-async function manifestIn(dir: string): Promise<string | null> {
+async function manifestsIn(dir: string): Promise<ProjectManifest[]> {
+  const found: ProjectManifest[] = [];
   for (const manifest of ["deno.json", "deno.jsonc"]) {
     const path = `${dir}/${manifest}`;
-    if (await isFile(path)) return path;
+    if (await isFile(path)) {
+      found.push({ dir, manifest: path, kind: "deno" });
+      break;
+    }
   }
-  return null;
+  // Issue #2138: a Cargo workspace is a project too. Its members are covered
+  // by `--workspace`, so a directory that holds a Cargo.toml is not descended.
+  const cargo = `${dir}/Cargo.toml`;
+  if (await isFile(cargo)) found.push({ dir, manifest: cargo, kind: "cargo" });
+  return found;
 }
 
 /**
@@ -160,7 +194,10 @@ export async function findTypeCheckProjects(
   for (const project of await findProjectManifests(repoDir)) {
     found.push({
       dir: project.dir,
-      args: await resolveCheckArgs(project.manifest),
+      kind: project.kind,
+      args: project.kind === "cargo"
+        ? await cargoCheckArgs(project.dir)
+        : await resolveCheckArgs(project.manifest),
     });
   }
   return found;
@@ -168,6 +205,8 @@ export async function findTypeCheckProjects(
 
 /** A Deno project found in a tree, and the manifest that declares it. */
 export interface ProjectManifest {
+  /** Which toolchain owns the manifest (Issue #2138). */
+  kind: ProjectKind;
   /** Directory holding the manifest. */
   dir: string;
   /** Path to `deno.json` or `deno.jsonc` in that directory. */
@@ -202,9 +241,9 @@ export async function findProjectManifests(
   for (let depth = 0; depth <= MERGE_GATE_MAX_DEPTH && level.length; depth++) {
     const next: string[] = [];
     for (const dir of level.sort()) {
-      const manifest = await manifestIn(dir);
-      if (manifest) {
-        found.push({ dir, manifest });
+      const manifests = await manifestsIn(dir);
+      if (manifests.length > 0) {
+        found.push(...manifests);
         continue;
       }
       if (depth === MERGE_GATE_MAX_DEPTH) continue;
@@ -233,7 +272,8 @@ function tail(output: string): string {
 
 /** Spawn the repository's own check with a bounded timeout. */
 const spawnTypeCheck: TypeCheckRunner = async (project) => {
-  const result = await runWithTimeout(Deno.execPath(), project.args, {
+  const executable = project.kind === "cargo" ? "cargo" : Deno.execPath();
+  const result = await runWithTimeout(executable, project.args, {
     cwd: project.dir,
     timeoutMs: MERGE_GATE_TIMEOUT_MS,
   });
@@ -285,15 +325,15 @@ export async function checkMergedTree(
   if (projects.length === 0) {
     return {
       status: "skipped",
-      detail:
-        `no deno.json(c) under '${repoDir}' — the merged tree was not type-checked`,
+      detail: `no deno.json(c) or Cargo.toml under '${repoDir}' — the merged ` +
+        "tree was not type-checked",
       output: "",
     };
   }
 
   const checked: string[] = [];
   for (const project of projects) {
-    const where = `deno ${project.args.join(" ")} in ${project.dir}`;
+    const where = `${describeProject(project)} in ${project.dir}`;
     let result: { code: number; output: string };
     try {
       result = await runner(project);
