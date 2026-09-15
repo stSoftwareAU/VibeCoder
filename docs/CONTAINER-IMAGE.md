@@ -123,7 +123,11 @@ Three properties make that step trustworthy:
   `npm_config_build_from_source` is `true`, which is what makes the compile
   unconditional, so a C++20 or header regression fails **every** build rather
   than only the Mac M-series one. Measured on linux/arm64 (Node 24.19.0, g++
-  14.2): the install is about 3 s and the seven forced compiles about 13 s.
+  14.2): the install is about 5 s and the seven forced compiles about 16 s.
+  Without the rebuild all seven fail to load on that architecture: core,
+  `python` and `kotlin` report `No native build was found`, and each of the
+  other four has a `linux-arm64` prebuild that `file` reports as an
+  `ELF 64-bit LSB shared object, x86-64`.
 - **Nothing is fetched.** `npm_config_nodedir=/usr/local` points node-gyp at
   the headers the Node layer already extracted, so no header tarball is
   downloaded and no `~/.cache/node-gyp` is created. npm 12 no longer knows
