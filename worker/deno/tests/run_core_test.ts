@@ -635,6 +635,55 @@ Deno.test("run_core - an unhealthy alternative keeps the skip-cycle path (Issue 
   );
 });
 
+Deno.test("run_core - no healthy alternative plus a usage signal with time left waits for the reset instead of re-probing (Issue #2119)", async () => {
+  // GRQ-23: weekly limit on the primary, 402 on the fallback, a seven-hour
+  // pause written — and the loop re-probed both every 30 s regardless.
+  const errors: string[] = [];
+  let nowValue = 0;
+  let healthChecks = 0;
+  const sleeps: number[] = [];
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: (ms?: number) => {
+      sleeps.push(ms ?? 0);
+      nowValue += Math.max(ms ?? 0, 1000);
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: () => {
+      healthChecks++;
+      return Promise.resolve({
+        ok: true,
+        value: { healthy: false, exitCode: 3 },
+      });
+    },
+    getRateLimitRemainingSeconds: () => Promise.resolve(25_000),
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  const result = await runCoreLoop(config, deps);
+
+  assert(
+    errors.some((e) => e.includes("pausing until the usage window reopens")),
+    `the wait must be announced: ${errors.join(" | ")}`,
+  );
+  assertEquals(
+    errors.filter((e) => e.includes("skipping cycle")).length,
+    0,
+    "the 30 s skip is for a failure with no signal, not for a known pause",
+  );
+  // The 25 000 s pause outruns the 3 600 s run: one probe of each provider,
+  // then a clean quota-paused exit — not seven hours of re-probing.
+  assertEquals(healthChecks, 2, "primary once, fallback once");
+  assertEquals(result.plannedShutdown, true);
+});
+
 Deno.test("run_core - switching to a metered fallback says so loudly (Issue #1923)", async () => {
   // The subscription-only policy covers automatic routing. The opt-in
   // `agent_provider_fallback` list is an explicit operator choice and is left
