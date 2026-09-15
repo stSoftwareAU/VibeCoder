@@ -193,37 +193,35 @@ flowchart LR
 - Statuses a hook invocation can record: `ok`, `failed`, `timed_out`,
   `spawn_failed`.
 
-## A hook that fails on every issue is reported once
+## A hook that fails on every issue is recorded once, locally
 
 A hook fault is reported per invocation, which is right for a hook that fails
 once and wrong for a hook that cannot succeed at all. Observed on GRQ-23 on
 2026-09-05: the `always` hook failed on **every** issue across at least five
-runs, each failure costing about 100 seconds of slot time, and raised nothing a
-human ever saw. A fault that needs a human is itself a bug, so the worker now
-counts the streak and escalates it.
+runs, each failure costing about 100 seconds of slot time, and the only trace
+was one line per issue among the thousands the fleet writes. So the worker
+counts the streak and writes one record the operator of the host can act on.
 
 - The worker keeps a consecutive-failure count **per event** in
   `$WORK_DIR/callback-failure-streaks.json`. It survives the run boundary,
   because the condition does.
-- On the **third** consecutive failing issue, the worker files (or comments on)
-  one deduplicated issue in its **own** repository, titled
-  `Post-run <event> callback failing on <host>` — the shared host-escalation
-  channel, so an ongoing condition stays one incident however long it runs.
-- **One report per streak.** The fourth failure and the four-hundredth add
+- On the **third** consecutive failing issue, the worker writes **one** `ERROR`
+  record to its own log, naming the hook path, the streak, the last
+  `owner/repo#issue`, the status, the exit code, the duration, the hook's
+  captured (redacted) stderr, the callback schema version this worker exports,
+  and the remedy — so a hook refusing the version is diagnosed by the record
+  rather than by a human reading the raw stderr.
+- **One record per streak.** The fourth failure and the four-hundredth add
   nothing. A single successful invocation clears the count, so the next fault is
-  reported afresh.
-- **The report retires itself** (Issues #2039, #2041). The success that ends a
-  reported streak closes the issue the worker raised, with the recovery — which
-  run, after how many failures — as the closing comment. Only an issue a fleet
-  account opened is closed; somebody else's title match is left alone. A
-  success that ends a streak too short to have been reported closes nothing.
-- The report names the hook path, the last run, the exit code, the duration,
-  the hook's captured (redacted) stderr, and the callback schema version this
-  worker exports, so a hook refusing the version is diagnosed by the report
-  rather than by a human reading the stderr.
-- Delivery is best-effort in one direction only: a report that could not be
-  filed, or a closure that was refused, is logged as an error, and nothing
-  about it alters the run's own result.
+  recorded afresh.
+- **Recovery is one line.** The success that ends a recorded streak logs which
+  run succeeded and after how many failing issues. A success that ends a streak
+  too short to have been recorded logs nothing.
+- **Nothing leaves the container** (Issue #2111). The streak fires no hook,
+  spawns no process and makes no GitHub write: no issue is filed on the
+  threshold crossing, none is closed on recovery, and no `host_failure` hook is
+  invoked from inside the container. The log record and the count file are the
+  host's own record, and nothing about either alters the run's own result.
 
 **What a hook author owes in return.** The worker bounds a hook's wall clock and
 reports its outcome; it cannot see inside it. A hook that retries must classify
@@ -358,11 +356,11 @@ the fleet failed on every issue: no health heartbeat, no run archive, one
 escalation per host per hook, and a reinstall by hand on each host to recover.
 Nothing about the change needed a bump; the bump was the outage.
 
-The worker reports a hook that refuses its schema version the same way it
-reports any other permanent hook failure
-([above](#a-hook-that-fails-on-every-issue-is-reported-once)); the report
-names the version the worker exports so the remedy — upgrade the extension on
-that host — is the first line, not a diagnosis.
+The worker records a hook that refuses its schema version the same way it
+records any other permanent hook failure
+([above](#a-hook-that-fails-on-every-issue-is-recorded-once-locally)); the
+record names the version the worker exports so the remedy — upgrade the
+extension on that host — is the first line, not a diagnosis.
 
 ## Session logs are sensitive — redaction is the hook author's job
 
