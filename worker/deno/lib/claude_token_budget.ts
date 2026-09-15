@@ -42,6 +42,18 @@
  *   A rejected request is not an option — a `401` came back with **zero**
  *   `anthropic-ratelimit-*` headers, so the request has to be a valid one.
  *
+ * ## A `429` is an answer, not a failure (Issue #2040)
+ *
+ * A `429` from a subscription token is the quota answer itself: Anthropic
+ * still sends the full `anthropic-ratelimit-unified-*` header set with it, and
+ * that is exactly the reading this probe exists to collect. Discarding it made
+ * a spent token report `unknown` rather than `0% remaining, resets at T`, so
+ * an operator could not tell an exhausted subscription from a revoked one.
+ * The `429` path therefore reads the headers exactly as the `200` path does;
+ * a `429` carrying no recognisable window headers is a genuinely throttled
+ * probe and keeps its `http-429` unknown. No other rejected status is read:
+ * a `401` is a revoked token whose headers describe nothing to trust.
+ *
  * Anything not on that list is not assumed. If the headers this module looks
  * for are absent or unparseable the answer is
  * `{ known: false, reason: "unrecognised-response-shape" }` — never a
@@ -95,6 +107,20 @@ export const CLAUDE_BUDGET_PROBE_MODEL = "claude-haiku-4-5";
 /** Shortest prompt that is still a valid request. */
 const PROBE_PROMPT = ".";
 
+/**
+ * The one rejected status whose rate-limit headers are trusted (Issue #2040).
+ *
+ * A `429` from a subscription token is not a throttled probe to discard — it
+ * is the quota answer itself, and Anthropic still sends the full
+ * `anthropic-ratelimit-unified-*` header set with it. Reading it is the
+ * difference between an operator seeing `remaining=unknown` for a spent token
+ * and seeing `0.0% remaining, resets at T`. Every other rejection keeps its
+ * `http-<status>` unknown: a `401` is a revoked token whose headers, if any,
+ * describe nothing the worker can trust, and a `5xx` never carried the figures
+ * in the first place.
+ */
+const TOO_MANY_REQUESTS = 429;
+
 /** Beta flag required for OAuth bearer authentication. */
 const OAUTH_BETA = "oauth-2025-04-20";
 
@@ -137,7 +163,9 @@ export interface ClaudeTokenBudgetWindow {
 /**
  * Why a budget could not be determined — short, operator-facing, and safe to
  * log verbatim. `http-<status>` covers every rejected request (`http-401` for
- * a revoked token, `http-429` when the probe itself is throttled).
+ * a revoked token, `http-429` when the probe itself is throttled and the
+ * response carried no window headers — a `429` that carries them is a known
+ * budget, see {@link TOO_MANY_REQUESTS}).
  */
 export type ClaudeTokenBudgetUnknownReason =
   | "missing-token"
@@ -302,7 +330,9 @@ function probeBody(): string {
  * Never throws and never retries: every failure — a rejected `fetch`, a
  * timeout, a non-2xx status, headers that do not carry the figures — comes
  * back as `{ known: false, reason }` naming which one occurred, so a token that
- * could not be measured ranks last rather than blocking startup.
+ * could not be measured ranks last rather than blocking startup. The one
+ * rejection that is not a failure is a `429` carrying the window headers: it
+ * is the quota answer for a spent token, and comes back known (Issue #2040).
  *
  * Only OAuth subscription tokens are in scope (#902): an `ANTHROPIC_API_KEY`
  * would need `x-api-key` rather than the bearer header sent here, and stays on
@@ -359,13 +389,20 @@ export async function probeClaudeTokenBudget(
   try {
     await discardBody(response);
 
-    if (!response.ok) {
+    // A `429` is the one rejection whose headers are the answer this probe
+    // came for, rather than noise about the probe itself (Issue #2040).
+    if (!response.ok && response.status !== TOO_MANY_REQUESTS) {
       return { known: false, label, reason: `http-${response.status}` };
     }
 
     const windows = parseWindows(response.headers);
     const headline = mostConstrained(windows);
     if (headline === undefined) {
+      // A `429` carrying no figures is a throttled probe — it measured
+      // nothing, so it keeps the status it arrived with.
+      if (!response.ok) {
+        return { known: false, label, reason: `http-${response.status}` };
+      }
       return {
         known: false,
         label,
