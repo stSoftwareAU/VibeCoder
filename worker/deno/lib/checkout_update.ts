@@ -104,7 +104,10 @@ import {
   type HostFailurePayload,
   invokeHostFailureHook,
 } from "./host_failure_hook.ts";
-import { emitSelfHealEventAuto } from "./self_heal_events.ts";
+import {
+  emitSelfHealEventAuto,
+  type SelfHealEvent,
+} from "./self_heal_events.ts";
 
 // Re-exported for the callers and tests that knew this helper by its old
 // home; the channel itself now lives in host_escalation.ts (Issue #556).
@@ -352,7 +355,7 @@ export interface CheckoutUpdateOutcome {
   overwriteNotice: string;
   /** Consecutive failures including this one; 0 after a success. */
   streak: number;
-  /** Whether this failure raised the control-plane escalation. */
+  /** Whether the `callbacks.host_failure` hook took delivery on this run. */
   escalated: boolean;
 }
 
@@ -410,8 +413,10 @@ export interface CheckoutUpdateDeps {
   /**
    * Read the escalation marker and spool (Issue #1018). An absent or
    * unreadable store reads as {@link emptyEscalationState}: the worst that
-   * costs is one duplicate attempt, which the deduplicated escalation channel
-   * folds into the open issue — a lost alert has no such recovery.
+   * costs is one duplicate invocation of the operator's hook — nothing folds
+   * those together any more (Issue #2110) — and a hook told twice about a
+   * wedged host is a far better outcome than a lost alert, which has no
+   * recovery at all.
    */
   readEscalationState(logDir: string): Promise<CheckoutEscalationState>;
   /**
@@ -443,6 +448,15 @@ export interface CheckoutUpdateDeps {
   ): Promise<CallbackInvocation>;
   /** Append a timestamped line to `run_core.log`. */
   log(logDir: string, message: string): Promise<void>;
+  /**
+   * Record a `checkout_update` self-heal event (Issue #2110) — `escalated`
+   * with the hook status, the attempt and the streak, or `escalation_lost`.
+   *
+   * A seam like every other side effect here, so the tests observe the
+   * events through the dependency set rather than through the module-level
+   * work directory the production default reads.
+   */
+  emitEvent(event: Omit<SelfHealEvent, "timestamp">): Promise<void>;
 }
 
 /**
@@ -1132,6 +1146,9 @@ export function createDefaultCheckoutUpdateDeps(
     writeEscalationState: defaultWriteEscalationState,
     escalate: invokeCheckoutUpdateFailureHook,
     log: appendRunCoreLogLine,
+    emitEvent: async (event) => {
+      await emitSelfHealEventAuto(event);
+    },
   };
 }
 
@@ -1247,7 +1264,7 @@ async function recordUnusableHook(
         : `callbacks.host_failure could not be read, so there is nowhere ` +
           `to report it (${hookStatus}, Issue #2110): ${hook.error}`),
   );
-  await emitSelfHealEventAuto({
+  await deps.emitEvent({
     module: "checkout_update",
     action: "escalated",
     reason: `checkout update failed ${streak} consecutive runs`,
@@ -1282,13 +1299,16 @@ async function recordEscalationLost(
       `made for this streak, and the evidence exists only in this log ` +
       `(Issue #2110)`,
   );
-  await emitSelfHealEventAuto({
+  await deps.emitEvent({
     module: "checkout_update",
     action: "escalation_lost",
     reason:
       `${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} hook attempts all failed`,
     result: "failed",
-    details: { hookStatus, attempts, streak },
+    // `attempt`, not `attempts`, so one key reads both events: a
+    // `self-heal-summary` consumer asking for the attempt an event describes
+    // gets an answer whichever of the two it is looking at.
+    details: { hookStatus, attempt: attempts, streak },
   });
 }
 
@@ -1368,7 +1388,7 @@ async function deliverEscalation(
   }
   const hookStatus = invocation?.status ?? "threw";
 
-  await emitSelfHealEventAuto({
+  await deps.emitEvent({
     module: "checkout_update",
     action: "escalated",
     reason: `checkout update failed ${streak} consecutive runs`,

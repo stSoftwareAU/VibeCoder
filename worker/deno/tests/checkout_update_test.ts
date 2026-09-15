@@ -31,6 +31,7 @@ import {
   type CheckoutUpdateDeps,
   type CheckoutUpdateEscalationContext,
   type CheckoutUpdateStreak,
+  createDefaultCheckoutUpdateDeps,
   diagnoseUpdateFailure,
   DIRECTORY_SERVICES_RETRY_DELAYS_MS,
   directoryServicesUid,
@@ -113,6 +114,10 @@ function recordingDeps(
     },
     log: (_logDir, message) => {
       order.push(`log:${message}`);
+      return Promise.resolve();
+    },
+    emitEvent: (event) => {
+      order.push(`event:${event.action}`);
       return Promise.resolve();
     },
     ...overrides,
@@ -1211,4 +1216,16 @@ Deno.test("gitStepExitStatus - reads git's own status, and only a real one (Issu
     undefined,
   );
   assertEquals(gitStepExitStatus("exit code 3"), undefined);
+});
+
+Deno.test("createDefaultCheckoutUpdateDeps - a caller that names no hook escalates nowhere (Issue #2110)", () => {
+  // The documented default. A caller that knows nothing about this host's
+  // `callbacks` block must escalate nowhere and say so locally, never guess a
+  // path and invoke it.
+  assertEquals(createDefaultCheckoutUpdateDeps().hostFailureHook, {
+    kind: "none",
+  });
+
+  const configured = createDefaultCheckoutUpdateDeps(CONFIGURED_HOOK);
+  assertEquals(configured.hostFailureHook, CONFIGURED_HOOK);
 });
