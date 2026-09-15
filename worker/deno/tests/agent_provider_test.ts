@@ -37,6 +37,7 @@ import {
   setRunProviderOverride,
 } from "../lib/agent_provider.ts";
 import { clearDeprecatedEnvWarnings } from "../lib/config_precedence.ts";
+import { envFrom } from "./support/env_lookup.ts";
 import { capturingWarnings } from "./support/warnings.ts";
 import { buildClaudeEffortArgs } from "../lib/claude_executor.ts";
 import { checkCredentialPreflight } from "../lib/credential_preflight.ts";
@@ -635,13 +636,20 @@ Deno.test("agent provider - Claude invocation without promptViaStdin is unchange
 });
 
 Deno.test("agent provider - the per-run provider override beats the configured file value (Issue #2062)", () => {
+  // State the installed set the case needs (Issue #2141): without it the
+  // resolver reads this host image's stamp, so the assertion becomes "which
+  // agent CLIs this image happens to carry" and a single-provider image fails
+  // a case about precedence. No `Deno.env.set` — it is parallel-unsafe.
+  const statedEnv = envFrom({
+    [IMAGE_AGENT_PROVIDERS_ENV]: "claude,deepseek",
+  });
   try {
     setRunProviderOverride("deepseek");
     // The resolver consults the override before the file's preferred id,
     // so an in-process config reload cannot reset the gate's switch
     // (Issue #2065).
     assertEquals(
-      resolveAgentProviderId({ configured: "claude" }),
+      resolveAgentProviderId({ configured: "claude", env: statedEnv }),
       "deepseek",
     );
     assertEquals(runProviderOverrideId(), "deepseek");
@@ -649,7 +657,7 @@ Deno.test("agent provider - the per-run provider override beats the configured f
     setRunProviderOverride(undefined);
   }
   assertEquals(
-    resolveAgentProviderId({ configured: "claude" }),
+    resolveAgentProviderId({ configured: "claude", env: statedEnv }),
     "claude",
     "clearing the override restores the configured provider",
   );
