@@ -504,10 +504,12 @@ function Write-BuildFailureEvidence {
 # Failure is not fatal: a host that cannot reach GitHub still launches the
 # worker on the checkout it already has. It says so loudly on stderr and in
 # the run-core log rather than passing quietly (Issue #3234), and three
-# consecutive failures raise a GitHub issue naming this host (Issue #4204).
+# consecutive failures spanning at least fifteen minutes fire the operator's
+# callbacks.host_failure hook once, naming this host (Issues #4204, #2110).
+# Nothing is filed on GitHub: a host-level fault goes to whoever runs the host.
 #
-# --allow-sys=hostname: that escalation titles its issue with the host id, so
-# each host gets its own report instead of every host sharing one.
+# --allow-sys=hostname: that report names the host id, so each host reports as
+# itself instead of every host sharing one identity.
 $checkoutUpdate = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
     "run",
     "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",

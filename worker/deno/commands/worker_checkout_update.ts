@@ -19,7 +19,17 @@
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run \
  *     mod.ts worker-checkout-update --base-dir /path/to/checkout \
- *     [--default-branch trunk] [--log-dir <host log directory>]
+ *     [--default-branch trunk] [--log-dir <host log directory>] \
+ *     [--work-dir <self-heal events root>]
+ *
+ * A crash-loop is reported to the operator's own `callbacks.host_failure`
+ * hook, never to GitHub (Issues #2107, #2110). The hook is read from the same
+ * `.config.json` under `--base-dir` that `update_mode` comes from, with the
+ * same targeted read: only `callbacks.host_failure` and
+ * `callbacks.timeout_seconds` are validated, so a container-side `success`
+ * hook naming a path the host cannot see is still correct configuration. A
+ * host with no hook, or one whose `callbacks` block will not parse, records
+ * that locally and updates exactly as before.
  *
  * Failure is loud here — a non-zero exit naming what went wrong — and the
  * launchers treat that as a warning rather than a fatal error, so a host that
@@ -48,9 +58,12 @@
 
 import type { Command, CommandResult, Result, UpdateMode } from "../types.ts";
 import {
+  createDefaultCheckoutUpdateDeps,
   SKIP_CHECKOUT_UPDATE_ENV,
   updateCheckout,
 } from "../lib/checkout_update.ts";
+import { readHostFailureHook } from "../lib/host_failure_hook.ts";
+import { setSelfHealEventsWorkDir } from "../lib/self_heal_events.ts";
 import { DEFAULT_UPDATE_MODE, UPDATE_MODES } from "../lib/config_defaults.ts";
 import { pinValueErrors } from "../lib/config_validator.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
@@ -228,6 +241,14 @@ export const workerCheckoutUpdateCommand: Command = {
   execute(
     args: Record<string, unknown>,
   ): Promise<CommandResult<WorkerCheckoutUpdateResult>> {
+    // This command is its own host-side process (the launchers invoke it
+    // before every container launch), so it supplies the self-heal sink's
+    // wiring itself — the same --work-dir, then WORK_DIR, then HOME
+    // resolution `container-restart-backoff` applies (Issue #4250: the sink
+    // no longer falls back to the environment on its own).
+    const workDir = optionalString(args["work-dir"]) ??
+      Deno.env.get("WORK_DIR") ?? Deno.env.get("HOME") ?? "";
+    setSelfHealEventsWorkDir(workDir || undefined);
     return updateWorkerCheckout(args);
   },
 };
@@ -292,13 +313,21 @@ export async function updateWorkerCheckout(
     return { success: false, message: settings.error.message };
   }
 
+  // Where the crash-loop report goes (Issues #2107, #2110). The same
+  // `.config.json` under --base-dir that `readCheckoutUpdateMode` just read,
+  // and the same targeted read: a `success` hook naming a path that exists
+  // only inside the container is correct configuration, and must not stop the
+  // host hook from firing. The read never throws — `none` and `invalid` are
+  // recorded by the update itself.
+  const hostFailureHook = await readHostFailureHook(`${repoDir}/.config.json`);
+
   const outcome = await updateCheckout({
     repoDir,
     logDir: optionalString(args["log-dir"]) ?? defaultLogDir(env),
     defaultBranch: optionalString(args["default-branch"]),
     updateMode: settings.value.mode,
     pinnedRef: settings.value.ref,
-  });
+  }, createDefaultCheckoutUpdateDeps(hostFailureHook));
 
   const data: WorkerCheckoutUpdateResult = {
     repoDir,

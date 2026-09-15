@@ -115,6 +115,26 @@ exported as `VIBECODER_HOST`, `VIBECODER_HOST_FAILURE_CONDITION`,
 `VIBECODER_DELIVERY_COUNT` and `VIBECODER_ATTEMPT`. The multi-line facts
 (`logTail`, `detail`) live in the document only.
 
+### What the checkout update sends
+
+The host-side checkout update is the first caller (Issue #2110). Its cadence:
+
+- **One report per streak.** Three consecutive failures spanning at least
+  fifteen minutes fire the hook once, with `condition` and `phase` both
+  `checkout_update` and `delivery` `first`/1. Later failures in the same streak
+  fire nothing.
+- **Five attempts, then `escalation_lost`.** An invocation that returns
+  anything but `ok` is retried on each later failing run — `attempt` counts
+  them — and the fifth failure abandons the report for that streak, recording
+  `escalation_lost` in `run_core.log` and `~/logs/self-heal.jsonl`.
+- **Failures only.** A run that updates cleanly fires no hook: the condition
+  has cleared, and the recovery is one local line.
+- **No hook is not a fault.** A host with no `callbacks.host_failure` records
+  `no_hook_configured` once per streak; a `callbacks` block that will not parse
+  records `config_invalid`. Neither blocks the update.
+
+See [Host-Side Checkout Update](CONFIGURATION.md#-host-side-checkout-update).
+
 ## Invocation and path rules
 
 - The configured path is executed **directly** — no shell, no `sh -c`, no

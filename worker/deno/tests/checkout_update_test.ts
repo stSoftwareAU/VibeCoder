@@ -40,7 +40,15 @@ import {
   SKIP_CHECKOUT_UPDATE_ENV,
   updateCheckout,
 } from "../lib/checkout_update.ts";
+import {
+  buildCheckoutHostFailurePayload,
+  gitStepExitStatus,
+} from "../lib/checkout_update.ts";
 import type { Result } from "../types.ts";
+import {
+  CONFIGURED_HOOK,
+  HOOK_OK,
+} from "./support/checkout_escalation_hook.ts";
 
 /** The tag a frozen host is pinned to, and the commit it resolves to. */
 const PINNED_REF = "v1.2.3";
@@ -99,9 +107,10 @@ function recordingDeps(
       order.push(`writeEscalationState:${state.escalatedStreak}`);
       return Promise.resolve();
     },
-    escalate: (_context) => {
+    hostFailureHook: CONFIGURED_HOOK,
+    escalate: (_context, _hook) => {
       order.push("escalate");
-      return Promise.resolve();
+      return Promise.resolve(HOOK_OK);
     },
     log: (_logDir, message) => {
       order.push(`log:${message}`);
@@ -272,9 +281,9 @@ Deno.test("updateCheckout - escalation problems never mask the update failure (I
     recordingDeps(order, {
       resetToDefaultBranch: failingReset(order),
       readFailureStreak: (_logDir) => Promise.resolve(agedStreak(2)),
-      escalate: (_context) => {
+      escalate: (_context, _hook) => {
         order.push("escalate");
-        return Promise.reject(new Error("gh is not authenticated"));
+        return Promise.reject(new Error("the hook seam blew up"));
       },
     }),
   );
@@ -285,7 +294,8 @@ Deno.test("updateCheckout - escalation problems never mask the update failure (I
   // The escalation failure is logged, best-effort, and never thrown.
   assert(
     order.some((entry) =>
-      entry.startsWith("log:") && entry.includes("escalation failed")
+      entry.startsWith("log:") && entry.includes("escalation failed") &&
+      entry.includes("the hook seam blew up")
     ),
   );
 });
@@ -343,7 +353,8 @@ Deno.test("updateCheckout - the streak file lives under the log directory (Issue
           error: new Error("git fetch origin failed (exit code 128)"),
         } as Result<void>),
       describeCheckoutState: () => Promise.resolve(null),
-      escalate: () => Promise.resolve(),
+      hostFailureHook: CONFIGURED_HOOK,
+      escalate: () => Promise.resolve(HOOK_OK),
       now: () => clock,
     };
 
@@ -690,9 +701,10 @@ Deno.test("updateCheckout - three failures inside a minute do not escalate (Issu
           ),
         } as Result<void>),
       describeCheckoutState: () => Promise.resolve(null),
+      hostFailureHook: CONFIGURED_HOOK,
       escalate: (context) => {
         escalations.push(context.streak);
-        return Promise.resolve();
+        return Promise.resolve(HOOK_OK);
       },
       now: () => stamps[run++] ?? NOW_SECONDS,
     };
@@ -1089,4 +1101,114 @@ Deno.test("resetCheckoutToDefaultBranch - a tokenised remote URL never reaches p
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// The host_failure payload the crash-loop now reports (Issue #2110)
+// ---------------------------------------------------------------------------
+
+/** The streak start these payload tests measure from. */
+const STREAK_STARTED_AT = 1_700_000_000;
+
+/** A crash-loop as the update hands it to the hook. */
+function escalationContext(
+  overrides: Partial<Parameters<typeof buildCheckoutHostFailurePayload>[0]> =
+    {},
+) {
+  return {
+    repoDir: "/srv/VibeCoder",
+    logDir: "/srv/logs",
+    streak: 3,
+    streakStartedAt: STREAK_STARTED_AT,
+    attempt: 2,
+    error: "cannot update /srv/VibeCoder to origin/main: git fetch origin " +
+      "failed (exit code 128): Could not resolve hostname github.com",
+    checkout: { branch: "fix/local", dirtyFiles: 4 },
+    ...overrides,
+  };
+}
+
+Deno.test("buildCheckoutHostFailurePayload - names the condition, the streak and the attempt (Issue #2110)", () => {
+  const payload = buildCheckoutHostFailurePayload(
+    escalationContext(),
+    "grq-23",
+  );
+
+  assertEquals(payload.host, "grq-23");
+  assertEquals(payload.condition, "checkout_update");
+  assertEquals(payload.phase, "checkout_update");
+  assertEquals(payload.consecutiveFailures, 3);
+  assertEquals(
+    payload.streakStartedAt,
+    new Date(STREAK_STARTED_AT * 1000).toISOString(),
+  );
+  // One report per streak: a retry is a further attempt, not a further
+  // delivery, which is what `attempt` says and `delivery` does not.
+  assertEquals(payload.delivery, { kind: "first", count: 1 });
+  assertEquals(payload.attempt, 2);
+  assertEquals(payload.checkout, { branch: "fix/local", dirtyFiles: 4 });
+  assertStringIncludes(payload.detail ?? "", "Could not resolve hostname");
+  assertEquals(
+    payload.lastExitStatus,
+    128,
+    "the git step's own exit status reaches the hook",
+  );
+});
+
+Deno.test("buildCheckoutHostFailurePayload - omits what the host could not observe (Issue #2110)", () => {
+  const payload = buildCheckoutHostFailurePayload(
+    escalationContext({
+      checkout: null,
+      error: "cannot resolve the default branch of /srv/VibeCoder: no " +
+        "origin/HEAD (pass --default-branch to name it)",
+    }),
+    "grq-23",
+  );
+
+  assertEquals(
+    payload.lastExitStatus,
+    undefined,
+    "a failure with no observed exit status never invents one",
+  );
+  assertEquals(payload.checkout, undefined);
+});
+
+Deno.test("buildCheckoutHostFailurePayload - redacts a tokenised remote before the hook sees it (Issue #1258)", () => {
+  const payload = buildCheckoutHostFailurePayload(
+    escalationContext({
+      error: "git fetch origin failed (exit code 128): could not read " +
+        "https://x-access-token:ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@github.com/o/r",
+    }),
+    "grq-23",
+  );
+
+  assertEquals(
+    (payload.detail ?? "").includes("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    false,
+    "a hook the operator wrote never receives the token git leaked",
+  );
+});
+
+Deno.test("buildCheckoutHostFailurePayload - an unknown streak start falls back to now (Issue #2110)", () => {
+  const fixedMs = Date.UTC(2026, 0, 2, 3, 4, 5);
+  const payload = buildCheckoutHostFailurePayload(
+    escalationContext({ streakStartedAt: 0 }),
+    "grq-23",
+    () => fixedMs,
+  );
+
+  assertEquals(payload.streakStartedAt, new Date(fixedMs).toISOString());
+});
+
+Deno.test("gitStepExitStatus - reads git's own status, and only a real one (Issue #2110)", () => {
+  assertEquals(
+    gitStepExitStatus("git clean -fd failed (exit code 1): permission denied"),
+    1,
+  );
+  assertEquals(gitStepExitStatus("git fetch failed (exit code 128)"), 128);
+  assertEquals(
+    gitStepExitStatus("pinned_ref v9.9.9 does not resolve"),
+    undefined,
+  );
+  assertEquals(gitStepExitStatus("exit code 3"), undefined);
 });

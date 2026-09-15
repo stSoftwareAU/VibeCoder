@@ -33,6 +33,7 @@ import {
   updateWorkerCheckout,
 } from "../commands/worker_checkout_update.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { CHECKOUT_UPDATE_FAILURE_STREAK_FILE } from "../lib/checkout_update.ts";
 
 /** A bare remote on `trunk` plus a clone of it, in a fresh temp directory. */
 async function makeCheckout(): Promise<{
@@ -729,6 +730,144 @@ Deno.test("worker-checkout-update - frozen moves a dirty checkout that has drift
     assertEquals(result.success, true, result.message);
     assertEquals(await headSha(clone), pinnedSha);
     assertEquals(await Deno.readTextFile(`${clone}/file.txt`), "one\n");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+// ============================================================================
+// The crash-loop rides callbacks.host_failure, never GitHub (Issue #2110)
+// ============================================================================
+
+/**
+ * Put the clone one failure short of the escalation threshold, with a start
+ * old enough to clear the fifteen-minute span rule (Issue #1017).
+ */
+async function seedQualifyingStreak(logDir: string): Promise<void> {
+  await Deno.mkdir(logDir, { recursive: true });
+  await Deno.writeTextFile(
+    `${logDir}/${CHECKOUT_UPDATE_FAILURE_STREAK_FILE}`,
+    JSON.stringify({
+      count: 2,
+      firstFailureAt: Math.floor(Date.now() / 1000) - 3 * 3600,
+    }),
+  );
+}
+
+/** An executable hook that records the payload facts it was handed. */
+async function writeRecordingHook(
+  path: string,
+  marker: string,
+): Promise<void> {
+  await Deno.writeTextFile(
+    path,
+    `#!/bin/sh\n` +
+      `{\n` +
+      `  echo "event=$VIBECODER_CALLBACK_EVENT"\n` +
+      `  echo "condition=$VIBECODER_HOST_FAILURE_CONDITION"\n` +
+      `  echo "phase=$VIBECODER_HOST_FAILURE_PHASE"\n` +
+      `  echo "failures=$VIBECODER_CONSECUTIVE_FAILURES"\n` +
+      `  echo "attempt=$VIBECODER_ATTEMPT"\n` +
+      `  cat "$VIBECODER_CALLBACK_CONTEXT"\n` +
+      `} > "${marker}"\n`,
+  );
+  await Deno.chmod(path, 0o755);
+}
+
+Deno.test("worker-checkout-update - a qualifying streak runs the configured host_failure hook (Issue #2110)", async () => {
+  const { tmp, remote, clone, logDir } = await makeCheckout();
+  try {
+    // The remote goes away entirely, so the update cannot succeed.
+    await Deno.remove(remote, { recursive: true });
+    await seedQualifyingStreak(logDir);
+    const marker = `${tmp}/hook-ran.txt`;
+    const hook = `${tmp}/host-failure.sh`;
+    await writeRecordingHook(hook, marker);
+    await writeConfig(clone, {
+      callbacks: { host_failure: hook, timeout_seconds: 30 },
+    });
+
+    const result = await updateWorkerCheckout({
+      "base-dir": clone,
+      "log-dir": logDir,
+    });
+
+    assertEquals(result.success, false, "the update itself still failed loud");
+    const recorded = await Deno.readTextFile(marker);
+    assertStringIncludes(recorded, "event=host_failure");
+    assertStringIncludes(recorded, "condition=checkout_update");
+    assertStringIncludes(recorded, "phase=checkout_update");
+    assertStringIncludes(recorded, "failures=3");
+    assertStringIncludes(recorded, "attempt=1");
+    // The JSON document carries the diagnosis the log line carries.
+    assertStringIncludes(recorded, '"condition": "checkout_update"');
+    assertStringIncludes(recorded, '"delivery"');
+    assertStringIncludes(recorded, clone);
+    assertStringIncludes(
+      await runCoreLog(logDir),
+      "invoking the callbacks.host_failure hook",
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("worker-checkout-update - a host with no hook records no_hook_configured and still updates (Issue #2110)", async () => {
+  const { tmp, remote, seed, clone, logDir } = await makeCheckout();
+  try {
+    await seedQualifyingStreak(logDir);
+    // No `callbacks` block at all — the commonest configuration.
+    await writeConfig(clone, { repos: ["stSoftwareAU/VibeCoder"] });
+    await Deno.remove(remote, { recursive: true });
+
+    const failed = await updateWorkerCheckout({
+      "base-dir": clone,
+      "log-dir": logDir,
+    });
+    assertEquals(failed.success, false);
+    assertStringIncludes(await runCoreLog(logDir), "no_hook_configured");
+
+    // And the absent hook never stopped the update from working once the
+    // remote came back.
+    await runGitCommand(["init", "--bare", "--initial-branch=trunk", remote]);
+    await runGitCommand(["push", remote, "trunk"], { cwd: seed });
+    const recovered = await updateWorkerCheckout({
+      "base-dir": clone,
+      "log-dir": logDir,
+    });
+    assertEquals(recovered.success, true, recovered.message);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("worker-checkout-update - a callbacks block that will not parse is config_invalid, not a refused update (Issue #2110)", async () => {
+  const { tmp, remote, seed, clone, logDir } = await makeCheckout();
+  try {
+    await pushSecondCommit(seed, remote);
+    await seedQualifyingStreak(logDir);
+    // `update_mode` is still readable, so the update itself must proceed —
+    // only the escalation channel is unusable.
+    await writeConfig(clone, { callbacks: { host_failure: 42 } });
+
+    // A failing run is what reaches the escalation, so the unusable channel
+    // is named there rather than silently answered as "no hook".
+    await Deno.rename(remote, `${tmp}/remote-away.git`);
+    const failed = await updateWorkerCheckout({
+      "base-dir": clone,
+      "log-dir": logDir,
+    });
+    assertEquals(failed.success, false);
+    assertStringIncludes(await runCoreLog(logDir), "config_invalid");
+
+    await Deno.rename(`${tmp}/remote-away.git`, remote);
+    const result = await updateWorkerCheckout({
+      "base-dir": clone,
+      "log-dir": logDir,
+    });
+
+    assertEquals(result.success, true, result.message);
+    assertEquals(await Deno.readTextFile(`${clone}/file.txt`), "two\n");
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
