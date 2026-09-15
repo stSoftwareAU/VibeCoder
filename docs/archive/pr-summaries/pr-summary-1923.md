@@ -176,14 +176,14 @@ host holding both.
   points operators at for the persistent-login half, so leaving it unreachable
   from the index would make the new documentation a dead end
 - **unrequested** — `resolveCodexHome` moved from `provider_auto_runtime.ts` to
-  `worker/deno/lib/codex_auth_mode.ts`, with four unit tests — reviewer:
-  unrequested — reason: the descriptor's billing probe and the auto-routing
+  `worker/deno/lib/codex_auth_mode.ts`, with four unit tests — reviewer: unrequested
+  — reason: the descriptor's billing probe and the auto-routing
   quota probe must resolve the same directory or they classify different
   hosts; one definition beside the auth-mode question it answers is what makes
   that true by construction rather than by inspection
 - **unrequested** — `docs/audits/lib-sweep-coverage.json` slice and
-  `docs/audits/security-sweep-1923-provider-billing.md` — reviewer:
-  unrequested — reason: a repo convention, not an issue requirement — every
+  `docs/audits/security-sweep-1923-provider-billing.md` — reviewer: unrequested
+  — reason: a repo convention, not an issue requirement — every
   module entering `worker/deno/lib/` must be claimed by a swept slice, and the
   `completeness checks` stage of `./quality.sh` fails without it
 - **unrequested** — a `billing` field added to the fake descriptor in
@@ -191,8 +191,8 @@ host holding both.
   reason: forced by making `billing` a required descriptor field; without it
   `deno check` fails
 - **unrequested** — a `nosemgrep` annotation on a pre-existing fixture value in
-  `worker/deno/tests/security_scan_overflow_3707_test.ts` — reviewer:
-  unrequested — reason: semgrep scans the *changed* file set, so editing this
+  `worker/deno/tests/security_scan_overflow_3707_test.ts` — reviewer: unrequested
+  — reason: semgrep scans the *changed* file set, so editing this
   file for the guard surfaced a pre-existing `detected-generic-api-key`
   finding on a fixture that was already there; the annotation follows the
   established convention in `handle_no_changes_phase_test.ts` and is scoped to
