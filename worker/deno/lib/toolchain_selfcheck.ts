@@ -329,21 +329,39 @@ function judge(
 /**
  * Does this output report exactly the pinned version?
  *
- * A plain substring test passes a pin that is a PREFIX of what the image
- * carries — pin 1.7.1 against an installed 1.7.12 — which is the one version
- * mismatch this check would be reporting as healthy. The pin must therefore
- * stand as a whole version token, bounded by something that cannot continue
- * it.
+ * A plain substring test passes a pinned version that is a PREFIX of what the
+ * image carries — 1.7.1 against an installed 1.7.12 — which is the one version
+ * mismatch this check would be reporting as healthy. The pinned version must
+ * therefore stand as a whole token, bounded on both sides by something that
+ * cannot continue it.
  *
  * @param output - Everything the probe printed
  * @param version - The pinned version
  * @returns True when the output carries the pin as a complete token
  */
 function reportsVersion(output: string, version: string): boolean {
-  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^0-9A-Za-z.])${escaped}([^0-9A-Za-z.]|$)`).test(
-    output,
-  );
+  if (version === "") return false;
+  // Scanned rather than matched with a constructed regular expression: a
+  // pattern built from an interpolated value is a ReDoS surface (and the SAST
+  // stage rejects one), and the rule here is simple enough not to need a
+  // pattern at all — a character that could continue the version token on
+  // either side means this occurrence is part of a longer version.
+  for (
+    let at = output.indexOf(version);
+    at !== -1;
+    at = output.indexOf(version, at + 1)
+  ) {
+    const before = at === 0 ? "" : output[at - 1]!;
+    const after = output[at + version.length] ?? "";
+    if (!continuesVersion(before) && !continuesVersion(after)) return true;
+  }
+  return false;
+}
+
+/** Could this character be part of the same version token? */
+function continuesVersion(character: string): boolean {
+  if (character === "") return false;
+  return /[0-9A-Za-z.]/.test(character);
 }
 
 /**
