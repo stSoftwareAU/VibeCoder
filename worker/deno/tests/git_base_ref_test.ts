@@ -40,7 +40,20 @@ function isVerifyOf(args: string[], ref: string): boolean {
 
 const SHA = "a".repeat(40);
 
-Deno.test("resolveComparableBaseRef - uses the local branch when it resolves", async () => {
+Deno.test("resolveComparableBaseRef - prefers origin/<base> over a local branch that also resolves (Issue #2147)", async () => {
+  // GRQ-AutoTrader#463: the local Develop lagged origin/Develop by weeks and
+  // the diff against it listed every upstream file as the branch's own.
+  const runner = runnerFrom((args) =>
+    isVerifyOf(args, "main") || isVerifyOf(args, "origin/main")
+      ? { code: 0, stdout: SHA }
+      : { code: 1 }
+  );
+  const result = await resolveComparableBaseRef(runner, "main");
+  assert(result.ok);
+  assertEquals(result.value, "origin/main");
+});
+
+Deno.test("resolveComparableBaseRef - uses the local branch when only it resolves", async () => {
   const runner = runnerFrom((args) =>
     isVerifyOf(args, "main") ? { code: 0, stdout: SHA } : { code: 1 }
   );
