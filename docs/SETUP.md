@@ -959,6 +959,20 @@ belong to the logger, not to this decision — every worker line carries them. A
 candidate whose window had already rolled over reads
 `five_hour=100.0% … (window already elapsed, counted as full)`.
 
+A **spent** subscription reads as one too. Anthropic answers an exhausted
+token with `429` and still sends the rate-limit headers, so that response is
+the quota answer rather than a failed probe (Issue #2040) and the line carries
+both windows and when they come back:
+
+```text
+[2026-09-12 10:49:43Z] INFO: [SECURITY] claude token candidate provider (#1): five_hour=0.0% resets=2026-09-12T14:00:00.000Z seven_day=0.0% resets=2026-09-15T01:00:00.000Z rate=0.00%/h gate=fail host=vibe-host:5312
+```
+
+Only a `429` is read this way. A `429` that carries no rate-limit headers is
+the probe itself being throttled and still reads
+`remaining=unknown reason=http-429`, and a `401` or a `5xx` is unknown however
+many headers it carries — a revoked token's figures are not trusted.
+
 Tokens are named by **file stem** — `provider`, `provider-2` — and never by
 value: no part of a token, not even a prefix, is an input to these lines, so an
 operator can read which subscription a run consumed without the log ever
