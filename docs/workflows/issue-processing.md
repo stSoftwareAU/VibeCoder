@@ -998,6 +998,21 @@ out of scope too — the diff is collected with `--diff-filter=ACMR`, so a remov
 workflow has no text to check and its absence is never read as an unreadable
 file.
 
+**And only what the run *introduced*** (Issue #2043). Scoping to changed *files*
+was not enough: a file a run appended two steps to was still checked whole, so a
+`push:` trigger that had sat on the base commit for months blocked the PR that
+touched the file for an unrelated reason — a `severity:low` audit finding turned
+into a hard block on unrelated work, and each block recorded as a host failure.
+Every check therefore runs **twice**: once over the branch's text, once over
+`git show <base>:<path>`, and a finding is the run's only when it is absent at
+base. The comparison is per check, by `(finding id, file)`, and it counts — two
+findings sharing an id where base carried one report the extra one, so a second
+offender is never masked by the first. Line numbers are excluded from the key,
+because appending a step shifts every line below it without changing what is
+wrong. A path absent at base is one the branch **added**, so it is checked whole;
+a base version that cannot be **read** is a fault and blocks, while one that
+cannot be **parsed** is not — that is often the very state the run is fixing.
+
 **Not deciding is a failure, not a pass** (see
 [Never fail silently](../../CODING-STANDARDS.md)). A diff that cannot be
 collected, a changed file that cannot be read, and a file whose YAML does not
@@ -1014,15 +1029,17 @@ flowchart TD
     D -->|"diff failed"| X["Blocked: fail loud —<br/>an unknown diff is not a pass"]
     D --> F{"Any changed<br/>.github/workflows/*.yml?"}
     F -->|no| PR["PR creation continues"]
-    F -->|yes| R{"Read + parse each<br/>changed file"}
+    F -->|yes| R{"Read + parse each<br/>changed file, and its<br/>base version"}
     R -->|"read or parse failed"| X
-    R --> C{"WORKFLOW_FILE_CHECKS<br/>over the changed files"}
-    C -->|"no findings"| PR
-    C -->|"findings"| B["Blocked: comment names<br/>check id, file, line, detail"]
+    R --> C{"WORKFLOW_FILE_CHECKS<br/>over branch text and base text"}
+    C --> DF{"Finding also<br/>present at base?"}
+    DF -->|"yes — pre-existing"| PR
+    DF -->|"no — introduced here"| B["Blocked: comment names<br/>check id, file, line, detail"]
     U["Untouched offending workflow"] -.->|"out of scope — audit files it"| PR
     style F fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style C fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style DF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style B fill:#c45858,stroke:#6b2020,color:#fff
     style X fill:#c45858,stroke:#6b2020,color:#fff
