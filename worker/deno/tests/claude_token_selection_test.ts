@@ -749,3 +749,46 @@ Deno.test("no token value reaches the decision log (Issue #919)", async () => {
   }
   assertStringIncludes(captured, "provider-2");
 });
+
+Deno.test("a spent token's candidate line carries its windows, not remaining=unknown (Issue #2040)", async () => {
+  // The whole point of #2040 at the operator's end: the token that answered
+  // 429 must say 0% and when it comes back, rather than going blank and
+  // leaving the pool's weekly picture two-thirds empty.
+  const fiveHourReset = Date.UTC(2026, 8, 4, 2, 0, 0) / 1000;
+  const sevenDayReset = Date.UTC(2026, 8, 8, 1, 0, 0) / 1000;
+  const fetcher = fetchByToken((token) =>
+    token === "tok-spent"
+      ? new Response(JSON.stringify({ error: { message: "rate limit" } }), {
+        status: 429,
+        headers: {
+          "anthropic-ratelimit-unified-5h-utilization": "1",
+          "anthropic-ratelimit-unified-5h-reset": String(fiveHourReset),
+          "anthropic-ratelimit-unified-7d-utilization": "1",
+          "anthropic-ratelimit-unified-7d-reset": String(sevenDayReset),
+        },
+      })
+      : budgetResponse(0.08, Date.UTC(2026, 8, 4, 3, 0, 0) / 1000)
+  );
+  const logs: string[] = [];
+  const select = createClaudeBudgetTokenSelector({
+    fetchFn: fetcher.fetchFn,
+    now: () => NOW,
+    log: (line) => logs.push(line),
+  });
+
+  const chosen = await select([
+    tokenFile("provider", "tok-spent"),
+    tokenFile("provider-2", "tok-2"),
+  ], CLAUDE);
+
+  assertEquals(chosen?.label, "provider-2", "the token with budget is chosen");
+  const spentLine = logs.find((line) =>
+    line.includes("candidate provider (#1)")
+  );
+  assertEquals(
+    spentLine,
+    "[SECURITY] claude token candidate provider (#1): five_hour=0.0% " +
+      "resets=2026-09-04T02:00:00.000Z seven_day=0.0% " +
+      "resets=2026-09-08T01:00:00.000Z rate=0.00%/h gate=fail",
+  );
+});
