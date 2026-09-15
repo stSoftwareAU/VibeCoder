@@ -221,6 +221,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Post-run callback hooks (Issue #806, parent #796)
   "callbacks",
 
+  // Graft repo-context injection (Issue #2098, part of #2060)
+  "graft_context",
+
   // Custom label → non-public prompt file mappings (Issue #846, part of #843)
   "custom_label_prompts",
 ]);
@@ -277,9 +280,27 @@ function levenshteinDistance(a: string, b: string): number {
  * @returns The suggested correct key, or null if no close match found
  */
 export function suggestSimilarKey(unknownKey: string): string | null {
+  return suggestKeyFrom(unknownKey, KNOWN_CONFIG_KEYS);
+}
+
+/**
+ * Suggest the most likely intended key from an arbitrary recognised set.
+ *
+ * The strategies are {@link suggestSimilarKey}'s, lifted so a nested block
+ * (`graft_context`, Issue #2098) gets the same help against its own key set
+ * rather than against the top-level one.
+ *
+ * @param unknownKey - The unrecognised key
+ * @param knownKeys - The keys recognised at that level
+ * @returns The suggested correct key, or null if no close match found
+ */
+function suggestKeyFrom(
+  unknownKey: string,
+  knownKeys: ReadonlySet<string>,
+): string | null {
   // Strategy 1: Try camelCase → snake_case conversion
   const snakeVersion = camelToSnake(unknownKey);
-  if (KNOWN_CONFIG_KEYS.has(snakeVersion)) {
+  if (knownKeys.has(snakeVersion)) {
     return snakeVersion;
   }
 
@@ -289,7 +310,7 @@ export function suggestSimilarKey(unknownKey: string): string | null {
   let bestMatch: string | null = null;
   let bestDistance = maxDistance + 1;
 
-  for (const knownKey of KNOWN_CONFIG_KEYS) {
+  for (const knownKey of knownKeys) {
     const distance = levenshteinDistance(unknownKey, knownKey);
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -323,6 +344,41 @@ export function detectUnknownConfigKeys(
 
       warnings.push({ field: key, message, suggestion });
     }
+  }
+
+  return warnings;
+}
+
+/**
+ * Detect unknown keys inside a nested `.config.json` block.
+ *
+ * The same warn-and-ignore treatment {@link detectUnknownConfigKeys} gives the
+ * top level, one level down: the reported field is dotted
+ * (`graft_context.enabledd`) and the suggestion is drawn from the block's own
+ * recognised keys.
+ *
+ * @param block - The parsed nested block
+ * @param blockName - The block's key in `.config.json`, e.g. `graft_context`
+ * @param knownKeys - Keys recognised inside that block
+ * @returns Array of warnings for unknown nested keys
+ */
+export function detectUnknownNestedKeys(
+  block: Record<string, unknown>,
+  blockName: string,
+  knownKeys: ReadonlySet<string>,
+): UnknownKeyWarning[] {
+  const warnings: UnknownKeyWarning[] = [];
+
+  for (const key of Object.keys(block)) {
+    if (knownKeys.has(key)) continue;
+    const match = suggestKeyFrom(key, knownKeys);
+    const suggestion = match === null ? null : `${blockName}.${match}`;
+    const field = `${blockName}.${key}`;
+    const message = suggestion
+      ? `Unknown config key "${field}" in .config.json. Did you mean "${suggestion}"?`
+      : `Unknown config key "${field}" in .config.json. This attribute is not recognised and will be ignored.`;
+
+    warnings.push({ field, message, suggestion });
   }
 
   return warnings;
