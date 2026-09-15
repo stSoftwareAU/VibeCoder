@@ -219,13 +219,16 @@ RUN set -eu; \
 # seven with no usable linux prebuild — the rest of Graft's grammars ship
 # working ones and are left alone. npm 12 blocks install scripts unless
 # --allow-scripts names the package, so the rest of the tree stays suppressed.
-# ONE code path, no `uname` branch: a compile fault fails every build, not only
-# the arm64 one. It is load-bearing on arm64 — tree-sitter core, python and
-# kotlin ship no prebuild there and go/java/javascript/typescript ship x86-64
-# binaries mislabelled arm64 (trailhq/Graft#119). npm_config_nodedir points
-# node-gyp at the headers the Node layer already extracted, so nothing is
-# downloaded, and `set -eu` makes a failed compile fail the image build.
-# DO_NOT_TRACK stops the version probe pinging upstream.
+# ONE code path, no `uname` branch, and `build_from_source` so it really is
+# one: node-gyp-build otherwise loads the shipped prebuild and skips the
+# compile, which on amd64 — where six of the seven prebuilds are valid — would
+# leave a C++20 or header fault to be found only by an arm64 build. It is
+# load-bearing on arm64 regardless: tree-sitter core, python and kotlin ship no
+# prebuild there and go/java/javascript/typescript ship x86-64 binaries
+# mislabelled arm64 (trailhq/Graft#119). npm_config_nodedir points node-gyp at
+# the headers the Node layer already extracted, so nothing is downloaded, and
+# `set -eu` makes a failed compile fail the image build. DO_NOT_TRACK stops the
+# version probe pinging upstream.
 #
 # The rebuild must then be PROVEN, because a no-op one is silent: npm reports
 # "rebuilt dependencies successfully" for a run whose scripts it blocked, and
@@ -242,6 +245,7 @@ RUN set -eu; \
     echo "${GRAFT_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
     npm install -g --ignore-scripts "${tarball}"; \
     CXXFLAGS="-std=c++20" npm_config_nodedir=/usr/local \
+      npm_config_build_from_source=true \
       npm rebuild -g --allow-scripts="$(printf '%s' "${native}" | tr ' ' ',')" ${native}; \
     rm -rf /tmp/npmc "${tarball}"; \
     NODE_PATH="$(npm root -g)/@nanonets/graft/node_modules" \

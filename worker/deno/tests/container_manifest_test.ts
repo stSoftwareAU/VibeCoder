@@ -1965,6 +1965,15 @@ function findGraftRebuildViolations(containerfile: string): string[] {
         "download Node headers at build time",
     );
   }
+  // Without this node-gyp-build loads the shipped prebuild and skips the
+  // compile, so an amd64 build — where six of the seven prebuilds are valid —
+  // would prove nothing about the C++20 compile.
+  if (!step.includes("npm_config_build_from_source=true")) {
+    violations.push(
+      "the rebuild does not force a build from source, so a valid prebuild " +
+        "would skip the compile it exists to prove",
+    );
+  }
   // ONE code path: a `uname` branch would let an amd64 build skip the
   // compile, so a fault would only ever surface on the Mac M-series host.
   if (step.includes("uname")) {
@@ -2013,6 +2022,7 @@ Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift
     "RUN set -eu; \\",
     '    native="tree-sitter tree-sitter-go tree-sitter-java tree-sitter-javascript tree-sitter-typescript tree-sitter-python tree-sitter-kotlin"; \\',
     '    CXXFLAGS="-std=c++20" npm_config_nodedir=/usr/local \\',
+    "      npm_config_build_from_source=true \\",
     `      npm rebuild -g --allow-scripts="$(printf '%s' "\${native}" | tr ' ' ',')" \${native}; \\`,
     "    node -e 'for (const m of process.argv.slice(1)) require(m)' ${native}; \\",
     '    DO_NOT_TRACK=1 graft --version | grep -qxF "${GRAFT_VERSION}"',
@@ -2067,6 +2077,16 @@ Deno.test("findGraftRebuildViolations - reports a rebuild that would skip, drift
   assertStringIncludes(
     findGraftRebuildViolations(online).join("\n"),
     "download Node headers",
+  );
+
+  // A rebuild that accepts a prebuild compiles nothing on amd64.
+  const prebuilt = sound.replace(
+    "      npm_config_build_from_source=true \\\n",
+    "",
+  );
+  assertStringIncludes(
+    findGraftRebuildViolations(prebuilt).join("\n"),
+    "would skip the compile",
   );
 });
 
