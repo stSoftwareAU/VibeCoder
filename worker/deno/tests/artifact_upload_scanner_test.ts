@@ -466,6 +466,67 @@ jobs:
   assertEquals(f.lines, f.steps[0]!.line);
 });
 
+// The filed issue's title and body are the human-facing surface, so the
+// one-step and many-step wordings are both asserted (Issue #2221).
+Deno.test("scan - the title and body read correctly for a single offending step", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+on: push
+jobs:
+  build:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: .
+`,
+    ),
+  ];
+  const f = scanArtifactUploads(files)[0]!;
+  assertEquals(
+    f.title,
+    "🟢 An artefact upload ships the whole workspace " +
+      "(`.github/workflows/ci.yml`)",
+  );
+  assert(
+    f.whyItMatters.includes("has 1 `actions/upload-artifact` step with"),
+  );
+  assert(f.suggestedFix.includes("In the upload step listed above"));
+});
+
+Deno.test("scan - the title and body read correctly for several offending steps", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+on: push
+jobs:
+  build:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: .
+  test:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: ./
+`,
+    ),
+  ];
+  const f = scanArtifactUploads(files)[0]!;
+  assertEquals(
+    f.title,
+    "🟢 2 artefact uploads ship the whole workspace " +
+      "(`.github/workflows/ci.yml`)",
+  );
+  assert(
+    f.whyItMatters.includes("has 2 `actions/upload-artifact` steps with"),
+  );
+  assert(f.suggestedFix.includes("In each of the 2 upload steps listed above"));
+});
+
 Deno.test("scan - two workflow files yield one finding each, sorted by id", () => {
   const body = `on: push
 jobs:

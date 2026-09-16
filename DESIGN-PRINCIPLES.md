@@ -1684,9 +1684,11 @@ native workflow-trigger pre-filer files `BP-TRIGGER-<workflow-basename>` ids; th
 native checkout-persist-credentials pre-filer files
 `BP-PERSIST-CREDS-<workflow-basename>` ids; the native
 broad-artefact-upload pre-filer files
-`BP-ARTIFACT-UPLOAD-<workflow-basename>` ids — both one per file since Issue
-#2221, with their pre-#2221 per-step ids still honoured for dedup and
-suppression so the reshape never re-files a repository mid-flight; the native
+`BP-ARTIFACT-UPLOAD-<workflow-basename>` ids — both one per file since
+Issue #2221, with their per-step ids still honoured for dedup, in-source
+suppression, and the per-step pre-PR changed-workflow gate, so the reshape
+neither re-files a repository mid-flight nor lets a newly added offender
+hide behind a pre-existing one; the native
 milestone-branch-filter pre-filer files `BP-MILESTONE-FILTER-<workflow-basename>`
 ids; the native gitleaks-drift pre-filer files
 `BP-GITLEAKS-<CLASS>-<workflow-basename>` ids.

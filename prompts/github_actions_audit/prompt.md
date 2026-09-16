@@ -741,8 +741,8 @@ Cite the workflow path and line range for each.
     **Stable id.** `BP-ARTIFACT-UPLOAD-<workflow-basename>`, lower-cased
     (slug of the workflow basename) — matching the native pre-filer so the
     two never double-file. It is **one finding per workflow file**, not per
-    step (Issue #2221): list every offending job/step of that file in the
-    one issue body, because the same edit to the same file fixes them all.
+    step: list every offending job/step of that file in the one issue body,
+    because the same edit to the same file fixes them all.
     **Severity.** `severity:low` baseline; `severity:medium` when a listed
     job has secrets in scope (a `${{ secrets.* }}` reference at workflow, job,
     or step level) **or** the workflow uses a trigger from the

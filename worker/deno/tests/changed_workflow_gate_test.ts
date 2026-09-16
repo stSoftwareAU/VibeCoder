@@ -335,11 +335,11 @@ Deno.test("changed-workflow gate - a traversing path is refused, not read", asyn
 });
 
 Deno.test("changed-workflow gate - a long finding list is truncated, and says so", async () => {
-  // 25 tag-pinned steps, each a distinct action coordinate — more
-  // findings than the message names in full.
+  // 25 tag-pinned steps — more than the message names in full.
   const steps = Array.from(
     { length: 25 },
-    (_, i) => `      - name: Step ${i}\n        uses: vendor${i}/action@v1\n`,
+    (_, i) =>
+      `      - name: Step ${i}\n        uses: actions/checkout@v${i + 1}\n`,
   )
     .join("");
   const many = seed(
@@ -385,6 +385,48 @@ Deno.test("changed-workflow gate - the message names the PR the block lands on (
     assertStringIncludes(message, `[${verdict.findings[0]!.id}]`);
     assertStringIncludes(message, "best-practice-ignore");
   }
+});
+
+// Issue #2221 reshaped the persist-credentials and artefact-upload
+// findings to one issue per workflow file. The gate still diffs per step,
+// so a second offender the run adds is reported rather than masked by the
+// first.
+Deno.test("changed-workflow gate - a second offending checkout the run added is reported", async () => {
+  const oneOffender = seed(
+    "        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n        with:\n          persist-credentials: false\n",
+    "        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2\n",
+  );
+  const twoOffenders = oneOffender.replace(
+    "  test:\n",
+    `  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Lint
+        run: |
+          set -euo pipefail
+          deno lint
+  test:
+`,
+  );
+  assert(
+    twoOffenders !== oneOffender,
+    "fixture drift: the second job was not inserted",
+  );
+
+  const { result } = runGate(
+    { [CI_PATH]: twoOffenders },
+    { base: { [CI_PATH]: oneOffender } },
+  );
+  const verdict = await result;
+
+  assertEquals(verdict.ok, false, "the added offender must block");
+  assertEquals(verdict.findings.length, 1, "only the added one is reported");
+  assertEquals(verdict.findings[0]!.id, "BP-PERSIST-CREDS-ci-lint-0");
 });
 
 Deno.test("changed-workflow gate - an offending file the run did not touch is ignored", async () => {

@@ -60,7 +60,7 @@
  */
 
 import {
-  isFindingSuppressed,
+  selectLiveSteps,
   type WorkflowFile,
   type WorkflowFindingSeverity,
 } from "./workflow_scan_common.ts";
@@ -260,14 +260,18 @@ function checkoutUsesLines(lines: readonly string[]): number[] {
 }
 
 /**
- * The legacy per-step id this finding carried before Issue #2221 reshaped
- * the family to one finding per workflow file:
- * `BP-PERSIST-CREDS-<basename>-<job>-<step-index>`.
+ * The per-step id `BP-PERSIST-CREDS-<basename>-<job>-<step-index>` — the
+ * id this family **filed** before Issue #2221 reshaped it to one finding
+ * per workflow file.
  *
- * Still computed (never filed) so an open per-step issue, or an in-source
- * marker written against one, keeps suppressing its step.
+ * It is never filed as an issue again, but it stays the unit of the
+ * smaller decisions: an open per-step issue covers its file (the #2221
+ * migration), an in-source marker written against one still suppresses
+ * its step, and the pre-PR changed-workflow gate reports per step so a
+ * newly added offender is never masked by a pre-existing one
+ * (`workflow_file_checks.ts`).
  */
-export function legacyPersistCredentialsId(
+export function persistCredentialsStepId(
   workflowPath: string,
   job: string,
   stepIndex: number,
@@ -361,25 +365,12 @@ export function scanCheckoutPersistCredentials(
     offending.sort((a, b) => a.line - b.line);
 
     const findingId = persistCredentialsId(file.path);
-    if (suppressed.has(findingId)) continue;
-    if (knownOpen.has(findingId)) continue;
-
-    // Migration (#2221): an already-open per-step issue covers this file's
-    // fix, so the per-file id must not re-file alongside it.
-    const legacyIdOf = (s: CheckoutPersistCredentialsStep) =>
-      legacyPersistCredentialsId(file.path, s.job, s.stepIndex);
-    if (offending.some((s) => knownOpen.has(legacyIdOf(s)))) continue;
-
-    // A marker (or a triage suppression) against the per-file id or the
-    // step's legacy id drops that step alone; the file drops out once
-    // every offending step is suppressed.
-    const live = offending.filter((s) => {
-      const legacyId = legacyIdOf(s);
-      if (suppressed.has(legacyId)) return false;
-      if (isFindingSuppressed(file.rawText, s.line, findingId, file.path)) {
-        return false;
-      }
-      return !isFindingSuppressed(file.rawText, s.line, legacyId, file.path);
+    const live = selectLiveSteps(offending, {
+      file,
+      findingId,
+      stepId: (s) => persistCredentialsStepId(file.path, s.job, s.stepIndex),
+      suppressedIds: suppressed,
+      knownOpenIds: knownOpen,
     });
     if (live.length === 0) continue;
 
@@ -396,7 +387,8 @@ function buildFinding(
   steps: readonly CheckoutPersistCredentialsStep[],
 ): CheckoutPersistCredentialsFinding {
   const count = steps.length;
-  const plural = count === 1 ? "step" : "steps";
+  const one = count === 1;
+  const plural = one ? "step" : "steps";
   const stepList = steps
     .map((s) => `job \`${s.job}\` step ${s.stepIndex} (line ${s.line})`)
     .join(", ");
@@ -406,8 +398,11 @@ function buildFinding(
     workflowPath: file.path,
     steps,
     severity: "medium",
-    title: `${MEDIUM_EMOJI} ${count} checkout ${plural} persist credentials ` +
-      `(\`${file.path}\`)`,
+    title: `${MEDIUM_EMOJI} ` +
+      (one
+        ? "A checkout step persists credentials"
+        : `${count} checkout steps persist credentials`) +
+      ` (\`${file.path}\`)`,
     file: file.path,
     lines: steps[0]?.line ?? 1,
     whyItMatters:
@@ -416,20 +411,30 @@ function buildFinding(
       "writes the workflow's `GITHUB_TOKEN` into `.git/config` as an auth " +
       "header, where any later step in the job — including a compromised " +
       "dependency or an injected script — can read it and act as the token. " +
-      `None of these jobs shows a static sign of pushing back to the ` +
-      "repository or fetching private submodules, so they do not need the " +
-      "persisted credential, and keeping it on disk only widens the blast " +
-      "radius of a compromised step. All " +
-      `${count} ${plural} are fixed by the same edit to this one file, so ` +
-      "they are one finding.",
-    suggestedFix:
-      `Add \`persist-credentials: false\` to each of the ${count} checkout ` +
-      `${plural} listed above so the token is not written to disk:\n\n` +
+      (one
+        ? "That job shows no static sign of pushing back to the repository " +
+          "or fetching private submodules, so it does not need the persisted " +
+          "credential"
+        : "None of these jobs shows a static sign of pushing back to the " +
+          "repository or fetching private submodules, so they do not need " +
+          "the persisted credential") +
+      ", and keeping it on disk only widens the blast radius of a " +
+      "compromised step." +
+      (one
+        ? ""
+        : ` All ${count} steps are fixed by the same edit to this one file, ` +
+          "so they are one finding."),
+    suggestedFix: "Add `persist-credentials: false` to " +
+      (one
+        ? "the checkout step listed above"
+        : `each of the ${count} checkout steps listed above`) +
+      " so the token is not written to disk:\n\n" +
       "```yaml\n      - uses: actions/checkout@<sha>\n" +
       "        with:\n          persist-credentials: false\n```\n\nIf a later " +
-      "step in one of these jobs genuinely pushes back to the repository (or " +
-      "fetches a private submodule) using the checkout credential, that step " +
-      "is a false positive — suppress it with an in-source " +
+      "step in " + (one ? "that job" : "one of these jobs") +
+      " genuinely pushes back to the repository (or fetches a private " +
+      "submodule) using the checkout credential, that step is a false " +
+      "positive — suppress it with an in-source " +
       `\`# best-practice-ignore: ${id} — <reason>\` comment above that ` +
       "step's `uses:` line. Each step is suppressed on its own; the finding " +
       "goes away once every listed step is fixed or suppressed.",

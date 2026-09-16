@@ -58,7 +58,7 @@
  */
 
 import {
-  isFindingSuppressed,
+  selectLiveSteps,
   type WorkflowFile,
   type WorkflowFindingSeverity,
 } from "./workflow_scan_common.ts";
@@ -295,14 +295,18 @@ function uploadUsesLines(lines: readonly string[]): number[] {
 }
 
 /**
- * The legacy per-step id this finding carried before Issue #2221 reshaped
- * the family to one finding per workflow file:
- * `BP-ARTIFACT-UPLOAD-<basename>-<job>-<step-index>`.
+ * The per-step id `BP-ARTIFACT-UPLOAD-<basename>-<job>-<step-index>` — the
+ * id this family **filed** before Issue #2221 reshaped it to one finding
+ * per workflow file.
  *
- * Still computed (never filed) so an open per-step issue, or an in-source
- * marker written against one, keeps suppressing its step.
+ * It is never filed as an issue again, but it stays the unit of the
+ * smaller decisions: an open per-step issue covers its file (the #2221
+ * migration), an in-source marker written against one still suppresses
+ * its step, and the pre-PR changed-workflow gate reports per step so a
+ * newly added offender is never masked by a pre-existing one
+ * (`workflow_file_checks.ts`).
  */
-export function legacyArtifactUploadId(
+export function artifactUploadStepId(
   workflowPath: string,
   job: string,
   stepIndex: number,
@@ -394,25 +398,12 @@ export function scanArtifactUploads(
     offending.sort((a, b) => a.line - b.line);
 
     const findingId = artifactUploadId(file.path);
-    if (suppressed.has(findingId)) continue;
-    if (knownOpen.has(findingId)) continue;
-
-    // Migration (#2221): an already-open per-step issue covers this file's
-    // fix, so the per-file id must not re-file alongside it.
-    const legacyIdOf = (s: ArtifactUploadStep) =>
-      legacyArtifactUploadId(file.path, s.job, s.stepIndex);
-    if (offending.some((s) => knownOpen.has(legacyIdOf(s)))) continue;
-
-    // A marker (or a triage suppression) against the per-file id or the
-    // step's legacy id drops that step alone; the file drops out once
-    // every offending step is suppressed.
-    const live = offending.filter((s) => {
-      const legacyId = legacyIdOf(s);
-      if (suppressed.has(legacyId)) return false;
-      if (isFindingSuppressed(file.rawText, s.line, findingId, file.path)) {
-        return false;
-      }
-      return !isFindingSuppressed(file.rawText, s.line, legacyId, file.path);
+    const live = selectLiveSteps(offending, {
+      file,
+      findingId,
+      stepId: (s) => artifactUploadStepId(file.path, s.job, s.stepIndex),
+      suppressedIds: suppressed,
+      knownOpenIds: knownOpen,
     });
     if (live.length === 0) continue;
 
@@ -451,7 +442,8 @@ function buildFinding(
       ", widening the blast radius of the exposed artefact."
     : "";
   const count = steps.length;
-  const plural = count === 1 ? "step" : "steps";
+  const one = count === 1;
+  const plural = one ? "step" : "steps";
   const stepList = steps
     .map((s) => `job \`${s.job}\` step ${s.stepIndex} (line ${s.line})`)
     .join(", ");
@@ -461,8 +453,11 @@ function buildFinding(
     workflowPath: file.path,
     steps,
     severity,
-    title: `${emoji} ${count} artefact upload ${plural} ship the whole ` +
-      `workspace (\`${file.path}\`)`,
+    title: `${emoji} ` +
+      (one
+        ? "An artefact upload ships the whole workspace"
+        : `${count} artefact uploads ship the whole workspace`) +
+      ` (\`${file.path}\`)`,
     file: file.path,
     lines: steps[0]?.line ?? 1,
     whyItMatters:
@@ -476,13 +471,15 @@ function buildFinding(
       "by every collaborator — and by anyone on a public repo — so a broad " +
       "upload is a credential- and source-exfiltration surface." + escalation,
     suggestedFix:
-      `In each of the ${count} upload ${plural} listed above, upload only ` +
+      (one
+        ? "In the upload step listed above, upload only "
+        : `In each of the ${count} upload steps listed above, upload only `) +
       "the specific build-output path(s) instead of the workspace root:\n\n" +
       "```yaml\n      - uses: actions/upload-artifact@<sha>\n" +
       "        with:\n          name: build-output\n          path: dist/\n" +
       "```\n\nIf the whole tree genuinely must move between jobs, scope it to " +
       "a dedicated output directory and exclude `.git`, `.env`, and secret " +
-      "files. If one of these uploads is intentional and safe, suppress that " +
+      "files. If a listed upload is intentional and safe, suppress that " +
       `step with an in-source \`# best-practice-ignore: ${id} — <reason>\` ` +
       "comment above its `uses:` line. Each step is suppressed on its own; " +
       "the finding goes away once every listed step is fixed or suppressed.",

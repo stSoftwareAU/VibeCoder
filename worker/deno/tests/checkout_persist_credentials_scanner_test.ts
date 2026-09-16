@@ -433,6 +433,69 @@ jobs:
   assertEquals(f.lines, f.steps[0]!.line);
 });
 
+// The filed issue's title and body are the human-facing surface, so the
+// one-step and many-step wordings are both asserted (Issue #2221).
+Deno.test("scan - the title and body read correctly for a single offending step", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno test
+`,
+    ),
+  ];
+  const f = scanCheckoutPersistCredentials(files)[0]!;
+  assertEquals(
+    f.title,
+    "🟠 A checkout step persists credentials (`.github/workflows/ci.yml`)",
+  );
+  assert(f.whyItMatters.includes("has 1 `actions/checkout` step without"));
+  assert(f.whyItMatters.includes("That job shows no static sign"));
+  assert(
+    !f.whyItMatters.includes("All 1"),
+    "no plural-count sentence for a single step",
+  );
+  assert(
+    f.suggestedFix.includes(
+      "Add `persist-credentials: false` to the checkout step listed above",
+    ),
+  );
+});
+
+Deno.test("scan - the title and body read correctly for several offending steps", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno test
+  lint:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno lint
+`,
+    ),
+  ];
+  const f = scanCheckoutPersistCredentials(files)[0]!;
+  assertEquals(
+    f.title,
+    "🟠 2 checkout steps persist credentials (`.github/workflows/ci.yml`)",
+  );
+  assert(f.whyItMatters.includes("has 2 `actions/checkout` steps without"));
+  assert(f.whyItMatters.includes("None of these jobs shows"));
+  assert(f.whyItMatters.includes("All 2 steps are fixed by the same edit"));
+  assert(
+    f.suggestedFix.includes("each of the 2 checkout steps listed above"),
+  );
+});
+
 Deno.test("scan - two workflow files yield one finding each, sorted by id", () => {
   const steps = `jobs:
   test:
