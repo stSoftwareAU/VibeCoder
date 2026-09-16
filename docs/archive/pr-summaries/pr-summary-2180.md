@@ -84,7 +84,7 @@ flowchart LR
   five explicit rules with 22/3389 closed — reviewer: met
 - **met** — Case 2 (identity) marked confirmed or refuted — evidence: record
   §"Case 2 — identity and host hardening hold"; refuted, `:231` SSM core only,
-  `:263` `HttpTokens: required`, `:271` `Encrypted: true` — reviewer: met
+  `:263` sets `HttpTokens` to required, `:271` `Encrypted: true` — reviewer: met
 - **met** — Case 3 (`curl | sh`) classified A03/A08 and against the scan's own
   category, with the trust boundary stated — evidence: record finding 2 and
   §"Case 3"; confirmed, filed as **#2199** — reviewer: met
