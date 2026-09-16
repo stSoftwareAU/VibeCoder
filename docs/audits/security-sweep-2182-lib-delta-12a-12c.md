@@ -55,9 +55,11 @@ record.
 eligible to be listed as skipped-with-citation. Only `claude_runner.ts` is in
 these three slices at all, and its hunks were read here anyway because they
 change what is written to the prompt file and what the retry ladder scans.
-`workflow_scope.ts` (12d), `reserved_label_strip.ts` (12e) and
+`workflow_scope.ts` (12d) and `reserved_label_strip.ts` (12e) are owned by
+slices outside this record, so their drift belongs to #2183.
 `claude_credential_pool.ts` — the one #2170 records as only _partially_ read —
-are owned by slices outside this record; their drift belongs to #2183.
+is owned by slice 12k, also outside this record, but #2182 asks for it by name,
+so it was read here too; see below.
 
 Triage followed [`docs/SECURITY-SCAN.md`](../SECURITY-SCAN.md) Phase 3
 (refute-unless-proven). A candidate only survives when a concrete
@@ -233,6 +235,28 @@ them.
 the slice's drift is hardening (stricter bot admission, fleet-author gates,
 `redactSecrets` on diagnostics) or consumes GitHub data for classification and
 display only.
+
+## `claude_credential_pool.ts` — read across slices
+
+Issue #2182 names this module specifically because #2170 read only part of it.
+It belongs to slice **12k** (#1668), not to 12a–12c, so it is absent from this
+record's drift lists and 12k's `sweptAt` is **not** bumped here — that edit
+belongs to #2183. The module was read anyway, at hunk level against 12k's own
+`sweptAt` (`fdd79338…`), so the gap #2170 left is closed rather than passed on.
+
+What the drift adds: `withoutRecordedSpent` (a spent token is left out of the
+start-up ranking), `exhaustionFromUsageSignal` /
+`primeClaudePoolFromUsageSignal` (read the worker-written usage-limit signal
+back at start-up) and `retireUnattributableUsageSignal` (delete an unlabelled
+signal on a multi-credential host).
+
+**Nil.** The signal file is worker-written under the operator's `workDir` and is
+removed by `clearRateLimitSignal(workDir)` — one fixed filename, non-recursive.
+`credentialLabel` is a pool label (`provider-2`), never token material: it is
+looked up in an in-memory `snapshots` map, never joined into a path or an argv,
+and `recordHeldProviderCredential` stores the same label. `resetAt` is
+arithmetic guarded by `Number.isFinite`. Every failure path logs and returns
+`false`, leaving the historical pause standing rather than silently clearing it.
 
 ## Refutations worth keeping
 
