@@ -43,7 +43,7 @@ re-read — that is what the base record covers.
 `@@ -1117,7 +1230,31 @@` · `@@ -1209,6 +1346,24 @@` · `@@ -1245,13 +1400,41 @@` ·
 `@@ -1262,6 +1445,16 @@` · `@@ -1335,7 +1528,19 @@`
 
-**`run.sh`** (+427 / −151), 22 hunks:
+**`run.sh`** (+427 / −151), 21 hunks:
 
 `@@ -243,7 +243,8 @@` · `@@ -251,11 +252,11 @@` · `@@ -413,14 +414,16 @@` ·
 `@@ -582,10 +585,12 @@` · `@@ -687,6 +692,7 @@` · `@@ -712,6 +718,7 @@` ·
@@ -83,7 +83,7 @@ categories did not:
 | Check | run.sh (#1221 → now) | setup.sh | loop.sh | Triage |
 | ----- | -------------------- | -------- | ------- | ------ |
 | SC2250 | 0 → 0 | 205 → 228 | 0 → 0 | Style, unchanged: `setup.sh` keeps the bare `$var` dialect throughout, including every line added here. |
-| SC2310 | 29 → 34 | 19 → 24 | 0 → 0 | Diffed note-for-note against the base commit, the ten new notes come from these call sites — `run.sh`: `if recreate_volume` and `kb="$(volume_store_kb …)"` in `reset_work_volumes_before_build`, the matching `kb="$(volume_store_kb …)"` in `heal_untrimmable_volumes`, plus `toolchain_rebuild_recorded` at `:1853` and `:1876`; `setup.sh`: `export_provider_env` at `:856` (two notes — shellcheck reports the `!` and the `if` separately) and `:864`, `run_setup_cli launchagent --status` at `:1408`, and `setup_token_transcript_prefix` inside the `mktemp` at `:917`. Every one is the `if ! helper; then <report>` or `x="$(helper)" || x=""` shape the base record triaged; each was read, and none swallows a status it needed — the `volume_store_kb` pair is the exception only in that its *caller* mishandles the empty result, which is finding 1. |
+| SC2310 | 29 → 34 | 19 → 24 | 0 → 0 | Diffed note-for-note against the base commit, the ten new notes come from these call sites — `run.sh`: `if recreate_volume` and `kb="$(volume_store_kb …)"` in `reset_work_volumes_before_build`, the matching `kb="$(volume_store_kb …)"` in `heal_untrimmable_volumes`, plus `toolchain_rebuild_recorded` at `:1853` and `:1876`; `setup.sh`: `export_provider_env` at `:856` (two notes — shellcheck reports the `!` and the `if` separately) and `:864`, `run_setup_cli launchagent --status` at `:1408`, and `setup_token_transcript_prefix` inside the `mktemp` at `:917`. Every one is the `if ! helper; then <report>` or `x="$(helper)" \|\| x=""` shape the base record triaged; each was read, and none swallows a status it needed — the `volume_store_kb` pair is the exception only in that its *caller* mishandles the empty result, which is finding 1. |
 | SC2312 | 1 → 4 | 3 → 4 | 0 → 0 | The four new ones each feed a value that is then validated, defaulted, or purely cosmetic: `run.sh:824` (`$(date +%s)` inside the `host-disk.json` `printf`), `run.sh:1111` and `:1519` (`$(volume_too_small_detail …)` inside a log message), and `setup.sh:917` (`$(setup_token_transcript_prefix)`, a `printf` of `$$` that cannot fail). `run.sh:1584` (`claim_floor_detail`) is the base record's single pre-existing instance, unchanged. |
 | SC2249 | 0 → 0 | 2 → 2 | 0 → 0 | Unchanged option parsers. |
 
@@ -128,9 +128,13 @@ does not re-derive them:
 
 | # | Where | Class | Severity | Status |
 | - | ----- | ----- | -------- | ------ |
-| 1 | `run.sh:1518` | protection mechanism failure — a guard skipped when its measurement fails (CWE-693) | medium | [#2216](https://github.com/stSoftwareAU/VibeCoder/issues/2216) |
+| 1 | `run.sh:1518` | protection mechanism failure — a guard skipped when its measurement fails (CWE-693) | medium | [#2216](https://github.com/stSoftwareAU/VibeCoder/issues/2216) — `SEC-3cc92c0a026b` |
 
 ### 1 — the content-approval tamper baseline is recreated when its size cannot be measured
+
+Filed as [#2216](https://github.com/stSoftwareAU/VibeCoder/issues/2216), stable id
+`SEC-3cc92c0a026b`, `severity:medium` / `confidence:high`, tagged `CWE-693` so a later
+scan dedups against it rather than re-filing the same root cause.
 
 `heal_untrimmable_volumes` applies the Issue #2117 minimum-size guard — the one
 thing that stops the launcher wiping the content-approval store to reclaim
