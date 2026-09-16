@@ -453,9 +453,8 @@ not by Claude:
   One id per package coordinate, however many call-sites it has.
 
 The `BP-PERSIST-CREDS-…` and `BP-ARTIFACT-UPLOAD-…` families carried a
-per-step `BP-…-<workflow-basename>-<job>-<step-index>` id before Issue
-#2221.
-Those per-step ids are never filed as issues again, but they are still
+per-step `BP-…-<workflow-basename>-<job>-<step-index>` id before
+Issue #2221. Those per-step ids are never filed as issues again, but they are still
 **honoured**: a repository that already has an open per-step issue for a
 file yields no per-file finding for it, an in-source
 `best-practice-ignore` marker written against one still suppresses its
