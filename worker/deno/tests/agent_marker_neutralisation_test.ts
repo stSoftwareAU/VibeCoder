@@ -74,7 +74,14 @@ Deno.test("neutraliseAgentMarkers - the worker's own marker appended afterwards 
   assertEquals(parsed[0]?.attempt, 1);
 });
 
-Deno.test("neutraliseAgentMarkers - the reported names are capped and deduplicated", () => {
+Deno.test("neutraliseAgentMarkers - empty input is returned unchanged", () => {
+  const result = neutraliseAgentMarkers("");
+  assertEquals(result.text, "");
+  assertEquals(result.neutralised, 0);
+  assertEquals(result.names, []);
+});
+
+Deno.test("neutraliseAgentMarkers - the reported names are deduplicated", () => {
   const text = Array.from(
     { length: 9 },
     (_, i) => `<!-- marker-${i % 2} -->`,
@@ -82,4 +89,28 @@ Deno.test("neutraliseAgentMarkers - the reported names are capped and deduplicat
   const result = neutraliseAgentMarkers(text);
   assertEquals(result.names, ["marker-0", "marker-1"]);
   assertEquals(result.neutralised, 18);
+});
+
+Deno.test("neutraliseAgentMarkers - hostile text cannot flood the warning with names", () => {
+  // Twelve distinct names: only the first five are reported, and every
+  // delimiter is still counted and neutralised.
+  const text = Array.from(
+    { length: 12 },
+    (_, i) => `<!-- marker-${i} -->`,
+  ).join("\n");
+  const result = neutraliseAgentMarkers(text);
+  assertEquals(result.names.length, 5);
+  assertEquals(result.names[0], "marker-0");
+  assertEquals(result.neutralised, 24);
+  assertEquals(result.text.includes("<!--"), false);
+});
+
+Deno.test("neutraliseAgentMarkers - a reported name is capped in length", () => {
+  const long = "n".repeat(200);
+  const result = neutraliseAgentMarkers(`<!-- ${long} -->`);
+  assertEquals(result.names.length, 1);
+  assertEquals(result.names[0]?.length, 64);
+  // The text itself is neutralised whole — only the report is capped.
+  assertEquals(result.text.includes(long), true);
+  assertEquals(result.text.includes("<!--"), false);
 });

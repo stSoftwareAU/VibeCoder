@@ -890,7 +890,7 @@ async function resolveConflict(
   // The reply file is consumed on read so a stale reply cannot be reused, and
   // this attempt reads it in up to three places — the override guard, the
   // ancestor failure and the resolved comment. Read it once (Issue #1767).
-  const agentReply = createMergeConflictReplyReader(workDir);
+  const agentReply = createMergeConflictReplyReader(workDir, logger);
   if (merge.code !== 0) {
     const unmerged = await git(
       run,

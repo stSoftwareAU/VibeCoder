@@ -209,16 +209,19 @@ export async function runMergeConflictAgent(
  * it through one memoised closure is how both targets get the same reply.
  *
  * @param workDir - The checkout the agent ran in
+ * @param logger - Optional logger, so a defused marker is reported loudly
+ *                 (Issue #2236)
  * @returns A function returning the reply, or `undefined` when there was none
  */
 export function createMergeConflictReplyReader(
   workDir: string | undefined,
+  logger?: Logger,
 ): () => Promise<string | undefined> {
   let read = false;
   let reply: string | undefined;
   return async () => {
     if (!read) {
-      reply = await readPrResponseMessage(workDir);
+      reply = await readPrResponseMessage(workDir, logger);
       read = true;
     }
     return reply;
