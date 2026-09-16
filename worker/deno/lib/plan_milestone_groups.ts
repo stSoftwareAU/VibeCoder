@@ -16,10 +16,11 @@
  * **never** checked — the accepted scope of #2163 makes file overlap planner
  * judgement, and a gate that guessed at it would reject sound plans.
  *
- * **No table is not a failure.** The gate lands before the prompts teach the
- * table (#2174), so a parent with no `## Milestones` table takes the legacy
- * path — one milestone for the whole plan, exactly as today. A table that is
- * present but structurally broken *is* a failure: it escalates through the
+ * **No table is not a failure.** The prompts teach the table (#2174), but a
+ * degraded run, an operator's own planning template or a plan published before
+ * that landed may carry none — so a parent with no `## Milestones` table takes
+ * the legacy path — one milestone for the whole plan, exactly as today. A
+ * table that is present but structurally broken *is* a failure: it escalates through the
  * shared `escalateToHuman()` chokepoint, and the caller still creates the
  * legacy single milestone so overnight delivery keeps working while a human
  * regroups.
@@ -87,10 +88,11 @@ export const MAX_MILESTONE_GROUPS = 4;
  * Held beside the gate — not beside the prompts — so the instruction and the
  * rule {@link validateMilestoneGroups} actually implements cannot drift apart,
  * exactly as `COVERAGE_TABLE_REQUIREMENT` does for the coverage gate. This
- * constant is what the degraded in-code fallbacks interpolate; teaching the
- * same table in `prompts/planning/prompt.md` and
- * `prompts/planning_critique/prompt.md` is Issue #2174, which is why the gate
- * must tolerate a plan that carries no table at all.
+ * constant is what the degraded in-code fallbacks interpolate;
+ * `prompts/planning/prompt.md` and `prompts/planning_critique/prompt.md` teach
+ * the same table in their own words (Issue #2174). Neither is guaranteed to
+ * have run, which is why the gate must tolerate a plan that carries no table
+ * at all.
  */
 export const MILESTONES_TABLE_REQUIREMENT =
   "Your summary comment on the parent issue must also carry a " +
