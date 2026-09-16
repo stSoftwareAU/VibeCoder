@@ -243,7 +243,8 @@ fi
 # Self-heal accounting (Issue #4072). Under cron / launchd / systemd / Task
 # Scheduler there is no supervising process between runs, so the launcher
 # records its own outcome: consecutive failures grow the backoff and, past the
-# phase's threshold, escalate through GitHub. loop.sh and loop.ps1 set
+# phase's threshold, escalate through the host's own `callbacks.host_failure`
+# hook - never GitHub (Issue #2108). loop.sh and loop.ps1 set
 # VIBE_SUPERVISOR_RECORDS_OUTCOME because they record the same outcome
 # themselves - one failure must be counted once, not twice. Best-effort: a
 # recorder that cannot run says so on stderr and never changes this launcher's
@@ -251,11 +252,11 @@ fi
 # Invoked from the EXIT trap below; shellcheck cannot see that call and reports
 # it as never-invoked (SC2317 on older versions, SC2329 on newer ones).
 #
-# --allow-sys=hostname: the escalation this recorder files names the machine it
-# is about (Issues #633, #710). Without it `Deno.hostname()` is refused, the
-# report is titled `unknown-host` and says `Host: unknown`, which is close to
-# useless in a fleet reporting into one shared repository. loop.sh has carried
-# the flag since #633; the scheduler path through this launcher had not.
+# --allow-sys=hostname: the escalation this recorder sends names the machine it
+# is about (Issues #633, #710). Without it `Deno.hostname()` is refused and
+# every host reports as `unknown-host`, which is close to useless in a fleet
+# whose hook receives them all. loop.sh has carried the flag since #633; the
+# scheduler path through this launcher had not.
 # shellcheck disable=SC2317,SC2329
 record_outcome() {
   local status="$1"
@@ -584,10 +585,12 @@ fi
 # Failure is not fatal: a host that cannot reach GitHub still launches the
 # worker on the checkout it already has. It says so loudly on stderr and in
 # the run-core log rather than passing quietly (Issue #3234), and three
-# consecutive failures raise a GitHub issue naming this host (Issue #4204).
+# consecutive failures spanning at least fifteen minutes fire the operator's
+# callbacks.host_failure hook once, naming this host (Issues #4204, #2110).
+# Nothing is filed on GitHub: a host-level fault goes to whoever runs the host.
 #
-# --allow-sys=hostname: that escalation titles its issue with the host id, so
-# each host gets its own report instead of every host sharing one.
+# --allow-sys=hostname: that report names the host id, so each host reports as
+# itself instead of every host sharing one identity.
 #
 # The command reads update_mode and pinned_ref from .config.json itself, since
 # it runs before the configuration load: a frozen host is held at its pinned

@@ -29,8 +29,8 @@ import {
   runCallbackConformance,
 } from "../lib/callback_conformance.ts";
 import {
-  CALLBACK_EVENTS,
   type CallbacksConfig,
+  CONTAINER_CALLBACK_EVENTS,
   parseCallbacksConfig,
 } from "../lib/run_callbacks_config.ts";
 
@@ -46,7 +46,7 @@ function parseArguments(
   args: Record<string, unknown>,
 ): Result<CallbacksConfig, string> {
   const block: Record<string, unknown> = {};
-  for (const event of CALLBACK_EVENTS) {
+  for (const event of CONTAINER_CALLBACK_EVENTS) {
     if (args[event] !== undefined) block[event] = args[event];
   }
   if (args["timeout-seconds"] !== undefined) {
@@ -81,11 +81,26 @@ export const callbackConformanceCommand: Command = {
       };
     }
 
+    if (args.host_failure !== undefined) {
+      // Loud rather than silently green: the fixture runs where the worker
+      // runs, and `callbacks.host_failure` is a **host** path the host
+      // launcher spawns (Issue #2107). Accepting the flag and quietly
+      // dropping it would report a passing contract for a hook nothing here
+      // ever ran.
+      return {
+        success: false,
+        message:
+          "--host_failure cannot be proven here: it is a host path spawned by " +
+          "the host launcher, and this fixture runs inside the container. " +
+          "Run it on the host, or drop the flag to prove the container hooks.",
+      };
+    }
+
     const parsed = parseArguments(args);
     if (!parsed.ok) return { success: false, message: parsed.error };
 
     const hooks: ConformanceHooks = {};
-    for (const event of CALLBACK_EVENTS) {
+    for (const event of CONTAINER_CALLBACK_EVENTS) {
       const path = parsed.value[event];
       if (path !== undefined) hooks[event] = path;
     }

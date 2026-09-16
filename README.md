@@ -169,7 +169,8 @@ host builds and runs a Codex image rather than reusing the default one.
   see [Model, Caching & Batching](docs/MODEL-AND-CACHING.md#batch-api).)
 - **Post-run callbacks** — Optional `success` / `failure` / `always`
   executables run after a terminal issue run, plus an optional `cycle`
-  heartbeat at the end of every scan loop, following the
+  heartbeat at the end of every scan loop and an optional `host_failure` hook
+  the host launcher runs while a host-level failure persists, following the
   `success / failure / always` outcome semantics familiar from CI pipelines. The public extension point for fleet-specific
   reporting; a hook failure never rewrites the run's own result. The contract —
   ordering, the versioned context, the security boundary, portable examples and
@@ -305,8 +306,13 @@ reports progress, escalations and crashes the same way.
 
 **SSH, Remote Desktop, screen sharing, a management UI and terminal access to
 the host are not required for normal operation.** No inbound port is opened.
-Local logs (the host log directory) remain useful for diagnosis, but a recoverable failure is
-reported through GitHub rather than left to disappear into a host log.
+Local logs (the host log directory) remain useful for diagnosis, and a failure
+inside a run is still reported through GitHub. A **host-level** failure — the
+launcher crash-looping, the checkout update failing run after run — happens
+before any issue is claimed, so it is reported through the deployment's own
+[`callbacks.host_failure` hook](docs/CALLBACKS.md#host-level-failures--callbackshost_failure),
+or, when none is configured, to the host log and the self-heal events. It is
+never filed as an issue on a public repository.
 
 For production, run via cron (macOS/Linux) or Task Scheduler (Windows) every 5
 minutes:
@@ -448,7 +454,7 @@ flowchart LR
 | — [Resilience & Concurrency](docs/workflows/resilience-and-concurrency.md)     | Self-healing behaviour, restart model, issue claiming, multi-worker coexistence                                                                        |
 | **[Quorum](docs/QUORUM.md)**                                                   | Operator manual for the `quorum` plan-off: the trigger, the two-draft/one-judge sequence, the result comment, every degradation path, the per-run cost, and the config keys |
 | **[Configuration Reference](docs/CONFIGURATION.md)**                           | Config file (`.config.json`), per-repo settings, authorised commenters                                                                                 |
-| **[Post-Run Callbacks](docs/CALLBACKS.md)**                                    | The extension contract: `success`/`failure`/`always`/`cycle` ordering, the versioned context and every `VIBECODER_*` variable, path and container-visibility rules, session-log sensitivity, portable hook examples, the conformance fixture, and the health-tracking migration |
+| **[Post-Run Callbacks](docs/CALLBACKS.md)**                                    | The extension contract: `success`/`failure`/`always`/`cycle` ordering, the host-side `host_failure` hook, the versioned context and every `VIBECODER_*` variable, path and container-visibility rules, session-log sensitivity, portable hook examples, the conformance fixture, and the health-tracking migration |
 | **[Setup Guide](docs/SETUP.md)**                                               | Setup manual: what the automated setup script does, and the from-scratch manual path for macOS, Linux and Windows                                      |
 | **[Deployment Guide](docs/DEPLOYMENT.md)**                                     | Installation, cron/systemd/launchd setup, logs, screenshot support                                                                                     |
 | **[Linux Verification Host](docs/EC2-LINUX-VERIFICATION.md)**                  | The CloudFormation stack that confirms the Linux/podman launch path: an SSM-only Ubuntu EC2 host, the launch/verify/tear-down commands, and the faults it deliberately reproduces |

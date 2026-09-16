@@ -14,6 +14,57 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
+## Unreleased — host-level failures report through `callbacks.host_failure`, never a GitHub issue
+
+**Contract change. Read it if you relied on the issues a host filed when its
+launcher or its checkout update was stuck: those issues are gone, and the
+replacement is a hook you configure.**
+
+> Not yet tagged. Recorded here so the version that carries it can be named
+> when it is cut.
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| A host-level failure — the launcher crash-looping, the checkout update failing run after run — is delivered to the deployment's own `callbacks.host_failure` hook, a **host** path the launcher spawns before any container exists; the versioned document, the `VIBECODER_*` scalars and the `timeout_seconds` budget follow the post-run callback contract | #2107 |
+| The launcher self-heal recorder no longer files (or comments on) an issue in the repository the worker itself lives in when the crash channel has nobody to tell; it reports on the streak's cadence — the threshold crossing, then an hour later, then daily — and retries an undelivered report up to five times before recording `escalation_lost` | #2108 |
+| The host-side checkout update no longer files an issue against the checkout's origin repository; it fires the hook once per streak, and a run that updates cleanly logs the recovery locally instead of closing an issue | #2110 |
+| The callback-failure streak is a container-side condition and writes only a local `ERROR` record: no issue is filed on the crossing, none is closed on recovery, and no host hook is invoked from inside the container | #2111 |
+
+### Breaking: the public-issue default is removed
+
+A host that used to escalate to a GitHub issue now escalates to **nothing**
+unless a hook is configured. `no_hook_configured` in the host log and the
+self-heal events is the record, and it is not a fault — but it is not an alert
+either. A host's outage was being published to a public repository, which is
+why the default is gone rather than merely discouraged.
+
+### Migration
+
+An operator who relied on those issues configures the hook:
+
+```json
+{
+  "callbacks": {
+    "host_failure": "/opt/vibe-hooks/host-failure.sh",
+    "timeout_seconds": 60
+  }
+}
+```
+
+The path must be absolute, POSIX and executable, and it is resolved on the
+**host** — unlike every other `callbacks` key, which is resolved inside the
+container. The payload, the `VIBECODER_*` variables and both callers' cadences
+are in
+[Host-level failures](CALLBACKS.md#host-level-failures--callbackshost_failure).
+An operator who wants no alert configures nothing and reads the host log.
+
+### Rollback
+
+Pin the previous release. No configuration key restores the issues — the code
+that filed them is gone — so the rollback is the release, not a setting.
+
 ## 1.6.0 — the post-run callback contract is additive-only
 
 **Contract change, already in the fleet. Read it if you run post-run callback
@@ -43,9 +94,11 @@ that stops it happening again.
 
 Upgrade any post-run callback extension so it accepts schema version 2 (and,
 per the new rule, any later version, on the fields it knows). Nothing in
-`.config.json` changes. A host whose hooks still refuse the version carries
-one open `Post-run … callback failing on …` issue per hook; the worker closes
-each one on the hook's next success after the upgrade.
+`.config.json` changes. A host whose hooks still refuse the version writes one
+`ERROR` record per hook to its own worker log, naming the version the worker
+exports; the record stops once the hook succeeds again after the upgrade. (The
+report was a GitHub issue the worker filed and closed until Issue #2111 made it
+a local record.)
 
 ### Rollback
 

@@ -25,7 +25,6 @@
  *   | `shared_cooldown`          | do not suppress the work            |
  *   | `failure_detection_resume` | retry rather than escalate          |
  *   | `escalate_as_work`         | file a fresh escalation             |
- *   | `host_escalation`          | create, never comment elsewhere     |
  *   | `collaborator_precheck`    | file a fresh issue                  |
  *   | `best_practices_relabel`   | write no labels                     |
  *
@@ -67,7 +66,6 @@ import {
   resumeFailureDetectionRepair,
 } from "../lib/failure_detection_resume.ts";
 import { escalateAsWork } from "../lib/escalate_as_work.ts";
-import { fileOrCommentIssue } from "../lib/host_escalation.ts";
 import {
   PRECHECK_DEDUP_TAG,
   verifyMonitoredCollaborators,
@@ -652,12 +650,38 @@ interface FakeComment {
   user: { login: string };
 }
 
+/** Whether a walked value can still carry a named field. */
+function isFieldBearing(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * Read one jq path (`.user.login`) off a comment.
+ *
+ * Own properties only: a path naming an inherited member (`.constructor`)
+ * reads as absent, the way jq reads a field an object does not have.
+ */
+function readJqPath(comment: FakeComment, path: string): unknown {
+  return path.slice(1).split(".").reduce<unknown>(
+    (value, segment) =>
+      isFieldBearing(value) && Object.hasOwn(value, segment)
+        ? value[segment]
+        : undefined,
+    comment,
+  );
+}
+
 /**
  * A `gh api … --jq` fake that models jq's object construction rather than
  * recording the request: it applies the `select(.body | test(...))` filter
  * and then projects exactly the paths the caller named. A projection that
  * drops `.user.login` therefore truthfully returns rows with no author,
  * and a test written against the old projection cannot pass by accident.
+ *
+ * The filter is matched as a literal substring rather than compiled into a
+ * `RegExp`: every caller's pattern is a marker prefix with no metacharacter
+ * in it, so containment is what jq's `test` means here, and a dynamic regex
+ * built from a caller's string is a ReDoS surface this fake need not carry.
  */
 function commentsGh(comments: FakeComment[]) {
   return (args: string[]): Promise<string> => {
@@ -668,20 +692,15 @@ function commentsGh(comments: FakeComment[]) {
       const [key, path] = pair.split(":");
       return { key: (key ?? "").trim(), path: (path ?? "").trim() };
     }).filter((f) => f.key !== "" && f.path.startsWith("."));
-    const selected = comments.filter((c) =>
-      new RegExp(test.replace(/\\/g, "")).test(c.body)
+    const marker = test.replace(/\\/g, "");
+    const selected = comments.filter((c) => c.body.includes(marker));
+    return Promise.resolve(
+      JSON.stringify(selected.map((c) =>
+        Object.fromEntries(
+          fields.map((field) => [field.key, readJqPath(c, field.path)]),
+        )
+      )),
     );
-    return Promise.resolve(JSON.stringify(selected.map((c) => {
-      const row: Record<string, unknown> = {};
-      for (const field of fields) {
-        let value: unknown = c;
-        for (const segment of field.path.slice(1).split(".")) {
-          value = (value as Record<string, unknown> | undefined)?.[segment];
-        }
-        row[field.key] = value;
-      }
-      return row;
-    })));
   };
 }
 
@@ -948,90 +967,7 @@ Deno.test("escalate as work - a fleet-authored title still deduplicates", async 
 });
 
 // ===========================================================================
-// 6b. host_escalation.ts — "commented" must mean the fleet's own issue
-// ===========================================================================
-
-Deno.test("host escalation - a planted title is created fresh, never commented on", async () => {
-  const commands: string[][] = [];
-  const delivery = await fileOrCommentIssue({
-    repo: REPO,
-    title: "GRQ-23: the checkout could not be updated",
-    body: "the report",
-    env: {},
-  }, {
-    ghFn: (args: readonly string[]) => {
-      commands.push([...args]);
-      if (args[1] === "list") {
-        return Promise.resolve({
-          code: 0,
-          stdout: JSON.stringify([{
-            number: 8,
-            title: "GRQ-23: the checkout could not be updated",
-            author: { login: OUTSIDER },
-          }]),
-          stderr: "",
-          success: true,
-        });
-      }
-      return Promise.resolve({
-        code: 0,
-        stdout: "",
-        stderr: "",
-        success: true,
-      });
-    },
-    fleetAuthors: FLEET,
-  });
-
-  assertEquals(
-    delivery,
-    "created",
-    "reporting 'commented' when the report landed on a stranger's issue is a lie",
-  );
-  assert(
-    !commands.some((c) => c[1] === "comment"),
-    "the escalation body must not be posted onto an attacker-chosen issue",
-  );
-});
-
-Deno.test("host escalation - a fleet-authored title is still commented on", async () => {
-  const commands: string[][] = [];
-  const delivery = await fileOrCommentIssue({
-    repo: REPO,
-    title: "GRQ-23: the checkout could not be updated",
-    body: "the report",
-    env: {},
-  }, {
-    ghFn: (args: readonly string[]) => {
-      commands.push([...args]);
-      if (args[1] === "list") {
-        return Promise.resolve({
-          code: 0,
-          stdout: JSON.stringify([{
-            number: 8,
-            title: "GRQ-23: the checkout could not be updated",
-            author: { login: HOST },
-          }]),
-          stderr: "",
-          success: true,
-        });
-      }
-      return Promise.resolve({
-        code: 0,
-        stdout: "",
-        stderr: "",
-        success: true,
-      });
-    },
-    fleetAuthors: FLEET,
-  });
-
-  assertEquals(delivery, "commented", "one issue per host per condition");
-  assertEquals(commands.filter((c) => c[1] === "comment").length, 1);
-});
-
-// ===========================================================================
-// 6c. setup/collaborator_precheck.ts — the follow-up carries invite commands
+// 6b. setup/collaborator_precheck.ts — the follow-up carries invite commands
 // ===========================================================================
 
 function precheckGh(

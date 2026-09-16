@@ -9,6 +9,7 @@
  *     "failure": "/absolute/path/to/failure.sh",
  *     "always":  "/absolute/path/to/always.sh",
  *     "cycle":   "/absolute/path/to/cycle.sh",
+ *     "host_failure": "/absolute/host/path/to/host-failure.sh",
  *     "timeout_seconds": 60
  *   }
  * }
@@ -37,17 +38,38 @@
  * must be present at that absolute path inside the container — a host path
  * that is not mounted in is not visible to it.
  *
+ * `host_failure` is the one exception, and the distinction matters: it is a
+ * **host** path (Issue #2107, parent #2088). Nothing inside the container
+ * invokes it — the host launcher does, before a container exists — so it must
+ * be present on the host's own filesystem, not the container's. Every other
+ * key is a container path.
+ *
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
 import type { Result } from "../types.ts";
 
-/** Outcome conditions a callback may be registered against. */
-export const CALLBACK_EVENTS = [
+/**
+ * Events the worker invokes from **inside the container**, where every hook
+ * path is a container path.
+ */
+export const CONTAINER_CALLBACK_EVENTS = [
   "success",
   "failure",
   "always",
   "cycle",
+] as const;
+
+/**
+ * Outcome conditions a callback may be registered against.
+ *
+ * `host_failure` is the host launcher's (Issue #2107): it is the one key
+ * whose path is resolved on the host, and nothing inside the container
+ * invokes it.
+ */
+export const CALLBACK_EVENTS = [
+  ...CONTAINER_CALLBACK_EVENTS,
+  "host_failure",
 ] as const;
 
 /**
@@ -87,6 +109,15 @@ export interface CallbacksConfig {
    * unchanged.
    */
   cycle?: string;
+  /**
+   * Executable the **host launcher** runs while a host-level failure persists
+   * (Issue #2107, parent #2088).
+   *
+   * Unlike every other key this is a path on the **host**, not inside the
+   * container: it fires for failures that happen before a container exists,
+   * so nothing in the container ever invokes it.
+   */
+  host_failure?: string;
   /** Wall-clock budget for one callback, in seconds. */
   timeoutSeconds: number;
 }
@@ -235,4 +266,59 @@ export function assertCallbacksConfig(raw: unknown): CallbacksConfig {
   const parsed = parseCallbacksConfig(raw);
   if (!parsed.ok) throw new Error(parsed.error);
   return parsed.value;
+}
+
+/** The host-side view of the block: just the host hook and its budget. */
+export interface HostFailureCallbackConfig {
+  /** Absolute host path to the hook, when one is configured. */
+  path?: string;
+  /** Wall-clock budget for the hook, in seconds. */
+  timeoutSeconds: number;
+}
+
+/**
+ * Validate **only** `callbacks.host_failure` and `callbacks.timeout_seconds`
+ * (Issue #2107, parent #2088).
+ *
+ * The host launcher reads the config file itself, before any container
+ * exists, and it uses exactly these two keys. Validating the whole block
+ * there would fail the host on a container-only key it never touches — a
+ * `success` hook pointing at a path only the container can see is correct
+ * configuration, and must not stop the host hook from firing. So the same
+ * path and timeout rules are applied, to these two keys alone.
+ *
+ * An absent `host_failure` is not a fault: it yields `path: undefined`, which
+ * the caller reads as "no host hook configured".
+ */
+export function parseHostFailureCallback(
+  rawCallbacks: unknown,
+): Result<HostFailureCallbackConfig, string> {
+  if (rawCallbacks === undefined || rawCallbacks === null) {
+    return {
+      ok: true,
+      value: { timeoutSeconds: DEFAULT_CALLBACK_TIMEOUT_SECONDS },
+    };
+  }
+  if (typeof rawCallbacks !== "object" || Array.isArray(rawCallbacks)) {
+    return {
+      ok: false,
+      error: `callbacks must be an object of hook paths, got ${
+        show(rawCallbacks)
+      }`,
+    };
+  }
+
+  const block = rawCallbacks as Record<string, unknown>;
+  const timeout = parseTimeoutSeconds(block.timeout_seconds);
+  if (!timeout.ok) return timeout;
+
+  if (block.host_failure === undefined) {
+    return { ok: true, value: { timeoutSeconds: timeout.value } };
+  }
+  const hook = parseHookPath("host_failure", block.host_failure);
+  if (!hook.ok) return hook;
+  return {
+    ok: true,
+    value: { path: hook.value, timeoutSeconds: timeout.value },
+  };
 }
