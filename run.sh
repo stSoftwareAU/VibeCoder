@@ -1016,6 +1016,16 @@ fi
 # report (Issue #477), and the hard floor below is what stops it.
 HEAL_STATE_FILE="${VIBE_WORK_VOLUME_HEAL_STATE:-${HOME}/.vibe-coder/work-volume-heal}"
 
+# Whether the previous launch recorded that this runtime refused to trim the
+# work volume (Issue #2253). Read from the reading the launcher itself wrote
+# (Issue #2077): the pre-build reset runs before this launch's volume init,
+# so the last launch's verdict is the freshest one there is.
+host_disk_trim_refused() {
+  local file="${RUN_CORE_LOG_DIR:-}/host-disk.json"
+  [[ -n "${RUN_CORE_LOG_DIR:-}" && -f "${file}" ]] || return 1
+  grep -q '"workVolumeTrimRefused":true' "${file}"
+}
+
 # Free (field 2) or total (field 4) kilobytes of the gate's filesystem.
 host_disk_field_kb() {
   df -kP "${disk_gate_path}" 2>/dev/null |
@@ -1094,25 +1104,40 @@ volume_too_small_detail() {
 # the volume by hand. The measurement is the same one heal_untrimmable_volumes
 # makes; only the order changes. A recreated volume is root-owned, and the
 # init that follows the build re-owns it exactly as it does after that heal.
+#
+# Headroom (Issue #2253): on a runtime that refuses to trim, what a volume
+# holds now is what the next cycle allocates again — GRQ-23 launched 430 MB
+# above the floor with a 22 GB image over 6 GB of live data, drained the pool
+# minutes later, and lost the cycle. So a trim-refused volume is reset when
+# the free space is within its own allocation of the floor, not only below it.
 reset_work_volumes_before_build() {
-  local avail_kb total_kb floor_kb floor_detail volume kb
+  local avail_kb total_kb floor_kb floor_detail volume kb trim_refused=false
   avail_kb="$(host_disk_field_kb 2)"
   total_kb="$(host_disk_field_kb 4)"
   [[ "${avail_kb}" =~ ^[0-9]+$ && "${total_kb}" =~ ^[1-9][0-9]*$ ]] || return 0
   floor_kb="$(claim_floor_kb "${total_kb}")"
-  ((avail_kb >= floor_kb)) && return 0
+  host_disk_trim_refused && trim_refused=true
+  [[ "${trim_refused}" != true ]] && ((avail_kb >= floor_kb)) && return 0
   floor_detail="$(claim_floor_detail "${total_kb}")"
-  local min_kb
+  local min_kb need_kb
   min_kb="$(volume_reset_min_kb)"
   for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     kb="$(volume_store_kb "${volume}" || true)"
     [[ "${kb}" =~ ^[0-9]+$ ]] || continue
+    need_kb="${floor_kb}"
+    [[ "${trim_refused}" == true ]] && need_kb=$((floor_kb + kb))
+    ((avail_kb >= need_kb)) && continue
     if ((kb < min_kb)); then
       log_run_core "$(volume_too_small_detail "${volume}" "${kb}" "${min_kb}")"
       continue
     fi
-    echo "[run.sh] resetting volume ${volume} before the build: $((avail_kb / 1024)) MB free is below the claiming ${floor_detail} and it holds $((kb / 1024)) MB (Issue #2092)" >&2
-    log_run_core "work-volume: pre-build reset of ${volume} - $((avail_kb / 1024)) MB free is below the claiming ${floor_detail} and ${volume} holds $((kb / 1024)) MB in ${container_store}; the build comes first, and a host that cannot build must still reclaim its disk (Issue #2092)"
+    if ((avail_kb >= floor_kb)); then
+      echo "[run.sh] resetting volume ${volume} before the build: $((avail_kb / 1024)) MB free is within the $((kb / 1024)) MB it holds of the claiming ${floor_detail}, and this runtime returns no trimmed blocks (Issue #2253)" >&2
+      log_run_core "work-volume: pre-build reset of ${volume} - $((avail_kb / 1024)) MB free is within $((kb / 1024)) MB of the claiming ${floor_detail}; what ${volume} holds now is what a trim-refused cycle allocates again, so the host would drain mid-cycle (Issue #2253)"
+    else
+      echo "[run.sh] resetting volume ${volume} before the build: $((avail_kb / 1024)) MB free is below the claiming ${floor_detail} and it holds $((kb / 1024)) MB (Issue #2092)" >&2
+      log_run_core "work-volume: pre-build reset of ${volume} - $((avail_kb / 1024)) MB free is below the claiming ${floor_detail} and ${volume} holds $((kb / 1024)) MB in ${container_store}; the build comes first, and a host that cannot build must still reclaim its disk (Issue #2092)"
+    fi
     if recreate_volume "${volume}"; then
       mkdir -p "$(dirname "${HEAL_STATE_FILE}")" 2>/dev/null || true
       printf '%s\n' "$(date +%s)" >"${HEAL_STATE_FILE}" 2>/dev/null || true

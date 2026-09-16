@@ -5213,6 +5213,12 @@ async function syncMilestoneBranchesFn(
     // Issue #2030: the pass runs in the maintenance lane; each repository's
     // clone is leased against the issue pool for the repair.
     leaseRepoFn: (repo) => acquireMaintenanceRepoLease(repo),
+    // Issue #2220: the refusal sweep may only remove the labels this
+    // deployment actually uses, which are operator-configurable.
+    failureLabels: {
+      failedLabel: config.failedLabel,
+      failedOnceLabel: config.failedOnceLabel,
+    },
     // Issue #2022: a fleet PR is not retargeted onto a milestone branch it
     // would conflict with. A dry run in the host's clone: fetch both refs,
     // then `merge-tree --write-tree`, which exits 1 on conflicts and writes

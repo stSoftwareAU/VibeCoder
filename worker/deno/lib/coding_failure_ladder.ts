@@ -51,6 +51,13 @@ import type {
 export type CodingFailureDisposition =
   /** Transient infrastructure — today's plain cooldown, no attempt consumed. */
   | "transient"
+  /**
+   * Not the issue's failure, but the issue is still owed a written record
+   * (Issue #2220): `handleIssueFailure` is called and writes its comment,
+   * and the category's own arm there applies no label. No attempt consumed
+   * and no escalating cooldown, exactly as `transient`.
+   */
+  | "record-only"
   /** The issue's own failure — `failed-once` → `failed` plus the ladder. */
   | "ladder";
 
@@ -98,6 +105,27 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Failure classes that are the REPOSITORY's state, not the issue's, but
+ * that still owe the issue a written record (Issue #2220).
+ *
+ * `repo-config` is a ruleset or protection the repository carries: it
+ * refuses every issue in the milestone identically and no attempt of the
+ * issue's can clear it, so it must not consume an attempt or earn the
+ * escalating 2 h → 6 h → 24 h cooldown and its three-strike `needs-human`
+ * park — the human chore this change exists to remove, one rung later.
+ *
+ * It is deliberately NOT in {@link TRANSIENT_FAILURE_CLASSES}, because a
+ * transient decision returns before `handleIssueFailure` is ever reached
+ * and the run would end with no record at all on the issue. The issue asked
+ * for "comment once, apply **no** label", which is two different things:
+ * the disposition suppresses the label and the cooldown, and
+ * `handleIssueFailure`'s own `repo_config` arm writes the comment.
+ */
+const RECORD_ONLY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
+  "repo-config",
+]);
+
+/**
  * Decide what a terminal coding-run failure earns.
  *
  * `unknown` is deliberately NOT transient. The safe default for auto-filing
@@ -130,6 +158,10 @@ export function classifyCodingFailure(
 
   if (TRANSIENT_FAILURE_CLASSES.has(failureClass)) {
     return { disposition: "transient", category, failureClass, rationale };
+  }
+
+  if (RECORD_ONLY_FAILURE_CLASSES.has(failureClass)) {
+    return { disposition: "record-only", category, failureClass, rationale };
   }
 
   return {
@@ -180,7 +212,9 @@ export interface CodingFailureLadderOutcome {
  * Apply the `failed-once` → `failed` ladder to a terminal coding failure.
  *
  * A transient failure returns without touching GitHub, so it keeps today's
- * plain cooldown and consumes no attempt.
+ * plain cooldown and consumes no attempt. A `record-only` failure does call
+ * `handleIssueFailure` — that is where its comment is written — and the
+ * category's own arm there applies no label (Issue #2220).
  */
 export async function applyCodingFailureLadder(
   options: CodingFailureLadderOptions,
@@ -230,7 +264,13 @@ export interface CodingRunOutcomeSummary {
 
 /** What the main loop must do about a finished coding run. */
 export interface CodingFailurePlan {
-  /** Whether the caller must step the ladder itself. */
+  /**
+   * Whether the caller must call `applyCodingFailureLadder` itself.
+   *
+   * True for a `ladder` decision, and for a `record-only` one — that call is
+   * the only route to the issue's written record, and the decision's own arm
+   * inside `handleIssueFailure` is what withholds the label (Issue #2220).
+   */
   applyLadder: boolean;
   /** Cooldown kind to record; absent for a success, a skip or a transient. */
   cooldownKind?: CooldownFailureKind;
@@ -262,7 +302,12 @@ export function planCodingFailure(
   }
 
   return {
-    applyLadder: decision.disposition === "ladder",
+    // `record-only` is included: the caller's one route into
+    // `applyCodingFailureLadder` is this flag, and a repository-configuration
+    // refusal still owes the issue its comment (Issue #2220). What it does
+    // not earn is a label or a cooldown kind, and neither is set here.
+    applyLadder: decision.disposition === "ladder" ||
+      decision.disposition === "record-only",
     ...(decision.cooldownKind ? { cooldownKind: decision.cooldownKind } : {}),
     decision,
   };
