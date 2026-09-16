@@ -134,7 +134,7 @@ function formatIndexSeconds(seconds: number): string {
  * @param codegraph - What this run's CodeGraph step produced
  * @returns The markdown line, ready to append to the stats section
  */
-export function buildCodegraphStatsLine(
+function buildCodegraphStatsLine(
   codegraph: CodegraphContextResult,
 ): string {
   const status = codegraph.status === "unsupported"
@@ -433,14 +433,15 @@ export async function postIssueRunStatsComment(args: {
   const codegraph = args.codegraph ? { codegraph: args.codegraph } : {};
 
   // Built without the issue's comments first, purely to answer "is there
-  // anything to report?" — so a stats-free wrap-up costs no GitHub call.
+  // anything to report?" — so a stats-free wrap-up costs no GitHub call. The
+  // CodeGraph figures are left out of this probe deliberately: they never make
+  // a stats-free run worth a comment, so they cannot change the answer.
   if (
     !buildIssueRunStatsComment({
       phase,
       claudeResults: args.claudeResults,
       runId,
       ...bestModel,
-      ...codegraph,
     })
   ) {
     logger.debug("No run stats to report on issue wrap-up (Issue #3756)", {

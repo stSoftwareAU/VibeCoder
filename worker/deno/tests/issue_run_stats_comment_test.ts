@@ -20,7 +20,13 @@ import {
   tallyIssueCost,
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
-import type { CodegraphContextResult } from "../lib/codegraph_context.ts";
+import {
+  type CodegraphContextResult,
+  prepareCodegraphContext,
+} from "../lib/codegraph_context.ts";
+import { GEMINI_PROVIDER_ID } from "../lib/agent_provider.ts";
+import { buildDegradationReport } from "../lib/planning_run_stats.ts";
+import { buildPhaseInvocations } from "../lib/phase_run_stats.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import type { RunStats } from "../lib/run_stats.ts";
 import type { Logger } from "../types.ts";
@@ -690,10 +696,23 @@ Deno.test("codegraph line - a failure with no figures reports the status alone",
   assertEquals(codegraphLineOf(body), "- **CodeGraph:** failed");
 });
 
-Deno.test("codegraph line - a Gemini-routed run names the unsupported provider", () => {
-  const body = commentWithCodegraph({ status: "unsupported", enabled: true });
+Deno.test("codegraph line - a Gemini-routed run names the unsupported provider", async () => {
+  // Driven from the real preparation step rather than a hand-made result, so
+  // the line's `(gemini)` and the only status-producing path stay pinned
+  // together: a second excluded provider fails this test instead of silently
+  // publishing the wrong provider name.
+  const codegraph = await prepareCodegraphContext({
+    repoDir: "/tmp/not-read-on-this-path",
+    enabled: true,
+    providerId: GEMINI_PROVIDER_ID,
+    logger: { warn: () => {} },
+  });
 
-  assertEquals(codegraphLineOf(body), "- **CodeGraph:** unsupported (gemini)");
+  assertEquals(codegraph.status, "unsupported");
+  assertEquals(
+    codegraphLineOf(commentWithCodegraph(codegraph)),
+    "- **CodeGraph:** unsupported (gemini)",
+  );
 });
 
 Deno.test("codegraph line - a host with the switch off says so", () => {
@@ -734,21 +753,29 @@ Deno.test("codegraph line - the cost tally and total line ignore it", () => {
 });
 
 Deno.test("codegraph line - a comment built without the argument is unchanged", () => {
-  const args = {
+  const claudeResults = [claudeResult(["claude-opus-4-8"])];
+  const body = buildIssueRunStatsComment({
     phase: "issue",
-    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    claudeResults,
     runId: "vibe-codegraph-run",
-  };
+  });
 
-  const body = buildIssueRunStatsComment(args);
-
-  assertEquals(codegraphLineOf(body), undefined);
-  assertEquals(body.includes("CodeGraph"), false);
-  // Byte-for-byte the comment a run that never met CodeGraph rendered before.
+  // Byte-for-byte the comment this function rendered before the trial existed:
+  // the marker, the shared section, then the disclaimer — nothing between.
+  const { section } = buildDegradationReport({
+    invocations: claudeResults.flatMap((r) =>
+      buildPhaseInvocations("issue", r)
+    ),
+    phase: "issue",
+  });
   assertEquals(
     body,
-    buildIssueRunStatsComment({ ...args, codegraph: undefined }),
+    `${
+      buildIssueRunStatsMarker("vibe-codegraph-run")
+    }\n${section}\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
   );
+  assertEquals(codegraphLineOf(body), undefined);
+  assertEquals(body.includes("CodeGraph"), false);
 });
 
 Deno.test("codegraph line - the line sits inside the stats block, above the disclaimer", () => {

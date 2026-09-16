@@ -10,6 +10,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { processIssueQuestion } from "../lib/question_processor.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
 import type { GitHubClient } from "../types.ts";
+import { ISSUE_RUN_STATS_MARKER } from "../lib/issue_run_stats_comment.ts";
 import {
   CODEGRAPH_PROMPT_LINE,
   type CodegraphContextResult,
@@ -17,7 +18,7 @@ import {
 } from "../lib/codegraph_context.ts";
 
 /** A gh client that answers everything the answer path needs. */
-function stubGhClient(): GitHubClient {
+function stubGhClient(posted: string[] = []): GitHubClient {
   return {
     getIssue: () =>
       Promise.resolve({
@@ -33,7 +34,10 @@ function stubGhClient(): GitHubClient {
     getIssueComments: () => Promise.resolve([]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
-    postComment: () => Promise.resolve(undefined),
+    postComment: (_r: string, _i: number, body: string) => {
+      posted.push(body);
+      return Promise.resolve(undefined);
+    },
     editIssue: () => Promise.resolve(),
     assignIssue: () => Promise.resolve(),
     unassignIssue: () => Promise.resolve(),
@@ -44,6 +48,8 @@ function stubGhClient(): GitHubClient {
 interface Observed {
   runOptions: Record<string, unknown>[];
   prepared: PrepareCodegraphContextOptions[];
+  /** Comment bodies the run posted on the issue. */
+  posted: string[];
   queries?: number;
   status?: string;
 }
@@ -66,7 +72,7 @@ async function runQuestion(
     githubUser: "testbot",
     config,
   };
-  const observed: Observed = { runOptions: [], prepared: [] };
+  const observed: Observed = { runOptions: [], prepared: [], posted: [] };
   const deps = createMockDeps({
     claude: {
       runClaudeWithRetry: ((options: Record<string, unknown>) => {
@@ -100,7 +106,7 @@ async function runQuestion(
   });
 
   const result = await processIssueQuestion(ctx, {
-    ghClient: stubGhClient(),
+    ghClient: stubGhClient(observed.posted),
     logger: deps.logger,
     deps,
   });
@@ -166,4 +172,27 @@ Deno.test("question_processor - a failed index adds neither half", async () => {
     assertEquals(observed.status, status);
     assertEquals(observed.queries, 0);
   }
+});
+
+Deno.test("question_processor - the run's CodeGraph figures reach the stats comment (Issue #2161)", async () => {
+  const observed = await runQuestion(
+    true,
+    {
+      status: "ok",
+      enabled: true,
+      indexSeconds: 4.2,
+      nodeCount: 1200,
+      relationshipCount: 3400,
+    },
+    { mcp__codegraph__codegraph_explore: 4 },
+  );
+
+  const stats = observed.posted.find((body) =>
+    body.includes(ISSUE_RUN_STATS_MARKER)
+  );
+  assert(stats, "expected the question round's run-stats comment");
+  assertStringIncludes(
+    stats,
+    "- **CodeGraph:** ok — index 4.2 s, 1,200 nodes, 3,400 relationships, 4 queries",
+  );
 });
