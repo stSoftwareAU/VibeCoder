@@ -439,6 +439,9 @@ async function executeClaudeBody(
   // that has not opted in — the collector returns `off` without spawning. A
   // `failed` collection is reported on the phase state and the run proceeds
   // unbundled: the bundle is an accelerator, never a precondition.
+  // The #1550 infra retry re-enters this body, so an enabled host collects
+  // again on a retried run — the graph persists in `graft/`, so the second
+  // build replays Graft's own cache rather than re-parsing the checkout.
   const graftContext = await deps.infrastructure.collectGraftContext({
     repoDir: state.repoPath,
     query: graftQueryFor(issueTitle, issueBody),
