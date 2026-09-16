@@ -49,6 +49,12 @@
  * remedy the message already names (fix it, or add a `best-practice-ignore`
  * marker) clears it.
  *
+ * The two families that file **one issue per workflow file** (Issue #2221 —
+ * persist-credentials and artefact uploads) are expanded back to one gate
+ * finding per offending step by `workflow_file_checks.ts`, precisely so this
+ * diff keeps seeing each offender: collapsed to one entry per file, a step the
+ * branch *added* would cancel against the pre-existing one and pass.
+ *
  * **Fail loud** (Issue #3234). A diff that cannot be collected, a file that
  * cannot be read, and a file whose YAML does not parse are all reported as
  * errors, never as "no findings": absence of a finding is only a pass when the

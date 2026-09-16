@@ -19,6 +19,8 @@ import {
   isFindingSuppressed,
   makeStableId,
   readWorkflowFiles,
+  selectLiveSteps,
+  type SelectLiveStepsOptions,
   type WorkflowFile,
 } from "../lib/workflow_scan_common.ts";
 
@@ -342,4 +344,107 @@ Deno.test("fileWorkflowFinding - returns null when gh output has no issue URL", 
     ghCommandFn: gh,
   });
   assertEquals(result, null);
+});
+
+// ---------------------------------------------------------------------------
+// selectLiveSteps — the per-file dedup/suppression rules (Issue #2221)
+// ---------------------------------------------------------------------------
+
+/** A two-step fixture file with a marker above the second `uses:` line. */
+function stepsFile(rawText: string): WorkflowFile {
+  return {
+    path: ".github/workflows/ci.yml",
+    rawText,
+    parsed: {},
+    kind: "workflow",
+  };
+}
+
+/** One offending step, in the shape the per-file pre-filers use. */
+interface DemoStep {
+  job: string;
+  stepIndex: number;
+  line: number;
+}
+
+const TWO_STEPS: DemoStep[] = [
+  { job: "test", stepIndex: 0, line: 2 },
+  { job: "lint", stepIndex: 0, line: 4 },
+];
+
+/** Options shared by the `selectLiveSteps` cases. */
+function opts(
+  file: WorkflowFile,
+  over: {
+    suppressedIds?: string[];
+    knownOpenIds?: string[];
+  } = {},
+): SelectLiveStepsOptions<DemoStep> {
+  return {
+    file,
+    findingId: "BP-DEMO-ci",
+    stepId: (s: DemoStep) => `BP-DEMO-ci-${s.job}-${s.stepIndex}`,
+    suppressedIds: new Set(over.suppressedIds ?? []),
+    knownOpenIds: new Set(over.knownOpenIds ?? []),
+  };
+}
+
+const PLAIN = stepsFile("jobs:\n  a: 1\n  b: 2\n  c: 3\n  d: 4\n");
+
+Deno.test("selectLiveSteps - nothing suppressed keeps every step", () => {
+  assertEquals(selectLiveSteps(TWO_STEPS, opts(PLAIN)), TWO_STEPS);
+});
+
+Deno.test("selectLiveSteps - no steps yields no steps", () => {
+  assertEquals(selectLiveSteps([], opts(PLAIN)), []);
+});
+
+Deno.test("selectLiveSteps - the per-file id being open or suppressed covers the file", () => {
+  assertEquals(
+    selectLiveSteps(TWO_STEPS, opts(PLAIN, { knownOpenIds: ["BP-DEMO-ci"] })),
+    [],
+  );
+  assertEquals(
+    selectLiveSteps(TWO_STEPS, opts(PLAIN, { suppressedIds: ["BP-DEMO-ci"] })),
+    [],
+  );
+});
+
+Deno.test("selectLiveSteps - an open per-step id covers the whole file (migration)", () => {
+  assertEquals(
+    selectLiveSteps(
+      TWO_STEPS,
+      opts(PLAIN, { knownOpenIds: ["BP-DEMO-ci-lint-0"] }),
+    ),
+    [],
+  );
+});
+
+Deno.test("selectLiveSteps - a suppressed per-step id drops only that step", () => {
+  assertEquals(
+    selectLiveSteps(
+      TWO_STEPS,
+      opts(PLAIN, { suppressedIds: ["BP-DEMO-ci-test-0"] }),
+    ),
+    [TWO_STEPS[1]!],
+  );
+});
+
+Deno.test("selectLiveSteps - an in-source marker drops the step it sits above", () => {
+  _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
+  try {
+    const file = stepsFile(
+      [
+        "jobs:",
+        "  - uses: actions/checkout@v4",
+        "  # best-practice-ignore: BP-DEMO-ci — author=nigel expires=2099-12-31 needed",
+        "  - uses: actions/checkout@v4",
+      ].join("\n"),
+    );
+    assertEquals(selectLiveSteps(TWO_STEPS, opts(file)), [TWO_STEPS[0]!]);
+  } finally {
+    _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
+  }
 });
