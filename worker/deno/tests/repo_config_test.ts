@@ -237,7 +237,9 @@ Deno.test("repo_config - buildQualityInstructions requires one foreground gate r
     `guidance must ask for a single foreground gate run:\n${result}`,
   );
   assertEquals(
-    lower.includes("never start ./quality.sh in the background"),
+    lower.includes(
+      "never start ./quality.sh, the full test suite, a build, or any other long-running command in the background",
+    ),
     true,
     `guidance must forbid backgrounding the gate:\n${result}`,
   );
@@ -253,7 +255,9 @@ Deno.test("repo_config - buildQualityInstructions applies the same no-polling ru
   // org/repo-b configures `yarn test` as its quality command.
   const result = buildQualityInstructions(repoConfigs, "org/repo-b");
   assertEquals(
-    result.includes("Never start yarn test in the background"),
+    result.includes(
+      "Never start yarn test, the full test suite, a build, or any other long-running command in the background",
+    ),
     true,
     `the custom command must carry the same guidance:\n${result}`,
   );
