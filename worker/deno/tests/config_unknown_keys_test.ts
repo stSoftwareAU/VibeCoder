@@ -309,8 +309,9 @@ Deno.test("config_unknown_keys - a nested key with no close match warns without 
 });
 
 Deno.test("config_unknown_keys - a non-object codegraph_context block yields no nested warnings", () => {
-  // The malformed block itself fails the config load loudly
-  // (`lib/codegraph_context_config.ts`); it is not this module's to report.
+  // A block that is not an object has no keys to check. It is refused by
+  // `parseCodegraphContext()` at config load — this module reports typos, not
+  // malformed blocks, so guessing at one here would only add noise.
   assertEquals(detectUnknownConfigKeys({ codegraph_context: "on" }), []);
   assertEquals(detectUnknownConfigKeys({ codegraph_context: null }), []);
   assertEquals(detectUnknownConfigKeys({ codegraph_context: [1] }), []);

@@ -605,6 +605,17 @@ export interface GitHubComment {
 }
 
 /**
+ * The CodeGraph repo-context switch as the worker reads it (Issue #2154).
+ *
+ * Parsed from the `.config.json` `codegraph_context` block by
+ * `parseCodegraphContext()` in `lib/codegraph_context_config.ts`.
+ */
+export interface CodegraphContextConfig {
+  /** Whether a run indexes the repository with CodeGraph (default: false). */
+  enabled: boolean;
+}
+
+/**
  * Discriminated union Result type for consistent error handling (Issue #223).
  *
  * Enables type-safe error handling without try/catch:
@@ -617,17 +628,6 @@ export interface GitHubComment {
  * // result.value is typed here
  * ```
  */
-/**
- * The CodeGraph repo-context switch as the worker reads it (Issue #2154).
- *
- * Parsed from the `.config.json` `codegraph_context` block by
- * `parseCodegraphContext()` in `lib/codegraph_context_config.ts`.
- */
-export interface CodegraphContextConfig {
-  /** Whether a run indexes the repository with CodeGraph (default: false). */
-  enabled: boolean;
-}
-
 export type Result<T, E = Error> =
   | { ok: true; value: T }
   | { ok: false; error: E };

@@ -1589,6 +1589,18 @@
       "paths": [
         "worker/deno/lib/host_failure_hook.ts"
       ]
+    },
+    {
+      "issue": 2154,
+      "chunk": "top-up-2154",
+      "title": "top-up: the CodeGraph context switch",
+      "ledger": "docs/audits/security-sweep-2154-codegraph-context-config.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: codegraph_context_config.ts (#2154)",
+      "status": "swept",
+      "sweptAt": "f430f91c233f5372bc66d6d41c996b6400228987",
+      "paths": [
+        "worker/deno/lib/codegraph_context_config.ts"
+      ]
     }
   ],
   "roots": [
