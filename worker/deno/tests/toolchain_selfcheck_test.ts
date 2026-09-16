@@ -294,6 +294,10 @@ const REAL_IMAGE_OUTPUT: Record<
   rust: { command: "cargo 1.98.0 (797e8a9bc 2026-08-05)\n" },
   semgrep: { command: "1.173.0\n" },
   pyyaml: { module: "6.0.3\n" },
+  // Captured by running the very tarball this manifest checksums, on the
+  // architecture the image builds for: the toolchain is new (Issue #2153) and
+  // the image above predates it, so there is no in-image capture to quote yet.
+  codegraph: { command: "1.6.0\n" },
 };
 
 Deno.test("checkContainerToolchains - every probe of the committed manifest passes against what the image really prints", async () => {

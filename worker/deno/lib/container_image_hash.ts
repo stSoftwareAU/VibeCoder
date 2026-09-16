@@ -91,6 +91,10 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   // PyYAML, the library those BATS suites import (Issue #1628): a wheel in
   // the system interpreter's purelib rather than a command on the PATH.
   "container/toolchains/pyyaml.sh",
+  // CodeGraph, the indexer trialled as a second repo-context candidate
+  // (Issue #2153): the one fragment here that exists for the worker's own
+  // runs rather than for a monitored repository's gate.
+  "container/toolchains/codegraph.sh",
   "container/toolchains/rust.sh",
   "worker/deno/deno.lock",
 ];
