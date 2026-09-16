@@ -839,6 +839,61 @@ Implementation: `worker/deno/lib/planning_milestone.ts`
 lookup/reuse), called from `closePlanningIssue` in
 `worker/deno/lib/planning_processor.ts`.
 
+#### 🧩 Grouping sub-issues by file area (Issue #2174)
+
+One milestone for the whole plan serialises delivery. The planning prompts
+therefore group the plan by **file area** — the top-level directory or
+subsystem each sub-issue touches — so groups that cannot collide are delivered
+as parallel milestones. The grouping is **planner judgement**; the structural
+gate above ([Milestones table and structural
+gate](#-milestones-table-and-structural-gate-issue-2172)) only checks the shape
+of what was published.
+
+The draft prompt (`prompts/planning/prompt.md`) carries the rule:
+
+- **Every sub-issue names its area** — a `File area:` line in its `## Context`,
+  beside `Covers ask:`, taken from the files the planner actually read.
+- **Split when the groups share only housekeeping files** — `deno.json`,
+  `Cargo.toml`, `*.lock`, `CHANGELOG.md`, `README.md`, plus **at most one**
+  further file the planner names explicitly, with its reason, in the sub-issue
+  body. A shared housekeeping file is not a collision.
+- **Merge when they share real work** — two groups that would edit the same
+  **source or test** file are one group. A plan whose groups all merge is a
+  single milestone, exactly the behaviour before grouping existed.
+- **Shared work becomes a foundation group** — drafted first, with each
+  dependant recording `Depends on: <working title>` as usual.
+- **At most 4 milestones** — a group of one sub-issue takes no milestone
+  (written `—`), merges straight to the default branch, and does not count
+  towards the cap.
+- **No grouping when the parent owns a milestone** — every sub-issue inherits
+  it via `--milestone`, so there is nothing to group.
+
+The critique/publish prompt (`prompts/planning_critique/prompt.md`) attacks the
+grouping (file overlap between groups, a group with no file area, more than
+four milestones) and publishes the surviving grouping as the `## Milestones`
+table, immediately after `## Plan Coverage` in the same summary comment. It
+never passes `--milestone` for a group it names there — the worker creates and
+assigns those milestones after publish, and `--milestone` on `gh issue create`
+stays reserved for the inheritance path where the parent already owns one.
+
+```mermaid
+flowchart TD
+    A[Draft sub-issues] --> B[Label each with its file area]
+    B --> C{Two groups edit the same<br/>source or test file?}
+    C -->|yes| D[Merge them]
+    C -->|"no — only housekeeping shared"| E[Keep them separate]
+    D --> F{More than 4 multi-sub-issue groups?}
+    E --> F
+    F -->|yes| D
+    F -->|no| G["Publish the ## Milestones table<br/>(groups of one written —)"]
+```
+
+`worker/deno/tests/planning_multi_milestone_prompts_test.ts` is the anti-drift
+guard: it fails when either prompt loses the rule, and it feeds every example
+table the publish prompt teaches to the real `extractMilestoneGroups()` /
+`validateMilestoneGroups()` pair, so a prompt can never teach a table the gate
+rejects.
+
 #### 📈 Degraded-model observability
 
 Every planning run posts a **model-usage stats block** as a comment on the

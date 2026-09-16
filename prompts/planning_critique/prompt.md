@@ -17,6 +17,7 @@ Adversarially critique the draft plan shown above. Ask **"what's wrong with this
 - **Dependencies** — wrong, missing, or circular `Depends on #N` links; work ordered so it cannot compile or test.
 - **Over-engineering** — speculative sub-issues, premature abstraction, or scope the issue never asked for (KISS).
 - **Duplication** — sub-issues that recreate an existing open issue. The draft turn listed open issues; you re-list them yourself in Step 3, so treat any duplicate the draft missed as a criticism to raise here.
+- **File overlap** — two groups that edit the same source or test file; a group with no file area; more than 4 milestones. Groups sharing only housekeeping files (`deno.json`, `Cargo.toml`, `*.lock`, `CHANGELOG.md`, `README.md`) are not overlapping; groups sharing anything else must merge.
 - **Weak acceptance criteria** — criteria that are not specific or testable.
 - **A simpler alternative** — a materially simpler plan that still satisfies the issue.
 </step>
@@ -70,6 +71,7 @@ Depends on
 ## Context
 Part of #{{ISSUE_NUMBER}}
 Covers ask: the ask from the parent's accepted scope that this sub-issue satisfies, worded the same way as its row in the coverage table below.
+File area: the top-level directory or subsystem this sub-issue touches, worded the same way as its row in the milestones table below.
 Relevant context from the parent issue.
 ```
 </sub_issue_body_template>
@@ -158,6 +160,25 @@ Rules the table must satisfy — a deterministic gate at the end of the run chec
 
 If writing the table shows an ask with nothing covering it and no honest out-of-scope reason, that is the gate telling you the plan is incomplete: create the missing sub-issue before you post the comment, rather than publishing a table you know does not hold.
 
+#### Publish the milestones table
+
+The draft grouped its sub-issues by **file area** so the fleet can work several milestones in parallel. Publish that grouping as a `## Milestones` table in the same comment, immediately after `## Plan Coverage` — one row per group, naming the milestone, the file area and the group's sub-issues:
+
+| Milestone | File area | Sub-issues |
+| --- | --- | --- |
+| options trading: infra | `infra/` | #201, #202 |
+| options trading: lambdas | `lambdas/` | #203, #204 |
+| — | `docs/` | #205 |
+
+Rules the table must satisfy — a deterministic gate at the end of the run checks them:
+
+- **Every published sub-issue is in exactly one row.** A sub-issue in no row, or in two, fails the gate.
+- **Every row names a file area** — the top-level directory or subsystem the group touches, worded the same way as the `File area:` line in each of its sub-issues.
+- **A group of one sub-issue gets no milestone.** Write `—` in its `Milestone` cell: it merges straight to the default branch, and it does not count towards the cap.
+- **At most 4 rows carry two or more sub-issues.** If your revision produced more, merge the closest groups — two groups that edit the same source or test file were one group all along.
+
+The worker creates the milestones from this table and assigns the sub-issues after you publish, so never pass `--milestone` for a group you name here. `--milestone` on `gh issue create` stays exactly as described above: passed only when milestone instructions appear above, in which case the parent already owns the milestone, every sub-issue inherits it, and the whole plan is a single row naming that milestone.
+
 Then post **one** summary comment on issue #{{ISSUE_NUMBER}} in this shape:
 
 ````
@@ -176,6 +197,12 @@ Sub-issues created (dependencies lead their dependants):
 | Rewrite the query planner | #102 | Depends on #101 |
 | Add a cache-eviction policy | Out of scope | The issue mentions it only as future work |
 
+## Milestones
+
+| Milestone | File area | Sub-issues |
+| --- | --- | --- |
+| query cache and planner | `worker/deno/lib/query/` | #101, #102 |
+
 ```mermaid
 flowchart LR
     A[" query result cache"] --> B[" query planner"]
@@ -184,14 +211,14 @@ flowchart LR
 Assumptions: the cache API stays in-process; no migration is needed.
 ````
 
-Include the `## Plan Coverage` table in every summary comment, include the Mermaid `flowchart` of the dependency graph whenever there are three or more sub-issues, and list every assumption you made — an unstated assumption is the one the implementing run gets wrong.
+Include the `## Plan Coverage` table and the `## Milestones` table in every summary comment, include the Mermaid `flowchart` of the dependency graph whenever there are three or more sub-issues, and list every assumption you made — an unstated assumption is the one the implementing run gets wrong.
 
 Your only artefacts are the GitHub issues you create and the summary comment. Create no files in the working tree; if you write a scratch file for your own working, delete it before the turn ends.
 </step>
 
 ### Do not publish the critique
 
-Your critique from Step 1 is internal reasoning only. **Do not post the critique anywhere** — not as a comment, not in a sub-issue body, not in the summary. The one exception is the `## Plan Coverage` table above: the coverage judgement is published as that table and nothing else of the critique is. Publish only the final, revised sub-issues and the summary comment. Do not leave behind a draft set of sub-issues from before the revision.
+Your critique from Step 1 is internal reasoning only. **Do not post the critique anywhere** — not as a comment, not in a sub-issue body, not in the summary. The two exceptions are the `## Plan Coverage` and `## Milestones` tables above: the coverage judgement is published as the first, the grouping judgement as the second, and nothing else of the critique is. Publish only the final, revised sub-issues and the summary comment. Do not leave behind a draft set of sub-issues from before the revision.
 
 ### When the revised plan needs zero sub-issues
 
