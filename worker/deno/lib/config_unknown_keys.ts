@@ -230,6 +230,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Post-run callback hooks (Issue #806, parent #796)
   "callbacks",
 
+  // Graft repo-context injection (Issue #2098, part of #2060)
+  "graft_context",
+
   // Custom label → non-public prompt file mappings (Issue #846, part of #843)
   "custom_label_prompts",
 ]);
@@ -243,12 +246,19 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
  * Free-form maps (`repo_config`, `phase_model_overrides`, …) are deliberately
  * absent — their keys are operator-chosen, so nothing could be checked.
  */
-export const KNOWN_NESTED_CONFIG_KEYS: ReadonlyMap<
+//
+// Built on demand rather than at module load: `codegraph_context_config.ts`
+// imports the defaults, the defaults import the Graft config, and the Graft
+// config imports this module (Issue #2098) — a load-time table here would
+// read `CODEGRAPH_CONTEXT_KEYS` before its module finished initialising.
+export function knownNestedConfigKeys(): ReadonlyMap<
   string,
   ReadonlySet<string>
-> = new Map([
-  ["codegraph_context", CODEGRAPH_CONTEXT_KEYS],
-]);
+> {
+  return new Map([
+    ["codegraph_context", CODEGRAPH_CONTEXT_KEYS],
+  ]);
+}
 
 /**
  * Convert a camelCase string to snake_case.
@@ -302,7 +312,25 @@ function levenshteinDistance(a: string, b: string): number {
  * @returns The suggested correct key, or null if no close match found
  */
 export function suggestSimilarKey(unknownKey: string): string | null {
-  return suggestFrom(unknownKey, KNOWN_CONFIG_KEYS);
+  return suggestKeyFrom(unknownKey, KNOWN_CONFIG_KEYS);
+}
+
+/**
+ * Suggest the most likely intended key from an arbitrary recognised set.
+ *
+ * The strategies are {@link suggestSimilarKey}'s, lifted so a nested block
+ * (`graft_context`, Issue #2098) gets the same help against its own key set
+ * rather than against the top-level one.
+ *
+ * @param unknownKey - The unrecognised key
+ * @param knownKeys - The keys recognised at that level
+ * @returns The suggested correct key, or null if no close match found
+ */
+function suggestKeyFrom(
+  unknownKey: string,
+  knownKeys: ReadonlySet<string>,
+): string | null {
+  return suggestFrom(unknownKey, knownKeys);
 }
 
 /**
@@ -365,7 +393,7 @@ export function detectUnknownConfigKeys(
     // Issue #2154: a block with its own vocabulary gets the same treatment one
     // level down — a typo inside it would otherwise read as a setting the
     // operator made and the worker never saw.
-    const nestedKeys = KNOWN_NESTED_CONFIG_KEYS.get(key);
+    const nestedKeys = knownNestedConfigKeys().get(key);
     if (!nestedKeys) continue;
     const block = data[key];
     if (typeof block !== "object" || block === null || Array.isArray(block)) {
@@ -376,6 +404,41 @@ export function detectUnknownConfigKeys(
       if (nestedKeys.has(nested)) continue;
       warnings.push(unknownKeyWarning(nested, nestedKeys, key));
     }
+  }
+
+  return warnings;
+}
+
+/**
+ * Detect unknown keys inside a nested `.config.json` block.
+ *
+ * The same warn-and-ignore treatment {@link detectUnknownConfigKeys} gives the
+ * top level, one level down: the reported field is dotted
+ * (`graft_context.enabledd`) and the suggestion is drawn from the block's own
+ * recognised keys.
+ *
+ * @param block - The parsed nested block
+ * @param blockName - The block's key in `.config.json`, e.g. `graft_context`
+ * @param knownKeys - Keys recognised inside that block
+ * @returns Array of warnings for unknown nested keys
+ */
+export function detectUnknownNestedKeys(
+  block: Record<string, unknown>,
+  blockName: string,
+  knownKeys: ReadonlySet<string>,
+): UnknownKeyWarning[] {
+  const warnings: UnknownKeyWarning[] = [];
+
+  for (const key of Object.keys(block)) {
+    if (knownKeys.has(key)) continue;
+    const match = suggestKeyFrom(key, knownKeys);
+    const suggestion = match === null ? null : `${blockName}.${match}`;
+    const field = `${blockName}.${key}`;
+    const message = suggestion
+      ? `Unknown config key "${field}" in .config.json. Did you mean "${suggestion}"?`
+      : `Unknown config key "${field}" in .config.json. This attribute is not recognised and will be ignored.`;
+
+    warnings.push({ field, message, suggestion });
   }
 
   return warnings;

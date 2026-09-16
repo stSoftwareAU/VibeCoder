@@ -8,6 +8,7 @@
 import { assertEquals } from "@std/assert";
 import {
   detectUnknownConfigKeys,
+  detectUnknownNestedKeys,
   KNOWN_CONFIG_KEYS,
   suggestSimilarKey,
 } from "../lib/config_unknown_keys.ts";
@@ -273,6 +274,62 @@ Deno.test("config_unknown_keys - a retired milestone_sync_cooldown_seconds is wa
   // Ignored, never an error: validation still accepts the file.
   const validated = validateConfigFileJson(config);
   assertEquals(validated.ok, true);
+});
+
+// --- Nested blocks (Issue #2098) ---
+
+Deno.test("config_unknown_keys - detectUnknownNestedKeys returns empty for a recognised nested key", () => {
+  assertEquals(
+    detectUnknownNestedKeys(
+      { enabled: true },
+      "graft_context",
+      new Set(["enabled"]),
+    ),
+    [],
+  );
+});
+
+Deno.test("config_unknown_keys - detectUnknownNestedKeys dots the field and suggests within the block", () => {
+  const warnings = detectUnknownNestedKeys(
+    { enabledd: true },
+    "graft_context",
+    new Set(["enabled"]),
+  );
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]?.field, "graft_context.enabledd");
+  assertEquals(warnings[0]?.suggestion, "graft_context.enabled");
+});
+
+Deno.test("config_unknown_keys - detectUnknownNestedKeys converts a camelCase nested key", () => {
+  const warnings = detectUnknownNestedKeys(
+    { timeoutSeconds: 30 },
+    "graft_context",
+    new Set(["timeout_seconds"]),
+  );
+  assertEquals(warnings[0]?.suggestion, "graft_context.timeout_seconds");
+});
+
+Deno.test("config_unknown_keys - detectUnknownNestedKeys reports no suggestion for a distant key", () => {
+  const warnings = detectUnknownNestedKeys(
+    { completely_unrelated_attribute: 1 },
+    "graft_context",
+    new Set(["enabled"]),
+  );
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]?.suggestion, null);
+  assertEquals(
+    warnings[0]?.message.includes(
+      "graft_context.completely_unrelated_attribute",
+    ),
+    true,
+  );
+});
+
+Deno.test("config_unknown_keys - detectUnknownNestedKeys returns empty for an empty block", () => {
+  assertEquals(
+    detectUnknownNestedKeys({}, "graft_context", new Set(["enabled"])),
+    [],
+  );
 });
 
 // --- Nested block keys (Issue #2154) ---

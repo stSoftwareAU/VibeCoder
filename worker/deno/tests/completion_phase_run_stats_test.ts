@@ -168,6 +168,43 @@ Deno.test("completion - aggregates every recorded execute invocation", async () 
   assertStringIncludes(stats.body, "input 8,000");
 });
 
+Deno.test("completion - reports the run's Graft figures beside the costs (Issue #2105)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    graftContext: {
+      status: "ok",
+      enabled: true,
+      buildSeconds: 47,
+      bundleChars: 7_874,
+      nodeCount: 19_714,
+      callEdgeCount: 22_908,
+    },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(
+    stats.body,
+    "- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714 nodes, 22,908 call edges",
+  );
+});
+
+Deno.test("completion - a run that never reached the collection carries no Graft line", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertEquals(stats.body.includes("**Graft:**"), false);
+});
+
 Deno.test("completion - posts no stats comment when Claude never ran", async () => {
   const ctx = makeContext();
   const state = makeState();

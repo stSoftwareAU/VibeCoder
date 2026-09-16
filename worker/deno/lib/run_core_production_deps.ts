@@ -123,6 +123,7 @@ import {
   findPrCommentsToFix,
 } from "./pr_maintenance.ts";
 import { processPrFeedback } from "./pr_feedback_processor.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { maybeFileIdleTaskCommand } from "../commands/maybe_file_idle_task.ts";
 import { runIdleTaskFilerCycle } from "./idle_task_filer_run.ts";
 import {
@@ -200,6 +201,7 @@ import { processGrillMe } from "./grill_me_processor.ts";
 import { processQuorum } from "./quorum_processor.ts";
 import { dispatchCustomLabelPrompts } from "./custom_label_dispatch.ts";
 import { customDispatchMappings } from "./custom_label_prompts_config.ts";
+import { resolveCallbackRunMode } from "./callback_run_mode.ts";
 import { findCustomLabelPrCandidates } from "./custom_label_pr_finder.ts";
 import { dispatchCustomLabelPrPrompts } from "./custom_label_pr_dispatch.ts";
 import { buildCustomPrPrompt } from "./prompt_builder.ts";
@@ -1851,6 +1853,8 @@ export async function createProductionRunCoreDeps(
             githubUser,
             trustedReviewBots: config.trustedReviewBots ?? [],
             repoConfigs: config.repoConfig,
+            // Issue #2103: the host switch for the Graft repo-context bundle.
+            graftContextEnabled: isGraftContextEnabled(config),
           },
         );
 
@@ -2080,6 +2084,8 @@ export async function createProductionRunCoreDeps(
             // fleet's own attempt record — the push-capable set, because
             // those are the accounts that actually run this lane.
             fleetLogins: resolveFleetMaintenanceAuthorSet(fleetPrAuthorInput),
+            // Issue #2103: the host switch for the Graft repo-context bundle.
+            graftContextEnabled: isGraftContextEnabled(config),
           },
         );
 
@@ -3623,6 +3629,14 @@ export async function createProductionRunCoreDeps(
       // text still reached the prompt.
       const issueTitle = issueData.title;
 
+      // Issue #2100: the workflow this dispatch served, from the configured
+      // implementation label. Carried to the post-run callbacks so a fleet
+      // archive can tell an implementation run from an idle-task sweep
+      // without reading a transcript.
+      const mode = resolveCallbackRunMode(issueData.labels ?? [], {
+        workOnLabel: config.workOnLabel,
+      });
+
       // Issue #3647: re-verify the content-approval snapshot against the
       // bytes just fetched — the scan-time check (Issue #1341) verified a
       // different, earlier copy and discarded it, leaving a TOCTOU window
@@ -3677,7 +3691,10 @@ export async function createProductionRunCoreDeps(
         // Issue #1139: a wrapper a sibling host holds is a skip that releases
         // nothing (`claimNotHeld`); a claim that failed for any other reason
         // is reported as the failure it is. Neither is an ordinary success.
-        return { ok: true, value: routeRunResult(idleRoute) };
+        return {
+          ok: true,
+          value: { ...routeRunResult(idleRoute), ...(mode ? { mode } : {}) },
+        };
       }
 
       // Issue #2579: route a `work-on` issue titled `add-repo: owner/repo`
@@ -3706,7 +3723,10 @@ export async function createProductionRunCoreDeps(
         // Issue #1193: a request a sibling host holds is a skip that releases
         // nothing (`claimNotHeld`); a claim that failed for any other reason
         // is reported as the failure it is.
-        return { ok: true, value: routeRunResult(addRepoRoute) };
+        return {
+          ok: true,
+          value: { ...routeRunResult(addRepoRoute), ...(mode ? { mode } : {}) },
+        };
       }
 
       // Issue #3860: route an issue titled
@@ -3732,7 +3752,10 @@ export async function createProductionRunCoreDeps(
         { logger },
       );
       if (seedRoute.routed) {
-        return { ok: true, value: routeRunResult(seedRoute) };
+        return {
+          ok: true,
+          value: { ...routeRunResult(seedRoute), ...(mode ? { mode } : {}) },
+        };
       }
 
       // The issue's comments (Issue #1910). This is the fleet's own
@@ -3878,6 +3901,9 @@ export async function createProductionRunCoreDeps(
         value: {
           success: result.success,
           skipped: isExpectedSkip,
+          // Issue #2100: which workflow this run served. Reported for a skip
+          // too — it costs nothing and the callbacks ignore skips anyway.
+          ...(mode ? { mode } : {}),
           // Issue #1193: the setup phase was refused the claim, so this run
           // holds nothing to release — releasing would strip the winner's
           // assignee and clear its heartbeat marker under the shared login.
@@ -3900,6 +3926,11 @@ export async function createProductionRunCoreDeps(
             : {}),
           ...(result.telemetryAbsentReason && !isExpectedSkip
             ? { telemetryAbsentReason: result.telemetryAbsentReason }
+            : {}),
+          // What the run's Graft collection did (Issue #2104), for the
+          // callback context. A skip never reached the collection.
+          ...(result.graftContext && !isExpectedSkip
+            ? { graftContext: result.graftContext }
             : {}),
           ...(result.phase && !isExpectedSkip ? { phase: result.phase } : {}),
           // The CodeGraph figures for the post-run callbacks (Issue #2162);

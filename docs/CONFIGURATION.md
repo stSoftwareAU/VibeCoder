@@ -1737,9 +1737,120 @@ unless explicitly overridden.
 | Comment flood threshold | `comment_flood_threshold` | `10` | Threshold of untrusted comments that triggers a flood audit event |
 | Include untrusted comments | `include_untrusted_comments` | `true` | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely. |
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
+| Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback and CI-fix** paths (Issues #2159, #2160) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+
+### 🌱 Graft repo-context injection
+
+```json
+{
+  "graft_context": {
+    "enabled": true
+  }
+}
+```
+
+`graft_context.enabled` is the **host** switch for Graft repo-context
+injection (Issue #2060). It defaults to **`false`**, and a host whose
+`.config.json` carries no `graft_context` block behaves exactly as it does
+today — nothing is built, nothing is injected, and no prompt changes.
+
+This key is the configuration surface (Issue #2098). As of Issue #2103 it is
+live for all five phases that accept a bundle — the **issue**, **planning**
+and **question** runs (Issue #2102) and the **PR feedback** and **CI fix**
+runs (Issue #2103): each collects a bundle before its prompt is built and
+injects it when the collection succeeded. The run-stats fields land with the
+rest of #2060. A host that leaves the switch off is unaffected everywhere.
+
+**What it turns on.** On an enabled host, each run builds a
+[Graft](https://github.com/trailhq/Graft) tree-sitter code graph of the
+repository checkout and injects the resulting source bundle as an extra prompt
+section beside the existing `CLAUDE.md` / `AGENTS.md` repo-context docs. The
+switch is per host, not per repository: an enabled host uses Graft for every
+repository it works on. Five builders accept a bundle (Issue #2101) —
+**issue**, **planning**, **question**, **PR feedback** and **CI fix** — and
+all five collect one (Issues #2102 and #2103). The query is the issue title
+and body on the three issue-shaped runs; on the two PR runs it is the PR title
+plus the feedback comment text (PR feedback) or the failing check's name,
+annotations and CI log excerpt (CI fix). The PR title costs one
+`gh pr view --json title`, made **only** on an enabled host; a title that
+cannot be read is warned about and the query is asked without it. On the PR
+runs the graph is built over the PR head branch, so the bundle is
+PR-author-influenced content — which is exactly why it is fenced as untrusted.
+The bundle renders as a fenced untrusted document, tagged
+`<document source="graft ask --source">` and named among the untrusted blocks
+the boundary-integrity instruction covers, because it reproduces repository
+source and is therefore data, never instructions. It is selected per query, so
+it deliberately sits **outside** the cacheable static prefix and outside the
+static prompt SHA: a bundle that differs on every issue costs no prompt-cache
+hits, and a phase run without one produces byte-identical prompt text to
+before.
+
+**When Graft is unavailable.** An enabled host that cannot run Graft — the
+clone's `info/exclude` cannot be resolved or appended to, the binary is
+missing, the build or the query fails, the query succeeds but returns an empty
+bundle, or the graph index cannot be read — logs one
+`[GRAFT_UNAVAILABLE] <reason>` line at `warn` and records a `failed` Graft
+status. The run itself continues, without the bundle: the bundle is an
+accelerator, so a run never fails because Graft did.
+Grep the worker log for `[GRAFT_UNAVAILABLE]` to see why. Beside it the run
+logs one `Graft context: <status> — <figures>` line, so a run that asked for a
+bundle always says what came back — `failed` as loudly as `ok`. A run on a
+host with the switch off logs neither line.
+
+**What the issue itself shows.** The worker log is private to the host, so the
+[per-issue run-stats comment](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)
+carries the same outcome as one bullet beside the run's costs (Issue #2105) —
+`- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714 nodes, 22,908 call
+edges` on a full collection, the figures it reached on a `failed` one
+(`- **Graft:** failed — build 300 s`), and `- **Graft:** off` when the host
+switch is off. The line is a bullet of the stats block and never counts toward
+the estimated-cost tally. It rides the comment the issue and question rounds
+post; a planning run posts its stats through the planning processor's own
+render, which carries no Graft bullet — its outcome is in the
+`Graft context:` log line alone.
+
+**Query size.** The bundle query is passed to `graft ask --source` as a single
+argument, truncated to **64 KiB** of UTF-8 on a character boundary, so it
+stays well under Linux's 128 KiB single-argument limit (Issue #2099). A query that is
+actually cut logs one `[GRAFT_QUERY_TRUNCATED]` line at `warn`, so a thin
+bundle can be traced to a cut query rather than guessed at. The bundle Graft
+returns is not capped.
+
+**Time limits.** The graph build is given **300 seconds** and the bundle query
+**30 seconds**. Past either limit the run continues without the bundle and
+records a `failed` Graft status — the bundle is an accelerator, so losing it
+never fails the run, and the loss is recorded rather than passed off as a
+clean run.
+
+**Where the graph lives.** Graft writes its graph to `graft/` at the root of
+the repository checkout, which is persistent between runs, so an unchanged
+file replays from Graft's own cache on the next build instead of being
+re-parsed. The worker never deletes `graft/`. Two entries keep it that way
+(Issue #2099): `/graft/` is added to the clone's own `.git/info/exclude`
+before each build — per-clone, unstageable, and unlike a `.gitignore` edit it
+survives the `git reset --hard` + `git clean -fd` every run starts with — and
+`/graft/` is in the canonical `.gitignore` pattern set the worker enforces, so
+a checkout whose `.gitignore` carries that set cannot stage the graph either.
+The two differ in reach, and it is worth being exact about which does the
+work: the `.gitignore` entry is written by `gitignore-sync` at `setup.sh` time
+and that edit is uncommitted, so the per-run `git reset --hard` reverts it —
+during a run it is the `info/exclude` entry that is actually in force, and the
+`.gitignore` pattern is the belt to its braces once the line reaches a
+repository's committed `.gitignore`. Graft itself is run with `--no-gitignore
+--no-ignore`, which #2060 records as the flags that stop it editing
+`.gitignore`; that is an assumption from Graft's documentation rather than one
+observed here, because Graft is not installed on the image this was written
+against. The `info/exclude` entry holds either way.
+
+**Validation.** The block is validated at config load. An unrecognised key
+inside it warns and is ignored, the way an unknown top-level key does, but a
+block that is not an object — or an `enabled` that is not a boolean, such as
+`"yes"` — **stops the worker** with an error naming `graft_context.enabled`.
+A host whose operator believes Graft is on must never silently run with it
+off.
 
 ### 📝 Agent transcripts
 
@@ -2992,6 +3103,7 @@ invocation and removed after it exits:
   "issueNumber": 806,
   "host": "worker-1",
   "workerName": "fleet-a",
+  "mode": "work-on",
   "provider": "claude",
   "sessionId": "…",
   "sessionLogPath": "/home/vibe/logs/agent-….log",
@@ -3004,12 +3116,22 @@ invocation and removed after it exits:
     "outputTokens": 340,
     "cacheCreationTokens": 90,
     "cacheReadTokens": 20,
-    "estimatedCostUsd": 0.42
+    "estimatedCostUsd": 0.42,
+    "turns": 34,
+    "model": "claude-opus-4-6"
   },
   "outcome": {
     "kind": "pr",
     "prNumber": 806,
     "phase": "completion"
+  },
+  "graft": {
+    "enabled": true,
+    "status": "ok",
+    "buildSeconds": 12.5,
+    "bundleChars": 4096,
+    "nodeCount": 820,
+    "callEdgeCount": 1204
   }
 }
 ```
@@ -3018,20 +3140,31 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_CALLBACK_SCHEMA_VERSION`, `VIBECODER_CALLBACK_EVENT`,
 `VIBECODER_CALLBACK_CONTEXT`, `VIBECODER_RUN_ID`, `VIBECODER_RESULT`,
 `VIBECODER_REPOSITORY`, `VIBECODER_ISSUE_NUMBER`, `VIBECODER_HOST`,
-`VIBECODER_WORKER_NAME`, `VIBECODER_PROVIDER`, `VIBECODER_SESSION_ID`,
+`VIBECODER_WORKER_NAME`, `VIBECODER_MODE`, `VIBECODER_PROVIDER`,
+`VIBECODER_SESSION_ID`,
 `VIBECODER_SESSION_LOG_PATH`, `VIBECODER_SESSION_LOG_ABSENT_REASON`,
 `VIBECODER_STARTED_AT`, `VIBECODER_FINISHED_AT`,
 `VIBECODER_DURATION_SECONDS`, `VIBECODER_EXIT_CODE`, `VIBECODER_INPUT_TOKENS`,
 `VIBECODER_OUTPUT_TOKENS`, `VIBECODER_CACHE_CREATION_TOKENS`,
 `VIBECODER_CACHE_READ_TOKENS`, `VIBECODER_ESTIMATED_COST_USD`,
+`VIBECODER_TURNS`, `VIBECODER_MODEL`,
 `VIBECODER_TELEMETRY_ABSENT_REASON`, `VIBECODER_OUTCOME_KIND`,
 `VIBECODER_OUTCOME_CATEGORY`, `VIBECODER_OUTCOME_PHASE`,
 `VIBECODER_OUTCOME_FAILURE_CLASS`, `VIBECODER_PR_NUMBER`,
+`VIBECODER_GRAFT_ENABLED`, `VIBECODER_GRAFT_STATUS`,
+`VIBECODER_GRAFT_BUILD_SECONDS`, `VIBECODER_GRAFT_BUNDLE_CHARS`,
+`VIBECODER_GRAFT_NODE_COUNT`, `VIBECODER_GRAFT_CALL_EDGE_COUNT`,
 `VIBECODER_CODEGRAPH_ENABLED`, `VIBECODER_CODEGRAPH_STATUS`,
 `VIBECODER_CODEGRAPH_INDEX_SECONDS`, `VIBECODER_CODEGRAPH_NODE_COUNT`,
 `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT`, `VIBECODER_CODEGRAPH_QUERIES`. A
 cycle hook also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
 `VIBECODER_CLAIMS_TAKEN` and `VIBECODER_CYCLE_END_REASON`.
+
+The `graft` block (Issue #2104) is on **every** run context: `graft.enabled`
+and `graft.status` (`ok`, `failed` or `off`) always, and the four figures only
+when the collection reached them. A host that never switched Graft on reports
+`{ "enabled": false, "status": "off" }` rather than omitting the block — see
+[Post-Run Callbacks](CALLBACKS.md#what-a-hook-receives).
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and
 either `sessionLogPath` or `sessionLogAbsentReason` — never neither. Other

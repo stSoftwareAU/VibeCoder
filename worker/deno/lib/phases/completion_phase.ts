@@ -735,6 +735,9 @@ async function postWorkOnRunStats(
     postComment: (repo, issueNumber, body) =>
       client.postComment(repo, issueNumber, body),
     logger: deps.logger,
+    // What Graft did for this run, from the slot the execute phase filled
+    // (Issue #2105). Absent when the run never reached the collection.
+    ...(state.graftContext ? { graft: state.graftContext } : {}),
     // The cumulative total is summed over fleet-authored comments only
     // (Issue #1249, finding 12). This phase already holds the run's identity,
     // so it states the fleet rather than re-reading the config file.

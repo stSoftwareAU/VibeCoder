@@ -371,6 +371,7 @@ invocation (mode `0600`) and removed after it exits:
   "issueNumber": 807,
   "host": "worker-1",
   "workerName": "fleet-a",
+  "mode": "work-on",
   "provider": "claude",
   "sessionId": "…",
   "sessionLogPath": "/home/vibe/logs/agent-vibe-mtk92vcu-ebcc11-807.jsonl",
@@ -383,12 +384,22 @@ invocation (mode `0600`) and removed after it exits:
     "outputTokens": 340,
     "cacheCreationTokens": 90,
     "cacheReadTokens": 20,
-    "estimatedCostUsd": 0.42
+    "estimatedCostUsd": 0.42,
+    "turns": 34,
+    "model": "claude-opus-4-6"
   },
   "outcome": {
     "kind": "pr",
     "prNumber": 807,
     "phase": "completion"
+  },
+  "graft": {
+    "enabled": true,
+    "status": "ok",
+    "buildSeconds": 12.5,
+    "bundleChars": 4096,
+    "nodeCount": 820,
+    "callEdgeCount": 1204
   },
   "codegraph": {
     "enabled": true,
@@ -414,6 +425,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_ISSUE_NUMBER`                 | `issueNumber`                   | yes            | Issue number the run worked                                                                                          |
 | `VIBECODER_HOST`                         | `host`                          | yes            | Host the worker runs on                                                                                              |
 | `VIBECODER_WORKER_NAME`                  | `workerName`                    | no             | Operator-configured worker name                                                                                      |
+| `VIBECODER_MODE`                         | `mode`                          | no             | Workflow the run served: the configured implementation label (`work-on`) or `idle-task`                              |
 | `VIBECODER_PROVIDER`                     | `provider`                      | no             | Agent provider that served the run                                                                                   |
 | `VIBECODER_SESSION_ID`                   | `sessionId`                     | no             | Agent session id                                                                                                     |
 | `VIBECODER_SESSION_LOG_PATH`             | `sessionLogPath`                | no             | Absolute path to this run's transcript, verified on disk                                                             |
@@ -427,12 +439,20 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_CACHE_CREATION_TOKENS`        | `telemetry.cacheCreationTokens` | no             | Cache-creation tokens                                                                                                |
 | `VIBECODER_CACHE_READ_TOKENS`            | `telemetry.cacheReadTokens`     | no             | Cache-read tokens                                                                                                    |
 | `VIBECODER_ESTIMATED_COST_USD`           | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
+| `VIBECODER_TURNS`                        | `telemetry.turns`               | no             | Turns the run took, summed across its invocations                                                                    |
+| `VIBECODER_MODEL`                        | `telemetry.model`               | no             | Served model of the invocation with the biggest token total — the model most of the run went through                 |
 | `VIBECODER_TELEMETRY_ABSENT_REASON`      | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
 | `VIBECODER_OUTCOME_KIND`                 | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
 | `VIBECODER_OUTCOME_CATEGORY`             | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                |
 | `VIBECODER_OUTCOME_PHASE`                | `outcome.phase`                 | no             | Phase that terminated the run                                                                                        |
 | `VIBECODER_OUTCOME_FAILURE_CLASS`        | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked                                                    |
 | `VIBECODER_PR_NUMBER`                    | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                            |
+| `VIBECODER_GRAFT_ENABLED`                | `graft.enabled`                 | yes            | Whether the Graft repo-context switch was on for this run (`true`/`false`)                                           |
+| `VIBECODER_GRAFT_STATUS`                 | `graft.status`                  | yes            | `ok`, `failed` or `off`                                                                                              |
+| `VIBECODER_GRAFT_BUILD_SECONDS`          | `graft.buildSeconds`            | no             | Wall-clock seconds `graft build` took                                                                                |
+| `VIBECODER_GRAFT_BUNDLE_CHARS`           | `graft.bundleChars`             | no             | Characters of bundle text `graft ask` returned                                                                       |
+| `VIBECODER_GRAFT_NODE_COUNT`             | `graft.nodeCount`               | no             | Nodes in the built graph                                                                                             |
+| `VIBECODER_GRAFT_CALL_EDGE_COUNT`        | `graft.callEdgeCount`           | no             | Edges in the built graph whose relation is `calls`                                                                   |
 | `VIBECODER_CODEGRAPH_ENABLED`            | `codegraph.enabled`             | yes            | Whether the host's CodeGraph switch was on for this run (`true` or `false`)                                          |
 | `VIBECODER_CODEGRAPH_STATUS`             | `codegraph.status`              | yes            | `ok`, `failed`, `unsupported` (no MCP transport on this provider) or `off` (switch off)                              |
 | `VIBECODER_CODEGRAPH_INDEX_SECONDS`      | `codegraph.indexSeconds`        | no             | Wall-clock seconds the index step took, when it was started                                                          |
@@ -446,6 +466,56 @@ A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `rate_limited`, `shutdown`, `error`). It does **not** receive run-only scalars
 (`RESULT`, `REPOSITORY`, `ISSUE_NUMBER`, `EXIT_CODE`, …), so it cannot be
 mistaken for a run hook.
+
+`mode`, `telemetry.turns` and `telemetry.model` were **added** to schema 2
+without a version bump (Issue #2100), exactly as
+[Versioning](#versioning--the-contract-is-additive) requires. All three are
+optional, and a hook written before they existed is unaffected:
+
+- `mode` names the workflow the run served, so a fleet archive can compare
+  implementation runs only. Run callbacks fire for the issue scan's own
+  claims, so today the value is the configured implementation label
+  (`work-on`, or your own if you renamed it) or `idle-task`; it is absent
+  when no implementation label is configured. A **grill-me, quorum, planning,
+  question, refine-issue or custom-label run emits no run callback at all** —
+  those routes answer their issue and return without one — so no context is
+  produced for them rather than one carrying their label. If a future release
+  gives those routes callbacks, they will report their own label here, and
+  that too is additive.
+- `telemetry.turns` is summed over the invocations that reported a turn
+  count, and is absent when none did — never nought.
+- `telemetry.model` is the served model of the invocation with the biggest
+  token total, falling back to that invocation's requested model when the API
+  reported none. Tokens rather than estimated cost, so a model with no
+  pricing row can still be named; it is present whenever `telemetry` is.
+
+The `graft` block was **added** the same way (Issue #2104, part of #2060), and
+is the one optional-looking fact that is present on **every** run context:
+
+- `graft.enabled` and `graft.status` are always emitted, and always exported as
+  `VIBECODER_GRAFT_ENABLED` and `VIBECODER_GRAFT_STATUS`. A host that never
+  switched Graft on reports `{ "enabled": false, "status": "off" }` rather than
+  omitting the block, so an archive can compare a host without the switch
+  against one with it instead of reading silence as a missing run.
+- `status` is `ok` when the bundle came back, `failed` when the collection was
+  attempted and did not, and `off` when nothing was attempted. A `failed`
+  collection reports whichever figures it reached, so a failure the run
+  recorded is visible as a failure rather than as a clean-looking `off`.
+- The two fields are independent, and `{ "enabled": true, "status": "off" }` is
+  the combination worth reading: the host **had** Graft switched on and the run
+  ended before the collection — a setup failure, a refused claim. `enabled`
+  states the host's real switch setting rather than a default, so an early exit
+  on a Graft host is never archived as a host that never opted in — on every
+  run that returned a result. Where no result carried a block at all — a run
+  that threw, or one the loop could not complete — the block falls back to
+  `{ "enabled": false, "status": "off" }`: the switch was never read, so this
+  says only that nothing was recorded.
+- `buildSeconds`, `bundleChars`, `nodeCount` and `callEdgeCount` are present
+  only when the collection actually reached them, and are **omitted** — not
+  emitted as an empty string — when it did not. A figure that really is nought
+  is reported as `0`: a graph with no nodes is a measurement, not an absence.
+- The Graft **bundle text** is never published. It is repository source,
+  already spent on the run's prompt; only the figures above cross the boundary.
 
 `codegraph` is an **additive** block (Issue #2162, part of #2145) carried by
 every run document, so the CodeGraph trial's figures are comparable across

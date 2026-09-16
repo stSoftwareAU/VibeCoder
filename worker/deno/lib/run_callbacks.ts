@@ -88,6 +88,86 @@ export interface CallbackRunTelemetry {
   cacheReadTokens?: number;
   /** Estimated spend in USD; absent when no model had a pricing row. */
   estimatedCostUsd?: number;
+  /**
+   * Turns the run took, summed across its invocations (Issue #2100). Absent
+   * when no invocation reported a turn count — never nought.
+   */
+  turns?: number;
+  /**
+   * The model the largest share of the run went through (Issue #2100): the
+   * served model of the invocation with the biggest token total.
+   */
+  model?: string;
+}
+
+/**
+ * What the run's Graft repo-context collection did (Issue #2104, part of
+ * #2060).
+ *
+ * Structurally the recorded half of `GraftContextResult` — the bundle itself
+ * is never carried here, and {@link callbackGraftFacts} rebuilds the block
+ * field by field so it can never travel even if a caller hands one in.
+ *
+ * Restated rather than imported from `graft_context.ts` on purpose: this is
+ * the **published contract**, and a field added to the collector's own result
+ * must not widen what a hook is promised without someone deciding it here.
+ */
+export interface CallbackGraftContext {
+  /** Whether the host switch was on for this run. */
+  enabled: boolean;
+  /** `off` when the switch was off, `ok` on a full bundle, else `failed`. */
+  status: "ok" | "failed" | "off";
+  /** Wall-clock seconds `graft build` took, when it was started. */
+  buildSeconds?: number;
+  /** Characters of bundle text `graft ask` returned. */
+  bundleChars?: number;
+  /** Nodes in the built graph. */
+  nodeCount?: number;
+  /** Edges in the built graph whose relation is `calls`. */
+  callEdgeCount?: number;
+}
+
+/**
+ * The Graft block every run reports, whether or not it collected anything.
+ *
+ * `enabled` and `status` are present on **every** run so an archive can
+ * compare a host that never opted in with one that did, rather than reading
+ * a missing block as a missing run. A collection that *was* attempted and
+ * failed reports `status: "failed"` with whatever figures it reached — never
+ * a clean-looking `off`.
+ *
+ * `enabled` states the host's real switch, so `{ enabled: true, status:
+ * "off" }` is a run that ended before the collection on a Graft host. The
+ * `{ enabled: false, status: "off" }` returned for a run that reported no
+ * collection at all is the last resort — a run that threw before
+ * `workOnIssue` could state the switch — and not a default the ordinary
+ * early-exit paths fall back to: `workOnIssue` supplies the truthful block
+ * on every result it returns.
+ *
+ * Built field by field rather than spread, so the bundle text a
+ * `GraftContextResult` may still carry can never reach a hook.
+ *
+ * @param graft - What the run's collection did, when it reached one
+ * @returns The block for the document and the environment
+ */
+export function callbackGraftFacts(
+  graft?: CallbackGraftContext,
+): CallbackGraftContext {
+  if (!graft) return { enabled: false, status: "off" };
+  return {
+    enabled: graft.enabled,
+    status: graft.status,
+    ...(graft.buildSeconds !== undefined
+      ? { buildSeconds: graft.buildSeconds }
+      : {}),
+    ...(graft.bundleChars !== undefined
+      ? { bundleChars: graft.bundleChars }
+      : {}),
+    ...(graft.nodeCount !== undefined ? { nodeCount: graft.nodeCount } : {}),
+    ...(graft.callEdgeCount !== undefined
+      ? { callEdgeCount: graft.callEdgeCount }
+      : {}),
+  };
 }
 
 /**
@@ -110,6 +190,14 @@ export interface IssueRunCallbackContext {
   host: string;
   /** Operator-configured worker name, when set. */
   workerName?: string;
+  /**
+   * The workflow the run served (Issue #2100) — the configured
+   * implementation label (`work-on` by default) or `idle-task`, so an
+   * archive can compare implementation runs only. An open string: a route
+   * that later gains its own run callbacks reports its own label here, which
+   * is additive. Absent when the dispatch could not name one.
+   */
+  mode?: string;
   /** Agent provider that served the run, when known. */
   provider?: string;
   /** Agent session id, when the run had one. */
@@ -126,6 +214,12 @@ export interface IssueRunCallbackContext {
   exitCode: number;
   /** Token and cost telemetry, when available. */
   telemetry?: CallbackRunTelemetry;
+  /**
+   * What this run's Graft collection did (Issue #2104). Absent means the run
+   * ended before the collection was reached; the document reports the `off`
+   * block either way, so every run is comparable.
+   */
+  graft?: CallbackGraftContext;
   /**
    * Structured run outcome (Issue #1947). Present when the worker computed
    * one; omitted members stay omitted, same as the rest of the context.
@@ -293,8 +387,12 @@ export interface TerminalIssueRun {
   startedAtEpochMs: number;
   /** Epoch ms the run terminated. */
   finishedAtEpochMs: number;
+  /** The workflow the run served, when the dispatch named one (#2100). */
+  mode?: string;
   /** Token and cost telemetry, when the run's invocations reported it. */
   telemetry?: CallbackRunTelemetry;
+  /** What the run's Graft collection did, when it reached one (#2104). */
+  graft?: CallbackGraftContext;
   /** What the run achieved, when the worker computed a {@link RunOutcome}. */
   outcome?: RunOutcome;
   /** Terminating phase name, when known (setup, execute, completion, …). */
@@ -400,6 +498,7 @@ export function buildCallbackContextDocument(
   if (context.workerName !== undefined) {
     document.workerName = context.workerName;
   }
+  if (context.mode !== undefined) document.mode = context.mode;
   if (context.provider !== undefined) document.provider = context.provider;
   if (context.sessionId !== undefined) document.sessionId = context.sessionId;
   if (context.sessionLogPath !== undefined) {
@@ -413,6 +512,9 @@ export function buildCallbackContextDocument(
     document.telemetryAbsentReason = context.telemetryAbsentReason;
   }
   if (context.outcome !== undefined) document.outcome = context.outcome;
+  // Issue #2104: emitted on every run, never omitted — see
+  // {@link callbackGraftFacts} for why absence is reported as `off`.
+  document.graft = callbackGraftFacts(context.graft);
   // Emitted on every run (Issue #2162): the trial compares hosts by these
   // figures, and a host that never ran CodeGraph has to say so rather than
   // leave the reader to infer it from an absent key.
@@ -507,6 +609,7 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_ISSUE_NUMBER", context.issueNumber);
   put(env, "VIBECODER_HOST", context.host);
   put(env, "VIBECODER_WORKER_NAME", context.workerName);
+  put(env, "VIBECODER_MODE", context.mode);
   put(env, "VIBECODER_PROVIDER", context.provider);
   put(env, "VIBECODER_SESSION_ID", context.sessionId);
   put(env, "VIBECODER_SESSION_LOG_PATH", context.sessionLogPath);
@@ -528,11 +631,22 @@ export function buildCallbackEnv(
   );
   put(env, "VIBECODER_CACHE_READ_TOKENS", context.telemetry?.cacheReadTokens);
   put(env, "VIBECODER_ESTIMATED_COST_USD", context.telemetry?.estimatedCostUsd);
+  put(env, "VIBECODER_TURNS", context.telemetry?.turns);
+  put(env, "VIBECODER_MODEL", context.telemetry?.model);
   put(
     env,
     "VIBECODER_TELEMETRY_ABSENT_REASON",
     context.telemetryAbsentReason,
   );
+  const graft = callbackGraftFacts(context.graft);
+  // Issue #2104: both scalars on every run; the four figures only when the
+  // collection actually reached them.
+  put(env, "VIBECODER_GRAFT_ENABLED", String(graft.enabled));
+  put(env, "VIBECODER_GRAFT_STATUS", graft.status);
+  put(env, "VIBECODER_GRAFT_BUILD_SECONDS", graft.buildSeconds);
+  put(env, "VIBECODER_GRAFT_BUNDLE_CHARS", graft.bundleChars);
+  put(env, "VIBECODER_GRAFT_NODE_COUNT", graft.nodeCount);
+  put(env, "VIBECODER_GRAFT_CALL_EDGE_COUNT", graft.callEdgeCount);
   put(env, "VIBECODER_OUTCOME_KIND", context.outcome?.kind);
   put(env, "VIBECODER_OUTCOME_CATEGORY", context.outcome?.category);
   put(env, "VIBECODER_OUTCOME_PHASE", context.outcome?.phase);

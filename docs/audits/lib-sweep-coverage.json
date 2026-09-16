@@ -1629,6 +1629,54 @@
       ]
     },
     {
+      "issue": 2100,
+      "chunk": "top-up-2100",
+      "title": "top-up: the callback mode resolver",
+      "ledger": "docs/audits/security-sweep-2100-callback-run-mode.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: callback_run_mode.ts (#2100)",
+      "status": "swept",
+      "sweptAt": "a6fa91de8dc59150630379cf5517c0d7198ade44",
+      "paths": [
+        "worker/deno/lib/callback_run_mode.ts"
+      ]
+    },
+    {
+      "issue": 2098,
+      "chunk": "top-up-2098",
+      "title": "top-up: the graft_context host switch",
+      "ledger": "docs/audits/security-sweep-2098-graft-context-config.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: graft_context_config.ts (#2098)",
+      "status": "swept",
+      "sweptAt": "39f9a71dfc2d2ceef7158627e414f58431115056",
+      "paths": [
+        "worker/deno/lib/graft_context_config.ts"
+      ]
+    },
+    {
+      "issue": 2099,
+      "chunk": "top-up-2099",
+      "title": "top-up: the Graft runner",
+      "ledger": "docs/audits/security-sweep-2099-graft-context.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: graft_context.ts (#2099)",
+      "status": "swept",
+      "sweptAt": "b7b29797995973bcaa2aae3ca3c1b039a99198a7",
+      "paths": [
+        "worker/deno/lib/graft_context.ts"
+      ]
+    },
+    {
+      "issue": 2103,
+      "chunk": "top-up-2103",
+      "title": "top-up: the PR-title read",
+      "ledger": "docs/audits/security-sweep-2103-pr-title-read.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_title_read.ts (#2103)",
+      "status": "swept",
+      "sweptAt": "8d71c2af80c01c9ff4c8b752d2317a18faefdf48",
+      "paths": [
+        "worker/deno/lib/pr_title_read.ts"
+      ]
+    },
+    {
       "issue": 2154,
       "chunk": "top-up-2154",
       "title": "top-up: the CodeGraph context switch",

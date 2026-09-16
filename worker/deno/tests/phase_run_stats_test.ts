@@ -28,6 +28,7 @@ import {
 } from "../lib/phase_run_stats.ts";
 import { DEGRADED_MODEL_LABEL } from "../lib/planning_degraded_label.ts";
 import { buildIssueRunStatsMarker } from "../lib/issue_run_stats_comment.ts";
+import type { GraftContextResult } from "../lib/graft_context.ts";
 import { getRunId } from "../lib/run_id.ts";
 import {
   setActiveRepoModelEffortOverrides,
@@ -466,6 +467,96 @@ Deno.test("reportPhaseDegradation - a run with no stats and no flags is silent",
   assertEquals(verdict.degraded, false);
   assertEquals(addLabelCalls.length, 0);
   assertEquals(comments.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Graft figures ride the planning-shaped stats comment (Issue #2105)
+// ---------------------------------------------------------------------------
+
+/** The `ok` collection the two tests below report. */
+const GRAFT_OK: GraftContextResult = {
+  status: "ok",
+  enabled: true,
+  buildSeconds: 12.5,
+  bundleChars: 7_874,
+  nodeCount: 19_714,
+  callEdgeCount: 22_908,
+};
+
+Deno.test("reportPhaseDegradation - a healthy round carries the run's Graft figures", async () => {
+  pinPhasesToFable();
+  const { ghCommandFn } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2105,
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    listIssueComments: () => Promise.resolve([]),
+    graft: GRAFT_OK,
+  });
+
+  resetModelResolution();
+  assertEquals(comments.length, 1);
+  assertStringIncludes(
+    comments[0]!.body,
+    "- **Graft:** ok — build 12.5 s, bundle 7,874 chars, 19,714 nodes, 22,908 call edges",
+  );
+});
+
+Deno.test("reportPhaseDegradation - a degraded round reports Graft too", async () => {
+  pinPhasesToFable();
+  const { ghCommandFn } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2105,
+    claudeResult: { runStats: runStats(["claude-opus-4-8"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    graft: { status: "off", enabled: false },
+  });
+
+  resetModelResolution();
+  assertEquals(comments.length, 1);
+  assertStringIncludes(comments[0]!.body, "- **Graft:** off");
+});
+
+Deno.test("reportPhaseDegradation - no Graft outcome leaves the comment unchanged", async () => {
+  pinPhasesToFable();
+  const { ghCommandFn } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2105,
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    listIssueComments: () => Promise.resolve([]),
+  });
+
+  resetModelResolution();
+  assertEquals(comments.length, 1);
+  assertEquals(comments[0]!.body.includes("**Graft:**"), false);
 });
 
 // ---------------------------------------------------------------------------

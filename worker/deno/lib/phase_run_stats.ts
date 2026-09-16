@@ -40,6 +40,7 @@ import type { Logger } from "../types.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { EnvLookup } from "./env_lookup.ts";
+import type { GraftContextResult } from "./graft_context.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import {
@@ -176,6 +177,14 @@ export async function reportPhaseDegradation(args: {
    */
   env?: EnvLookup;
   /**
+   * What the round's Graft collection did (Issue #2105, part of #2060).
+   * Reported on both the healthy and the degraded comment, so the figures are
+   * readable on the issue whichever way the round went. Omitted — a phase that
+   * collects no bundle, or a round that ended before the collection — renders
+   * exactly the comment this recorder rendered before.
+   */
+  graft?: GraftContextResult;
+  /**
    * What this run's CodeGraph step produced (Issue #2161). Carried onto both
    * the healthy and the degraded stats comment, so the trial's figures are
    * reported on every run the phase completes — not only the healthy ones.
@@ -196,6 +205,7 @@ export async function reportPhaseDegradation(args: {
   const claudeResults = Array.isArray(claudeResult)
     ? claudeResult
     : [claudeResult];
+  const graft = args.graft ? { graft: args.graft } : {};
   const invocations = claudeResults.flatMap((result) =>
     buildPhaseInvocations(phase, result)
   );
@@ -222,6 +232,7 @@ export async function reportPhaseDegradation(args: {
       postComment,
       logger,
       ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
+      ...graft,
       ...(args.codegraph ? { codegraph: args.codegraph } : {}),
     });
     return verdict;
@@ -250,6 +261,7 @@ export async function reportPhaseDegradation(args: {
   const body = buildIssueRunStatsComment({
     phase,
     claudeResults,
+    ...graft,
     ...(args.codegraph ? { codegraph: args.codegraph } : {}),
   });
   if (body) {

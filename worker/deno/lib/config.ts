@@ -35,6 +35,7 @@ import { parseContainerTools } from "./container_tools_config.ts";
 import { parseContainerExtension } from "./container_extension_config.ts";
 import { parseCodegraphContext } from "./codegraph_context_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
+import { assertGraftContextConfig } from "./graft_context_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
 import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
@@ -1121,6 +1122,10 @@ export async function loadConfig(
     // operator believes is wired, but that silently never runs, is the exact
     // failure the contract exists to prevent.
     callbacks: assertCallbacksConfig(file.callbacks),
+    // Issue #2098 (part of #2060): off unless this host opted in. A malformed
+    // block stops the worker here rather than reading as off on a host whose
+    // operator believes Graft is on.
+    graftContext: assertGraftContextConfig(file.graft_context),
     repoConfig: normaliseRepoConfigs(file.repo_config),
   };
 

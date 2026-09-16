@@ -9,8 +9,11 @@
  * patterns for `.config*.json`, `*.secret.json`, `.secrets/`, `.env`, and
  * `.env.*`, plus the non-hidden private-key and credential filenames the
  * `.*` rule cannot reach (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`,
- * `credentials.json`, `service-account*.json` — Issue #3660), plus the
- * CodeGraph index directory `/.codegraph/` (Issue #2155).
+ * `credentials.json`, `service-account*.json` — Issue #3660), plus `/graft/`,
+ * the root-anchored Graft code graph a Graft-enabled host builds in each
+ * checkout (Issue #2099 — `graft_context.ts` also excludes it per-clone so the
+ * per-run `git clean` keeps it), and the CodeGraph index directory
+ * `/.codegraph/` (Issue #2155).
  *
  * `setup.sh` invokes `ensureGitignorePatterns()` once via the
  * `gitignore-sync` subcommand (Issue #1774) so that secret-bearing files
@@ -84,6 +87,8 @@ export const REQUIRED_GITIGNORE_PATTERNS: readonly string[] = [
   "id_rsa.*",
   "credentials.json",
   "service-account*.json",
+  // Graft's code graph — a per-run build artefact, never committed (#2099).
+  "/graft/",
   // The CodeGraph index (Issue #2155): kept between runs, never committed.
   "/.codegraph/",
 ];

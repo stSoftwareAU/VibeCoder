@@ -27,6 +27,10 @@
  * 3. **An estimate disclaimer.** KISS on multi-worker coverage: no cross-worker
  *    aggregation infrastructure is introduced, so the comment says plainly what
  *    the figures do and do not cover.
+ * 4. **The run's Graft figures** (Issue #2105, part of #2060). The host's
+ *    worker log is private, so the status and figures of the run's Graft
+ *    collection ride one bullet of the same comment — readable on the issue by
+ *    whoever is judging the trial.
  *
  * Every GitHub operation here is **non-fatal** — a listing or comment failure
  * is logged and never aborts the phase that was wrapping the issue up
@@ -49,6 +53,7 @@ import {
   type PhaseClaudeResult,
 } from "./phase_run_stats.ts";
 import { formatUsd } from "./cost_estimate.ts";
+import type { GraftContextResult } from "./graft_context.ts";
 import { getRunId } from "./run_id.ts";
 
 /**
@@ -224,6 +229,74 @@ export function buildIssueCostTotalLine(tally: IssueCostTally): string {
   }${suffix}`;
 }
 
+/** The three statuses a Graft collection can report. */
+const GRAFT_STATUSES: readonly string[] = ["ok", "failed", "off"];
+
+/**
+ * Render one figure, or nothing when the collection never produced it.
+ *
+ * A figure that is absent or not a finite number is dropped rather than
+ * rendered as `NaN`: a half-gathered collection reports what it reached and
+ * says nothing about what it did not.
+ */
+function graftFigure(
+  value: number | undefined,
+  render: (value: number) => string,
+): string | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? render(value)
+    : undefined;
+}
+
+/**
+ * Seconds to at most one decimal place, so `47` never reads as `47.0`.
+ *
+ * Deliberately unseparated: a build is bounded by the Graft build timeout, so
+ * a figure with a thousands separator on the integers and none on the
+ * fractions would be the only inconsistency the line could carry.
+ */
+function formatGraftSeconds(seconds: number): string {
+  return String(Math.round(seconds * 10) / 10);
+}
+
+/**
+ * Render the run's Graft line for the stats block (Issue #2105, part of #2060).
+ *
+ * One line on every run, so the figures are readable on the issue itself
+ * rather than only in the host's private worker log: the status always, and
+ * whichever of the build time, bundle size, node count and call-edge count the
+ * collection actually reached. A `failed` collection therefore reports what it
+ * got to before it failed, and `off` says plainly that the host switch was off
+ * rather than looking like a run that never reported.
+ *
+ * The status is rendered through an allow-list, so a value from a
+ * deserialised outcome can never inject markdown into the comment.
+ *
+ * @param graft - The outcome from `collectGraftContext`, or undefined when the
+ *   caller has none (the line is then omitted entirely)
+ * @returns The bullet line, or `""` when there is no outcome to report
+ */
+export function buildGraftStatsLine(graft?: GraftContextResult): string {
+  if (!graft) return "";
+  const status = GRAFT_STATUSES.includes(graft.status)
+    ? graft.status
+    : "unknown";
+  const figures = [
+    graftFigure(graft.buildSeconds, (s) => `build ${formatGraftSeconds(s)} s`),
+    graftFigure(
+      graft.bundleChars,
+      (n) => `bundle ${formatCount(Math.round(n))} chars`,
+    ),
+    graftFigure(graft.nodeCount, (n) => `${formatCount(Math.round(n))} nodes`),
+    graftFigure(
+      graft.callEdgeCount,
+      (n) => `${formatCount(Math.round(n))} call edges`,
+    ),
+  ].filter((entry): entry is string => entry !== undefined);
+  const detail = figures.length > 0 ? ` — ${figures.join(", ")}` : "";
+  return `- **Graft:** ${status}${detail}`;
+}
+
 /**
  * Build the wrap-up run-stats comment body for an issue.
  *
@@ -241,6 +314,9 @@ export function buildIssueCostTotalLine(tally: IssueCostTally): string {
  *   {@link getRunId}
  * @param args.priorComments - Comment bodies already on the issue, used for the
  *   cumulative issue total
+ * @param args.graft - What the run's Graft collection did (Issue #2105);
+ *   omitted renders exactly the comment this function rendered before it
+ *   existed
  * @param args.codegraph - What this run's CodeGraph step produced (Issue
  *   #2161); omitted renders exactly the comment this function rendered before
  *   the trial existed
@@ -253,6 +329,7 @@ export function buildIssueRunStatsComment(args: {
   configuredBestModel?: string;
   runId?: string;
   priorComments?: readonly string[];
+  graft?: GraftContextResult;
   codegraph?: CodegraphContextResult;
 }): string {
   const invocations = args.claudeResults.flatMap((result) =>
@@ -268,12 +345,16 @@ export function buildIssueRunStatsComment(args: {
   if (!section) return "";
 
   const marker = buildIssueRunStatsMarker(args.runId ?? getRunId());
-  // The CodeGraph line closes the stats section, above the cumulative total,
-  // so the trial's figures sit with the run they describe (Issue #2161).
+  // Appended to the stats bullets, so the Graft and CodeGraph figures sit
+  // with the run they describe and ahead of the cumulative issue total
+  // (Issues #2105, #2161).
+  const graftLine = buildGraftStatsLine(args.graft);
   const codegraphLine = args.codegraph
     ? `\n${buildCodegraphStatsLine(args.codegraph)}`
     : "";
-  const body = `${marker}\n${section}${codegraphLine}`;
+  const body = `${marker}\n${section}${
+    graftLine ? `\n${graftLine}` : ""
+  }${codegraphLine}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
   );
@@ -407,6 +488,8 @@ export async function postIssueRunStatsComment(args: {
   configuredBestModel?: string;
   /** Run this comment reports; defaults to the canonical {@link getRunId}. */
   runId?: string;
+  /** What the run's Graft collection did (Issue #2105); omitted renders no line. */
+  graft?: GraftContextResult;
   /** What this run's CodeGraph step produced (Issue #2161). */
   codegraph?: CodegraphContextResult;
   getIssueComments: (
@@ -430,6 +513,7 @@ export async function postIssueRunStatsComment(args: {
   const bestModel = args.configuredBestModel
     ? { configuredBestModel: args.configuredBestModel }
     : {};
+  const graft = args.graft ? { graft: args.graft } : {};
   const codegraph = args.codegraph ? { codegraph: args.codegraph } : {};
 
   // Built without the issue's comments first, purely to answer "is there
@@ -442,6 +526,7 @@ export async function postIssueRunStatsComment(args: {
       claudeResults: args.claudeResults,
       runId,
       ...bestModel,
+      ...graft,
     })
   ) {
     logger.debug("No run stats to report on issue wrap-up (Issue #3756)", {
@@ -488,6 +573,7 @@ export async function postIssueRunStatsComment(args: {
         runId,
         priorComments,
         ...bestModel,
+        ...graft,
         ...codegraph,
       }),
     );

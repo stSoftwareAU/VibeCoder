@@ -19,6 +19,7 @@ import { DEFAULT_CADENCE_POLICY } from "./idle_task_cadence.ts";
 import { DEFAULT_RUN_MODE } from "./run_mode.ts";
 import { cloneCadencePolicy } from "./idle_task_cadence_config.ts";
 import { noCallbacks } from "./run_callbacks_config.ts";
+import { graftContextOff } from "./graft_context_config.ts";
 
 /**
  * Default label values used across shell and TypeScript configuration.
@@ -410,6 +411,12 @@ export const OPERATIONAL_DEFAULTS = {
    * rediscovery tax before it can start work.
    */
   includeCodebaseMap: true,
+  /**
+   * Graft repo-context injection (Issue #2098, part of #2060). Off: a host
+   * that never writes the `graft_context` block behaves exactly as today,
+   * and the operator turns it on per host for the #2060 trial.
+   */
+  graftContext: graftContextOff(),
   /**
    * The CodeGraph repo-context switch (Issue #2154, part of #2145). Off by
    * default: turning it on adds an index step at run start and a `codegraph`
@@ -1555,6 +1562,9 @@ export function buildDefaultWorkerConfig(
     // Issue #806: no hooks configured — an existing configuration without a
     // `callbacks` block behaves exactly as before.
     callbacks: noCallbacks(),
+    // Issue #2098: Graft off. Spread so a caller mutating the built config
+    // cannot corrupt the shared default.
+    graftContext: { ...OPERATIONAL_DEFAULTS.graftContext },
     ...overrides,
   };
 }

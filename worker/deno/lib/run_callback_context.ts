@@ -24,6 +24,7 @@ import type {
   TerminalIssueRun,
   TerminalScanCycle,
 } from "./run_callbacks.ts";
+import { callbackGraftFacts } from "./run_callbacks.ts";
 import { CODEGRAPH_OFF } from "./run_callbacks.ts";
 import { classifyRunFailure } from "./run_outcome_classifier.ts";
 import {
@@ -189,6 +190,9 @@ export function buildIssueRunCallbackContext(
     ...(present(identity.workerName)
       ? { workerName: present(identity.workerName)! }
       : {}),
+    // Issue #2100: the workflow label the dispatch matched, so an archive can
+    // compare implementation runs only. Absent when the loop named none.
+    ...(present(run.mode) ? { mode: present(run.mode)! } : {}),
     ...(present(identity.provider)
       ? { provider: present(identity.provider)! }
       : {}),
@@ -209,6 +213,10 @@ export function buildIssueRunCallbackContext(
       telemetryAbsentReason: run.telemetryAbsentReason ??
         "agent_not_invoked",
     }),
+    // Issue #2104: what this run's Graft collection did, rebuilt field by
+    // field so the bundle text can never ride along. Absent when the run
+    // ended before the collection — the document reports `off` for it.
+    ...(run.graft ? { graft: callbackGraftFacts(run.graft) } : {}),
     ...(outcome ? { outcome } : {}),
     // Issue #2162: stated on every run, so a host without the switch is
     // explicitly comparable with the hosts that have it.

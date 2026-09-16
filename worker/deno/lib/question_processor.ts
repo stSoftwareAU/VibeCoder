@@ -39,6 +39,17 @@ import { buildQuestionPrompt } from "./prompt_builder.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
+import {
+  collectGraftContext,
+  describeGraftContext,
+  type GraftContextCollector,
+  graftContextFacts,
+  type GraftContextResult,
+  type GraftContextSlot,
+  graftQueryFor,
+  withGraftContext,
+} from "./graft_context.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
 import { releaseClaim } from "./claim_release.ts";
 import { reportPhaseDegradation } from "./phase_run_stats.ts";
@@ -71,6 +82,11 @@ export interface QuestionResult {
   /** Human-readable summary. */
   summary: string;
   /**
+   * What the Graft repo-context collection did this run (Issue #2102, part of
+   * #2060) — `off` on a host that has not opted in.
+   */
+  graftContext?: GraftContextResult;
+  /**
    * What this run's CodeGraph step produced (Issue #2159, part of #2145).
    *
    * Present on every outcome reached after the index step, carrying
@@ -87,6 +103,22 @@ export interface QuestionProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
+  /**
+   * Collect the Graft repo-context bundle (Issue #2102). Optional —
+   * {@link collectGraftContext} is used when omitted, and it spawns nothing
+   * while the host switch is off.
+   */
+  collectGraftContext?: GraftContextCollector;
+  /**
+   * Prompts directory the question template is read from — the seam
+   * `PlanningProcessorDeps` already carries (Issue #1024).
+   *
+   * Left unset in production, where `getPromptsDir()` resolves it from the
+   * launcher's environment. A test names its own checkout's `prompts/` here
+   * rather than reading whichever templates the host happens to have
+   * installed.
+   */
+  promptsDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +297,8 @@ export async function processIssueQuestion(
   // a round that worked, and a diagnosed failure for one that did not.
   const runStartedAtMs = Date.now();
   let runOutcome: RunOutcome | undefined;
+  // Filled once the run reaches the collection (Issue #2102).
+  const graftSlot: GraftContextSlot = {};
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every one of them carries it (Issue #2159).
   const carrier: { codegraphContext?: CodegraphContextResult } = {};
@@ -272,6 +306,7 @@ export async function processIssueQuestion(
     const result = await _processQuestionWithHeartbeat(
       ctx,
       processorDeps,
+      graftSlot,
       carrier,
     );
     runOutcome = outcomeForNonCodingResult(
@@ -280,12 +315,18 @@ export async function processIssueQuestion(
       (Date.now() - runStartedAtMs) / 1000,
       "question answered",
     );
-    return result.ok && carrier.codegraphContext
+    // Issue #2103: the shared carrier — one shape for all four processors;
+    // the CodeGraph facts ride the same result (Issue #2159).
+    const withGraft = withGraftContext(result, graftSlot);
+    return withGraft.ok && carrier.codegraphContext
       ? {
         ok: true,
-        value: { ...result.value, codegraphContext: carrier.codegraphContext },
+        value: {
+          ...withGraft.value,
+          codegraphContext: carrier.codegraphContext,
+        },
       }
-      : result;
+      : withGraft;
   } catch (err) {
     runOutcome = outcomeForThrown(
       "question",
@@ -305,6 +346,7 @@ export async function processIssueQuestion(
 async function _processQuestionWithHeartbeat(
   ctx: IssueContext,
   processorDeps: QuestionProcessorDeps,
+  graftSlot: GraftContextSlot,
   carrier: { codegraphContext?: CodegraphContextResult },
 ): Promise<Result<QuestionResult>> {
   const {
@@ -329,6 +371,21 @@ async function _processQuestionWithHeartbeat(
       ? repoContextResult.value.content
       : undefined;
 
+  // Graft repo-context bundle (Issue #2102, part of #2060). Off on a host
+  // that has not opted in — the collector returns `off` without spawning. A
+  // `failed` collection is reported and the answer is written unbundled.
+  const collectGraft = processorDeps.collectGraftContext ?? collectGraftContext;
+  const graftContext = await collectGraft({
+    repoDir,
+    query: graftQueryFor(issueTitle, issueBody),
+    enabled: isGraftContextEnabled(config),
+    logger,
+  });
+  graftSlot.result = graftContext;
+  if (graftContext.status !== "off") {
+    logger.info(describeGraftContext(graftContext), { repo, issueNumber });
+  }
+
   // Issue #1226: Build question-specific prompt using the dedicated builder
   // instead of the generic issue prompt builder. This ensures the question
   // template (with clarification guidance) is used, not the implementation one.
@@ -342,6 +399,9 @@ async function _processQuestionWithHeartbeat(
     commentBoundaryId,
     questionLabel: config.questionLabel,
     repoContextContent,
+    promptsDir: processorDeps.promptsDir,
+    // Present only on an `ok` collection (Issue #2102).
+    graftContextBundle: graftContext.bundle,
     // Issue #849: an operator's `question` mapping replaces the template.
     promptOverrides: promptOverrideMappings(config),
   });
@@ -488,6 +548,12 @@ async function _processQuestionWithHeartbeat(
       listIssueComments: (r, i) => ghClient.getIssueComments(r, i),
       runGhCommand: deps.github.runGhCommand,
       logger,
+      // The round's Graft figures ride the same comment (Issue #2105). The
+      // facts only: the bundle is repository source, and nothing that large
+      // or that untrusted goes near a comment body.
+      ...(graftSlot.result
+        ? { graft: graftContextFacts(graftSlot.result) }
+        : {}),
       // This run's CodeGraph figures ride the same comment (Issue #2161).
       ...(carrier.codegraphContext
         ? { codegraph: carrier.codegraphContext }

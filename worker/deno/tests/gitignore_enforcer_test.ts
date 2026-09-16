@@ -93,9 +93,49 @@ Deno.test("REQUIRED_GITIGNORE_PATTERNS - contains hidden-files defence in depth 
     "id_rsa.*",
     "credentials.json",
     "service-account*.json",
+    "/graft/",
     "/.codegraph/",
   ];
   assertEquals([...REQUIRED_GITIGNORE_PATTERNS], expected);
+});
+
+Deno.test("ensureGitignorePatterns - ignores Graft's code graph (Issue #2099)", async () => {
+  await withTempDir(async (dir) => {
+    await initGitRepo(dir);
+    const result = await ensureGitignorePatterns(dir);
+    assert(result.ok);
+
+    // The graph itself is never committed — it is a per-run build artefact.
+    assert(
+      await gitCheckIgnore(dir, "graft/.graph/wiring.json"),
+      "expected 'graft/.graph/wiring.json' to be ignored",
+    );
+    // Anchored at the root, so a repo's own source named `graft` elsewhere is
+    // still tracked.
+    assertEquals(
+      await gitCheckIgnore(dir, "src/graft/parser.ts"),
+      false,
+      "expected 'src/graft/parser.ts' not to be ignored",
+    );
+  });
+});
+
+Deno.test("ensureGitignorePatterns - /graft/ is written exactly once across two passes (Issue #2099)", async () => {
+  await withTempDir(async (dir) => {
+    const first = await ensureGitignorePatterns(dir);
+    assert(first.ok);
+    assert(first.value.added.includes("/graft/"));
+
+    const second = await ensureGitignorePatterns(dir);
+    assert(second.ok);
+    assertEquals(second.value.added, []);
+    assert(second.value.existed.includes("/graft/"));
+
+    const occurrences = (await readGitignore(dir))
+      .split("\n")
+      .filter((line) => line.trim() === "/graft/");
+    assertEquals(occurrences.length, 1);
+  });
 });
 
 Deno.test("ensureGitignorePatterns - ignores private key material (Issue #3660)", async () => {
@@ -449,6 +489,31 @@ Deno.test("root .gitignore - ignores private key material (Issue #3660)", async 
         `root .gitignore must not ignore '${path}'`,
       );
     }
+  });
+});
+
+Deno.test("root .gitignore - ignores Graft's code graph (Issue #2099)", async () => {
+  // `graft/` is not hidden, so the `.*` rule does not reach it: this repo is a
+  // monitored repo too, and an enabled host builds a graph in this very
+  // checkout. The committed file must carry the line the enforcer requires.
+  const rootGitignore = new URL("../../../.gitignore", import.meta.url);
+  const contents = await Deno.readTextFile(rootGitignore);
+
+  await withTempDir(async (dir) => {
+    await initGitRepo(dir);
+    await Deno.writeTextFile(`${dir}/.gitignore`, contents);
+
+    assertEquals(
+      await gitCheckIgnore(dir, "graft/.graph/wiring.json"),
+      true,
+      "root .gitignore must ignore the Graft code graph",
+    );
+    // Root-anchored, so source of our own named `graft` stays tracked.
+    assertEquals(
+      await gitCheckIgnore(dir, "worker/deno/lib/graft/parser.ts"),
+      false,
+      "root .gitignore must not ignore source under a nested 'graft' directory",
+    );
   });
 });
 

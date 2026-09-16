@@ -8,6 +8,7 @@
 import type { CadencePolicy } from "./lib/idle_task_cadence.ts";
 import type { RunMode } from "./lib/run_mode.ts";
 import type { CallbacksConfig } from "./lib/run_callbacks_config.ts";
+import type { GraftContextConfig } from "./lib/graft_context_config.ts";
 
 /**
  * Verbosity levels for configurable response output (Issue #1330).
@@ -583,6 +584,16 @@ export interface WorkerConfig {
    * silently never run.
    */
   callbacks: CallbacksConfig;
+  /**
+   * Graft repo-context injection (Issue #2098, part of #2060).
+   *
+   * Off unless the host's `.config.json` says otherwise, so a host that never
+   * writes the `graft_context` block behaves exactly as it does today. Only
+   * `assertGraftContextConfig()` in `lib/graft_context_config.ts` produces
+   * this typed block; it fails loud on a malformed one rather than reading it
+   * as off.
+   */
+  graftContext: GraftContextConfig;
   /** Per-repo configuration overrides (Issue #1187) */
   repoConfig?: Record<string, RepoConfig>;
 }
@@ -1425,6 +1436,16 @@ export interface ConfigFile {
    * than repairing it.
    */
   callbacks?: unknown;
+  /**
+   * Graft repo-context injection switch (Issue #2098, part of #2060).
+   *
+   * Deliberately untyped here: the block arrives untrusted from the
+   * operator's file, and only `parseGraftContextConfig()` /
+   * `assertGraftContextConfig()` in `lib/graft_context_config.ts` may be
+   * trusted to produce a {@link GraftContextConfig}. They fail loud on a
+   * malformed block rather than repairing it.
+   */
+  graft_context?: unknown;
 }
 
 /**

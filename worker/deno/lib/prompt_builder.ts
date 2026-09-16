@@ -26,6 +26,7 @@ import {
   loadCodingGuidelinesOverlay,
 } from "./coding_guidelines_overlay.ts";
 import { formatCodebaseMapSection } from "./codebase_map.ts";
+import { formatGraftContextSection } from "./graft_context.ts";
 import { formatRepoContextSection } from "./repo_context_reader.ts";
 import type { ConflictIssueContext } from "./conflict_issue_context.ts";
 import { formatConflictIssueContextSection } from "./conflict_intent_context.ts";
@@ -304,6 +305,51 @@ function buildCustomInstructionsSection(
 }
 
 /**
+ * Name the Graft bundle carries in `untrustedBlocks` (Issue #2101).
+ */
+const GRAFT_BUNDLE_BLOCK_NAME = "the generated Graft code bundle";
+
+/**
+ * Join rendered context documents, dropping the ones that rendered empty.
+ *
+ * Every builder that carries repo-context documents renders each one as either
+ * its full section or `""`, so a prompt built without a Graft bundle must come
+ * out byte-identical to one built before the bundle existed (Issue #2101).
+ * Filtering first — rather than interpolating a possibly-empty section between
+ * two blank lines — is what keeps that true in both directions.
+ */
+function joinContextSections(...sections: readonly string[]): string {
+  return sections.filter((section) => section !== "").join("\n\n");
+}
+
+/**
+ * Render the context documents a phase prompt carries in its user turn.
+ *
+ * The repo-context document is repo-stable; the Graft bundle beside it is
+ * selected per query, so both are fenced with this run's boundary and both
+ * stay in the user turn rather than the cached system prompt (Issue #2101).
+ * Returning the Graft section as well as the joined pair is what lets the
+ * caller name it among the untrusted blocks only when it actually rendered.
+ */
+function buildContextDocuments(
+  repoContextSection: string,
+  graftContextBundle: string | undefined,
+  boundaryId: string,
+): { graftContextSection: string; contextDocumentsSection: string } {
+  const graftContextSection = formatGraftContextSection(
+    graftContextBundle,
+    boundaryId,
+  );
+  return {
+    graftContextSection,
+    contextDocumentsSection: joinContextSections(
+      repoContextSection,
+      graftContextSection,
+    ),
+  };
+}
+
+/**
  * Name the recent-activity block carries in `untrustedBlocks` (Issue #1373).
  */
 const RECENT_ACTIVITY_BLOCK_NAME = "the recent repository activity summary";
@@ -469,6 +515,16 @@ export interface IssuePromptOptions {
    * untrusted, and repo-stable so it rides in the cacheable prefix.
    */
   codebaseMap?: string;
+  /**
+   * Bundle returned by `graft ask --source` for this task (Issue #2101, part
+   * of #2060). Rendered as a fenced untrusted document beside the repo-context
+   * docs — it is repository-derived, so it is data and never instructions.
+   *
+   * Selected per query, so it is deliberately kept out of the cacheable static
+   * prefix and out of `computeStaticPromptHash`: it rides in the per-run user
+   * turn, where a bundle that changes every run costs nothing in cache hits.
+   */
+  graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
   /**
@@ -542,6 +598,7 @@ export async function buildIssuePrompt(
     recentActivity,
     repoContextContent,
     codebaseMap,
+    graftContextBundle,
     verbosityLevel,
     ciFailureContext,
     ciFailureBoundaryId,
@@ -682,6 +739,16 @@ Do NOT skip screenshots. Do NOT describe visual changes in words only. The PR va
     codebaseMap,
     delimiters.boundaryId,
   );
+
+  // The Graft bundle (Issue #2101, part of #2060) sits beside those documents
+  // but NOT inside the stable prefix below: it is selected per query, so the
+  // same repository produces a different bundle for every issue. Rendering it
+  // after the prefix keeps the leading bytes byte-identical across issues,
+  // which is the whole reason the prefix is ordered at all (Issue #4282).
+  const graftContextSection = formatGraftContextSection(
+    graftContextBundle,
+    delimiters.boundaryId,
+  );
   const sanitisedTitle = sanitiseDelimiterPatterns(issueTitle);
   // Labels are an attacker-influenceable comma-join of GitHub label names, so
   // scrub delimiter-like patterns exactly as the title/body receive (Issue
@@ -713,7 +780,8 @@ Do NOT skip screenshots. Do NOT describe visual changes in words only. The PR va
     codebase_map: codebaseMapSection,
     custom_instructions: customSection,
   });
-  const documentsSection = stablePrefix ? `${stablePrefix}\n\n` : "";
+  const documents = joinContextSections(stablePrefix, graftContextSection);
+  const documentsSection = documents ? `${documents}\n\n` : "";
 
   // Milestone branch targeting (Issue #449), fenced in this run's boundary and
   // named among the untrusted blocks below (Issue #16) — a milestone is
@@ -739,6 +807,7 @@ Do NOT skip screenshots. Do NOT describe visual changes in words only. The PR va
       ? ["the repository-supplied guidance document"]
       : []),
     ...(codebaseMapSection ? ["the generated codebase map"] : []),
+    ...(graftContextSection ? [GRAFT_BUNDLE_BLOCK_NAME] : []),
     ...(ciFailureContext ? ["the CI console-log excerpt"] : []),
     ...(milestoneInstructions ? ["the milestone branch"] : []),
     ...(recentActivitySection ? [RECENT_ACTIVITY_BLOCK_NAME] : []),
@@ -814,6 +883,8 @@ export interface PlanningPromptOptions {
    * behind an untrusted fence, not the system prompt (Issue #3706).
    */
   repoContextContent?: string;
+  /** Graft `ask --source` bundle — see IssuePromptOptions (Issue #2101). */
+  graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
   /** Validated `custom_label_prompts` mappings (Issue #849). */
@@ -841,6 +912,7 @@ export async function buildPlanningPrompt(
     milestoneTitle,
     promptsDir,
     repoContextContent,
+    graftContextBundle,
     verbosityLevel,
     promptOverrides,
   } = options;
@@ -916,6 +988,13 @@ export async function buildPlanningPrompt(
     delimiters.boundaryId,
   );
 
+  const { graftContextSection, contextDocumentsSection } =
+    buildContextDocuments(
+      repoContextSection,
+      graftContextBundle,
+      delimiters.boundaryId,
+    );
+
   const prompt =
     `I need you to plan the implementation for GitHub issue #${issueNumber} from repository ${repo}.
 
@@ -943,10 +1022,11 @@ ${
         ...(repoContextSection
           ? ["the repository-supplied guidance document"]
           : []),
+        ...(graftContextSection ? [GRAFT_BUNDLE_BLOCK_NAME] : []),
         ...(milestoneSection ? ["the milestone title"] : []),
       ])
     }
-${repoContextSection}
+${contextDocumentsSection}
 
 ${planningTemplate}
 `;
@@ -1190,6 +1270,8 @@ export interface QuestionPromptOptions {
    * behind an untrusted fence, not the system prompt (Issue #3706).
    */
   repoContextContent?: string;
+  /** Graft `ask --source` bundle — see IssuePromptOptions (Issue #2101). */
+  graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
   /** Validated `custom_label_prompts` mappings (Issue #849). */
@@ -1215,6 +1297,7 @@ export async function buildQuestionPrompt(
     questionLabel = "question",
     promptsDir,
     repoContextContent,
+    graftContextBundle,
     verbosityLevel,
     promptOverrides,
   } = options;
@@ -1268,6 +1351,13 @@ export async function buildQuestionPrompt(
     delimiters.boundaryId,
   );
 
+  const { graftContextSection, contextDocumentsSection } =
+    buildContextDocuments(
+      repoContextSection,
+      graftContextBundle,
+      delimiters.boundaryId,
+    );
+
   const prompt =
     `I need you to answer questions on GitHub issue #${issueNumber} from repository ${repo}.
 
@@ -1295,9 +1385,10 @@ ${
         ...(repoContextSection
           ? ["the repository-supplied guidance document"]
           : []),
+        ...(graftContextSection ? [GRAFT_BUNDLE_BLOCK_NAME] : []),
       ])
     }
-${repoContextSection}
+${contextDocumentsSection}
 
 ${questionTemplate}
 `;
@@ -1331,6 +1422,8 @@ export interface PrFeedbackPromptOptions {
    * behind an untrusted fence, not the system prompt (Issue #3706).
    */
   repoContextContent?: string;
+  /** Graft `ask --source` bundle — see IssuePromptOptions (Issue #2101). */
+  graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
   /**
@@ -1457,6 +1550,7 @@ export async function buildPrFeedbackPrompt(
     customInstructions,
     promptsDir,
     repoContextContent,
+    graftContextBundle,
     verbosityLevel,
     additionalReviewComments,
   } = options;
@@ -1495,6 +1589,14 @@ export async function buildPrFeedbackPrompt(
     repoContextContent,
     delimiters.boundaryId,
   );
+
+  const { graftContextSection, contextDocumentsSection } =
+    buildContextDocuments(
+      repoContextSection,
+      graftContextBundle,
+      delimiters.boundaryId,
+    );
+
   const sanitisedComment = sanitiseDelimiterPatterns(commentBody);
   const botReviewSection = buildBotReviewCommentsSection(
     prNumber,
@@ -1521,9 +1623,10 @@ ${botReviewSection}${
         ...(repoContextSection
           ? ["the repository-supplied guidance document"]
           : []),
+        ...(graftContextSection ? [GRAFT_BUNDLE_BLOCK_NAME] : []),
       ])
     }
-${repoContextSection}
+${contextDocumentsSection}
 
 ${feedbackTemplate}
 ${customSection}`;
@@ -1919,6 +2022,8 @@ export interface CiFixPromptOptions {
    * behind an untrusted fence, not the system prompt (Issue #3706).
    */
   repoContextContent?: string;
+  /** Graft `ask --source` bundle — see IssuePromptOptions (Issue #2101). */
+  graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
   /** Raw annotations for failure classification (Issue #1692). */
@@ -1996,6 +2101,7 @@ export async function buildCiFixPrompt(
     customInstructions,
     promptsDir,
     repoContextContent,
+    graftContextBundle,
     verbosityLevel,
     annotations,
     logExcerpt,
@@ -2065,6 +2171,13 @@ export async function buildCiFixPrompt(
     delimiters.boundaryId,
   );
 
+  const { graftContextSection, contextDocumentsSection } =
+    buildContextDocuments(
+      repoContextSection,
+      graftContextBundle,
+      delimiters.boundaryId,
+    );
+
   // The check name and annotation text are GitHub-sourced and
   // attacker-influenceable (Issue #2606), so sanitise delimiter-like
   // patterns and wrap them in an explicit untrusted block — the same
@@ -2099,9 +2212,10 @@ ${
         ...(repoContextSection
           ? ["the repository-supplied guidance document"]
           : []),
+        ...(graftContextSection ? [GRAFT_BUNDLE_BLOCK_NAME] : []),
       ])
     }
-${repoContextSection}
+${contextDocumentsSection}
 
 ${ciFixTemplate}${customSection}
 `;

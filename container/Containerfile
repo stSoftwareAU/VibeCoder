@@ -215,6 +215,40 @@ RUN set -eu; \
     rm -rf /tmp/npmc "${tarball}"; \
     markdownlint-cli2 --version
 
+# Graft is a worker RUNTIME tool, not a repo gate tool: it builds the
+# tree-sitter code graph the repo-context injection reads. Same shape as
+# markdownlint-cli2 above, plus the image's only compile — the seven native
+# modules with no usable linux prebuild are rebuilt by name, from source on
+# both architectures, against the headers the Node layer left in /usr/local,
+# and then loaded before the version is probed, because a rebuild npm blocked
+# still reports success. Why each of those is load-bearing is in
+# docs/CONTAINER-IMAGE.md, "Graft — the one layer that compiles"; the
+# invariants are enforced by findGraftRebuildViolations (Issue #2097).
+ARG GRAFT_VERSION="0.18.0"
+ARG GRAFT_SHA256_NOARCH="729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc"
+
+# No telemetry round trip from an unattended container, the same reasoning as
+# POWERSHELL_TELEMETRY_OPTOUT above: as an image-wide setting this covers the
+# start-up self-check's own `graft --version` on every fleet host too, not
+# just the build's probe below.
+ENV DO_NOT_TRACK="1"
+
+RUN set -eu; \
+    tarball="/tmp/graft.tgz"; \
+    native="tree-sitter tree-sitter-go tree-sitter-java tree-sitter-javascript tree-sitter-typescript tree-sitter-python tree-sitter-kotlin"; \
+    curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/@nanonets/graft/-/graft-${GRAFT_VERSION}.tgz"; \
+    echo "${GRAFT_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
+    npm install -g --ignore-scripts "${tarball}"; \
+    CXXFLAGS="-std=c++20" npm_config_nodedir=/usr/local \
+      npm_config_build_from_source=true \
+      npm rebuild -g --allow-scripts="$(printf '%s' "${native}" | tr ' ' ',')" ${native}; \
+    rm -rf /tmp/npmc "${tarball}"; \
+    NODE_PATH="$(npm root -g)/@nanonets/graft/node_modules" \
+      node -e 'for (const m of process.argv.slice(1)) require(m); console.log("graft native modules ok: " + process.argv.slice(1).join(" "))' ${native}; \
+    reported="$(DO_NOT_TRACK=1 graft --version)"; \
+    test "${reported}" = "${GRAFT_VERSION}" || \
+      { echo "graft reports ${reported}, expected ${GRAFT_VERSION}" >&2; exit 1; }
+
 # The Rust toolchain the fleet's crates build and test with — its own layer,
 # rebuilt on a Rust bump without disturbing the smaller toolchains above.
 # container/toolchains/rust.sh holds the detail (standalone rust-lang

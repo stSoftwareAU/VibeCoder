@@ -45,6 +45,16 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
+import {
+  collectGraftContext,
+  describeGraftContext,
+  type GraftContextCollector,
+  type GraftContextResult,
+  type GraftContextSlot,
+  graftQueryFor,
+  withGraftContext,
+} from "./graft_context.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
@@ -143,6 +153,11 @@ export interface PlanningResult {
    */
   uncoveredAsks?: string[];
   /**
+   * What the Graft repo-context collection did this run (Issue #2102, part of
+   * #2060) — `off` on a host that has not opted in.
+   */
+  graftContext?: GraftContextResult;
+  /**
    * What this run's CodeGraph step produced (Issue #2159, part of #2145),
    * with `queries` summed across every planning invocation the run made.
    */
@@ -177,6 +192,12 @@ export interface PlanningProcessorDeps {
    * other parallel worker shares.
    */
   promptsDir?: string;
+  /**
+   * Collect the Graft repo-context bundle (Issue #2102). Optional —
+   * {@link collectGraftContext} is used when omitted, and it spawns nothing
+   * while the host switch is off.
+   */
+  collectGraftContext?: GraftContextCollector;
 }
 
 // ---------------------------------------------------------------------------
@@ -1252,6 +1273,9 @@ export async function processIssuePlanning(
   // a round that worked, and a diagnosed failure for one that did not.
   const runStartedAtMs = Date.now();
   let runOutcome: RunOutcome | undefined;
+  // Filled once the run reaches the collection (Issue #2102); a pre-check
+  // that closes the parent without building a prompt leaves it unset.
+  const graftSlot: GraftContextSlot = {};
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every one of them carries it (Issue #2159).
   const codegraphCarrier: { codegraphContext?: CodegraphContextResult } = {};
@@ -1259,6 +1283,7 @@ export async function processIssuePlanning(
     const result = await _processPlanningWithHeartbeat(
       ctx,
       processorDeps,
+      graftSlot,
       codegraphCarrier,
     );
     runOutcome = outcomeForNonCodingResult(
@@ -1267,15 +1292,18 @@ export async function processIssuePlanning(
       (Date.now() - runStartedAtMs) / 1000,
       "planning round posted — sub-issues created",
     );
-    return result.ok && codegraphCarrier.codegraphContext
+    // Issue #2103: the shared carrier — one shape for all four processors;
+    // the CodeGraph facts ride the same result (Issue #2159).
+    const withGraft = withGraftContext(result, graftSlot);
+    return withGraft.ok && codegraphCarrier.codegraphContext
       ? {
         ok: true,
         value: {
-          ...result.value,
+          ...withGraft.value,
           codegraphContext: codegraphCarrier.codegraphContext,
         },
       }
-      : result;
+      : withGraft;
   } catch (err) {
     runOutcome = outcomeForThrown(
       "planning",
@@ -1295,6 +1323,7 @@ export async function processIssuePlanning(
 async function _processPlanningWithHeartbeat(
   ctx: IssueContext,
   processorDeps: PlanningProcessorDeps,
+  graftSlot: GraftContextSlot,
   codegraphCarrier: { codegraphContext?: CodegraphContextResult },
 ): Promise<Result<PlanningResult>> {
   const env = processorDeps.env ?? processEnvLookup;
@@ -1430,6 +1459,21 @@ async function _processPlanningWithHeartbeat(
       ? repoContextResult.value.content
       : undefined;
 
+  // Graft repo-context bundle (Issue #2102, part of #2060). Off on a host
+  // that has not opted in — the collector returns `off` without spawning. A
+  // `failed` collection is reported and planning proceeds unbundled.
+  const collectGraft = processorDeps.collectGraftContext ?? collectGraftContext;
+  const graftContext = await collectGraft({
+    repoDir,
+    query: graftQueryFor(issueTitle, issueBody),
+    enabled: isGraftContextEnabled(config),
+    logger,
+  });
+  graftSlot.result = graftContext;
+  if (graftContext.status !== "off") {
+    logger.info(describeGraftContext(graftContext), { repo, issueNumber });
+  }
+
   // Build planning-specific prompt (not the implementation prompt)
   const promptResult = await buildPlanningPrompt({
     repo,
@@ -1443,6 +1487,8 @@ async function _processPlanningWithHeartbeat(
     complexityContext,
     milestoneTitle,
     repoContextContent,
+    // Present only on an `ok` collection (Issue #2102).
+    graftContextBundle: graftContext.bundle,
     promptsDir: processorDeps.promptsDir,
     // Issue #849: an operator's `planning` mapping replaces the template.
     promptOverrides: promptOverrideMappings(config),
