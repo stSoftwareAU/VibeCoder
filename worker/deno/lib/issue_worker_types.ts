@@ -238,9 +238,10 @@ export interface PhaseState {
    * What the Graft repo-context collection did for this run (Issue #2102,
    * part of #2060).
    *
-   * Set by the execute phase beside {@link PhaseState.claudeRunStats} and
-   * read by the completion phase, which reports the status and figures on the
-   * run-stats comment. Absent when the run never reached the collection.
+   * Set by the execute phase beside {@link PhaseState.claudeRunStats}. It has
+   * no reader yet — the run-stats comment that reports the status and figures
+   * is a later sub-issue of #2060 — so this is the carrier that lets it read
+   * the outcome. Absent when the run never reached the collection.
    */
   graftContext?: GraftContextResult;
   /**

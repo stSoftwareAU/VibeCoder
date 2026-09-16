@@ -45,6 +45,7 @@ import {
   type GraftContextSlot,
   graftQueryFor,
 } from "./graft_context.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
 import { releaseClaim } from "./claim_release.ts";
 import { reportPhaseDegradation } from "./phase_run_stats.ts";
@@ -97,6 +98,16 @@ export interface QuestionProcessorDeps {
    * while the host switch is off.
    */
   collectGraftContext?: GraftContextCollector;
+  /**
+   * Prompts directory the question template is read from — the seam
+   * `PlanningProcessorDeps` already carries (Issue #1024).
+   *
+   * Left unset in production, where `getPromptsDir()` resolves it from the
+   * launcher's environment. A test names its own checkout's `prompts/` here
+   * rather than reading whichever templates the host happens to have
+   * installed.
+   */
+  promptsDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +353,7 @@ async function _processQuestionWithHeartbeat(
   const graftContext = await collectGraft({
     repoDir,
     query: graftQueryFor(issueTitle, issueBody),
-    enabled: config.graftContext.enabled,
+    enabled: isGraftContextEnabled(config),
     logger,
   });
   graftSlot.result = graftContext;
@@ -363,6 +374,7 @@ async function _processQuestionWithHeartbeat(
     commentBoundaryId,
     questionLabel: config.questionLabel,
     repoContextContent,
+    promptsDir: processorDeps.promptsDir,
     // Present only on an `ok` collection (Issue #2102).
     graftContextBundle: graftContext.bundle,
     // Issue #849: an operator's `question` mapping replaces the template.

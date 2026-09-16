@@ -53,6 +53,7 @@ import {
   type GraftContextSlot,
   graftQueryFor,
 } from "./graft_context.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import type { IssueContext } from "./issue_worker.ts";
 import {
@@ -1436,7 +1437,7 @@ async function _processPlanningWithHeartbeat(
   const graftContext = await collectGraft({
     repoDir,
     query: graftQueryFor(issueTitle, issueBody),
-    enabled: config.graftContext.enabled,
+    enabled: isGraftContextEnabled(config),
     logger,
   });
   graftSlot.result = graftContext;

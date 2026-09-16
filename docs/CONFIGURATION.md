@@ -1779,11 +1779,12 @@ static prompt SHA: a bundle that differs on every issue costs no prompt-cache
 hits, and a phase run without one produces byte-identical prompt text to
 before.
 
-**When Graft is unavailable.** An enabled host that cannot run Graft — the clone's `info/exclude` cannot be
-resolved or appended to, the binary is missing, the build or the query fails,
-the query succeeds but returns an empty bundle, or the graph index cannot be
-read — logs one `[GRAFT_UNAVAILABLE] <reason>` line at `warn`
-and records a `failed` Graft status. The run itself continues, without the
+**When Graft is unavailable.** An enabled host that cannot run Graft — the
+clone's `info/exclude` cannot be resolved or appended to, the binary is
+missing, the build or the query fails, the query succeeds but returns an empty
+bundle, or the graph index cannot be read — logs one
+`[GRAFT_UNAVAILABLE] <reason>` line at `warn` and records a `failed` Graft
+status. The run itself continues, without the
 bundle: the bundle is an accelerator, so a run never fails because Graft did.
 Grep the worker log for `[GRAFT_UNAVAILABLE]` to see why. Beside it the run
 logs one `Graft context: <status> — <figures>` line, so a run that asked for a

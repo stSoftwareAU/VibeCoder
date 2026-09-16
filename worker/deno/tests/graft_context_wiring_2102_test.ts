@@ -437,6 +437,7 @@ Deno.test("processIssueQuestion - the switch off collects nothing and injects no
   const deps = questionDeps(prompts);
 
   const result = await processIssueQuestion(questionContext(false), {
+    promptsDir: PROMPTS_DIR,
     ghClient: makeGhClient(),
     logger: deps.logger,
     deps,
@@ -454,6 +455,7 @@ Deno.test("processIssueQuestion - an enabled host injects the bundle and asks fo
   const collector = fakeCollector(okOutcome());
 
   const result = await processIssueQuestion(questionContext(true), {
+    promptsDir: PROMPTS_DIR,
     ghClient: makeGhClient(),
     logger: deps.logger,
     deps,
@@ -475,6 +477,7 @@ Deno.test("processIssueQuestion - a failed collection is reported and the answer
   const collector = fakeCollector(failedOutcome());
 
   const result = await processIssueQuestion(questionContext(true), {
+    promptsDir: PROMPTS_DIR,
     ghClient: makeGhClient(),
     logger: deps.logger,
     deps,

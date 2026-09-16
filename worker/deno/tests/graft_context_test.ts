@@ -12,11 +12,13 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   collectGraftContext,
+  describeGraftContext,
   formatGraftContextSection,
   GRAFT_ASK_TIMEOUT_MS,
   GRAFT_BUILD_TIMEOUT_MS,
   GRAFT_EXCLUDE_PATTERN,
   GRAFT_LAYOUT_DIRS,
+  graftQueryFor,
   MAX_GRAFT_QUERY_BYTES,
   truncateUtf8,
   utf8Length,
@@ -920,4 +922,69 @@ Deno.test("truncateUtf8 - cuts on a code-point boundary, never mid-character", (
   assertEquals(truncateUtf8("a🌱", 5), "a🌱");
   // A zero limit yields nothing rather than a replacement character.
   assertEquals(truncateUtf8("ééé", 0), "");
+});
+
+// ---------------------------------------------------------------------------
+// graftQueryFor — the one query the three runs share (Issue #2102)
+// ---------------------------------------------------------------------------
+
+Deno.test("graftQueryFor - joins the title and body with a blank line", () => {
+  assertEquals(
+    graftQueryFor("Fix the parser", "It drops the year."),
+    "Fix the parser\n\nIt drops the year.",
+  );
+});
+
+Deno.test("graftQueryFor - keeps the title when the body is empty", () => {
+  // An issue filed with a title alone must still ask Graft about the title,
+  // rather than handing it a query that starts with blank lines only.
+  assertEquals(graftQueryFor("Fix the parser", ""), "Fix the parser\n\n");
+  assertEquals(graftQueryFor("", ""), "\n\n");
+});
+
+// ---------------------------------------------------------------------------
+// describeGraftContext — the run-level log line (Issue #2102)
+// ---------------------------------------------------------------------------
+
+Deno.test("describeGraftContext - reports the status with every figure it has", () => {
+  const line = describeGraftContext({
+    status: "ok",
+    enabled: true,
+    buildSeconds: 12.5,
+    bundleChars: 4096,
+    nodeCount: 820,
+    callEdgeCount: 1204,
+    bundle: "…",
+  });
+  assertStringIncludes(line, "Graft context: ok");
+  assertStringIncludes(line, "4096 bundle chars");
+  assertStringIncludes(line, "820 nodes");
+  assertStringIncludes(line, "1204 calls edges");
+  assertStringIncludes(line, "build 12.5s");
+});
+
+Deno.test("describeGraftContext - a failure with no figures still states the status", () => {
+  // A collection that failed before the build gathered nothing; the line must
+  // still say `failed` rather than read as a clean run.
+  const line = describeGraftContext({ status: "failed", enabled: true });
+  assertStringIncludes(line, "Graft context: failed");
+  assertEquals(line.includes("—"), false);
+});
+
+Deno.test("describeGraftContext - reports a partial figure set", () => {
+  const line = describeGraftContext({
+    status: "failed",
+    enabled: true,
+    buildSeconds: 300,
+  });
+  assertStringIncludes(line, "Graft context: failed");
+  assertStringIncludes(line, "build 300s");
+  assertEquals(line.includes("nodes"), false);
+});
+
+Deno.test("describeGraftContext - an off switch reports off", () => {
+  assertStringIncludes(
+    describeGraftContext({ status: "off", enabled: false }),
+    "Graft context: off",
+  );
 });

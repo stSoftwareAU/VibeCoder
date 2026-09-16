@@ -589,7 +589,9 @@ export type GraftContextCollector = (
  * The issue phase and the planning and question processors each return from
  * a dozen or more places; a slot lets the outcome escape once rather than
  * being threaded onto every exit, and an unset slot honestly means the run
- * ended before the collection was reached.
+ * ended before the collection was reached. The issue phase attaches it to
+ * every exit; the two processors have a value to attach it to only on their
+ * `ok` result, so a failed round reports the outcome in the log alone.
  */
 export interface GraftContextSlot {
   result?: GraftContextResult;

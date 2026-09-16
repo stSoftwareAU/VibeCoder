@@ -183,9 +183,10 @@ export interface ExecuteClaudePhaseResult {
    * What the Graft repo-context collection did this run (Issue #2102, part of
    * #2060).
    *
-   * Always present, `status: "off"` included: the recording sub-issues report
-   * the outcome, and an absent field would make "the switch was off" and "the
-   * collector never ran" indistinguishable.
+   * Present, `status: "off"` included, on every run that reached the
+   * collection — a later sub-issue of #2060 reports the outcome, and carrying
+   * `off` keeps "the switch was off" distinct from "the collector never
+   * ran", which is what an absent field means.
    */
   graftContext?: GraftContextResult;
   /** Elapsed time in seconds. */
