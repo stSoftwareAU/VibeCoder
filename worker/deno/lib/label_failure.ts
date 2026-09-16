@@ -233,6 +233,75 @@ If you want to work on this manually, remove the \`${labels.failedOnceLabel}\` l
 }
 
 /**
+ * Marker placed in the repo-configuration record so the release sweep can
+ * recognise its own comment (Issue #2220).
+ */
+export const REPO_CONFIG_REFUSAL_MARKER = "<!-- vibe-repo-config-refusal -->";
+
+/**
+ * Record a repository-configuration refusal without labelling the issue
+ * (Issue #2220).
+ *
+ * The repository refused the milestone branch, which it will refuse
+ * identically for every sibling issue, so nothing about this issue failed and
+ * nothing about it should be marked. The comment is still written — a run
+ * that ended with no PR must say why — but it applies no label and removes
+ * no assignee beyond the caller's own release, leaving the issue claimable
+ * the moment the repository is fixed.
+ */
+async function recordRepoConfigRefusal(
+  options: FailureOptions,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<void> {
+  const failureCategory = detectFailureCategory(options.failureMessage);
+  const categoryDisplay = getFailureCategoryDisplay(failureCategory);
+  const errorSection = buildErrorSection(options.failureMessage);
+  const diagnosisText = getFailureDiagnosis(
+    failureCategory,
+    options.clarityStatus ?? "not_assessed",
+    options.diagnosticContext ?? "",
+  );
+
+  let commentBody = `## Automated Processing Paused (Repository Configuration)
+
+**Category:** \`${categoryDisplay}\`
+
+${errorSection}
+
+### Why this issue is NOT labelled
+${diagnosisText}
+
+### What happens next?
+- No \`${
+    options.labels?.failedOnceLabel ?? DEFAULT_LABEL_CONFIG.failedOnceLabel
+  }\` or \`${
+    options.labels?.failedLabel ?? DEFAULT_LABEL_CONFIG.failedLabel
+  }\` label was applied — this issue is still claimable
+- Fix the repository configuration named above; the next scan picks this issue up with no further human action
+
+${REPO_CONFIG_REFUSAL_MARKER}`;
+
+  if (options.workerFooter) {
+    commentBody += options.workerFooter;
+  }
+
+  try {
+    await ghCommandFn([
+      "issue",
+      "comment",
+      String(options.issueNumber),
+      "--repo",
+      options.repo,
+      "--body",
+      commentBody,
+    ]);
+  } catch {
+    // Best-effort: the absent label is the substantive outcome, and a failed
+    // comment must not turn a non-fault into one.
+  }
+}
+
+/**
  * Mark an issue as permanently failed (second failure).
  */
 export async function markIssueAsFailed(
@@ -382,6 +451,27 @@ export async function handleIssueFailure(
   // with. The claim-release comment carries the scheduled-release wording,
   // so the outcome is still recorded — just not as a fault.
   if (failureCategory === "scheduled_release") {
+    return {
+      ok: true,
+      value: {
+        markedAsFailed: false,
+        markedAsFailedOnce: false,
+        failureCategory,
+        isInfrastructure: false,
+      },
+    };
+  }
+
+  // A repository-level milestone-branch refusal never enters the ladder
+  // either (Issue #2220). The repository refused the branch — a ruleset, a
+  // protection, or a permission the fleet account lacks — and it refuses it
+  // identically for every sibling issue in the milestone. Labelling this
+  // issue records a repository setting against work that never ran: sixteen
+  // GRQ-FX-validation sub-issues took `failed-once`, eight went on to
+  // `failed`, and a human had to strip every one by hand after the ruleset
+  // was repaired. Comment once, label nothing, leave it claimable.
+  if (failureCategory === "repo_config") {
+    await recordRepoConfigRefusal(options, ghCommandFn);
     return {
       ok: true,
       value: {

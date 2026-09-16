@@ -3954,6 +3954,55 @@ children are never touched, so a finished milestone's branch is not resurrected
 on every scan cycle. Merged PRs are never touched, and PRs auto-closed by a past
 branch deletion are not reopened.
 
+#### The refusal is never recorded against the issue (Issue #2220)
+
+A repo-level branch refusal is a fact about the **repository**, so it must not
+be written onto the sub-issues that met it. Until #2220 it was: the refusal
+text (`GH013`, `Repository rule violations`, `Failed to push milestone
+branch`) matched no pattern in `detectFailureCategory`, came out `unknown`,
+and `unknown` is not an infrastructure category — so every setup refusal went
+straight up the `failed-once` → `failed` ladder. On
+`stSoftwareAU/GRQ-FX-validation` sixteen sub-issues took `failed-once` in
+under a minute each without touching a line of code, six went on to `failed`,
+and when the ruleset was repaired nothing released any of them.
+
+Two changes close that:
+
+- **`repo_config` is its own failure category.**
+  `isRepoLevelMilestoneBranchRefusal` (`milestone_branch_rejection.ts`)
+  requires *both* a repo-level refusal signature *and* a milestone branch in
+  the message, so an ordinary protected-branch push refusal stays
+  `push_failure` with its bounded infrastructure retry. `handleIssueFailure`
+  short-circuits `repo_config` exactly as it does `scheduled_release`: it
+  writes one **Automated Processing Paused (Repository Configuration)**
+  comment and applies no label, leaving the issue claimable.
+- **The run that opens the branch releases the backlog.** Once
+  `ensureMilestoneBranchExists` succeeds — including via the #2079 in-run
+  repair — the setup phase calls
+  `releaseMilestoneBranchRefusalLabels` (`milestone_branch_refusal_release.ts`),
+  which lists the milestone's open `failed-once` / `failed` issues, reads each
+  one's **most recent** failure record, and removes the labels only where that
+  record was the refusal. An issue that failed its own quality gate after the
+  refusal keeps its label. The sweep runs once per branch per process and
+  returns every gh fault to the caller, which logs it — a half-run sweep is
+  never reported as a clean one.
+
+```mermaid
+flowchart TD
+    A[setup: ensure milestone branch] --> B{Refused?}
+    B -- "repo-level (GH013)" --> C[category: repo_config]
+    C --> D[Comment once<br/>NO failed-once / failed]
+    D --> E[Issue stays claimable]
+    B -- "per-issue fault" --> F[Existing ladder<br/>failed-once → failed]
+    B -- no --> G[Branch exists]
+    G --> H[Sweep the milestone's<br/>failed-once / failed issues]
+    H --> I{Newest failure record<br/>is the refusal?}
+    I -- yes --> J[Remove labels + comment]
+    I -- no --> K[Leave the label alone]
+    style C fill:#f4a261,stroke:#b5651d,color:#000
+    style J fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ### 📊 Token usage tracking
 
 [credit_tracker.ts](../worker/deno/lib/credit_tracker.ts) now logs token usage

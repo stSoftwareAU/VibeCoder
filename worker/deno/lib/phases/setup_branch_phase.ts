@@ -54,6 +54,7 @@ import {
   isObjectStoreCorruption,
 } from "../object_store_repair.ts";
 import { repairMilestoneCreateBlockAndRetry } from "../milestone_create_block_repair.ts";
+import { releaseMilestoneBranchRefusalLabels } from "../milestone_branch_refusal_release.ts";
 
 /**
  * What a human must do when a milestone branch cannot be ensured
@@ -389,6 +390,41 @@ export async function workOnIssueSetupBranch(
           `Failed to ensure milestone branch '${state.milestoneBranch}' for milestone ` +
           `'${milestoneTitle}': ${detail}`,
       };
+    }
+
+    // The branch exists, so the refusal that once blocked it is gone
+    // (Issue #2220). Nothing else ever released the issues that refusal had
+    // already labelled: GRQ-FX-validation's ruleset was repaired with
+    // sixteen sub-issues still carrying `failed-once`/`failed` for a fault
+    // that no longer existed, and a human stripped every one by hand. The
+    // first run through here is the first witness that the repository is
+    // fixed, so it clears the record. Best-effort — the branch is usable
+    // whatever the sweep finds — but never silent.
+    const release = await releaseMilestoneBranchRefusalLabels({
+      repo,
+      milestoneTitle,
+      milestoneBranch: state.milestoneBranch,
+      labels: {
+        failedLabel: config.failedLabel,
+        failedOnceLabel: config.failedOnceLabel,
+      },
+      ghCommandFn: deps.github.runGhCommand,
+    });
+    if (release.released.length > 0) {
+      logger.info(
+        "Released failure labels left by a repo-level milestone-branch refusal (Issue #2220)",
+        {
+          repo,
+          milestoneBranch: state.milestoneBranch,
+          released: release.released,
+        },
+      );
+    }
+    for (const error of release.errors) {
+      logger.warn(
+        `Milestone-branch refusal label sweep: ${error} (Issue #2220)`,
+        { repo, milestoneBranch: state.milestoneBranch },
+      );
     }
 
     // Sync before new work (Issue #1780): no child branch is cut while the
