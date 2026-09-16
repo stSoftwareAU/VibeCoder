@@ -183,12 +183,12 @@ COPY tools.json /tmp/toolchain-manifest.json
 # BATS suites executing, NEAT-AI-core's workflow assertions parse YAML with
 # `python3 -c "import yaml"`, so its wheel is installed into the system
 # interpreter's own purelib directory rather than a venv.
-
+#
 # codegraph is the other odd one out (Issue #2153): the indexer trialled as a
 # second repo-context candidate, so it exists for the worker's own runs rather
 # than for a monitored repository's gate. Its release ships a bundle with its
 # own node runtime, installed under /opt/codegraph and symlinked onto the PATH.
-#
+
 # No update nag and no telemetry round trip from an unattended container —
 # the same reasoning as SEMGREP_ENABLE_VERSION_CHECK below. Set before the
 # install so the build's own version assertion is quiet too.

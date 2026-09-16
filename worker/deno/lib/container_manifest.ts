@@ -139,7 +139,15 @@ export interface ContainerToolchainPin {
    * Present exactly when {@link modules} is non-empty.
    */
   versionModule?: string;
-  /** `owner/repo` slugs whose quality gate needs this toolchain. */
+  /**
+   * `owner/repo` slugs whose quality gate needs this toolchain.
+   *
+   * A toolchain that exists for the worker's own runs rather than for a
+   * monitored gate — `codegraph`, the repo-context trial of Issue #2153 —
+   * still records a slug here, because the list may not be empty; its `notes`
+   * say why. Read the field as "who this toolchain exists for", which is what
+   * makes a repository leaving the fleet enough to remove one.
+   */
   repos: string[];
 }
 
@@ -208,6 +216,11 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * `bats`, the runner both drive over their `tests/scripts` suites, and
  * `codespell`, which NEAT-AI-core's gate skipped with a warning and
  * NEAT-AI-scorer's `scripts/spell-check.sh` preflight exits 1 without.
+ *
+ * Not every pinned toolchain is listed here, and `codegraph` (Issue #2153) is
+ * the deliberate absence: it exists for the worker's own repo-context trial,
+ * so no repository's gate would miss it and requiring it would state a
+ * consumer that does not exist.
  */
 export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "cargo",
