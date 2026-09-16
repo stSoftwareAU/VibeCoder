@@ -2048,6 +2048,7 @@ export async function runClaudeWithTimeout(
     // model/effort, token usage, turn count, and durations. Parsed from the
     // same raw stream-json; the effort string is passed through verbatim so
     // new levels (e.g. xhigh, #2620) flow untouched.
+    const { toolCallCounts } = progress.snapshot();
     const runStats = {
       ...buildRunStats(rawOutput, {
         requestedModel: resolvedModel,
@@ -2057,6 +2058,11 @@ export async function runClaudeWithTimeout(
         provider: provider.id,
       }),
       ...(agentOutput?.usage ? { tokenUsage: agentOutput.usage } : {}),
+      // Per-tool call counts (Issue #2157) from the tracker that already
+      // parsed this stream's tool events — Claude `tool_use` blocks and
+      // Codex tool items alike. Omitted when the run made no tool call, so
+      // the field's absence never masquerades as a zeroed tally.
+      ...(Object.keys(toolCallCounts).length > 0 ? { toolCallCounts } : {}),
     };
 
     // Anthropic prompt-cache effectiveness for this invocation (Issue #4282).

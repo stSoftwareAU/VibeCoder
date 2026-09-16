@@ -290,3 +290,54 @@ Deno.test("run_stats - aggregateRunStats on empty list yields a zeroed aggregate
   assertEquals(agg.durationMs, 0);
   assertEquals(agg.wallClockMs, 0);
 });
+
+// =============================================================================
+// Per-tool call counts (Issue #2157)
+// =============================================================================
+
+Deno.test("run_stats - aggregateRunStats sums per-tool call counts", () => {
+  const a: RunStats = {
+    servedModels: ["claude-fable-5"],
+    requestedModel: "claude-fable-5",
+    durationMs: 10,
+    wallClockMs: 10,
+    toolCallCounts: { Read: 2, mcp__codegraph__codegraph_explore: 3 },
+  };
+  const b: RunStats = {
+    servedModels: ["claude-fable-5"],
+    requestedModel: "claude-fable-5",
+    durationMs: 20,
+    wallClockMs: 20,
+    toolCallCounts: { Bash: 1, mcp__codegraph__codegraph_explore: 4 },
+  };
+
+  const agg = aggregateRunStats([a, b]);
+  assertEquals(agg.toolCallCounts, {
+    Read: 2,
+    mcp__codegraph__codegraph_explore: 7,
+    Bash: 1,
+  });
+});
+
+Deno.test("run_stats - aggregateRunStats leaves toolCallCounts absent when no call reported any", () => {
+  const a: RunStats = {
+    servedModels: ["claude-fable-5"],
+    requestedModel: "claude-fable-5",
+    durationMs: 10,
+    wallClockMs: 10,
+  };
+  assertEquals(aggregateRunStats([a]).toolCallCounts, undefined);
+  assertEquals(aggregateRunStats([]).toolCallCounts, undefined);
+});
+
+Deno.test("run_stats - buildRunStats leaves toolCallCounts absent (the tally is layered on by the runner)", () => {
+  const stream = [
+    '{"type":"assistant","message":{"model":"claude-fable-5","content":[]}}',
+    '{"type":"result","result":"done"}',
+  ].join("\n");
+  const stats = buildRunStats(stream, {
+    requestedModel: "claude-fable-5",
+    wallClockMs: 1000,
+  });
+  assertEquals(stats.toolCallCounts, undefined);
+});
