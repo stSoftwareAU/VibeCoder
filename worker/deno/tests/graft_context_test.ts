@@ -663,6 +663,30 @@ Deno.test("collectGraftContext - writes /graft/ to info/exclude exactly once acr
   });
 });
 
+Deno.test("collectGraftContext - an exclude file with no trailing newline is not fused onto (Issue #2099)", async () => {
+  await withRepo(async (repoDir) => {
+    // git leaves the file exactly as the operator last wrote it, so a final
+    // pattern without its newline is a real shape. Appending blind would make
+    // it read `*.logs/graft/` and silently stop ignoring both.
+    await Deno.writeTextFile(`${repoDir}/.git/info/exclude`, "# mine\n*.log");
+    const { logger } = recordingLogger();
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: fakeRunner([ok(""), ok("bundle")]).run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "ok");
+    const lines = (await excludeText(repoDir)).split("\n");
+    assert(lines.includes("*.log"), lines.join("|"));
+    assert(lines.includes(GRAFT_EXCLUDE_PATTERN), lines.join("|"));
+  });
+});
+
 Deno.test("collectGraftContext - creates the exclude file when it is absent", async () => {
   await withRepo(async (repoDir) => {
     const { logger } = recordingLogger();
@@ -829,6 +853,20 @@ Deno.test("formatGraftContextSection - a bundle carrying delimiter-shaped text c
   const fence = section.split("\n").find((l) => l.startsWith("```"))!;
   const body = section.split(fence)[1] ?? "";
   assertEquals(body.includes(fence), false);
+});
+
+Deno.test("formatGraftContextSection - a credential in the bundle is redacted before it is fenced (Issue #2099)", () => {
+  // The bundle is repository source, and repository source sometimes carries a
+  // checked-in token. The sweep record claims the section redacts before it
+  // reaches the prompt; this is what holds that claim to the code.
+  const secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+  const section = formatGraftContextSection(
+    `const token = "${secret}";`,
+    "abc123abc123",
+  );
+
+  assertEquals(section.includes(secret), false);
+  assertStringIncludes(section, "const token =");
 });
 
 // ---------------------------------------------------------------------------
