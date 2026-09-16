@@ -21,6 +21,7 @@ import {
   detectFailureCategory,
   isInfrastructureFailure,
 } from "./failure_diagnosis.ts";
+import { primaryQuotaLatchedUntil } from "./primary_quota_latch.ts";
 
 /** Default backoff before an in-process infra retry. */
 export const DEFAULT_INFRA_RETRY_BACKOFF_MS = 15_000;
@@ -49,10 +50,29 @@ export function hasRunwayForInfraRetry(
   return cycleDeadlineEpochMs - nowMs >= MIN_INFRA_RETRY_RUNWAY_SECONDS * 1000;
 }
 
+/**
+ * Margin added to a quota-reset wait so the retry lands after the reset,
+ * not on it (Issue #2150).
+ */
+export const RATE_LIMIT_RESET_MARGIN_MS = 5_000;
+
 /** Options for `shouldRetryInfrastructureFailure`. */
 export interface InfraRetryOptions {
   /** Backoff in milliseconds before the retry. Defaults to 15s. */
   backoffMs?: number;
+  /**
+   * The cycle deadline, when the run has one. A `rate_limit` retry that
+   * must wait for the quota reset only happens when the wait plus
+   * {@link MIN_INFRA_RETRY_RUNWAY_SECONDS} fits before it (Issue #2150).
+   */
+  cycleDeadlineEpochMs?: number;
+  /** Time source (Unix milliseconds) — injectable for tests. */
+  nowMs?: () => number;
+  /**
+   * When the primary GraphQL quota latch holds until (Unix seconds), or
+   * null — injectable for tests; defaults to the live latch.
+   */
+  quotaResetEpochSeconds?: () => number | null;
   /** Sleep implementation — injectable for tests. Defaults to setTimeout. */
   sleepFn?: (ms: number) => Promise<void>;
   /** Optional abort signal to cancel the backoff sleep early. */
@@ -131,6 +151,46 @@ export async function shouldRetryInfrastructureFailure(
     return false;
   }
 
+  let backoffMs = options.backoffMs ?? DEFAULT_INFRA_RETRY_BACKOFF_MS;
+
+  // Issue #2150: a rate-limited phase retried 15 s later meets the same
+  // latch — on NEAT-AI-core#673 the reset was 17 minutes away and the run
+  // was failed with its PR already merged. When the latch names the reset,
+  // the retry waits for it; when that wait does not fit the cycle's runway,
+  // there is no retry to have, and the release reason already names the
+  // reset for the next cycle.
+  if (category === "rate_limit") {
+    const resetEpoch = (options.quotaResetEpochSeconds ??
+      primaryQuotaLatchedUntil)();
+    const now = options.nowMs?.() ?? Date.now();
+    if (resetEpoch !== null) {
+      const waitMs = resetEpoch * 1000 - now + RATE_LIMIT_RESET_MARGIN_MS;
+      if (waitMs > backoffMs) {
+        const deadline = options.cycleDeadlineEpochMs;
+        if (
+          deadline !== undefined &&
+          now + waitMs + MIN_INFRA_RETRY_RUNWAY_SECONDS * 1000 > deadline
+        ) {
+          logger.warn(
+            "Not retrying: the GraphQL quota resets after this cycle's runway",
+            {
+              phase,
+              category,
+              resetInSeconds: Math.round((resetEpoch * 1000 - now) / 1000),
+              runwaySeconds: Math.round((deadline - now) / 1000),
+            },
+          );
+          return false;
+        }
+        backoffMs = waitMs;
+        logger.warn(
+          "Waiting for the GraphQL quota reset before the retry (Issue #2150)",
+          { phase, category, waitSeconds: Math.round(waitMs / 1000) },
+        );
+      }
+    }
+  }
+
   const attempt = prior + 1;
   state.infraRetryCounts[phase] = attempt;
   logger.warn("Retrying infrastructure failure in-process", {
@@ -139,7 +199,6 @@ export async function shouldRetryInfrastructureFailure(
     attempt,
   });
 
-  const backoffMs = options.backoffMs ?? DEFAULT_INFRA_RETRY_BACKOFF_MS;
   const sleepFn = options.sleepFn ??
     ((ms: number) => defaultSleep(ms, options.abortSignal));
   await sleepFn(backoffMs);
