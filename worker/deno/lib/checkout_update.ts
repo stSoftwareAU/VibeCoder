@@ -52,9 +52,9 @@
  * settled-streak marker is recorded on delivery, and evidence that could not
  * be delivered is spooled in `<logDir>/checkout-update-escalation` — one entry
  * per streak, overwritten, carrying the attempt count — so the next failing
- * run retries it. The fifth failed attempt records `escalation_lost` once and
- * settles the streak, so a hook that never works cannot make every launch pay
- * for it.
+ * run retries it. The fifth failed attempt records `escalation_lost` once,
+ * settles the streak and drops that spool, so a hook that never works cannot
+ * make every launch pay for it.
  *
  * **Recovery delivers nothing** (Issue #2110). A run that updates cleanly ends
  * the streak: it clears `<logDir>/checkout-update-failure-streak` and the
@@ -1321,8 +1321,8 @@ async function recordEscalationLost(
  * did not return `ok` leaves the streak eligible and the next failing run
  * tries again. Attempts are bounded: the
  * {@link CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS}th failed attempt records
- * `escalation_lost` once and settles the streak, so a hook that never works
- * is not paid for on every launch for ever.
+ * `escalation_lost` once, settles the streak and drops the spool, so a hook
+ * that never works is not paid for on every launch for ever.
  *
  * A host with no hook, or with a `callbacks` block that could not be read,
  * has nothing to deliver to: that is recorded once, locally, and settles the
@@ -1409,10 +1409,14 @@ async function deliverEscalation(
     return true;
   }
 
+  // The bound is spent here: the report is abandoned, so the spool goes with
+  // it. Nothing will read that evidence again — the streak is settled, so no
+  // later run retries it — and `escalation_lost` below is the loud record
+  // that an alert existed and never arrived.
   const lost = attempt >= CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS;
   const queued = await saveEscalationState(deps, logDir, {
     escalatedStreak: lost ? streak : 0,
-    pending: {
+    pending: lost ? null : {
       repoDir: current.repoDir,
       streak,
       error: current.error,
@@ -1426,10 +1430,12 @@ async function deliverEscalation(
     `Checkout update escalation failed (hook status ${hookStatus}` +
       (thrown === "" ? "" : `: ${thrown}`) +
       `) on attempt ${attempt} of ` +
-      `${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS}, ` +
-      (queued
-        ? "spooled for the next failing run"
-        : "and the evidence could NOT be queued — it exists only in this log") +
+      `${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS}` +
+      (lost
+        ? ""
+        : `, ` + (queued
+          ? "spooled for the next failing run"
+          : "and the evidence could NOT be queued — it exists only in this log")) +
       ` (Issue #2110)`,
   );
 

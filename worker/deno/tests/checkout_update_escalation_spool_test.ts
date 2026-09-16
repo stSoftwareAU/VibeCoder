@@ -288,9 +288,9 @@ Deno.test("updateCheckout - the fifth failed attempt loses the report and settle
       "the streak is settled, so no later run tries again",
     );
     assertEquals(
-      state?.pending?.attempts,
-      CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS,
-      "the undelivered evidence is kept, so the recovery line can say so",
+      state?.pending,
+      null,
+      "the abandoned report's spool is dropped — nothing will retry it",
     );
   });
 });
