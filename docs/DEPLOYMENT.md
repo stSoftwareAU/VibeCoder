@@ -249,9 +249,11 @@ directory (e.g. `~/vibe-coder-runtime`) and do interactive work elsewhere —
 `git worktree` is a cheap way to keep development trees out of the
 appliance clone's way. When the bootstrap does hit this collision it now
 names it in the failure ("looks like an active development tree"), and
-after three consecutive failures it raises a deduplicated GitHub issue on
-the worker repository so an unattended host's absence is visible where you
-actually look.
+after three consecutive failures spanning at least fifteen minutes it fires
+the operator's `callbacks.host_failure` hook once, so an unattended host's
+absence reaches whoever runs that host — see
+[Host-Side Checkout Update](CONFIGURATION.md#-host-side-checkout-update).
+Nothing is filed on GitHub (Issue #2110).
 
 ## 🏁 Initial Setup
 

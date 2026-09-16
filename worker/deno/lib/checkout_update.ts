@@ -15,11 +15,23 @@
  * `git checkout <branch>` → `git reset --hard origin/<branch>` →
  * `git clean -fd` → the scoped ignored clean of Issue #1443 — and, on
  * failure, enriches the error, counts the streak in
- * `<logDir>/checkout-update-failure-streak`, and raises exactly one GitHub
- * issue per streak once {@link CHECKOUT_UPDATE_ESCALATION_THRESHOLD}
- * consecutive failures are reached **and** they span at least
+ * `<logDir>/checkout-update-failure-streak`, and delivers exactly one report
+ * per streak through the operator's own `callbacks.host_failure` hook once
+ * {@link CHECKOUT_UPDATE_ESCALATION_THRESHOLD} consecutive failures are
+ * reached **and** they span at least
  * {@link CHECKOUT_UPDATE_ESCALATION_MIN_SPAN_SECONDS}. A success resets the
  * streak to zero.
+ *
+ * That report used to be a GitHub issue filed against the checkout's own
+ * origin repository (Issue #4204). It no longer is (Issues #2110, #2088): a
+ * host-level fault is the operator's business, not a public record in the
+ * repository the fleet works on, so the escalation now rides the host-side
+ * `callbacks.host_failure` hook of Issue #2107 — a `checkout_update` payload
+ * handed to whatever command the operator configured. No path in this module
+ * spawns `gh`. A host with no hook configured records `no_hook_configured`
+ * locally and a host whose `callbacks` block cannot be read records
+ * `config_invalid`; neither stops the update itself, and neither is retried,
+ * because there is nothing to retry against.
  *
  * The span is half the rule because the count alone was not measuring
  * persistence (Issue #1017): on GRQ-23 the streak went 1 → 2 → 3 in eight
@@ -32,18 +44,27 @@
  * the streak at all.
  *
  * That escalation used to fire at the single run where the streak *equalled*
- * the threshold, and its transport — `gh issue create` against
- * `api.github.com` — needs the network whose loss is the dominant cause of the
- * streak. So the one observed firing threw and was lost for ever (Issue
- * #1018). It is now re-armed and queued: delivery is attempted on every
- * failing run at or above the threshold until one attempt lands, the
- * escalated-at marker is recorded **only** on success, and evidence that could
- * not be sent is spooled in `<logDir>/checkout-update-escalation` — one entry
- * per streak, overwritten — so the next run with connectivity delivers it. The
- * run that recovers is usually that run, and it flushes the queue marked as an
- * outage that has since ended; the spool is then cleared with the streak,
- * whatever became of that send, because a queued report must never outlive the
- * condition it describes.
+ * the threshold, and a transport that fails is the dominant failure mode here
+ * — the fault being reported is often the same fault that stops the report
+ * (Issue #1018). So delivery is re-armed and bounded: it is attempted on every
+ * failing run at or above the threshold until one invocation returns `ok` or
+ * {@link CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} attempts have failed, the
+ * settled-streak marker is recorded on delivery, and a report that could not
+ * be delivered is spooled in `<logDir>/checkout-update-escalation` — one entry
+ * per streak, overwritten, carrying the attempt count — so the next failing
+ * run knows which attempt it is on and reports the streak afresh. The fifth
+ * failed attempt records `escalation_lost` once, settles the streak and drops
+ * that spool, so a hook that never works cannot make every launch pay for it.
+ *
+ * **Recovery delivers nothing** (Issue #2110). A run that updates cleanly ends
+ * the streak: it clears `<logDir>/checkout-update-failure-streak` and the
+ * spool, and logs one line saying the streak ended and whether a report was
+ * still undelivered. The condition is over, and a hook fired after the fact
+ * would report a fault that no longer exists — the local line is the record.
+ *
+ * Both outcomes are also self-heal events under the `checkout_update` module:
+ * `escalated` carries the hook status, the attempt and the streak, and
+ * `escalation_lost` records the streak whose report never landed.
  *
  * Under `update_mode: "frozen"` (Issue #624, part of #583) the sequence above
  * would defeat the pin, so the checkout is held at `pinned_ref` instead: fetch
@@ -76,13 +97,17 @@ import {
   resolveOriginDefaultBranch,
 } from "./run_bootstrap.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { escalationHostId, parseOriginRepo } from "./host_escalation.ts";
+import type { CallbackInvocation } from "./run_callbacks.ts";
 import {
-  escalationHostId,
-  fileOrCommentIssue,
-  parseOriginRepo,
-  resolveEscalationGhEnv,
-  resolveOriginRepo,
-} from "./host_escalation.ts";
+  type HostFailureHookConfig,
+  type HostFailurePayload,
+  invokeHostFailureHook,
+} from "./host_failure_hook.ts";
+import {
+  emitSelfHealEventAuto,
+  type SelfHealEvent,
+} from "./self_heal_events.ts";
 
 // Re-exported for the callers and tests that knew this helper by its old
 // home; the channel itself now lives in host_escalation.ts (Issue #556).
@@ -91,11 +116,25 @@ export { parseOriginRepo };
 /**
  * Consecutive update failures before the host escalates through the control
  * plane (Issue #4204). One transient blip stays a log line; a crash-loop
- * becomes a GitHub issue the operator actually sees — the observed failure
- * mode was a worker silently running week-old code because its checkout was
- * occupied by interactive development work.
+ * reaches the operator's own `callbacks.host_failure` hook (Issue #2110) —
+ * the observed failure mode was a worker silently running week-old code
+ * because its checkout was occupied by interactive development work.
  */
 export const CHECKOUT_UPDATE_ESCALATION_THRESHOLD = 3;
+
+/**
+ * Hook invocations a single streak may spend before its report is abandoned
+ * (Issue #2110).
+ *
+ * The hook is a command on the host, and the fault it reports — a wedged
+ * checkout, a host that cannot reach its remote — is exactly the kind of
+ * fault that can stop it running. Retrying on each later failing run is what
+ * gets a report out of a transient outage; retrying for ever is what makes a
+ * permanently broken hook a cost on every launch. Five attempts spans the
+ * hourly cadence the streak was written for without becoming unbounded, and
+ * the fifth failure says `escalation_lost` out loud rather than going quiet.
+ */
+export const CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS = 5;
 
 /**
  * The shortest span those consecutive failures may cover before the host
@@ -204,7 +243,7 @@ export interface CheckoutState {
   dirtyFiles: number;
 }
 
-/** Everything the escalation hook needs to name the failure (#4204). */
+/** Everything the host-failure hook needs to name the failure (#4204). */
 export interface CheckoutUpdateEscalationContext {
   /** The worker checkout that could not be updated. */
   repoDir: string;
@@ -212,29 +251,27 @@ export interface CheckoutUpdateEscalationContext {
   logDir: string;
   /** Consecutive failures, including this one. */
   streak: number;
+  /** Unix seconds of the first failure in this streak; 0 when unknown. */
+  streakStartedAt: number;
+  /** Which delivery attempt this report is, counting from 1 (Issue #2110). */
+  attempt: number;
   /** The enriched failure detail. */
   error: string;
   /** Checkout state at failure time, when it could be read. */
   checkout: CheckoutState | null;
-  /**
-   * ISO-8601 time the first undelivered attempt was made, when this report
-   * comes off the spool (Issue #1018); undefined for a first-attempt report.
-   * The issue body says so, so a late report is never read as a fresh one.
-   */
-  spooledAt?: string;
-  /**
-   * True when this report is flushed by a run that updated cleanly (Issue
-   * #1018) — the outage is over, and the body says so, so a report that
-   * arrives after the fact is never read as a live one.
-   */
-  recovered?: boolean;
 }
+
+/** The evidence of one failure, before an attempt number is put on it. */
+type CheckoutEscalationEvidence = Omit<
+  CheckoutUpdateEscalationContext,
+  "attempt"
+>;
 
 /**
  * Evidence of an escalation that could not be delivered (Issue #1018). Each
  * further failed attempt in the same streak overwrites the evidence — the
  * newest failure is the one worth reporting — while keeping the timestamp of
- * the first, so the report says how long the host has been unable to speak.
+ * the first, so the record says how long the host has been unable to speak.
  */
 export interface SpooledCheckoutEscalation {
   /** The worker checkout that could not be updated. */
@@ -247,6 +284,13 @@ export interface SpooledCheckoutEscalation {
   checkout: CheckoutState | null;
   /** ISO-8601 time of the **first** delivery attempt that failed. */
   spooledAt: string;
+  /**
+   * Hook invocations this streak has spent (Issue #2110). Bounded by
+   * {@link CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS}: the attempt that reaches
+   * the bound settles the streak, so a hook that never works is paid for
+   * five times, not for ever.
+   */
+  attempts: number;
 }
 
 /**
@@ -256,12 +300,14 @@ export interface SpooledCheckoutEscalation {
  */
 export interface CheckoutEscalationState {
   /**
-   * The streak an escalation was **successfully delivered** for; 0 when none
-   * has been. Non-zero is what keeps the rest of the streak quiet, so a send
-   * that threw leaves the streak eligible for the next run to retry.
+   * The streak whose report is **settled**; 0 while it is still open. Settled
+   * means one of: the hook returned `ok`, there was no hook to invoke, or
+   * {@link CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} attempts all failed
+   * (Issue #2110). Non-zero is what keeps the rest of the streak quiet, so an
+   * invocation that merely failed leaves the streak eligible to retry.
    */
   escalatedStreak: number;
-  /** The single queued report awaiting connectivity, or null. */
+  /** The single queued report awaiting a working hook, or null. */
   pending: SpooledCheckoutEscalation | null;
 }
 
@@ -309,7 +355,7 @@ export interface CheckoutUpdateOutcome {
   overwriteNotice: string;
   /** Consecutive failures including this one; 0 after a success. */
   streak: number;
-  /** Whether this failure raised the control-plane escalation. */
+  /** Whether the `callbacks.host_failure` hook took delivery on this run. */
   escalated: boolean;
 }
 
@@ -367,8 +413,10 @@ export interface CheckoutUpdateDeps {
   /**
    * Read the escalation marker and spool (Issue #1018). An absent or
    * unreadable store reads as {@link emptyEscalationState}: the worst that
-   * costs is one duplicate attempt, which the deduplicated escalation channel
-   * folds into the open issue — a lost alert has no such recovery.
+   * costs is one duplicate invocation of the operator's hook — nothing folds
+   * those together any more (Issue #2110) — and a hook told twice about a
+   * wedged host is a far better outcome than a lost alert, which has no
+   * recovery at all.
    */
   readEscalationState(logDir: string): Promise<CheckoutEscalationState>;
   /**
@@ -381,14 +429,34 @@ export interface CheckoutUpdateDeps {
     state: CheckoutEscalationState,
   ): Promise<void>;
   /**
-   * Raise the crash-loop through the control plane (Issue #4204) — the
-   * default files (or comments on) a deduplicated GitHub issue against the
-   * checkout's origin repository. Best-effort: a throw is logged and never
-   * masks the underlying update failure.
+   * The operator's `callbacks.host_failure` hook, as a targeted read of this
+   * host's `.config.json` found it (Issues #2107, #2110). `none` and
+   * `invalid` are recorded locally and settle the streak — there is nothing
+   * to retry against — and neither blocks the update itself.
    */
-  escalate(context: CheckoutUpdateEscalationContext): Promise<void>;
+  hostFailureHook: HostFailureHookConfig;
+  /**
+   * Report the crash-loop to the validated hook (Issues #4204, #2110).
+   * Delivery is an invocation whose status is `ok`; everything else is
+   * retried on the next failing run, up to
+   * {@link CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS}. Best-effort: a throw is
+   * logged and never masks the underlying update failure.
+   */
+  escalate(
+    context: CheckoutUpdateEscalationContext,
+    hook: { path: string; timeoutSeconds: number },
+  ): Promise<CallbackInvocation>;
   /** Append a timestamped line to `run_core.log`. */
   log(logDir: string, message: string): Promise<void>;
+  /**
+   * Record a `checkout_update` self-heal event (Issue #2110) — `escalated`
+   * with the hook status, the attempt and the streak, or `escalation_lost`.
+   *
+   * A seam like every other side effect here, so the tests observe the
+   * events through the dependency set rather than through the module-level
+   * work directory the production default reads.
+   */
+  emitEvent(event: Omit<SelfHealEvent, "timestamp">): Promise<void>;
 }
 
 /**
@@ -852,7 +920,17 @@ function parseSpooledEscalation(
       };
     }
   }
-  return { repoDir, streak, error, checkout, spooledAt };
+  // A spool entry written before Issue #2110 carries no attempt count, and
+  // reads as zero: a host upgrading mid-streak gets the full bound of
+  // attempts rather than a shortened one, which is the direction that
+  // reports the fault rather than losing it.
+  const rawAttempts = record["attempts"];
+  const attempts =
+    typeof rawAttempts === "number" && Number.isFinite(rawAttempts) &&
+      rawAttempts > 0
+      ? Math.floor(rawAttempts)
+      : 0;
+  return { repoDir, streak, error, checkout, spooledAt, attempts };
 }
 
 /**
@@ -860,8 +938,8 @@ function parseSpooledEscalation(
  *
  * Anything that stops the file meaning what it says — absent, unreadable,
  * malformed — reads as "nothing escalated, nothing queued". That is the safe
- * direction: it re-attempts an escalation the deduplicated channel folds into
- * the issue already open, rather than silencing a host running stale code.
+ * direction: it re-attempts a report the operator's hook may receive twice,
+ * rather than silencing a host running stale code.
  */
 async function defaultReadEscalationState(
   logDir: string,
@@ -957,63 +1035,103 @@ export function diagnoseUpdateFailure(
 }
 
 /**
- * File (or comment on) a deduplicated GitHub issue naming the crash-loop
- * (Issue #4204). Rides the shared host-escalation channel in
- * `host_escalation.ts` (Issue #556), which goes through the `spawnGh`
- * chokepoint like every other worker write and resolves the staged
- * `GH_CONFIG_DIR` this update runs before the configuration load establishes.
+ * The exit status a failing git step reported, or undefined (Issue #2110).
+ *
+ * The enriched detail carries git's own `(exit code N)` — it is the one place
+ * the status survives into the report, because the update sequence returns a
+ * message rather than a status. Nothing invents one: a failure whose status
+ * was never observed (an unresolvable default branch, an unresolvable pin)
+ * omits `lastExitStatus` rather than emitting a placeholder a hook would read
+ * as real.
  */
-export async function escalateCheckoutUpdateFailure(
-  context: CheckoutUpdateEscalationContext,
-): Promise<void> {
-  const repo = await resolveOriginRepo(context.repoDir);
-  const env = await resolveEscalationGhEnv();
-
-  const host = escalationHostId();
-  const title = `Worker checkout update failing on ${host}`;
-  const body = [
-    context.recovered
-      ? `The host-side worker checkout update on \`${host}\` failed ` +
-        `${context.streak} consecutive runs and has **since recovered** — it ` +
-        `updated cleanly on the run that delivered this report. The host was ` +
-        `launching on stale code for the duration, and could not reach GitHub ` +
-        `to say so at the time (Issues #4204, #1018).`
-      : `The host-side worker checkout update on \`${host}\` has failed ` +
-        `${context.streak} consecutive runs — the worker keeps launching on ` +
-        `the checkout it already has, so that host is running stale code ` +
-        `(Issues #4204, #513).`,
-    "",
-    "```",
-    context.error,
-    "```",
-    "",
-    context.checkout
-      ? `Checkout state: branch \`${context.checkout.branch}\`, ` +
-        `${context.checkout.dirtyFiles} uncommitted change(s).`
-      : "Checkout state could not be read.",
-    "",
-    // A report that could not be sent when the fault started says so, rather
-    // than reading as though the fault only began now (Issue #1018).
-    ...(context.spooledAt
-      ? [
-        `This report was queued on \`${context.spooledAt}\` — the host could ` +
-        `not reach GitHub at the time — and delivered on the first run that ` +
-        `could (Issue #1018). The evidence above is from the last failing ` +
-        `run before delivery.`,
-        "",
-      ]
-      : []),
-    "If this checkout doubles as a development tree, commit or stash the " +
-    "in-flight work, or give the worker its own dedicated clone — see " +
-    "docs/DEPLOYMENT.md (Dedicated clone).",
-  ].join("\n");
-
-  await fileOrCommentIssue({ repo, title, body, env });
+export function gitStepExitStatus(detail: string): number | undefined {
+  const match = /\(exit code (-?\d+)\)/.exec(detail);
+  const captured = match?.[1];
+  if (captured === undefined) return undefined;
+  const code = Number.parseInt(captured, 10);
+  return Number.isFinite(code) ? code : undefined;
 }
 
-/** Build the production dependency set for {@link updateCheckout}. */
-export function createDefaultCheckoutUpdateDeps(): CheckoutUpdateDeps {
+/**
+ * The `host_failure` payload describing this checkout-update crash-loop
+ * (Issues #2107, #2110).
+ *
+ * `delivery` is always `first`/1: the checkout update delivers one report per
+ * streak, and a retry of that same report is a further *attempt*, not a
+ * further delivery — which is what `attempt` says.
+ *
+ * @param context - The failure, and which attempt is reporting it
+ * @param host - Host identifier; defaults to this host's
+ * @param nowMs - Clock seam, used only when the streak start is unknown
+ * @returns The payload the hook receives
+ */
+export function buildCheckoutHostFailurePayload(
+  context: CheckoutUpdateEscalationContext,
+  host: string = escalationHostId(),
+  nowMs: () => number = Date.now,
+): HostFailurePayload {
+  const startedMs = context.streakStartedAt > 0
+    ? context.streakStartedAt * 1000
+    : nowMs();
+  const payload: HostFailurePayload = {
+    host,
+    condition: "checkout_update",
+    phase: "checkout_update",
+    consecutiveFailures: context.streak,
+    streakStartedAt: new Date(startedMs).toISOString(),
+    delivery: { kind: "first", count: 1 },
+    attempt: context.attempt,
+    // Git error text is the canonical carrier of a tokenised remote URL, and
+    // this detail is handed to a command the operator wrote (Issue #1258).
+    detail: redactSecrets(context.error),
+  };
+  const exitStatus = gitStepExitStatus(context.error);
+  if (exitStatus !== undefined) payload.lastExitStatus = exitStatus;
+  if (context.checkout !== null) {
+    payload.checkout = {
+      branch: context.checkout.branch,
+      dirtyFiles: context.checkout.dirtyFiles,
+    };
+  }
+  return payload;
+}
+
+/**
+ * Run the operator's `callbacks.host_failure` hook for this crash-loop
+ * (Issues #2110, #2088) — the production {@link CheckoutUpdateDeps.escalate}.
+ *
+ * This replaced the GitHub issue the crash-loop used to file against the
+ * checkout's origin repository: a host-level fault belongs to whoever runs
+ * the host, not to the public record of the repository the fleet works on.
+ * The invoker never throws — a hook that could not be spawned, that failed or
+ * that timed out comes back as a non-`ok` invocation the caller retries.
+ *
+ * Both hook-side log sinks go to stderr: the launchers redirect this
+ * command's stderr into the operator's run log, and stdout carries the
+ * command's own result.
+ */
+export function invokeCheckoutUpdateFailureHook(
+  context: CheckoutUpdateEscalationContext,
+  hook: { path: string; timeoutSeconds: number },
+): Promise<CallbackInvocation> {
+  return invokeHostFailureHook(buildCheckoutHostFailurePayload(context), hook, {
+    log: (message) => console.error(`[worker-checkout-update] ${message}`),
+    logError: (message) => console.error(`[worker-checkout-update] ${message}`),
+  });
+}
+
+/**
+ * Build the production dependency set for {@link updateCheckout}.
+ *
+ * @param hostFailureHook - What a targeted read of `callbacks.host_failure`
+ *   found (Issue #2110). The default is `none`, so a caller that knows
+ *   nothing about the hook escalates nowhere rather than guessing a path.
+ */
+export function createDefaultCheckoutUpdateDeps(
+  hostFailureHook: HostFailureHookConfig = { kind: "none" },
+): CheckoutUpdateDeps {
   return {
+    hostFailureHook,
     resolveDefaultBranch: resolveOriginDefaultBranch,
     resetToDefaultBranch: resetCheckoutToDefaultBranch,
     fetchOrigin,
@@ -1026,8 +1144,11 @@ export function createDefaultCheckoutUpdateDeps(): CheckoutUpdateDeps {
     now: () => Math.floor(Date.now() / 1000),
     readEscalationState: defaultReadEscalationState,
     writeEscalationState: defaultWriteEscalationState,
-    escalate: escalateCheckoutUpdateFailure,
+    escalate: invokeCheckoutUpdateFailureHook,
     log: appendRunCoreLogLine,
+    emitEvent: async (event) => {
+      await emitSelfHealEventAuto(event);
+    },
   };
 }
 
@@ -1115,26 +1236,108 @@ async function saveEscalationState(
 }
 
 /**
- * Deliver the crash-loop escalation for the current streak (Issues #4204,
- * #1018).
+ * Record a streak that has nowhere to report to (Issue #2110).
  *
- * Called on every failing run at or above the threshold. The marker — not the
- * streak count — decides whether to stay quiet, so an attempt that threw
- * leaves the streak eligible and the next run tries again; only a delivered
- * report silences the rest of the streak. Evidence that could not be sent is
- * spooled, and a run whose network has come back sends the spooled evidence
- * rather than pretending the fault started now.
+ * A host with no `callbacks.host_failure`, or one whose `callbacks` block
+ * will not parse, is not a fault of the update — but it must not be silent
+ * either, or a wedged host produces no signal at all. So it is said once, in
+ * `run_core.log` and as a self-heal event, and the streak is **settled**
+ * rather than left eligible: nothing about the configuration will change
+ * between now and the next failing run, so a retry would only repeat the
+ * line.
+ */
+async function recordUnusableHook(
+  deps: CheckoutUpdateDeps,
+  logDir: string,
+  streak: number,
+  hook: { kind: "none" } | { kind: "invalid"; error: string },
+): Promise<void> {
+  const hookStatus = hook.kind === "none"
+    ? "no_hook_configured"
+    : "config_invalid";
+  await deps.log(
+    logDir,
+    `The worker checkout update has failed ${streak} consecutive runs — ` +
+      (hook.kind === "none"
+        ? `no callbacks.host_failure hook is configured on this host, so ` +
+          `there is nowhere to report it (${hookStatus}, Issue #2110)`
+        : `callbacks.host_failure could not be read, so there is nowhere ` +
+          `to report it (${hookStatus}, Issue #2110): ${hook.error}`),
+  );
+  await deps.emitEvent({
+    module: "checkout_update",
+    action: "escalated",
+    reason: `checkout update failed ${streak} consecutive runs`,
+    result: "skipped",
+    details: { hookStatus, attempt: 0, streak },
+  });
+  await saveEscalationState(deps, logDir, {
+    escalatedStreak: streak,
+    pending: null,
+  });
+}
+
+/**
+ * Abandon this streak's report after the attempt bound (Issue #2110).
+ *
+ * Said out loud in both records, so "nobody was told" is itself something the
+ * operator can find, rather than a silence indistinguishable from a host that
+ * never failed.
+ */
+async function recordEscalationLost(
+  deps: CheckoutUpdateDeps,
+  logDir: string,
+  streak: number,
+  hookStatus: string,
+  attempts: number,
+): Promise<void> {
+  await deps.log(
+    logDir,
+    `escalation_lost: ${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} attempts ` +
+      `to report this checkout-update streak through ` +
+      `callbacks.host_failure have all failed — no further attempt will be ` +
+      `made for this streak, and the evidence exists only in this log ` +
+      `(Issue #2110)`,
+  );
+  await deps.emitEvent({
+    module: "checkout_update",
+    action: "escalation_lost",
+    reason:
+      `${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} hook attempts all failed`,
+    result: "failed",
+    // `attempt`, not `attempts`, so one key reads both events: a
+    // `self-heal-summary` consumer asking for the attempt an event describes
+    // gets an answer whichever of the two it is looking at.
+    details: { hookStatus, attempt: attempts, streak },
+  });
+}
+
+/**
+ * Deliver this streak's report through the `callbacks.host_failure` hook
+ * (Issues #4204, #1018, #2110).
+ *
+ * Called on every failing run at or above the threshold. The settled marker —
+ * not the streak count — decides whether to stay quiet, so an invocation that
+ * did not return `ok` leaves the streak eligible and the next failing run
+ * tries again. Attempts are bounded: the
+ * {@link CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS}th failed attempt records
+ * `escalation_lost` once, settles the streak and drops the spool, so a hook
+ * that never works is not paid for on every launch for ever.
+ *
+ * A host with no hook, or with a `callbacks` block that could not be read,
+ * has nothing to deliver to: that is recorded once, locally, and settles the
+ * streak — retrying an absent hook would only repeat the same line.
  *
  * Every step is best-effort: nothing here may mask the underlying update
  * failure.
  *
  * @param deps - The injected side effects
- * @param current - This run's failure, as the escalation would report it
- * @returns Whether a report actually reached GitHub on this run
+ * @param current - This run's failure, as the report would describe it
+ * @returns Whether the hook actually took delivery on this run
  */
 async function deliverEscalation(
   deps: CheckoutUpdateDeps,
-  current: CheckoutUpdateEscalationContext,
+  current: CheckoutEscalationEvidence,
 ): Promise<boolean> {
   const { logDir, streak } = current;
 
@@ -1144,88 +1347,121 @@ async function deliverEscalation(
   } catch {
     state = emptyEscalationState();
   }
-  // One delivered report per streak — a crash-loop must not spam the repo.
+  // One settled report per streak — a crash-loop must not re-fire the hook
+  // every hour once its report has landed, been abandoned, or had nowhere to
+  // go.
   //
   // The marker is only believed while this run is *later in the same streak*
-  // than the delivery it records, which is what the count strictly increasing
+  // than the outcome it records, which is what the count strictly increasing
   // within a streak means. A marker left behind by an earlier streak — the
   // clear on recovery could not remove the file, say — is therefore ignored
   // rather than silencing the host for ever, which would be a worse failure
-  // than the duplicate report the deduplicated channel folds into one issue.
+  // than one duplicate report.
   if (state.escalatedStreak > 0 && streak > state.escalatedStreak) return false;
 
-  const spooled = state.pending;
-  const context: CheckoutUpdateEscalationContext = spooled === null
-    ? current
-    : {
-      ...current,
-      error: spooled.error,
-      checkout: spooled.checkout,
-      spooledAt: spooled.spooledAt,
-    };
-
-  await deps.log(
-    logDir,
-    `The worker checkout update has failed ${streak} consecutive runs — ` +
-      `escalating through the control plane (Issue #4204)` +
-      (spooled === null
-        ? ""
-        : `, delivering the report spooled at ${spooled.spooledAt} ` +
-          `(Issue #1018)`),
-  );
-
-  try {
-    await deps.escalate(context);
-  } catch (escalationError) {
-    // Queue the evidence — one entry per streak, overwritten — and leave the
-    // marker unset so the next failing run attempts delivery again (#1018).
-    const queued = await saveEscalationState(deps, logDir, {
-      escalatedStreak: 0,
-      pending: {
-        repoDir: current.repoDir,
-        streak,
-        error: current.error,
-        checkout: current.checkout,
-        spooledAt: spooled?.spooledAt ?? new Date().toISOString(),
-      },
-    });
-    await deps.log(
-      logDir,
-      `Checkout update escalation failed, ${
-        queued
-          ? "spooled for the next run with connectivity"
-          : "and the evidence could NOT be queued — it exists only in this log"
-      } (Issue #1018): ${failureText(escalationError)}`,
-    );
+  const hook = deps.hostFailureHook;
+  if (hook.kind !== "hook") {
+    await recordUnusableHook(deps, logDir, streak, hook);
     return false;
   }
 
-  await saveEscalationState(deps, logDir, {
-    escalatedStreak: streak,
-    pending: null,
+  const attempt = (state.pending?.attempts ?? 0) + 1;
+  await deps.log(
+    logDir,
+    `The worker checkout update has failed ${streak} consecutive runs — ` +
+      `invoking the callbacks.host_failure hook (attempt ${attempt} of ` +
+      `${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS}, Issue #2110)`,
+  );
+
+  let invocation: CallbackInvocation | null = null;
+  let thrown = "";
+  try {
+    invocation = await deps.escalate({ ...current, attempt }, {
+      path: hook.path,
+      timeoutSeconds: hook.timeoutSeconds,
+    });
+  } catch (escalationError) {
+    // The invoker is documented never to throw, so this is a fault in the
+    // seam rather than in the hook — recorded as its own status, never
+    // silently folded into "the hook failed".
+    thrown = failureText(escalationError);
+  }
+  const hookStatus = invocation?.status ?? "threw";
+
+  await deps.emitEvent({
+    module: "checkout_update",
+    action: "escalated",
+    reason: `checkout update failed ${streak} consecutive runs`,
+    result: hookStatus === "ok" ? "ok" : "failed",
+    details: { hookStatus, attempt, streak },
   });
-  return true;
+
+  if (hookStatus === "ok") {
+    await deps.log(
+      logDir,
+      `The callbacks.host_failure hook took delivery of the checkout-update ` +
+        `report on attempt ${attempt} (Issue #2110)`,
+    );
+    await saveEscalationState(deps, logDir, {
+      escalatedStreak: streak,
+      pending: null,
+    });
+    return true;
+  }
+
+  // The bound is spent here: the report is abandoned, so the spool goes with
+  // it. Nothing will read that evidence again — the streak is settled, so no
+  // later run retries it — and `escalation_lost` below is the loud record
+  // that an alert existed and never arrived.
+  const lost = attempt >= CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS;
+  const queued = await saveEscalationState(deps, logDir, {
+    escalatedStreak: lost ? streak : 0,
+    pending: lost ? null : {
+      repoDir: current.repoDir,
+      streak,
+      error: current.error,
+      checkout: current.checkout,
+      spooledAt: state.pending?.spooledAt ?? new Date().toISOString(),
+      attempts: attempt,
+    },
+  });
+  await deps.log(
+    logDir,
+    `Checkout update escalation failed (hook status ${hookStatus}` +
+      (thrown === "" ? "" : `: ${thrown}`) +
+      `) on attempt ${attempt} of ` +
+      `${CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS}` +
+      (lost
+        ? ""
+        : `, ` + (queued
+          ? "spooled for the next failing run"
+          : "and the evidence could NOT be queued — it exists only in this log")) +
+      ` (Issue #2110)`,
+  );
+
+  if (lost) {
+    await recordEscalationLost(deps, logDir, streak, hookStatus, attempt);
+  }
+  return false;
 }
 
 /**
- * End the streak, delivering whatever it never managed to say (Issue #1018).
+ * End the streak, recording locally what it never managed to say (Issue
+ * #2110).
  *
- * A queued report exists precisely because the host could not reach GitHub,
- * and the run that recovers is the first that can — so it is sent, marked as
- * an outage that has since ended, which is how "the operator learns about an
- * outage after it ends rather than never" actually holds. Nothing is ever
- * re-armed by it: only a report that was never delivered is flushed, so a
- * streak that already escalated stays at one issue.
+ * Nothing is delivered here. A run that updates cleanly is proof the
+ * condition has cleared, and firing the hook then would report a fault that
+ * no longer exists — the operator would be paged, at recovery, about a host
+ * that is fine. So the streak file and the spool are cleared together and one
+ * line goes to `run_core.log` saying the streak ended and whether its report
+ * was still undelivered, which is the record that an alert existed and never
+ * arrived.
  *
- * The spool is then cleared **whatever happened to that send**, because the
- * condition it describes has cleared — carrying it forward would be the stale
- * state that caught Issues #805 and #808. A flush that could not be delivered
- * is said out loud instead, so the operator can see in `run_core.log` that an
- * alert existed and why it never arrived.
+ * A success on a host that never escalated says nothing: there is no streak
+ * to report the end of.
  */
 async function clearEscalationState(
   deps: CheckoutUpdateDeps,
-  repoDir: string,
   logDir: string,
 ): Promise<void> {
   let state: CheckoutEscalationState;
@@ -1235,31 +1471,16 @@ async function clearEscalationState(
     state = emptyEscalationState();
   }
   const pending = state.pending;
-  if (pending !== null) {
+  if (state.escalatedStreak > 0 || pending !== null) {
     await deps.log(
       logDir,
-      `The checkout update succeeded — delivering the escalation spooled at ` +
-        `${pending.spooledAt} after ${pending.streak} consecutive failures, ` +
-        `now that this host can reach GitHub again (Issue #1018)`,
+      `The checkout update succeeded — the failure streak has ended` +
+        (pending === null
+          ? `, and its escalation state is cleared (Issue #2110)`
+          : `, but its report was still undelivered after ${pending.attempts} ` +
+            `hook attempt(s) first queued at ${pending.spooledAt}; it is ` +
+            `discarded with the condition it describes (Issue #2110)`),
     );
-    try {
-      await deps.escalate({
-        repoDir,
-        logDir,
-        streak: pending.streak,
-        error: pending.error,
-        checkout: pending.checkout,
-        spooledAt: pending.spooledAt,
-        recovered: true,
-      });
-    } catch (escalationError) {
-      await deps.log(
-        logDir,
-        `The spooled checkout update escalation could not be delivered and ` +
-          `is being discarded, because the condition it reports has already ` +
-          `cleared (Issue #1018): ${failureText(escalationError)}`,
-      );
-    }
   }
   await saveEscalationState(deps, logDir, emptyEscalationState());
 }
@@ -1267,9 +1488,9 @@ async function clearEscalationState(
 /**
  * Bring a checkout to where this host's update mode says it belongs — the tip
  * of `origin/<default-branch>` under `dynamic`, the pinned ref under `frozen`
- * (Issue #624) — counting consecutive failures and escalating a crash-loop
- * exactly once per streak (#4204), retrying until one report is delivered
- * (#1018).
+ * (Issue #624) — counting consecutive failures and reporting a crash-loop
+ * through `callbacks.host_failure` exactly once per streak (#4204, #2110),
+ * retrying until one invocation returns `ok` or five have failed (#1018).
  *
  * @param options - The checkout, the log directory, an optional branch, and
  *   the update mode with its pinned ref.
@@ -1350,7 +1571,7 @@ export async function updateCheckout(
     } catch {
       // Best-effort persistence.
     }
-    await clearEscalationState(deps, repoDir, logDir);
+    await clearEscalationState(deps, logDir);
     return {
       ok: true,
       branch,
@@ -1372,11 +1593,11 @@ export async function updateCheckout(
   await deps.log(logDir, `Checkout update failed: ${detail}`);
 
   // Consecutive-failure escalation (Issue #4204): one blip stays a log line;
-  // a crash-loop is raised through the control plane once per streak, so an
+  // a crash-loop is reported through the host-failure hook once per streak, so an
   // unattended host running stale code is visible where the operator actually
   // looks. Delivery is attempted on every run from the threshold on until one
-  // report lands (Issue #1018). Every step is best-effort — nothing here may
-  // mask the underlying failure.
+  // report lands or five attempts have failed (Issues #1018, #2110). Every
+  // step is best-effort — nothing here may mask the underlying failure.
   const nowSeconds = deps.now();
   let previous: CheckoutUpdateStreak;
   try {
@@ -1407,6 +1628,7 @@ export async function updateCheckout(
       repoDir,
       logDir,
       streak: streak.count,
+      streakStartedAt: streak.firstFailureAt,
       error: detail,
       checkout,
     })
