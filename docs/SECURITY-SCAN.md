@@ -763,6 +763,18 @@ file list a delta sweep regenerates from, rather than from stale counts
 in an overflow issue. Drift is a report, not a merge gate: rewriting a
 swept module must not turn CI red.
 
+**`sweptAt` is a commit reachable from the default branch.** For a new record
+take it from `git merge-base origin/main HEAD` at list-generation time; when
+repointing an existing slice use the commit the record *landed* at on `main` —
+`git log --diff-filter=A -1 --format=%H origin/main -- <record>`, the commit
+that added it, not the last commit to touch it, so a later edit to the record
+cannot skip drift. Never a feature-branch commit: squash-merge deletes it, so
+`git diff <sweptAt> HEAD` later dies with
+`fatal: bad object …` and the whole drift report fails. `driftSince` wraps that
+git exit in a `SweepLedgerError` naming the slice, its `sweptAt` and this
+remedy, so the failure says which slice to repoint rather than only what git
+said (#2178).
+
 **Adding a top-up slice.** A module that enters the ledger roots after the
 chunk-12 slices recorded their coverage gets its own slice, with its own
 written record under `docs/audits/`. Its `chunk` id is **`top-up-<issue>`**

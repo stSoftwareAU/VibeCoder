@@ -28,15 +28,26 @@ export interface SweepDriftBlock {
   drift: SliceDrift;
 }
 
-/** Default git runner — the shared timeout/audit chokepoint. */
-export async function defaultSweepGitRunner(
-  args: readonly string[],
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const result = await runGitCommand([...args]);
-  if (!result.ok) {
-    return { code: 1, stdout: "", stderr: result.error.message };
-  }
-  return result.value;
+/**
+ * Default git runner — the shared timeout/audit chokepoint — rooted at the
+ * repository the report is about (Issue #2178).
+ *
+ * `driftSince` passes repo-relative pathspecs, which git resolves against the
+ * working directory. Run from anywhere but the repository root they matched
+ * nothing and every slice reported an empty drift: a clean bill of health for
+ * a ledger nobody had diffed. Pinning git's cwd to `repoRoot` makes the
+ * `--repo` argument mean the same thing for git as it does for the ledger.
+ *
+ * @param repoRoot - Absolute path of the repository to diff.
+ */
+export function sweepGitRunnerFor(repoRoot: string): SweepGitRunner {
+  return async (args) => {
+    const result = await runGitCommand([...args], { cwd: repoRoot });
+    if (!result.ok) {
+      return { code: 1, stdout: "", stderr: result.error.message };
+    }
+    return result.value;
+  };
 }
 
 /** Render one block per slice: counts plus paths. */
@@ -103,7 +114,7 @@ export const sweepDriftCommand: Command = {
     const onDisk = await listSweptModulesForRoots(repoRoot, ledger.roots);
     const runGit = typeof args.runGit === "function"
       ? args.runGit as SweepGitRunner
-      : defaultSweepGitRunner;
+      : sweepGitRunnerFor(repoRoot);
     const blocks = await collectSweepDrift(ledger, onDisk, runGit);
     const message = formatSweepDriftReport(blocks);
     return { success: true, message, data: { blocks } };

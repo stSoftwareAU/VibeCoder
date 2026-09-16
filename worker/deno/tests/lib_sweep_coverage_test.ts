@@ -675,6 +675,10 @@ Deno.test("driftSince - an empty diff is an empty report (Issue #1609)", async (
   assertEquals(drift, { added: [], modified: [], unowned: [] });
 });
 
+// Issue #2178 widened this error: the message now names the slice, its
+// `sweptAt` and the remedy, so a failing `sweep-drift` says which slice to
+// repoint. The stderr is still carried verbatim inside it, which is what the
+// original #1609 assertion was protecting.
 Deno.test("driftSince - a non-zero git exit throws with stderr (Issue #1609)", async () => {
   const ledger = ledgerFixture([{
     chunk: "12a",
@@ -698,5 +702,42 @@ Deno.test("driftSince - a non-zero git exit throws with stderr (Issue #1609)", a
     thrown = error;
   }
   assert(thrown instanceof SweepLedgerError, String(thrown));
-  assertEquals((thrown as SweepLedgerError).message, "fatal: bad revision");
+  assert(
+    (thrown as SweepLedgerError).message.includes("fatal: bad revision"),
+    (thrown as SweepLedgerError).message,
+  );
+});
+
+Deno.test("driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)", async () => {
+  // Fail direction: before this change the thrown message was the bare git
+  // stderr — `fatal: bad object 00c1d959…` — which named neither the slice
+  // nor what to do about it, so `sweep-drift` failed without saying which of
+  // the ledger's slices pointed at a squash-deleted feature-branch commit.
+  const ledger = ledgerFixture([{
+    chunk: "12a",
+    paths: ["worker/deno/lib/a.ts"],
+  }]);
+  let thrown: unknown;
+  try {
+    await driftSince(
+      ledger,
+      ledger.slices[0]!,
+      ["worker/deno/lib/a.ts"],
+      fakeGit({
+        "--diff-filter=A": {
+          code: 128,
+          stdout: "",
+          stderr: `fatal: bad object ${FIXTURE_COMMIT}`,
+        },
+      }),
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assert(thrown instanceof SweepLedgerError, String(thrown));
+  const message = (thrown as SweepLedgerError).message;
+  assert(message.includes("slice 12a (#1000)"), message);
+  assert(message.includes(FIXTURE_COMMIT), message);
+  assert(message.includes("reachable from the default branch"), message);
+  assert(message.includes("docs/audits/fixture.md"), message);
 });

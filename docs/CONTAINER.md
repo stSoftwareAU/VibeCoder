@@ -2000,10 +2000,12 @@ architecture; the build resolves its own `amd64`/`arm64` and falls back to
 `noarch`, and a tool with neither aborts the build naming the id.
 
 **The install prefix is fixed at `/opt/vibe-tools/<id>`**, and every `bin` and
-`env` value is relative to it. An absolute path, a `~`, or a `..` that walks
-above the prefix is refused at validation, so no selection can aim PATH or
-an environment variable at an arbitrary host path — the worst a malformed spec can do is
-fail the build.
+`env` value is relative to it. An absolute path, a `~`, a newline, or a `..`
+that walks above the prefix is refused at validation, so no selection can aim
+PATH or an environment variable at an arbitrary host path — the worst a
+malformed spec can do is fail the build. The newline is refused because the
+hand-off below is one `KEY=value` per line: a value carrying one would write a
+second line the reader cannot tell from a real one (Issue #2179).
 
 At container start `container/entrypoint.sh` reads the
 `/opt/vibe-tools/environment` hand-off the installer wrote, prepends each
