@@ -1153,10 +1153,12 @@ export function createGitHubActionsAuditTemplate(
         //     static signal of needing the persisted token (no `git
         //     push`/`fetch`, no known push action, no `submodules:`). The
         //     long-documented v3-slot check #23 was never implemented;
-        //     this is its deterministic native counterpart. Each
-        //     surviving finding becomes its own `github-actions-audit`
-        //     issue at `severity:medium`; its id is added to the
-        //     known-open list so the LLM does not double-file.
+        //     this is its deterministic native counterpart. Every
+        //     offending step in one workflow file becomes a **single**
+        //     `github-actions-audit` issue at `severity:medium` (Issue
+        //     #2221 — one edit to that file fixes them all), its body
+        //     naming each job/step; its id is added to the known-open
+        //     list so the LLM does not double-file.
         const persistFindings: CheckoutPersistCredentialsFinding[] =
           scanCheckoutPersistCredentials(files, {
             knownOpenFindingIds: seenIds,
@@ -1187,11 +1189,12 @@ export function createGitHubActionsAuditTemplate(
         //     from #2834). Flag every `actions/upload-artifact` step whose
         //     `with.path` is the whole workspace (`.`, `./`,
         //     `${{ github.workspace }}`, `*`, `**`) — the decidable core of
-        //     v9 prompt check #30. Each surviving finding becomes its own
-        //     `github-actions-audit` issue at `severity:low` baseline
-        //     (`severity:medium` when the job has secrets or runs under a
-        //     privileged trigger); its id is added to the known-open list
-        //     so the LLM does not double-file.
+        //     v9 prompt check #30. Every offending step in one workflow
+        //     file becomes a **single** `github-actions-audit` issue
+        //     (Issue #2221) at `severity:low` baseline (`severity:medium`
+        //     when any listed job has secrets or the workflow runs under
+        //     a privileged trigger); its id is added to the known-open
+        //     list so the LLM does not double-file.
         const artifactFindings: ArtifactUploadFinding[] = scanArtifactUploads(
           files,
           { knownOpenFindingIds: seenIds },

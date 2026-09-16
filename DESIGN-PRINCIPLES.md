@@ -236,6 +236,36 @@ fixing a genuine root cause in a shared *dependency's* own repo is still correct
 isolation forbids centralising a per-repo quality gate, not fixing a bug where it
 lives. Recorded for the worker in the `prompts/coding_guidelines/` template.
 
+### Merge conflicts are the worker's to resolve — never a person's
+
+**The fleet tries to avoid merge conflicts; when one occurs anyway, the Vibe
+Coder handles it end to end. No path may hand a conflict to a human.**
+
+Avoidance comes first: every branch is brought forward onto its base before
+its PR is raised, and the milestone branch sync merges the default branch into
+every active milestone branch each cycle. When a conflict still occurs, the
+automatic ladder is the whole answer:
+
+1. **Replay** — the PR's own commits are replayed onto the current base, so a
+   rewritten or moved base is never read as a conflict in the change itself.
+2. **Deterministic rules** — the triage settles the shapes that have one right
+   answer (both sides only added to a ledger or manifest → union; a version the
+   milestone already carries → ported; a test file resolves only when one side
+   keeps every case and every line of the other).
+3. **The resolution agent** on the residue, bounded by the cycle's budget
+   (Issue #1778), and its merged tree verified with the repository's own check
+   before anything is pushed — a red tree is rolled back, never pushed.
+4. **Retry across cycles** within a bounded attempt budget, and when the budget
+   is spent, **roll back** the PRs that introduced the conflict and reopen
+   their issues for the fleet to redo (Issue #1781).
+
+Every comment the sync or the conflict processor posts is a **record** of what
+the ladder did and will do next, on the thread as it stands. It never reopens a
+planning issue, never applies `needs-human`, and never asks a person to merge
+(Issues #2214, #2226). A path that does is a bug to fix the same day, not a
+design choice. The canonical operator manual is
+[docs/INTERNALS.md § Milestone and dependency handling](docs/INTERNALS.md).
+
 ### Milestone independence
 
 A PR targeting the default branch must not block issues in milestones.
@@ -1630,19 +1660,22 @@ default, keep `pull_request` / `schedule` / `workflow_dispatch`) rides a normal
 worker PR through the pre-merge gate rather than a bulk YAML rewrite — and a
 native checkout-persist-credentials scan
 (`checkout_persist_credentials_scanner.ts`,) that files a
-`BP-PERSIST-CREDS-<workflow-basename>-<job>-<step-index>` finding at
-`severity:medium` for each `actions/checkout` step lacking `persist-credentials:
-false` in a job giving no static signal of needing the token (no `git
-push`/`fetch`, no known push action, no `submodules:` checkout) — the
+`BP-PERSIST-CREDS-<workflow-basename>` finding at
+`severity:medium` per **workflow file** whose `actions/checkout` steps lack
+`persist-credentials: false` in a job giving no static signal of needing the
+token (no `git push`/`fetch`, no known push action, no `submodules:`
+checkout), the body naming every offending job/step — one issue per file
+because one edit fixes them all (Issue #2221) — the
 long-documented v3-slot check #23 that was never actually
 implemented until now; nuanced hedge cases stay with the LLM — and a native
 broad-artefact-upload scan (`artifact_upload_scanner.ts`, gap
 from) that files a
-`BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>`
-finding for each `actions/upload-artifact` step whose `with.path` is the whole
-workspace (`.`, `./`, `${{ github.workspace }}`, `*`, `**`) at `severity:low`
-baseline (`severity:medium` when the job has secrets in scope or the workflow
-uses a privileged trigger) — the decidable core of v9 prompt check #30; the
+`BP-ARTIFACT-UPLOAD-<workflow-basename>`
+finding per **workflow file** whose `actions/upload-artifact` steps upload the
+whole workspace (`.`, `./`, `${{ github.workspace }}`, `*`, `**`) at
+`severity:low` baseline (`severity:medium` when any listed job has secrets in
+scope or the workflow uses a privileged trigger), on the same one-issue-per-file
+reshape (Issue #2221) — the decidable core of v9 prompt check #30; the
 "otherwise unscoped" long tail stays with the LLM — and a native
 milestone-branch-filter scan (`milestone_branch_filter_scanner.ts`,)
 that files a `BP-MILESTONE-FILTER-<workflow-basename>` finding at
@@ -1679,9 +1712,13 @@ with the retired bucket. The native SHA-pin pre-filer files
 pre-filer files `BP-INJECTION-<workflow-basename>-<job>-<step-index>` ids; the
 native workflow-trigger pre-filer files `BP-TRIGGER-<workflow-basename>` ids; the
 native checkout-persist-credentials pre-filer files
-`BP-PERSIST-CREDS-<workflow-basename>-<job>-<step-index>` ids; the native
+`BP-PERSIST-CREDS-<workflow-basename>` ids; the native
 broad-artefact-upload pre-filer files
-`BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>` ids; the native
+`BP-ARTIFACT-UPLOAD-<workflow-basename>` ids — both one per file since
+Issue #2221, with their per-step ids still honoured for dedup, in-source
+suppression, and the per-step pre-PR changed-workflow gate, so the reshape
+neither re-files a repository mid-flight nor lets a newly added offender
+hide behind a pre-existing one; the native
 milestone-branch-filter pre-filer files `BP-MILESTONE-FILTER-<workflow-basename>`
 ids; the native gitleaks-drift pre-filer files
 `BP-GITLEAKS-<CLASS>-<workflow-basename>` ids.

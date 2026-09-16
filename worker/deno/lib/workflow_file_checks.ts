@@ -40,11 +40,17 @@ import type { WorkflowFile } from "./workflow_scan_common.ts";
 import { scanActionPins } from "./action_pin_scanner.ts";
 import { scanWorkflowPermissions } from "./workflow_permissions_scanner.ts";
 import { scanWorkflowTriggers } from "./workflow_trigger_scanner.ts";
-import { scanCheckoutPersistCredentials } from "./checkout_persist_credentials_scanner.ts";
+import {
+  persistCredentialsStepId,
+  scanCheckoutPersistCredentials,
+} from "./checkout_persist_credentials_scanner.ts";
 import { scanMilestoneBranchFilters } from "./milestone_branch_filter_scanner.ts";
 import { scanCiInstallPins } from "./ci_install_pin_scanner.ts";
 import { scanRunInjection } from "./run_injection_scanner.ts";
-import { scanArtifactUploads } from "./artifact_upload_scanner.ts";
+import {
+  artifactUploadStepId,
+  scanArtifactUploads,
+} from "./artifact_upload_scanner.ts";
 import { scanGitleaksDrift } from "./gitleaks_drift_scanner.ts";
 import {
   collectActionPins,
@@ -104,6 +110,41 @@ function fromScanner(finding: ScannerFinding): WorkflowFileCheckFinding {
   };
 }
 
+/** The per-file pre-filer finding shape (Issue #2221). */
+interface PerFileScannerFinding {
+  workflowPath: string;
+  file: string;
+  steps: readonly { job: string; stepIndex: number; line: number }[];
+}
+
+/**
+ * Adapt a per-file pre-filer finding to **one gate finding per offending
+ * step**.
+ *
+ * The audit files one issue per workflow file (Issue #2221) because one
+ * edit fixes every step in it, but this gate answers a different
+ * question: what did *this branch* introduce? Its base-vs-head diff is
+ * keyed by `(finding id, file)`, so collapsing a file's steps into one
+ * entry here would let a step the run **added** hide behind a
+ * pre-existing one. The id reported per step is the one an in-source
+ * `best-practice-ignore` marker suppresses, so the remedy the gate
+ * message names still works.
+ */
+function fromPerFileScanner(
+  findings: readonly PerFileScannerFinding[],
+  stepId: (path: string, job: string, stepIndex: number) => string,
+  detail: (job: string, stepIndex: number, file: string) => string,
+): WorkflowFileCheckFinding[] {
+  return findings.flatMap((finding) =>
+    finding.steps.map((step) => ({
+      id: stepId(finding.workflowPath, step.job, step.stepIndex),
+      file: finding.file,
+      line: step.line,
+      detail: detail(step.job, step.stepIndex, finding.file),
+    }))
+  );
+}
+
 /** Adapt a workflow-hygiene violation to the common shape. */
 function fromHygiene(
   violation: { kind: string; file: string; line: number; detail: string },
@@ -147,7 +188,14 @@ export const WORKFLOW_FILE_CHECKS: readonly WorkflowFileCheck[] = [
     id: "checkout-persist-credentials",
     label:
       "every `actions/checkout` sets `persist-credentials: false` unless the job pushes",
-    run: (files) => scanCheckoutPersistCredentials(files).map(fromScanner),
+    run: (files) =>
+      fromPerFileScanner(
+        scanCheckoutPersistCredentials(files),
+        persistCredentialsStepId,
+        (job, stepIndex, file) =>
+          `🟠 Job \`${job}\` step ${stepIndex} checkout persists credentials ` +
+          `(\`${file}\`)`,
+      ),
   },
   {
     id: "milestone-branch-filters",
@@ -169,7 +217,14 @@ export const WORKFLOW_FILE_CHECKS: readonly WorkflowFileCheck[] = [
   {
     id: "artifact-uploads",
     label: "no `actions/upload-artifact` step uploads the whole workspace",
-    run: (files) => scanArtifactUploads(files).map(fromScanner),
+    run: (files) =>
+      fromPerFileScanner(
+        scanArtifactUploads(files),
+        artifactUploadStepId,
+        (job, stepIndex, file) =>
+          `🟢 Job \`${job}\` step ${stepIndex} uploads the whole workspace ` +
+          `as an artefact (\`${file}\`)`,
+      ),
   },
   {
     id: "gitleaks-drift",

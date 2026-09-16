@@ -108,7 +108,11 @@ export function getRepoNice(
  * that prints nothing until it finishes looks indistinguishable from a hung
  * one — they backgrounded it and burned the rest of the execute budget in
  * `sleep`/`pgrep` poll loops. One agent sat at 38 tool calls for over seven
- * minutes doing exactly that.
+ * minutes doing exactly that. The rule used to name only the gate command,
+ * so on 2026-09-16 an agent backgrounded the full `deno task test` instead
+ * and polled it with one-second `echo` turns — 731 tool calls in 35 minutes
+ * on a swapping shared host, and no PR (Issue #2230). It now covers every
+ * long-running command.
  *
  * That single end-of-run gate is now conditional on the budget left to pay
  * for it (Issue #1138): the gate's median observed duration is 17 minutes
@@ -148,7 +152,7 @@ export function buildQualityInstructions(
       options.typicalGateSeconds,
       options.runBudgetSeconds,
     ),
-    `   - Never start ${command} in the background and poll for it. A \`sleep\`/\`pgrep\` wait loop spends the execute budget without making progress; run it in the foreground and watch each check report as it completes.`,
+    `   - Never start ${command}, the full test suite, a build, or any other long-running command in the background and poll for it. A \`sleep\`/\`pgrep\`/\`echo\` wait loop spends the execute budget, and a model turn per poll, without making progress (Issue #2230). Run one bounded foreground command instead — \`timeout 900 <command> < /dev/null\` — and read its result when it returns. Run only the test files your change touches; the quality gate and CI run everything.`,
     `   - IMPORTANT: Always redirect stdin from /dev/null (< /dev/null) when running tests, quality checks, or build commands to prevent hanging on unattended machines.`,
   ].join("\n");
 }

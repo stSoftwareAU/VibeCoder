@@ -738,11 +738,13 @@ Cite the workflow path and line range for each.
     between jobs, scope it to a dedicated output directory and exclude
     `.git`, `.env`, and secret files.
 
-    **Stable id.** `BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>`,
-    lower-cased (slug of the workflow basename and job, 0-based step
-    index) — matching the native pre-filer so the two never double-file.
-    **Severity.** `severity:low` baseline; `severity:medium` when the job
-    has secrets in scope (a `${{ secrets.* }}` reference at workflow, job,
+    **Stable id.** `BP-ARTIFACT-UPLOAD-<workflow-basename>`, lower-cased
+    (slug of the workflow basename) — matching the native pre-filer so the
+    two never double-file. It is **one finding per workflow file**, not per
+    step: list every offending job/step of that file in the one issue body,
+    because the same edit to the same file fixes them all.
+    **Severity.** `severity:low` baseline; `severity:medium` when a listed
+    job has secrets in scope (a `${{ secrets.* }}` reference at workflow, job,
     or step level) **or** the workflow uses a trigger from the
     *privileged-trigger set*.
 
@@ -1247,7 +1249,7 @@ bucket:
 - `BP-DUP-IN-FILE-<12 hex>` (check 19)
 - `BP-DUP-XFILE-<12 hex>` (check 20)
 - `BP-OBSOLETE-REF-<12 hex>` (check 21)
-- `BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>` (check 30)
+- `BP-ARTIFACT-UPLOAD-<workflow-basename>` (check 30 — one per file)
 - `BP-AI-INJECTION-<workflow-basename>-<job>-<step-index>` (check 31,
   explicit-`with:` core — matches the `run_injection_scanner.ts`
   pre-filer)

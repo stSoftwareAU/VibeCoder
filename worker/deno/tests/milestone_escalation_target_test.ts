@@ -53,7 +53,7 @@ Deno.test("decideMilestoneEscalationTarget - the parent planning issue wins", ()
         { number: 9, kind: "issue" },
       ],
     }),
-    { kind: "parent", issue: 1730, reopened: false },
+    { kind: "parent", issue: 1730 },
   );
 });
 
@@ -123,7 +123,7 @@ Deno.test("resolveMilestoneEscalationTarget - an open parent is used as it stand
     log: () => {},
   });
 
-  assertEquals(target, { kind: "parent", issue: 1730, reopened: false });
+  assertEquals(target, { kind: "parent", issue: 1730 });
   assertEquals(
     calls.filter((c) => c[1] === "reopen").length,
     0,
@@ -132,7 +132,7 @@ Deno.test("resolveMilestoneEscalationTarget - an open parent is used as it stand
   assertEquals(createCalls(calls).length, 0);
 });
 
-Deno.test("resolveMilestoneEscalationTarget - a closed parent is reopened and labelled needs-human only", async () => {
+Deno.test("resolveMilestoneEscalationTarget - a closed parent is used as it stands: never reopened, never labelled (Issue #2226)", async () => {
   const { gh, calls } = ghStub((key) =>
     key.startsWith("issue view") ? "CLOSED" : ""
   );
@@ -144,41 +144,12 @@ Deno.test("resolveMilestoneEscalationTarget - a closed parent is reopened and la
     log: () => {},
   });
 
-  assertEquals(target, { kind: "parent", issue: 1730, reopened: true });
+  assertEquals(target, { kind: "parent", issue: 1730 });
+  assertEquals(calls.filter((c) => c[1] === "reopen"), [], "never reopened");
   assertEquals(
-    calls.filter((c) => c[1] === "reopen").map((c) => c[2]),
-    ["1730"],
-    "reopened exactly once",
-  );
-
-  // No pickup label: reopening must not push the milestone's planning back
-  // into the fleet's work queue.
-  const labels = calls
-    .filter((c) => c.includes("--add-label"))
-    .map((c) => c[c.indexOf("--add-label") + 1]);
-  assertEquals(labels, ["needs-human"]);
-  assertEquals(createCalls(calls).length, 0);
-});
-
-Deno.test("resolveMilestoneEscalationTarget - a reopen that fails still targets the parent", async () => {
-  const { gh, calls } = ghStub((key) => {
-    if (key.startsWith("issue view")) return "CLOSED";
-    if (key.startsWith("issue reopen")) return new Error("403 forbidden");
-    return "";
-  });
-  const logs: string[] = [];
-
-  const target = await resolveMilestoneEscalationTarget({
-    repo: REPO,
-    milestone: { title: "#1730 Resolve merge conflicts", number: 7 },
-    ghCommandFn: gh,
-    log: (m) => logs.push(m),
-  });
-
-  assertEquals(target, { kind: "parent", issue: 1730, reopened: false });
-  assert(
-    logs.some((l) => l.includes("403 forbidden")),
-    `the refusal is said out loud; logs: ${JSON.stringify(logs)}`,
+    calls.filter((c) => c.includes("--add-label")),
+    [],
+    "never labelled — a sync post asks nothing of a person",
   );
   assertEquals(createCalls(calls).length, 0);
 });
@@ -284,7 +255,7 @@ Deno.test(
 );
 
 Deno.test(
-  "resolveMilestoneEscalationTarget - an escalation not yet on the destination still reopens it (Issue #1786)",
+  "resolveMilestoneEscalationTarget - an escalation not yet on the destination is posted to it as it stands (Issues #1786, #2226)",
   async () => {
     const asked: number[] = [];
     const { gh, calls } = ghStub((key) =>
@@ -302,29 +273,12 @@ Deno.test(
       },
     });
 
-    assertEquals(target, { kind: "parent", issue: 1730, reopened: true });
+    assertEquals(target, { kind: "parent", issue: 1730 });
     assertEquals(asked, [1730], "the destination is what was checked");
     assertEquals(
-      calls.filter((c) => c[1] === "reopen").map((c) => c[2]),
-      ["1730"],
+      calls.filter((c) => c[1] === "reopen"),
+      [],
+      "never reopened (Issue #2226)",
     );
   },
 );
-
-Deno.test("resolveMilestoneEscalationTarget - reopenClosedParent false leaves a closed parent closed and unlabelled (Issue #2214)", async () => {
-  const { gh, calls } = ghStub((key) =>
-    key.startsWith("issue view") ? "CLOSED" : ""
-  );
-
-  const target = await resolveMilestoneEscalationTarget({
-    repo: REPO,
-    milestone: { title: "#2145 Trial CodeGraph", number: 9 },
-    ghCommandFn: gh,
-    log: () => {},
-    reopenClosedParent: false,
-  });
-
-  assertEquals(target, { kind: "parent", issue: 2145, reopened: false });
-  assertEquals(calls.filter((c) => c[1] === "reopen"), [], "never reopened");
-  assertEquals(calls.filter((c) => c.includes("--add-label")), [], "no label");
-});
