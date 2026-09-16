@@ -164,6 +164,10 @@ import { safeMktemp } from "./temp_utils.ts";
 import { checkAndCleanupDiskSpace } from "./disk_space.ts";
 import { checkAndRotateLog } from "./log_rotation.ts";
 import { buildIssuePrompt } from "./prompt_builder.ts";
+import {
+  collectGraftContext,
+  type GraftContextCollector,
+} from "./graft_context.ts";
 import { loadPrompt } from "./prompt_manager.ts";
 import { shuffleArray } from "./array_utils.ts";
 import { evaluateRunGuard } from "./run_entrypoint.ts";
@@ -359,6 +363,11 @@ export interface InfrastructureDeps {
   checkAndCleanupDiskSpace: typeof checkAndCleanupDiskSpace;
   checkAndRotateLog: typeof checkAndRotateLog;
   buildPrompt: typeof buildIssuePrompt;
+  /**
+   * Collect the Graft repo-context bundle for the run (Issue #2102, part of
+   * #2060). Spawns nothing while the host switch is off.
+   */
+  collectGraftContext: GraftContextCollector;
   loadPrompt: typeof loadPrompt;
   shuffleArray: typeof shuffleArray;
   evaluateRunGuard: typeof evaluateRunGuard;
@@ -639,6 +648,7 @@ export function createDefaultDeps(
       checkAndCleanupDiskSpace,
       checkAndRotateLog,
       buildPrompt: buildIssuePrompt,
+      collectGraftContext,
       loadPrompt,
       shuffleArray,
       evaluateRunGuard,
@@ -1208,6 +1218,11 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     ),
     loadPrompt: mockFn<InfrastructureDeps["loadPrompt"]>(() =>
       Promise.resolve({ ok: true, value: "mock template" })
+    ),
+    // Issue #2102: the switch is off by default, so a mocked run spawns no
+    // `graft` and injects no bundle unless a test says otherwise.
+    collectGraftContext: mockFn<InfrastructureDeps["collectGraftContext"]>(() =>
+      Promise.resolve({ status: "off", enabled: false })
     ),
     shuffleArray: mockFn<InfrastructureDeps["shuffleArray"]>(<T>(
       items: readonly T[],

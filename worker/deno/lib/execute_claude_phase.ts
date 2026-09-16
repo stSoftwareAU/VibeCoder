@@ -72,6 +72,15 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { getOrGenerateCodebaseMap } from "./codebase_map_cache.ts";
+import {
+  collectGraftContext,
+  describeGraftContext,
+  type GraftContextCollector,
+  graftContextFacts,
+  type GraftContextResult,
+  type GraftContextSlot,
+  graftQueryFor,
+} from "./graft_context.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
 import { findExistingPrForBranch } from "./pr_issue_linking.ts";
 import { retargetPrToMilestone } from "./pr_retarget.ts";
@@ -171,6 +180,16 @@ export interface ExecuteClaudePhaseResult {
   promptSha?: string;
   /** Whether the prompt cache was hit (Issue #1273). */
   promptCacheHit?: boolean;
+  /**
+   * What the Graft repo-context collection did this run (Issue #2102, part of
+   * #2060).
+   *
+   * Present, `status: "off"` included, on every run that reached the
+   * collection — a later sub-issue of #2060 reports the outcome, and carrying
+   * `off` keeps "the switch was off" distinct from "the collector never
+   * ran", which is what an absent field means.
+   */
+  graftContext?: GraftContextResult;
   /** Elapsed time in seconds. */
   elapsedSeconds?: number;
 }
@@ -248,6 +267,15 @@ export interface ExecuteClaudePhaseOptions {
   includeCodebaseMap?: boolean;
   /** Directory for cached codebase maps (Issue #4281). */
   codebaseMapCacheDir?: string;
+  /**
+   * Whether this host collects a Graft repo-context bundle (Issue #2102,
+   * part of #2060, default: false).
+   *
+   * Threaded from `config.graftContext.enabled`. Off, the collector returns
+   * `off` without spawning anything, so a host that never opted in behaves
+   * exactly as it does today.
+   */
+  graftContextEnabled?: boolean;
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
   /** Warning threshold for the context budget (Issue #1327, default: 50). */
@@ -352,6 +380,12 @@ export interface ExecuteClaudePhaseDeps {
    * chokepoint) is used when omitted.
    */
   escalateContextBudget?: (options: ContextBudgetEscalation) => Promise<void>;
+  /**
+   * Collect the Graft repo-context bundle (Issue #2102). Optional so existing
+   * test doubles need no change — {@link collectGraftContext} is used when
+   * omitted, and it spawns nothing while the host switch is off.
+   */
+  collectGraftContext?: GraftContextCollector;
   /** Log a message. */
   log: (message: string) => void;
 }
@@ -794,10 +828,27 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
  *
  * This is the main orchestration function that replaces the business logic
  * in work_on_issue_execute_claude() from issue_worker.sh.
+ *
+ * Issue #2102: the Graft collection's outcome is attached to whichever of the
+ * body's many exits is taken, so a `failed` collection is reported on a failed
+ * run as readily as on a successful one.
  */
 export async function runExecuteClaudePhase(
   options: ExecuteClaudePhaseOptions,
   deps: ExecuteClaudePhaseDeps = createDefaultDeps(),
+): Promise<ExecuteClaudePhaseResult> {
+  const collected: GraftContextSlot = {};
+  const result = await executeClaudePhaseBody(options, deps, collected);
+  return collected.result
+    ? { ...result, graftContext: graftContextFacts(collected.result) }
+    : result;
+}
+
+/** Single-pass phase body — see {@link runExecuteClaudePhase}. */
+async function executeClaudePhaseBody(
+  options: ExecuteClaudePhaseOptions,
+  deps: ExecuteClaudePhaseDeps,
+  collected: GraftContextSlot,
 ): Promise<ExecuteClaudePhaseResult> {
   const {
     repo,
@@ -833,6 +884,7 @@ export async function runExecuteClaudePhase(
       OPERATIONAL_DEFAULTS.recentActivityCacheTtlSeconds,
     includeCodebaseMap = OPERATIONAL_DEFAULTS.includeCodebaseMap,
     codebaseMapCacheDir,
+    graftContextEnabled = false,
     sessionResumeState,
     contextBudgetWarningPercent =
       OPERATIONAL_DEFAULTS.contextBudgetWarningPercent,
@@ -954,6 +1006,10 @@ export async function runExecuteClaudePhase(
     }
   }
 
+  // The checkout both the codebase map and the Graft collection read.
+  const repoName = repo.split("/").pop() ?? repo;
+  const repoDir = `${workDir}/${repoName}`;
+
   // --- Generate (or reuse) the per-repo codebase map (Issue #4281) ---
   // Without it every session starts blind and spends its first minutes
   // grepping for where the code lives. The map is keyed on the repository's
@@ -962,8 +1018,6 @@ export async function runExecuteClaudePhase(
   // unmapped — degraded, never silently blank.
   let codebaseMap: string | undefined;
   if (includeCodebaseMap) {
-    const repoName = repo.split("/").pop() ?? repo;
-    const repoDir = `${workDir}/${repoName}`;
     const mapResult = await getOrGenerateCodebaseMap({
       repo,
       repoDir,
@@ -981,6 +1035,23 @@ export async function runExecuteClaudePhase(
         `WARN: codebase map unavailable for ${repoDir} (non-fatal, Issue #4281): ${mapResult.error.message}`,
       );
     }
+  }
+
+  // --- Graft repo-context bundle (Issue #2102, part of #2060) ---
+  // Off on every host that has not opted in: the collector short-circuits to
+  // `off` without spawning, so nothing changes for today's hosts. On an
+  // enabled host a `failed` collection is reported and the run continues
+  // unbundled — the bundle is an accelerator, never a precondition.
+  const collectGraft = deps.collectGraftContext ?? collectGraftContext;
+  const graftContext = await collectGraft({
+    repoDir,
+    query: graftQueryFor(issueTitle, issueBody),
+    enabled: graftContextEnabled,
+    logger,
+  });
+  collected.result = graftContext;
+  if (graftContext.status !== "off") {
+    deps.log(describeGraftContext(graftContext));
   }
 
   // --- Previous security-fix gate verdict (Issue #4057) ---
@@ -1033,6 +1104,9 @@ export async function runExecuteClaudePhase(
     milestoneBranch: milestoneBranch || undefined,
     recentActivity,
     codebaseMap,
+    // Present only on an `ok` collection (Issue #2102); the builder renders
+    // nothing when it is undefined.
+    graftContextBundle: graftContext.bundle,
     ciFailureContext,
     ciFailureBoundaryId,
     securityGateBlock,

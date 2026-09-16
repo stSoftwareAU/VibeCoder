@@ -569,6 +569,98 @@ function entriesOf(value: unknown): unknown[] | null {
 }
 
 // ---------------------------------------------------------------------------
+// Call sites — the query, the seam and the log line
+// ---------------------------------------------------------------------------
+
+/**
+ * The collector as the phases and processors inject it (Issue #2102).
+ *
+ * Named so a test can hand in a fake without depending on the real
+ * implementation's module graph, and so the three wiring sites state the same
+ * seam rather than each spelling out the signature.
+ */
+export type GraftContextCollector = (
+  options: CollectGraftContextOptions,
+) => Promise<GraftContextResult>;
+
+/**
+ * The outcome without its bundle — the shape that is safe to *record*.
+ *
+ * `ExecuteClaudePhaseResult` is JSON-serialised straight onto stdout by the
+ * `execute-claude-phase` command, so an outcome that still carried the bundle
+ * would write the whole `graft ask --source` selection — uncapped by design —
+ * into the worker log on every enabled run. The recorders want the status and
+ * the figures; the bundle has already been spent on the prompt.
+ *
+ * @param result - The outcome from {@link collectGraftContext}
+ * @returns The same outcome with `bundle` dropped
+ */
+export function graftContextFacts(
+  result: GraftContextResult,
+): GraftContextResult {
+  const { bundle: _bundle, ...facts } = result;
+  return facts;
+}
+
+/**
+ * Where a caller with many exits leaves the Graft outcome (Issue #2102).
+ *
+ * The issue phase and the planning and question processors each return from
+ * a dozen or more places; a slot lets the outcome escape once rather than
+ * being threaded onto every exit, and an unset slot honestly means the run
+ * ended before the collection was reached. The issue phase attaches it to
+ * every exit; the two processors have a value to attach it to only on their
+ * `ok` result, so a failed round reports the outcome in the log alone.
+ */
+export interface GraftContextSlot {
+  result?: GraftContextResult;
+}
+
+/**
+ * The `graft ask --source` query for one run — the issue title and body.
+ *
+ * One helper rather than three interpolations, so the issue, planning and
+ * question runs cannot drift into asking Graft three different questions
+ * about the same issue.
+ *
+ * @param issueTitle - The issue title
+ * @param issueBody - The issue body
+ * @returns The query text
+ */
+export function graftQueryFor(issueTitle: string, issueBody: string): string {
+  return `${issueTitle}\n\n${issueBody}`;
+}
+
+/**
+ * One log line stating what the collection did, with whatever figures it
+ * gathered.
+ *
+ * `failed` is reported here as loudly as `ok`: the collector has already
+ * written its `[GRAFT_UNAVAILABLE]` line, and this is the run-level record
+ * that a bundle was asked for and what came back. Callers skip it for `off`,
+ * where nothing was attempted.
+ *
+ * @param result - The outcome from {@link collectGraftContext}
+ * @returns A single line, safe to log verbatim
+ */
+export function describeGraftContext(result: GraftContextResult): string {
+  const figures = [
+    result.bundleChars === undefined
+      ? undefined
+      : `${result.bundleChars} bundle chars`,
+    result.nodeCount === undefined ? undefined : `${result.nodeCount} nodes`,
+    result.callEdgeCount === undefined
+      ? undefined
+      : `${result.callEdgeCount} call edges`,
+    result.buildSeconds === undefined
+      ? undefined
+      : `build ${result.buildSeconds}s`,
+  ].filter((entry): entry is string => entry !== undefined);
+  const detail = figures.length > 0 ? ` — ${figures.join(", ")}` : "";
+  return `Graft context: ${result.status}${detail} (Issue #2060)`;
+}
+
+// ---------------------------------------------------------------------------
 // Prompt rendering
 // ---------------------------------------------------------------------------
 

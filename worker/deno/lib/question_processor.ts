@@ -37,6 +37,16 @@ import {
 } from "./heartbeat.ts";
 import { buildQuestionPrompt } from "./prompt_builder.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
+import {
+  collectGraftContext,
+  describeGraftContext,
+  type GraftContextCollector,
+  graftContextFacts,
+  type GraftContextResult,
+  type GraftContextSlot,
+  graftQueryFor,
+} from "./graft_context.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
 import { releaseClaim } from "./claim_release.ts";
 import { reportPhaseDegradation } from "./phase_run_stats.ts";
@@ -68,6 +78,11 @@ export interface QuestionResult {
   responseType: "answer" | "clarification" | "partial" | "failure";
   /** Human-readable summary. */
   summary: string;
+  /**
+   * What the Graft repo-context collection did this run (Issue #2102, part of
+   * #2060) — `off` on a host that has not opted in.
+   */
+  graftContext?: GraftContextResult;
 }
 
 /** Options for the question processor. */
@@ -78,6 +93,22 @@ export interface QuestionProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
+  /**
+   * Collect the Graft repo-context bundle (Issue #2102). Optional —
+   * {@link collectGraftContext} is used when omitted, and it spawns nothing
+   * while the host switch is off.
+   */
+  collectGraftContext?: GraftContextCollector;
+  /**
+   * Prompts directory the question template is read from — the seam
+   * `PlanningProcessorDeps` already carries (Issue #1024).
+   *
+   * Left unset in production, where `getPromptsDir()` resolves it from the
+   * launcher's environment. A test names its own checkout's `prompts/` here
+   * rather than reading whichever templates the host happens to have
+   * installed.
+   */
+  promptsDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,15 +287,29 @@ export async function processIssueQuestion(
   // a round that worked, and a diagnosed failure for one that did not.
   const runStartedAtMs = Date.now();
   let runOutcome: RunOutcome | undefined;
+  // Filled once the run reaches the collection (Issue #2102).
+  const graftSlot: GraftContextSlot = {};
   try {
-    const result = await _processQuestionWithHeartbeat(ctx, processorDeps);
+    const result = await _processQuestionWithHeartbeat(
+      ctx,
+      processorDeps,
+      graftSlot,
+    );
     runOutcome = outcomeForNonCodingResult(
       "question",
       result,
       (Date.now() - runStartedAtMs) / 1000,
       "question answered",
     );
-    return result;
+    return graftSlot.result && result.ok
+      ? {
+        ok: true,
+        value: {
+          ...result.value,
+          graftContext: graftContextFacts(graftSlot.result),
+        },
+      }
+      : result;
   } catch (err) {
     runOutcome = outcomeForThrown(
       "question",
@@ -284,6 +329,7 @@ export async function processIssueQuestion(
 async function _processQuestionWithHeartbeat(
   ctx: IssueContext,
   processorDeps: QuestionProcessorDeps,
+  graftSlot: GraftContextSlot,
 ): Promise<Result<QuestionResult>> {
   const {
     repo,
@@ -307,6 +353,21 @@ async function _processQuestionWithHeartbeat(
       ? repoContextResult.value.content
       : undefined;
 
+  // Graft repo-context bundle (Issue #2102, part of #2060). Off on a host
+  // that has not opted in — the collector returns `off` without spawning. A
+  // `failed` collection is reported and the answer is written unbundled.
+  const collectGraft = processorDeps.collectGraftContext ?? collectGraftContext;
+  const graftContext = await collectGraft({
+    repoDir,
+    query: graftQueryFor(issueTitle, issueBody),
+    enabled: isGraftContextEnabled(config),
+    logger,
+  });
+  graftSlot.result = graftContext;
+  if (graftContext.status !== "off") {
+    logger.info(describeGraftContext(graftContext), { repo, issueNumber });
+  }
+
   // Issue #1226: Build question-specific prompt using the dedicated builder
   // instead of the generic issue prompt builder. This ensures the question
   // template (with clarification guidance) is used, not the implementation one.
@@ -320,6 +381,9 @@ async function _processQuestionWithHeartbeat(
     commentBoundaryId,
     questionLabel: config.questionLabel,
     repoContextContent,
+    promptsDir: processorDeps.promptsDir,
+    // Present only on an `ok` collection (Issue #2102).
+    graftContextBundle: graftContext.bundle,
     // Issue #849: an operator's `question` mapping replaces the template.
     promptOverrides: promptOverrideMappings(config),
   });
