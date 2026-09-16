@@ -1589,6 +1589,18 @@
       "paths": [
         "worker/deno/lib/host_failure_hook.ts"
       ]
+    },
+    {
+      "issue": 2155,
+      "chunk": "top-up-2155",
+      "title": "top-up: the CodeGraph runner",
+      "ledger": "docs/audits/security-sweep-2155-codegraph-context.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: codegraph_context.ts (#2155)",
+      "status": "swept",
+      "sweptAt": "3ab8614a7efc80d6f619068b2e0607526784a622",
+      "paths": [
+        "worker/deno/lib/codegraph_context.ts"
+      ]
     }
   ],
   "roots": [

@@ -2,7 +2,8 @@
  * CodeGraph repo-context runner — index step, MCP entry, prompt line and
  * `.codegraph/` persistence (Issue #2155, part of #2145).
  *
- * On a host whose `.config.json` sets `codegraph_context.enabled`, each run
+ * On a host whose switch is on — the `enabled` argument, which the wiring of
+ * #2145 reads from the host `.config.json` — each run
  * builds or refreshes a [CodeGraph](https://github.com/colbymchenry/codegraph)
  * index of the checkout and hands the agent the `codegraph` MCP server so it
  * can query that index instead of grepping files. This module is the one place
@@ -286,7 +287,8 @@ export async function prepareCodegraphContext(
   // 2. Build or refresh, timed. `init` both creates `.codegraph/` and builds
   //    the graph; `sync` is the incremental update for an index already there.
   const present = await indexDirectoryPresent(repoDir);
-  const indexArgs = present ? ["sync"] : ["init", "--yes"];
+  if (!present.ok) return fail(present.error.message);
+  const indexArgs = present.value ? ["sync"] : ["init", "--yes"];
   const startedAt = performance.now();
   const indexed = await runCodegraph(run, indexArgs, repoDir, indexTimeoutMs);
   const indexSeconds = elapsedSeconds(startedAt);
@@ -387,7 +389,8 @@ async function runCodegraph(
   try {
     result = await run("codegraph", args, {
       cwd: repoDir,
-      env: CODEGRAPH_ENV,
+      // A copy: the seam must not be able to mutate the shared constant.
+      env: { ...CODEGRAPH_ENV },
       timeoutMs,
     });
   } catch (err) {
@@ -428,13 +431,25 @@ async function runCodegraph(
  * `lstat`, not `stat`: a symlink planted at `.codegraph` in the
  * agent-writable clone is not a directory this module will treat as an index,
  * so the run takes the `init` branch, which is idempotent.
+ *
+ * Only a genuine absence answers `false`. A permission or I/O error is
+ * returned rather than swallowed: reporting an unreadable path as "no index"
+ * would quietly re-run `init` over an index that is already there, and a fault
+ * must not be dressed up as a branch decision.
  */
-async function indexDirectoryPresent(repoDir: string): Promise<boolean> {
+async function indexDirectoryPresent(
+  repoDir: string,
+): Promise<Result<boolean>> {
+  const path = `${repoDir}/${CODEGRAPH_INDEX_DIR}`;
   try {
-    const info = await Deno.lstat(`${repoDir}/${CODEGRAPH_INDEX_DIR}`);
-    return info.isDirectory;
-  } catch {
-    return false;
+    const info = await Deno.lstat(path);
+    return { ok: true, value: info.isDirectory };
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return { ok: true, value: false };
+    return {
+      ok: false,
+      error: new Error(`could not stat ${path}: ${detail(message(err))}`),
+    };
   }
 }
 
@@ -450,49 +465,30 @@ async function ensureCodegraphExcluded(
   repoDir: string,
   git: CodegraphGitRunner,
 ): Promise<Result<void>> {
+  // One shape for the four ways the resolution can fail, so the log line
+  // reads the same however git let us down.
+  const unresolved = (why: string): Result<void> => ({
+    ok: false,
+    error: new Error(`could not resolve info/exclude in ${repoDir}: ${why}`),
+  });
+
   let resolved: Result<GitCommandOutput>;
   try {
     resolved = await git(["rev-parse", "--git-path", "info/exclude"], {
       cwd: repoDir,
     });
   } catch (err) {
-    return {
-      ok: false,
-      error: new Error(
-        `could not resolve info/exclude in ${repoDir}: ${detail(message(err))}`,
-      ),
-    };
+    return unresolved(detail(message(err)));
   }
-  if (!resolved.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `could not resolve info/exclude in ${repoDir}: ${
-          detail(resolved.error.message)
-        }`,
-      ),
-    };
-  }
+  if (!resolved.ok) return unresolved(detail(resolved.error.message));
   if (resolved.value.code !== 0) {
-    return {
-      ok: false,
-      error: new Error(
-        `could not resolve info/exclude in ${repoDir} (git exited ${resolved.value.code}): ${
-          detail(resolved.value.stderr)
-        }`,
-      ),
-    };
+    return unresolved(
+      `git exited ${resolved.value.code}: ${detail(resolved.value.stderr)}`,
+    );
   }
 
   const answer = resolved.value.stdout.trim();
-  if (answer === "") {
-    return {
-      ok: false,
-      error: new Error(
-        `could not resolve info/exclude in ${repoDir}: git printed nothing`,
-      ),
-    };
-  }
+  if (answer === "") return unresolved("git printed nothing");
   // `--git-path` answers relative to the working directory it ran in.
   const excludePath = answer.startsWith("/") ? answer : `${repoDir}/${answer}`;
 

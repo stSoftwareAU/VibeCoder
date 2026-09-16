@@ -19,7 +19,11 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { Result } from "../types.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 import type { GitCommandOutput } from "../lib/git_timeout.ts";
-import { EXECUTABLE_IGNORED_DIRS } from "../lib/ignored_path_clean.ts";
+import {
+  EXECUTABLE_IGNORED_DIRS,
+  ignoredExecutableCleanArgs,
+} from "../lib/ignored_path_clean.ts";
+import { withTempDir as withTempTree } from "./support/temp_tree.ts";
 import { GEMINI_PROVIDER_ID } from "../lib/agent_provider.ts";
 import {
   CODEGRAPH_EXCLUDE_PATTERN,
@@ -145,12 +149,35 @@ function forbiddenSeams(): { run: CodegraphRunner; git: CodegraphGitRunner } {
   };
 }
 
-async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await Deno.makeTempDir({ prefix: "codegraph_context_test_" });
+/** A temp checkout, removed however the body ends (Issue #1135). */
+function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  return withTempTree(fn, { prefix: "codegraph_context_test_" });
+}
+
+/** Run one real git command in `dir`, failing loud on a non-zero exit. */
+async function git(dir: string, args: string[]): Promise<void> {
+  const result = await new Deno.Command("git", {
+    args,
+    cwd: dir,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (result.code !== 0) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${
+        new TextDecoder().decode(result.stderr)
+      }`,
+    );
+  }
+}
+
+/** Whether a path exists, without following a link into existence. */
+async function exists(path: string): Promise<boolean> {
   try {
-    await fn(dir);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
+    await Deno.lstat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -534,14 +561,54 @@ Deno.test("prepareCodegraphContext - keeps existing exclude content and its newl
   });
 });
 
-Deno.test("no `.codegraph/` layout directory is erased by the ignored-path clean", () => {
-  for (const dir of CODEGRAPH_LAYOUT_DIRS) {
-    assertEquals(
-      EXECUTABLE_IGNORED_DIRS.includes(dir),
-      false,
-      `${dir} would be erased by the scoped ignored clean`,
+Deno.test("the index survives the cleans a run starts with, where an ignored dependency directory does not", async () => {
+  await withTempDir(async (dir) => {
+    await git(dir, ["init", "-q"]);
+    const { run } = fakeRun({
+      status: { ok: true, value: ok({ stdout: statusJson(1, 1) }) },
+    });
+    await prepareCodegraphContext({
+      repoDir: dir,
+      enabled: true,
+      providerId: "claude",
+      logger: fakeLogger(),
+      run,
+      git: fakeGit().git,
+    });
+    // `node_modules/` is the control: ignored exactly as the index is, and
+    // named in EXECUTABLE_IGNORED_DIRS, so the scoped clean must erase it.
+    await Deno.writeTextFile(
+      `${dir}/.git/info/exclude`,
+      `${await readExclude(dir)}/node_modules/\n`,
     );
-  }
+    await Deno.mkdir(`${dir}/${CODEGRAPH_INDEX_DIR}`);
+    await Deno.writeTextFile(`${dir}/${CODEGRAPH_INDEX_DIR}/codegraph.db`, "x");
+    await Deno.mkdir(`${dir}/node_modules`);
+    await Deno.writeTextFile(`${dir}/node_modules/dep.js`, "x");
+
+    // The two cleans `checkout_update.ts` runs on every checkout.
+    await git(dir, ["clean", "-fd"]);
+    await git(dir, ignoredExecutableCleanArgs());
+
+    assertEquals(
+      await exists(`${dir}/${CODEGRAPH_INDEX_DIR}/codegraph.db`),
+      true,
+      "the index must survive both cleans",
+    );
+    assertEquals(
+      await exists(`${dir}/node_modules/dep.js`),
+      false,
+      "the control directory must be erased by the scoped ignored clean",
+    );
+    // The invariant the survival rests on, pinned by name.
+    for (const layoutDir of CODEGRAPH_LAYOUT_DIRS) {
+      assertEquals(
+        EXECUTABLE_IGNORED_DIRS.includes(layoutDir),
+        false,
+        `${layoutDir} would be erased by the scoped ignored clean`,
+      );
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
