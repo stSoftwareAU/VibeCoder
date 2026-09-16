@@ -4095,6 +4095,14 @@ Two properties follow from reading the record off the pull request:
 - **An unreadable tally is never "no attempts yet".** A failed comment read,
   or an unresolved fleet identity, is logged as an error saying the cap is not
   enforced for that run — it does not quietly hand the host a fresh budget.
+- **The agent's own words cannot forge one.** The lane posts the agent's
+  `.pr_response_message` verbatim inside the comment the fleet account
+  authors, so a marker smuggled into that message would pass the author gate
+  as the fleet's own claim. Every HTML-comment delimiter in agent-authored
+  text is made inert at the `readPrResponseMessage` chokepoint
+  ([agent_marker_neutralisation.ts](../worker/deno/lib/agent_marker_neutralisation.ts))
+  and the defusal is logged as `AGENT_MARKER_NEUTRALISED`; the worker's own
+  marker is appended afterwards and still counts (Issue #2236).
 
 **One comment per failure signature.** The same failure diagnosed again on the
 **same head** posts nothing at all and runs no agent: nothing has changed

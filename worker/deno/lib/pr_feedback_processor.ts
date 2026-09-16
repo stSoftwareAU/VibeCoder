@@ -882,7 +882,10 @@ async function _processFeedbackWithHeartbeat(
   // Read .pr_response_message if Claude created one (Issue #1458).
   // Used as the PR comment body when push succeeds, replacing the hardcoded
   // default with Claude's own summary of what it fixed.
-  const customMessage = await readPrResponseMessage(processorDeps.workDir);
+  const customMessage = await readPrResponseMessage(
+    processorDeps.workDir,
+    logger,
+  );
 
   // Detect escape-hatch invocation (Issue #1826). When Claude raises a
   // follow-up issue and posts a hand-off message instead of looping on a
