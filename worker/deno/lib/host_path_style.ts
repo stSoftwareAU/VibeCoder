@@ -144,8 +144,10 @@ export function isAtOrAbove(
  * The confinement rule shared by every operator-supplied relative value: the
  * `container_tools` install prefix (`bin`/`env`) and the `container_extension`
  * directory (`containerfile`/`start`). `""` is the directory itself. Anything
- * absolute, `~`-anchored, NUL-bearing, or walking above the directory with
- * `..` is out.
+ * absolute, `~`-anchored, NUL-bearing, newline-bearing, or walking above the
+ * directory with `..` is out. A newline is rejected because the value is later
+ * written to line-oriented files — `install-tools.sh` records one `KEY=value`
+ * per line — where a second line is indistinguishable from a real one.
  *
  * @param value - The operator's relative value
  * @param style - The host's path spelling; `windows` also treats `\` as a
@@ -157,6 +159,7 @@ export function isConfinedRelativePath(
   style: LauncherPathStyle = "posix",
 ): boolean {
   if (value.includes("\0")) return false;
+  if (/[\r\n]/.test(value)) return false;
   if (value.startsWith("~")) return false;
   if (isAbsolutePath(value, style)) return false;
   // A Windows host spells its separator `\`, so `..\..` escapes exactly as

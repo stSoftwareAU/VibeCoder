@@ -259,6 +259,206 @@ Deno.test("install-tools - a valid two-tool spec installs both and writes the en
   });
 });
 
+Deno.test("install-tools - a newline in an env value is refused before any download", async () => {
+  await withDirs(async (workDir, prefix) => {
+    const java = await fixtureTarGz(workDir, "java-1.0", {
+      "bin/java": "#!/bin/sh\n",
+    });
+    // The environment hand-off is one KEY=value per line, so a value carrying a
+    // newline would append a `PATH=` line aimed outside the install prefix.
+    const run = await runInstaller(
+      [{
+        id: "java",
+        url: { noarch: java.url },
+        sha256: { noarch: java.sha256 },
+        stripComponents: 1,
+        env: { JAVA_HOME: "lib\nPATH=/tmp/attacker-bin" },
+      }],
+      { prefix, workDir },
+    );
+
+    assert(run.code !== 0, "a newline-bearing env value must fail");
+    assertStringIncludes(run.stderr, "java");
+    assertStringIncludes(run.stderr, "newline");
+    // Refused for the whole set: nothing downloaded, nothing recorded.
+    assertEquals([...Deno.readDirSync(prefix)].length, 0);
+  });
+});
+
+Deno.test("install-tools - a newline in a bin entry is refused before any download", async () => {
+  await withDirs(async (workDir, prefix) => {
+    const java = await fixtureTarGz(workDir, "java-1.0", {
+      "bin/java": "#!/bin/sh\n",
+    });
+    const run = await runInstaller(
+      [{
+        id: "java",
+        url: { noarch: java.url },
+        sha256: { noarch: java.sha256 },
+        stripComponents: 1,
+        bin: ["bin\nPATH=/tmp/attacker-bin"],
+      }],
+      { prefix, workDir },
+    );
+
+    assert(run.code !== 0, "a newline-bearing bin entry must fail");
+    assertStringIncludes(run.stderr, "newline");
+    assertEquals([...Deno.readDirSync(prefix)].length, 0);
+  });
+});
+
+Deno.test("install-tools - a newline in an env NAME is refused before any download", async () => {
+  await withDirs(async (workDir, prefix) => {
+    const java = await fixtureTarGz(workDir, "java-1.0", {
+      "bin/java": "#!/bin/sh\n",
+    });
+    // The name is the left half of the same line as the value, so a newline
+    // there injects a line just as surely — here a PATH= the entrypoint would
+    // prepend, aimed outside the install prefix.
+    const run = await runInstaller(
+      [{
+        id: "java",
+        url: { noarch: java.url },
+        sha256: { noarch: java.sha256 },
+        stripComponents: 1,
+        env: { "A\nPATH=/tmp/attacker-bin:x": "" },
+      }],
+      { prefix, workDir },
+    );
+
+    assert(
+      run.code !== 0,
+      `a newline-bearing env name must fail: ${run.stdout}`,
+    );
+    assertStringIncludes(run.stderr, "newline");
+    assertEquals([...Deno.readDirSync(prefix)].length, 0);
+  });
+});
+
+Deno.test("install-tools - a bin block jq cannot walk aborts rather than installing a PATH-less tool", async () => {
+  await withDirs(async (workDir, prefix) => {
+    const java = await fixtureTarGz(workDir, "java-1.0", {
+      "bin/java": "#!/bin/sh\n",
+    });
+    // `bin` as a string, not an array. The environment-recording loops read it
+    // through a process substitution whose status nothing observes, so this
+    // used to install the tool, record no PATH line, and exit 0.
+    const run = await runInstaller(
+      [{
+        id: "java",
+        url: { noarch: java.url },
+        sha256: { noarch: java.sha256 },
+        stripComponents: 1,
+        bin: "bin",
+      }],
+      { prefix, workDir },
+    );
+
+    assert(run.code !== 0, `a malformed bin block must fail: ${run.stdout}`);
+    assertEquals([...Deno.readDirSync(prefix)].length, 0);
+  });
+});
+
+Deno.test("install-tools - a zip whose strip level is a symlink does not copy the link target in", async () => {
+  await withDirs(async (workDir, prefix) => {
+    // A directory the archive has no business reaching: it stands in for
+    // anything readable on the build host.
+    const outside = `${workDir}/outside`;
+    await Deno.mkdir(outside, { recursive: true });
+    await Deno.writeTextFile(`${outside}/host-secret.txt`, "not yours\n");
+
+    // One entry, `top`, a symlink at that directory — so `stripComponents: 1`
+    // descends into it unless the installer refuses a symlinked strip level.
+    const archive = `${workDir}/symlink.zip`;
+    await Deno.writeFile(
+      archive,
+      zipSymlinkEntry("top", outside),
+    );
+
+    const run = await runInstaller(
+      [{
+        id: "zt",
+        url: { noarch: `file://${archive}` },
+        sha256: { noarch: await sha256Hex(archive) },
+        stripComponents: 1,
+      }],
+      { prefix, workDir },
+    );
+
+    assert(run.code !== 0, `a symlinked strip level must fail: ${run.stdout}`);
+    assertStringIncludes(run.stderr, "extraction failed");
+    assert(
+      !existsSync(`${prefix}/zt/host-secret.txt`),
+      "the link target's tree must not be copied into the install prefix",
+    );
+  });
+});
+
+/** CRC-32 (IEEE) of a byte string, as the zip central directory records it. */
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xFFFFFFFF;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) {
+      crc = (crc >>> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+/**
+ * A one-entry `.zip` holding a UNIX symlink — the link target is the entry's
+ * body and the mode in the external attributes is what makes `unzip` restore
+ * it as a link. Written here rather than shelled out to `zip`, which the
+ * image does not carry.
+ */
+function zipSymlinkEntry(name: string, target: string): Uint8Array {
+  const nameBytes = new TextEncoder().encode(name);
+  const data = new TextEncoder().encode(target);
+  const crc = crc32(data);
+  const symlinkMode = 0o120777;
+
+  const local = new Uint8Array(30 + nameBytes.length + data.length);
+  const lv = new DataView(local.buffer);
+  lv.setUint32(0, 0x04034B50, true);
+  lv.setUint16(4, 20, true); // version needed
+  lv.setUint16(8, 0, true); // stored, not deflated
+  lv.setUint16(12, 0x21, true); // 1980-01-01
+  lv.setUint32(14, crc, true);
+  lv.setUint32(18, data.length, true);
+  lv.setUint32(22, data.length, true);
+  lv.setUint16(26, nameBytes.length, true);
+  local.set(nameBytes, 30);
+  local.set(data, 30 + nameBytes.length);
+
+  const central = new Uint8Array(46 + nameBytes.length);
+  const cv = new DataView(central.buffer);
+  cv.setUint32(0, 0x02014B50, true);
+  cv.setUint16(4, (3 << 8) | 20, true); // made by UNIX — external attrs are a mode
+  cv.setUint16(6, 20, true);
+  cv.setUint16(14, 0x21, true);
+  cv.setUint32(16, crc, true);
+  cv.setUint32(20, data.length, true);
+  cv.setUint32(24, data.length, true);
+  cv.setUint16(28, nameBytes.length, true);
+  cv.setUint32(38, (symlinkMode << 16) >>> 0, true);
+  central.set(nameBytes, 46);
+
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054B50, true);
+  ev.setUint16(8, 1, true); // entries on this disk
+  ev.setUint16(10, 1, true); // entries in total
+  ev.setUint32(12, central.length, true);
+  ev.setUint32(16, local.length, true);
+
+  const out = new Uint8Array(local.length + central.length + eocd.length);
+  out.set(local, 0);
+  out.set(central, local.length);
+  out.set(eocd, local.length + central.length);
+  return out;
+}
+
 /** Local existsSync without importing std/fs. */
 function existsSync(path: string): boolean {
   try {

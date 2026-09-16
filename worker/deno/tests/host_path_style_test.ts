@@ -52,6 +52,13 @@ Deno.test("isConfinedRelativePath - absolute, ~-anchored and NUL values are refu
   assertEquals(isConfinedRelativePath("bin\0/start.sh"), false);
 });
 
+Deno.test("isConfinedRelativePath - a newline-bearing value is refused", () => {
+  // The value is written to line-oriented files (install-tools.sh records one
+  // KEY=value per line), where a newline appends a line of its own.
+  assertEquals(isConfinedRelativePath("bin\nPATH=/tmp/attacker-bin"), false);
+  assertEquals(isConfinedRelativePath("bin\rPATH=/tmp/attacker-bin"), false);
+});
+
 Deno.test("isConfinedRelativePath - a value walking above the directory is refused", () => {
   assertEquals(isConfinedRelativePath("../start.sh"), false);
   assertEquals(isConfinedRelativePath("bin/../../start.sh"), false);
