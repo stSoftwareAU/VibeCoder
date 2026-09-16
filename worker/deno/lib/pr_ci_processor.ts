@@ -1179,9 +1179,7 @@ async function _processCiWithHeartbeat(
   // always made. Prepared once: the post-quality retry below reuses this run
   // rather than indexing the same checkout a second time.
   const codegraph = await prepareCodegraphRun({
-    ...(processorDeps.workDir === undefined
-      ? {}
-      : { repoDir: processorDeps.workDir }),
+    repoDir: processorDeps.workDir,
     enabled: codegraphContextEnabled,
     logger,
     prepare: deps.claude.prepareCodegraphContext,

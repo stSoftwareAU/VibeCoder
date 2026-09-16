@@ -215,3 +215,52 @@ Deno.test("prepareCodegraphRun - an unresolvable provider fails the index, not t
     "one status line is logged per run, on every path",
   );
 });
+
+Deno.test("prepareCodegraphRun - a run that names no checkout fails the index, not the run (Issue #2160)", async () => {
+  const logger = recordingLogger();
+  const preparer = fakePreparer({ status: "ok", enabled: true });
+  const run = await prepareCodegraphRun({
+    enabled: true,
+    logger,
+    prepare: preparer.prepare,
+  });
+
+  assertEquals(preparer.calls.length, 0, "nothing may be prepared");
+  assertEquals(
+    run.result.status,
+    "failed",
+    "the switch was on and no index was offered — never a silent `off`",
+  );
+  assertEquals(run.result.enabled, true);
+  assertEquals(run.applyPrompt("p"), "p");
+  assertEquals(run.mcpConfig(true), true, "the browser grant is untouched");
+  assertEquals(run.mcpConfigOption(), {}, "no MCP configuration is written");
+  assert(
+    logger.lines.some((l) => l.message.includes("[CODEGRAPH_UNAVAILABLE]")),
+    "the fault must be logged loudly",
+  );
+  assert(
+    logger.lines.some((l) =>
+      l.message.includes("CodeGraph context: status=failed")
+    ),
+    "one status line is logged per run, on every path",
+  );
+});
+
+Deno.test("prepareCodegraphRun - a switched-off host with no checkout stays off (Issue #2160)", async () => {
+  const logger = recordingLogger();
+  const preparer = fakePreparer({ status: "off", enabled: false });
+  const run = await prepareCodegraphRun({
+    enabled: false,
+    logger,
+    prepare: preparer.prepare,
+  });
+
+  assertEquals(run.result.status, "off");
+  assertEquals(run.mcpConfigOption(), {});
+  assertEquals(
+    logger.lines.some((l) => l.message.includes("[CODEGRAPH_UNAVAILABLE]")),
+    false,
+    "an off host reports no fault",
+  );
+});
