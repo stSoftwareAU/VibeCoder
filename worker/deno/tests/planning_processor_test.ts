@@ -37,6 +37,7 @@ import { planningProcessorCommand } from "../commands/planning_processor.ts";
 import { validateFailureDetectionCriteria } from "../lib/failure_detection_gate.ts";
 import { COVERAGE_TABLE_REQUIREMENT } from "../lib/plan_coverage_gate.ts";
 import { MILESTONES_TABLE_REQUIREMENT } from "../lib/plan_milestone_groups.ts";
+import { MAX_MILESTONE_TITLE_LENGTH } from "../lib/planning_milestone.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
@@ -5349,7 +5350,10 @@ Deno.test("processIssuePlanning - a plan ordered against its dependency edges st
  * A parent read carrying a covered `## Plan Coverage` table for the two
  * sub-issues this run publishes, plus whatever `table` lines follow it.
  */
-function milestonesReadWith(table: string[]): string {
+function milestonesReadWith(
+  table: string[],
+  subIssueNumbers: number[] = [101, 102],
+): string {
   return JSON.stringify({
     body: "Parent",
     comments: [{
@@ -5357,14 +5361,17 @@ function milestonesReadWith(table: string[]): string {
       body: [
         "## Plan published",
         "",
-        "1. #101 — Auth module (`enhancement`)",
-        "2. #102 — Session store (`enhancement`)",
+        ...subIssueNumbers.map((n, i) =>
+          `${i + 1}. #${n} — Part (\`enhancement\`)`
+        ),
         "",
         "## Plan Coverage",
         "",
         "| Ask | Covered by | Notes |",
         "| --- | --- | --- |",
-        "| Add the auth module | #101, #102 | Both published |",
+        `| Add the auth module | ${
+          subIssueNumbers.map((n) => `#${n}`).join(", ")
+        } | All published |`,
         "",
         ...table,
       ].join("\n"),
@@ -5372,22 +5379,31 @@ function milestonesReadWith(table: string[]): string {
   });
 }
 
-/** Run a planning close that publishes #101 and #102 against `table`. */
-async function runPlanningWithMilestones(table: string[]): Promise<{
+/** Run a planning close that publishes `subIssueNumbers` against `table`. */
+async function runPlanningWithMilestones(
+  table: string[],
+  subIssueNumbers: number[] = [101, 102],
+): Promise<{
   result: Awaited<ReturnType<typeof processIssuePlanning>>;
   closedIssue: boolean;
   labels: string[];
   comments: string[];
   milestonePosts: string[][];
+  milestoneAssignments: string[][];
 }> {
   const ctx = makeContext();
-  const claudeOutput = `Created the following sub-issues:
-- https://github.com/org/repo/issues/101 — Auth module
-- https://github.com/org/repo/issues/102 — Session store`;
+  const claudeOutput = [
+    "Created the following sub-issues:",
+    ...subIssueNumbers.map((n) =>
+      `- https://github.com/org/repo/issues/${n} — Part`
+    ),
+  ].join("\n");
   let closedIssue = false;
   const labels: string[] = [];
   const comments: string[] = [];
   const milestonePosts: string[][] = [];
+  const milestoneAssignments: string[][] = [];
+  let nextMilestoneNumber = 7;
 
   const deps = createMockDeps({
     claude: {
@@ -5400,18 +5416,25 @@ async function runPlanningWithMilestones(table: string[]): Promise<{
     github: {
       runGhCommand: (args: string[]) => {
         if (isCoverageRead(args)) {
-          return Promise.resolve(milestonesReadWith(table));
+          return Promise.resolve(milestonesReadWith(table, subIssueNumbers));
         }
         if (args[0] === "api") {
           if (
             args.includes("POST") && args.some((a) => a.endsWith("/milestones"))
           ) {
             milestonePosts.push(args);
+            const posted = args.find((a) => a.startsWith("title="))?.slice(
+              "title=".length,
+            ) ?? "#100 Break down auth";
             return Promise.resolve(
-              JSON.stringify({ number: 7, title: "#100 Break down auth" }),
+              JSON.stringify({ number: nextMilestoneNumber++, title: posted }),
             );
           }
           return Promise.resolve("[]");
+        }
+        if (args[0] === "issue" && args[1] === "edit") {
+          const at = args.indexOf("--milestone");
+          if (at !== -1) milestoneAssignments.push([args[2]!, args[at + 1]!]);
         }
         if (args.includes("close")) closedIssue = true;
         return Promise.resolve("");
@@ -5425,7 +5448,14 @@ async function runPlanningWithMilestones(table: string[]): Promise<{
     logger: deps.logger,
     deps,
   });
-  return { result, closedIssue, labels, comments, milestonePosts };
+  return {
+    result,
+    closedIssue,
+    labels,
+    comments,
+    milestonePosts,
+    milestoneAssignments,
+  };
 }
 
 Deno.test("processIssuePlanning - no `## Milestones` table closes the parent with one milestone (Issue #2172)", async () => {
@@ -5457,6 +5487,40 @@ Deno.test("processIssuePlanning - a sound `## Milestones` table closes the paren
   assertEquals(closedIssue, true);
   assertEquals(labels.includes("needs-human"), false);
   assertEquals(comments.some((c) => c.includes("Plan milestones gate")), false);
+});
+
+Deno.test("processIssuePlanning - a sound table creates one milestone per multi-issue group (Issue #2175)", async () => {
+  const { milestonePosts, milestoneAssignments, labels } =
+    await runPlanningWithMilestones([
+      "## Milestones",
+      "",
+      "| Milestone | File area | Sub-issues |",
+      "| --- | --- | --- |",
+      "| auth module | worker/auth | #101, #102 |",
+      "| session store | worker/store | #103, #104 |",
+      "| — | docs | #105 |",
+    ], [101, 102, 103, 104, 105]);
+
+  assertEquals(labels.includes("needs-human"), false);
+  // Two groups of 2+ → two milestones; the single-sub-issue group gets none.
+  assertEquals(milestonePosts.length, 2);
+  const postedTitles = milestonePosts.map((p) =>
+    p.find((a) => a.startsWith("title="))!.slice("title=".length)
+  );
+  assertEquals(postedTitles, [
+    "#100 worker auth: auth module",
+    "#100 worker store: session store",
+  ]);
+  for (const title of postedTitles) {
+    assertEquals(title.length <= MAX_MILESTONE_TITLE_LENGTH, true);
+  }
+  // Each sub-issue is assigned to its own group's milestone, and #105 to none.
+  assertEquals(milestoneAssignments, [
+    ["101", "#100 worker auth: auth module"],
+    ["102", "#100 worker auth: auth module"],
+    ["103", "#100 worker store: session store"],
+    ["104", "#100 worker store: session store"],
+  ]);
 });
 
 Deno.test("processIssuePlanning - a broken `## Milestones` table escalates and still creates the legacy milestone (Issue #2172)", async () => {
