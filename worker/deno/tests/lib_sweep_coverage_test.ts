@@ -736,7 +736,7 @@ Deno.test("driftSince - an unreachable sweptAt names the slice, the commit and t
   }
   assert(thrown instanceof SweepLedgerError, String(thrown));
   const message = (thrown as SweepLedgerError).message;
-  assert(message.includes("12a"), message);
+  assert(message.includes("slice 12a (#1000)"), message);
   assert(message.includes(FIXTURE_COMMIT), message);
   assert(message.includes("reachable from the default branch"), message);
   assert(message.includes("docs/audits/fixture.md"), message);

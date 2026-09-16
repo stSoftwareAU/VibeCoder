@@ -374,7 +374,7 @@ function describeDriftGitFailure(
     `could not be diffed from sweptAt ${slice.sweptAt}: ${detail}\n` +
     `  sweptAt must be a commit reachable from the default branch — a ` +
     `feature-branch commit is deleted by squash-merge. Repoint it with: ` +
-    `git log -1 --format=%H -- ${slice.ledger}`;
+    `git log --diff-filter=A -1 --format=%H origin/main -- ${slice.ledger}`;
 }
 
 /**
