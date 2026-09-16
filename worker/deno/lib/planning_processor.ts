@@ -86,6 +86,7 @@ import {
 import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
 import {
   escalateMilestoneGroupOffenders,
+  type MilestoneGroup,
   MILESTONES_TABLE_REQUIREMENT,
   runMilestoneGroupsGate,
   validateMilestoneGroups,
@@ -2253,6 +2254,11 @@ async function closePlanningIssue(
   // straight to the default branch, so there is nothing to group) and the
   // parent owns no milestone of its own (the #1300 inheritance path keeps
   // ownership, exactly as `maybeCreatePlanningMilestone` gates on it).
+  //
+  // A sound grouping is carried to `maybeCreatePlanningMilestone` below, which
+  // creates one milestone per group of 2+ sub-issues (Issue #2175); anything
+  // else leaves it undefined and the legacy single-milestone path runs.
+  let soundMilestoneGroups: MilestoneGroup[] | undefined;
   if (
     textSubIssueNumbers.length >= 2 &&
     (parentMilestoneTitle ?? "").trim() === ""
@@ -2283,8 +2289,8 @@ async function closePlanningIssue(
         textSubIssueNumbers,
       );
       if (offenders.length === 0) {
-        // The grouping is sound. Creating one milestone per group is
-        // Issue #2175; until it lands the groups are recorded, not acted on.
+        // The grouping is sound — one milestone per group below (Issue #2175).
+        soundMilestoneGroups = milestoneVerdict.groups;
         logger.info(
           "Milestone-groups gate: the published `## Milestones` table is structurally sound (Issue #2172)",
           {
@@ -2373,15 +2379,58 @@ async function closePlanningIssue(
   // assign every sub-issue to it. This opts the sub-issues into the existing
   // milestone-branch delivery workflow (Issue #1300). Idempotent and
   // best-effort — a failure must never abort planning closure.
-  await maybeCreatePlanningMilestone({
+  const planningMilestones = await maybeCreatePlanningMilestone({
     repo,
     parentIssueNumber: issueNumber,
     parentIssueTitle,
     parentMilestoneTitle,
     subIssueNumbers,
+    // Issue #2175: with a sound `## Milestones` grouping, one milestone per
+    // group of 2+ sub-issues instead of one for the whole plan. Undefined
+    // keeps the legacy single-milestone behaviour.
+    ...(soundMilestoneGroups ? { groups: soundMilestoneGroups } : {}),
     ghCommandFn: deps.github.runGhCommand,
     logger,
   });
+  for (const milestone of planningMilestones.milestones ?? []) {
+    if (milestone.milestoneNumber === undefined) {
+      const deliberate = milestone.skippedReason === "too-few-sub-issues" ||
+        milestone.skippedReason === "no-milestone-row";
+      // A deliberate skip and a GitHub failure are not the same outcome, so
+      // they are never reported with the same words or at the same level: a
+      // group that lost its milestone to an error must not read as a design
+      // decision.
+      const context = {
+        repo,
+        issueNumber,
+        area: milestone.area,
+        reason: milestone.skippedReason ?? "unknown",
+      };
+      if (deliberate) {
+        logger.info(
+          "Milestone group: no milestone — this group merges straight to the default branch (Issue #2175)",
+          context,
+        );
+      } else {
+        logger.warn(
+          "Milestone group: failed to create the group's milestone — its sub-issues keep the default branch (Issue #2175)",
+          context,
+        );
+      }
+      continue;
+    }
+    logger.info(
+      "Milestone group: created or reused one milestone for the group (Issue #2175)",
+      {
+        repo,
+        issueNumber,
+        area: milestone.area,
+        milestoneTitle: milestone.milestoneTitle,
+        milestoneNumber: milestone.milestoneNumber,
+        assigned: milestone.assigned.join(", "),
+      },
+    );
+  }
 
   // Issue #2650: on a degraded run, tag the parent issue and every sub-issue
   // with the non-reserved `degraded-model` label so silent model degradation is

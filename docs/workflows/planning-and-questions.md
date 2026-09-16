@@ -635,14 +635,16 @@ chokepoint (`needs-human` plus a paired comment naming every offending row)
 continues while a human regroups. Both in-code fallback publish prompts
 interpolate the same `MILESTONES_TABLE_REQUIREMENT` constant that lives beside
 the gate, so a degraded run does not publish a table the gate is bound to
-reject.
+reject. An **accepted** grouping is handed to `maybeCreatePlanningMilestone()`,
+which creates one milestone per group of two or more sub-issues (Issue #2175 —
+see [Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)).
 
 ```mermaid
 flowchart TD
     A["closePlanningIssue() — 2+ sub-issues published,<br/>parent owns no milestone"] --> B{"## Milestones table found?"}
     B -->|no| L["Legacy path: one milestone for the plan<br/>close the parent"]
     B -->|yes| C{"Every sub-issue in exactly one group,<br/>every group names a file area,<br/>at most 4 multi-sub-issue groups?"}
-    C -->|yes| D[Grouping accepted]
+    C -->|yes| D["Grouping accepted:<br/>one milestone per group of 2+ sub-issues"]
     C -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each offending row"]
     E --> L
 ```
@@ -798,6 +800,19 @@ auto-merges into a shared `milestone/<name>` branch, and the default branch is
 updated via a **single final PR** once all sub-issues close — the "review once /
 run overnight" workflow (see [milestones.md](milestones.md)).
 
+- **One milestone per file-area group.** When the publish turn posts a
+  `## Milestones` table grouping its sub-issues by file area and that table
+  passes the
+  [structural gate](#-milestones-table-and-structural-gate-issue-2172), the
+  worker creates **one milestone per group** that carries two or more
+  sub-issues, and assigns each sub-issue to its own group's milestone only.
+  Each is titled `#<N> <area>: <short description>` — for example
+  `#2163 infra: options trading` — so the fleet can work several milestones in
+  parallel instead of serialising a whole plan onto one branch. A group of a
+  **single** sub-issue gets no milestone at all: that sub-issue keeps the
+  default branch as its PR base. With no table — or a table the gate rejected —
+  the plan takes the legacy path below: one milestone for the whole plan. The
+  gate caps a plan at **four** milestones (groups of one do not count).
 - **Always on, no opt-out.** Detach the milestone manually in the rare case you
   do not want it.
 - **Single sub-issue → no milestone.** A plan that yields just one sub-issue is
@@ -821,6 +836,24 @@ run overnight" workflow (see [milestones.md](milestones.md)).
   older, long-titled milestone (milestone #50 and its kind) is therefore found
   and reused **exactly as it is** — the worker never renames a milestone, so
   active milestone branches and in-flight work are untouched.
+- **A group never adopts another area's milestone.** A grouped milestone's
+  marker carries its area
+  (`<!-- planning-milestone parent="N" area="infra" -->`), and a grouped lookup
+  stops at that marker and the exact title — it never falls back to the shared
+  leading `#<N>`, which every group of the same plan carries. The legacy `#<N>`
+  fallback runs on the **ungrouped** path only, and skips any milestone whose
+  description names an area. So re-running planning reuses each group's own
+  milestone, and neither path can pull a differently-scoped group's work onto
+  one branch.
+- **Two rows on one file area share one milestone, loudly.** The gate
+  deliberately allows two groups to name the same area, and the area *is* the
+  milestone's identity — so those rows resolve to a single milestone and a
+  single branch. That is reported with a WARNING naming the areas rather than
+  passed off as two independent streams.
+- **A `—` milestone row never gets one.** A row whose `Milestone` cell is `—`
+  (or `none`) merges straight to the default branch whatever its size, exactly
+  as the table's own contract says — the worker does not invent a name the
+  planner declined to give.
 - **Non-fatal.** A milestone create/assign hiccup is logged and swallowed — it
   never aborts closing the planning issue.
 
@@ -830,15 +863,23 @@ flowchart TD
     B -- Yes --> C[: sub-issues inherit it]
     B -- No --> D{N ≥ 2?}
     D -- No --> E[Single sub-issue — no milestone]
-    D -- Yes --> F[Auto-create '#N short description' milestone]
-    F --> G[Assign every sub-issue to it]
-    G --> H[Milestone-branch delivery: shared branch + one final PR]
+    D -- Yes --> G{"Sound '## Milestones' table?"}
+    G -- No --> F[Auto-create one '#N short description' milestone]
+    F --> I[Assign every sub-issue to it]
+    G -- Yes --> P[For each group in the table]
+    P --> S{"Group has 2+ sub-issues?"}
+    S -- No --> T[No milestone — default branch]
+    S -- Yes --> M["Auto-create '#N area: short description' milestone<br/>assign that group's sub-issues only"]
+    I --> H[Milestone-branch delivery: shared branch + one final PR]
+    M --> H
 ```
 
 Implementation: `worker/deno/lib/planning_milestone.ts`
-(`buildPlanningMilestoneTitle` for the name, `ensurePlanningMilestone` for the
-lookup/reuse), called from `closePlanningIssue` in
-`worker/deno/lib/planning_processor.ts`.
+(`buildPlanningMilestoneTitle` for the name, `planningMilestoneMarker` for the
+per-group identity, `ensurePlanningMilestone` for the lookup/reuse), called
+from `closePlanningIssue` in `worker/deno/lib/planning_processor.ts`, which
+passes it the groups `runMilestoneGroupsGate`
+(`worker/deno/lib/plan_milestone_groups.ts`) accepted.
 
 #### 🧩 Grouping sub-issues by file area (Issue #2174)
 

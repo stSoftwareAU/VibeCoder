@@ -502,3 +502,533 @@ Deno.test("maybeCreatePlanningMilestone — lists a full page of milestones", as
   const listing = calls.find((c) => c[1]?.includes("/milestones?"));
   assertStringIncludes(listing?.[1] ?? "", "per_page=100");
 });
+
+// ---------------------------------------------------------------------------
+// Grouped milestones — one milestone per file-area group (Issue #2175)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildPlanningMilestoneTitle — area goes before a colon", () => {
+  assertEquals(
+    buildPlanningMilestoneTitle(
+      2163,
+      "Parent title",
+      "options trading",
+      "infra",
+    ),
+    "#2163 infra: options trading",
+  );
+});
+
+Deno.test("buildPlanningMilestoneTitle — a blank area keeps today's shape", () => {
+  assertEquals(
+    buildPlanningMilestoneTitle(5, "Parent title", undefined, "   "),
+    "#5 Parent title",
+  );
+  assertEquals(
+    buildPlanningMilestoneTitle(5, "Parent title", undefined, ""),
+    "#5 Parent title",
+  );
+  // An area of only unsafe characters sanitises away to the same shape.
+  assertEquals(
+    buildPlanningMilestoneTitle(5, "Parent title", undefined, '"$&"'),
+    "#5 Parent title",
+  );
+});
+
+Deno.test("buildPlanningMilestoneTitle — the area is sanitised with the allowlist", () => {
+  assertEquals(
+    buildPlanningMilestoneTitle(7, "Parent", "short", 'worker/deno "lib"'),
+    "#7 worker deno lib: short",
+  );
+});
+
+Deno.test("buildPlanningMilestoneTitle — a long area keeps the prefix, the colon and a description", () => {
+  const longArea =
+    "worker deno lib planning milestone processor and every adjacent module";
+  const title = buildPlanningMilestoneTitle(
+    2163,
+    "Group the sub-issues of a plan by the file area each one touches",
+    undefined,
+    longArea,
+  );
+  assertEquals(title.length <= MAX_MILESTONE_TITLE_LENGTH, true);
+  assertEquals(title.startsWith("#2163 "), true);
+  assertStringIncludes(title, ": ");
+  // Both halves are cut on a word boundary — no half words either side.
+  const area = title.slice("#2163 ".length, title.indexOf(":"));
+  assertEquals(longArea.startsWith(area), true);
+  const description = title.slice(title.indexOf(": ") + 2);
+  assertEquals(description === "", false);
+});
+
+Deno.test("buildPlanningMilestoneTitle — a long description is cut, the area and colon survive", () => {
+  const title = buildPlanningMilestoneTitle(
+    42,
+    "x".repeat(MAX_MILESTONE_TITLE_LENGTH * 2),
+    undefined,
+    "docs",
+  );
+  assertEquals(title.length <= MAX_MILESTONE_TITLE_LENGTH, true);
+  assertEquals(title.startsWith("#42 docs: x"), true);
+});
+
+Deno.test("planningMilestoneMarker — carries the area when one is given", () => {
+  assertEquals(
+    planningMilestoneMarker(2163, "infra"),
+    '<!-- planning-milestone parent="2163" area="infra" -->',
+  );
+  // No area → today's marker, so pre-#2175 milestones still match.
+  assertEquals(
+    planningMilestoneMarker(2163),
+    '<!-- planning-milestone parent="2163" -->',
+  );
+  assertEquals(
+    planningMilestoneMarker(2163, "   "),
+    '<!-- planning-milestone parent="2163" -->',
+  );
+  // The area is sanitised, so a quote can never break out of the attribute.
+  assertEquals(
+    planningMilestoneMarker(2163, 'infra" --><script>'),
+    '<!-- planning-milestone parent="2163" area="infra -- script" -->',
+  );
+});
+
+/** Group shape the gate hands `maybeCreatePlanningMilestone` (Issue #2172). */
+function group(area: string, title: string, subIssueNumbers: number[]) {
+  return { area, title, subIssueNumbers };
+}
+
+/** A gh stub that records calls and answers listings/creates from `state`. */
+function groupedGh(state: {
+  listing: unknown[];
+  calls: string[][];
+  failEdits?: number[];
+  failPostFor?: string[];
+}) {
+  const nextNumber = () =>
+    Math.max(
+      99,
+      ...state.listing.map((m) => (m as { number: number }).number),
+    ) + 1;
+  return (args: string[]): Promise<string> => {
+    state.calls.push(args);
+    if (args[0] === "api" && args[1]?.includes("/milestones?")) {
+      return Promise.resolve(JSON.stringify(state.listing));
+    }
+    if (args.includes("POST")) {
+      const title = (args.find((a) => a.startsWith("title=")) ?? "").slice(
+        "title=".length,
+      );
+      if (state.failPostFor?.some((t) => title.includes(t))) {
+        return Promise.reject(new Error(`cannot create ${title}`));
+      }
+      const description = (args.find((a) => a.startsWith("description=")) ?? "")
+        .slice(
+          "description=".length,
+        );
+      const created = { number: nextNumber(), title, description };
+      state.listing.push(created);
+      return Promise.resolve(JSON.stringify(created));
+    }
+    if (args[0] === "issue" && args[1] === "edit") {
+      if (state.failEdits?.includes(Number(args[2]))) {
+        return Promise.reject(new Error(`issue ${args[2]} locked`));
+      }
+    }
+    return Promise.resolve("");
+  };
+}
+
+Deno.test("maybeCreatePlanningMilestone — three groups yield three milestones and per-group assignments", async () => {
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Split sub-issues by file area",
+    subIssueNumbers: [10, 11, 12, 13, 14, 15],
+    groups: [
+      group("infra", "options trading", [10, 11]),
+      group("docs", "milestone docs", [12, 13]),
+      group("worker", "gate wiring", [14, 15]),
+    ],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+
+  assertEquals(result.created, true);
+  const posts = state.calls.filter((c) => c.includes("POST"));
+  assertEquals(posts.length, 3);
+  assertEquals(result.milestones?.length, 3);
+  assertEquals(
+    result.milestones?.map((m) => m.milestoneTitle),
+    [
+      "#2163 infra: options trading",
+      "#2163 docs: milestone docs",
+      "#2163 worker: gate wiring",
+    ],
+  );
+  assertEquals(result.milestones?.map((m) => m.area), [
+    "infra",
+    "docs",
+    "worker",
+  ]);
+  assertEquals(result.milestones?.map((m) => m.assigned), [
+    [10, 11],
+    [12, 13],
+    [14, 15],
+  ]);
+  // Every sub-issue is assigned to its own group's milestone, and only that one.
+  const edits = state.calls.filter((c) => c[0] === "issue" && c[1] === "edit");
+  assertEquals(edits.length, 6);
+  const assignedTitleFor = (n: number) =>
+    edits.find((c) => c[2] === String(n))!.at(-1);
+  assertEquals(assignedTitleFor(10), "#2163 infra: options trading");
+  assertEquals(assignedTitleFor(12), "#2163 docs: milestone docs");
+  assertEquals(assignedTitleFor(15), "#2163 worker: gate wiring");
+  // Every generated title is within the cap.
+  for (const m of result.milestones ?? []) {
+    assertEquals(
+      (m.milestoneTitle ?? "").length <= MAX_MILESTONE_TITLE_LENGTH,
+      true,
+    );
+  }
+});
+
+Deno.test("maybeCreatePlanningMilestone — a group of one sub-issue gets no milestone", async () => {
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11, 12],
+    groups: [
+      group("infra", "options trading", [10, 11]),
+      group("docs", "", [12]),
+    ],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+
+  assertEquals(state.calls.filter((c) => c.includes("POST")).length, 1);
+  assertEquals(result.milestones?.length, 2);
+  const solo = result.milestones![1]!;
+  assertEquals(solo.area, "docs");
+  assertEquals(solo.milestoneTitle, undefined);
+  assertEquals(solo.milestoneNumber, undefined);
+  assertEquals(solo.assigned, []);
+  assertEquals(solo.skippedReason, "too-few-sub-issues");
+  // #12 keeps the default branch: it is never edited.
+  const edits = state.calls.filter((c) => c[0] === "issue" && c[1] === "edit");
+  assertEquals(edits.some((c) => c[2] === "12"), false);
+});
+
+Deno.test("maybeCreatePlanningMilestone — re-running reuses each group's milestone by marker", async () => {
+  const listing: unknown[] = [];
+  const groups = [
+    group("infra", "options trading", [10, 11]),
+    group("docs", "milestone docs", [12, 13]),
+  ];
+  const first = { listing, calls: [] as string[][] };
+  await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11, 12, 13],
+    groups,
+    ghCommandFn: groupedGh(first),
+    logger: silentLogger,
+  });
+  assertEquals(first.calls.filter((c) => c.includes("POST")).length, 2);
+
+  // Second run over the same listing: no POST, no rename, same milestones.
+  const second = { listing, calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11, 12, 13],
+    groups,
+    ghCommandFn: groupedGh(second),
+    logger: silentLogger,
+  });
+  assertEquals(second.calls.filter((c) => c.includes("POST")).length, 0);
+  assertEquals(second.calls.some((c) => c.includes("PATCH")), false);
+  assertEquals(result.milestones?.map((m) => m.milestoneNumber), [100, 101]);
+  assertEquals(result.milestones?.map((m) => m.milestoneTitle), [
+    "#2163 infra: options trading",
+    "#2163 docs: milestone docs",
+  ]);
+});
+
+Deno.test("maybeCreatePlanningMilestone — a group never adopts a sibling group's milestone", async () => {
+  // Only the `infra` group's milestone exists; `docs` must create its own
+  // rather than adopt the sibling by its leading `#2163`.
+  const state = {
+    listing: [{
+      number: 100,
+      title: "#2163 infra: options trading",
+      description: `${planningMilestoneMarker(2163, "infra")} grouping`,
+    }] as unknown[],
+    calls: [] as string[][],
+  };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [12, 13],
+    groups: [group("docs", "milestone docs", [12, 13])],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+  assertEquals(state.calls.filter((c) => c.includes("POST")).length, 1);
+  assertEquals(result.milestones?.[0]?.milestoneNumber, 101);
+  assertEquals(
+    result.milestones?.[0]?.milestoneTitle,
+    "#2163 docs: milestone docs",
+  );
+});
+
+Deno.test("maybeCreatePlanningMilestone — the ungrouped path never adopts a grouped milestone", async () => {
+  const state = {
+    listing: [{
+      number: 100,
+      title: "#2163 infra: options trading",
+      description: `${planningMilestoneMarker(2163, "infra")} grouping`,
+    }] as unknown[],
+    calls: [] as string[][],
+  };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [20, 21],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+  assertEquals(state.calls.filter((c) => c.includes("POST")).length, 1);
+  assertEquals(result.milestoneNumber, 101);
+  assertEquals(result.milestoneTitle, "#2163 Parent");
+});
+
+Deno.test("maybeCreatePlanningMilestone — the ungrouped path still reuses a legacy prefix milestone", async () => {
+  // Guard against over-reach: skipping `area=` markers must not break the
+  // legacy `#<N>` reuse that milestone #50 depends on.
+  const state = {
+    listing: [{
+      number: 50,
+      title: "#2163 A long legacy title nobody generated this way",
+      description: "",
+    }] as unknown[],
+    calls: [] as string[][],
+  };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [20, 21],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+  assertEquals(state.calls.filter((c) => c.includes("POST")).length, 0);
+  assertEquals(result.milestoneNumber, 50);
+});
+
+Deno.test("maybeCreatePlanningMilestone — a new grouped milestone carries the area marker", async () => {
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11],
+    groups: [group("infra", "options trading", [10, 11])],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+  const post = state.calls.find((c) => c.includes("POST"))!;
+  const description = post.find((a) => a.startsWith("description="))!;
+  assertStringIncludes(description, planningMilestoneMarker(2163, "infra"));
+});
+
+Deno.test("maybeCreatePlanningMilestone — one group's failure does not stop the others", async () => {
+  const state = {
+    listing: [] as unknown[],
+    calls: [] as string[][],
+    failPostFor: ["docs"],
+    failEdits: [15],
+  };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11, 12, 13, 14, 15],
+    groups: [
+      group("infra", "options trading", [10, 11]),
+      group("docs", "milestone docs", [12, 13]),
+      group("worker", "gate wiring", [14, 15]),
+    ],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+
+  assertEquals(result.created, true);
+  assertEquals(result.milestones?.length, 3);
+  // The infra group landed, docs failed to be ensured, worker still ran.
+  assertEquals(result.milestones?.[0]?.assigned, [10, 11]);
+  assertEquals(result.milestones?.[1]?.milestoneNumber, undefined);
+  assertEquals(result.milestones?.[1]?.assigned, []);
+  assertEquals(
+    result.milestones?.[2]?.milestoneTitle,
+    "#2163 worker: gate wiring",
+  );
+  // #15 failed to assign; #14 still did.
+  assertEquals(result.milestones?.[2]?.assigned, [14]);
+});
+
+Deno.test("maybeCreatePlanningMilestone — groups are ignored when the parent owns a milestone", async () => {
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    parentMilestoneTitle: "v1.0",
+    subIssueNumbers: [10, 11, 12, 13],
+    groups: [
+      group("infra", "options trading", [10, 11]),
+      group("docs", "milestone docs", [12, 13]),
+    ],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+  assertEquals(result.created, false);
+  assertEquals(result.skippedReason, "parent-has-milestone");
+  assertEquals(state.calls.length, 0);
+});
+
+Deno.test("maybeCreatePlanningMilestone — an empty group list falls back to the ungrouped path", async () => {
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 5,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11],
+    groups: [],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+  assertEquals(result.created, true);
+  assertEquals(result.milestoneTitle, "#5 Parent");
+  assertEquals(result.milestones, undefined);
+  assertEquals(result.assigned, [10, 11]);
+});
+
+Deno.test("maybeCreatePlanningMilestone — a sub-issue no group names is reported, not lost quietly", async () => {
+  const warnings: string[] = [];
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    // #99 is in no group — the gate should have caught that, so say so loudly.
+    subIssueNumbers: [10, 11, 99],
+    groups: [group("infra", "options trading", [10, 11])],
+    ghCommandFn: groupedGh(state),
+    logger: {
+      ...silentLogger,
+      warn: (message: string) => warnings.push(message),
+    },
+  });
+
+  assertEquals(result.created, true);
+  assertEquals(result.assigned, [10, 11]);
+  assertEquals(
+    warnings.some((w) => w.includes("no group for some sub-issues")),
+    true,
+  );
+});
+
+Deno.test("maybeCreatePlanningMilestone — a `—` milestone row gets no milestone whatever its size", async () => {
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11, 12, 13],
+    groups: [
+      group("infra", "options trading", [10, 11]),
+      // `—` in the table's Milestone cell parses to "": the planner said this
+      // group merges straight to the default branch.
+      group("docs", "", [12, 13]),
+    ],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+
+  assertEquals(state.calls.filter((c) => c.includes("POST")).length, 1);
+  assertEquals(result.milestones?.[1]?.skippedReason, "no-milestone-row");
+  assertEquals(result.milestones?.[1]?.milestoneNumber, undefined);
+  const edits = state.calls.filter((c) => c[0] === "issue" && c[1] === "edit");
+  assertEquals(edits.map((c) => c[2]), ["10", "11"]);
+});
+
+Deno.test("maybeCreatePlanningMilestone — two groups on one file area are reported, not silently merged", async () => {
+  const warnings: string[] = [];
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11, 12, 13],
+    // The gate permits file overlap, so two rows can name one area — they then
+    // share a milestone and a branch, which must never pass unremarked.
+    groups: [
+      group("worker/deno", "first stream", [10, 11]),
+      group("worker deno", "second stream", [12, 13]),
+    ],
+    ghCommandFn: groupedGh(state),
+    logger: {
+      ...silentLogger,
+      warn: (message: string) => warnings.push(message),
+    },
+  });
+
+  assertEquals(
+    warnings.some((w) => w.includes("same file area more than once")),
+    true,
+  );
+  // Both groups still land on the one milestone the shared area resolves to.
+  assertEquals(result.milestones?.[0]?.milestoneNumber, 100);
+  assertEquals(result.milestones?.[1]?.milestoneNumber, 100);
+});
+
+Deno.test("maybeCreatePlanningMilestone — an identical title is not adopted from another group", async () => {
+  // Both areas bound to the same title-area, so the generated titles collide
+  // while the markers differ. Matching on title alone would hand this group
+  // the sibling's milestone.
+  const longA = "worker deno lib planning milestone alpha stream";
+  const longB = "worker deno lib planning milestone beta stream";
+  const state = {
+    listing: [{
+      number: 100,
+      title: buildPlanningMilestoneTitle(2163, "Parent", "shared", longA),
+      description: `${planningMilestoneMarker(2163, longA)} grouping`,
+    }] as unknown[],
+    calls: [] as string[][],
+  };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [12, 13],
+    groups: [group(longB, "shared", [12, 13])],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+
+  // The titles really do collide — that is what makes this a trap.
+  assertEquals(
+    buildPlanningMilestoneTitle(2163, "Parent", "shared", longA),
+    buildPlanningMilestoneTitle(2163, "Parent", "shared", longB),
+  );
+  assertEquals(state.calls.filter((c) => c.includes("POST")).length, 1);
+  assertEquals(result.milestones?.[0]?.milestoneNumber, 101);
+});
