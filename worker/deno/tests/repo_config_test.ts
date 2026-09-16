@@ -8,7 +8,7 @@
  * TDD: These tests define expected behaviour before implementation.
  */
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import type { RepoConfig } from "../types.ts";
 import {
   buildQualityInstructions,
@@ -587,4 +587,16 @@ Deno.test("repo_config - getCiProviders throws on malformed config", () => {
     Error,
     "Invalid ciProviders",
   );
+});
+
+Deno.test("repo_config - buildQualityInstructions forbids backgrounding any long-running command and polling it, not only the gate (Issue #2230)", () => {
+  const text = buildQualityInstructions(undefined, "owner/repo");
+  assertStringIncludes(
+    text,
+    "Never start ./quality.sh, the full test suite, a build, or any other long-running command in the background and poll for it",
+  );
+  assertStringIncludes(text, "`echo` wait loop");
+  assertStringIncludes(text, "one bounded foreground command");
+  assertStringIncludes(text, "timeout 900");
+  assertStringIncludes(text, "Run only the test files your change touches");
 });
