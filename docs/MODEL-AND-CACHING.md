@@ -1793,19 +1793,20 @@ flowchart TD
         D["repo-specific instructions"]
     end
     subgraph Volatile["Volatile tail — differs per issue and per turn"]
-        E["task sentence"]
-        F["issue title · labels · body"]
-        G["CI log excerpt · retry notices"]
-        H["issue template (issue-numbered)"]
+        E["Graft code bundle<br/>selected per query, fenced"]
+        F["task sentence"]
+        G["issue title · labels · body"]
+        H["CI log excerpt · retry notices"]
+        I["issue template (issue-numbered)"]
     end
-    A --> B --> C --> D --> E --> F --> G --> H
+    A --> B --> C --> D --> E --> F --> G --> H --> I
 ```
 
 [`orderStablePrefix()`](../worker/deno/lib/prompt_prefix.ts) owns that
 order, so the prefix depends on section *content* only — never on the
 order a caller happened to assemble the sections in.
 
-Two things are deliberately **not** stable:
+Three things are deliberately **not** stable:
 
 - **The untrusted-content fence nonce** is randomised per invocation on
   purpose.
@@ -1815,6 +1816,12 @@ Two things are deliberately **not** stable:
   runs.
 - **The issue template** is substituted with the issue number, so it is
   per-issue by construction and stays in the tail.
+- **The Graft code bundle** ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection),
+  Issue #2101) is selected by a per-task query, so it is rendered *after*
+  `orderStablePrefix()` rather than inside it. It joins neither the stable
+  prefix nor `computeStaticPromptHash()`, so a bundle that differs on every
+  issue leaves the cacheable bytes ahead of it untouched — and a run with no
+  bundle produces exactly the prompt bytes it did before.
 
 `warnOnVolatileSystemPrompt()` scans the assembled system prompt on every
 build and names any token that cannot repeat (ISO timestamps, UUIDs, epoch
