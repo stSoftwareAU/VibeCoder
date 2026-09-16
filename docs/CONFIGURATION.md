@@ -1764,6 +1764,16 @@ repository checkout and injects the resulting source bundle as an extra prompt
 section beside the existing `CLAUDE.md` / `AGENTS.md` repo-context docs, in
 every phase that already receives those docs. The switch is per host, not per
 repository: an enabled host uses Graft for every repository it works on.
+The five phases are **issue**, **planning**, **question**, **PR feedback** and
+**CI fix** — the builders that already carry those docs (Issue #2101). The
+bundle renders as a fenced untrusted document, tagged
+`<document source="graft ask --source">` and named among the untrusted blocks
+the boundary-integrity instruction covers, because it reproduces repository
+source and is therefore data, never instructions. It is selected per query, so
+it deliberately sits **outside** the cacheable static prefix and outside the
+static prompt SHA: a bundle that differs on every issue costs no prompt-cache
+hits, and a phase run without one produces byte-identical prompt text to
+before.
 
 **When Graft is unavailable.** Once the injection change calls the runner, an
 enabled host that cannot run Graft — the clone's `info/exclude` cannot be
