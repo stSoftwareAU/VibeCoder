@@ -68,8 +68,15 @@ export interface CodegraphInvocationStats {
 
 /** Options for {@link prepareCodegraphRun}. */
 export interface PrepareCodegraphRunOptions {
-  /** Absolute path of the repository checkout to index. */
-  repoDir: string;
+  /**
+   * Absolute path of the repository checkout to index.
+   *
+   * Omitted names no checkout (Issue #2160): the CI-fix path's `workDir` is
+   * optional, and the runner writes no MCP configuration without a `cwd`, so
+   * a run that cannot name its clone is recorded as `failed` rather than
+   * handed a prompt line naming a server it never receives.
+   */
+  repoDir?: string;
   /** The host switch, from `config.codegraphContext.enabled`. */
   enabled: boolean;
   /** Provider selection for this invocation; omit for the active provider. */
@@ -150,13 +157,30 @@ export async function prepareCodegraphRun(
   // `prepareCodegraphContext` short-circuits before it reads the id anyway.
   let providerId = "";
   let result: CodegraphContextResult;
-  if (enabled && (providerId = resolveProviderId(options, logger)) === "") {
+  if (enabled && repoDir === undefined) {
+    // Recorded, never silently downgraded to `off`: the switch was on and the
+    // run got no index, which is what the trial's figure reader must see.
+    logger.warn(
+      `${CODEGRAPH_UNAVAILABLE_MARKER} the run names no checkout, so there ` +
+        `is nothing to index (Issue #2160)`,
+    );
+    result = { status: "failed", enabled: true };
+  } else if (
+    enabled && (providerId = resolveProviderId(options, logger)) === ""
+  ) {
     // A provider that cannot be resolved is a recorded outcome, never a
     // silent skip: the status line below still names it `failed`, which is
     // what the trial's figure reader looks for.
     result = { status: "failed", enabled: true };
   } else {
-    result = await prepare({ repoDir, enabled, providerId, logger });
+    // `repoDir` is only absent on the branch above, and on an off host,
+    // where `prepareCodegraphContext` short-circuits before reading it.
+    result = await prepare({
+      repoDir: repoDir ?? "",
+      enabled,
+      providerId,
+      logger,
+    });
   }
 
   // Exactly one status line per run, on every path through this function.

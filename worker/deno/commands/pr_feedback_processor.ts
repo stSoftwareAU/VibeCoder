@@ -187,6 +187,9 @@ export const prFeedbackProcessorCommand: Command = {
           // the larger issue-work claudeTimeout.
           claudeTimeout: config.prFeedbackTimeout || undefined,
           claudeModel: config.claudeModel || undefined,
+          // Issue #2160: the trial switch, so a single-shot feedback run on
+          // an enabled host is offered the same repo-context index.
+          codegraphContextEnabled: config.codegraphContext.enabled,
           workerId,
         };
 
