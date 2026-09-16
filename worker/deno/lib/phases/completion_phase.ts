@@ -123,6 +123,7 @@ import {
   resolveSecurityGateStateDir,
 } from "../security_fix_gate_feedback.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
+import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
@@ -363,15 +364,17 @@ async function lookupBlockedGatePr(
  * The rule is worth checking; reporting it as "the code did not work" is not.
  * So the outcome depends on whether the work reached a PR:
  *
- * - **no PR for this run's branch** — the gate blocks exactly as before, and
- *   the next attempt writes the summary the comment asks for;
+ * - **no PR for this run's branch** — the verdict is recorded on the phase
+ *   state and the gate blocks, which `workOnIssueCompletion` recovers from
+ *   once inside the run (Issue #2189) before the failure stands;
  * - **a PR already exists** — the PR is finalised the way the recovery path
  *   finalises it (body, labels, link, auto-merge), and the run reports
  *   `summary_incomplete`: the work is done, the summary is short, and the
  *   issue stays attached to its PR instead of going back in the queue.
  *
  * Either way the gate's remediation comment is posted, so the shortfall is on
- * the issue thread rather than only in this host's log.
+ * the issue thread rather than only in this host's log — once per distinct
+ * verdict, so the in-run recovery does not post the same block twice.
  *
  * The security-fix gate deliberately does not route through here. A PR that
  * closes a security-labelled finding without its vulnerability-fix evidence
@@ -393,12 +396,30 @@ async function reportSummaryRuleBlock(
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
-  await client.postComment(repo, issueNumber, comment);
 
   const existingPr = await deps.pr.findExistingPrForBranch(
     repo,
     state.branchName,
   );
+
+  // A run that recovers in-run (Issue #2189) reaches this gate twice, and the
+  // second verdict is usually the first one again. Post it once: the thread
+  // records the shortfall, not the number of attempts at it.
+  const verdicts = state.summaryRuleBlocks ?? [];
+  const alreadyOnThread = verdicts.some((v) => v.comment === comment);
+  if (!existingPr.ok) {
+    state.summaryRuleBlocks = [...verdicts, { reason, comment }];
+  }
+  if (alreadyOnThread) {
+    logger.info(
+      "Summary-rule verdict already posted in this run — not repeating the " +
+        "comment",
+      { repo, issueNumber, reason },
+    );
+  } else {
+    await client.postComment(repo, issueNumber, comment);
+  }
+
   if (!existingPr.ok) {
     // `findExistingPrForBranch` returns the same shape for "no open PR" and
     // for a `gh` fault, and only one of those is a fact about the run. Say
@@ -608,6 +629,22 @@ export async function workOnIssueCompletion(
     );
   }
 
+  // In-run recovery from the first PR-summary rule block (Issue #2189): a
+  // documentation shortfall on a pushed, quality-gated branch used to cost the
+  // whole run. Entered once per run — a block on the re-run is the second, and
+  // fails as before.
+  if (
+    result.status === "failure" && (state.summaryRuleBlocks?.length ?? 0) === 1
+  ) {
+    result = await recoverFromSummaryRuleBlock(
+      ctx,
+      state,
+      deps,
+      result,
+      () => runCompletionAttempt(ctx, state, deps),
+    );
+  }
+
   // Issue #3756 — a `work-on` issue is auto-closed by its merged PR, with no
   // worker attached at that moment, so PR-raise is the last point the worker
   // can report what the run cost. Post the issue's single cost/model stats
@@ -623,9 +660,10 @@ export async function workOnIssueCompletion(
 /**
  * One completion-phase attempt, with the #1550 infrastructure retry.
  *
- * A security-fix gate block is a verdict, not an infrastructure blip: re-running
- * the same body against the same summary reproduces it, so the retry is skipped
- * and the in-run recovery (Issue #1575) handles it instead.
+ * A security-fix or summary-rule gate block is a verdict, not an infrastructure
+ * blip: re-running the same body against the same summary reproduces it, so the
+ * retry is skipped and the in-run recovery (Issues #1575 and #2189) handles it
+ * instead.
  */
 async function runCompletionAttempt(
   ctx: IssueContext,
@@ -633,10 +671,15 @@ async function runCompletionAttempt(
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
   const blocksBefore = state.securityGateBlocks?.length ?? 0;
+  const summaryBlocksBefore = state.summaryRuleBlocks?.length ?? 0;
   const result = await completionBody(ctx, state, deps);
   const gateBlocked = (state.securityGateBlocks?.length ?? 0) > blocksBefore;
+  const summaryRuleBlocked =
+    (state.summaryRuleBlocks?.length ?? 0) > summaryBlocksBefore;
 
-  if (result.status !== "failure" || gateBlocked) return result;
+  if (result.status !== "failure" || gateBlocked || summaryRuleBlocked) {
+    return result;
+  }
 
   const shouldRetry = await shouldRetryInfrastructureFailure(
     "completion",
