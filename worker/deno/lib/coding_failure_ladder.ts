@@ -78,6 +78,9 @@ export interface CodingFailureDecision {
  *   bucket the classifier puts beside `usage-limit`, and permanently failing
  *   an issue because the account ran out of credit would blame the issue for
  *   the fleet's billing.
+ * - **Repository state** — `repo-config` is a ruleset or protection the
+ *   repository carries; it refuses every issue in the milestone identically
+ *   and no attempt of the issue's can clear it.
  * - **Host state** — a full disk, an OOM kill, a crashed worker, a tool
  *   missing from the image and an unexplained external kill are the host's
  *   fault. The run-outcome auto-filer (Issue #4329) already files those
@@ -95,6 +98,12 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
   "killed-unknown",
   "worker-crash",
   "missing-tools",
+  // A repository refusing the milestone branch is the repository's state,
+  // not the issue's (Issue #2220). Without this the category still earned a
+  // ladder disposition: the escalating 2 h → 6 h → 24 h cooldown, and a
+  // `needs-human` park on the third refusal inside 48 h — the human chore
+  // this change exists to remove, one rung later.
+  "repo-config",
 ]);
 
 /**

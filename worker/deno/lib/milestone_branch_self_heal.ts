@@ -64,6 +64,7 @@ import {
   hasReportedRepoLevelRejection,
   isRepoLevelBranchRejection,
 } from "./milestone_branch_rejection.ts";
+import { releaseMilestoneBranchRefusalLabels } from "./milestone_branch_refusal_release.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
   recordSelfDiagnosticFiling,
@@ -701,6 +702,32 @@ export async function selfHealMilestoneBranches(
               `children (Issue #3912)`,
           );
           branchesRecreated++;
+
+          // Issue #2220: the branch exists again, so the refusal that once
+          // blocked it is gone. This pass is the only one that reaches a
+          // milestone whose children ALL reached `failed` — those issues are
+          // filtered out of label discovery, so no claim of theirs can ever
+          // run the setup-phase sweep and release them.
+          const release = await releaseMilestoneBranchRefusalLabels({
+            repo,
+            milestoneTitle: milestone.title,
+            milestoneBranch,
+            ghCommandFn,
+          });
+          if (release.released.length > 0) {
+            log(
+              `Released failure labels left by the repo-level refusal of ` +
+                `'${milestoneBranch}' in ${repo}: ` +
+                `${release.released.map((n) => `#${n}`).join(", ")} ` +
+                `(Issue #2220)`,
+            );
+          }
+          for (const error of release.errors) {
+            log(
+              `WARNING: milestone-branch refusal label sweep in ${repo}: ` +
+                `${error} (Issue #2220)`,
+            );
+          }
         }
 
         if (openPrs === undefined) {

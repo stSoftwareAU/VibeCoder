@@ -233,12 +233,6 @@ If you want to work on this manually, remove the \`${labels.failedOnceLabel}\` l
 }
 
 /**
- * Marker placed in the repo-configuration record so the release sweep can
- * recognise its own comment (Issue #2220).
- */
-export const REPO_CONFIG_REFUSAL_MARKER = "<!-- vibe-repo-config-refusal -->";
-
-/**
  * Record a repository-configuration refusal without labelling the issue
  * (Issue #2220).
  *
@@ -277,9 +271,7 @@ ${diagnosisText}
   }\` or \`${
     options.labels?.failedLabel ?? DEFAULT_LABEL_CONFIG.failedLabel
   }\` label was applied — this issue is still claimable
-- Fix the repository configuration named above; the next scan picks this issue up with no further human action
-
-${REPO_CONFIG_REFUSAL_MARKER}`;
+- Fix the repository configuration named above; the next scan picks this issue up with no further human action`;
 
   if (options.workerFooter) {
     commentBody += options.workerFooter;
@@ -295,9 +287,15 @@ ${REPO_CONFIG_REFUSAL_MARKER}`;
       "--body",
       commentBody,
     ]);
-  } catch {
-    // Best-effort: the absent label is the substantive outcome, and a failed
-    // comment must not turn a non-fault into one.
+  } catch (err) {
+    // The absent label is the substantive outcome, so a failed comment must
+    // not turn a non-fault into one — but it is said out loud rather than
+    // swallowed, because an issue with no record reads as untouched.
+    console.warn(
+      `[label_manager] Warning: could not record the repository-configuration ` +
+        `refusal on issue #${options.issueNumber} in ${options.repo}: ` +
+        `${err instanceof Error ? err.message : String(err)} (Issue #2220)`,
+    );
   }
 }
 

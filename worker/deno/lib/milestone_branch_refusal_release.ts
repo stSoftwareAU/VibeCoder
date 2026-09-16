@@ -19,8 +19,8 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { detectFailureCategory } from "./failure_diagnosis.ts";
 import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
-import { isRepoLevelMilestoneBranchRefusal } from "./milestone_branch_rejection.ts";
 
 /** Function signature for running gh CLI commands. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
@@ -148,6 +148,13 @@ function parseCommentBodies(raw: string): string[] {
  * Reads newest-first and stops at the first failure record: an issue that
  * failed the refusal and then failed its quality gate keeps its labels,
  * because the newer record is a genuine fault of its own.
+ *
+ * The record is judged by `detectFailureCategory`, not by a bare refusal
+ * pattern, so the whole precedence order applies here exactly as it does at
+ * failure time. A quality-gate record that happens to quote the milestone
+ * branch and the words "required status checks" is `quality_check` there and
+ * `quality_check` here, so its label survives — matching the refusal pattern
+ * against the comment body alone would have released it.
  */
 export function refusalIsMostRecentFailure(
   commentBodies: readonly string[],
@@ -155,7 +162,7 @@ export function refusalIsMostRecentFailure(
   for (let i = commentBodies.length - 1; i >= 0; i--) {
     const body = commentBodies[i];
     if (body === undefined || !FAILURE_RECORD_RE.test(body)) continue;
-    return isRepoLevelMilestoneBranchRefusal(body);
+    return detectFailureCategory(body) === "repo_config";
   }
   return false;
 }
@@ -329,6 +336,13 @@ export async function releaseMilestoneBranchRefusalLabels(
         }`,
       );
     }
+  }
+
+  // A sweep that hit a gh fault did not finish, so it must not count as this
+  // run's one attempt — release the claim and let a later milestone setup in
+  // the same process try again. A clean sweep keeps the claim.
+  if (outcome.errors.length > 0) {
+    swept.delete(key(repo, milestoneBranch));
   }
 
   return outcome;

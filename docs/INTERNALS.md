@@ -3975,17 +3975,28 @@ Two changes close that:
   `push_failure` with its bounded infrastructure retry. `handleIssueFailure`
   short-circuits `repo_config` exactly as it does `scheduled_release`: it
   writes one **Automated Processing Paused (Repository Configuration)**
-  comment and applies no label, leaving the issue claimable.
+  comment and applies no label, leaving the issue claimable. `repo-config` is
+  also in `TRANSIENT_FAILURE_CLASSES` (`coding_failure_ladder.ts`), so the
+  failure earns the plain cooldown rather than the escalating 2 h → 6 h → 24 h
+  one and never reaches the three-strike `needs-human` park — skipping the
+  ladder while leaving the cooldown in place would have re-created the same
+  human chore one rung later.
 - **The run that opens the branch releases the backlog.** Once
   `ensureMilestoneBranchExists` succeeds — including via the #2079 in-run
-  repair — the setup phase calls
-  `releaseMilestoneBranchRefusalLabels` (`milestone_branch_refusal_release.ts`),
-  which lists the milestone's open `failed-once` / `failed` issues, reads each
-  one's **most recent** failure record, and removes the labels only where that
-  record was the refusal. An issue that failed its own quality gate after the
-  refusal keeps its label. The sweep runs once per branch per process and
-  returns every gh fault to the caller, which logs it — a half-run sweep is
-  never reported as a clean one.
+  repair — `releaseMilestoneBranchRefusalLabels`
+  (`milestone_branch_refusal_release.ts`) lists the milestone's open
+  `failed-once` / `failed` issues, reads each one's **most recent** failure
+  record, and removes the labels only where `detectFailureCategory` calls that
+  record `repo_config`. Judging it by the category, not by a bare refusal
+  pattern, means the whole precedence order applies: a quality-gate record
+  that merely *quotes* the branch and the ruleset's words is `quality_check`
+  and keeps its label. Both success paths call it — the setup phase, and the
+  per-cycle `selfHealMilestoneBranches` pass, which is the only one that
+  reaches a milestone whose children **all** reached `failed`, since those are
+  filtered out of label discovery and can never claim their way into setup.
+  The sweep runs once per branch per process, releases that claim if a `gh`
+  fault stopped it finishing, and returns every fault to the caller, which
+  logs it — a half-run sweep is never reported as a clean one.
 
 ```mermaid
 flowchart TD
@@ -3995,7 +4006,7 @@ flowchart TD
     D --> E[Issue stays claimable]
     B -- "per-issue fault" --> F[Existing ladder<br/>failed-once → failed]
     B -- no --> G[Branch exists]
-    G --> H[Sweep the milestone's<br/>failed-once / failed issues]
+    G --> H[Sweep the milestone's<br/>failed-once / failed issues<br/>setup phase + self-heal pass]
     H --> I{Newest failure record<br/>is the refusal?}
     I -- yes --> J[Remove labels + comment]
     I -- no --> K[Leave the label alone]

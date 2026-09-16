@@ -26,6 +26,12 @@ import {
 } from "../lib/milestone_branch_rejection.ts";
 import { handleIssueFailure } from "../lib/label_failure.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
+import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
+import { workOnIssueSetupBranch } from "../lib/phases/setup_branch_phase.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { stopHeartbeat } from "../lib/heartbeat.ts";
 import {
   buildRefusalReleaseComment,
   refusalIsMostRecentFailure,
@@ -337,4 +343,140 @@ Deno.test("buildRefusalReleaseComment - names the branch and every label removed
     buildRefusalReleaseComment(BRANCH, ["failed"]),
     "has been removed",
   );
+});
+
+// ===========================================================================
+// Precedence: a genuine failure that merely QUOTES the refusal is not released
+// ===========================================================================
+
+Deno.test("refusalIsMostRecentFailure - a quality failure quoting the milestone refusal keeps its label (Issue #2220)", () => {
+  // The whole failure output is embedded in the comment, so a quality-gate
+  // record can carry the branch name and the ruleset's own words. Matching a
+  // bare refusal pattern against the body would release it; the category
+  // precedence used at failure time says `quality_check`, so it must not.
+  const quotingQuality = `## Automated Processing Failed (Second Attempt - ` +
+    `Permanently Failed)\n\n**Category:** \`quality-failure\`\n\n` +
+    `### Error Output\n> ./quality.sh failed on ${BRANCH}\n> quality checks ` +
+    `did not pass\n> remote: error: GH013: Repository rule violations found ` +
+    `for refs/heads/${BRANCH}.\n> 5 of 6 required status checks are expected.`;
+  assertEquals(detectFailureCategory(quotingQuality), "quality_check");
+  assertEquals(refusalIsMostRecentFailure([quotingQuality]), false);
+});
+
+// ===========================================================================
+// The coding-failure ladder must treat repo_config as transient
+// ===========================================================================
+
+Deno.test("classifyCodingFailure - a milestone refusal is transient, so no ladder and no escalating cooldown (Issue #2220)", () => {
+  const decision = classifyCodingFailure(SETUP_REASON);
+  assertEquals(decision.category, "repo_config");
+  assertEquals(decision.failureClass, "repo-config");
+  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.cooldownKind, undefined);
+});
+
+// ===========================================================================
+// Setup-phase wiring: the run that opens the branch releases the backlog
+// ===========================================================================
+
+Deno.test("setup phase - a successful milestone branch releases the refusal's siblings (Issue #2220)", async () => {
+  resetMilestoneBranchRefusalSweepsForTest();
+  const workDir = await Deno.makeTempDir({ prefix: "issue2220-setup-" });
+  try {
+    const sibling: FakeIssue = {
+      number: 129,
+      labels: ["failed-once"],
+      comments: [REFUSAL_COMMENT],
+    };
+    const gh = fakeGh([sibling]);
+    const deps = createMockDeps({
+      github: { runGhCommand: gh.fn },
+      git: {
+        countCommitsAhead: () =>
+          Promise.resolve({ ok: true as const, value: 0 }),
+        createFeatureBranchFromBase: (branch: string) =>
+          Promise.resolve({ ok: true as const, value: branch }),
+      },
+    });
+    const ctx: IssueContext = {
+      repo: REPO,
+      issueNumber: 143,
+      issueTitle: "A sibling in the same milestone",
+      issueBody: "",
+      issueLabels: ["work-on"],
+      issueComments: "",
+      githubUser: "vibe-worker",
+      milestoneTitle: MILESTONE,
+      config: { ...buildDefaultWorkerConfig(), workDir },
+    };
+    const state: PhaseState = {
+      branchName: "",
+      baseBranch: "main",
+      defaultBranch: "main",
+      repoPath: "/tmp/test-repo",
+      clarityStatus: "not_assessed",
+      claudeOutput: "",
+      executeStartTime: 0,
+      baselineQualityPassed: true,
+      baselineQualityOutput: "",
+    };
+
+    const result = await workOnIssueSetupBranch(ctx, state, deps);
+
+    assertEquals(result.status, "continue");
+    assertEquals(
+      sibling.labels,
+      [],
+      "the sibling's failed-once label must be released by the sweep",
+    );
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("setup phase - an issue with no milestone never sweeps (Issue #2220)", async () => {
+  resetMilestoneBranchRefusalSweepsForTest();
+  const workDir = await Deno.makeTempDir({ prefix: "issue2220-setup-" });
+  try {
+    const gh = fakeGh([]);
+    const deps = createMockDeps({
+      github: { runGhCommand: gh.fn },
+      git: {
+        createFeatureBranchFromBase: (branch: string) =>
+          Promise.resolve({ ok: true as const, value: branch }),
+      },
+    });
+    const ctx: IssueContext = {
+      repo: REPO,
+      issueNumber: 144,
+      issueTitle: "No milestone here",
+      issueBody: "",
+      issueLabels: ["work-on"],
+      issueComments: "",
+      githubUser: "vibe-worker",
+      config: { ...buildDefaultWorkerConfig(), workDir },
+    };
+    const state: PhaseState = {
+      branchName: "",
+      baseBranch: "main",
+      defaultBranch: "main",
+      repoPath: "/tmp/test-repo",
+      clarityStatus: "not_assessed",
+      claudeOutput: "",
+      executeStartTime: 0,
+      baselineQualityPassed: true,
+      baselineQualityOutput: "",
+    };
+
+    const result = await workOnIssueSetupBranch(ctx, state, deps);
+    assertEquals(result.status, "continue");
+    assert(
+      !gh.calls.some((c) => c[1] === "list"),
+      "no milestone means no sweep",
+    );
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
 });
