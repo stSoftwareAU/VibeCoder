@@ -1,17 +1,20 @@
 /**
  * Tests for the sweep-drift command (Issue #1609).
  *
- * The command formats one block per slice. Git is injected; these tests
- * never spawn a real process.
+ * The command formats one block per slice. Git is injected, so the formatting
+ * and collection tests never spawn a real process. The one exception is the
+ * `sweepGitRunnerFor` test (Issue #2178), which builds a throwaway repository
+ * to prove the runner resolves repo-relative pathspecs against `--repo`.
  *
  * Australian English spelling throughout.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   collectSweepDrift,
   formatSweepDriftReport,
   sweepDriftCommand,
+  sweepGitRunnerFor,
 } from "../commands/sweep_drift.ts";
 import type { SweepCoverageLedger } from "../lib/lib_sweep_coverage.ts";
 
@@ -82,4 +85,70 @@ Deno.test("collectSweepDrift - one block per slice from the injected runner (Iss
 
 Deno.test("sweep-drift command - is registered under the documented name (Issue #1609)", () => {
   assertEquals(sweepDriftCommand.name, "sweep-drift");
+});
+
+Deno.test("sweepGitRunnerFor - resolves repo-relative pathspecs against --repo, not the process cwd (Issue #2178)", async () => {
+  // Fail direction: before this change the runner spawned git in the worker's
+  // own working directory, so `-- worker/deno/lib` matched nothing whenever
+  // that directory was not the repository root and every slice reported an
+  // empty drift — a clean report for a ledger nobody had diffed.
+  const repoRoot = await Deno.makeTempDir({ prefix: "sweep-drift-" });
+  const git = async (...args: string[]) => {
+    const { code, stderr } = await new Deno.Command("git", {
+      args,
+      cwd: repoRoot,
+      stdout: "null",
+      stderr: "piped",
+    }).output();
+    // Carry git's own reason, never just the exit code: a fixture that fails
+    // for an unrelated reason must say which one.
+    assertEquals(
+      code,
+      0,
+      `git ${args.join(" ")} failed: ${new TextDecoder().decode(stderr)}`,
+    );
+  };
+  try {
+    await git("init", "--quiet");
+    await git("config", "user.email", "test@example.com");
+    await git("config", "user.name", "Test");
+    // The fixture must not inherit the host's signing config, or a developer
+    // with `commit.gpgsign=true` globally gets a red suite for no reason.
+    await git("config", "commit.gpgsign", "false");
+    await Deno.mkdir(`${repoRoot}/sub`);
+    await Deno.writeTextFile(`${repoRoot}/sub/a.txt`, "one\n");
+    await git("add", "-A");
+    await git("commit", "--quiet", "-m", "first");
+    await Deno.writeTextFile(`${repoRoot}/sub/a.txt`, "two\n");
+    await git("commit", "--quiet", "-a", "-m", "second");
+
+    const result = await sweepGitRunnerFor(repoRoot)([
+      "diff",
+      "--name-only",
+      "--diff-filter=M",
+      "HEAD~1",
+      "HEAD",
+      "--",
+      "sub",
+    ]);
+    assertEquals(result.code, 0, result.stderr);
+    assertEquals(result.stdout.trim(), "sub/a.txt");
+  } finally {
+    await Deno.remove(repoRoot, { recursive: true });
+  }
+});
+
+Deno.test("sweepGitRunnerFor - a spawn failure is reported, never swallowed (Issue #2178)", async () => {
+  // The `!result.ok` branch is the only route by which a timeout or a spawn
+  // failure reaches driftSince's loud SweepLedgerError. A directory that does
+  // not exist makes the spawn throw, which runGitCommand reports as a failed
+  // Result rather than a git exit code.
+  const result = await sweepGitRunnerFor("/nonexistent-sweep-drift-repo")([
+    "diff",
+    "--name-only",
+    "HEAD",
+  ]);
+  assertEquals(result.code, 1);
+  assertEquals(result.stdout, "");
+  assert(result.stderr.length > 0, "the spawn failure must carry a reason");
 });

@@ -348,11 +348,42 @@ function rootsForSlice(
 }
 
 /**
+ * Failure message for a git exit inside {@link driftSince} (Issue #2178).
+ *
+ * The bare git stderr — `fatal: bad object 00c1d959…` — named neither the
+ * slice nor the remedy, so a `sweep-drift` run against a ledger holding a
+ * squash-deleted feature-branch commit failed without saying which slice to
+ * repoint. Naming the chunk, its `sweptAt` and the fix makes the failure
+ * actionable on sight.
+ *
+ * @param slice - The slice whose diff failed.
+ * @param filter - The `--diff-filter` value that was running.
+ * @param code - Git's exit code.
+ * @param stderr - Git's stderr, carried verbatim.
+ */
+function describeDriftGitFailure(
+  slice: SweepSlice,
+  filter: string,
+  code: number,
+  stderr: string,
+): string {
+  const detail = stderr.trim().length > 0
+    ? stderr.trim()
+    : `git diff --diff-filter=${filter} exited ${code}`;
+  return `${LIB_SWEEP_LEDGER_PATH}: slice ${slice.chunk} (#${slice.issue}) ` +
+    `could not be diffed from sweptAt ${slice.sweptAt}: ${detail}\n` +
+    `  sweptAt must be a commit reachable from the default branch — a ` +
+    `feature-branch commit is deleted by squash-merge. Repoint it with: ` +
+    `git log --diff-filter=A -1 --format=%H origin/main -- ${slice.ledger}`;
+}
+
+/**
  * Modules a slice owns that changed since `sweptAt`, plus unowned modules
  * on disk under that slice's roots (Issue #1609).
  *
  * Git is an injected runner so unit tests never spawn. A non-zero exit
- * throws with the stderr; an empty diff is an empty report.
+ * throws a {@link SweepLedgerError} naming the slice, its `sweptAt` and the
+ * remedy (Issue #2178); an empty diff is an empty report.
  *
  * @param ledger - Parsed ledger (roots + every claimed path).
  * @param slice - The slice whose drift to measure.
@@ -383,9 +414,7 @@ export async function driftSince(
       ]);
       if (result.code !== 0) {
         throw new SweepLedgerError(
-          result.stderr.length > 0
-            ? result.stderr
-            : `git diff --diff-filter=${filter} exited ${result.code}`,
+          describeDriftGitFailure(slice, filter, result.code, result.stderr),
         );
       }
       const target = filter === "A" ? added : modified;

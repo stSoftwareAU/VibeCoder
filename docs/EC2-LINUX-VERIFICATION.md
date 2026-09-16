@@ -81,6 +81,16 @@ aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs' --output table
 ```
 
+**`VibeCoderRepositoryUrl` must be a plain HTTPS clone URL, with no
+credential in it.** The template interpolates the value into the bootstrap's
+`git clone` command line, so it accepts only the characters a clone URL needs
+— letters, digits and `. _ ~ : / @ % + -`. A URL carrying a shell
+metacharacter is refused at deploy time rather than reaching the host's root
+shell. A credential embedded as `https://user:token@…` would also be visible
+three ways — in `describe-stacks`, in the rendered user data, and in the
+stack's history — so verify a private fork by cloning it yourself in the
+session after `gh auth login`, not by putting a token in this parameter.
+
 ## Connect
 
 ```bash
