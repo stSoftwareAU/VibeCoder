@@ -472,13 +472,18 @@ Deno.test("codex provider - the fragment aborts when the provider is not pinned"
 Deno.test("buildCodexMcpConfigArgs - a non-Playwright server yields command, args and env overrides (Issue #2156)", () => {
   const args = buildCodexMcpConfigArgs(
     JSON.stringify({
-      mcpServers: { codegraph: codegraphMcpServer() },
+      mcpServers: { codegraph: codegraphMcpServer("/w/repo") },
     }),
   );
-  const server = codegraphMcpServer();
+  const server = codegraphMcpServer("/w/repo");
   const joined = args.join(" ");
   assertStringIncludes(joined, `mcp_servers.codegraph.command="codegraph"`);
-  assertStringIncludes(joined, `mcp_servers.codegraph.args=["serve", "--mcp"]`);
+  // The checkout the server is rooted at survives the Codex translation
+  // (Issue #2200): Codex ignores `cwd`, so the path has to ride in the args.
+  assertStringIncludes(
+    joined,
+    `mcp_servers.codegraph.args=["serve", "--mcp", "--path", "/w/repo"]`,
+  );
   // The env table carries every variable the entry names, so the server the
   // agent talks to is configured the same way under both providers.
   for (const [key, value] of Object.entries(server.env)) {

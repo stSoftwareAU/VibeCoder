@@ -297,13 +297,18 @@ Deno.test("agent mcp config - a server requested without Playwright is written a
       cwd: "/w/repo",
       configDir: dir,
       playwright: false,
-      servers: { codegraph: codegraphMcpServer() },
+      servers: { codegraph: codegraphMcpServer("/w/repo") },
     });
     assert(path, "config path returned");
     const parsed = JSON.parse(await Deno.readTextFile(path));
     assertEquals(Object.keys(parsed.mcpServers), ["codegraph"]);
     assertEquals(parsed.mcpServers.codegraph.command, "codegraph");
-    assertEquals(parsed.mcpServers.codegraph.args, ["serve", "--mcp"]);
+    assertEquals(parsed.mcpServers.codegraph.args, [
+      "serve",
+      "--mcp",
+      "--path",
+      "/w/repo",
+    ]);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -315,7 +320,7 @@ Deno.test("agent mcp config - Playwright and an additional server are both writt
     const path = await ensureAgentMcpConfig({
       cwd: "/w/repo",
       configDir: dir,
-      servers: { codegraph: codegraphMcpServer() },
+      servers: { codegraph: codegraphMcpServer("/w/repo") },
     });
     assert(path, "config path returned");
     const parsed = JSON.parse(await Deno.readTextFile(path));
@@ -358,7 +363,7 @@ Deno.test("agent mcp config - a browser request the generator cannot satisfy fai
   const path = await ensureAgentMcpConfig({
     cwd: "/w/repo",
     configDir: "/should-not-be-used",
-    servers: { codegraph: codegraphMcpServer() },
+    servers: { codegraph: codegraphMcpServer("/w/repo") },
     // A generated shape with no server map: the browser the caller asked for
     // must not be dropped into a config carrying only the extra server.
     generate: () => JSON.stringify({ mcpServers: {} }),

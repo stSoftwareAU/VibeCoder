@@ -26,6 +26,7 @@ import {
   type CodegraphContextResult,
   type PrepareCodegraphContextOptions,
 } from "../lib/codegraph_context.ts";
+import { assertCodegraphRootedAt } from "./support/codegraph_mcp_root.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -172,6 +173,11 @@ Deno.test("pr_feedback_processor - an indexed run gets the line and the server t
   };
   assertEquals(mcp.playwright, false);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
+  assertCodegraphRootedAt(
+    mcp,
+    observed.prepared[0]?.repoDir,
+    "pr_feedback_processor",
+  );
   assertEquals(observed.status, "ok");
   assertEquals(observed.queries, 3);
 });

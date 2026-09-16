@@ -74,6 +74,16 @@ self-repair) and a CI fix makes a second when the post-quality gate asks for
 one; they share one index and their `codegraph_explore` calls are summed into a
 single figure for the run.
 
+The server is **rooted at the checkout that was indexed**, by
+`codegraph serve --mcp --path <checkout>` (Issue #2200). Rooting it explicitly
+rather than letting it inherit the agent's working directory is what makes the
+six paths behave alike: the planning and question processors run the agent with
+`cwd` set to `config.workDir`, the **parent** of every clone, so an unrooted
+server would resolve a directory with no `.codegraph/` in it while the run
+still reported `status: ok` with real counts. The path rides in the arguments
+because Codex's translation of an MCP entry keeps `command`, `args` and `env`
+and drops `cwd`.
+
 The MCP entry and the prompt line are handed over **together or not at all**:
 the line without the server tells the agent to call a tool that does not
 exist, and the server without the line leaves an indexed repository the agent
@@ -90,7 +100,7 @@ sequenceDiagram
     P->>C: prepareCodegraphContext(repoDir, enabled, providerId)
     C-->>P: {status, indexSeconds, counts}
     alt status ok
-        P->>A: prompt + CodeGraph line, mcpConfig with servers.codegraph
+        P->>A: prompt + CodeGraph line, mcpConfig with servers.codegraph<br/>(serve --mcp --path repoDir)
     else off / failed / unsupported
         P->>A: prompt unchanged, mcpConfig as before
     end

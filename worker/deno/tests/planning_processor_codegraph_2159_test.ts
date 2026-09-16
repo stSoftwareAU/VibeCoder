@@ -19,6 +19,7 @@ import {
   type CodegraphContextResult,
   type PrepareCodegraphContextOptions,
 } from "../lib/codegraph_context.ts";
+import { assertCodegraphRootedAt } from "./support/codegraph_mcp_root.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const FLEET_LOGIN = "testbot";
@@ -200,6 +201,14 @@ Deno.test("planning_processor - one index serves every invocation of the round",
     };
     assertEquals(mcp.playwright, false);
     assertEquals(mcp.servers?.codegraph?.command, "codegraph");
+    // The agent's `cwd` here is the work volume — the parent of every clone —
+    // so the server has to name the indexed checkout itself (Issue #2200).
+    assertEquals(options.cwd, "/tmp/codegraph-2159-work");
+    assertCodegraphRootedAt(
+      mcp,
+      observed.prepared[0]?.repoDir,
+      "planning_processor",
+    );
   }
 
   assertEquals(observed.status, "ok");

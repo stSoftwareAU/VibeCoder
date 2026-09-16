@@ -15,7 +15,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import type { Result } from "../types.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 import type { GitCommandOutput } from "../lib/git_timeout.ts";
@@ -31,6 +36,7 @@ import {
   CODEGRAPH_INDEX_TIMEOUT_MS,
   CODEGRAPH_LAYOUT_DIRS,
   CODEGRAPH_PROMPT_LINE,
+  CODEGRAPH_ROOT_FLAG,
   CODEGRAPH_UNAVAILABLE_MARKER,
   type CodegraphGitRunner,
   codegraphMcpServer,
@@ -616,21 +622,48 @@ Deno.test("the index survives the cleans a run starts with, where an ignored dep
 // ---------------------------------------------------------------------------
 
 Deno.test("codegraphMcpServer - names only the keys Claude and Codex both translate", () => {
-  const server = codegraphMcpServer();
+  const server = codegraphMcpServer("/work/repo");
   assertEquals(server, {
     command: "codegraph",
-    args: ["serve", "--mcp"],
+    args: ["serve", "--mcp", "--path", "/work/repo"],
     env: { CODEGRAPH_NO_DAEMON: "1" },
   });
   assertEquals(Object.keys(server).sort(), ["args", "command", "env"]);
 });
 
+Deno.test("codegraphMcpServer - roots the server at the checkout it is given (Issue #2200)", () => {
+  // Read back through the flag rather than by position, so the assertion says
+  // "rooted at the checkout", not "has four arguments".
+  for (const checkout of ["/work/repo", "/other/checkout"]) {
+    const args = codegraphMcpServer(checkout).args;
+    assertEquals(args[args.indexOf(CODEGRAPH_ROOT_FLAG) + 1], checkout);
+  }
+  assertEquals(CODEGRAPH_ROOT_FLAG, "--path");
+});
+
+Deno.test("codegraphMcpServer - a checkout-less call fails loudly (Issue #2200)", () => {
+  for (const nowhere of ["", "   "]) {
+    assertThrows(
+      () => codegraphMcpServer(nowhere),
+      Error,
+      "needs the indexed checkout",
+    );
+  }
+});
+
 Deno.test("codegraphMcpServer - a mutated entry does not leak into the next call", () => {
-  const first = codegraphMcpServer();
+  const first = codegraphMcpServer("/work/repo");
   first.args.push("--rogue");
   first.env.CODEGRAPH_NO_DAEMON = "0";
-  assertEquals(codegraphMcpServer().args, ["serve", "--mcp"]);
-  assertEquals(codegraphMcpServer().env, { CODEGRAPH_NO_DAEMON: "1" });
+  assertEquals(codegraphMcpServer("/work/repo").args, [
+    "serve",
+    "--mcp",
+    "--path",
+    "/work/repo",
+  ]);
+  assertEquals(codegraphMcpServer("/work/repo").env, {
+    CODEGRAPH_NO_DAEMON: "1",
+  });
 });
 
 Deno.test("CODEGRAPH_PROMPT_LINE - is exactly one line naming the tool", () => {

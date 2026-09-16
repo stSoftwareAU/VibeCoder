@@ -27,6 +27,7 @@ import {
   type CodegraphContextResult,
   type PrepareCodegraphContextOptions,
 } from "../lib/codegraph_context.ts";
+import { assertCodegraphRootedAt } from "./support/codegraph_mcp_root.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -217,6 +218,11 @@ Deno.test("pr_ci_processor - an indexed run gets the line and the server togethe
   };
   assertEquals(mcp.playwright, false);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
+  assertCodegraphRootedAt(
+    mcp,
+    observed.prepared[0]?.repoDir,
+    "pr_ci_processor",
+  );
   assertEquals(observed.status, "ok");
   assertEquals(observed.queries, 6);
 });
@@ -264,5 +270,10 @@ Deno.test("pr_ci_processor - the post-quality retry reuses the index, it does no
     servers?: Record<string, { command: string }>;
   };
   assertEquals(mcp?.servers?.codegraph?.command, "codegraph");
+  assertCodegraphRootedAt(
+    mcp,
+    observed.prepared[0]?.repoDir,
+    "pr_ci_processor retry",
+  );
   assertEquals(observed.queries, 4, "both invocations' tallies are summed");
 });

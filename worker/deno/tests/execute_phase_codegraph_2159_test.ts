@@ -18,6 +18,7 @@ import {
   type CodegraphContextResult,
   type PrepareCodegraphContextOptions,
 } from "../lib/codegraph_context.ts";
+import { assertCodegraphRootedAt } from "./support/codegraph_mcp_root.ts";
 
 /** What one execute-phase run handed the agent, plus the resulting state. */
 interface Observed {
@@ -135,6 +136,11 @@ Deno.test("execute_phase - an indexed run gets the line and the server together"
   };
   assertEquals(mcp.playwright, false);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
+  assertCodegraphRootedAt(
+    mcp,
+    observed.prepared[0]?.repoDir,
+    "execute_phase",
+  );
 
   assertEquals(observed.state.codegraphContext?.status, "ok");
   assertEquals(observed.state.codegraphContext?.queries, 5);

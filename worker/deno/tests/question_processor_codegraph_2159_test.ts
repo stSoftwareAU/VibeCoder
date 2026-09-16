@@ -16,6 +16,7 @@ import {
   type CodegraphContextResult,
   type PrepareCodegraphContextOptions,
 } from "../lib/codegraph_context.ts";
+import { assertCodegraphRootedAt } from "./support/codegraph_mcp_root.ts";
 
 /** A gh client that answers everything the answer path needs. */
 function stubGhClient(posted: string[] = []): GitHubClient {
@@ -151,6 +152,14 @@ Deno.test("question_processor - an indexed run gets the line and the server toge
   };
   assertEquals(mcp.playwright, false);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
+  // The agent's `cwd` here is the work volume — the parent of every clone —
+  // so the server has to name the indexed checkout itself (Issue #2200).
+  assertEquals(observed.runOptions[0]?.cwd, "/tmp/codegraph-2159-work");
+  assertCodegraphRootedAt(
+    mcp,
+    observed.prepared[0]?.repoDir,
+    "question_processor",
+  );
   assertEquals(observed.status, "ok");
   assertEquals(observed.queries, 4);
 });
