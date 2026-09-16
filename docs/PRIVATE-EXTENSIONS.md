@@ -420,7 +420,7 @@ that line if fix quality drops unexpectedly.
 
 Adding a provider *inside* this repository remains appropriate for CI systems
 **this project itself runs on**. Anything specific to one deployment belongs in
-that deployment's own repository. See
+a repository that deployment owns. See
 [Extending the Worker](EXTENDING.md#-adding-a-ci-log-provider) for the provider
 contract.
 
