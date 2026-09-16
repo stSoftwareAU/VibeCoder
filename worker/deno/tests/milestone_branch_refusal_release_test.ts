@@ -5,7 +5,7 @@
  *
  * GRQ-FX-validation, milestone `Scan 20260910`, 2026-09-12 to 2026-09-15:
  * sixteen sub-issues died in `setup` with `**Category:** unknown`, six of
- * them reaching `failed`. The ruleset was repaired at 2026-09-15 11:52 UTC
+ * them reaching `failed` (the issue's own table). The ruleset was repaired at 2026-09-15 11:52 UTC
  * and nothing released them.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
@@ -26,7 +26,11 @@ import {
 } from "../lib/milestone_branch_rejection.ts";
 import { handleIssueFailure } from "../lib/label_failure.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
-import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
+import {
+  applyCodingFailureLadder,
+  classifyCodingFailure,
+  planCodingFailure,
+} from "../lib/coding_failure_ladder.ts";
 import { workOnIssueSetupBranch } from "../lib/phases/setup_branch_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -81,6 +85,22 @@ Deno.test("refusal release - a repo-level milestone refusal needs BOTH a repo-le
     "milestone/scan-20260910";
   assertEquals(isRepoLevelMilestoneBranchRefusal(noRefusal), false);
   assertEquals(detectFailureCategory(noRefusal), "push_failure");
+
+  // A later-phase refusal that merely MENTIONS the milestone base branch is
+  // the issue's own push failure, with its bounded retry. Matching a bare
+  // `milestone/<slug>` anywhere in the text would have handed it a
+  // repository fault: no label, no ladder, no attempt consumed.
+  const childPush =
+    "Git push failed: remote: error: GH006: Protected branch update failed " +
+    "for refs/heads/issue-143-add-parser. 1 of 2 required status checks are " +
+    "expected. (base branch milestone/scan-20260910)";
+  assertEquals(isRepoLevelBranchRejection(childPush), true);
+  assertEquals(isRepoLevelMilestoneBranchRefusal(childPush), false);
+  assertEquals(detectFailureCategory(childPush), "push_failure");
+
+  // The raw remote text still matches on the refused ref itself, with no
+  // worker-written sentence anywhere in the message.
+  assertEquals(isRepoLevelMilestoneBranchRefusal(GH013), true);
 });
 
 Deno.test("refusal release - repo_config is not an infrastructure failure and has its own display (Issue #2220)", () => {
@@ -403,6 +423,53 @@ Deno.test("releaseMilestoneBranchRefusalLabels - an unresolvable fleet keeps eve
   );
 });
 
+Deno.test("releaseMilestoneBranchRefusalLabels - a malformed issue list is reported and releases nothing (Issue #2220)", async () => {
+  // The security record claims the fail direction for a malformed payload;
+  // this is what pins it. A list that is not an array must not read as an
+  // empty milestone, which would look like a clean sweep of nothing.
+  resetMilestoneBranchRefusalSweepsForTest();
+  const fn = (args: string[]): Promise<string> =>
+    args[1] === "list"
+      ? Promise.resolve('{"unexpected": "shape"}')
+      : Promise.resolve("");
+  const outcome = await releaseMilestoneBranchRefusalLabels({
+    repo: REPO,
+    milestoneTitle: MILESTONE,
+    milestoneBranch: BRANCH,
+    ghCommandFn: fn,
+    authorOptions: FLEET,
+  });
+  assertEquals(outcome.released, []);
+  assertEquals(outcome.retained, []);
+  assertEquals(outcome.errors.length, 2, outcome.errors.join(" | "));
+  assertStringIncludes(outcome.errors[0] ?? "", "parsing the");
+});
+
+Deno.test("releaseMilestoneBranchRefusalLabels - a comment that fails after the label came off is still a release, and is said out loud (Issue #2220)", async () => {
+  resetMilestoneBranchRefusalSweepsForTest();
+  const issues: FakeIssue[] = [
+    { number: 210, labels: ["failed-once"], comments: [REFUSAL_COMMENT] },
+  ];
+  const gh = fakeGh(issues);
+  const fn = (args: string[]): Promise<string> =>
+    args[1] === "comment"
+      ? Promise.reject(new Error("gh: 502 Bad Gateway"))
+      : gh.fn(args);
+  const outcome = await releaseMilestoneBranchRefusalLabels({
+    repo: REPO,
+    milestoneTitle: MILESTONE,
+    milestoneBranch: BRANCH,
+    ghCommandFn: fn,
+    authorOptions: FLEET,
+  });
+  // The label removal is the substantive outcome and it succeeded.
+  assertEquals(outcome.released, [210]);
+  assertEquals(gh.byNumber.get(210)?.labels, []);
+  // But the missing record is never swallowed.
+  assertEquals(outcome.errors.length, 1, outcome.errors.join(" | "));
+  assertStringIncludes(outcome.errors[0] ?? "", "502 Bad Gateway");
+});
+
 Deno.test("buildRefusalReleaseComment - names the branch and every label removed (Issue #2220)", () => {
   const body = buildRefusalReleaseComment(BRANCH, ["failed-once", "failed"]);
   assertStringIncludes(body, BRANCH);
@@ -436,12 +503,68 @@ Deno.test("refusalIsMostRecentFailure - a quality failure quoting the milestone 
 // The coding-failure ladder must treat repo_config as transient
 // ===========================================================================
 
-Deno.test("classifyCodingFailure - a milestone refusal is transient, so no ladder and no escalating cooldown (Issue #2220)", () => {
+Deno.test("classifyCodingFailure - a milestone refusal is record-only: no ladder and no escalating cooldown (Issue #2220)", () => {
   const decision = classifyCodingFailure(SETUP_REASON);
   assertEquals(decision.category, "repo_config");
   assertEquals(decision.failureClass, "repo-config");
-  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.disposition, "record-only");
   assertEquals(decision.cooldownKind, undefined);
+});
+
+Deno.test("planCodingFailure - a milestone refusal still reaches handleIssueFailure, so the issue gets its comment (Issue #2220)", () => {
+  // The issue asked for "comment once, apply no label" — two different
+  // things. Classifying the refusal `transient` delivered only the second:
+  // `applyCodingFailureLadder` returns before `handleIssueFailure` for a
+  // transient decision, and the main loop's ONLY route into it is this
+  // flag, so every sibling issue failed with no record at all.
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    reason: SETUP_REASON,
+  });
+  assertEquals(plan.decision?.disposition, "record-only");
+  assertEquals(plan.applyLadder, true, "the comment is written from there");
+  assertEquals(plan.cooldownKind, undefined, "no escalating cooldown");
+
+  // A genuinely transient failure is unchanged: nothing is written.
+  const transient = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    reason: "Claude usage limit reached — resets at 3pm",
+  });
+  assertEquals(transient.decision?.disposition, "transient");
+  assertEquals(transient.applyLadder, false);
+});
+
+Deno.test("applyCodingFailureLadder - a milestone refusal comments and labels nothing (Issue #2220)", async () => {
+  const calls: string[][] = [];
+  const outcome = await applyCodingFailureLadder({
+    repo: REPO,
+    issueNumber: 143,
+    githubUser: "vibe-worker",
+    failureReason: SETUP_REASON,
+  }, {
+    handleIssueFailure: (options) =>
+      handleIssueFailure(options, {
+        ghCommandFn: (args) => {
+          calls.push(args);
+          return Promise.resolve("[]");
+        },
+      }),
+  });
+  assertEquals(outcome.error, undefined);
+  assertEquals(outcome.ladder?.markedAsFailed, false);
+  assertEquals(outcome.ladder?.markedAsFailedOnce, false);
+  assert(
+    !calls.some((c) => c.includes("--add-label")),
+    "no label may be applied for a repository fault",
+  );
+  const comment = calls.find((c) => c[1] === "comment");
+  assert(comment, "the issue is still owed one written record");
+  assertStringIncludes(
+    comment[comment.length - 1] ?? "",
+    "Automated Processing Paused (Repository Configuration)",
+  );
 });
 
 // ===========================================================================

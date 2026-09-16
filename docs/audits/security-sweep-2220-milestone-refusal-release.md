@@ -30,7 +30,7 @@ Untrusted inputs, and how each reaches the output:
 | `gh issue list --json number,labels` output | GitHub, for the repository the run already holds a claim on | `JSON.parse` inside a `try`; a non-array throws. Each row is shape-checked field by field — a non-numeric `number` and a non-string label `name` are dropped, never coerced. A parse fault is recorded in `errors`, not thrown |
 | `gh issue view --json comments` output | GitHub; each comment body is text **anyone who can comment on the repository may write** | Shape-checked the same way, then filtered through `selectFleetAuthoredComments` so only a comment authored by the configured fleet identity is read as a failure record. Both the `{ login }` and bare-login author shapes are normalised |
 | the surviving comment bodies | fleet accounts only, after the filter above | matched against an anchored heading regex, then classified by `detectFailureCategory` — the same function used at failure time, so the category precedence cannot diverge between the two sites |
-| `repo`, `milestoneTitle`, `milestoneBranch`, label names | the run's own claim and its `WorkerConfig` | passed as separate argv elements to `gh`, never concatenated into a command string. `milestoneBranch` and the label names are additionally interpolated into the release comment's Markdown |
+| `repo`, `milestoneTitle`, `milestoneBranch`, label names | the run's own claim and its `WorkerConfig` — both callers pass the deployment's configured `failed` / `failed-once` names, so the sweep can only remove labels this fleet actually applies | passed as separate argv elements to `gh`, never concatenated into a command string. `milestoneBranch` and the label names are additionally interpolated into the release comment's Markdown |
 | `limit` | caller, default 100 | stringified into `--limit` |
 
 | Property | Result |
@@ -60,6 +60,11 @@ caller resolves that identity from the `WorkerConfig` it already holds rather
 than re-reading the config file. Regression tests:
 `releaseMilestoneBranchRefusalLabels - a refusal record written outside the
 fleet releases nothing` and `… - an unresolvable fleet keeps every label`.
+
+The two remaining fail-direction claims above are pinned by tests as well:
+`… - a malformed issue list is reported and releases nothing` (a payload that
+is not an array must not read as an empty milestone) and `… - a comment that
+fails after the label came off is still a release, and is said out loud`.
 
 No other finding. The one deliberate trust decision left is that the release
 comment interpolates `milestoneBranch` and the label names into Markdown

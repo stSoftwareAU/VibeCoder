@@ -5,7 +5,7 @@
  * Issue #853 stopped the *escalation* repeating and #2067 / #2079 fixed the
  * ruleset, but nothing ever released the issues the refusal had already
  * labelled. On GRQ-FX-validation the ruleset was repaired at 2026-09-15
- * 11:52 UTC with sixteen sub-issues still carrying `failed-once` — eight of
+ * 11:52 UTC with sixteen sub-issues still carrying `failed-once` — six of
  * them `failed` — for a fault that no longer existed. A human stripped every
  * one by hand.
  *

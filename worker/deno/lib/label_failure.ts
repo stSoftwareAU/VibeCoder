@@ -465,7 +465,7 @@ export async function handleIssueFailure(
   // protection, or a permission the fleet account lacks — and it refuses it
   // identically for every sibling issue in the milestone. Labelling this
   // issue records a repository setting against work that never ran: sixteen
-  // GRQ-FX-validation sub-issues took `failed-once`, eight went on to
+  // GRQ-FX-validation sub-issues took `failed-once`, six went on to
   // `failed`, and a human had to strip every one by hand after the ruleset
   // was repaired. Comment once, label nothing, leave it claimable.
   if (failureCategory === "repo_config") {

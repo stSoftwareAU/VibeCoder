@@ -3975,12 +3975,18 @@ Two changes close that:
   `push_failure` with its bounded infrastructure retry. `handleIssueFailure`
   short-circuits `repo_config` exactly as it does `scheduled_release`: it
   writes one **Automated Processing Paused (Repository Configuration)**
-  comment and applies no label, leaving the issue claimable. `repo-config` is
-  also in `TRANSIENT_FAILURE_CLASSES` (`coding_failure_ladder.ts`), so the
-  failure earns the plain cooldown rather than the escalating 2 h → 6 h → 24 h
-  one and never reaches the three-strike `needs-human` park — skipping the
-  ladder while leaving the cooldown in place would have re-created the same
-  human chore one rung later.
+  comment and applies no label, leaving the issue claimable. In
+  `coding_failure_ladder.ts` the class gets its own `record-only`
+  disposition, so the failure earns the plain cooldown rather than the
+  escalating 2 h → 6 h → 24 h one and never reaches the three-strike
+  `needs-human` park — skipping the ladder while leaving the cooldown in
+  place would have re-created the same human chore one rung later. It is
+  deliberately **not** `transient`: a transient decision returns before
+  `handleIssueFailure` is reached, and the main loop's only route into that
+  call is `planCodingFailure`'s `applyLadder`, so a transient refusal would
+  have left every sibling issue with no written record at all. The
+  disposition withholds the label and the cooldown; the comment is still
+  written.
 - **The run that opens the branch releases the backlog.** Once
   `ensureMilestoneBranchExists` succeeds — including via the #2079 in-run
   repair — `releaseMilestoneBranchRefusalLabels`

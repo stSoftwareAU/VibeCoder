@@ -66,14 +66,21 @@ export function isRepoLevelBranchRejection(message: string): boolean {
  * bounded infrastructure ladder. Only the milestone-branch refusal is a
  * fault the whole milestone shares, so only it skips the ladder.
  *
- * The third pattern matches the ref itself (`refs/heads/milestone/<slug>`,
- * `-> milestone/<slug>`), which is what the raw remote text carries when no
- * worker-written sentence survived into the message.
+ * The last two patterns match the REFUSED REF itself
+ * (`refs/heads/milestone/<slug>`, `-> milestone/<slug>`), which is what the
+ * raw remote text carries when no worker-written sentence survived into the
+ * message. They are deliberately not a bare `milestone/<slug>` match: a
+ * milestone child's base branch is named in plenty of later-phase failure
+ * messages, and pairing a bare mention with a generic repo-level signature
+ * ("protected branch", "required status check") would reclassify an
+ * ordinary PR-creation or child-push refusal as a repository fault — no
+ * label, no ladder, no attempt consumed.
  */
 const MILESTONE_BRANCH_CONTEXT: readonly RegExp[] = [
   /Failed to (?:ensure|push) milestone branch/i,
   /Milestone branch unavailable/i,
-  /(?:^|[\s'"`/])milestone\/[A-Za-z0-9._-]+/,
+  /refs\/heads\/milestone\/[A-Za-z0-9._-]+/,
+  /->\s*milestone\/[A-Za-z0-9._-]+/,
 ];
 
 /**
