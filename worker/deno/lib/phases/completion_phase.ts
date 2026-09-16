@@ -13,10 +13,12 @@
  */
 
 import { HeadDivergedError } from "../git_branch.ts";
-import type {
-  IssueContext,
-  PhaseResult,
-  PhaseState,
+import {
+  type IssueContext,
+  type PhaseResult,
+  type PhaseState,
+  recordClaudeRunStats,
+  type SummaryRuleBlock,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
@@ -393,7 +395,13 @@ async function reportSummaryRuleBlock(
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
-  await client.postComment(repo, issueNumber, comment);
+  // Issue #2189: the in-run recovery re-runs this attempt, and a recovery
+  // that changed nothing meets the same block — the thread already carries
+  // this exact comment, so it is not posted twice. A different comment (the
+  // next gate's, or fewer problems) is new information and is posted.
+  const alreadyPosted =
+    state.summaryRuleBlocks?.some((b) => b.comment === comment) ?? false;
+  if (!alreadyPosted) await client.postComment(repo, issueNumber, comment);
 
   const existingPr = await deps.pr.findExistingPrForBranch(
     repo,
@@ -414,6 +422,9 @@ async function reportSummaryRuleBlock(
         lookup: existingPr.error.message,
       },
     );
+    // Issue #2189: the first block in a run is recovered by
+    // `workOnIssueCompletion` — the comment above is that recovery's brief.
+    (state.summaryRuleBlocks ??= []).push({ reason, comment });
     return { status: "failure", reason };
   }
 
@@ -608,6 +619,21 @@ export async function workOnIssueCompletion(
     );
   }
 
+  // In-run recovery from the first PR-summary rule block met with no PR
+  // (Issue #2189): the branch is pushed and quality-gated, and the shortfall
+  // is a documentation block — one short invocation, not a whole new run.
+  if (
+    result.status === "failure" && (state.summaryRuleBlocks?.length ?? 0) === 1
+  ) {
+    result = await recoverFromSummaryRuleBlock(
+      ctx,
+      state,
+      deps,
+      result,
+      () => runCompletionAttempt(ctx, state, deps),
+    );
+  }
+
   // Issue #3756 — a `work-on` issue is auto-closed by its merged PR, with no
   // worker attached at that moment, so PR-raise is the last point the worker
   // can report what the run cost. Post the issue's single cost/model stats
@@ -618,6 +644,147 @@ export async function workOnIssueCompletion(
   }
 
   return result;
+}
+
+/**
+ * The prompt for the summary-rule recovery invocation (Issue #2189).
+ *
+ * The gate's own remediation comment is the brief: it names every rule
+ * broken and prints the shape the gates accept. The invocation is scoped to
+ * the summary file — no code, no quality gate — and commits, so the
+ * completion attempt that follows finds the branch ready to push.
+ */
+export function buildSummaryRuleRetryPrompt(
+  block: SummaryRuleBlock,
+  issueNumber: number,
+): string {
+  const summaryPath = `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`;
+  return [
+    "# PR summary gate block — complete the summary, then stop",
+    "",
+    "The work on this branch is finished, committed and pushed, and the " +
+    "quality gate has passed. The pull request was NOT raised because the " +
+    `PR summary at \`${summaryPath}\` breaks a documented summary rule:`,
+    "",
+    `> ${block.reason}`,
+    "",
+    "The gate's remediation comment, with the exact shape it accepts, follows.",
+    "",
+    "## What to do",
+    "",
+    `1. Edit \`${summaryPath}\` so it satisfies every rule the comment names. ` +
+    "Read the issue body and the branch diff (`git diff <base>...HEAD`) to " +
+    "assess each stated criterion honestly — `missing` with a reason is a " +
+    "valid answer; an omitted criterion is not.",
+    "2. Change nothing else: no source files, no tests, no other documents.",
+    "3. Do NOT run the quality gate or the test suite — the summary is not " +
+    "code, and the run's budget is nearly spent.",
+    `4. Commit the summary: \`git add ${summaryPath} && git commit -m ` +
+    `"docs: close out the PR summary (Issue #${issueNumber})"\`.`,
+    "5. Do NOT push and do NOT create the pull request — the worker does both " +
+    "once the gate passes.",
+    "",
+    "## The gate's comment",
+    "",
+    block.comment,
+  ].join("\n");
+}
+
+/**
+ * Recover in-run from the first PR-summary rule block met with no PR
+ * (Issue #2189).
+ *
+ * On this host a quarter of the runs that reached completion were failed by
+ * the acceptance-criteria closure gate — pushed, quality-gated branches with
+ * a summary that omitted the block the prompt asks for. Each block cost a
+ * whole further run to add a documentation block. The security-fix gate
+ * solved the same cost model in-run (Issue #1575); this is that pattern for
+ * the summary rules: one bounded invocation carrying the gate's comment, the
+ * summary committed (by the agent, or here if it edited without committing),
+ * then the completion attempt again. A second block in the same run stands
+ * as the failure it always was, with the comment already on the thread.
+ *
+ * @param blocked - The failure the block produced; returned unchanged when
+ *   the recovery cannot be launched.
+ */
+async function recoverFromSummaryRuleBlock(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  blocked: PhaseResult,
+  rerunCompletion: () => Promise<PhaseResult>,
+): Promise<PhaseResult> {
+  const logger = deps.logger;
+  const { repo, issueNumber, config } = ctx;
+  const block = state.summaryRuleBlocks?.[0];
+  if (!block) return blocked;
+
+  logger.warn(
+    "PR-summary rule block with no PR — completing the summary in-run " +
+      "rather than failing the run (Issue #2189)",
+    { repo, issueNumber, reason: block.reason },
+  );
+
+  const retryResult = await deps.claude.runClaudeWithRetry(
+    {
+      prompt: buildSummaryRuleRetryPrompt(block, issueNumber),
+      phase: "issue",
+      repo,
+      issueNumber,
+      timeoutSeconds: config.claudeTimeout,
+      killAfterSeconds: config.claudeKillAfter,
+      model: config.claudeModel || undefined,
+      cwd: state.repoPath,
+      logger,
+    },
+    { maxRetries: config.maxRateLimitRetries },
+  );
+  if (!retryResult.ok) {
+    logger.warn(
+      "The summary-rule recovery invocation could not be launched — the " +
+        "block stands (Issue #2189)",
+      { error: retryResult.error.message },
+    );
+    return blocked;
+  }
+  recordClaudeRunStats(state, retryResult.value);
+
+  // The agent is told to commit; a summary it edited but left uncommitted
+  // must not be lost to the re-run's "no changes" path, so it is committed
+  // here — this file only.
+  const summaryPath = `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`;
+  const status = await deps.git.runGitCommand(
+    ["status", "--porcelain", "--", summaryPath],
+    { cwd: state.repoPath },
+  );
+  if (status.ok && status.value.code === 0 && status.value.stdout.trim()) {
+    await deps.git.runGitCommand(["add", "--", summaryPath], {
+      cwd: state.repoPath,
+    });
+    const commit = await deps.git.runGitCommand(
+      [
+        "commit",
+        "-m",
+        `docs: close out the PR summary (Issue #${issueNumber})`,
+        "--",
+        summaryPath,
+      ],
+      { cwd: state.repoPath },
+    );
+    if (!commit.ok || commit.value.code !== 0) {
+      logger.warn(
+        "Could not commit the recovered PR summary — the re-run reads the " +
+          "branch as it stands (Issue #2189)",
+        {
+          error: commit.ok
+            ? commit.value.stderr.trim() || `exit ${commit.value.code}`
+            : commit.error.message,
+        },
+      );
+    }
+  }
+
+  return await rerunCompletion();
 }
 
 /**

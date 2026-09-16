@@ -120,6 +120,14 @@ export interface IssueContext {
 }
 
 /** Mutable state set by early phases, consumed by later phases. */
+/** One PR-summary rule block met with no PR to record it against (Issue #2189). */
+export interface SummaryRuleBlock {
+  /** The phase-failure reason the gate reported. */
+  reason: string;
+  /** The gate's remediation comment, as posted on the issue. */
+  comment: string;
+}
+
 export interface PhaseState {
   branchName: string;
   baseBranch: string;
@@ -256,6 +264,17 @@ export interface PhaseState {
    * one comment carries both verdicts.
    */
   securityGateBlocks?: SecurityGateRunVerdict[];
+  /**
+   * PR-summary rule blocks this run met with no PR to record them against
+   * (Issue #2189): the closure, independent-review and reproduction gates.
+   *
+   * The completion phase appends one entry per block. The first entry
+   * triggers the in-run recovery — one agent invocation carrying the gate's
+   * remediation comment, then the completion attempt again — so a summary
+   * shortfall on a pushed, quality-gated branch no longer costs the whole
+   * run. A second entry ends the run in `failure` as before.
+   */
+  summaryRuleBlocks?: SummaryRuleBlock[];
   /**
    * The trusted discovery label the merged-PR pre-check found added *after*
    * the linked PR merged (Issue #1862), when there was one.
