@@ -165,6 +165,8 @@ export const executeClaudePhaseCommand: Command = {
       // The host switch for Graft repo-context injection (Issue #2102);
       // off on every host that has not opted in.
       graftContextEnabled: isGraftContextEnabled(config),
+      // The CodeGraph repo-context trial switch (Issue #2159, part of #2145).
+      codegraphContextEnabled: config.codegraphContext.enabled,
       // Context budget thresholds, including the hard ceiling (Issue #3713)
       contextBudgetWarningPercent: config.contextBudgetWarningPercent,
       contextBudgetErrorPercent: config.contextBudgetErrorPercent,

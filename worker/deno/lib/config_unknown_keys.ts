@@ -8,6 +8,8 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { CODEGRAPH_CONTEXT_KEYS } from "./codegraph_context_config.ts";
+
 /**
  * Warning about an unknown configuration key.
  */
@@ -89,6 +91,10 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "progress_extension_stall_seconds",
   // Working-tree sampling interval (Issue #4295)
   "progress_extension_check_seconds",
+  // Call-storm stall guard (Issue #2230)
+  "call_storm_enabled",
+  "call_storm_calls",
+  "call_storm_window_seconds",
   // Agent transcript tee (Issue #1141) — off by default; the only operator
   // switch for the raw agent stream-json transcript.
   "agent_transcript_enabled",
@@ -178,6 +184,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "include_codebase_map",
   "timeline_cache_ttl_seconds",
 
+  // CodeGraph repo context (Issue #2154, part of #2145)
+  "codegraph_context",
+
   // Verbosity settings (Issue #1330)
   "verbosity",
 
@@ -227,6 +236,29 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Custom label → non-public prompt file mappings (Issue #846, part of #843)
   "custom_label_prompts",
 ]);
+
+/**
+ * Recognised keys **inside** a top-level block that takes an object value,
+ * keyed by the block's own name (Issue #2154).
+ *
+ * Only blocks whose vocabulary is small and fixed belong here: a typo inside
+ * one is as invisible as a typo at the top level, so it earns the same warning.
+ * Free-form maps (`repo_config`, `phase_model_overrides`, …) are deliberately
+ * absent — their keys are operator-chosen, so nothing could be checked.
+ */
+//
+// Built on demand rather than at module load: `codegraph_context_config.ts`
+// imports the defaults, the defaults import the Graft config, and the Graft
+// config imports this module (Issue #2098) — a load-time table here would
+// read `CODEGRAPH_CONTEXT_KEYS` before its module finished initialising.
+export function knownNestedConfigKeys(): ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> {
+  return new Map([
+    ["codegraph_context", CODEGRAPH_CONTEXT_KEYS],
+  ]);
+}
 
 /**
  * Convert a camelCase string to snake_case.
@@ -298,9 +330,26 @@ function suggestKeyFrom(
   unknownKey: string,
   knownKeys: ReadonlySet<string>,
 ): string | null {
+  return suggestFrom(unknownKey, knownKeys);
+}
+
+/**
+ * Suggest the most likely intended key from a given candidate set.
+ *
+ * The two strategies {@link suggestSimilarKey} documents, applied to whichever
+ * vocabulary is in play — the top-level keys, or the keys of one nested block.
+ *
+ * @param unknownKey - The unrecognised key.
+ * @param candidates - The keys that would have been recognised.
+ * @returns The suggested key, or null if no close match found.
+ */
+function suggestFrom(
+  unknownKey: string,
+  candidates: ReadonlySet<string>,
+): string | null {
   // Strategy 1: Try camelCase → snake_case conversion
   const snakeVersion = camelToSnake(unknownKey);
-  if (knownKeys.has(snakeVersion)) {
+  if (candidates.has(snakeVersion)) {
     return snakeVersion;
   }
 
@@ -310,7 +359,7 @@ function suggestKeyFrom(
   let bestMatch: string | null = null;
   let bestDistance = maxDistance + 1;
 
-  for (const knownKey of knownKeys) {
+  for (const knownKey of candidates) {
     const distance = levenshteinDistance(unknownKey, knownKey);
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -337,12 +386,23 @@ export function detectUnknownConfigKeys(
 
   for (const key of Object.keys(data)) {
     if (!KNOWN_CONFIG_KEYS.has(key)) {
-      const suggestion = suggestSimilarKey(key);
-      const message = suggestion
-        ? `Unknown config key "${key}" in .config.json. Did you mean "${suggestion}"?`
-        : `Unknown config key "${key}" in .config.json. This attribute is not recognised and will be ignored.`;
+      warnings.push(unknownKeyWarning(key, KNOWN_CONFIG_KEYS));
+      continue;
+    }
 
-      warnings.push({ field: key, message, suggestion });
+    // Issue #2154: a block with its own vocabulary gets the same treatment one
+    // level down — a typo inside it would otherwise read as a setting the
+    // operator made and the worker never saw.
+    const nestedKeys = knownNestedConfigKeys().get(key);
+    if (!nestedKeys) continue;
+    const block = data[key];
+    if (typeof block !== "object" || block === null || Array.isArray(block)) {
+      // A malformed block is the block parser's to refuse, not ours to guess at.
+      continue;
+    }
+    for (const nested of Object.keys(block)) {
+      if (nestedKeys.has(nested)) continue;
+      warnings.push(unknownKeyWarning(nested, nestedKeys, key));
     }
   }
 
@@ -382,6 +442,36 @@ export function detectUnknownNestedKeys(
   }
 
   return warnings;
+}
+
+/**
+ * Build one warning for an unrecognised key.
+ *
+ * @param key - The unrecognised key, as written in the file.
+ * @param candidates - The keys that would have been recognised in its position.
+ * @param blockPrefix - The enclosing block, for a nested key.
+ * @returns The warning, with a suggestion when a close match exists.
+ */
+function unknownKeyWarning(
+  key: string,
+  candidates: ReadonlySet<string>,
+  blockPrefix?: string,
+): UnknownKeyWarning {
+  const qualify = (name: string) =>
+    blockPrefix ? `${blockPrefix}.${name}` : name;
+  const suggestion = suggestFrom(key, candidates);
+  const field = qualify(key);
+  const message = suggestion
+    ? `Unknown config key "${field}" in .config.json. Did you mean "${
+      qualify(suggestion)
+    }"?`
+    : `Unknown config key "${field}" in .config.json. This attribute is not recognised and will be ignored.`;
+
+  return {
+    field,
+    message,
+    suggestion: suggestion ? qualify(suggestion) : null,
+  };
 }
 
 /**

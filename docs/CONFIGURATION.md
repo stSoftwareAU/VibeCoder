@@ -1656,6 +1656,9 @@ unless explicitly overridden.
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
 | Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
+| Call-storm guard | `call_storm_enabled` | `true` | Stop an issue-work run that is polling instead of working — dozens of tool calls a minute with no working-tree change (Issue #2230). Evaluated at each progress check; the stopped run keeps its preserved WIP. `false` gives a polling loop its whole budget back. See [Call storm — polling is not progress](#call-storm--polling-is-not-progress-issue-2230). |
+| Call-storm threshold | `call_storm_calls` | `60` | Tool calls inside the window at or above which that window reads as a storm. Must be positive and no greater than the 5000 tool calls the progress tracker retains; raise it if a genuinely fast exploration phase is being stopped. |
+| Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
@@ -1735,6 +1738,7 @@ unless explicitly overridden.
 | Include untrusted comments | `include_untrusted_comments` | `true` | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely. |
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
 | Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
+| CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback and CI-fix** paths (Issues #2159, #2160) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 
@@ -2426,8 +2430,13 @@ both surfaces keep their pre-extension wording.
 ```mermaid
 flowchart TD
     W[Watchdog wakes] --> I{Deadline reached?}
-    I -->|no — check interval| S[Sample the working tree<br/>record the verdict, re-arm]
-    S --> W
+    I -->|no — check interval| S[Sample the working tree<br/>record the verdict]
+    S --> P{Call storm?<br/>calls ≥ threshold AND tree<br/>unchanged a whole window}
+    P -->|yes, second in a row| KS[Stop — call-storm<br/>WIP preserved]
+    P -->|yes, first| RW[Warn, keep the streak]
+    P -->|no| RA[Re-arm the watchdog<br/>streak reset]
+    RW --> W
+    RA --> W
     I -->|yes| B{Progress extension<br/>enabled?}
     B -->|no| K[Kill — hard-timeout]
     B -->|yes| C{Last tool call within<br/>stall window?}
@@ -2454,7 +2463,10 @@ write anything. Set a key only to change it:
   "progress_extension_enabled": true,
   "progress_extension_grant_seconds": 900,
   "progress_extension_stall_seconds": 300,
-  "progress_extension_check_seconds": 300
+  "progress_extension_check_seconds": 300,
+  "call_storm_enabled": true,
+  "call_storm_calls": 60,
+  "call_storm_window_seconds": 300
 }
 ```
 
@@ -2473,6 +2485,71 @@ no tree sampling and no grants:
 The other three keys are then ignored. `loadConfig` still validates them, so a
 non-positive value or a stall window shorter than the check interval is
 rejected whether or not the feature is on.
+
+#### Call storm — polling is not progress (Issue #2230)
+
+Declining to extend does nothing until the deadline arrives, so a run that
+polls a job it started in the background kept its whole budget. GRQ-23 slot s2
+spent an hour and roughly 700 billed turns on `pgrep`, `tail` and `echo w252`
+while a background `deno task test` ran — about 25 tool calls a minute for
+twenty minutes, with not one byte changed in the checkout — and no watchdog
+could see it: the no-output watchdog had output every second, and the progress
+extension only refused to extend a deadline still an hour away.
+
+The call-storm guard closes that gap at the **interim check**. A check that
+finds `call_storm_calls` or more tool calls inside the last
+`call_storm_window_seconds` **and** a working tree that has not advanced for a
+whole window reads as a storm window. One storm window is a warning:
+
+```text
+[call-storm] call storm: 372 calls in 5m, tree unchanged; last: Bash echo w252
+— check 1 of 2; the run is stopped if the next check agrees
+```
+
+**Two consecutive** storm windows stop the run, with a reason naming the loop:
+
+```text
+[call-storm] stopping the agent after 1483s: call storm: 372 calls in 5m,
+tree unchanged; last: Bash echo w252
+```
+
+The result carries `timeoutReason: "call-storm"` and the reason, so the worker
+log and the issue comment both say which guard fired and what it saw — the
+comment reads *"Claude was stopped as stalled before its timeout — call storm:
+…"* rather than claiming a timeout the run never reached. The ordinary
+WIP-preservation path keeps whatever the agent had committed.
+
+Four deliberate limits keep it from stopping healthy runs:
+
+- **One window is never enough.** A read-heavy investigation can genuinely make
+  twelve calls a minute before its first edit, so a single storm window only
+  warns; ten minutes of that rate with nothing changed is the poll loop, not
+  the investigation. The incident that prompted the guard ran at ~25 calls a
+  minute for twenty minutes, so it is still stopped inside the second window.
+  Any check that is not a storm spends the streak.
+- **Only an affirmative `unchanged` counts.** A working-tree probe that answers
+  `unknown` never trips the guard — an unverifiable tree is the deadline
+  check's business (Issue #4294), not a reason to stop a run early. This is the
+  opposite fail-safe direction to the extension policy, because this guard
+  kills *inside* the budget.
+- **The window must have been observed whole.** The tree has to have stood
+  still for the entire window, measured from the run start, so a run that edits
+  a file every few minutes can never be mistaken for one that only polls.
+- **Waiting properly cannot trip it.** The tree is the only progress signal the
+  guard reads, and a descendant process burning CPU (Issue #508) does not
+  excuse a poll loop — polling is what costs a model turn a second. An agent
+  that waits the way the prompt tells it to, inside one bounded foreground
+  command, issues no tool calls at all while it waits, so it cannot trip the
+  guard however long that command takes.
+
+The guard rides the progress extension's own interim check, so
+`progress_extension_enabled: false` turns it off as well — with no checks there
+is nothing to evaluate. Use `call_storm_enabled: false` to keep the extension
+and drop only the guard.
+
+The agent side of this is in the prompt: the shared quality instructions forbid
+backgrounding a long-running command and polling it turn by turn, and tell the
+agent to run one bounded foreground command instead.
 
 #### Why did this run take three hours?
 
@@ -3076,8 +3153,11 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_OUTCOME_FAILURE_CLASS`, `VIBECODER_PR_NUMBER`,
 `VIBECODER_GRAFT_ENABLED`, `VIBECODER_GRAFT_STATUS`,
 `VIBECODER_GRAFT_BUILD_SECONDS`, `VIBECODER_GRAFT_BUNDLE_CHARS`,
-`VIBECODER_GRAFT_NODE_COUNT`, `VIBECODER_GRAFT_CALL_EDGE_COUNT`. A cycle hook
-also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
+`VIBECODER_GRAFT_NODE_COUNT`, `VIBECODER_GRAFT_CALL_EDGE_COUNT`,
+`VIBECODER_CODEGRAPH_ENABLED`, `VIBECODER_CODEGRAPH_STATUS`,
+`VIBECODER_CODEGRAPH_INDEX_SECONDS`, `VIBECODER_CODEGRAPH_NODE_COUNT`,
+`VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT`, `VIBECODER_CODEGRAPH_QUERIES`. A
+cycle hook also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
 `VIBECODER_CLAIMS_TAKEN` and `VIBECODER_CYCLE_END_REASON`.
 
 The `graft` block (Issue #2104) is on **every** run context: `graft.enabled`

@@ -221,6 +221,10 @@ export async function workOnIssue(
       // Issue #1949: a phase that already stepped the failure ladder says so,
       // so the main loop does not step it a second time in the same run.
       ...(state.failureLadderApplied ? { ladderApplied: true } : {}),
+      // Issue #2162: the CodeGraph figures, read here rather than in the
+      // execute phase so the `codegraph_explore` tally the invocation folded
+      // in afterwards is the one the callbacks report.
+      ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
     };
   } catch (err) {
     outcome = withRunOutcomeNotes(

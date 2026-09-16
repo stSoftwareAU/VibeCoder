@@ -599,3 +599,59 @@ Deno.test("run_core callbacks - an idle cycle fires the cycle heartbeat (Issue #
   assertEquals(cycles[0]!.endReason, "no_eligible_work");
   assertEquals(cycles[0]!.claimsTaken, 0);
 });
+
+Deno.test("run_core callbacks - the terminal run carries the run's CodeGraph figures (Issue #2162)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({
+        ok: true,
+        value: {
+          success: true,
+          codegraph: {
+            enabled: true,
+            status: "ok" as const,
+            indexSeconds: 22,
+            nodeCount: 1_000,
+            relationshipCount: 3_000,
+            queries: 2,
+          },
+        },
+      });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs[0]?.codegraph, {
+    enabled: true,
+    status: "ok",
+    indexSeconds: 22,
+    nodeCount: 1_000,
+    relationshipCount: 3_000,
+    queries: 2,
+  });
+});
+
+Deno.test("run_core callbacks - a run that reported no CodeGraph step carries none (Issue #2162)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs[0]?.codegraph, undefined);
+});

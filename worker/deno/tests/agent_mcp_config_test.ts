@@ -15,6 +15,7 @@ import {
   CLAUDE_PROVIDER_ID,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
+import { codegraphMcpServer } from "../lib/codegraph_context.ts";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import {
   BROWSER_OUTPUT_DIR_NAME,
@@ -267,5 +268,162 @@ Deno.test("agent mcp config - a named work volume beats the environment (Issue #
   assertEquals(
     defaultMcpConfigDir({ env }),
     "/from-the-environment/.vibe-cache/mcp",
+  );
+});
+
+Deno.test("agent mcp config - the Playwright-only request is byte-for-byte what the unflagged call writes (Issue #2156)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-eq-" });
+  try {
+    const clone = "/home/vibe/auto-issue-work/stSoftwareAU/private-repo-10";
+    const today = await ensureAgentMcpConfig({ cwd: clone, configDir: dir });
+    assert(today, "config path returned");
+    const before = await Deno.readTextFile(today);
+    const explicit = await ensureAgentMcpConfig({
+      cwd: clone,
+      configDir: dir,
+      playwright: true,
+    });
+    assert(explicit, "config path returned");
+    assertEquals(await Deno.readTextFile(explicit), before);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("agent mcp config - a server requested without Playwright is written alone, with no browser entry (Issue #2156)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-cg-" });
+  try {
+    const path = await ensureAgentMcpConfig({
+      cwd: "/w/repo",
+      configDir: dir,
+      playwright: false,
+      servers: { codegraph: codegraphMcpServer() },
+    });
+    assert(path, "config path returned");
+    const parsed = JSON.parse(await Deno.readTextFile(path));
+    assertEquals(Object.keys(parsed.mcpServers), ["codegraph"]);
+    assertEquals(parsed.mcpServers.codegraph.command, "codegraph");
+    assertEquals(parsed.mcpServers.codegraph.args, ["serve", "--mcp"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("agent mcp config - Playwright and an additional server are both written (Issue #2156)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-both-" });
+  try {
+    const path = await ensureAgentMcpConfig({
+      cwd: "/w/repo",
+      configDir: dir,
+      servers: { codegraph: codegraphMcpServer() },
+    });
+    assert(path, "config path returned");
+    const parsed = JSON.parse(await Deno.readTextFile(path));
+    assertEquals(Object.keys(parsed.mcpServers).sort(), [
+      "codegraph",
+      "playwright",
+    ]);
+    assertEquals(parsed.mcpServers.playwright.command, "deno");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("agent mcp config - requesting no server at all writes nothing and says so (Issue #2156)", async () => {
+  const logs: string[] = [];
+  const written: string[] = [];
+  const path = await ensureAgentMcpConfig({
+    cwd: "/w/repo",
+    configDir: "/should-not-be-used",
+    playwright: false,
+    writeFile: (p) => {
+      written.push(p);
+      return Promise.resolve();
+    },
+    log: (m) => {
+      logs.push(m);
+    },
+  });
+  assertEquals(path, undefined);
+  assertEquals(written, []);
+  assert(
+    logs.some((l) => l.includes("no MCP server was requested")),
+    logs.join(),
+  );
+});
+
+Deno.test("agent mcp config - a browser request the generator cannot satisfy fails loud rather than writing a browserless config (Issue #2156)", async () => {
+  const logs: string[] = [];
+  const written: string[] = [];
+  const path = await ensureAgentMcpConfig({
+    cwd: "/w/repo",
+    configDir: "/should-not-be-used",
+    servers: { codegraph: codegraphMcpServer() },
+    // A generated shape with no server map: the browser the caller asked for
+    // must not be dropped into a config carrying only the extra server.
+    generate: () => JSON.stringify({ mcpServers: {} }),
+    writeFile: (p) => {
+      written.push(p);
+      return Promise.resolve();
+    },
+    log: (m) => {
+      logs.push(m);
+    },
+  });
+  assertEquals(path, undefined);
+  assertEquals(written, []);
+  assert(
+    logs.some((l) => l.includes("no mcpServers entry")),
+    logs.join(),
+  );
+});
+
+Deno.test("agent mcp config - an additional server may not replace the generated browser entry (Issue #2156)", async () => {
+  const logs: string[] = [];
+  const written: string[] = [];
+  const path = await ensureAgentMcpConfig({
+    cwd: "/w/repo",
+    configDir: "/should-not-be-used",
+    // The hardened browser entry carries the secrets denylist and the pinned
+    // specifier: a caller's entry of the same name must not quietly win.
+    servers: { playwright: { command: "anything" } },
+    writeFile: (p) => {
+      written.push(p);
+      return Promise.resolve();
+    },
+    log: (m) => {
+      logs.push(m);
+    },
+  });
+  assertEquals(path, undefined);
+  assertEquals(written, []);
+  assert(
+    logs.some((l) => l.includes("would replace the generated entry")),
+    logs.join(),
+  );
+});
+
+Deno.test("agent mcp config - a browser-only request is checked for the browser entry too (Issue #2156)", async () => {
+  const logs: string[] = [];
+  const written: string[] = [];
+  const path = await ensureAgentMcpConfig({
+    cwd: "/w/repo",
+    configDir: "/should-not-be-used",
+    // No extras this time: the same empty generated map must still refuse,
+    // rather than writing a config that grants no browser at all.
+    generate: () => JSON.stringify({ mcpServers: {} }),
+    writeFile: (p) => {
+      written.push(p);
+      return Promise.resolve();
+    },
+    log: (m) => {
+      logs.push(m);
+    },
+  });
+  assertEquals(path, undefined);
+  assertEquals(written, []);
+  assert(
+    logs.some((l) => l.includes("no mcpServers entry")),
+    logs.join(),
   );
 });

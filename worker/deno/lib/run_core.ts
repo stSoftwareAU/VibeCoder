@@ -100,6 +100,7 @@ import {
   describeRunOutcome,
   type RunOutcome,
 } from "./run_outcome.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type {
   CallbackGraftContext,
   CallbackRunTelemetry,
@@ -803,6 +804,13 @@ export interface RunCoreDeps {
        * Terminating phase name, when the run ran (Issue #1947).
        */
       phase?: string;
+      /**
+       * What the run's CodeGraph step produced (Issue #2162, part of
+       * #2145) — status, index seconds, node and relationship counts and
+       * the `codegraph_explore` queries the agent made. Absent on a run
+       * that reported no CodeGraph step at all.
+       */
+      codegraph?: CodegraphContextResult;
     }>
   >;
 
@@ -2037,6 +2045,8 @@ interface TerminalRun {
   phase?: string;
   /** Why telemetry is absent, when it is (Issue #1948). */
   telemetryAbsentReason?: TelemetryAbsentReason;
+  /** What the run's CodeGraph step produced (Issue #2162), when it ran. */
+  codegraph?: CodegraphContextResult;
   /**
    * The cycle's exactly-once guard. Every dispatch site for a claim shares
    * one, so a run reported by its own release is not reported again by the
@@ -2046,8 +2056,9 @@ interface TerminalRun {
 }
 
 /**
- * Copy mode / outcome / telemetry / Graft / phase from a processIssue result
- * onto a TerminalRun (`mode` added by Issue #2100, `graft` by Issue #2104).
+ * Copy mode / outcome / telemetry / Graft / CodeGraph / phase from a
+ * processIssue result onto a TerminalRun (`mode` added by Issue #2100,
+ * `graft` by Issue #2104, `codegraph` by Issue #2162).
  */
 function withProcessCallbackFacts(
   ran: TerminalRun,
@@ -2060,6 +2071,7 @@ function withProcessCallbackFacts(
       outcome?: RunOutcome;
       phase?: string;
       telemetryAbsentReason?: TelemetryAbsentReason;
+      codegraph?: CodegraphContextResult;
     };
   },
 ): TerminalRun {
@@ -2082,6 +2094,7 @@ function withProcessCallbackFacts(
       : value.telemetry
       ? {}
       : { telemetryAbsentReason: "agent_not_invoked" }),
+    ...(value.codegraph ? { codegraph: value.codegraph } : {}),
   };
 }
 
@@ -2127,6 +2140,7 @@ function dispatchIssueCallbacks(
         ...(ran.telemetryAbsentReason
           ? { telemetryAbsentReason: ran.telemetryAbsentReason }
           : {}),
+        ...(ran.codegraph ? { codegraph: ran.codegraph } : {}),
       });
     } catch (error) {
       deps.logError(

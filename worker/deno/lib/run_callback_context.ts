@@ -25,6 +25,7 @@ import type {
   TerminalScanCycle,
 } from "./run_callbacks.ts";
 import { callbackGraftFacts } from "./run_callbacks.ts";
+import { CODEGRAPH_OFF } from "./run_callbacks.ts";
 import { classifyRunFailure } from "./run_outcome_classifier.ts";
 import {
   agentTranscriptDir,
@@ -217,6 +218,9 @@ export function buildIssueRunCallbackContext(
     // ended before the collection — the document reports `off` for it.
     ...(run.graft ? { graft: callbackGraftFacts(run.graft) } : {}),
     ...(outcome ? { outcome } : {}),
+    // Issue #2162: stated on every run, so a host without the switch is
+    // explicitly comparable with the hosts that have it.
+    codegraph: run.codegraph ?? CODEGRAPH_OFF,
   };
 }
 

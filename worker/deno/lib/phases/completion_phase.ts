@@ -742,6 +742,9 @@ async function postWorkOnRunStats(
     // (Issue #1249, finding 12). This phase already holds the run's identity,
     // so it states the fleet rather than re-reading the config file.
     authorOptions: { fleetAuthors: fleetAuthorsFor(ctx) },
+    // The run's CodeGraph figures, recorded by the execute phase beside the
+    // invocations above, ride the same comment (Issue #2161).
+    ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
   });
 }
 

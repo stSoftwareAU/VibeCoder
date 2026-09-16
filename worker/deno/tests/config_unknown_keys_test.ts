@@ -331,3 +331,45 @@ Deno.test("config_unknown_keys - detectUnknownNestedKeys returns empty for an em
     [],
   );
 });
+
+// --- Nested block keys (Issue #2154) ---
+
+Deno.test("config_unknown_keys - codegraph_context is a known top-level key", () => {
+  assertEquals(KNOWN_CONFIG_KEYS.has("codegraph_context"), true);
+
+  const warnings = detectUnknownConfigKeys({
+    repos: ["owner/repo"],
+    codegraph_context: { enabled: true },
+  });
+  assertEquals(warnings, []);
+});
+
+Deno.test("config_unknown_keys - an unknown key inside codegraph_context is warned about with its block prefix", () => {
+  const warnings = detectUnknownConfigKeys({
+    repos: ["owner/repo"],
+    codegraph_context: { enabeld: true },
+  });
+
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]?.field, "codegraph_context.enabeld");
+  assertEquals(warnings[0]?.suggestion, "codegraph_context.enabled");
+});
+
+Deno.test("config_unknown_keys - a nested key with no close match warns without a suggestion", () => {
+  const warnings = detectUnknownConfigKeys({
+    codegraph_context: { zzzzzzzzzzzz: 1 },
+  });
+
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]?.field, "codegraph_context.zzzzzzzzzzzz");
+  assertEquals(warnings[0]?.suggestion, null);
+});
+
+Deno.test("config_unknown_keys - a non-object codegraph_context block yields no nested warnings", () => {
+  // A block that is not an object has no keys to check. It is refused by
+  // `parseCodegraphContext()` at config load — this module reports typos, not
+  // malformed blocks, so guessing at one here would only add noise.
+  assertEquals(detectUnknownConfigKeys({ codegraph_context: "on" }), []);
+  assertEquals(detectUnknownConfigKeys({ codegraph_context: null }), []);
+  assertEquals(detectUnknownConfigKeys({ codegraph_context: [1] }), []);
+});

@@ -41,6 +41,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | actionlint | toolchain | 1.7.12 | amd64: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8<br>arm64: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 | exact version + SHA-256 verified |
 | bats-core | toolchain | 1.14.0 | noarch: bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177 | exact version + SHA-256 verified |
 | cargo-deny | toolchain | 0.20.2 | amd64: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f<br>arm64: 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d | exact version + SHA-256 verified |
+| codegraph | toolchain | 1.6.0 | amd64: de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e80b879ba73ef216b0<br>arm64: 6dc935a7b8f1a61e688a578b98ea34680eb2e36d7b91db079d64f4011f1a668f | exact version + SHA-256 verified |
 | codespell | toolchain | 2.4.3 | noarch: af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a | exact version + SHA-256 verified |
 | gitleaks | toolchain | 8.30.1 | amd64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb<br>arm64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | exact version + SHA-256 verified |
 | graft | toolchain | 0.18.0 | noarch: 729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc | exact version + SHA-256 verified |

@@ -18,6 +18,7 @@ import type { FailedCheck, GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { GraftContextResult } from "./graft_context.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
@@ -247,6 +248,15 @@ export interface PhaseState {
    */
   graftContext?: GraftContextResult;
   /**
+   * What this run's CodeGraph step produced (Issue #2159, part of #2145).
+   *
+   * Set by the execute phase beside {@link claudeRunStats}, and for the same
+   * reason: the trial's figures — status, index seconds, node and
+   * relationship counts, and the `codegraph_explore` queries the agent made —
+   * are read after the run, by a reader with no handle on the phase body.
+   */
+  codegraphContext?: CodegraphContextResult;
+  /**
    * The PR this run raised or recovered (Issue #4325): set by the
    * completion phase so the run outcome can name it at claim release.
    */
@@ -418,6 +428,12 @@ export interface WorkOnIssueResult {
    * but leaves the labels alone.
    */
   ladderApplied?: boolean;
+  /**
+   * What this run's CodeGraph step produced (Issue #2162, part of #2145),
+   * read from {@link PhaseState.codegraphContext} once the run is over so
+   * the query tally is final. Carried to the post-run callback context.
+   */
+  codegraph?: CodegraphContextResult;
 }
 
 /**

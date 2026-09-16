@@ -32,6 +32,8 @@ import {
   withGraftContext,
 } from "./graft_context.ts";
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import { prepareCodegraphRun } from "./codegraph_run.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
@@ -108,6 +110,17 @@ export interface PrFeedbackResult {
    * return before a prompt is built. Never carries the bundle itself.
    */
   graftContext?: GraftContextResult;
+  /**
+   * What this run's CodeGraph step produced (Issue #2160, part of #2145).
+   *
+   * Present on every **successful** outcome reached after the index step —
+   * `off` on a host whose switch is down, `unsupported` on a Gemini-routed
+   * run, and `ok` or `failed` otherwise, carrying `queries` once the run's
+   * tool tally was read. A run that returns an error has no result object to
+   * carry it; the one status line is logged either way, which is where the
+   * trial reads a failed run's figure from.
+   */
+  codegraphContext?: CodegraphContextResult;
 }
 
 /** Dependencies specific to the feedback processor. */
@@ -148,6 +161,15 @@ export interface PrFeedbackProcessorDeps {
   qualityInstructions?: string;
   /** Custom repo-specific instructions. */
   customInstructions?: string;
+  /**
+   * Whether to index the checkout with CodeGraph and offer the agent that
+   * index (Issue #2160, part of #2145, default: false).
+   *
+   * Threaded from `config.codegraphContext.enabled` by the production wiring.
+   * Off, the run spawns nothing and its prompt and MCP configuration are
+   * byte-identical to a run from before the trial existed.
+   */
+  codegraphContextEnabled?: boolean;
   /** Maximum token count for comment bodies before summarisation. */
   maxCommentTokens?: number;
   /** Claude timeout in seconds. */
@@ -460,13 +482,26 @@ export async function processPrFeedback(
   // Filled once the run reaches the collection (Issue #2103); every exit
   // above returns before a prompt is built and leaves it unset.
   const graftSlot: GraftContextSlot = {};
+  // The body returns from a dozen places; the CodeGraph outcome is attached
+  // here instead, so every successful one carries it (Issue #2160).
+  const carrier: { codegraphContext?: CodegraphContextResult } = {};
   try {
     const result = await _processFeedbackWithHeartbeat(
       input,
       processorDeps,
       graftSlot,
+      carrier,
     );
-    return withGraftContext(result, graftSlot);
+    const withGraft = withGraftContext(result, graftSlot);
+    return withGraft.ok && carrier.codegraphContext
+      ? {
+        ok: true,
+        value: {
+          ...withGraft.value,
+          codegraphContext: carrier.codegraphContext,
+        },
+      }
+      : withGraft;
   } finally {
     await stopHeartbeat(heartbeatHandle);
   }
@@ -480,6 +515,7 @@ async function _processFeedbackWithHeartbeat(
   input: PrFeedbackInput,
   processorDeps: PrFeedbackProcessorDeps,
   graftSlot: GraftContextSlot,
+  carrier: { codegraphContext?: CodegraphContextResult },
 ): Promise<Result<PrFeedbackResult>> {
   const { repo, prNumber, commentType, commentId, commentBody } = input;
   const {
@@ -492,6 +528,7 @@ async function _processFeedbackWithHeartbeat(
     claudeNoOutputTimeout = DEFAULT_CLAUDE_NO_OUTPUT_TIMEOUT,
     maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES,
     trustedReviewBots,
+    codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
   } = processorDeps;
 
   // Summarise large comments
@@ -618,21 +655,41 @@ async function _processFeedbackWithHeartbeat(
   // Destructure PromptParts for prompt caching (Issue #1262)
   const { systemPrompt, prompt: userPrompt } = promptResult.value;
 
+  // --- CodeGraph repo-context index (Issue #2160, part of #2145) ---
+  // The checkout the agent runs in, which is also the `cwd` below — without
+  // one the runner writes no MCP configuration at all. Off, this spawns
+  // nothing and the invocation is byte-identical to the one this processor
+  // always made; on and indexed, it gains the `codegraph` MCP entry and the
+  // single prompt line together, never one alone.
+  const codegraph = await prepareCodegraphRun({
+    repoDir: processorDeps.workDir,
+    enabled: codegraphContextEnabled,
+    logger,
+    prepare: deps.claude.prepareCodegraphContext,
+  });
+  carrier.codegraphContext = codegraph.result;
+
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt: userPrompt,
+      // Appended in code, not in `prompts/pr_feedback/prompt.md`: the line is
+      // run-conditional, so the template stays the same on every host.
+      prompt: codegraph.applyPrompt(userPrompt),
       systemPrompt,
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "pr_feedback",
       cwd: processorDeps.workDir,
       logger,
+      // Absent unless the index built, so a switched-off run writes no MCP
+      // configuration at all — exactly as before.
+      ...codegraph.mcpConfigOption(),
     },
     {
       maxRetries: maxRateLimitRetries,
     },
   );
+  if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     // Handle failure — report via comment failure handler

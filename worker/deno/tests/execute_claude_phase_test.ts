@@ -24,6 +24,7 @@ import {
   type ExecuteClaudePhaseOptions,
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
+import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 
 // =============================================================================
 // Screenshot requirement detection
@@ -850,7 +851,7 @@ Deno.test("runExecuteClaudePhase - screenshot label triggers screenshot instruct
 });
 
 Deno.test("runExecuteClaudePhase - the browser MCP server is requested only when the issue needs a screenshot (Issue #192)", async () => {
-  const captured: Array<boolean | undefined> = [];
+  const captured: Array<RunClaudeOptions["mcpConfig"]> = [];
   const captureRun: Partial<ExecuteClaudePhaseDeps> = {
     runClaudeWithRetry: async (options) => {
       captured.push(options.mcpConfig);

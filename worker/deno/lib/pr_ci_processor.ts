@@ -16,6 +16,8 @@ import type { CiProviderConfig, Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
 import {
   collectGraftContext,
   describeGraftContext,
@@ -206,6 +208,17 @@ export interface CiFixResult {
    * head all return before a prompt is built. Never carries the bundle itself.
    */
   graftContext?: GraftContextResult;
+  /**
+   * What this run's CodeGraph step produced (Issue #2160, part of #2145).
+   *
+   * Present on every **successful** outcome reached after the index step —
+   * `off` on a host whose switch is down, `unsupported` on a Gemini-routed
+   * run, and `ok` or `failed` otherwise, carrying `queries` summed across the
+   * fix attempt and the post-quality retry. A run that returns an error has no
+   * result object to carry it; the one status line is logged either way, which
+   * is where the trial reads a failed run's figure from.
+   */
+  codegraphContext?: CodegraphContextResult;
 }
 
 /** Dependencies specific to the CI fix processor. */
@@ -230,6 +243,15 @@ export interface CiProcessorDeps {
   qualityInstructions?: string;
   /** Custom repo-specific instructions. */
   customInstructions?: string;
+  /**
+   * Whether to index the checkout with CodeGraph and offer the agent that
+   * index (Issue #2160, part of #2145, default: false).
+   *
+   * Threaded from `config.codegraphContext.enabled` by the production wiring.
+   * Off, the run spawns nothing and its prompt and MCP configuration are
+   * byte-identical to a run from before the trial existed.
+   */
+  codegraphContextEnabled?: boolean;
   /** Claude timeout in seconds. */
   claudeTimeout?: number;
   /**
@@ -784,12 +806,16 @@ async function _processCiFailureLocked(
     `Claimed PR #${prNumber} (CI check \`${checkName}\` failing)`,
   );
 
+  // The body returns from a dozen places; the CodeGraph outcome is attached
+  // here instead, so every successful one carries it (Issue #2160).
+  const carrier: { codegraphContext?: CodegraphContextResult } = {};
   try {
     const result = await _processCiWithHeartbeat(
       input,
       processorDeps,
       newRetryCount,
       graftSlot,
+      carrier,
     );
     await recordCiMilestone(
       processorDeps,
@@ -798,7 +824,12 @@ async function _processCiFailureLocked(
         ? `Released — ${result.value.summary}`
         : `Released — gave up: ${result.error.message}`,
     );
-    return result;
+    return result.ok && carrier.codegraphContext
+      ? {
+        ok: true,
+        value: { ...result.value, codegraphContext: carrier.codegraphContext },
+      }
+      : result;
   } finally {
     await stopHeartbeat(heartbeatHandle);
   }
@@ -878,6 +909,7 @@ async function _processCiWithHeartbeat(
   processorDeps: CiProcessorDeps,
   newRetryCount: number,
   graftSlot: GraftContextSlot,
+  carrier: { codegraphContext?: CodegraphContextResult },
 ): Promise<Result<CiFixResult>> {
   const { repo, prNumber, checkRunId, checkName, encodedAnnotations } = input;
   const {
@@ -891,6 +923,7 @@ async function _processCiWithHeartbeat(
     maxCiRetries = DEFAULT_MAX_CI_RETRIES,
     maxAutoFixAttempts = DEFAULT_MAX_AUTO_FIX_ATTEMPTS,
     stateDir = resolveCiCheckStateDir(),
+    codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
   } = processorDeps;
 
   // Decode and format annotations
@@ -1275,21 +1308,42 @@ async function _processCiWithHeartbeat(
   // Destructure PromptParts for prompt caching (Issue #1262)
   const { systemPrompt, prompt: userPrompt } = promptResult.value;
 
+  // --- CodeGraph repo-context index (Issue #2160, part of #2145) ---
+  // The checkout the agent runs in, which is also the `cwd` below — without
+  // one the runner writes no MCP configuration at all, so an unnamed clone is
+  // recorded as `failed` rather than handed half the pair. Off, this spawns
+  // nothing and the invocation is byte-identical to the one this processor
+  // always made. Prepared once: the post-quality retry below reuses this run
+  // rather than indexing the same checkout a second time.
+  const codegraph = await prepareCodegraphRun({
+    repoDir: processorDeps.workDir,
+    enabled: codegraphContextEnabled,
+    logger,
+    prepare: deps.claude.prepareCodegraphContext,
+  });
+  carrier.codegraphContext = codegraph.result;
+
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt: userPrompt,
+      // Appended in code, not in `prompts/ci_fix/prompt.md`: the line is
+      // run-conditional, so the template stays the same on every host.
+      prompt: codegraph.applyPrompt(userPrompt),
       systemPrompt,
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "ci_fix",
       cwd: processorDeps.workDir,
       logger,
+      // Absent unless the index built, so a switched-off run writes no MCP
+      // configuration at all — exactly as before.
+      ...codegraph.mcpConfigOption(),
     },
     {
       maxRetries: maxRateLimitRetries,
     },
   );
+  if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     const failureMessage =
@@ -1320,6 +1374,7 @@ async function _processCiWithHeartbeat(
   const postQualityResult = await _runPostClaudeQualityCheck(
     input,
     processorDeps,
+    codegraph,
   );
 
   // Always commit and push any pending work (Issue #1643).
@@ -2089,6 +2144,7 @@ interface PostClaudeQualityResult {
 async function _runPostClaudeQualityCheck(
   input: CiFixInput,
   processorDeps: CiProcessorDeps,
+  codegraph: CodegraphRun,
 ): Promise<PostClaudeQualityResult> {
   const {
     logger,
@@ -2161,15 +2217,19 @@ async function _runPostClaudeQualityCheck(
       buildRetryPrompt(qualityResult.qualityOutput);
     const retryResult = await deps.claude.runClaudeWithRetry(
       {
-        prompt: retryPrompt,
+        // The same index the first attempt was handed (Issue #2160) — it is
+        // the same checkout, and re-indexing it would spend the budget twice.
+        prompt: codegraph.applyPrompt(retryPrompt),
         timeoutSeconds: claudeTimeout,
         noOutputTimeout: claudeNoOutputTimeout,
         phase: "ci_fix",
         cwd,
         logger,
+        ...codegraph.mcpConfigOption(),
       },
       { maxRetries: maxRateLimitRetries },
     );
+    if (retryResult.ok) codegraph.record(retryResult.value.runStats);
     if (!retryResult.ok) {
       logger.warn(
         "Claude quality retry failed — committing any remaining changes anyway",

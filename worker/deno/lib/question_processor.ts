@@ -36,6 +36,8 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { buildQuestionPrompt } from "./prompt_builder.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import { prepareCodegraphRun } from "./codegraph_run.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
 import {
   collectGraftContext,
@@ -84,6 +86,13 @@ export interface QuestionResult {
    * #2060) — `off` on a host that has not opted in.
    */
   graftContext?: GraftContextResult;
+  /**
+   * What this run's CodeGraph step produced (Issue #2159, part of #2145).
+   *
+   * Present on every outcome reached after the index step, carrying
+   * `queries` once the run's tool tally was read.
+   */
+  codegraphContext?: CodegraphContextResult;
 }
 
 /** Options for the question processor. */
@@ -290,11 +299,15 @@ export async function processIssueQuestion(
   let runOutcome: RunOutcome | undefined;
   // Filled once the run reaches the collection (Issue #2102).
   const graftSlot: GraftContextSlot = {};
+  // The body returns from a dozen places; the CodeGraph outcome is attached
+  // here instead, so every one of them carries it (Issue #2159).
+  const carrier: { codegraphContext?: CodegraphContextResult } = {};
   try {
     const result = await _processQuestionWithHeartbeat(
       ctx,
       processorDeps,
       graftSlot,
+      carrier,
     );
     runOutcome = outcomeForNonCodingResult(
       "question",
@@ -302,8 +315,18 @@ export async function processIssueQuestion(
       (Date.now() - runStartedAtMs) / 1000,
       "question answered",
     );
-    // Issue #2103: the shared carrier — one shape for all four processors.
-    return withGraftContext(result, graftSlot);
+    // Issue #2103: the shared carrier — one shape for all four processors;
+    // the CodeGraph facts ride the same result (Issue #2159).
+    const withGraft = withGraftContext(result, graftSlot);
+    return withGraft.ok && carrier.codegraphContext
+      ? {
+        ok: true,
+        value: {
+          ...withGraft.value,
+          codegraphContext: carrier.codegraphContext,
+        },
+      }
+      : withGraft;
   } catch (err) {
     runOutcome = outcomeForThrown(
       "question",
@@ -324,6 +347,7 @@ async function _processQuestionWithHeartbeat(
   ctx: IssueContext,
   processorDeps: QuestionProcessorDeps,
   graftSlot: GraftContextSlot,
+  carrier: { codegraphContext?: CodegraphContextResult },
 ): Promise<Result<QuestionResult>> {
   const {
     repo,
@@ -412,21 +436,39 @@ async function _processQuestionWithHeartbeat(
     prompt = promptResult.value.prompt;
   }
 
+  // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
+  // Off, nothing is spawned and the invocation below is byte-identical to the
+  // one this processor always made. On and indexed, the run gains the
+  // `codegraph` MCP entry and the one prompt line together — never one alone.
+  const codegraph = await prepareCodegraphRun({
+    repoDir,
+    enabled: config.codegraphContext.enabled,
+    logger,
+    prepare: deps.claude.prepareCodegraphContext,
+  });
+  carrier.codegraphContext = codegraph.result;
+
   // Execute Claude with question timeout
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt,
+      // Appended in code, not in `prompts/question/prompt.md`: the line is
+      // run-conditional, so the template stays the same on every host.
+      prompt: codegraph.applyPrompt(prompt),
       systemPrompt,
       timeoutSeconds: config.questionTimeout,
       killAfterSeconds: config.questionKillAfter,
       phase: "question",
       cwd: config.workDir,
       logger,
+      // Absent unless the index built, so a switched-off run writes no MCP
+      // configuration at all — exactly as before.
+      ...codegraph.mcpConfigOption(),
     },
     {
       maxRetries: config.maxRateLimitRetries,
     },
   );
+  if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     // Check for timeout with partial output
@@ -511,6 +553,10 @@ async function _processQuestionWithHeartbeat(
       // or that untrusted goes near a comment body.
       ...(graftSlot.result
         ? { graft: graftContextFacts(graftSlot.result) }
+        : {}),
+      // This run's CodeGraph figures ride the same comment (Issue #2161).
+      ...(carrier.codegraphContext
+        ? { codegraph: carrier.codegraphContext }
         : {}),
     });
   } catch (err) {

@@ -46,6 +46,8 @@ import {
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 import { buildDegradationReport, formatCount } from "./planning_run_stats.ts";
+import { GEMINI_PROVIDER_ID } from "./agent_provider.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
 import {
   buildPhaseInvocations,
   type PhaseClaudeResult,
@@ -102,6 +104,65 @@ export const ISSUE_RUN_STATS_DISCLAIMER =
   "_Estimate only — this block covers the run that posted it. The issue total " +
   "sums the run-stats comments visible on this issue; runs that reported no " +
   "figures are not included._";
+
+/**
+ * The CodeGraph line's fixed prefix — one line per run, whatever the status.
+ *
+ * Deliberately outside the cost lines' shape ({@link ESTIMATED_COST_PATTERN}),
+ * so the figures the CodeGraph trial reads can never be mistaken for spend by
+ * {@link tallyIssueCost}.
+ */
+const CODEGRAPH_STATS_PREFIX = "- **CodeGraph:**";
+
+/**
+ * Format the index duration the way the trial reads it — `1.8`, `300` — with
+ * no trailing `.0` on a whole number of seconds.
+ */
+function formatIndexSeconds(seconds: number): string {
+  const rounded = Math.round(seconds * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+/**
+ * Render the single CodeGraph line for a run's stats comment (Issue #2161).
+ *
+ * One line on **every** run, so the trial can tell an index that never ran
+ * from one that failed: the status always appears, and whichever figures the
+ * step actually gathered follow it. A `failed` run that timed out during the
+ * index still reports the seconds it spent; a status with no figures at all
+ * (`off`, `unsupported`) reports the status alone rather than an empty tail.
+ *
+ * `unsupported` names the provider that causes it — a Gemini-routed run has no
+ * MCP transport to reach the index through, which is the only way this status
+ * arises ({@link prepareCodegraphContext}).
+ *
+ * @param codegraph - What this run's CodeGraph step produced
+ * @returns The markdown line, ready to append to the stats section
+ */
+function buildCodegraphStatsLine(
+  codegraph: CodegraphContextResult,
+): string {
+  const status = codegraph.status === "unsupported"
+    ? `unsupported (${GEMINI_PROVIDER_ID})`
+    : codegraph.status;
+  const figures = [
+    codegraph.indexSeconds === undefined
+      ? undefined
+      : `index ${formatIndexSeconds(codegraph.indexSeconds)} s`,
+    codegraph.nodeCount === undefined
+      ? undefined
+      : `${formatCount(codegraph.nodeCount)} nodes`,
+    codegraph.relationshipCount === undefined
+      ? undefined
+      : `${formatCount(codegraph.relationshipCount)} relationships`,
+    codegraph.queries === undefined
+      ? undefined
+      : `${formatCount(codegraph.queries)} queries`,
+  ].filter((part): part is string => part !== undefined);
+  return figures.length > 0
+    ? `${CODEGRAPH_STATS_PREFIX} ${status} — ${figures.join(", ")}`
+    : `${CODEGRAPH_STATS_PREFIX} ${status}`;
+}
 
 /**
  * The top-level cost line the shared render emits, e.g.
@@ -256,6 +317,9 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
  * @param args.graft - What the run's Graft collection did (Issue #2105);
  *   omitted renders exactly the comment this function rendered before it
  *   existed
+ * @param args.codegraph - What this run's CodeGraph step produced (Issue
+ *   #2161); omitted renders exactly the comment this function rendered before
+ *   the trial existed
  * @returns The comment body, or `""` when no invocation produced stats (so
  *   callers post nothing rather than an empty comment)
  */
@@ -266,6 +330,7 @@ export function buildIssueRunStatsComment(args: {
   runId?: string;
   priorComments?: readonly string[];
   graft?: GraftContextResult;
+  codegraph?: CodegraphContextResult;
 }): string {
   const invocations = args.claudeResults.flatMap((result) =>
     buildPhaseInvocations(args.phase, result)
@@ -280,10 +345,16 @@ export function buildIssueRunStatsComment(args: {
   if (!section) return "";
 
   const marker = buildIssueRunStatsMarker(args.runId ?? getRunId());
-  // Appended to the stats bullets, so the Graft figures sit with the run they
-  // describe and ahead of the cumulative issue total.
+  // Appended to the stats bullets, so the Graft and CodeGraph figures sit
+  // with the run they describe and ahead of the cumulative issue total
+  // (Issues #2105, #2161).
   const graftLine = buildGraftStatsLine(args.graft);
-  const body = `${marker}\n${section}${graftLine ? `\n${graftLine}` : ""}`;
+  const codegraphLine = args.codegraph
+    ? `\n${buildCodegraphStatsLine(args.codegraph)}`
+    : "";
+  const body = `${marker}\n${section}${
+    graftLine ? `\n${graftLine}` : ""
+  }${codegraphLine}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
   );
@@ -419,6 +490,8 @@ export async function postIssueRunStatsComment(args: {
   runId?: string;
   /** What the run's Graft collection did (Issue #2105); omitted renders no line. */
   graft?: GraftContextResult;
+  /** What this run's CodeGraph step produced (Issue #2161). */
+  codegraph?: CodegraphContextResult;
   getIssueComments: (
     repo: string,
     issueNumber: number,
@@ -441,9 +514,12 @@ export async function postIssueRunStatsComment(args: {
     ? { configuredBestModel: args.configuredBestModel }
     : {};
   const graft = args.graft ? { graft: args.graft } : {};
+  const codegraph = args.codegraph ? { codegraph: args.codegraph } : {};
 
   // Built without the issue's comments first, purely to answer "is there
-  // anything to report?" — so a stats-free wrap-up costs no GitHub call.
+  // anything to report?" — so a stats-free wrap-up costs no GitHub call. The
+  // CodeGraph figures are left out of this probe deliberately: they never make
+  // a stats-free run worth a comment, so they cannot change the answer.
   if (
     !buildIssueRunStatsComment({
       phase,
@@ -498,6 +574,7 @@ export async function postIssueRunStatsComment(args: {
         priorComments,
         ...bestModel,
         ...graft,
+        ...codegraph,
       }),
     );
     return { posted: true };

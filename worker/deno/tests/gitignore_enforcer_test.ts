@@ -94,6 +94,7 @@ Deno.test("REQUIRED_GITIGNORE_PATTERNS - contains hidden-files defence in depth 
     "credentials.json",
     "service-account*.json",
     "/graft/",
+    "/.codegraph/",
   ];
   assertEquals([...REQUIRED_GITIGNORE_PATTERNS], expected);
 });
@@ -185,6 +186,39 @@ Deno.test("ensureGitignorePatterns - key patterns do not over-match ordinary fil
         `expected '${path}' not to be ignored`,
       );
     }
+  });
+});
+
+Deno.test("ensureGitignorePatterns - ignores the CodeGraph index (Issue #2155)", async () => {
+  await withTempDir(async (dir) => {
+    await initGitRepo(dir);
+    const result = await ensureGitignorePatterns(dir);
+    assert(result.ok);
+
+    for (const path of [".codegraph/codegraph.db", ".codegraph/writer.pid"]) {
+      assert(
+        await gitCheckIgnore(dir, path),
+        `expected '${path}' to be ignored`,
+      );
+    }
+    // The index pattern is anchored at the repo root, so an ordinary source
+    // file whose name merely starts the same way is untouched.
+    assertEquals(
+      await gitCheckIgnore(dir, "worker/deno/lib/codegraph_context.ts"),
+      false,
+    );
+  });
+});
+
+Deno.test("ensureGitignorePatterns - the CodeGraph pattern is written once across runs (Issue #2155)", async () => {
+  await withTempDir(async (dir) => {
+    await ensureGitignorePatterns(dir);
+    await ensureGitignorePatterns(dir);
+
+    const occurrences = (await readGitignore(dir))
+      .split("\n")
+      .filter((line) => line.trim() === "/.codegraph/");
+    assertEquals(occurrences.length, 1);
   });
 });
 

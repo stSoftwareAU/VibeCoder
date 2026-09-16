@@ -12,7 +12,10 @@ import {
   resolveSessionLogPath,
 } from "../lib/run_callback_context.ts";
 import { IssueCallbackGuard } from "../lib/issue_callback_guard.ts";
-import type { TerminalIssueRun } from "../lib/run_callbacks.ts";
+import {
+  codegraphNotRun,
+  type TerminalIssueRun,
+} from "../lib/run_callbacks.ts";
 
 function run(overrides: Partial<TerminalIssueRun> = {}): TerminalIssueRun {
   return {
@@ -331,4 +334,63 @@ Deno.test("issue_callback_guard - different claims are independent", () => {
 Deno.test("issue_callback_guard - a fresh guard starts empty", () => {
   assertEquals(new IssueCallbackGuard().size, 0);
   assertEquals(new IssueCallbackGuard().tryClaim("o/a", 1), true);
+});
+
+// ---------------------------------------------------------------------------
+// The additive `codegraph` block (Issue #2162, part of #2145)
+// ---------------------------------------------------------------------------
+
+Deno.test("run_callback_context - the CodeGraph figures the run reported travel into the context", () => {
+  const context = buildIssueRunCallbackContext(
+    run({
+      codegraph: {
+        enabled: true,
+        status: "ok",
+        indexSeconds: 31.5,
+        nodeCount: 900,
+        relationshipCount: 2_400,
+        queries: 4,
+      },
+    }),
+    IDENTITY,
+  );
+  assertEquals(context.codegraph, {
+    enabled: true,
+    status: "ok",
+    indexSeconds: 31.5,
+    nodeCount: 900,
+    relationshipCount: 2_400,
+    queries: 4,
+  });
+});
+
+Deno.test("run_callback_context - a host without the switch is explicitly off, so it stays comparable", () => {
+  const context = buildIssueRunCallbackContext(run(), IDENTITY);
+  assertEquals(context.codegraph, { enabled: false, status: "off" });
+});
+
+Deno.test("run_callback_context - a failed CodeGraph step keeps the partial figures it gathered", () => {
+  const context = buildIssueRunCallbackContext(
+    run({ codegraph: { enabled: true, status: "failed", indexSeconds: 12 } }),
+    IDENTITY,
+  );
+  assertEquals(context.codegraph, {
+    enabled: true,
+    status: "failed",
+    indexSeconds: 12,
+  });
+});
+
+Deno.test("run_callback_context - a switched-on host whose run never indexed reports failed, not off", () => {
+  const notRun = codegraphNotRun(true);
+  assertEquals(notRun, { enabled: true, status: "failed" });
+  const context = buildIssueRunCallbackContext(
+    run({ codegraph: notRun }),
+    IDENTITY,
+  );
+  assertEquals(context.codegraph, { enabled: true, status: "failed" });
+});
+
+Deno.test("run_callback_context - a switched-off host whose run never indexed reports off", () => {
+  assertEquals(codegraphNotRun(false), { enabled: false, status: "off" });
 });

@@ -23,6 +23,8 @@ import {
   resolveAgentProvider,
   resolveAgentProviderId,
 } from "../lib/agent_provider.ts";
+import { buildCodexMcpConfigArgs } from "../lib/codex_executor.ts";
+import { codegraphMcpServer } from "../lib/codegraph_context.ts";
 import {
   classifyCredentialFailure,
   type CredentialFailure,
@@ -465,4 +467,23 @@ Deno.test("codex provider - the fragment aborts when the provider is not pinned"
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("buildCodexMcpConfigArgs - a non-Playwright server yields command, args and env overrides (Issue #2156)", () => {
+  const args = buildCodexMcpConfigArgs(
+    JSON.stringify({
+      mcpServers: { codegraph: codegraphMcpServer() },
+    }),
+  );
+  const server = codegraphMcpServer();
+  const joined = args.join(" ");
+  assertStringIncludes(joined, `mcp_servers.codegraph.command="codegraph"`);
+  assertStringIncludes(joined, `mcp_servers.codegraph.args=["serve", "--mcp"]`);
+  // The env table carries every variable the entry names, so the server the
+  // agent talks to is configured the same way under both providers.
+  for (const [key, value] of Object.entries(server.env)) {
+    assertStringIncludes(joined, `${key} = "${value}"`);
+  }
+  // Three overrides, each introduced by its own -c.
+  assertEquals(args.filter((a) => a === "-c").length, 3);
 });

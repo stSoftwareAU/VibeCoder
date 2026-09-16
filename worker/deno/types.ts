@@ -268,6 +268,18 @@ export interface WorkerConfig {
    */
   progressExtensionCheckSeconds?: number;
   /**
+   * Stop a run making dozens of tool calls a minute with no working-tree
+   * change (`.config.json` `call_storm_enabled`, Issue #2230; default: true).
+   *
+   * `false` restores the pre-#2230 behaviour: a polling loop keeps its whole
+   * budget and is only noticed when the deadline arrives.
+   */
+  callStormEnabled?: boolean;
+  /** Tool calls in the window at which a run is a call storm (Issue #2230). */
+  callStormCalls?: number;
+  /** Sliding window the call-storm guard counts over (Issue #2230). */
+  callStormWindowSeconds?: number;
+  /**
    * Tee every agent invocation's raw stream-json to a redacted transcript
    * under the worker log directory (`.config.json` `agent_transcript_enabled`,
    * Issue #1141; default: false).
@@ -450,6 +462,13 @@ export interface WorkerConfig {
    */
   includeCodebaseMap: boolean;
   /**
+   * The CodeGraph repo-context switch, read from the `.config.json`
+   * `codegraph_context` block (Issue #2154, part of #2145) and validated by
+   * `parseCodegraphContext()` in `lib/codegraph_context_config.ts`. Off unless
+   * the host asks for it, so an unconfigured host is unchanged.
+   */
+  codegraphContext: CodegraphContextConfig;
+  /**
    * Cache TTL in seconds for the issue-timeline cache (Issue #1673).
    * Used by label-authorship checks (`wasLabelAddedByAllowedAuthor`,
    * `getLabelLastAddInfo`). Defaults to 300 seconds (5 minutes).
@@ -606,6 +625,17 @@ export interface GitHubComment {
     eyes: number;
     confused: number;
   };
+}
+
+/**
+ * The CodeGraph repo-context switch as the worker reads it (Issue #2154).
+ *
+ * Parsed from the `.config.json` `codegraph_context` block by
+ * `parseCodegraphContext()` in `lib/codegraph_context_config.ts`.
+ */
+export interface CodegraphContextConfig {
+  /** Whether a run indexes the repository with CodeGraph (default: false). */
+  enabled: boolean;
 }
 
 /**
@@ -1165,6 +1195,12 @@ export interface ConfigFile {
   progress_extension_stall_seconds?: number;
   /** Seconds between working-tree progress checks (Issue #4295) */
   progress_extension_check_seconds?: number;
+  /** Stop a run that polls instead of working (Issue #2230) */
+  call_storm_enabled?: boolean;
+  /** Tool calls in the window at which a run is a call storm (Issue #2230) */
+  call_storm_calls?: number;
+  /** Sliding window the call-storm guard counts over (Issue #2230) */
+  call_storm_window_seconds?: number;
   /**
    * Tee the raw agent stream to a redacted transcript (Issue #1141; default
    * false). Off unless asked for — the transcript carries repository content.
@@ -1301,6 +1337,13 @@ export interface ConfigFile {
   recent_activity_cache_ttl_seconds?: number;
   /** Whether to inject the generated codebase map into prompts (Issue #4281) */
   include_codebase_map?: boolean;
+  /**
+   * Raw `codegraph_context` block (Issue #2154). Typed `unknown` because it is
+   * operator-written JSON: `parseCodegraphContext()` in
+   * `lib/codegraph_context_config.ts` is the trust boundary that turns it into
+   * a {@link CodegraphContextConfig} or fails the config load.
+   */
+  codegraph_context?: unknown;
   /** Cache TTL in seconds for the issue-timeline cache (Issue #1673) */
   timeline_cache_ttl_seconds?: number;
   /** Whether to enable CLI session resume across phases (Issue #1324) */

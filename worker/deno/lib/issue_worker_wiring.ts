@@ -109,6 +109,7 @@ import { checkCiStatus, directMergePr } from "./direct_merge.ts";
 
 // Claude operations
 import { checkClaudeHealth, runClaudeWithRetry } from "./claude_runner.ts";
+import { prepareCodegraphContext } from "./codegraph_context.ts";
 import { buildClaudeModelArgs } from "./claude_executor.ts";
 import { isClaudeAuthError } from "./claude_auth.ts";
 import { activeAgentProvider } from "./agent_provider.ts";
@@ -298,6 +299,15 @@ export interface PrDeps {
 /** Claude operations — runner, executor, auth, health. */
 export interface ClaudeDeps {
   runClaudeWithRetry: typeof runClaudeWithRetry;
+  /**
+   * Build or refresh the run's CodeGraph index (Issue #2159, part of #2145).
+   *
+   * Sits beside the agent invocation because that is what it serves: the
+   * index is prepared, the `codegraph` MCP entry and the one prompt line are
+   * handed over together, and the run's `codegraph_explore` tally is read
+   * back. A test injects a fake preparer so no suite spawns `codegraph`.
+   */
+  prepareCodegraphContext: typeof prepareCodegraphContext;
   runHealthCheck: typeof checkClaudeHealth;
   isClaudeAuthError: typeof isClaudeAuthError;
   buildClaudeModelArgs: typeof buildClaudeModelArgs;
@@ -602,6 +612,7 @@ export function createDefaultDeps(
 
     claude: {
       runClaudeWithRetry,
+      prepareCodegraphContext,
       runHealthCheck: checkClaudeHealth,
       // Provider-auth classification goes through the seam (Issue #4067),
       // so a different provider classifies its own auth failures.
@@ -1062,6 +1073,11 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         ok: true,
         value: { exitCode: 0, output: "mock", timedOut: false },
       })
+    ),
+    // Off by default (Issue #2159): a test that says nothing about CodeGraph
+    // gets the switched-off behaviour and spawns nothing.
+    prepareCodegraphContext: mockFn<ClaudeDeps["prepareCodegraphContext"]>(() =>
+      Promise.resolve({ status: "off", enabled: false })
     ),
     runHealthCheck: mockFn<ClaudeDeps["runHealthCheck"]>(() =>
       Promise.resolve({ healthy: true, exitCode: 0, message: "OK" })
