@@ -99,6 +99,17 @@ flowchart TD
 - **violation** — `fileOrCommentIssue` / `resolveOriginRepo` in `worker/deno/lib/host_escalation.ts` have no production caller left after this change — evidence: `worker/deno/lib/host_escalation.ts:117,187` — reason: stands, and is already tracked: issue #2112 "Retire the GitHub issue channel from host_escalation.ts" is the sibling in this milestone that owns the removal. Deleting it here would be out of scope
 - **clean** — Australian English throughout the added lines; fail-loud handling (a non-`ok` hook is logged with its status and spooled, a seam that throws is a distinct `threw` status, `no_hook_configured` / `config_invalid` / `escalation_lost` are all said out loud, and no escalation problem masks the update failure); tests call real functions (`updateCheckout`, `updateWorkerCheckout`, `workerCheckoutUpdateCommand.execute`, `buildCheckoutHostFailurePayload`, `gitStepExitStatus`, `invokeCheckoutUpdateFailureHook`) with no source-grepping, sleeps or wall-clock budgets; `detail` is routed through `redactSecrets` before the operator's hook sees it, with its own test; no hidden paths staged; the new logic is factored into small named units and the shared fixtures live in `tests/support/checkout_escalation_hook.ts`
 
+## Branch history
+
+The interrupted attempt's branch carried seven upstream commits cherry-picked
+from the milestone branch, so a PR from it would have shown the whole milestone
+as its diff. The branch was rebased onto
+`origin/milestone/2088-host-escalations-must-not-file-public-github` (git
+dropped all seven as patch-identical) and force-pushed with
+`--force-with-lease`, after tagging the pre-rebase head locally. No issue-2110
+commit was dropped or rewritten in content — `git log` still shows all four,
+plus the two added this run.
+
 ## Test Plan
 
 Added or rewritten:
