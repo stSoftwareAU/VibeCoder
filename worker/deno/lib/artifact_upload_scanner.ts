@@ -33,10 +33,23 @@
  * the job, or a step) **or** the workflow uses a trigger from the
  * privileged-trigger set — both statically decidable.
  *
- * Stable id is `BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>`.
+ * Stable id is `BP-ARTIFACT-UPLOAD-<workflow-basename>` — **one finding
+ * per workflow file**, not per upload step (Issue #2221). Every offending
+ * step in the file is listed in the one finding's body, because the fix
+ * for all of them is the same edit to the same file. The per-step shape
+ * filed one issue per step, so a file with three broad uploads became
+ * three claims, three Claude invocations and three PRs into the same
+ * branch, of which only the first had anything to change.
+ *
  * The `BP-` prefix is required: `idle_task_snapshot.listKnownOpenFindingIds`
  * defaults `idPrefix` to `BP-`, so a non-`BP-` id silently breaks dedup and
  * the LLM re-files.
+ *
+ * Migration (Issue #2221): a repository that already carries an open
+ * per-step `BP-ARTIFACT-UPLOAD-<workflow>-<job>-<step-index>` issue for a
+ * file is left alone — the legacy id counts as covering the new per-file
+ * id. In-source `best-practice-ignore` markers written against a legacy
+ * per-step id keep suppressing that step for the same reason.
  *
  * Pure aside from reading the already-parsed/raw `WorkflowFile` — callers
  * read the files via `readWorkflowFiles`. Never throws on malformed input.
@@ -45,7 +58,7 @@
  */
 
 import {
-  isFindingSuppressed,
+  selectLiveSteps,
   type WorkflowFile,
   type WorkflowFindingSeverity,
 } from "./workflow_scan_common.ts";
@@ -82,23 +95,36 @@ const SECRETS_REFERENCE = /\$\{\{\s*secrets\./;
 /** Matches the `${{ github.workspace }}` token, optional trailing slash. */
 const GITHUB_WORKSPACE = /^\$\{\{\s*github\.workspace\s*\}\}\/?$/;
 
-/** A single broad-artefact-upload finding for one upload step. */
-export interface ArtifactUploadFinding {
-  /** Stable id `BP-ARTIFACT-UPLOAD-<basename>-<job>-<step-index>`. */
-  findingId: string;
-  /** Repo-relative workflow path, e.g. `.github/workflows/ci.yml`. */
-  workflowPath: string;
+/** One offending `actions/upload-artifact` step inside a workflow file. */
+export interface ArtifactUploadStep {
   /** Job name the step belongs to. */
   job: string;
   /** 0-based index of the step within the job's `steps` array. */
   stepIndex: number;
+  /** Best-effort 1-based line of the step's `uses:` declaration. */
+  line: number;
+  /** Does this step's job have `${{ secrets.* }}` in scope? */
+  hasSecrets: boolean;
+}
+
+/**
+ * A broad-artefact-upload finding for one workflow **file** — every
+ * offending upload step in that file is listed in {@link steps}.
+ */
+export interface ArtifactUploadFinding {
+  /** Stable id `BP-ARTIFACT-UPLOAD-<basename>` (one per workflow file). */
+  findingId: string;
+  /** Repo-relative workflow path, e.g. `.github/workflows/ci.yml`. */
+  workflowPath: string;
+  /** Every offending upload step in this file, in file order. */
+  steps: readonly ArtifactUploadStep[];
   /** `low` baseline; `medium` with secrets in scope or a privileged trigger. */
   severity: WorkflowFindingSeverity;
   /** Issue title (carries the severity emoji prefix). */
   title: string;
   /** File the finding is raised against (the workflow path). */
   file: string;
-  /** Best-effort 1-based line number for the cited `uses:` location. */
+  /** Best-effort 1-based line of the **first** offending `uses:`. */
   lines: number;
   /** `## Why this matters` rationale. */
   whyItMatters: string;
@@ -269,9 +295,37 @@ function uploadUsesLines(lines: readonly string[]): number[] {
 }
 
 /**
+ * The per-step id `BP-ARTIFACT-UPLOAD-<basename>-<job>-<step-index>` — the
+ * id this family **filed** before Issue #2221 reshaped it to one finding
+ * per workflow file.
+ *
+ * It is never filed as an issue again, but it stays the unit of the
+ * smaller decisions: an open per-step issue covers its file (the #2221
+ * migration), an in-source marker written against one still suppresses
+ * its step, and the pre-PR changed-workflow gate reports per step so a
+ * newly added offender is never masked by a pre-existing one
+ * (`workflow_file_checks.ts`).
+ */
+export function artifactUploadStepId(
+  workflowPath: string,
+  job: string,
+  stepIndex: number,
+): string {
+  return `BP-ARTIFACT-UPLOAD-${slugify(workflowBasename(workflowPath))}-${
+    slugify(job)
+  }-${stepIndex}`;
+}
+
+/** The per-file stable id for a workflow path. */
+function artifactUploadId(workflowPath: string): string {
+  return `BP-ARTIFACT-UPLOAD-${slugify(workflowBasename(workflowPath))}`;
+}
+
+/**
  * Scan every workflow file for `actions/upload-artifact` steps that upload
  * a whole-workspace path and return one {@link ArtifactUploadFinding} per
- * affected step.
+ * affected **file**, listing every offending step in that file (Issue
+ * #2221 — the fix is one edit per file, so it is one issue per file).
  *
  * Behaviour:
  *   - Only `kind === "workflow"` files are scanned — `jobs.*.steps[]` is a
@@ -281,12 +335,16 @@ function uploadUsesLines(lines: readonly string[]): number[] {
  *   - Only broad `with.path` values (`.`, `./`, `*`, `**`,
  *     `${{ github.workspace }}`) are flagged; a scoped path
  *     (`dist/`, `target/release/bin`) is never flagged.
- *   - Severity is `low` baseline, `medium` when the job has secrets in
- *     scope or the workflow uses a privileged trigger.
- *   - A finding suppressed by an in-source `best-practice-ignore:
- *     BP-ARTIFACT-UPLOAD-…` marker near its cited line is dropped.
- *   - Findings whose stable id appears in `suppressedIds` or
- *     `knownOpenFindingIds` are dropped (the LLM / a prior run owns them).
+ *   - Severity is `low` baseline, `medium` when **any** listed step's job
+ *     has secrets in scope or the workflow uses a privileged trigger.
+ *   - A step suppressed by an in-source `best-practice-ignore:
+ *     BP-ARTIFACT-UPLOAD-…` marker near its cited line — the per-file id
+ *     or its legacy per-step id — is dropped from the listing; the file
+ *     yields no finding once every offending step is suppressed.
+ *   - A file whose per-file id appears in `suppressedIds` or
+ *     `knownOpenFindingIds` yields no finding (the LLM / a prior run owns
+ *     it), and so does a file that still carries an **open legacy
+ *     per-step** id — the migration clause of Issue #2221.
  *
  * Findings are returned sorted by stable id for deterministic output.
  *
@@ -307,12 +365,12 @@ export function scanArtifactUploads(
     const jobs = file.parsed.jobs;
     if (!isRecord(jobs)) continue;
 
-    const basename = slugify(workflowBasename(file.path));
     const rawLines = file.rawText.split("\n");
     const uploadLines = uploadUsesLines(rawLines);
     let uploadSeen = 0;
 
     const privileged = workflowHasPrivilegedTrigger(file.parsed);
+    const offending: ArtifactUploadStep[] = [];
 
     for (const [jobName, jobValue] of Object.entries(jobs)) {
       if (!isRecord(jobValue)) continue;
@@ -332,26 +390,33 @@ export function scanArtifactUploads(
 
         if (!isBroadArtifactPath(uploadPathValue(step))) continue;
 
-        const findingId = `BP-ARTIFACT-UPLOAD-${basename}-${
-          slugify(jobName)
-        }-${stepIndex}`;
-        if (suppressed.has(findingId)) continue;
-        if (knownOpen.has(findingId)) continue;
-        if (isFindingSuppressed(file.rawText, line, findingId, file.path)) {
-          continue;
-        }
-
-        const severity: WorkflowFindingSeverity = privileged || hasSecrets
-          ? "medium"
-          : "low";
-        findings.push(
-          buildFinding(file, findingId, jobName, stepIndex, line, severity, {
-            privileged,
-            hasSecrets,
-          }),
-        );
+        offending.push({ job: jobName, stepIndex, line, hasSecrets });
       }
     }
+
+    if (offending.length === 0) continue;
+    offending.sort((a, b) => a.line - b.line);
+
+    const findingId = artifactUploadId(file.path);
+    const live = selectLiveSteps(offending, {
+      file,
+      findingId,
+      stepId: (s) => artifactUploadStepId(file.path, s.job, s.stepIndex),
+      suppressedIds: suppressed,
+      knownOpenIds: knownOpen,
+    });
+    if (live.length === 0) continue;
+
+    const hasSecrets = live.some((s) => s.hasSecrets);
+    const severity: WorkflowFindingSeverity = privileged || hasSecrets
+      ? "medium"
+      : "low";
+    findings.push(
+      buildFinding(file, findingId, live, severity, {
+        privileged,
+        hasSecrets,
+      }),
+    );
   }
 
   findings.sort((a, b) => a.findingId.localeCompare(b.findingId));
@@ -361,52 +426,69 @@ export function scanArtifactUploads(
 function buildFinding(
   file: WorkflowFile,
   id: string,
-  job: string,
-  stepIndex: number,
-  line: number,
+  steps: readonly ArtifactUploadStep[],
   severity: WorkflowFindingSeverity,
   reason: { privileged: boolean; hasSecrets: boolean },
 ): ArtifactUploadFinding {
   const emoji = severity === "medium" ? MEDIUM_EMOJI : LOW_EMOJI;
   const escalation = severity === "medium"
-    ? " The severity is raised to medium because this job " +
+    ? " The severity is raised to medium because " +
       (reason.hasSecrets && reason.privileged
-        ? "has secrets in scope and the workflow runs under a privileged trigger"
+        ? "a listed job has secrets in scope and the workflow runs under a " +
+          "privileged trigger"
         : reason.hasSecrets
-        ? "has secrets in scope"
-        : "runs under a privileged trigger") +
+        ? "a listed job has secrets in scope"
+        : "the workflow runs under a privileged trigger") +
       ", widening the blast radius of the exposed artefact."
     : "";
+  const count = steps.length;
+  const one = count === 1;
+  const plural = one ? "step" : "steps";
+  const stepList = steps
+    .map((s) => `job \`${s.job}\` step ${s.stepIndex} (line ${s.line})`)
+    .join(", ");
 
   return {
     findingId: id,
     workflowPath: file.path,
-    job,
-    stepIndex,
+    steps,
     severity,
-    title: `${emoji} Job \`${job}\` uploads the whole workspace as an ` +
-      `artefact (\`${file.path}\`)`,
+    title: `${emoji} ` +
+      (one
+        ? "An artefact upload ships the whole workspace"
+        : `${count} artefact uploads ship the whole workspace`) +
+      ` (\`${file.path}\`)`,
     file: file.path,
-    lines: line,
+    lines: steps[0]?.line ?? 1,
     whyItMatters:
-      `Job \`${job}\` step ${stepIndex} runs \`actions/upload-artifact\` ` +
+      `\`${file.path}\` has ${count} \`actions/upload-artifact\` ${plural} ` +
       "with a whole-workspace `path` (`.`, `./`, `${{ github.workspace }}`, " +
-      "`*`, or `**`). This ships the **entire** checkout to a build " +
+      `\`*\`, or \`**\`): ${stepList}. This ships the **entire** checkout ` +
+      "to a build " +
       "artefact: `.git/` (which holds the persisted `GITHUB_TOKEN` unless " +
       "`persist-credentials: false` was set), any `.env` or build secret " +
       "written during the run, and all source. The artefact is downloadable " +
       "by every collaborator — and by anyone on a public repo — so a broad " +
       "upload is a credential- and source-exfiltration surface." + escalation,
     suggestedFix:
-      "Upload only the specific build-output path(s) instead of the " +
-      "workspace root:\n\n```yaml\n      - uses: actions/upload-artifact@<sha>\n" +
+      (one
+        ? "In the upload step listed above, upload only "
+        : `In each of the ${count} upload steps listed above, upload only `) +
+      "the specific build-output path(s) instead of the workspace root:\n\n" +
+      "```yaml\n      - uses: actions/upload-artifact@<sha>\n" +
       "        with:\n          name: build-output\n          path: dist/\n" +
       "```\n\nIf the whole tree genuinely must move between jobs, scope it to " +
       "a dedicated output directory and exclude `.git`, `.env`, and secret " +
-      "files. If this upload is intentional and safe, suppress it with an " +
-      `in-source \`# best-practice-ignore: ${id} — <reason>\` comment above ` +
-      "the `uses:` line.",
-    evidence: `\`${file.path}\`:${line} — \`uses: actions/upload-artifact\` ` +
-      "with a whole-workspace `path`",
+      "files. If a listed upload is intentional and safe, suppress that " +
+      `step with an in-source \`# best-practice-ignore: ${id} — <reason>\` ` +
+      "comment above its `uses:` line. Each step is suppressed on its own; " +
+      "the finding goes away once every listed step is fixed or suppressed.",
+    evidence: steps
+      .map(
+        (s) =>
+          `\`${file.path}\`:${s.line} — job \`${s.job}\` step ${s.stepIndex} ` +
+          "— `uses: actions/upload-artifact` with a whole-workspace `path`",
+      )
+      .join("\n"),
   };
 }
