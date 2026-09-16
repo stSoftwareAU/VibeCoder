@@ -29,6 +29,7 @@ import type {
 } from "./run_callbacks.ts";
 import type { ImageReference } from "./untrusted_image_signal.ts";
 import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
+import type { SummaryRuleRunVerdict } from "./summary_rule_gate_retry.ts";
 import type { PostMergeReapproval } from "./reapproval_superseded_handoff.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
@@ -266,6 +267,18 @@ export interface PhaseState {
    * one comment carries both verdicts.
    */
   securityGateBlocks?: SecurityGateRunVerdict[];
+  /**
+   * PR-summary rule verdicts observed during THIS run (Issue #2189), oldest
+   * first — closure, independent review and reproduction alike.
+   *
+   * The completion phase appends one entry per block that reached no PR. The
+   * first entry triggers the in-run recovery — one agent invocation carrying
+   * the gate's own remediation comment, then the quality gate and the
+   * completion gates again — so a documentation shortfall no longer costs a
+   * whole run. A second entry ends the run in `failure`, with the comment
+   * already on the thread.
+   */
+  summaryRuleBlocks?: SummaryRuleRunVerdict[];
   /**
    * The trusted discovery label the merged-PR pre-check found added *after*
    * the linked PR merged (Issue #1862), when there was one.
