@@ -106,6 +106,10 @@ export interface CallbackRunTelemetry {
  * Structurally the recorded half of `GraftContextResult` — the bundle itself
  * is never carried here, and {@link callbackGraftFacts} rebuilds the block
  * field by field so it can never travel even if a caller hands one in.
+ *
+ * Restated rather than imported from `graft_context.ts` on purpose: this is
+ * the **published contract**, and a field added to the collector's own result
+ * must not widen what a hook is promised without someone deciding it here.
  */
 export interface CallbackGraftContext {
   /** Whether the host switch was on for this run. */

@@ -193,7 +193,7 @@ Deno.test("#2104 - callbackGraftFacts copies the figures it is given and invents
 Deno.test("#2104 - workOnIssue lifts the run's collection onto its result", async () => {
   const deps = createMockDeps({
     infrastructure: {
-      collectGraftContext: (() => Promise.resolve(OK_COLLECTION)) as never,
+      collectGraftContext: () => Promise.resolve(OK_COLLECTION),
     },
   });
   const result = await workOnIssue({

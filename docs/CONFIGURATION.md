@@ -3047,6 +3047,14 @@ invocation and removed after it exits:
     "kind": "pr",
     "prNumber": 806,
     "phase": "completion"
+  },
+  "graft": {
+    "enabled": true,
+    "status": "ok",
+    "buildSeconds": 12.5,
+    "bundleChars": 4096,
+    "nodeCount": 820,
+    "callEdgeCount": 1204
   }
 }
 ```
@@ -3065,9 +3073,18 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_TURNS`, `VIBECODER_MODEL`,
 `VIBECODER_TELEMETRY_ABSENT_REASON`, `VIBECODER_OUTCOME_KIND`,
 `VIBECODER_OUTCOME_CATEGORY`, `VIBECODER_OUTCOME_PHASE`,
-`VIBECODER_OUTCOME_FAILURE_CLASS`, `VIBECODER_PR_NUMBER`. A cycle hook also
-receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
+`VIBECODER_OUTCOME_FAILURE_CLASS`, `VIBECODER_PR_NUMBER`,
+`VIBECODER_GRAFT_ENABLED`, `VIBECODER_GRAFT_STATUS`,
+`VIBECODER_GRAFT_BUILD_SECONDS`, `VIBECODER_GRAFT_BUNDLE_CHARS`,
+`VIBECODER_GRAFT_NODE_COUNT`, `VIBECODER_GRAFT_CALL_EDGE_COUNT`. A cycle hook
+also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
 `VIBECODER_CLAIMS_TAKEN` and `VIBECODER_CYCLE_END_REASON`.
+
+The `graft` block (Issue #2104) is on **every** run context: `graft.enabled`
+and `graft.status` (`ok`, `failed` or `off`) always, and the four figures only
+when the collection reached them. A host that never switched Graft on reports
+`{ "enabled": false, "status": "off" }` rather than omitting the block — see
+[Post-Run Callbacks](CALLBACKS.md#what-a-hook-receives).
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and
 either `sessionLogPath` or `sessionLogAbsentReason` — never neither. Other
