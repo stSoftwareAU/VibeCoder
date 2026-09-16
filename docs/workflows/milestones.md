@@ -48,6 +48,24 @@ flowchart TD
 - **Purpose:** Define how the worker handles issues that belong to a GitHub milestone: create/sync `milestone/<name>` branch, implement issues one at a time with PRs targeting that branch, and create a final PR from the milestone branch to the default branch when all milestone issues are closed.
 - **Scope:** Milestone branch creation and sync; issue selection with milestone-aware open-PR blocking; PR targeting milestone branch (uses "Closes #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)); milestone completion detection; final consolidation PR; closing the GitHub milestone after merge.
 
+### Several milestones from one plan
+
+A planning run no longer produces at most one milestone. When the plan's
+`## Milestones` table groups its sub-issues by file area and passes the
+structural gate, the worker creates **one milestone per group of two or more
+sub-issues**, titled `#<N> <area>: <short description>` (for example
+`#2163 infra: options trading`), and assigns each sub-issue to its own group's
+milestone only. A group of a single sub-issue gets **no** milestone and merges
+straight to the default branch. A plan may create at most **four** milestones.
+
+Each is an ordinary milestone from this document's point of view: its own
+`milestone/<slug>` branch, its own one-PR-per-target-branch budget, its own
+final consolidation PR — so the streams run in parallel rather than serialising
+one plan onto a single branch. Every group's milestone keeps the same `#<N>`
+prefix, so `trackingIssueFromMilestoneTitle` escalates all of them to the same
+planning parent. See
+[planning-and-questions.md](planning-and-questions.md#-auto-milestone-for-multi-issue-plans).
+
 ## 🔀 One PR per target branch
 
 In a single repo, issues either target the **default branch** (no milestone) or a **milestone branch**. The worker creates **at most one open PR per target branch**:
