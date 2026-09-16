@@ -124,6 +124,14 @@ export interface ResolveMilestoneEscalationTargetOptions {
   /** Fleet-identity inputs for the tracking-child exclusion (Issue #1246). */
   verification?: MilestoneTrackerVerification;
   /**
+   * Whether a closed parent is reopened to carry the post (default true).
+   *
+   * False for a notice that needs nobody (Issue #2214) — a sync that
+   * resolved its conflict itself: the comment lands on the closed issue as
+   * it stands, and no `needs-human` is applied.
+   */
+  reopenClosedParent?: boolean;
+  /**
    * Whether the destination already carries this escalation (Issue #1786).
    *
    * Asked before the parent is reopened, so an escalation that has already
@@ -170,6 +178,14 @@ export async function resolveMilestoneEscalationTarget(
   if (decision.kind !== "parent") return decision;
 
   if (await isIssueClosed(repo, decision.issue, ghCommandFn, log)) {
+    if (options.reopenClosedParent === false) {
+      log(
+        `Issue #${decision.issue} in ${repo} is closed and stays closed — ` +
+          `the milestone sync notice for '${milestone.title}' needs nobody, ` +
+          `so it is posted there as it stands (Issue #2214).`,
+      );
+      return { ...decision, reopened: false };
+    }
     return {
       ...decision,
       reopened: await reopenParentIssue(
