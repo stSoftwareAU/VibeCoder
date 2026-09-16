@@ -1136,6 +1136,39 @@ export async function syncMilestoneBranches(
   const countedFailures = new Set<string>();
 
   /**
+   * What each branch's **previous cycle** concluded with (Issue #2215).
+   *
+   * Snapshotted before the first attempt, because a branch now concludes
+   * twice in one cycle and Issue #1964's repeat gate must compare this cycle
+   * with the last one, never with itself.
+   */
+  const priorReasons = new Map<string, string>();
+  for (const [key, entry] of Object.entries(streaks)) {
+    const reason = entry.lastAttempt?.reason;
+    if (reason) priorReasons.set(key, reason);
+  }
+
+  /**
+   * The share of the handler budget one attempt may spend, given the work
+   * still to do (Issue #2215). One reader of the sweep's bounds, so the two
+   * passes cannot drift apart on the floor or the reserve.
+   */
+  const shareFor = (unitsLeft: number) =>
+    milestoneAttemptShareMs({
+      ...(deps.deadlineEpochMs !== undefined
+        ? { deadlineEpochMs: deps.deadlineEpochMs }
+        : {}),
+      nowMs: now(),
+      unitsLeft,
+      ...(deps.attemptShareFloorMs !== undefined
+        ? { minMs: deps.attemptShareFloorMs }
+        : {}),
+      ...(deps.attemptShareReserveMs !== undefined
+        ? { reserveMs: deps.attemptShareReserveMs }
+        : {}),
+    });
+
+  /**
    * Repositories whose clone this cycle abandoned an attempt inside
    * (Issue #2215). The attempt is still running there, so nothing else in
    * that repository is touched until the next cycle.
@@ -1295,7 +1328,18 @@ export async function syncMilestoneBranches(
       // It concludes `disrupted` and is charged nothing — exactly as an
       // attempt the watchdog killed already is — so the milestones behind it
       // are still reached and this one is first next cycle.
-      abandonedWork = work.catch(() => undefined);
+      // Not swallowed: the pass no longer awaits it, so its eventual failure
+      // has nowhere else to be reported.
+      abandonedWork = work.then(
+        () => undefined,
+        (err: unknown) =>
+          log(
+            `WARNING: The abandoned sync of '${milestone.milestoneBranch}' in ` +
+              `${repo} then failed: ${
+                err instanceof Error ? err.message : String(err)
+              } (Issue #2215)`,
+          ),
+      );
       abandonedRepos.add(repo);
       log(
         `WARNING: Milestone sync for '${milestone.milestoneTitle}' in ` +
@@ -1444,6 +1488,7 @@ export async function syncMilestoneBranches(
         entry,
         verdict.reason,
         entry.count,
+        priorReasons.get(streakKey),
       );
       entry = concludeConflictAttempt(
         entry,
@@ -1604,21 +1649,30 @@ export async function syncMilestoneBranches(
   };
 
   // --- The cheap pass: every milestone, no agent (Issue #2215) ------------
+  // Issue #1519: sync is a local-git operation. Repos that have not been
+  // cloned in this environment are dropped here rather than inside the loop —
+  // otherwise every git command below fails and is mis-reported as a sync
+  // failure, and (Issue #2215) each of them would count as a unit of work the
+  // shares below are divided by. The fleet log this sweep was fixed from had
+  // eight such repos, which would have shrunk every share eightfold for work
+  // that does not exist.
+  const cloned: string[] = [];
+  for (const repo of repos) {
+    if (localCloneExistsFn && !(await localCloneExistsFn(repo))) {
+      log(`Skipping milestone sync for ${repo} — no local clone`);
+      continue;
+    }
+    cloned.push(repo);
+  }
+
   // Stalest repository first, so one that ate a whole cycle's budget cannot
   // eat the next one too.
-  const orderedRepos = orderReposByStaleness(repos, streaks);
+  const orderedRepos = orderReposByStaleness(cloned, streaks);
   for (const [repoIndex, repo] of orderedRepos.entries()) {
     // Issue #2030: the lane runs beside the issue pool, so the clone is
     // leased for the whole repository pass and given back whatever happens.
     let lease: RepoLease | null | undefined;
     try {
-      // Issue #1519: sync is a local-git operation. Skip repos that have
-      // not been cloned in this environment — otherwise every git command
-      // below fails and is mis-reported as a sync failure.
-      if (localCloneExistsFn && !(await localCloneExistsFn(repo))) {
-        log(`Skipping milestone sync for ${repo} — no local clone`);
-        continue;
-      }
       if (deps.leaseRepoFn) {
         lease = deps.leaseRepoFn(repo);
         if (lease === null) {
@@ -1725,20 +1779,9 @@ export async function syncMilestoneBranches(
         // repository's remaining milestones plus one per repository behind
         // it — deliberately rough, because the alternative is listing every
         // repository's milestones before syncing any of them.
-        const share = milestoneAttemptShareMs({
-          ...(deps.deadlineEpochMs !== undefined
-            ? { deadlineEpochMs: deps.deadlineEpochMs }
-            : {}),
-          nowMs: now(),
-          unitsLeft: ordered.length - index +
-            (orderedRepos.length - repoIndex - 1),
-          ...(deps.attemptShareFloorMs !== undefined
-            ? { minMs: deps.attemptShareFloorMs }
-            : {}),
-          ...(deps.attemptShareReserveMs !== undefined
-            ? { reserveMs: deps.attemptShareReserveMs }
-            : {}),
-        });
+        const share = shareFor(
+          ordered.length - index + (orderedRepos.length - repoIndex - 1),
+        );
         if (!share.attempt) {
           log(
             `WARNING: Skipping sync for '${milestone.milestoneTitle}' in ` +
@@ -1780,25 +1823,16 @@ export async function syncMilestoneBranches(
   // agent that outruns it is abandoned and charged nothing.
   // The cheap pass met them stalest-first, so its order is already the one
   // this pass wants.
-  const agentQueue = deferredToAgent;
-  for (const [index, item] of agentQueue.entries()) {
+  for (const item of deferredToAgent) {
     // The cycle grants one agent run (Issue #1778); the rest keep this
     // cycle's rules-only conclusion and go first next cycle.
     if (agentSpent) break;
     if (abandonedRepos.has(item.repo)) continue;
-    const share = milestoneAttemptShareMs({
-      ...(deps.deadlineEpochMs !== undefined
-        ? { deadlineEpochMs: deps.deadlineEpochMs }
-        : {}),
-      nowMs: now(),
-      unitsLeft: agentQueue.length - index,
-      ...(deps.attemptShareFloorMs !== undefined
-        ? { minMs: deps.attemptShareFloorMs }
-        : {}),
-      ...(deps.attemptShareReserveMs !== undefined
-        ? { reserveMs: deps.attemptShareReserveMs }
-        : {}),
-    });
+    // One unit, because the cycle grants one agent run: dividing what is left
+    // by the queue would refuse the rung to the branch at the front and then
+    // never offer it to the branch behind, which is the starvation this sweep
+    // exists to remove.
+    const share = shareFor(1);
     if (!share.attempt) {
       log(
         `Milestone sync: no agent resolution is started this cycle — ` +

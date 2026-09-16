@@ -1579,12 +1579,12 @@ Deno.test("syncMilestoneBranches - too little of the cycle left denies the agent
       }],
       streakPath,
       nowMs: 10_000,
-      // Two minutes of handler budget covers the cheap attempt but cannot
-      // cover an agent run plus its overhead, so the rung is refused before
-      // it is started (Issue #1693). Raised from 70s by Issue #2215: below
-      // the sweep's own per-attempt floor nothing is attempted at all, which
-      // is a different refusal from the one this test is about.
-      deadlineEpochMs: 130_000,
+      // Two hundred seconds of handler budget covers the cheap attempt but
+      // cannot cover an agent run plus its overhead, so the rung is refused
+      // before it is started (Issue #1693). Raised from 70s by Issue #2215:
+      // below the sweep's own per-attempt floor nothing is attempted at all,
+      // which is a different refusal from the one this test is about.
+      deadlineEpochMs: 210_000,
       agentTimeoutMs: DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
       grants,
     }));

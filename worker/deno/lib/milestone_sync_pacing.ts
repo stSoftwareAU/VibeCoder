@@ -38,12 +38,18 @@ export const MILESTONE_SWEEP_RESERVE_MS = 15_000;
 /**
  * The smallest share worth starting an attempt on.
  *
- * A milestone sync fetches, merges, runs the merge gate and pushes. Below a
- * minute that is a sliver nothing completes in, so the share is raised to
- * this floor and the milestones the budget genuinely cannot cover are refused
- * by name — and, being unvisited, sort first on the next cycle.
+ * A milestone sync fetches, merges, runs the repository's own merge gate and
+ * pushes; below three minutes that is a sliver a real conflicted merge cannot
+ * finish in, and starting one only to abandon it mid-merge is worse than not
+ * starting it. So the share is raised to this floor, and the milestones the
+ * budget genuinely cannot cover are **refused by name before anything is
+ * started** — which, being unvisited, sorts them first on the next cycle.
+ *
+ * The floor caps how long an attempt may run, not how long it reserves: an
+ * attempt that finishes in seconds hands the rest of the budget straight back
+ * to the next one, because the share is recomputed from the clock each time.
  */
-export const MIN_MILESTONE_ATTEMPT_MS = 60_000;
+export const MIN_MILESTONE_ATTEMPT_MS = 180_000;
 
 /** What one milestone attempt may spend. */
 export interface MilestoneAttemptShare {

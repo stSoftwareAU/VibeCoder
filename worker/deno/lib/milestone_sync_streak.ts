@@ -43,16 +43,21 @@ export const MILESTONE_SYNC_ESCALATION_THRESHOLD = 3;
  * @param entry - The branch's streak entry, before this cycle concludes
  * @param reason - The reason this cycle concluded with
  * @param failureCount - Consecutive failures including this cycle's
+ * @param previousReason - The previous **cycle's** reason, when the caller
+ *   knows it is not the one on the entry. Since Issue #2215 a branch can
+ *   conclude twice in one cycle — cheaply, then with the agent — and
+ *   comparing the second conclusion against the first would compare a cycle
+ *   with itself, which is never the repeat this gate is looking for.
  */
 export function isRepeatedFailureReason(
   entry: SyncStreakEntry,
   reason: string,
   failureCount: number,
+  previousReason: string | undefined = entry.lastAttempt?.reason,
 ): boolean {
   if (failureCount < 2) return false;
-  const previous = entry.lastAttempt?.reason;
-  return typeof previous === "string" && previous.length > 0 &&
-    previous === reason;
+  return typeof previousReason === "string" && previousReason.length > 0 &&
+    previousReason === reason;
 }
 
 /**

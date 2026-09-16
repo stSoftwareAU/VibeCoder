@@ -21,22 +21,22 @@ Deno.test("milestoneAttemptShareMs - a pass with no deadline is unbounded", () =
 });
 
 Deno.test("milestoneAttemptShareMs - one attempt never takes the whole budget", () => {
-  // 800s of budget, four milestones still to visit: each gets a quarter, so
+  // 3200s of budget, four milestones still to visit: each gets a quarter, so
   // the fourth is still reached (Issue #2215).
   const share = milestoneAttemptShareMs({
-    deadlineEpochMs: 800_000 + MILESTONE_SWEEP_RESERVE_MS,
+    deadlineEpochMs: 3_200_000 + MILESTONE_SWEEP_RESERVE_MS,
     nowMs: 0,
     unitsLeft: 4,
   });
   assertEquals(share.attempt, true);
-  assertEquals(share.budgetMs, 200_000);
+  assertEquals(share.budgetMs, 800_000);
 });
 
 Deno.test("milestoneAttemptShareMs - a share below the floor is raised to it", () => {
-  // Twenty milestones and 300s left: a 15s sliver starts nothing useful, so
+  // Twenty milestones and 800s left: a 40s sliver starts nothing useful, so
   // the early ones get the floor and the rest are refused when it runs out.
   const share = milestoneAttemptShareMs({
-    deadlineEpochMs: 300_000 + MILESTONE_SWEEP_RESERVE_MS,
+    deadlineEpochMs: 800_000 + MILESTONE_SWEEP_RESERVE_MS,
     nowMs: 0,
     unitsLeft: 20,
   });
@@ -45,7 +45,7 @@ Deno.test("milestoneAttemptShareMs - a share below the floor is raised to it", (
 
 Deno.test("milestoneAttemptShareMs - a spent budget refuses the attempt by name", () => {
   const share = milestoneAttemptShareMs({
-    deadlineEpochMs: 10_000,
+    deadlineEpochMs: 60_000,
     nowMs: 0,
     unitsLeft: 1,
   });
@@ -56,11 +56,11 @@ Deno.test("milestoneAttemptShareMs - a spent budget refuses the attempt by name"
 
 Deno.test("milestoneAttemptShareMs - a single milestone keeps what is left, not more", () => {
   const share = milestoneAttemptShareMs({
-    deadlineEpochMs: 120_000 + MILESTONE_SWEEP_RESERVE_MS,
+    deadlineEpochMs: 400_000 + MILESTONE_SWEEP_RESERVE_MS,
     nowMs: 0,
     unitsLeft: 1,
   });
-  assertEquals(share.budgetMs, 120_000);
+  assertEquals(share.budgetMs, 400_000);
 });
 
 Deno.test("lastVisitedMs - absent and unparseable both read as never visited", () => {

@@ -3731,19 +3731,27 @@ the answer, in three parts:
   waits behind an agent.
 - **A share, not the remainder.** `milestoneAttemptShareMs` divides the budget
   left by the work still to do (this repository's remaining milestones plus
-  one per repository behind it), floored at `MIN_MILESTONE_ATTEMPT_MS`. The
-  agent pass sizes `grantAgentRun` from that share rather than from the whole
-  handler budget. An attempt that outruns its share is abandoned: it concludes
-  `disrupted` and is charged nothing, the rest of that repository is left for
-  the next cycle — its clone belongs to the attempt still running inside it —
-  and its `RepoLease` is released only when that attempt settles.
+  one per repository behind it — repositories with no local clone are dropped
+  before the count, so phantom units cannot shrink every share), floored at
+  `MIN_MILESTONE_ATTEMPT_MS` (3 min). It is a cap, not a reservation: an
+  attempt that finishes in seconds returns the rest to the next one. Below the
+  floor the remaining milestones are refused **by name** before anything is
+  started. The agent pass sizes `grantAgentRun` from a single unit's share —
+  the cycle grants one agent run, so dividing by the queue would refuse the
+  rung at the front and never offer it behind. An attempt that outruns its
+  share is abandoned: it concludes `disrupted` and is charged nothing, the
+  rest of that repository is left for the next cycle — its clone belongs to
+  the attempt still running inside it — and its `RepoLease` is released only
+  when that attempt settles.
 - **Stalest first.** `openConflictAttempt` stamps `lastVisitedAt` on the
   ledger entry, and `orderReposByStaleness` / `orderMilestonesByStaleness`
   order the sweep by it, so what the budget starved goes first next cycle.
 
 A milestone attempted twice in one cycle — cheaply, then with the agent — is
 one cycle's verdict, not two: the failure streak is counted once per branch per
-cycle, so Issue #4260's escalation threshold still means three cycles.
+cycle, so Issue #4260's escalation threshold still means three cycles, and
+`isRepeatedFailureReason` is handed the **previous cycle's** reason so
+Issue #1964's repeat gate never compares a cycle with itself.
 
 ##### Sync before new work — the child run's own pre-cut sync
 

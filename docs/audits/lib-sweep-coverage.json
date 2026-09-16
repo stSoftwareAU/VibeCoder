@@ -1601,6 +1601,18 @@
       "paths": [
         "worker/deno/lib/summary_rule_gate_retry.ts"
       ]
+    },
+    {
+      "issue": 2215,
+      "chunk": "top-up-2215",
+      "title": "top-up: the milestone-sweep pacing helpers",
+      "ledger": "docs/audits/security-sweep-2215-milestone-sync-pacing.md",
+      "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: milestone_sync_pacing.ts (#2215)",
+      "status": "swept",
+      "sweptAt": "d0ef43da5a1d4cff8f89e4f4056e7a38feada0ca",
+      "paths": [
+        "worker/deno/lib/milestone_sync_pacing.ts"
+      ]
     }
   ],
   "roots": [

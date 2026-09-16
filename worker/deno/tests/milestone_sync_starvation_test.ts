@@ -19,7 +19,6 @@ import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts
 import {
   loadSyncStreaks,
   milestoneSyncStreakPath,
-  saveSyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
 
 const REPO = "owner/repo";
@@ -105,8 +104,7 @@ Deno.test("syncMilestoneBranches - a resolution that outruns its share is abando
       releaseAgent = resolve;
     });
 
-    const started = Date.now();
-    const deadlineEpochMs = started + 1_500;
+    const deadlineEpochMs = Date.now() + 1_500;
     const result = await syncMilestoneBranches(sweepDeps({
       branches: [hungry, union],
       streakPath,
@@ -124,14 +122,11 @@ Deno.test("syncMilestoneBranches - a resolution that outruns its share is abando
         return { ok: true as const, value: { message: "never reached" } };
       },
     }));
-    const elapsed = Date.now() - started;
 
-    // The handler returned inside its budget rather than being abandoned by
-    // the watchdog with every later milestone unvisited.
-    assert(
-      elapsed < 1_500 + 1_000,
-      `the sweep took ${elapsed}ms, past its own deadline`,
-    );
+    // Returning at all is the assertion: the agent stub never settles, so a
+    // sweep that waited for it would hang here rather than hand the watchdog
+    // a handler to abandon. No stopwatch — the bound is the sweep's own
+    // injected budget, not this machine's speed.
     assert(result.ok);
     // The union merged, and it did not wait behind the agent.
     assertEquals(result.value.synced, 1);
@@ -158,33 +153,51 @@ Deno.test("syncMilestoneBranches - the milestone the budget starved goes first n
   const dir = await Deno.makeTempDir({ prefix: "issue-2215-rotation-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
-    const hungry = "milestone/needs-an-agent";
+    const hungry = "milestone/eats-the-budget";
     const starved = "milestone/never-reached";
-    // The previous cycle reached the first milestone and never got to the
-    // second, which is exactly the record the order is read from.
-    await saveSyncStreaks(streakPath, {
-      [`${REPO}|${hungry}`]: {
-        count: 1,
-        escalated: false,
-        lastVisitedAt: new Date(Date.now() - 60_000).toISOString(),
-      },
+
+    let releaseHungry: (() => void) | undefined;
+    const hungryRun = new Promise<void>((resolve) => {
+      releaseHungry = resolve;
     });
 
-    const order: string[] = [];
-    const result = await syncMilestoneBranches(sweepDeps({
+    // Cycle 1: the first milestone outruns its share and is abandoned, so
+    // nothing else in its repository is touched and the second is never
+    // visited at all.
+    const firstCycle: string[] = [];
+    const cycleOne = await syncMilestoneBranches(sweepDeps({
+      branches: [hungry, starved],
+      streakPath,
+      deadlineEpochMs: Date.now() + 600,
+      syncBranchFn: async (_repo, branch) => {
+        firstCycle.push(branch);
+        if (branch === hungry) await hungryRun;
+        return { ok: true as const, value: { message: "merged" } };
+      },
+    }));
+    assert(cycleOne.ok);
+    assertEquals(firstCycle, [hungry]);
+
+    // Cycle 2: the starved milestone is the one with no visit on record, so
+    // it goes first — read from the ledger the first cycle persisted, not
+    // from anything this test wrote.
+    const secondCycle: string[] = [];
+    const cycleTwo = await syncMilestoneBranches(sweepDeps({
       branches: [hungry, starved],
       streakPath,
       syncBranchFn: (_repo, branch) => {
-        order.push(branch);
+        secondCycle.push(branch);
         return Promise.resolve({
           ok: true as const,
           value: { message: "merged" },
         });
       },
     }));
+    assert(cycleTwo.ok);
+    assertEquals(secondCycle, [starved, hungry]);
 
-    assert(result.ok);
-    assertEquals(order, [starved, hungry]);
+    releaseHungry!();
+    await hungryRun;
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -230,6 +243,50 @@ Deno.test("syncMilestoneBranches - the cheap rungs run across every milestone be
     // and not also failed.
     assertEquals(result.value.synced, 2);
     assertEquals(result.value.failed, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - an abandoned attempt keeps its repository's lease until it settles (Issue #2215)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2215-lease-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const hungry = "milestone/eats-the-budget";
+    const behind = "milestone/behind-it";
+
+    let releaseHungry: (() => void) | undefined;
+    const hungryRun = new Promise<void>((resolve) => {
+      releaseHungry = resolve;
+    });
+
+    let released = 0;
+    const touched: string[] = [];
+    const deps = sweepDeps({
+      branches: [hungry, behind],
+      streakPath,
+      deadlineEpochMs: Date.now() + 600,
+      syncBranchFn: async (_repo, branch) => {
+        touched.push(branch);
+        if (branch === hungry) await hungryRun;
+        return { ok: true as const, value: { message: "merged" } };
+      },
+    });
+    deps.leaseRepoFn = () => ({ release: () => released++ });
+
+    const result = await syncMilestoneBranches(deps);
+    assert(result.ok);
+
+    // The clone belongs to the attempt still running inside it: nothing else
+    // in the repository was touched, and the lease is still held.
+    assertEquals(touched, [hungry]);
+    assertEquals(released, 0);
+
+    releaseHungry!();
+    await hungryRun;
+    // A microtask for the release attached to the abandoned attempt.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assertEquals(released, 1);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

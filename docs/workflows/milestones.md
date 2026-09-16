@@ -241,8 +241,9 @@ merge by hand. The PR merge-conflict pass stands down on `milestone/**` heads
 by design (Issue #1772), so nothing else would ever have touched it. Next
 cycle the same repository came first and ate the budget again.
 
-Three rules answer that, and together they mean the sweep reaches **every**
-milestone **every** cycle:
+Three rules answer that. Together they mean the sweep reaches every milestone
+its budget can cover, and hands the rest to the **next** cycle by name instead
+of losing them silently behind one resolution:
 
 1. **Cheap rungs before expensive ones, across milestones.** The sweep makes
    two passes. The first offers every milestone in the fleet the deterministic
@@ -252,12 +253,18 @@ milestone **every** cycle:
    never wait behind an agent.
 2. **A share, not the remainder.** Each attempt is bounded by the handler
    budget left divided by the work still to do, floored at
-   `MIN_MILESTONE_ATTEMPT_MS` (60 s). An attempt that outruns its share is
-   **abandoned**: it concludes `disrupted` and is charged nothing, exactly as
-   an attempt the watchdog killed already is. Nothing else in that repository
-   is touched for the rest of the cycle — the clone belongs to the attempt
-   still running inside it — and its lease is given back only once that
-   attempt settles, so an issue slot cannot reset the clone from under it.
+   `MIN_MILESTONE_ATTEMPT_MS` (3 min) — a cap on one attempt, not a
+   reservation, so an attempt that finishes in seconds hands the rest straight
+   back to the next one. Once fewer than three minutes remain the milestones
+   left are **refused by name** before anything is started, which is the clean
+   ending; they carry no visit stamp, so they are first next cycle. An attempt
+   that outruns its share is **abandoned**: it concludes `disrupted` and is
+   charged nothing, exactly as an attempt the watchdog killed already is.
+   Nothing else in that repository is touched for the rest of the cycle — the
+   clone belongs to the attempt still running inside it, and two git processes
+   in one clone is the corruption this guard exists to prevent — and its lease
+   is given back only once that attempt settles, so an issue slot cannot reset
+   the clone from under it.
 3. **Stalest first.** Opening an attempt stamps `lastVisitedAt` on the
    branch's ledger entry, and both repositories and milestones are ordered by
    it. A milestone the budget never reached carries no stamp, so it goes
@@ -279,8 +286,15 @@ flowchart TD
 
 The cycle still grants **one** agent run in total (Issue #1778) and still
 refuses to start one the budget cannot cover (Issue #1693) — what changed is
-that the rung is sized to one milestone's share rather than to everything that
-is left, and that no milestone waits behind it for its own cheap attempt.
+that the rung is sized to that one resolution's own share, taken after every
+milestone has had its cheap attempt, rather than to everything that is left
+before any of them has.
+
+A milestone attempted twice in one cycle — cheaply, then with the agent — is
+one cycle's verdict, not two: the failure streak is counted once per branch per
+cycle, so the Issue #4260 escalation threshold still means three cycles, and
+Issue #1964's repeated-reason gate compares this cycle's conclusion with the
+**previous** cycle's rather than with the cheap pass's.
 
 ### Conflict triage
 
