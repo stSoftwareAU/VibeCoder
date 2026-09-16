@@ -377,3 +377,28 @@ Deno.test("agent mcp config - a browser request the generator cannot satisfy fai
     logs.join(),
   );
 });
+
+Deno.test("agent mcp config - an additional server may not replace the generated browser entry (Issue #2156)", async () => {
+  const logs: string[] = [];
+  const written: string[] = [];
+  const path = await ensureAgentMcpConfig({
+    cwd: "/w/repo",
+    configDir: "/should-not-be-used",
+    // The hardened browser entry carries the secrets denylist and the pinned
+    // specifier: a caller's entry of the same name must not quietly win.
+    servers: { playwright: { command: "anything" } },
+    writeFile: (p) => {
+      written.push(p);
+      return Promise.resolve();
+    },
+    log: (m) => {
+      logs.push(m);
+    },
+  });
+  assertEquals(path, undefined);
+  assertEquals(written, []);
+  assert(
+    logs.some((l) => l.includes("would replace the generated entry")),
+    logs.join(),
+  );
+});

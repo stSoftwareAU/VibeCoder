@@ -153,18 +153,28 @@ export function defaultMcpConfigDir(
 }
 
 /**
- * The `mcpServers` map from the generated Playwright configuration.
+ * Merge the additional servers over the generated Playwright map.
  *
- * A shape carrying no entries is a fault, not an empty map (Issue #2156):
- * coalescing it away would write a config holding the additional servers and
- * no browser entry for a run that asked for the browser — a requested
- * capability dropped silently.
+ * Two shapes are faults rather than merge outcomes (Issue #2156), because
+ * each would drop a capability the caller asked for while still returning a
+ * written config:
+ *
+ * - a generated shape carrying no entries — coalescing it away writes the
+ *   additional servers and no browser entry for a run that asked for the
+ *   browser;
+ * - an additional server whose name collides with a generated one — the
+ *   caller's entry would silently replace the hardened browser entry, losing
+ *   its secrets denylist, its pinned specifier and its scratch output dir.
  *
  * @param generated - The JSON {@link generateMcpConfig} produced
- * @returns The server map to merge the additional servers over
- * @throws Error when the JSON carries no non-empty `mcpServers` map
+ * @param extra - The additional servers this run asked for
+ * @returns The merged `mcpServers` map
+ * @throws Error when the generated map is empty or a name collides
  */
-function playwrightServers(generated: string): Record<string, unknown> {
+function mergeServers(
+  generated: string,
+  extra: Record<string, AgentMcpServerSpec>,
+): Record<string, unknown> {
   const servers = (JSON.parse(generated) as {
     mcpServers?: Record<string, unknown>;
   }).mcpServers;
@@ -173,7 +183,15 @@ function playwrightServers(generated: string): Record<string, unknown> {
       "the generated Playwright configuration carries no mcpServers entry",
     );
   }
-  return servers;
+  const collisions = Object.keys(extra).filter((name) => name in servers);
+  if (collisions.length > 0) {
+    throw new Error(
+      `additional MCP server ${
+        collisions.join(", ")
+      } would replace the generated entry of the same name`,
+    );
+  }
+  return { ...servers, ...extra };
 }
 
 /**
@@ -235,7 +253,7 @@ export async function ensureAgentMcpConfig(
       // Playwright alone is written verbatim, so the file a browser run gets
       // is byte-for-byte what it got before Issue #2156.
       content = extraNames.length === 0 ? generated : JSON.stringify(
-        { mcpServers: { ...playwrightServers(generated), ...extra } },
+        { mcpServers: mergeServers(generated, extra) },
         null,
         2,
       );
