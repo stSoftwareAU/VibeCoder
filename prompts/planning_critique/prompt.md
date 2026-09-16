@@ -168,7 +168,7 @@ The draft grouped its sub-issues by **file area** so the fleet can work several 
 | --- | --- | --- |
 | options trading: infra | `infra/` | #201, #202 |
 | options trading: lambdas | `lambdas/` | #203, #204 |
-| — | `docs/` | #205 |
+| — | `pwa/` | #205 |
 
 Rules the table must satisfy — a deterministic gate at the end of the run checks them:
 
