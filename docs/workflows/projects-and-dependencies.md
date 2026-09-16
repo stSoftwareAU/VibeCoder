@@ -103,7 +103,8 @@ All workflow labels (e.g. `failed-once`, `failed`, `needs-human`, `refine-issue`
 
 ### 🔀 Mixed dependencies and milestones
 
-- Dependencies can cross milestones (e.g. issue in milestone A depends on issue in milestone B). The worker honours the dependency regardless of milestone: the dependent issue is not selected until the dependency is closed.
+- Dependencies can cross milestones (e.g. issue in milestone A depends on issue in milestone B). Closing the dependency is not enough when it belongs to **another milestone that is still open**: its merged code only reaches the default branch — and so the dependant's milestone branch — once that milestone's final PR merges. The dependant is therefore held until the dependency's milestone is closed (Issue #2173).
+- A dependency with **no milestone**, or one in the candidate's **own milestone**, is satisfied as soon as it closes — unchanged behaviour.
 - The **one PR per target branch** rule is independent: it limits how many concurrent PRs exist per base branch; dependency rules limit which **issue** is selected next.
 
 ### 🚫 All issues in a milestone blocked

@@ -69,6 +69,7 @@ import {
 } from "./fleet_authors.ts";
 import {
   buildOpenIssueStateMap,
+  createOpenMilestoneLookup,
   type FindIssuesOptions,
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
@@ -322,6 +323,12 @@ export async function collectSelfDiagnosticCandidates(
   }
 
   const openStateMap = buildOpenIssueStateMap(repoAllIssues);
+
+  // Issue #2173: the lazy open-milestone lookup for the cross-milestone
+  // dependency hold. Built once per repo and shared by every candidate; the
+  // listing is only fetched if a closed dependency actually carries a
+  // different milestone.
+  const isMilestoneOpen = createOpenMilestoneLookup(repo, options.cache, ghFn);
   const pushCapableAuthors = resolveFleetMaintenanceAuthorSet({
     githubUser: options.githubUser,
     fleetPrAuthors: config.fleetPrAuthors,
@@ -412,7 +419,12 @@ export async function collectSelfDiagnosticCandidates(
       }
     }
 
-    if (await isDependencyBlocked(repo, issue.number, fetcher, openStateMap)) {
+    if (
+      await isDependencyBlocked(repo, issue.number, fetcher, openStateMap, {
+        candidateMilestone: milestoneTitle,
+        isMilestoneOpen,
+      })
+    ) {
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       continue;
     }
