@@ -42,3 +42,7 @@ id_rsa
 id_rsa.*
 credentials.json
 service-account*.json
+
+# Graft code graph (Issue #2099) — rebuilt locally in every checkout, never
+# committed. `graft/` is not hidden, so the `.*` rule above does not cover it.
+/graft/

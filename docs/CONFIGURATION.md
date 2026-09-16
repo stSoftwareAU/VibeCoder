@@ -1765,6 +1765,25 @@ section beside the existing `CLAUDE.md` / `AGENTS.md` repo-context docs, in
 every phase that already receives those docs. The switch is per host, not per
 repository: an enabled host uses Graft for every repository it works on.
 
+**When Graft is unavailable.** Once the injection change calls the runner, an
+enabled host that cannot run Graft — the clone's `info/exclude` cannot be
+resolved or appended to, the binary is missing, the build or the query fails,
+the query succeeds but returns an empty bundle, or the graph index cannot be
+read — logs one `[GRAFT_UNAVAILABLE] <reason>` line at `warn`
+and records a `failed` Graft status. The run itself continues, without the
+bundle: the bundle is an accelerator, so a run never fails because Graft did.
+Grep the worker log for `[GRAFT_UNAVAILABLE]` to see why. Like the limits
+below, this is the behaviour `graft_context.ts` implements (Issue #2099); it
+is stated here so the switch is documented against what it turns on, and no
+such line is logged until #2060 wires the runner in.
+
+**Query size.** The bundle query is passed to `graft ask --source` as a single
+argument, truncated to **64 KiB** of UTF-8 on a character boundary, so it
+stays well under Linux's 128 KiB single-argument limit (Issue #2099). A query that is
+actually cut logs one `[GRAFT_QUERY_TRUNCATED]` line at `warn`, so a thin
+bundle can be traced to a cut query rather than guessed at. The bundle Graft
+returns is not capped.
+
 **Time limits.** The graph build is given **300 seconds** and the bundle query
 **30 seconds**. Past either limit the run continues without the bundle and
 records a `failed` Graft status — the bundle is an accelerator, so losing it
@@ -1775,8 +1794,22 @@ stated here so the switch is documented against the behaviour it turns on.
 **Where the graph lives.** Graft writes its graph to `graft/` at the root of
 the repository checkout, which is persistent between runs, so an unchanged
 file replays from Graft's own cache on the next build instead of being
-re-parsed. The worker never deletes `graft/`; keeping the graph out of git is
-part of the injection change, not of this switch.
+re-parsed. The worker never deletes `graft/`. Two entries keep it that way
+(Issue #2099): `/graft/` is added to the clone's own `.git/info/exclude`
+before each build — per-clone, unstageable, and unlike a `.gitignore` edit it
+survives the `git reset --hard` + `git clean -fd` every run starts with — and
+`/graft/` is in the canonical `.gitignore` pattern set the worker enforces, so
+a checkout whose `.gitignore` carries that set cannot stage the graph either.
+The two differ in reach, and it is worth being exact about which does the
+work: the `.gitignore` entry is written by `gitignore-sync` at `setup.sh` time
+and that edit is uncommitted, so the per-run `git reset --hard` reverts it —
+during a run it is the `info/exclude` entry that is actually in force, and the
+`.gitignore` pattern is the belt to its braces once the line reaches a
+repository's committed `.gitignore`. Graft itself is run with `--no-gitignore
+--no-ignore`, which #2060 records as the flags that stop it editing
+`.gitignore`; that is an assumption from Graft's documentation rather than one
+observed here, because Graft is not installed on the image this was written
+against. The `info/exclude` entry holds either way.
 
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a
