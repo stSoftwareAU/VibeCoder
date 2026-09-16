@@ -203,6 +203,10 @@ Deno.test("runExecuteClaudePhase - an enabled host injects the bundle and asks f
   assertEquals(collector.calls[0]?.repoDir, "/tmp/graft-wiring-2102/repo");
   assertEquals(captured.options?.graftContextBundle, BUNDLE);
   assertEquals(result.graftContext?.status, "ok");
+  // The result is JSON-serialised onto stdout by the `execute-claude-phase`
+  // command, so the bundle must never ride it into the worker log.
+  assertEquals(result.graftContext?.bundle, undefined);
+  assertEquals(result.graftContext?.bundleChars, BUNDLE.length);
   assert(
     logs.some((line) => line.includes("Graft context: ok")),
     `expected the phase to report the collection, got: ${logs.join(" | ")}`,
@@ -381,7 +385,10 @@ Deno.test("processIssuePlanning - an enabled host injects the bundle and asks fo
   assertStringIncludes(prompts[0] ?? "", "Graft Code Bundle");
   assertStringIncludes(prompts[0] ?? "", BUNDLE);
   assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.graftContext?.status, "ok");
+  if (result.ok) {
+    assertEquals(result.value.graftContext?.status, "ok");
+    assertEquals(result.value.graftContext?.bundle, undefined);
+  }
 });
 
 Deno.test("processIssuePlanning - a failed collection is reported and planning proceeds", async () => {
@@ -468,7 +475,10 @@ Deno.test("processIssueQuestion - an enabled host injects the bundle and asks fo
   assertStringIncludes(prompts[0] ?? "", "Graft Code Bundle");
   assertStringIncludes(prompts[0] ?? "", BUNDLE);
   assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.graftContext?.status, "ok");
+  if (result.ok) {
+    assertEquals(result.value.graftContext?.status, "ok");
+    assertEquals(result.value.graftContext?.bundle, undefined);
+  }
 });
 
 Deno.test("processIssueQuestion - a failed collection is reported and the answer proceeds", async () => {
@@ -578,6 +588,9 @@ Deno.test("execute_phase - an enabled host injects the bundle and asks for the i
   assertEquals(collector.calls[0]?.repoDir, "/tmp/graft-wiring-2102/repo");
   assertEquals(promptOptions[0]?.graftContextBundle, BUNDLE);
   assertEquals(state.graftContext?.status, "ok");
+  // The phase state is a record, not a carrier for the bundle text.
+  assertEquals(state.graftContext?.bundle, undefined);
+  assertEquals(state.graftContext?.nodeCount, 820);
 });
 
 Deno.test("execute_phase - a failed collection is recorded and the run proceeds", async () => {

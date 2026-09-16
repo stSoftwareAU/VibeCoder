@@ -584,6 +584,25 @@ export type GraftContextCollector = (
 ) => Promise<GraftContextResult>;
 
 /**
+ * The outcome without its bundle — the shape that is safe to *record*.
+ *
+ * `ExecuteClaudePhaseResult` is JSON-serialised straight onto stdout by the
+ * `execute-claude-phase` command, so an outcome that still carried the bundle
+ * would write the whole `graft ask --source` selection — uncapped by design —
+ * into the worker log on every enabled run. The recorders want the status and
+ * the figures; the bundle has already been spent on the prompt.
+ *
+ * @param result - The outcome from {@link collectGraftContext}
+ * @returns The same outcome with `bundle` dropped
+ */
+export function graftContextFacts(
+  result: GraftContextResult,
+): GraftContextResult {
+  const { bundle: _bundle, ...facts } = result;
+  return facts;
+}
+
+/**
  * Where a caller with many exits leaves the Graft outcome (Issue #2102).
  *
  * The issue phase and the planning and question processors each return from
@@ -632,7 +651,7 @@ export function describeGraftContext(result: GraftContextResult): string {
     result.nodeCount === undefined ? undefined : `${result.nodeCount} nodes`,
     result.callEdgeCount === undefined
       ? undefined
-      : `${result.callEdgeCount} calls edges`,
+      : `${result.callEdgeCount} call edges`,
     result.buildSeconds === undefined
       ? undefined
       : `build ${result.buildSeconds}s`,

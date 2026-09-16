@@ -18,6 +18,7 @@ import {
   GRAFT_BUILD_TIMEOUT_MS,
   GRAFT_EXCLUDE_PATTERN,
   GRAFT_LAYOUT_DIRS,
+  graftContextFacts,
   graftQueryFor,
   MAX_GRAFT_QUERY_BYTES,
   truncateUtf8,
@@ -959,7 +960,7 @@ Deno.test("describeGraftContext - reports the status with every figure it has", 
   assertStringIncludes(line, "Graft context: ok");
   assertStringIncludes(line, "4096 bundle chars");
   assertStringIncludes(line, "820 nodes");
-  assertStringIncludes(line, "1204 calls edges");
+  assertStringIncludes(line, "1204 call edges");
   assertStringIncludes(line, "build 12.5s");
 });
 
@@ -986,5 +987,43 @@ Deno.test("describeGraftContext - an off switch reports off", () => {
   assertStringIncludes(
     describeGraftContext({ status: "off", enabled: false }),
     "Graft context: off",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// graftContextFacts — what may be recorded (Issue #2102)
+// ---------------------------------------------------------------------------
+
+Deno.test("graftContextFacts - drops the bundle and keeps every figure", () => {
+  // The issue phase's result is JSON-serialised onto stdout, so an outcome
+  // that kept the bundle would write the whole selection into the worker log.
+  const facts = graftContextFacts({
+    status: "ok",
+    enabled: true,
+    buildSeconds: 12.5,
+    bundleChars: 4096,
+    nodeCount: 820,
+    callEdgeCount: 1204,
+    bundle: "the whole selection",
+  });
+  assertEquals(facts, {
+    status: "ok",
+    enabled: true,
+    buildSeconds: 12.5,
+    bundleChars: 4096,
+    nodeCount: 820,
+    callEdgeCount: 1204,
+  });
+  assertEquals(Object.hasOwn(facts, "bundle"), false);
+});
+
+Deno.test("graftContextFacts - an outcome that never had a bundle is unchanged", () => {
+  assertEquals(
+    graftContextFacts({ status: "off", enabled: false }),
+    { status: "off", enabled: false },
+  );
+  assertEquals(
+    graftContextFacts({ status: "failed", enabled: true, buildSeconds: 300 }),
+    { status: "failed", enabled: true, buildSeconds: 300 },
   );
 });

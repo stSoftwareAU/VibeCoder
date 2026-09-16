@@ -76,6 +76,7 @@ import {
   collectGraftContext,
   describeGraftContext,
   type GraftContextCollector,
+  graftContextFacts,
   type GraftContextResult,
   type GraftContextSlot,
   graftQueryFor,
@@ -839,7 +840,7 @@ export async function runExecuteClaudePhase(
   const collected: GraftContextSlot = {};
   const result = await executeClaudePhaseBody(options, deps, collected);
   return collected.result
-    ? { ...result, graftContext: collected.result }
+    ? { ...result, graftContext: graftContextFacts(collected.result) }
     : result;
 }
 

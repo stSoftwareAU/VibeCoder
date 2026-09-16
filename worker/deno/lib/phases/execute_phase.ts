@@ -23,7 +23,11 @@ import { getPromptsCommit } from "../prompt_manager.ts";
 import { promptOverrideMappings } from "../custom_label_prompts_config.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
 import { detectScreenshotRequired } from "../execute_claude_phase.ts";
-import { describeGraftContext, graftQueryFor } from "../graft_context.ts";
+import {
+  describeGraftContext,
+  graftContextFacts,
+  graftQueryFor,
+} from "../graft_context.ts";
 import { isGraftContextEnabled } from "../graft_context_config.ts";
 import {
   buildQualityInstructions,
@@ -448,7 +452,7 @@ async function executeClaudeBody(
     enabled: isGraftContextEnabled(config),
     logger,
   });
-  state.graftContext = graftContext;
+  state.graftContext = graftContextFacts(graftContext);
   if (graftContext.status !== "off") {
     logger.info(describeGraftContext(graftContext), { repo, issueNumber });
   }

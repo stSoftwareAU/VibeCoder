@@ -41,6 +41,7 @@ import {
   collectGraftContext,
   describeGraftContext,
   type GraftContextCollector,
+  graftContextFacts,
   type GraftContextResult,
   type GraftContextSlot,
   graftQueryFor,
@@ -301,7 +302,13 @@ export async function processIssueQuestion(
       "question answered",
     );
     return graftSlot.result && result.ok
-      ? { ok: true, value: { ...result.value, graftContext: graftSlot.result } }
+      ? {
+        ok: true,
+        value: {
+          ...result.value,
+          graftContext: graftContextFacts(graftSlot.result),
+        },
+      }
       : result;
   } catch (err) {
     runOutcome = outcomeForThrown(
