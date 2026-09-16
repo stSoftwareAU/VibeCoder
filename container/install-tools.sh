@@ -25,10 +25,11 @@
 #   6. remove the downloaded archive.
 #
 # Like install-providers.sh, the WHOLE set is validated first — id shape,
-# duplicate ids, a supported archive extension, and a URL+SHA for the build
-# architecture — before anything is downloaded, so a bad set never leaves a
-# half-installed image behind. `set -euo pipefail`; any failure aborts loudly
-# with the offending tool id named (parent #5: no partial image).
+# duplicate ids, a supported archive extension, a URL+SHA for the build
+# architecture, and a bin entry, env name or env value that carries no
+# newline — before anything is downloaded, so a bad set never leaves a
+# half-installed image behind. `set -euo pipefail`; any failure aborts loudly with the
+# offending tool id named (parent #5: no partial image).
 #
 # Install prefix, build architecture and env file are overridable via the
 # environment so the tests can drive the real script against local fixtures
@@ -137,6 +138,24 @@ for ((i = 0; i < count; i++)); do
     [[ "${strip}" =~ ^[0-9]+$ ]] ||
         fail "tool \"${id}\" has a non-integer stripComponents: ${strip}."
 
+    # The environment hand-off is one KEY=value per LINE, so ANY of the three
+    # pieces that reach a line — a bin entry, an env name, an env value —
+    # writes a second line the reader cannot tell from a real one if it carries
+    # a newline, and that second line can be a `PATH=` aimed anywhere on the
+    # host. All three are checked, not just the values: the name is the left
+    # half of the very same line. Refused for the whole set before anything
+    # downloads, so the confinement the prefix promises is a property of the
+    # file rather than of the spec's goodwill.
+    # Read as an assignment rather than an `if jq -e`: a bin/env block jq
+    # cannot walk at all must abort here, not read as "found no newline".
+    line_safe="$(jq -r --argjson idx "${i}" \
+        '[(.[$idx].bin // [])[],
+          ((.[$idx].env // {}) | to_entries[] | (.key, .value))]
+         | all(type == "string" and (contains("\n") or contains("\r") | not))' \
+        "${spec}")"
+    [[ "${line_safe}" == "true" ]] ||
+        fail "tool \"${id}\" has a bin entry, env name or env value carrying a newline: ${ENV_FILE} is one KEY=value per line."
+
     ids+=("${id}")
     urls+=("${url}")
     shas+=("${sha}")
@@ -165,7 +184,10 @@ extract_zip() { # <archive> <dest> <strip>
             return 1
         fi
         src="$(find "${src}" -mindepth 1 -maxdepth 1)"
-        [[ -d "${src}" ]] || {
+        # A strip level must be a real directory: descending through a symlink
+        # would copy the link TARGET's tree — anything on the build host — into
+        # the tool's prefix, which `tar --strip-components` never does.
+        [[ -d "${src}" && ! -L "${src}" ]] || {
             rm -rf "${stage}"
             return 1
         }

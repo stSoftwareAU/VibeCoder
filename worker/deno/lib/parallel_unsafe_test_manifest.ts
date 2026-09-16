@@ -164,6 +164,10 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * left out goes red one run in five, on somebody else's change.
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
+  // The grill-me stem strip walks a run of trailing punctuation an untrusted
+  // commenter chooses the length of; only a growth measurement separates the
+  // linear walk from the quadratic regex it replaced (#2183).
+  "tests/grill_me_stall_guard_bounds_2183_test.ts",
   "tests/growth_bound_test.ts",
   "tests/plan_coverage_gate_bounds_1245_test.ts",
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
