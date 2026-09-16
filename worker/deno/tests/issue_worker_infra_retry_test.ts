@@ -14,6 +14,7 @@
 import { assertEquals } from "@std/assert";
 import {
   MAX_INFRA_RETRIES_PER_PHASE,
+  RATE_LIMIT_RESET_MARGIN_MS,
   resetInfraRetryCount,
   shouldRetryInfrastructureFailure,
 } from "../lib/infra_retry.ts";
@@ -678,3 +679,103 @@ Deno.test(
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #2150 — a rate-limit retry waits for the quota reset it knows about
+// ---------------------------------------------------------------------------
+
+/** The live reason from NEAT-AI-core#673, 2026-09-15 23:44Z. */
+const LATCHED_REASON =
+  "PR creation failed: gh command skipped: GraphQL primary quota exhausted " +
+  "(API rate limit already exceeded) — at 2026-09-16 10:01:52 AEST (in 17m 6s)";
+
+Deno.test("infra retry - a rate_limit retry sleeps until the latched quota reset, not the fixed backoff (Issue #2150)", async () => {
+  const state = makeState();
+  const captured: CapturedLog[] = [];
+  const logger = makeCapturingLogger(captured);
+  const nowMs = 1_800_000_000_000;
+  const resetSeconds = nowMs / 1000 + 17 * 60;
+  let sleptMs: number | undefined;
+
+  const retry = await shouldRetryInfrastructureFailure(
+    "completion",
+    LATCHED_REASON,
+    state,
+    logger,
+    {
+      backoffMs: 15_000,
+      nowMs: () => nowMs,
+      quotaResetEpochSeconds: () => resetSeconds,
+      cycleDeadlineEpochMs: nowMs + 60 * 60 * 1000,
+      sleepFn: (ms) => {
+        sleptMs = ms;
+        return Promise.resolve();
+      },
+    },
+  );
+
+  assertEquals(retry, true);
+  assertEquals(sleptMs, 17 * 60 * 1000 + RATE_LIMIT_RESET_MARGIN_MS);
+  assertEquals(
+    captured.some((l) => l.msg.includes("Waiting for the GraphQL quota reset")),
+    true,
+  );
+});
+
+Deno.test("infra retry - a rate_limit retry whose reset wait does not fit the cycle's runway is declined, leaving the retry unspent (Issue #2150)", async () => {
+  const state = makeState();
+  const captured: CapturedLog[] = [];
+  const logger = makeCapturingLogger(captured);
+  const nowMs = 1_800_000_000_000;
+  let slept = false;
+
+  const retry = await shouldRetryInfrastructureFailure(
+    "completion",
+    LATCHED_REASON,
+    state,
+    logger,
+    {
+      backoffMs: 15_000,
+      nowMs: () => nowMs,
+      quotaResetEpochSeconds: () => nowMs / 1000 + 17 * 60,
+      // 3 minutes left: the 17-minute wait plus the retry's runway do not fit.
+      cycleDeadlineEpochMs: nowMs + 3 * 60 * 1000,
+      sleepFn: () => {
+        slept = true;
+        return Promise.resolve();
+      },
+    },
+  );
+
+  assertEquals(retry, false);
+  assertEquals(slept, false);
+  assertEquals(state.infraRetryCounts?.completion ?? 0, 0);
+  assertEquals(
+    captured.some((l) => l.msg.includes("resets after this cycle's runway")),
+    true,
+  );
+});
+
+Deno.test("infra retry - a rate_limit retry with no latched reset keeps the fixed backoff (Issue #2150)", async () => {
+  const state = makeState();
+  const logger = makeCapturingLogger([]);
+  let sleptMs: number | undefined;
+
+  const retry = await shouldRetryInfrastructureFailure(
+    "completion",
+    LATCHED_REASON,
+    state,
+    logger,
+    {
+      backoffMs: 15_000,
+      quotaResetEpochSeconds: () => null,
+      sleepFn: (ms) => {
+        sleptMs = ms;
+        return Promise.resolve();
+      },
+    },
+  );
+
+  assertEquals(retry, true);
+  assertEquals(sleptMs, 15_000);
+});
