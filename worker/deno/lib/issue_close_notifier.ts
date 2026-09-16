@@ -38,7 +38,7 @@ import {
 } from "./audit_mutation_classifier.ts";
 import { classifyIssueLifecycle } from "./gh_issue_lifecycle.ts";
 import type { IssueCache } from "./issue_cache.ts";
-import { ISSUE_STATE_CACHE_PREFIX } from "./issue_cache_keys.ts";
+import { ISSUE_STATE_CACHE_PREFIX } from "./issue_cache.ts";
 import {
   type ProcessedIssueRegistry,
   sharedProcessedIssues,

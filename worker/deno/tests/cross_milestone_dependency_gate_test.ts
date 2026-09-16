@@ -278,6 +278,22 @@ Deno.test("createIssueFetcher maps the dependency's milestone title", async () =
   assertEquals(args[0]?.includes("number,state,title,milestone"), true);
 });
 
+Deno.test("a merged PR named as a dependency maps to CLOSED with no milestone", async () => {
+  // Issue #3218: a dependency reference can be a PR number, and `gh issue
+  // view` reports MERGED. The added `milestone` field must not turn that into
+  // a cross-milestone hold when the PR carries no milestone.
+  const gh = () =>
+    Promise.resolve(JSON.stringify({
+      number: 2171,
+      state: "MERGED",
+      title: "The fix",
+      milestone: null,
+    }));
+  const state = await createIssueFetcher(gh).getIssueState(REPO, 2171);
+  assertEquals(state.state, "CLOSED");
+  assertEquals(state.milestone, null);
+});
+
 Deno.test("createIssueFetcher maps a milestone-less dependency to null", async () => {
   const gh = () =>
     Promise.resolve(JSON.stringify({

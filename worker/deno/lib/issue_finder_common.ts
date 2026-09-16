@@ -39,7 +39,7 @@ import {
   ISSUE_BODY_CACHE_PREFIX,
   ISSUE_STATE_CACHE_PREFIX,
   ISSUE_SUB_ISSUES_CACHE_PREFIX,
-} from "./issue_cache_keys.ts";
+} from "./issue_cache.ts";
 
 /**
  * Options for the issue finder.
@@ -321,9 +321,10 @@ export function createIssueFetcher(
   };
 }
 
-// Issue #1818: the per-issue cache key prefixes live in a leaf module so the
-// close chokepoint can invalidate the same keys this fetcher writes; re-exported
-// here because callers have always imported them from this module.
+// Issue #1818: the per-issue cache key prefixes are defined beside the cache
+// itself so the close chokepoint can invalidate the same keys this fetcher
+// writes; re-exported here because callers have always imported them from this
+// module.
 export {
   ISSUE_BODY_CACHE_PREFIX,
   ISSUE_STATE_CACHE_PREFIX,
