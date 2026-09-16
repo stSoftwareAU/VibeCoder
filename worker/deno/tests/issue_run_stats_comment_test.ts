@@ -20,6 +20,7 @@ import {
   tallyIssueCost,
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
+import type { CodegraphContextResult } from "../lib/codegraph_context.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import type { RunStats } from "../lib/run_stats.ts";
 import type { Logger } from "../types.ts";
@@ -617,4 +618,201 @@ Deno.test("recordClaudeRunStats - keeps degradation signals, drops absent fields
 
   recordClaudeRunStats(state, {});
   assertEquals(Object.keys(state.claudeRunStats![1]!).length, 0);
+});
+
+// ============================================================================
+// CodeGraph line (Issue #2161)
+// ============================================================================
+
+/** The comment's CodeGraph line, or `undefined` when it carries none. */
+function codegraphLineOf(body: string): string | undefined {
+  return body.split("\n").find((line) => line.startsWith("- **CodeGraph:**"));
+}
+
+/** A stats comment for a run whose CodeGraph step produced `codegraph`. */
+function commentWithCodegraph(
+  codegraph: CodegraphContextResult,
+  priorComments?: readonly string[],
+): string {
+  return buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-codegraph-run",
+    codegraph,
+    ...(priorComments ? { priorComments } : {}),
+  });
+}
+
+Deno.test("codegraph line - an indexed run reports every figure it gathered", () => {
+  const body = commentWithCodegraph({
+    status: "ok",
+    enabled: true,
+    indexSeconds: 1.8,
+    nodeCount: 4120,
+    relationshipCount: 9870,
+    queries: 14,
+  });
+
+  assertEquals(
+    codegraphLineOf(body),
+    "- **CodeGraph:** ok — index 1.8 s, 4,120 nodes, 9,870 relationships, 14 queries",
+  );
+});
+
+Deno.test("codegraph line - omits queries when the tally reported none", () => {
+  const body = commentWithCodegraph({
+    status: "ok",
+    enabled: true,
+    indexSeconds: 12,
+    nodeCount: 4120,
+    relationshipCount: 9870,
+  });
+
+  assertEquals(
+    codegraphLineOf(body),
+    "- **CodeGraph:** ok — index 12 s, 4,120 nodes, 9,870 relationships",
+  );
+});
+
+Deno.test("codegraph line - a failed run still reports the figures it reached", () => {
+  const body = commentWithCodegraph({
+    status: "failed",
+    enabled: true,
+    indexSeconds: 300,
+  });
+
+  assertEquals(codegraphLineOf(body), "- **CodeGraph:** failed — index 300 s");
+});
+
+Deno.test("codegraph line - a failure with no figures reports the status alone", () => {
+  const body = commentWithCodegraph({ status: "failed", enabled: true });
+
+  assertEquals(codegraphLineOf(body), "- **CodeGraph:** failed");
+});
+
+Deno.test("codegraph line - a Gemini-routed run names the unsupported provider", () => {
+  const body = commentWithCodegraph({ status: "unsupported", enabled: true });
+
+  assertEquals(codegraphLineOf(body), "- **CodeGraph:** unsupported (gemini)");
+});
+
+Deno.test("codegraph line - a host with the switch off says so", () => {
+  const body = commentWithCodegraph({ status: "off", enabled: false });
+
+  assertEquals(codegraphLineOf(body), "- **CodeGraph:** off");
+});
+
+Deno.test("codegraph line - the cost tally and total line ignore it", () => {
+  const figures: CodegraphContextResult = {
+    status: "ok",
+    enabled: true,
+    indexSeconds: 1.8,
+    nodeCount: 4120,
+    relationshipCount: 9870,
+    queries: 14,
+  };
+  const withLine = commentWithCodegraph(figures);
+  const without = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-codegraph-run",
+  });
+
+  // Same run, same spend: the CodeGraph figures must not move the tally.
+  assertEquals(tallyIssueCost([withLine]), tallyIssueCost([without]));
+  assertEquals(tallyIssueCost([withLine]).partial, false);
+
+  // …nor the cumulative total, which is summed from those same tallies.
+  const prior = commentWithCodegraph(figures);
+  const second = commentWithCodegraph(figures, [prior]);
+  assertStringIncludes(
+    second,
+    `**Issue total across 2 run-stats comments:** ~${
+      formatUsd(tallyIssueCost([prior]).total + tallyIssueCost([second]).total)
+    }`,
+  );
+});
+
+Deno.test("codegraph line - a comment built without the argument is unchanged", () => {
+  const args = {
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-codegraph-run",
+  };
+
+  const body = buildIssueRunStatsComment(args);
+
+  assertEquals(codegraphLineOf(body), undefined);
+  assertEquals(body.includes("CodeGraph"), false);
+  // Byte-for-byte the comment a run that never met CodeGraph rendered before.
+  assertEquals(
+    body,
+    buildIssueRunStatsComment({ ...args, codegraph: undefined }),
+  );
+});
+
+Deno.test("codegraph line - the line sits inside the stats block, above the disclaimer", () => {
+  const body = commentWithCodegraph({
+    status: "ok",
+    enabled: true,
+    indexSeconds: 1.8,
+    nodeCount: 4120,
+    relationshipCount: 9870,
+    queries: 14,
+  });
+
+  const codegraphAt = body.indexOf("- **CodeGraph:**");
+  assert(codegraphAt > body.indexOf("- **Degraded:**"));
+  assert(codegraphAt < body.indexOf(ISSUE_RUN_STATS_DISCLAIMER));
+});
+
+Deno.test("postIssueRunStatsComment - posts this run's CodeGraph figures", async () => {
+  const github = makeGitHubDouble();
+
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2161,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    codegraph: {
+      status: "ok",
+      enabled: true,
+      indexSeconds: 2.5,
+      nodeCount: 1000,
+      relationshipCount: 2000,
+      queries: 3,
+    },
+  });
+
+  assertEquals(result.posted, true);
+  assertEquals(github.posted.length, 1);
+  assertEquals(
+    codegraphLineOf(github.posted[0] ?? ""),
+    "- **CodeGraph:** ok — index 2.5 s, 1,000 nodes, 2,000 relationships, 3 queries",
+  );
+});
+
+Deno.test("postIssueRunStatsComment - CodeGraph figures alone are not something to report", async () => {
+  const github = makeGitHubDouble();
+
+  // No invocation produced stats, so there is no comment to carry the line —
+  // the trial must not manufacture a stats comment out of an index alone.
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2161,
+    phase: "issue",
+    claudeResults: [],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    codegraph: { status: "ok", enabled: true, nodeCount: 5, queries: 1 },
+  });
+
+  assertEquals(result, { posted: false, reason: "no_stats" });
+  assertEquals(github.posted.length, 0);
 });
