@@ -781,6 +781,13 @@ function isMergedPrBlocked(issue: CensusIssue, mergedPRs: ClosedPR[]): boolean {
  * Parent/child blocking (`checkParentBlocked`) is deliberately not modelled:
  * it needs a per-issue API call the census must not pay for, and it errs in
  * the same under-counting direction.
+ *
+ * The cross-milestone hold (Issue #2173) is likewise not modelled: it needs
+ * the *closed* dependency's milestone, which is absent from the open-issue set
+ * this function is given. So an issue whose only blocker is a closed
+ * dependency in another still-open milestone counts as claimable here while
+ * the scan refuses it — the same under-count as parent/child blocking, in the
+ * bounded-harm direction this module prefers.
  */
 function isDependencyBlockedByOpenIssue(
   issue: CensusIssue,

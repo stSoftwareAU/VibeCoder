@@ -896,7 +896,11 @@ model it, so such an issue counted as claimable on every cycle. It is resolved
 against the repo's own open-issue set — which the census already holds — so it
 costs no `gh` call: a same-repo `#N` absent from that set is closed and does not
 block, and a cross-repo `owner/repo#N` cannot be resolved locally, so it blocks,
-matching `isDependencyBlocked`'s fail-safe.
+matching `isDependencyBlocked`'s fail-safe. The cross-milestone hold
+(Issue #2173) is *not* modelled — it needs the closed dependency's milestone,
+which the open-issue set does not carry — so an issue held only by that rule
+still counts as claimable here: an under-count, the same bounded-harm direction
+as the unmodelled parent/child gate.
 
 The **run-local hold** gate (Issue #655) closes the fourth instance, one step
 later in the pipeline. Every gate above lives in a `collect_*_candidates.ts`;
