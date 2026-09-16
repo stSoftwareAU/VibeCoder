@@ -109,7 +109,8 @@ itself and is untouched here.
 Two further weaknesses were closed in passing and are recorded so a later sweep
 does not re-derive them:
 
-- **The repo list bypassed slug validation** (`setup.sh:1213-1216` at the base commit, deleted here).
+- **The repo list bypassed slug validation** (`setup.sh:1096-1099` at the
+  base commit, deleted here).
   `write_interactive_config` used to `jq`-merge the raw `INTERACTIVE_REPOS`
   answer into `.config.json` *after* the TypeScript writer had run, overwriting
   the validated, de-duplicated list with the operator's unvalidated one. The
@@ -271,7 +272,9 @@ an unstated empty category is indistinguishable from one that was skipped.
   three files download nothing they did not already.
 - **Destructive `rm` — no new unguarded recursive removal, but the *volume*
   reset was deliberately unbounded.** The only `rm -rf` in the three files
-  (`setup.sh:1310`) is outside the delta and unchanged. Every `rm` added here is
+  (`setup.sh:1310`) is outside the delta and unchanged — the only other literal
+  `rm -rf` in the three files, `setup.sh:1344`, sits inside a `print_info`
+  string and is never executed. Every `rm` added here is
   a non-recursive `rm -f` over a path the same function created: the mktemp
   temporaries in `write_interactive_config`, the setup-token transcripts, the
   image-removal stderr capture, and `TOOLCHAIN_REBUILD_STATE`. Separately,
@@ -299,7 +302,7 @@ an unstated empty category is indistinguishable from one that was skipped.
   stdout.** `export_provider_env` passes the credential through the child
   environment as a single `export` argument, never as argv. The credential
   directories are now owner-only *at creation* (`make_credential_dir`,
-  `setup.sh:284-289`) rather than narrowed by a following `chmod`, which closes
+  `setup.sh:281-286`) rather than narrowed by a following `chmod`, which closes
   the umask window on every parent `mkdir -p` creates. Nothing added here
   `echo`s a credential: the workflow-scope warning prints only the scope list,
   and the setup-token capture greps the transcript rather than displaying it.
