@@ -191,7 +191,9 @@ Eight consequences worth knowing:
   `bin/codegraph` shell launcher, its own `node` runtime and `lib/`), so the
   fragment installs the whole tree under
   `/opt/codegraph` and symlinks `/usr/local/bin/codegraph` at the launcher,
-  which resolves symlinks itself to find its bundle directory.
+  which resolves symlinks itself to find its bundle directory. That bundle is
+  about 62 MB downloaded and 280 MB unpacked, so it is the third-largest
+  toolchain in the image after `rust` and `semgrep`.
 
 Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
 provider need; the worker itself is Deno. Its layer is built **before** the

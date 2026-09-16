@@ -67,8 +67,8 @@ echo "${checksum}  ${archive}" | sha256sum -c -
 # exist in the image; the bundle belongs to root like every other install here.
 tar -xzf "${archive}" --no-same-owner -C "${workdir}"
 extracted="${workdir}/codegraph-linux-${asset_arch}"
-if [[ ! -x "${extracted}/bin/codegraph" ]]; then
-    echo "[${TOOLCHAIN_ID}] Archive holds no executable bin/codegraph under ${extracted##*/}" >&2
+if [[ ! -x "${extracted}/bin/codegraph" || ! -x "${extracted}/node" ]]; then
+    echo "[${TOOLCHAIN_ID}] Archive does not carry the expected bundle layout (bin/codegraph plus its own node) under ${extracted##*/}" >&2
     exit 1
 fi
 
