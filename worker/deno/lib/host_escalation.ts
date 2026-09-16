@@ -8,14 +8,14 @@
  * operator most needs telling: nothing is being worked, and nothing will be
  * until somebody looks.
  *
- * That report is delivered **on the host**, to `callbacks.host_failure`. Core
- * files nothing in the origin repository for a host-level condition: the
- * origin repository is public, and a crash-loop, a stale checkout or a dead
- * credential describe the operator's own infrastructure to anybody reading it
- * (Issue #2088). The issue channel this module once carried — file, comment,
- * close, all deduplicated by title — was retired with that milestone; what is
- * left is the host's identity, which the hook payload's `host` field names,
- * and the `owner/repo` parse the release check still needs.
+ * That report is delivered **on the host**, to `callbacks.host_failure`. The
+ * core worker files nothing in the origin repository for a host-level
+ * condition: that repository is public, and a crash-loop, a stale checkout or
+ * a dead credential describe the operator's own infrastructure to anybody
+ * reading it (Issue #2088). The issue channel this module once carried — file,
+ * comment, close, all deduplicated by title — was retired with that milestone;
+ * what is left is the host's identity, which the hook payload's `host` field
+ * names, and the `owner/repo` parse the release check still needs.
  *
  * Australian English spelling throughout (behaviour, organisation, authorised).
  */
