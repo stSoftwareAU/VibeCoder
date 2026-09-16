@@ -1567,9 +1567,10 @@ Deno.test("syncMilestoneBranches - too little of the cycle left denies the agent
       }],
       streakPath,
       nowMs: 10_000,
-      // A minute of handler budget cannot cover an agent run plus its
+      // Four minutes of handler budget start a rules-only sync (Issue #2215
+      // stops a pass under three) but cannot cover an agent run plus its
       // overhead, so the rung is refused before it is started (Issue #1693).
-      deadlineEpochMs: 70_000,
+      deadlineEpochMs: 250_000,
       agentTimeoutMs: DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
       grants,
     }));
