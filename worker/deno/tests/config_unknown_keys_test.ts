@@ -274,3 +274,44 @@ Deno.test("config_unknown_keys - a retired milestone_sync_cooldown_seconds is wa
   const validated = validateConfigFileJson(config);
   assertEquals(validated.ok, true);
 });
+
+// --- Nested block keys (Issue #2154) ---
+
+Deno.test("config_unknown_keys - codegraph_context is a known top-level key", () => {
+  assertEquals(KNOWN_CONFIG_KEYS.has("codegraph_context"), true);
+
+  const warnings = detectUnknownConfigKeys({
+    repos: ["owner/repo"],
+    codegraph_context: { enabled: true },
+  });
+  assertEquals(warnings, []);
+});
+
+Deno.test("config_unknown_keys - an unknown key inside codegraph_context is warned about with its block prefix", () => {
+  const warnings = detectUnknownConfigKeys({
+    repos: ["owner/repo"],
+    codegraph_context: { enabeld: true },
+  });
+
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]?.field, "codegraph_context.enabeld");
+  assertEquals(warnings[0]?.suggestion, "codegraph_context.enabled");
+});
+
+Deno.test("config_unknown_keys - a nested key with no close match warns without a suggestion", () => {
+  const warnings = detectUnknownConfigKeys({
+    codegraph_context: { zzzzzzzzzzzz: 1 },
+  });
+
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]?.field, "codegraph_context.zzzzzzzzzzzz");
+  assertEquals(warnings[0]?.suggestion, null);
+});
+
+Deno.test("config_unknown_keys - a non-object codegraph_context block yields no nested warnings", () => {
+  // The malformed block itself fails the config load loudly
+  // (`lib/codegraph_context_config.ts`); it is not this module's to report.
+  assertEquals(detectUnknownConfigKeys({ codegraph_context: "on" }), []);
+  assertEquals(detectUnknownConfigKeys({ codegraph_context: null }), []);
+  assertEquals(detectUnknownConfigKeys({ codegraph_context: [1] }), []);
+});
