@@ -307,6 +307,34 @@ Deno.test("install-tools - a newline in a bin entry is refused before any downlo
   });
 });
 
+Deno.test("install-tools - a newline in an env NAME is refused before any download", async () => {
+  await withDirs(async (workDir, prefix) => {
+    const java = await fixtureTarGz(workDir, "java-1.0", {
+      "bin/java": "#!/bin/sh\n",
+    });
+    // The name is the left half of the same line as the value, so a newline
+    // there injects a line just as surely — here a PATH= the entrypoint would
+    // prepend, aimed outside the install prefix.
+    const run = await runInstaller(
+      [{
+        id: "java",
+        url: { noarch: java.url },
+        sha256: { noarch: java.sha256 },
+        stripComponents: 1,
+        env: { "A\nPATH=/tmp/attacker-bin:x": "" },
+      }],
+      { prefix, workDir },
+    );
+
+    assert(
+      run.code !== 0,
+      `a newline-bearing env name must fail: ${run.stdout}`,
+    );
+    assertStringIncludes(run.stderr, "newline");
+    assertEquals([...Deno.readDirSync(prefix)].length, 0);
+  });
+});
+
 Deno.test("install-tools - a bin block jq cannot walk aborts rather than installing a PATH-less tool", async () => {
   await withDirs(async (workDir, prefix) => {
     const java = await fixtureTarGz(workDir, "java-1.0", {

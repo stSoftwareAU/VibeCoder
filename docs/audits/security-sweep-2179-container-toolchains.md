@@ -133,11 +133,11 @@ directory level, and a status nothing reads.
 
 | # | Where | Class | Severity | Status |
 | - | ----- | ----- | -------- | ------ |
-| 1 | `install-tools.sh` env hand-off | line injection into a `KEY=value` file (CWE-74) | low | **Fixed here** |
+| 1 | `install-tools.sh` env hand-off | line injection into a `KEY=value` file (CWE-74) | low | **Fixed here** (both halves of the line) |
 | 2 | `install-tools.sh` `extract_zip` | strip level descends a symlink (CWE-59) | low | **Fixed here** |
 | 3 | `install-tools.sh:221-229` | `jq` failure masked as a successful install (CWE-755) | low | **Fixed here** |
 
-### 1 — a newline in a `bin` entry or an `env` value writes a second line
+### 1 — a newline in a `bin` entry, an `env` name or an `env` value writes a second line
 
 `/opt/vibe-tools/environment` is **one `KEY=value` per line**, and
 `container/entrypoint.sh:510-534` reads it that way: a `PATH=` line is prepended
@@ -166,11 +166,21 @@ value on `/`, saw `["x\nPATH=", "evil"]`, and returned `true`. Both layers are
 fixed: the predicate rejects `\r`/`\n`, and `install-tools.sh` refuses the whole
 set before anything downloads.
 
+**Both halves of the line, not just the value.** An `env` **name** is the left
+half of the very same line, so a newline there injects a line exactly as a
+value does — `{"A\nPATH=/tmp/evil:x": ""}` writes a well-formed `PATH=` line
+the entrypoint accepts. The Deno boundary refuses that name already
+(`ENV_NAME_PATTERN`, and JavaScript's `$` is end-of-input, so a trailing
+newline does not slip past it), but the installer must not depend on the
+boundary having run: the check covers `bin` entries, `env` names and `env`
+values alike.
+
 **Regression tests.**
 `install_tools_test.ts::install-tools - a newline in an env value is refused before any download`,
-`::install-tools - a newline in a bin entry is refused before any download`
+`::install-tools - a newline in a bin entry is refused before any download`,
+`::install-tools - a newline in an env NAME is refused before any download`
 and `host_path_style_test.ts::isConfinedRelativePath - a newline-bearing value is refused`.
-The first two were observed failing against the unfixed script.
+The first three were each observed failing against the code they fix.
 
 ### 2 — a zip whose strip level is a symlink copies the link target in
 
@@ -381,12 +391,14 @@ category is indistinguishable from one that was skipped.
   install a local, digest-verified wheel with `--no-deps --only-binary=:all:`,
   so no index is consulted and nothing unpinned can enter; the flag would
   restate that rather than change it.
-- **`install-tools.sh` does not validate `env` *names*.** A malformed name
-  reaches the hand-off file and is refused by `container/entrypoint.sh:522-525`,
-  which aborts the container loudly. The name is validated at the Deno trust
-  boundary (`ENV_NAME_PATTERN`) on the fleet path, so the window is a
-  hand-run script producing an image that fails at first start rather than at
-  build — loud in both places, just later than ideal.
+- **`install-tools.sh` still does not validate the *shape* of an `env` name.**
+  Its newline is refused (finding 1), but a name that is newline-free and not a
+  POSIX identifier — `1TOOL`, say — reaches the hand-off file and is refused by
+  `container/entrypoint.sh:522-525`, which aborts the container loudly. The
+  shape is validated at the Deno trust boundary (`ENV_NAME_PATTERN`) on the
+  fleet path, so the remaining window is a hand-run script producing an image
+  that fails at first start rather than at build — loud in both places, just
+  later than ideal.
 - **The build-arg value is recorded in image history.** `VIBE_CONTAINER_TOOLS`
   carries ids, URLs and digests — no credential — so this is a visibility note,
   not an exposure.

@@ -26,9 +26,10 @@
 #
 # Like install-providers.sh, the WHOLE set is validated first — id shape,
 # duplicate ids, a supported archive extension, a URL+SHA for the build
-# architecture, and a bin/env value that carries no newline — before anything is
-# downloaded, so a bad set never leaves a half-installed image behind. `set -euo pipefail`; any failure aborts loudly
-# with the offending tool id named (parent #5: no partial image).
+# architecture, and a bin entry, env name or env value that carries no
+# newline — before anything is downloaded, so a bad set never leaves a
+# half-installed image behind. `set -euo pipefail`; any failure aborts loudly with the
+# offending tool id named (parent #5: no partial image).
 #
 # Install prefix, build architecture and env file are overridable via the
 # environment so the tests can drive the real script against local fixtures
@@ -137,19 +138,23 @@ for ((i = 0; i < count; i++)); do
     [[ "${strip}" =~ ^[0-9]+$ ]] ||
         fail "tool \"${id}\" has a non-integer stripComponents: ${strip}."
 
-    # The environment hand-off is one KEY=value per LINE, so a bin entry or an
-    # env value carrying a newline writes a second line the reader cannot tell
-    # from a real one — a `PATH=` aimed anywhere on the host. Refused for the
-    # whole set before anything downloads, so the confinement the prefix
-    # promises is a property of the file rather than of the spec's goodwill.
+    # The environment hand-off is one KEY=value per LINE, so ANY of the three
+    # pieces that reach a line — a bin entry, an env name, an env value —
+    # writes a second line the reader cannot tell from a real one if it carries
+    # a newline, and that second line can be a `PATH=` aimed anywhere on the
+    # host. All three are checked, not just the values: the name is the left
+    # half of the very same line. Refused for the whole set before anything
+    # downloads, so the confinement the prefix promises is a property of the
+    # file rather than of the spec's goodwill.
     # Read as an assignment rather than an `if jq -e`: a bin/env block jq
     # cannot walk at all must abort here, not read as "found no newline".
     line_safe="$(jq -r --argjson idx "${i}" \
-        '[(.[$idx].bin // [])[], ((.[$idx].env // {}) | to_entries[] | .value)]
+        '[(.[$idx].bin // [])[],
+          ((.[$idx].env // {}) | to_entries[] | (.key, .value))]
          | all(type == "string" and (contains("\n") or contains("\r") | not))' \
         "${spec}")"
     [[ "${line_safe}" == "true" ]] ||
-        fail "tool \"${id}\" has a bin entry or env value that is not a newline-free string: ${ENV_FILE} is one KEY=value per line, so such a value would inject a line of its own."
+        fail "tool \"${id}\" has a bin entry, env name or env value carrying a newline: ${ENV_FILE} is one KEY=value per line."
 
     ids+=("${id}")
     urls+=("${url}")
