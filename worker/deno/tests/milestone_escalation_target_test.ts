@@ -310,3 +310,21 @@ Deno.test(
     );
   },
 );
+
+Deno.test("resolveMilestoneEscalationTarget - reopenClosedParent false leaves a closed parent closed and unlabelled (Issue #2214)", async () => {
+  const { gh, calls } = ghStub((key) =>
+    key.startsWith("issue view") ? "CLOSED" : ""
+  );
+
+  const target = await resolveMilestoneEscalationTarget({
+    repo: REPO,
+    milestone: { title: "#2145 Trial CodeGraph", number: 9 },
+    ghCommandFn: gh,
+    log: () => {},
+    reopenClosedParent: false,
+  });
+
+  assertEquals(target, { kind: "parent", issue: 2145, reopened: false });
+  assertEquals(calls.filter((c) => c[1] === "reopen"), [], "never reopened");
+  assertEquals(calls.filter((c) => c.includes("--add-label")), [], "no label");
+});

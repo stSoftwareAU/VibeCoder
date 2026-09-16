@@ -77,6 +77,17 @@ export function conflictEscalationMarker(key: string): string {
   return `<!-- vibe-milestone-sync-conflict key="${sanitise(key)}" -->`;
 }
 
+/**
+ * The leading part every marker for `milestoneBranch` shares, whatever the
+ * SHA and files (Issue #2214): a thread that contains it carried a sync
+ * escalation for this branch at some point.
+ */
+export function conflictEscalationMarkerPrefix(
+  milestoneBranch: string,
+): string {
+  return `<!-- vibe-milestone-sync-conflict key="${sanitise(milestoneBranch)}@`;
+}
+
 // ---------------------------------------------------------------------------
 // Cross-host check
 // ---------------------------------------------------------------------------
