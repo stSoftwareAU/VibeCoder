@@ -3994,9 +3994,14 @@ Two changes close that:
   per-cycle `selfHealMilestoneBranches` pass, which is the only one that
   reaches a milestone whose children **all** reached `failed`, since those are
   filtered out of label discovery and can never claim their way into setup.
-  The sweep runs once per branch per process, releases that claim if a `gh`
-  fault stopped it finishing, and returns every fault to the caller, which
-  logs it — a half-run sweep is never reported as a clean one.
+  Only a comment a **fleet** account wrote counts as a failure record: a
+  record is plain Markdown anyone able to comment could forge, and here a
+  forged one would strip a genuine `failed` label, so every comment is
+  filtered through `selectFleetAuthoredComments` (`alert_dedup_authors.ts`)
+  first. An unresolvable fleet identity discards every comment, which keeps
+  the label. The sweep runs once per branch per process, releases that claim
+  if a `gh` fault stopped it finishing, and returns every fault to the caller,
+  which logs it — a half-run sweep is never reported as a clean one.
 
 ```mermaid
 flowchart TD
@@ -4007,7 +4012,7 @@ flowchart TD
     B -- "per-issue fault" --> F[Existing ladder<br/>failed-once → failed]
     B -- no --> G[Branch exists]
     G --> H[Sweep the milestone's<br/>failed-once / failed issues<br/>setup phase + self-heal pass]
-    H --> I{Newest failure record<br/>is the refusal?}
+    H --> I{Newest fleet-authored<br/>failure record<br/>is the refusal?}
     I -- yes --> J[Remove labels + comment]
     I -- no --> K[Leave the label alone]
     style C fill:#f4a261,stroke:#b5651d,color:#000
