@@ -1613,6 +1613,18 @@
       "paths": [
         "worker/deno/lib/codegraph_context.ts"
       ]
+    },
+    {
+      "issue": 2159,
+      "chunk": "top-up-2159",
+      "title": "top-up: the CodeGraph run wiring",
+      "ledger": "docs/audits/security-sweep-2159-codegraph-run.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: codegraph_run.ts (#2159)",
+      "status": "swept",
+      "sweptAt": "e163b9c369ad5c4534eac33ff684a60b49015097",
+      "paths": [
+        "worker/deno/lib/codegraph_run.ts"
+      ]
     }
   ],
   "roots": [

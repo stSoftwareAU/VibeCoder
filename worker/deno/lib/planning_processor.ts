@@ -45,6 +45,8 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import type { IssueContext } from "./issue_worker.ts";
 import {
@@ -133,6 +135,11 @@ export interface PlanningResult {
    * completes. Absent on a run whose every ask is accounted for.
    */
   uncoveredAsks?: string[];
+  /**
+   * What this run's CodeGraph step produced (Issue #2159, part of #2145),
+   * with `queries` summed across every planning invocation the run made.
+   */
+  codegraphContext?: CodegraphContextResult;
 }
 
 /** Options for the planning processor. */
@@ -1238,15 +1245,30 @@ export async function processIssuePlanning(
   // a round that worked, and a diagnosed failure for one that did not.
   const runStartedAtMs = Date.now();
   let runOutcome: RunOutcome | undefined;
+  // The body returns from a dozen places; the CodeGraph outcome is attached
+  // here instead, so every one of them carries it (Issue #2159).
+  const codegraphCarrier: { codegraphContext?: CodegraphContextResult } = {};
   try {
-    const result = await _processPlanningWithHeartbeat(ctx, processorDeps);
+    const result = await _processPlanningWithHeartbeat(
+      ctx,
+      processorDeps,
+      codegraphCarrier,
+    );
     runOutcome = outcomeForNonCodingResult(
       "planning",
       result,
       (Date.now() - runStartedAtMs) / 1000,
       "planning round posted — sub-issues created",
     );
-    return result;
+    return result.ok && codegraphCarrier.codegraphContext
+      ? {
+        ok: true,
+        value: {
+          ...result.value,
+          codegraphContext: codegraphCarrier.codegraphContext,
+        },
+      }
+      : result;
   } catch (err) {
     runOutcome = outcomeForThrown(
       "planning",
@@ -1266,6 +1288,7 @@ export async function processIssuePlanning(
 async function _processPlanningWithHeartbeat(
   ctx: IssueContext,
   processorDeps: PlanningProcessorDeps,
+  codegraphCarrier: { codegraphContext?: CodegraphContextResult },
 ): Promise<Result<PlanningResult>> {
   const env = processorDeps.env ?? processEnvLookup;
   const {
@@ -1463,10 +1486,29 @@ async function _processPlanningWithHeartbeat(
   // verdict on the parent issue.
   const invocations: PlanningInvocationStats[] = [];
 
+  // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
+  // Prepared ONCE for the whole round: planning makes several invocations
+  // (draft, critique, the #1219 retry, the #3272 self-repair) and re-indexing
+  // before each would spend the index step over and over on a checkout that
+  // has not changed. Every invocation below is handed the same MCP entry and
+  // the same prompt line — together or not at all — and their
+  // `codegraph_explore` calls are summed into one figure for the run.
+  const codegraph = await prepareCodegraphRun({
+    repoDir,
+    enabled: config.codegraphContext.enabled,
+    logger,
+    prepare: deps.claude.prepareCodegraphContext,
+  });
+  codegraphCarrier.codegraphContext = codegraph.result;
+  /** The `mcpConfig` every planning invocation gets: absent unless indexed. */
+  const codegraphMcpOption = codegraph.mcpConfigOption();
+
   // --- Turn 1: draft the plan as text only ---
   const draftResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt,
+      // Appended in code, not in `prompts/planning/prompt.md`: the line is
+      // run-conditional, so the template stays the same on every host.
+      prompt: codegraph.applyPrompt(prompt),
       systemPrompt,
       timeoutSeconds: config.planningTimeout,
       killAfterSeconds: config.planningKillAfter,
@@ -1474,6 +1516,7 @@ async function _processPlanningWithHeartbeat(
       cwd: config.workDir,
       logger,
       sessionResumeState: sessionState,
+      ...codegraphMcpOption,
     },
     {
       maxRetries: config.maxRateLimitRetries,
@@ -1497,7 +1540,7 @@ async function _processPlanningWithHeartbeat(
         providerId: draftResult.value.provider,
       });
     }
-    recordInvocation(invocations, draftResult.value);
+    recordInvocation(invocations, draftResult.value, codegraph);
     if (draftResult.value.timedOut) {
       logger.warn(
         "Planning draft stage timed out — falling back to single-invocation publish (Issue #2648)",
@@ -1543,6 +1586,7 @@ async function _processPlanningWithHeartbeat(
         ctx.milestoneTitle,
         ctx.handlerDeadlineEpochMs,
         env,
+        codegraph,
       );
     }
   }
@@ -1614,7 +1658,7 @@ async function _processPlanningWithHeartbeat(
 
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt: publishPrompt,
+      prompt: codegraph.applyPrompt(publishPrompt),
       systemPrompt: publishSystemPrompt,
       timeoutSeconds: config.planningTimeout,
       killAfterSeconds: config.planningKillAfter,
@@ -1622,6 +1666,7 @@ async function _processPlanningWithHeartbeat(
       cwd: config.workDir,
       logger,
       sessionResumeState: publishSessionState,
+      ...codegraphMcpOption,
     },
     {
       maxRetries: config.maxRateLimitRetries,
@@ -1648,7 +1693,7 @@ async function _processPlanningWithHeartbeat(
       ),
     };
   }
-  recordInvocation(invocations, claudeResult.value);
+  recordInvocation(invocations, claudeResult.value, codegraph);
 
   const claudeOutput = claudeResult.value.output;
 
@@ -1751,13 +1796,14 @@ async function _processPlanningWithHeartbeat(
 
     const retryResult = await deps.claude.runClaudeWithRetry(
       {
-        prompt: retryPrompt,
+        prompt: codegraph.applyPrompt(retryPrompt),
         timeoutSeconds: config.planningTimeout,
         killAfterSeconds: config.planningKillAfter,
         model: config.claudeModel || undefined,
         phase: "planning",
         cwd: config.workDir,
         logger,
+        ...codegraphMcpOption,
       },
       {
         maxRetries: config.maxRateLimitRetries,
@@ -1765,7 +1811,7 @@ async function _processPlanningWithHeartbeat(
     );
 
     if (retryResult.ok) {
-      recordInvocation(invocations, retryResult.value);
+      recordInvocation(invocations, retryResult.value, codegraph);
     }
     if (retryResult.ok && !retryResult.value.timedOut) {
       const retryOutput = retryResult.value.output;
@@ -1844,6 +1890,7 @@ async function _processPlanningWithHeartbeat(
     ctx.milestoneTitle,
     ctx.handlerDeadlineEpochMs,
     env,
+    codegraph,
   );
 }
 
@@ -1865,7 +1912,14 @@ function recordInvocation(
     preflightDegraded?: boolean;
     preflightDegradedReason?: string;
   },
+  /**
+   * The run's CodeGraph context (Issue #2159). Folding the tally in here —
+   * rather than beside each call — is what makes the query figure the sum
+   * across every planning invocation, with no site left out.
+   */
+  codegraph?: CodegraphRun,
 ): void {
+  codegraph?.record(value.runStats);
   invocations.push({
     phase: "planning",
     ...(value.runStats ? { runStats: value.runStats } : {}),
@@ -1994,7 +2048,16 @@ async function closePlanningIssue(
    * Defaults to the process environment.
    */
   env: EnvLookup = processEnvLookup,
+  /**
+   * The run's prepared CodeGraph context (Issue #2159), when the round got
+   * as far as preparing one. The Failure-Detection self-repair below is a
+   * planning invocation like any other, so it is handed the same MCP entry
+   * and prompt line, and its queries join the run's tally. Absent on the
+   * recovery paths that close without ever invoking the agent.
+   */
+  codegraph?: CodegraphRun,
 ): Promise<Result<PlanningResult>> {
+  const codegraphMcpOption = codegraph?.mcpConfigOption() ?? {};
   // Sub-issue numbers the run created — resolved once and reused below.
   // Issue #2900: union the text-extracted URLs with the parent's *native*
   // GitHub sub-issues. Text extraction is fragile — when Claude printed the
@@ -2086,12 +2149,15 @@ async function closePlanningIssue(
         runClaude: (repairPrompt: string) =>
           deps.claude.runClaudeWithRetry(
             {
-              prompt: repairPrompt,
+              prompt: codegraph
+                ? codegraph.applyPrompt(repairPrompt)
+                : repairPrompt,
               timeoutSeconds: config.planningTimeout,
               killAfterSeconds: config.planningKillAfter,
               phase: "planning",
               cwd: config.workDir,
               logger,
+              ...codegraphMcpOption,
             },
             { maxRetries: config.maxRateLimitRetries },
           ),
@@ -2106,6 +2172,10 @@ async function closePlanningIssue(
       // stats (built once below) reflect the repair invocation — the run no
       // longer reports "no served model observed" on this path (Issue #3272).
       invocations.push(...repair.invocations);
+      // Issue #2159: the repair's calls belong to the same run's tally.
+      for (const invocation of repair.invocations) {
+        codegraph?.record(invocation.runStats);
+      }
 
       if (repair.repaired.length > 0) {
         logger.info(

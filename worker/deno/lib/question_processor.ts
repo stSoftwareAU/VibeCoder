@@ -36,6 +36,8 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { buildQuestionPrompt } from "./prompt_builder.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import { prepareCodegraphRun } from "./codegraph_run.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
 import { releaseClaim } from "./claim_release.ts";
@@ -68,6 +70,13 @@ export interface QuestionResult {
   responseType: "answer" | "clarification" | "partial" | "failure";
   /** Human-readable summary. */
   summary: string;
+  /**
+   * What this run's CodeGraph step produced (Issue #2159, part of #2145).
+   *
+   * Present on every outcome reached after the index step, carrying
+   * `queries` once the run's tool tally was read.
+   */
+  codegraphContext?: CodegraphContextResult;
 }
 
 /** Options for the question processor. */
@@ -256,15 +265,27 @@ export async function processIssueQuestion(
   // a round that worked, and a diagnosed failure for one that did not.
   const runStartedAtMs = Date.now();
   let runOutcome: RunOutcome | undefined;
+  // The body returns from a dozen places; the CodeGraph outcome is attached
+  // here instead, so every one of them carries it (Issue #2159).
+  const carrier: { codegraphContext?: CodegraphContextResult } = {};
   try {
-    const result = await _processQuestionWithHeartbeat(ctx, processorDeps);
+    const result = await _processQuestionWithHeartbeat(
+      ctx,
+      processorDeps,
+      carrier,
+    );
     runOutcome = outcomeForNonCodingResult(
       "question",
       result,
       (Date.now() - runStartedAtMs) / 1000,
       "question answered",
     );
-    return result;
+    return result.ok && carrier.codegraphContext
+      ? {
+        ok: true,
+        value: { ...result.value, codegraphContext: carrier.codegraphContext },
+      }
+      : result;
   } catch (err) {
     runOutcome = outcomeForThrown(
       "question",
@@ -284,6 +305,7 @@ export async function processIssueQuestion(
 async function _processQuestionWithHeartbeat(
   ctx: IssueContext,
   processorDeps: QuestionProcessorDeps,
+  carrier: { codegraphContext?: CodegraphContextResult },
 ): Promise<Result<QuestionResult>> {
   const {
     repo,
@@ -354,21 +376,39 @@ async function _processQuestionWithHeartbeat(
     prompt = promptResult.value.prompt;
   }
 
+  // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
+  // Off, nothing is spawned and the invocation below is byte-identical to the
+  // one this processor always made. On and indexed, the run gains the
+  // `codegraph` MCP entry and the one prompt line together — never one alone.
+  const codegraph = await prepareCodegraphRun({
+    repoDir,
+    enabled: config.codegraphContext.enabled,
+    logger,
+    prepare: deps.claude.prepareCodegraphContext,
+  });
+  carrier.codegraphContext = codegraph.result;
+
   // Execute Claude with question timeout
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt,
+      // Appended in code, not in `prompts/question/prompt.md`: the line is
+      // run-conditional, so the template stays the same on every host.
+      prompt: codegraph.applyPrompt(prompt),
       systemPrompt,
       timeoutSeconds: config.questionTimeout,
       killAfterSeconds: config.questionKillAfter,
       phase: "question",
       cwd: config.workDir,
       logger,
+      // Absent unless the index built, so a switched-off run writes no MCP
+      // configuration at all — exactly as before.
+      ...codegraph.mcpConfigOption(),
     },
     {
       maxRetries: config.maxRateLimitRetries,
     },
   );
+  if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     // Check for timeout with partial output

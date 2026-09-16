@@ -60,6 +60,45 @@ decision is not re-litigated from memory:
    (about 3.5 minutes) and the most expensive to set up (about US$2.30 of Gemini
    and Claude at API prices), and it saved the least.
 
+### 1.2 🔌 Where CodeGraph is wired in
+
+An enabled host prepares the index **once per run**, before the agent is
+invoked, on three paths — the standalone issue phase
+(`worker/deno/lib/execute_claude_phase.ts`), the main-loop issue phase
+(`worker/deno/lib/phases/execute_phase.ts`), and the planning and question
+processors. Planning makes several invocations in one round (draft, critique,
+the explicit retry, the Failure-Detection self-repair); they share one index
+and their `codegraph_explore` calls are summed into a single figure for the
+run.
+
+The MCP entry and the prompt line are handed over **together or not at all**:
+the line without the server tells the agent to call a tool that does not
+exist, and the server without the line leaves an indexed repository the agent
+never queries. The line is appended in code rather than written into
+`prompts/<type>/prompt.md`, because it is run-conditional — the same reason
+the codebase map is injected rather than templated — and appending it after
+the built prompt leaves the cached static half untouched.
+
+```mermaid
+sequenceDiagram
+    participant P as phase / processor
+    participant C as codegraph_context
+    participant A as agent (claude / codex)
+    P->>C: prepareCodegraphContext(repoDir, enabled, providerId)
+    C-->>P: {status, indexSeconds, counts}
+    alt status ok
+        P->>A: prompt + CodeGraph line, mcpConfig with servers.codegraph
+    else off / failed / unsupported
+        P->>A: prompt unchanged, mcpConfig as before
+    end
+    A-->>P: runStats.toolCallCounts
+    P->>C: countCodegraphQueries → result.queries
+```
+
+Every run logs one `CodeGraph context: status=…` line naming the status and
+whatever figures were gathered, and a failure additionally logs
+`[CODEGRAPH_UNAVAILABLE]`. Losing the index never fails a run.
+
 ## 2. 📼 Motivation, not evidence
 
 The trial was prompted by a published one-run-per-setup comparison
