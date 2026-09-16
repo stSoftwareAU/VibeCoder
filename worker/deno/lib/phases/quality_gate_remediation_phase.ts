@@ -158,7 +158,10 @@ export async function workOnIssueQualityGate(
         qualityFailureMessage ?? phaseResult.reason,
         state,
         deps.logger,
-        { backoffMs: ctx.config.infraRetryBackoffMs },
+        {
+          backoffMs: ctx.config.infraRetryBackoffMs,
+          cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
+        },
       );
       if (shouldRetry) {
         ({ phaseResult, qualityFailureMessage } = await runQualityGateBody(
