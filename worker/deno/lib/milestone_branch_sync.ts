@@ -42,6 +42,7 @@ import {
 import {
   conflictEscalationKey,
   conflictEscalationMarker,
+  conflictEscalationMarkerPrefix,
   hasConflictEscalationComment,
 } from "./milestone_conflict_dedup.ts";
 import {
@@ -1590,6 +1591,29 @@ export async function escalateSyncConflict(
     return true;
   }
 
+  // Issue #2214: a conflict the worker resolved itself is a notice, not an
+  // escalation. It used to travel the escalation path unchanged, which
+  // reopened the closed planning issue, labelled it `needs-human` and led
+  // with "needs a human" — on VibeCoder#2145, #2163 and NEAT-AI-Ockham#130
+  // a success read as a hand-off. The notice now leaves a closed parent
+  // closed, applies no label, and clears the `needs-human` an earlier sync
+  // escalation of this very branch left behind.
+  if (conflict.resolution === "auto") {
+    return await escalateToExistingIssue(
+      repo,
+      milestone,
+      body,
+      what,
+      ghCommandFn,
+      log,
+      undefined,
+      {
+        informational: true,
+        addendum: (issue) =>
+          clearEarlierSyncEscalation(repo, issue, milestone, ghCommandFn, log),
+      },
+    );
+  }
   return await escalateToExistingIssue(
     repo,
     milestone,
@@ -1598,6 +1622,78 @@ export async function escalateSyncConflict(
     ghCommandFn,
     log,
   );
+}
+
+/**
+ * Clear the `needs-human` an earlier sync escalation of this branch applied
+ * (Issue #2214), once the branch has synced.
+ *
+ * Only a label this pass itself put there is touched: the issue must carry
+ * `needs-human` AND a sync-conflict marker for this milestone branch. A
+ * `needs-human` a person applied, or another pass, is left alone. Nothing is
+ * closed — a reopen is reverted by the reader, who can see from the notice
+ * that the sync has cleared. Best-effort: a failure is logged, and the
+ * notice still goes out.
+ *
+ * @returns A line for the notice when the label was removed, else "".
+ */
+async function clearEarlierSyncEscalation(
+  repo: string,
+  issueNumber: number,
+  milestone: ActiveMilestone,
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+): Promise<string> {
+  try {
+    const raw = await ghCommandFn([
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--json",
+      "labels,comments",
+    ]);
+    const parsed = JSON.parse(raw) as {
+      labels?: { name?: unknown }[];
+      comments?: { body?: unknown }[];
+    };
+    const labelled = (parsed.labels ?? []).some((l) =>
+      l?.name === "needs-human"
+    );
+    if (!labelled) return "";
+    const prefix = conflictEscalationMarkerPrefix(milestone.milestoneBranch);
+    const escalatedHere = (parsed.comments ?? []).some((c) =>
+      typeof c?.body === "string" && c.body.includes(prefix)
+    );
+    if (!escalatedHere) return "";
+    await ghCommandFn([
+      "issue",
+      "edit",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--remove-label",
+      "needs-human",
+    ]);
+    log(
+      `Removed needs-human from issue #${issueNumber} in ${repo}: the ` +
+        `milestone sync escalation for '${milestone.milestoneBranch}' it ` +
+        `carried has cleared (Issue #2214).`,
+    );
+    return `The \`needs-human\` an earlier sync escalation for ` +
+      `\`${milestone.milestoneBranch}\` applied is cleared: the branch has ` +
+      `synced. If that escalation is what reopened this issue, it can be ` +
+      `closed again.`;
+  } catch (err) {
+    log(
+      `Could not clear an earlier sync escalation on issue #${issueNumber} ` +
+        `in ${repo}: ${
+          err instanceof Error ? err.message : String(err)
+        } (Issue #2214). The notice still goes out.`,
+    );
+    return "";
+  }
 }
 
 /**
@@ -1736,6 +1832,11 @@ async function escalateMergeGateFailure(
  *   again, and is not reopened either (Issue #1786). Another host's streak
  *   file is invisible here, so the marker on the issue is the shared record.
  *   Fails open — an unreadable thread is reported again.
+ * @param options.informational - The post needs nobody (Issue #2214): a
+ *   closed parent stays closed, no label is applied, and no "needs a human"
+ *   preamble is written.
+ * @param options.addendum - Text appended to the body once the destination
+ *   is known — a success reports there what it cleared.
  * @returns True when the escalation reached a human, or had nowhere to go.
  */
 async function escalateToExistingIssue(
@@ -1746,6 +1847,10 @@ async function escalateToExistingIssue(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
   dedupMarker?: string,
+  options: {
+    informational?: boolean;
+    addendum?: (issue: number) => Promise<string>;
+  } = {},
 ): Promise<boolean> {
   const target: MilestoneEscalationTarget =
     await resolveMilestoneEscalationTarget({
@@ -1756,6 +1861,7 @@ async function escalateToExistingIssue(
       },
       ghCommandFn,
       log,
+      ...(options.informational ? { reopenClosedParent: false } : {}),
       ...(dedupMarker !== undefined
         ? {
           alreadyEscalated: (issueNumber: number) =>
@@ -1792,11 +1898,12 @@ async function escalateToExistingIssue(
       `needs a human, and this is the milestone's own planning issue ` +
       `(Issue #1769)._\n\n`
     : "";
+  const addendum = options.addendum ? await options.addendum(target.issue) : "";
 
   return await postEscalationComment(
     repo,
     target.issue,
-    `${preamble}${body}`,
+    `${preamble}${body}${addendum ? `\n\n${addendum}` : ""}`,
     ghCommandFn,
     log,
     what,
