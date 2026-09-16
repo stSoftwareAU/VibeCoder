@@ -261,3 +261,17 @@ Deno.test("callback_conformance command - an out-of-range timeout is refused", a
     );
   }
 });
+
+Deno.test("callback_conformance command - --host_failure is refused, never silently dropped (Issue #2107)", async () => {
+  // The fixture runs inside the container; the hook is a host path. Accepting
+  // the flag and ignoring it would report a green contract for a hook that
+  // never ran.
+  const result = await callbackConformanceCommand.execute(
+    { host_failure: "/opt/hooks/host-failure.sh" },
+    buildDefaultWorkerConfig(),
+  );
+
+  assertEquals(result.success, false);
+  assert(result.message.includes("--host_failure"), result.message);
+  assert(result.message.includes("host"), result.message);
+});

@@ -45,7 +45,7 @@
  * author is authenticated — so one planted issue used to suppress a real
  * finding across every scanner sharing these helpers, silently and for as long
  * as it stayed open. Both look-ups now route their matches through
- * {@link selectFleetAuthoredMatches}, the same control `host_escalation.ts`
+ * {@link selectFleetAuthoredMatches}, the same control `escalate_as_work.ts`
  * and friends already apply to their body-marker searches. The fail direction
  * is towards filing: an unverifiable match is discarded, so a duplicate
  * finding is the worst case. A duplicate is noise a human closes; a suppressed

@@ -14,6 +14,7 @@ import {
   DEFAULT_CALLBACK_TIMEOUT_SECONDS,
   MAX_CALLBACK_TIMEOUT_SECONDS,
   parseCallbacksConfig,
+  parseHostFailureCallback,
 } from "../lib/run_callbacks_config.ts";
 
 function parsed(raw: unknown) {
@@ -154,4 +155,50 @@ Deno.test("run_callbacks_config - assertCallbacksConfig returns the parsed block
     assertCallbacksConfig({ success: "/opt/hooks/s.sh" }).success,
     "/opt/hooks/s.sh",
   );
+});
+
+Deno.test("run_callbacks_config - accepts a host_failure hook path (Issue #2107)", () => {
+  const config = parsed({ host_failure: "/opt/hooks/h.sh" });
+  assertEquals(config.host_failure, "/opt/hooks/h.sh");
+  assertEquals(config.success, undefined);
+});
+
+Deno.test("run_callbacks_config - a host_failure path obeys the existing path rules", () => {
+  assert(error({ host_failure: "hooks/h.sh" }).includes("absolute"));
+  assert(error({ host_failure: "   " }).includes("callbacks.host_failure"));
+  assert(error({ host_failure: "/opt/h\u0000.sh" }).includes("NUL"));
+});
+
+Deno.test("run_callbacks_config - the targeted host read validates only its two keys", () => {
+  // `success` is invalid, but the host never spawns it: a container-only key
+  // must not stop the host hook from firing.
+  const result = parseHostFailureCallback({
+    success: 42,
+    host_failure: "  /opt/hooks/h.sh  ",
+    timeout_seconds: 90,
+  });
+  assert(result.ok, !result.ok ? result.error : "");
+  assertEquals(result.value.path, "/opt/hooks/h.sh");
+  assertEquals(result.value.timeoutSeconds, 90);
+});
+
+Deno.test("run_callbacks_config - the targeted host read reports its own two keys", () => {
+  const relative = parseHostFailureCallback({ host_failure: "hooks/h.sh" });
+  assert(!relative.ok && relative.error.includes("callbacks.host_failure"));
+  const timeout = parseHostFailureCallback({
+    host_failure: "/opt/hooks/h.sh",
+    timeout_seconds: 0,
+  });
+  assert(!timeout.ok && timeout.error.includes("callbacks.timeout_seconds"));
+  const block = parseHostFailureCallback(["/opt/hooks/h.sh"]);
+  assert(!block.ok && block.error.includes("callbacks must be an object"));
+});
+
+Deno.test("run_callbacks_config - the targeted host read defaults an absent hook", () => {
+  for (const raw of [undefined, null, {}, { success: "/opt/hooks/s.sh" }]) {
+    const result = parseHostFailureCallback(raw);
+    assert(result.ok, !result.ok ? result.error : "");
+    assertEquals(result.value.path, undefined);
+    assertEquals(result.value.timeoutSeconds, DEFAULT_CALLBACK_TIMEOUT_SECONDS);
+  }
 });

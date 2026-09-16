@@ -565,8 +565,15 @@ export function describeInvocation(invocation: CallbackInvocation): string {
     ` — exit ${invocation.exitCode}, ${seconds}s`;
 }
 
-/** Run one hook, capturing everything it produced. Never throws. */
-async function invokeOne(
+/**
+ * Run one hook, capturing everything it produced. Never throws.
+ *
+ * Exported so the host-side `host_failure` hook (Issue #2107) reuses this
+ * spawn rather than growing a second one: same direct exec, same cleared
+ * environment, same timeout, same redaction and truncation, same 0600 context
+ * file removed afterwards.
+ */
+export async function invokeCallback(
   event: CallbackEvent,
   path: string,
   document: Record<string, unknown>,
@@ -672,7 +679,7 @@ export async function invokeRunCallbacks(
     options.log(
       `Running ${event} callback for ${context.repository}#${context.issueNumber}: ${path}`,
     );
-    const invocation = await invokeOne(
+    const invocation = await invokeCallback(
       event,
       path,
       buildCallbackContextDocument(context, event),
@@ -707,7 +714,7 @@ export async function invokeCycleCallback(
   options.log(
     `Running cycle callback (${context.endReason}) on ${context.host}: ${path}`,
   );
-  const invocation = await invokeOne(
+  const invocation = await invokeCallback(
     "cycle",
     path,
     buildCycleCallbackDocument(context),
