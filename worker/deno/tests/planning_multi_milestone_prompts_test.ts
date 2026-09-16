@@ -30,6 +30,14 @@ const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 /** The header row of every `## Milestones` table the prompts teach. */
 const MILESTONES_HEADER = "| Milestone | File area | Sub-issues |";
 
+/** Text between two markers, exclusive of the markers. */
+function between(body: string, start: string, end: string): string {
+  const from = body.indexOf(start);
+  const to = body.indexOf(end, from + start.length);
+  assert(from >= 0 && to > from, `missing ${start} … ${end}`);
+  return body.slice(from + start.length, to);
+}
+
 async function buildDraft(milestoneTitle?: string): Promise<string> {
   const built = await buildPlanningPrompt({
     repo: "owner/repo",
@@ -63,10 +71,12 @@ async function buildCritique(milestoneTitle?: string): Promise<string> {
 }
 
 Deno.test("planning - the draft turn groups sub-issues by file area", async () => {
-  const prompt = await buildDraft("v2.0");
+  const prompt = await buildDraft();
   assertStringIncludes(prompt, "Group sub-issues by file area");
   // Every sub-issue records the area it touches, so the groups can be checked.
   assertStringIncludes(prompt, "File area:");
+  // And the draft's output contract ends with the grouping itself.
+  assertStringIncludes(prompt, "the `## Milestones` grouping described above");
 });
 
 Deno.test("planning - the draft turn is told which files are housekeeping", async () => {
@@ -98,12 +108,31 @@ Deno.test("planning - the draft turn merges overlapping groups and caps the plan
   assertStringIncludes(prompt, "Depends on: <working title>");
   // A group of one sub-issue gets no milestone and does not count.
   assertStringIncludes(prompt, "does not count towards the cap");
+  // The prose that states the cap is interpolated from the constant, so
+  // raising MAX_MILESTONE_GROUPS cannot leave the prompt teaching the old cap.
+  assertStringIncludes(prompt, `until ${MAX_MILESTONE_GROUPS} remain`);
+  assertStringIncludes(prompt, `cap of ${MAX_MILESTONE_GROUPS}`);
 });
 
 Deno.test("planning - the draft turn skips grouping when the parent owns a milestone", async () => {
   const prompt = await buildDraft("v2.0");
-  assertStringIncludes(prompt, "<milestone_instructions>");
+  // The skip is bound to the milestone block, which carries the real title.
+  assertStringIncludes(
+    prompt,
+    "Skip the grouping when the `<milestone_instructions>` block above is non-empty",
+  );
   assertStringIncludes(prompt, "every sub-issue inherits it");
+  assertStringIncludes(
+    between(prompt, "<milestone_instructions>", "</milestone_instructions>"),
+    "v2.0",
+  );
+  // With no milestone the block is empty, so the grouping rule applies.
+  const ungrouped = await buildDraft();
+  assertEquals(
+    between(ungrouped, "<milestone_instructions>", "</milestone_instructions>")
+      .trim(),
+    "",
+  );
 });
 
 Deno.test("planning_critique - the attack list covers file overlap between groups", async () => {
@@ -114,6 +143,8 @@ Deno.test("planning_critique - the attack list covers file overlap between group
     prompt,
     `more than ${MAX_MILESTONE_GROUPS} milestones`,
   );
+  // The publish half states the same cap, also keyed to the constant.
+  assertStringIncludes(prompt, `At most ${MAX_MILESTONE_GROUPS} rows`);
 });
 
 Deno.test("planning_critique - the publish turn posts a Milestones table after the coverage table", async () => {
@@ -158,5 +189,14 @@ Deno.test("planning_critique - every example Milestones table it teaches passes 
     const published = [...new Set(groups.flatMap((g) => g.subIssueNumbers))];
     assert(published.length > 0, "a taught table names no sub-issues");
     assertEquals(validateMilestoneGroups(groups, published), []);
+
+    // Negative control: the validator really is live on these groups — a
+    // sub-issue the taught table leaves out is reported, so the pass above is
+    // the table's doing, not a validator that accepts anything.
+    const ungrouped = Math.max(...published) + 1;
+    assertEquals(
+      validateMilestoneGroups(groups, [...published, ungrouped]).length,
+      1,
+    );
   }
 });

@@ -626,8 +626,9 @@ real collision, so it would reject sound plans.
 
 **What happens on each outcome.** A parent with **no** `## Milestones` table
 takes the legacy path — one milestone for the whole plan — and closes exactly
-as before; the gate landed ahead of the prompts that teach the table, and a
-missing table must never strand a planning run. A table that is present but
+as before; the prompts teach the table ([#2174](#-grouping-sub-issues-by-file-area-issue-2174))
+but a degraded run or an operator's own planning template may publish none, and
+a missing table must never strand a planning run. A table that is present but
 **structurally broken** escalates through the shared `escalateToHuman()`
 chokepoint (`needs-human` plus a paired comment naming every offending row)
 **and** still creates the legacy single milestone, so overnight delivery
@@ -861,7 +862,9 @@ The draft prompt (`prompts/planning/prompt.md`) carries the rule:
   **source or test** file are one group. A plan whose groups all merge is a
   single milestone, exactly the behaviour before grouping existed.
 - **Shared work becomes a foundation group** — drafted first, with each
-  dependant recording `Depends on: <working title>` as usual.
+  dependant recording `Depends on: <working title>` as usual. Those links are
+  the cross-milestone dependency hold: a dependant in another group waits until
+  the foundation sub-issue closes, so keep foundation groups small.
 - **At most 4 milestones** — a group of one sub-issue takes no milestone
   (written `—`), merges straight to the default branch, and does not count
   towards the cap.
@@ -872,27 +875,37 @@ The critique/publish prompt (`prompts/planning_critique/prompt.md`) attacks the
 grouping (file overlap between groups, a group with no file area, more than
 four milestones) and publishes the surviving grouping as the `## Milestones`
 table, immediately after `## Plan Coverage` in the same summary comment. It
-never passes `--milestone` for a group it names there — the worker creates and
-assigns those milestones after publish, and `--milestone` on `gh issue create`
-stays reserved for the inheritance path where the parent already owns one.
+never passes `--milestone` for a group it names there — milestone creation
+belongs to the worker, and `--milestone` on `gh issue create` stays reserved
+for the inheritance path where the parent already owns one.
+
+**What the worker does with the table today.** It reads and gates it, and
+nothing more: `closePlanningIssue()` logs a sound grouping and still creates
+the **legacy single milestone** for the whole plan, exactly as the [#2172
+section](#-milestones-table-and-structural-gate-issue-2172) describes. Creating
+one milestone per group — and assigning each group's sub-issues to it — is
+**Issue #2175**. Until that lands, a published grouping is recorded rather than
+acted on, so the prompts teach the grouping ahead of the machinery that
+consumes it.
 
 ```mermaid
 flowchart TD
     A[Draft sub-issues] --> B[Label each with its file area]
     B --> C{Two groups edit the same<br/>source or test file?}
-    C -->|yes| D[Merge them]
+    C -->|yes| D[Merge them into one group]
     C -->|"no — only housekeeping shared"| E[Keep them separate]
     D --> F{More than 4 multi-sub-issue groups?}
     E --> F
-    F -->|yes| D
+    F -->|"yes — merge the closest groups"| C
     F -->|no| G["Publish the ## Milestones table<br/>(groups of one written —)"]
 ```
 
 `worker/deno/tests/planning_multi_milestone_prompts_test.ts` is the anti-drift
 guard: it fails when either prompt loses the rule, and it feeds every example
 table the publish prompt teaches to the real `extractMilestoneGroups()` /
-`validateMilestoneGroups()` pair, so a prompt can never teach a table the gate
-rejects.
+`validateMilestoneGroups()` pair, so a taught table that the gate would reject
+on its own structure — an unnamed file area, a sub-issue in two rows, a fifth
+milestone — fails there rather than in production.
 
 #### 📈 Degraded-model observability
 

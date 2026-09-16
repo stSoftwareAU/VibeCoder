@@ -134,8 +134,8 @@ Sub-issues that touch different parts of the tree can be delivered as separate m
 - **Split into two or more milestones when the groups share only housekeeping files.** The housekeeping files are `deno.json`, `Cargo.toml`, `*.lock`, `CHANGELOG.md` and `README.md`, plus at most one further file you name explicitly — with the reason it is safe to share — in the sub-issue body of each group that touches it.
 - **Merge groups that share real work.** Two groups that would both edit the same source or test file are one group: merge them. A plan whose groups all merge is a single milestone, exactly as today.
 - **Shared work becomes a foundation group.** Work two or more groups need goes in its own foundation group, drafted first, and each dependant records `Depends on: <working title>` as above.
-- **At most 4 milestones.** A plan that wants more is over-split — merge the closest groups until four remain. A group holding a single sub-issue gets no milestone (write `—` for it), merges straight to the default branch, and does not count towards the cap.
-- **Skip the grouping when the `<milestone_instructions>` block above is non-empty.** The parent already owns a milestone and every sub-issue inherits it, so there is nothing to group.
+- **At most 4 milestones.** A plan that wants more is over-split — merge the closest groups until 4 remain. A group holding a single sub-issue gets no milestone (write `—` for it), merges straight to the default branch, and does not count towards the cap.
+- **Skip the grouping when the `<milestone_instructions>` block above is non-empty.** The parent already owns a milestone and every sub-issue inherits it, so there is nothing to split — still record each sub-issue's `File area:` line, and make the whole plan one group naming that milestone.
 
 End the draft with a `## Milestones` grouping — one line per group giving the milestone short name, the file area, and the working titles it carries:
 
@@ -181,4 +181,4 @@ Produce your draft plan as text in this turn. **Do not run `gh issue create`, an
 - the full body using the structure above (including `Part of #{{ISSUE_NUMBER}}` and any `Depends on: <working title>` lines — symbolic, never an invented `#N`),
 - the descriptive labels you would apply.
 
-Then give the ask list — each ask with the proposed sub-issue covering it, or `Out of scope` and the reason — followed by the suggested implementation order (dependencies first), the dependency relationships, and any assumptions you made. This draft is internal working material — it is **not** posted to the issue. The next turn will adversarially critique and revise it before anything is published.
+Then give the ask list — each ask with the proposed sub-issue covering it, or `Out of scope` and the reason — followed by the suggested implementation order (dependencies first), the dependency relationships, any assumptions you made, and finally the `## Milestones` grouping described above. This draft is internal working material — it is **not** posted to the issue. The next turn will adversarially critique and revise it before anything is published.

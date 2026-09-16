@@ -177,7 +177,7 @@ Rules the table must satisfy — a deterministic gate at the end of the run chec
 - **A group of one sub-issue gets no milestone.** Write `—` in its `Milestone` cell: it merges straight to the default branch, and it does not count towards the cap.
 - **At most 4 rows carry two or more sub-issues.** If your revision produced more, merge the closest groups — two groups that edit the same source or test file were one group all along.
 
-The worker creates the milestones from this table and assigns the sub-issues after you publish, so never pass `--milestone` for a group you name here. `--milestone` on `gh issue create` stays exactly as described above: passed only when milestone instructions appear above, in which case the parent already owns the milestone, every sub-issue inherits it, and the whole plan is a single row naming that milestone.
+The worker creates the milestones from this table and assigns the sub-issues after you publish, so never pass `--milestone` for a group you name here — the `--milestone` rule above is unchanged. Where milestone instructions do appear, the parent owns the milestone every sub-issue inherits, and the whole plan is a single row naming it.
 
 Then post **one** summary comment on issue #{{ISSUE_NUMBER}} in this shape:
 
@@ -227,7 +227,7 @@ If your revision concludes the issue is simple enough that it needs **zero** sub
 - **There is still real work to do** (the issue describes a genuine change, just small enough that breaking it into multiple sub-issues adds no value). This is the **default** for any zero-sub-issue outcome. You **must** create exactly **one** carrier sub-issue that captures the remaining work, before closing the parent:
   - Label it exactly the way you label sibling sub-issues in Step 3 (a descriptive `bug` or `enhancement`, never a reserved workflow label) so the worker's new-work scan claims and implements it — an unlabelled carrier would never be picked up and would reproduce the bug.
   - Its body must include `Part of #{{ISSUE_NUMBER}}` and testable acceptance criteria, exactly like any other sub-issue. Apply the same `## Failure Detection` verification from Step 3 to the carrier before you publish it.
-  - Your summary comment still carries the `## Plan Coverage` table from Step 3, with every ask covered by the carrier (or an explained `Out of scope` row) — the gate checks a carrier plan exactly like any other.
+  - Your summary comment still carries the `## Plan Coverage` table from Step 3, with every ask covered by the carrier (or an explained `Out of scope` row) — the gate checks a carrier plan exactly like any other. Its `## Milestones` table is a single row: the carrier, its file area, and `—` in `Milestone`, because one sub-issue merges straight to the default branch.
 
   ```bash
   gh issue create --repo {{REPO}} --title "Carrier title — implement <the remaining work>" --body "Description of the remaining work.

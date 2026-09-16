@@ -2268,10 +2268,10 @@ async function closePlanningIssue(
     });
 
     if (!milestoneVerdict.tableFound) {
-      // Deliberate: this gate lands before the prompts teach the table
-      // (#2174), so a plan with no `## Milestones` table takes the legacy
-      // path — one milestone for the whole plan — rather than stranding the
-      // run. A read failure is reported as such; the coverage gate above has
+      // Deliberate: the prompts teach the table (#2174) but cannot be
+      // relied on — a degraded run or an operator's own template may publish
+      // none — so a plan with no `## Milestones` table takes the legacy path
+      // — one milestone for the whole plan — rather than stranding the run. A read failure is reported as such; the coverage gate above has
       // already escalated the same unreadable parent.
       logger.info(
         "Milestone-groups gate: no `## Milestones` table on the parent — one milestone for the plan, as today (Issue #2172)",
