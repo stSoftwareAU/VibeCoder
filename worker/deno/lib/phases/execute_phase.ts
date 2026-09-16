@@ -962,8 +962,20 @@ async function executeClaudeBody(
     // as before. `foldedNote` is what the reason already carries, so the
     // branch is never stated twice.
     const foldedNote = scheduled && wip.preserved ? wipNote : undefined;
+    // A call storm is not the clock running out (Issue #2230): the guard
+    // stopped the run inside its budget because it was polling rather than
+    // working. Say that, and name the loop, rather than reporting a timeout
+    // the run never reached. The wording still carries "timeout", so the
+    // failure keeps its timeout classification — a stalled run is the issue's
+    // to answer for, not infrastructure.
+    const stalled = claudeResult.value.timeoutReason === "call-storm"
+      ? claudeResult.value.stallReason ??
+        "a call storm — tool calls without working-tree change"
+      : undefined;
     const baseReason = (scheduled
       ? buildScheduledReleaseReason(scheduled, foldedNote)
+      : stalled
+      ? `Claude was stopped as stalled before its timeout — ${stalled}`
       : state.claudeOutput.length === 0
       ? `Claude timed out with zero output and made no changes`
       : dirtyFiles > 0

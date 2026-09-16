@@ -66,6 +66,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { CallStormPolicy } from "./call_storm.ts";
 import type { DescendantActivityOutcome } from "./descendant_progress.ts";
 import type { RunDeadlineReporter } from "./run_deadline.ts";
 import type { RunBudgetNotice } from "./wind_down_notice.ts";
@@ -218,6 +219,20 @@ export interface ProgressExtensionOptions {
    * single-issue path and the tests get.
    */
   ceilingMs?: number;
+  /**
+   * Call-storm guard, evaluated at each interim check (Issue #2230).
+   *
+   * Declining to extend does nothing until the deadline arrives, so a run
+   * polling a background job turn by turn kept its whole budget. With this
+   * policy wired, an interim check that sees a flood of tool calls and a
+   * checkout that has not moved for a whole window stops the agent there and
+   * then, and the existing WIP-preservation path keeps what it committed.
+   *
+   * Absent — every caller before #2230, and every phase that passes no
+   * progress-extension option — nothing is evaluated and the behaviour is
+   * unchanged.
+   */
+  callStorm?: CallStormPolicy;
 }
 
 /** What the watchdog should do when the deadline expires. */

@@ -27,6 +27,10 @@ import { resolveRunMode } from "./run_mode.ts";
 import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
+import {
+  TOOL_CALL_HISTORY_MAX,
+  TOOL_CALL_HISTORY_MS,
+} from "./agent_progress.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
 import { parseContainerExtension } from "./container_extension_config.ts";
 import { parseCodegraphContext } from "./codegraph_context_config.ts";
@@ -638,6 +642,48 @@ export async function loadConfig(
         `run whose tool activity landed between checks.`,
     );
   }
+  // Call-storm stall guard (Issue #2230). On by default; the tunables are
+  // refused loudly rather than silently disabling the guard or stopping every
+  // run, exactly as the progress-extension tunables above are.
+  const callStormEnabled = file.call_storm_enabled ??
+    OPERATIONAL_DEFAULTS.callStormEnabled;
+  const callStormCalls = file.call_storm_calls ??
+    OPERATIONAL_DEFAULTS.callStormCalls;
+  const callStormWindowSeconds = file.call_storm_window_seconds ??
+    OPERATIONAL_DEFAULTS.callStormWindowSeconds;
+  if (callStormCalls <= 0) {
+    throw new Error(
+      `call_storm_calls must be positive, got ${callStormCalls}. A ` +
+        `non-positive threshold would stop every run that reached a check. ` +
+        `Set call_storm_enabled: false to turn the guard off instead.`,
+    );
+  }
+  if (callStormWindowSeconds <= 0) {
+    throw new Error(
+      `call_storm_window_seconds must be positive, got ` +
+        `${callStormWindowSeconds}. A non-positive window has no rate to ` +
+        `measure. Set call_storm_enabled: false to turn the guard off instead.`,
+    );
+  }
+  // The tracker's history is what the guard can see (Issue #2230). A window
+  // or a threshold beyond it would be accepted and then quietly under-count
+  // or never fire, which is the silent failure this codebase refuses.
+  const callStormHistorySeconds = TOOL_CALL_HISTORY_MS / 1000;
+  if (callStormWindowSeconds > callStormHistorySeconds) {
+    throw new Error(
+      `call_storm_window_seconds must not exceed the ` +
+        `${callStormHistorySeconds}s of tool-call history the progress ` +
+        `tracker retains, got ${callStormWindowSeconds}. A wider window ` +
+        `would count only the part of itself the tracker still remembers.`,
+    );
+  }
+  if (callStormCalls > TOOL_CALL_HISTORY_MAX) {
+    throw new Error(
+      `call_storm_calls must not exceed the ${TOOL_CALL_HISTORY_MAX} tool ` +
+        `calls the progress tracker retains, got ${callStormCalls}. A higher ` +
+        `threshold could never be reached, so the guard would never fire.`,
+    );
+  }
   // Self-scheduling for auto-filed worker diagnostics (Issue #505). On by
   // default; `false` restores the wait-for-a-human behaviour exactly. The
   // in-flight cap is refused loudly when it is not a whole number — a
@@ -985,6 +1031,9 @@ export async function loadConfig(
     progressExtensionGrantSeconds,
     progressExtensionStallSeconds,
     progressExtensionCheckSeconds,
+    callStormEnabled,
+    callStormCalls,
+    callStormWindowSeconds,
     selfScheduleDiagnosticsEnabled,
     selfScheduleDiagnosticsMaxInFlight,
     prFeedbackTimeout,

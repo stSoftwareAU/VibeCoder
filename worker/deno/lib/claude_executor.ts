@@ -52,8 +52,11 @@ const DEFAULT_CHARS_PER_TOKEN = 4;
  * - `"hard-timeout"` — the wall-clock `timeoutSeconds` watchdog fired.
  * - `"no-output"` — the silence watchdog fired because stdout was idle for
  *   `noOutputTimeout` seconds (Issue #1825).
+ * - `"call-storm"` — the call-storm guard stopped a run that was polling
+ *   rather than working: dozens of tool calls a minute with no working-tree
+ *   change (Issue #2230).
  */
-export type ClaudeTimeoutReason = "hard-timeout" | "no-output";
+export type ClaudeTimeoutReason = "hard-timeout" | "no-output" | "call-storm";
 
 /** Result of a Claude CLI execution. */
 export interface ClaudeExecutionResult {
@@ -109,6 +112,15 @@ export interface ClaudeExecutionResult {
    * 3600 s watchdog fire 487 s and 3470 s late. Present only when late.
    */
   watchdogLateSeconds?: number;
+  /**
+   * Why the call-storm guard stopped the run (Issue #2230).
+   *
+   * Present only with `timeoutReason: "call-storm"`. Its own field, not the
+   * extension telemetry's `refusalReason`: no extension was refused, and the
+   * execute phase puts this string in the failure reason so the issue comment
+   * names the loop rather than blaming the clock.
+   */
+  stallReason?: string;
   /**
    * Set when the post-kill wait expired before the child settled
    * (Issue #4254): the runner abandoned `child.status` and the stream

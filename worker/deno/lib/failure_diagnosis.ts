@@ -337,13 +337,19 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
 
 /**
  * True when the message carries the worker watchdog's own evidence line
- * (`Watchdog: hard-timeout` / `Watchdog: no-output`, written by
- * `formatDetailedFailureMessage` for a timed-out run). Such a run was ended
- * by the worker, so any signal named in its raw-exit diagnostics is the
- * watchdog's doing, not an external kill (VibeCoder#174).
+ * (`Watchdog: hard-timeout` / `Watchdog: no-output` / `Watchdog: call-storm`,
+ * written by `formatDetailedFailureMessage` for a run the worker stopped).
+ * Such a run was ended by the worker, so any signal named in its raw-exit
+ * diagnostics is the watchdog's doing, not an external kill (VibeCoder#174).
+ *
+ * `call-storm` joins the list with Issue #2230: the guard SIGTERMs the agent
+ * exactly as the other two do, so without it a stopped call storm read as an
+ * external `killed` — infrastructure — and was retried in process.
  */
 export function watchdogFiredIn(failureMessage: string): boolean {
-  return /\bWatchdog: (?:hard-timeout|no-output)\b/.test(failureMessage);
+  return /\bWatchdog: (?:hard-timeout|no-output|call-storm)\b/.test(
+    failureMessage,
+  );
 }
 
 /**
