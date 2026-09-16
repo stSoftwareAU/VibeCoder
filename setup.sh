@@ -996,7 +996,7 @@ run_setup_cli() {
     if ! command -v deno &>/dev/null; then
         print_error "deno is required but not installed."
         print_info "Deno is core to Vibe Coder for TypeScript business logic."
-        print_info "Install from: https://deno.com/ or with: curl -fsSL https://deno.land/install.sh | sh"
+        print_info "Install the pinned, checksum-verified build with: ./infra/host/install-deno.sh (Linux) — or see https://deno.com/"
         exit 1
     fi
     # --frozen + --lock fail closed on dependency drift (Issues #2896, #3653),

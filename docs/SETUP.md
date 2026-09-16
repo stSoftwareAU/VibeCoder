@@ -526,14 +526,22 @@ sudo apt-get install -y git
 sudo apt-get install -y gh
 gh auth login
 
-# deno — the upstream installer; no Debian or Ubuntu package exists,
-# which is also why the automated path refuses to install it here.
-# Installs to ~/.deno/bin — put that on PATH.
-curl -fsSL https://deno.land/install.sh | sh
+# unzip and jq — the installers below need them
+sudo apt-get install -y unzip jq
 
-# claude CLI — no distribution package; use the upstream installer
-# (https://docs.anthropic.com/en/docs/claude-code)
-curl -fsSL https://claude.ai/install.sh | bash
+# clone the checkout first: the installers read their pins from it
+git clone https://github.com/stSoftwareAU/VibeCoder.git && cd VibeCoder
+
+# deno — no Debian or Ubuntu package exists, which is also why the automated
+# path refuses to install it here. Never `curl | sh`: this downloads the
+# release asset for the version the container image pins, verifies its
+# SHA-256, and installs to ~/.deno/bin — put that on PATH (Issue #2199).
+./infra/host/install-deno.sh
+
+# claude CLI — no distribution package. Same shape: the version and SHA-256
+# come from container/tools.json, the pin the image itself is built from.
+# Installs to ~/.local/bin — put that on PATH.
+./infra/host/install-claude.sh
 
 # container runtime — the distribution's own Docker package (the automated
 # path deliberately never adds Docker's third-party apt repository), or Podman
