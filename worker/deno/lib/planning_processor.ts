@@ -49,10 +49,10 @@ import {
   collectGraftContext,
   describeGraftContext,
   type GraftContextCollector,
-  graftContextFacts,
   type GraftContextResult,
   type GraftContextSlot,
   graftQueryFor,
+  withGraftContext,
 } from "./graft_context.ts";
 import { isGraftContextEnabled } from "./graft_context_config.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
@@ -1281,15 +1281,8 @@ export async function processIssuePlanning(
       (Date.now() - runStartedAtMs) / 1000,
       "planning round posted — sub-issues created",
     );
-    return graftSlot.result && result.ok
-      ? {
-        ok: true,
-        value: {
-          ...result.value,
-          graftContext: graftContextFacts(graftSlot.result),
-        },
-      }
-      : result;
+    // Issue #2103: the shared carrier — one shape for all four processors.
+    return withGraftContext(result, graftSlot);
   } catch (err) {
     runOutcome = outcomeForThrown(
       "planning",

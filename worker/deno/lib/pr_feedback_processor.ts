@@ -31,7 +31,7 @@ import {
   graftQueryForPr,
   withGraftContext,
 } from "./graft_context.ts";
-import { readPrTitle } from "./pr_title_read.ts";
+import { prTitleForGraftQuery } from "./pr_title_read.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
@@ -307,22 +307,14 @@ async function collectGraftForFeedback(
   const enabled = processorDeps.graftContextEnabled ?? false;
   const collect = processorDeps.collectGraftContext ?? collectGraftContext;
 
-  let prTitle: string | undefined;
-  if (enabled) {
-    const title = await readPrTitle(
+  const prTitle = enabled
+    ? await prTitleForGraftQuery({
       repo,
       prNumber,
-      (args: string[]) => deps.github.runGhCommand(args),
-    );
-    if (title.ok) {
-      prTitle = title.value;
-    } else {
-      logger.warn(
-        `Graft query is missing the PR title: ${title.error.message}`,
-        { repo, prNumber },
-      );
-    }
-  }
+      gh: (args: string[]) => deps.github.runGhCommand(args),
+      logger,
+    })
+    : undefined;
 
   return await collect({
     // `workDir` already is the checkout, with the PR head branch on it

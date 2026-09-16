@@ -119,12 +119,22 @@ function isTitleRead(args: readonly string[]): boolean {
 /**
  * A `gh` stub that reports an open PR, answers the title read, records every
  * call, and returns an empty JSON list for everything else.
+ *
+ * @param calls - Collector every call's argv is appended to
+ * @param titleFails - Make the title read fail the way a 403 would
  */
-function makeGh(calls: string[][]): GitHubDeps["runGhCommand"] {
+function makeGh(
+  calls: string[][],
+  titleFails = false,
+): GitHubDeps["runGhCommand"] {
   return (args: string[]): Promise<string> => {
     calls.push(args);
     if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
-    if (isTitleRead(args)) return Promise.resolve(`${PR_TITLE}\n`);
+    if (isTitleRead(args)) {
+      return titleFails
+        ? Promise.reject(new Error("gh: HTTP 403"))
+        : Promise.resolve(`${PR_TITLE}\n`);
+    }
     return Promise.resolve("[]");
   };
 }
@@ -172,12 +182,13 @@ async function runFeedback(options: {
   collect?: (
     options: CollectGraftContextOptions,
   ) => Promise<GraftContextResult>;
+  titleFails?: boolean;
 }): Promise<FeedbackRun> {
   const prompts: string[] = [];
   const ghCalls: string[][] = [];
   const deps = createMockDeps({
     claude: capturingClaude(prompts),
-    github: { runGhCommand: makeGh(ghCalls) },
+    github: { runGhCommand: makeGh(ghCalls, options.titleFails ?? false) },
     git: pushedGit(),
   });
   const workDir = await Deno.makeTempDir();
@@ -259,6 +270,23 @@ Deno.test("processPrFeedback - a failed collection is reported and the run proce
   assertEquals(result.value.graftContext?.status, "failed");
 });
 
+Deno.test("processPrFeedback - a title that cannot be read is dropped, and the bundle still lands", async () => {
+  const collector = fakeCollector(okOutcome());
+  const { result, prompts } = await runFeedback({
+    enabled: true,
+    collect: collector.collect,
+    titleFails: true,
+  });
+
+  // The query asks about the feedback alone rather than opening with blank
+  // lines, and the run is otherwise untouched.
+  assertEquals(collector.calls.length, 1);
+  assertEquals(collector.calls[0]?.query, FEEDBACK_BODY);
+  assertStringIncludes(prompts[0] ?? "", BUNDLE);
+  assert(result.ok);
+  assertEquals(result.value.graftContext?.status, "ok");
+});
+
 // ===========================================================================
 // CI fix — processCiFailure
 // ===========================================================================
@@ -274,6 +302,8 @@ async function runCiFix(options: {
   collect?: (
     options: CollectGraftContextOptions,
   ) => Promise<GraftContextResult>;
+  /** Drop the checkout from the deps, as a mis-wired dispatcher would. */
+  noCheckout?: boolean;
 }): Promise<CiRun> {
   const prompts: string[] = [];
   const ghCalls: string[][] = [];
@@ -309,7 +339,7 @@ async function runCiFix(options: {
       promptsDir: PROMPTS_DIR,
       logger: silentLogger(),
       deps,
-      workDir,
+      ...(options.noCheckout === true ? {} : { workDir }),
       workRoot: workDir,
       stateDir: `${workDir}/.ci_check_state`,
       actionsLogFn,
@@ -372,4 +402,21 @@ Deno.test("processCiFailure - a failed collection is reported and the fix procee
   assertEquals(prompts[0]?.includes("Graft Code Bundle"), false);
   assert(result.ok, "a failed collection must not fail the CI fix run");
   assertEquals(result.value.graftContext?.status, "failed");
+});
+
+Deno.test("processCiFailure - an enabled host with no checkout reports failed, never off", async () => {
+  // The fault must not hide among the hosts that never opted in, and nothing
+  // may be spawned against a checkout that is not there.
+  const collector = fakeCollector(okOutcome());
+  const { result, prompts } = await runCiFix({
+    enabled: true,
+    collect: collector.collect,
+    noCheckout: true,
+  });
+
+  assertEquals(collector.calls.length, 0);
+  assertEquals(prompts[0]?.includes("Graft Code Bundle"), false);
+  assert(result.ok, "a missing checkout must not fail the CI fix run");
+  assertEquals(result.value.graftContext?.status, "failed");
+  assertEquals(result.value.graftContext?.enabled, true);
 });

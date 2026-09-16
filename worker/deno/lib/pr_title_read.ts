@@ -16,7 +16,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 
 /** Run a `gh` command and return its stdout. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
@@ -70,4 +70,31 @@ export async function readPrTitle(
     };
   }
   return { ok: true, value: title };
+}
+
+/**
+ * The PR title for a Graft query, or `undefined` with one warning line.
+ *
+ * The warn-and-drop step both PR processors need, in one place: a title that
+ * cannot be read must not fail the run (the bundle is an accelerator), must
+ * not be silently absent either, and must be dropped from the query rather
+ * than interpolated as an empty line.
+ *
+ * @param options - Repo, PR number, `gh` runner and the warning sink
+ * @returns The title, or `undefined` when it could not be read
+ */
+export async function prTitleForGraftQuery(options: {
+  repo: string;
+  prNumber: number;
+  gh: GhCommandFn;
+  logger: Pick<Logger, "warn">;
+}): Promise<string | undefined> {
+  const { repo, prNumber, gh, logger } = options;
+  const title = await readPrTitle(repo, prNumber, gh);
+  if (title.ok) return title.value;
+  logger.warn(`Graft query is missing the PR title: ${title.error.message}`, {
+    repo,
+    prNumber,
+  });
+  return undefined;
 }

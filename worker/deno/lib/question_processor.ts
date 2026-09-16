@@ -41,10 +41,10 @@ import {
   collectGraftContext,
   describeGraftContext,
   type GraftContextCollector,
-  graftContextFacts,
   type GraftContextResult,
   type GraftContextSlot,
   graftQueryFor,
+  withGraftContext,
 } from "./graft_context.ts";
 import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
@@ -301,15 +301,8 @@ export async function processIssueQuestion(
       (Date.now() - runStartedAtMs) / 1000,
       "question answered",
     );
-    return graftSlot.result && result.ok
-      ? {
-        ok: true,
-        value: {
-          ...result.value,
-          graftContext: graftContextFacts(graftSlot.result),
-        },
-      }
-      : result;
+    // Issue #2103: the shared carrier — one shape for all four processors.
+    return withGraftContext(result, graftSlot);
   } catch (err) {
     runOutcome = outcomeForThrown(
       "question",

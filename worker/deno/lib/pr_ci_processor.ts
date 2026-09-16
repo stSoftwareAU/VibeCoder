@@ -25,7 +25,7 @@ import {
   graftQueryForPr,
   withGraftContext,
 } from "./graft_context.ts";
-import { readPrTitle } from "./pr_title_read.ts";
+import { prTitleForGraftQuery } from "./pr_title_read.ts";
 import {
   getCiCheckRetryCount,
   postCiFixMaxRetriesComment,
@@ -470,19 +470,14 @@ async function collectGraftForCiFix(
     return { status: "failed", enabled: true };
   }
 
-  let prTitle: string | undefined;
-  if (enabled) {
-    const ghFn = processorDeps.ghCommandFn ?? deps.github.runGhCommand;
-    const title = await readPrTitle(repo, prNumber, ghFn);
-    if (title.ok) {
-      prTitle = title.value;
-    } else {
-      logger.warn(
-        `Graft query is missing the PR title: ${title.error.message}`,
-        { repo, prNumber },
-      );
-    }
-  }
+  const prTitle = enabled
+    ? await prTitleForGraftQuery({
+      repo,
+      prNumber,
+      gh: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+      logger,
+    })
+    : undefined;
 
   const failureText = [
     checkName,
