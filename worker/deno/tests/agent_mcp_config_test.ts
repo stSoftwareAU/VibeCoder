@@ -402,3 +402,28 @@ Deno.test("agent mcp config - an additional server may not replace the generated
     logs.join(),
   );
 });
+
+Deno.test("agent mcp config - a browser-only request is checked for the browser entry too (Issue #2156)", async () => {
+  const logs: string[] = [];
+  const written: string[] = [];
+  const path = await ensureAgentMcpConfig({
+    cwd: "/w/repo",
+    configDir: "/should-not-be-used",
+    // No extras this time: the same empty generated map must still refuse,
+    // rather than writing a config that grants no browser at all.
+    generate: () => JSON.stringify({ mcpServers: {} }),
+    writeFile: (p) => {
+      written.push(p);
+      return Promise.resolve();
+    },
+    log: (m) => {
+      logs.push(m);
+    },
+  });
+  assertEquals(path, undefined);
+  assertEquals(written, []);
+  assert(
+    logs.some((l) => l.includes("no mcpServers entry")),
+    logs.join(),
+  );
+});

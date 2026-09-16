@@ -250,13 +250,14 @@ export async function ensureAgentMcpConfig(
       content = JSON.stringify({ mcpServers: { ...extra } }, null, 2);
     } else {
       const generated = generate(options.cwd, screenshotDir);
+      // Checked on both paths: a generated shape with no browser entry is a
+      // fault whether or not extras ride with it.
+      const merged = mergeServers(generated, extra);
       // Playwright alone is written verbatim, so the file a browser run gets
       // is byte-for-byte what it got before Issue #2156.
-      content = extraNames.length === 0 ? generated : JSON.stringify(
-        { mcpServers: mergeServers(generated, extra) },
-        null,
-        2,
-      );
+      content = extraNames.length === 0
+        ? generated
+        : JSON.stringify({ mcpServers: merged }, null, 2);
     }
     const dir = options.configDir ?? defaultMcpConfigDir({
       ...(options.workDir ? { workDir: options.workDir } : {}),

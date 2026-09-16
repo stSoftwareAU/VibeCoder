@@ -1041,14 +1041,16 @@ export async function runClaudeWithTimeout(
   // what it wants. Anything falsy writes no config at all.
   const mcpRequest: AgentMcpServerRequest | undefined =
     options.mcpConfig === true
-      ? {}
+      ? { playwright: true }
       : typeof options.mcpConfig === "object"
       ? options.mcpConfig
       : undefined;
   const mcpConfigPath = mcpRequest && cwd
     ? await ensureAgentMcpConfig({
-      cwd,
+      // The request is spread first: the clone path, the logger and the
+      // work dir below are this call's to set, never the caller's to shadow.
       ...mcpRequest,
+      cwd,
       log: (message) => logger?.warn?.(message),
       ...(options.workDir ? { workDir: options.workDir } : {}),
     })
