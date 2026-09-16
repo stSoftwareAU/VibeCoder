@@ -36,8 +36,8 @@ exactly as before. A **malformed** block fails the config load rather than
 leaving an operator with a hook that silently never runs.
 
 `host_failure` is the one **host** path in the block (Issue #2107) — see
-[Host-level failures](#host-level-failures--callbackshost_failure). Every other key is resolved
-inside the container.
+[Host-level failures](#host-level-failures--callbackshost_failure). Every other
+key is resolved inside the container.
 
 ## Ordering and exactly-once scope
 
@@ -97,8 +97,10 @@ flowchart LR
     R -- malformed --> E["config_invalid — reported, never repaired"]
     R -- configured --> I["Hook spawned on the host"]
     I --> O["ok / failed / timed_out / spawn_failed"]
-    O -- not ok --> Q["Retried next failing run,<br/>≤ 5 attempts"]
-    Q --> L["escalation_lost"]
+    O -- ok --> D["Delivered — nothing more for now"]
+    O -- not ok --> Q["Queued and retried,<br/>up to 5 attempts"]
+    Q -- lands --> D
+    Q -- 5th failure --> L["escalation_lost recorded"]
 ```
 
 Three properties are specific to it:
@@ -154,28 +156,28 @@ The scalars are exported one variable each; the multi-line facts live in the
 document alone, where no environment-size limit can turn them into a spawn
 failure:
 
-| Environment variable               | JSON field            | Always present | Meaning                                                                                                                                        |
-| ---------------------------------- | --------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VIBECODER_CALLBACK_SCHEMA_VERSION` | `schemaVersion`      | yes            | Contract version — unchanged by this event                                                                                                     |
-| `VIBECODER_CALLBACK_EVENT`         | `event`               | yes            | Always `host_failure`                                                                                                                          |
-| `VIBECODER_CALLBACK_CONTEXT`       | —                     | yes            | Path to the JSON document for this invocation                                                                                                  |
-| `VIBECODER_HOST`                   | `host`                | yes            | Host the failure is on                                                                                                                         |
-| `VIBECODER_HOST_FAILURE_CONDITION` | `condition`           | yes            | `launcher` or `checkout_update`                                                                                                                |
-| `VIBECODER_HOST_FAILURE_PHASE`     | `phase`               | yes            | Phase within the condition: `runtime_detection`, `container_egress`, `image_build`, `volume_init`, `container_start` or `worker_run` for the launcher; `checkout_update` for the checkout update |
-| `VIBECODER_CONSECUTIVE_FAILURES`   | `consecutiveFailures` | yes            | Consecutive failures of this condition, including this one                                                                                     |
-| `VIBECODER_LAST_EXIT_STATUS`       | `lastExitStatus`      | no             | Exit status of the most recent attempt, when one was observed                                                                                  |
-| `VIBECODER_BACKOFF_SECONDS`        | `backoffSeconds`      | no             | Seconds the host waits before retrying, when it backs off                                                                                      |
-| `VIBECODER_STREAK_STARTED_AT`      | `streakStartedAt`     | yes            | ISO-8601 timestamp of the first failure in the streak                                                                                          |
-| `VIBECODER_DELIVERY_KIND`          | `delivery.kind`       | yes            | `first` report of this streak, or a `repeat` while it persists                                                                                 |
-| `VIBECODER_DELIVERY_COUNT`         | `delivery.count`      | yes            | Reports delivered for this streak, including this one                                                                                          |
-| `VIBECODER_ATTEMPT`                | `attempt`             | yes            | Attempt number that produced this report — a retry of one report, not a new one                                                                |
-| —                                  | `logTail`             | no             | Tail of the failing attempt's output, redacted — document only                                                                                 |
-| —                                  | `detail`              | no             | Free-text diagnosis — document only                                                                                                            |
-| —                                  | `checkout`            | no             | `branch` and `dirtyFiles`, when the condition is `checkout_update` — document only                                                             |
+| Environment variable                | JSON field            | Always present | Meaning                                                                                                                                                                                          |
+| ----------------------------------- | --------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `VIBECODER_CALLBACK_SCHEMA_VERSION` | `schemaVersion`       | yes            | Contract version — unchanged by this event                                                                                                                                                       |
+| `VIBECODER_CALLBACK_EVENT`          | `event`               | yes            | Always `host_failure`                                                                                                                                                                            |
+| `VIBECODER_CALLBACK_CONTEXT`        | —                     | yes            | Path to the JSON document for this invocation                                                                                                                                                    |
+| `VIBECODER_HOST`                    | `host`                | yes            | Host the failure is on                                                                                                                                                                           |
+| `VIBECODER_HOST_FAILURE_CONDITION`  | `condition`           | yes            | `launcher` or `checkout_update`                                                                                                                                                                  |
+| `VIBECODER_HOST_FAILURE_PHASE`      | `phase`               | yes            | Phase within the condition: `runtime_detection`, `container_egress`, `image_build`, `volume_init`, `container_start` or `worker_run` for the launcher; `checkout_update` for the checkout update |
+| `VIBECODER_CONSECUTIVE_FAILURES`    | `consecutiveFailures` | yes            | Consecutive failures of this condition, including this one                                                                                                                                       |
+| `VIBECODER_LAST_EXIT_STATUS`        | `lastExitStatus`      | no             | Exit status of the most recent attempt, when one was observed                                                                                                                                    |
+| `VIBECODER_BACKOFF_SECONDS`         | `backoffSeconds`      | no             | Seconds the host waits before retrying, when it backs off                                                                                                                                        |
+| `VIBECODER_STREAK_STARTED_AT`       | `streakStartedAt`     | yes            | ISO-8601 timestamp of the first failure in the streak                                                                                                                                            |
+| `VIBECODER_DELIVERY_KIND`           | `delivery.kind`       | yes            | `first` report of this streak, or a `repeat` while it persists                                                                                                                                   |
+| `VIBECODER_DELIVERY_COUNT`          | `delivery.count`      | yes            | Reports delivered for this streak, including this one                                                                                                                                            |
+| `VIBECODER_ATTEMPT`                 | `attempt`             | yes            | Attempt number that produced this report — a retry of one report, not a new one                                                                                                                  |
+| —                                   | `logTail`             | no             | Tail of the failing attempt's output, redacted — document only                                                                                                                                   |
+| —                                   | `detail`              | no             | Free-text diagnosis — document only                                                                                                                                                              |
+| —                                   | `checkout`            | no             | `branch` and `dirtyFiles`, when the condition is `checkout_update` — document only                                                                                                               |
 
 Optional facts the host could not supply are **omitted** from both the document
-and the environment rather than emitted empty, so `[ -n "$VIBECODER_BACKOFF_SECONDS" ]`
-is a truthful test.
+and the environment rather than emitted empty, so
+`[ -n "$VIBECODER_BACKOFF_SECONDS" ]` is a truthful test.
 
 ### What the launcher sends
 
@@ -195,13 +197,17 @@ its cadence is the streak's, not the failure's:
 - **Five attempts, then `escalation_lost`.** A delivery that returns anything
   but `ok` is queued and retried on the next cycle — `attempt` counts them —
   and the fifth failure records `escalation_lost` in the self-heal health
-  report rather than dropping the escalation silently.
+  report rather than dropping the escalation silently. The per-cycle retry
+  stops there; the streak's own re-notify schedule still governs, so a host
+  that is still broken reports again when the schedule next falls due.
 - **`logTail` carries the launcher's own tail**, redacted before it leaves the
   process: a hook is an operator's channel, not a trusted vault.
 - **No hook is not a fault.** A host with no `callbacks.host_failure` records
-  the `escalated` event locally with `no_hook_configured` and keeps the
-  re-notify schedule instead of burning five retries; a `callbacks` block that
-  will not parse records `config_invalid` with the read's own error beside it.
+  the `escalated` event locally with `no_hook_configured`; a `callbacks` block
+  that will not parse records `config_invalid` with the read's own error
+  beside it. When there is also no crash channel to fall back on there is
+  nothing left to try, so the report is not queued for retry at all — the
+  streak's re-notify schedule is the whole record.
 
 ### What the checkout update sends
 
