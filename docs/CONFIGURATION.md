@@ -1765,12 +1765,12 @@ everywhere.
 **What it turns on.** On an enabled host, each run builds a
 [Graft](https://github.com/trailhq/Graft) tree-sitter code graph of the
 repository checkout and injects the resulting source bundle as an extra prompt
-section beside the existing `CLAUDE.md` / `AGENTS.md` repo-context docs, in
-every phase that already receives those docs. The switch is per host, not per
-repository: an enabled host uses Graft for every repository it works on.
-The five phases are **issue**, **planning**, **question**, **PR feedback** and
-**CI fix** — the builders that already carry those docs (Issue #2101). The
-bundle renders as a fenced untrusted document, tagged
+section beside the existing `CLAUDE.md` / `AGENTS.md` repo-context docs. The
+switch is per host, not per repository: an enabled host uses Graft for every
+repository it works on. Five builders accept a bundle (Issue #2101) —
+**issue**, **planning**, **question**, **PR feedback** and **CI fix** — and
+the first three collect one (Issue #2102). The query is the issue title and
+body. The bundle renders as a fenced untrusted document, tagged
 `<document source="graft ask --source">` and named among the untrusted blocks
 the boundary-integrity instruction covers, because it reproduces repository
 source and is therefore data, never instructions. It is selected per query, so
@@ -1784,8 +1784,8 @@ clone's `info/exclude` cannot be resolved or appended to, the binary is
 missing, the build or the query fails, the query succeeds but returns an empty
 bundle, or the graph index cannot be read — logs one
 `[GRAFT_UNAVAILABLE] <reason>` line at `warn` and records a `failed` Graft
-status. The run itself continues, without the
-bundle: the bundle is an accelerator, so a run never fails because Graft did.
+status. The run itself continues, without the bundle: the bundle is an
+accelerator, so a run never fails because Graft did.
 Grep the worker log for `[GRAFT_UNAVAILABLE]` to see why. Beside it the run
 logs one `Graft context: <status> — <figures>` line, so a run that asked for a
 bundle always says what came back — `failed` as loudly as `ok`. A run on a
