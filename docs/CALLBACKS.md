@@ -491,10 +491,11 @@ is the one optional-looking fact that is present on **every** run context:
   the combination worth reading: the host **had** Graft switched on and the run
   ended before the collection — a setup failure, a refused claim. `enabled`
   states the host's real switch setting rather than a default, so an early exit
-  on a Graft host is never archived as a host that never opted in. The one
-  exception is a run that threw outright: it reports
-  `{ "enabled": false, "status": "off" }`, because no result was built to read
-  the switch onto.
+  on a Graft host is never archived as a host that never opted in — on every
+  run that returned a result. Where no result carried a block at all — a run
+  that threw, or one the loop could not complete — the block falls back to
+  `{ "enabled": false, "status": "off" }`: the switch was never read, so this
+  says only that nothing was recorded.
 - `buildSeconds`, `bundleChars`, `nodeCount` and `callEdgeCount` are present
   only when the collection actually reached them, and are **omitted** — not
   emitted as an empty string — when it did not. A figure that really is nought
