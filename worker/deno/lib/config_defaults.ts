@@ -248,6 +248,33 @@ export const OPERATIONAL_DEFAULTS = {
    */
   progressExtensionCheckSeconds: 300,
   /**
+   * Call-storm stall guard (Issue #2230).
+   *
+   * **On by default.** A run polling a background job turn by turn — GRQ-23
+   * managed ~700 tool calls and `echo w252` in an hour — is stalled by
+   * definition, and neither the no-output watchdog (it sees output every
+   * second) nor the progress extension (it only declines to extend) stops
+   * it. Set `call_storm_enabled: false` to give a polling loop its whole
+   * budget back.
+   */
+  callStormEnabled: true,
+  /**
+   * Tool calls inside the window at which a run is judged a storm (#2230).
+   *
+   * Sixty calls in five minutes is twelve a minute, sustained, with nothing
+   * to show for it in the checkout; the incident that prompted the guard ran
+   * at roughly twenty-five a minute for twenty minutes. Raise it if an
+   * exploration phase that genuinely reads faster than this is being stopped.
+   */
+  callStormCalls: 60,
+  /**
+   * Sliding window the calls are counted over (#2230).
+   *
+   * Matched to `progressExtensionCheckSeconds`, because that is the cadence
+   * the guard is evaluated at: the window judged is the window observed.
+   */
+  callStormWindowSeconds: 300,
+  /**
    * Self-scheduling for auto-filed worker diagnostics (Issue #505).
    *
    * **On by default.** The worker diagnoses its own faults accurately and
@@ -1406,6 +1433,9 @@ export function buildDefaultWorkerConfig(
       OPERATIONAL_DEFAULTS.progressExtensionStallSeconds,
     progressExtensionCheckSeconds:
       OPERATIONAL_DEFAULTS.progressExtensionCheckSeconds,
+    callStormEnabled: OPERATIONAL_DEFAULTS.callStormEnabled,
+    callStormCalls: OPERATIONAL_DEFAULTS.callStormCalls,
+    callStormWindowSeconds: OPERATIONAL_DEFAULTS.callStormWindowSeconds,
     // Issue #505: self-scheduling for auto-filed worker diagnostics.
     selfScheduleDiagnosticsEnabled:
       OPERATIONAL_DEFAULTS.selfScheduleDiagnosticsEnabled,

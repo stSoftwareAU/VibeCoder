@@ -105,6 +105,7 @@ import {
   type AgentTranscriptWriter,
   maybeCreateAgentTranscriptWriter,
 } from "./agent_transcript.ts";
+import { callStormWindowMs, decideCallStorm } from "./call_storm.ts";
 import {
   combineExternalEvidence,
   combineTreeEvidence,
@@ -295,8 +296,10 @@ export interface ClaudeRunResult {
    *
    * - `"hard-timeout"` — wall-clock `timeoutSeconds` watchdog fired.
    * - `"no-output"` — silence watchdog fired (`noOutputTimeout`).
+   * - `"call-storm"` — the run was polling rather than working: dozens of
+   *   tool calls a minute with no working-tree change (Issue #2230).
    */
-  timeoutReason?: "hard-timeout" | "no-output";
+  timeoutReason?: "hard-timeout" | "no-output" | "call-storm";
   /**
    * The run was stopped on schedule, not because it failed (Issue #424,
    * parent #397).
@@ -1064,7 +1067,7 @@ export async function runClaudeWithTimeout(
   const noOutputMs = noOutputTimeout > 0 ? noOutputTimeout * 1000 : 0;
 
   let timedOut = false;
-  let timeoutReason: "hard-timeout" | "no-output" | undefined;
+  let timeoutReason: "hard-timeout" | "no-output" | "call-storm" | undefined;
   // Why the deadline check refused the last extension, when the answer was
   // "the supervisor's cap left no runway" rather than "the run stalled"
   // (Issue #424). Carried onto the result so the phase can report a
@@ -1358,7 +1361,7 @@ export async function runClaudeWithTimeout(
     });
 
     const fireKill = (
-      reason: "hard-timeout" | "no-output",
+      reason: "hard-timeout" | "no-output" | "call-storm",
       message: string,
     ) => {
       if (timedOut) return; // already firing — don't double-kill
@@ -1435,6 +1438,11 @@ export async function runClaudeWithTimeout(
     let lastTreeSample:
       | { outcome: TreeProgressState; atMs: number }
       | undefined;
+    // When the checkout last actually moved (Issue #2230), seeded with the
+    // run start so a young run has not yet stood still for a whole window.
+    // The call-storm guard reads it, so a run that edits a file every few
+    // minutes can never be mistaken for one that only polls.
+    let lastTreeAdvancedMs = startMs;
     // The same for external work (Issue #508): a descendant process burning
     // CPU is progress even when the checkout never moves, and an interim
     // reading is carried into the next deadline decision for one interval.
@@ -1496,6 +1504,36 @@ export async function runClaudeWithTimeout(
           (late > 0 || trigger === "wall-clock"
             ? ` (fired at +${firedAfterSeconds}s via ${trigger} — ${late}s late)`
             : ""),
+      );
+    };
+
+    /**
+     * Stop a run that is polling rather than working (Issue #2230).
+     *
+     * GRQ-23 spent an hour and ~700 billed turns on `echo w252` while a
+     * background test run finished. Neither existing watchdog could see it:
+     * the silence watchdog had output every second, and the progress
+     * extension only declines to extend, which changes nothing until the
+     * deadline arrives. This kill lands at the interim check instead, so the
+     * remaining budget goes back to the fleet and the WIP-preservation path
+     * keeps whatever the agent had committed.
+     *
+     * @param reason - The guard's own reason, naming the loop.
+     * @param nowMs - When the check that decided this ran.
+     */
+    const fireCallStorm = (reason: string, nowMs: number) => {
+      // Name the stalled signal wherever the extension telemetry is read.
+      lastRefusalReason = reason;
+      killTelemetry = snapshotExtensions(nowMs);
+      const elapsedSeconds = Math.round((nowMs - startMs) / 1000);
+      logger?.info(
+        `[call-storm] stopping the agent after ${elapsedSeconds}s: ${reason}`,
+      );
+      fireKill(
+        "call-storm",
+        `Watchdog: stopping PID ${childPid} after ${elapsedSeconds}s — ` +
+          `${reason}. A polling loop advances nothing: one bounded ` +
+          `foreground command is the way to wait.`,
       );
     };
 
@@ -1622,6 +1660,40 @@ export async function runClaudeWithTimeout(
     };
 
     /**
+     * Ask the call-storm guard about this check (Issue #2230).
+     *
+     * Pure apart from reading the tracker: the tool calls come from the
+     * sliding window `agent_progress.ts` keeps, the tree evidence from the
+     * probe this check just ran, and the decision itself lives in
+     * `call_storm.ts`. Returns the reason when the run is storming, or
+     * undefined — including when no policy is wired, which is every caller
+     * before #2230.
+     *
+     * @param opts - The progress-extension options, which carry the policy.
+     * @param treeState - What the probe said at this check.
+     * @param nowMs - When this check ran.
+     * @returns The stall reason, or undefined when the run is not storming.
+     */
+    const checkCallStorm = (
+      opts: ProgressExtensionOptions,
+      treeState: TreeProgressState,
+      nowMs: number,
+    ): string | undefined => {
+      const policy = opts.callStorm;
+      if (!policy) return undefined;
+      const windowMs = callStormWindowMs(policy);
+      if (windowMs <= 0) return undefined;
+      const lastToolSummary = progress.snapshot().lastToolSummary;
+      const verdict = decideCallStorm({
+        toolCalls: progress.toolCallsSince(nowMs - windowMs),
+        treeState,
+        treeUnchangedForMs: nowMs - lastTreeAdvancedMs,
+        ...(lastToolSummary ? { lastToolSummary } : {}),
+      }, policy);
+      return verdict.stalled ? verdict.reason : undefined;
+    };
+
+    /**
      * An interim check inside the budget (Issue #4295): sample the progress
      * signals and re-arm. It can never kill — the deadline is what guards the
      * budget — so a fault only downgrades the sample to `unknown`.
@@ -1644,11 +1716,20 @@ export async function runClaudeWithTimeout(
       if (timedOut || runFinished) return;
       const atMs = clock.now();
       lastTreeSample = { outcome, atMs };
+      if (outcome === "advanced") lastTreeAdvancedMs = atMs;
       if (external !== undefined) {
         lastExternalSample = { outcome: external, atMs };
       }
       await maybeWindDown(opts, atMs);
       if (timedOut || runFinished) return;
+      // A run polling its own background job makes dozens of calls a minute
+      // and changes nothing (Issue #2230): stop it here rather than let it
+      // spend the whole budget one echo at a time.
+      const storm = checkCallStorm(opts, outcome, atMs);
+      if (storm) {
+        fireCallStorm(storm, atMs);
+        return;
+      }
       armHardWatchdog();
     };
 
@@ -1695,6 +1776,9 @@ export async function runClaudeWithTimeout(
         sample,
         opts.policy,
       );
+      // The deadline probe moves the call-storm baseline too (Issue #2230):
+      // a checkout that advanced here has not stood still for a window.
+      if (combinedTreeState === "advanced") lastTreeAdvancedMs = nowMs;
       // The same fold for external work (Issue #508), and spent the same way.
       const externalSample: ExternalProgressSample | undefined =
         lastExternalSample

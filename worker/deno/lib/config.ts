@@ -637,6 +637,29 @@ export async function loadConfig(
         `run whose tool activity landed between checks.`,
     );
   }
+  // Call-storm stall guard (Issue #2230). On by default; the tunables are
+  // refused loudly rather than silently disabling the guard or stopping every
+  // run, exactly as the progress-extension tunables above are.
+  const callStormEnabled = file.call_storm_enabled ??
+    OPERATIONAL_DEFAULTS.callStormEnabled;
+  const callStormCalls = file.call_storm_calls ??
+    OPERATIONAL_DEFAULTS.callStormCalls;
+  const callStormWindowSeconds = file.call_storm_window_seconds ??
+    OPERATIONAL_DEFAULTS.callStormWindowSeconds;
+  if (callStormCalls <= 0) {
+    throw new Error(
+      `call_storm_calls must be positive, got ${callStormCalls}. A ` +
+        `non-positive threshold would stop every run that reached a check. ` +
+        `Set call_storm_enabled: false to turn the guard off instead.`,
+    );
+  }
+  if (callStormWindowSeconds <= 0) {
+    throw new Error(
+      `call_storm_window_seconds must be positive, got ` +
+        `${callStormWindowSeconds}. A non-positive window has no rate to ` +
+        `measure. Set call_storm_enabled: false to turn the guard off instead.`,
+    );
+  }
   // Self-scheduling for auto-filed worker diagnostics (Issue #505). On by
   // default; `false` restores the wait-for-a-human behaviour exactly. The
   // in-flight cap is refused loudly when it is not a whole number — a
@@ -973,6 +996,9 @@ export async function loadConfig(
     progressExtensionGrantSeconds,
     progressExtensionStallSeconds,
     progressExtensionCheckSeconds,
+    callStormEnabled,
+    callStormCalls,
+    callStormWindowSeconds,
     selfScheduleDiagnosticsEnabled,
     selfScheduleDiagnosticsMaxInFlight,
     prFeedbackTimeout,

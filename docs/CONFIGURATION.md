@@ -1656,6 +1656,9 @@ unless explicitly overridden.
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
 | Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
+| Call-storm guard | `call_storm_enabled` | `true` | Stop an issue-work run that is polling instead of working — dozens of tool calls a minute with no working-tree change (Issue #2230). Evaluated at each progress check; the stopped run keeps its preserved WIP. `false` gives a polling loop its whole budget back. See [Call storm — polling is not progress](#call-storm--polling-is-not-progress-issue-2230). |
+| Call-storm threshold | `call_storm_calls` | `60` | Tool calls inside the window at or above which the run is judged a storm. Must be positive; raise it if a genuinely fast exploration phase is being stopped. |
+| Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
@@ -2315,8 +2318,11 @@ both surfaces keep their pre-extension wording.
 ```mermaid
 flowchart TD
     W[Watchdog wakes] --> I{Deadline reached?}
-    I -->|no — check interval| S[Sample the working tree<br/>record the verdict, re-arm]
-    S --> W
+    I -->|no — check interval| S[Sample the working tree<br/>record the verdict]
+    S --> P{Call storm?<br/>calls ≥ threshold AND tree<br/>unchanged a whole window}
+    P -->|yes| KS[Stop — call-storm<br/>WIP preserved]
+    P -->|no| RA[Re-arm the watchdog]
+    RA --> W
     I -->|yes| B{Progress extension<br/>enabled?}
     B -->|no| K[Kill — hard-timeout]
     B -->|yes| C{Last tool call within<br/>stall window?}
@@ -2343,7 +2349,10 @@ write anything. Set a key only to change it:
   "progress_extension_enabled": true,
   "progress_extension_grant_seconds": 900,
   "progress_extension_stall_seconds": 300,
-  "progress_extension_check_seconds": 300
+  "progress_extension_check_seconds": 300,
+  "call_storm_enabled": true,
+  "call_storm_calls": 60,
+  "call_storm_window_seconds": 300
 }
 ```
 
@@ -2362,6 +2371,50 @@ no tree sampling and no grants:
 The other three keys are then ignored. `loadConfig` still validates them, so a
 non-positive value or a stall window shorter than the check interval is
 rejected whether or not the feature is on.
+
+#### Call storm — polling is not progress (Issue #2230)
+
+Declining to extend does nothing until the deadline arrives, so a run that
+polls a job it started in the background kept its whole budget. GRQ-23 slot s2
+spent an hour and roughly 700 billed turns on `pgrep`, `tail` and `echo w252`
+while a background `deno task test` ran — about 25 tool calls a minute for
+twenty minutes, with not one byte changed in the checkout — and no watchdog
+could see it: the no-output watchdog had output every second, and the progress
+extension only refused to extend a deadline still an hour away.
+
+The call-storm guard closes that gap at the **interim check**. When a check
+finds `call_storm_calls` or more tool calls inside the last
+`call_storm_window_seconds` **and** the working tree has not advanced for a
+whole window, the run is stopped there with a reason naming the loop:
+
+```text
+[call-storm] stopping the agent after 1483s: call storm: 372 calls in 5m,
+tree unchanged; last: Bash echo w252
+```
+
+The result carries `timeoutReason: "call-storm"`, so the worker log and the
+issue comment say which guard fired, and the ordinary WIP-preservation path
+keeps whatever the agent had committed.
+
+Two deliberate limits keep it from stopping healthy runs:
+
+- **Only an affirmative `unchanged` counts.** A working-tree probe that answers
+  `unknown` never trips the guard — an unverifiable tree is the deadline
+  check's business (Issue #4294), not a reason to stop a run early. This is the
+  opposite fail-safe direction to the extension policy, because this guard
+  kills *inside* the budget.
+- **The window must have been observed whole.** The tree has to have stood
+  still for the entire window, measured from the run start, so a run that edits
+  a file every few minutes can never be mistaken for one that only polls.
+
+The guard rides the progress extension's own interim check, so
+`progress_extension_enabled: false` turns it off as well — with no checks there
+is nothing to evaluate. Use `call_storm_enabled: false` to keep the extension
+and drop only the guard.
+
+The agent side of this is in the prompt: the shared quality instructions forbid
+backgrounding a long-running command and polling it turn by turn, and tell the
+agent to run one bounded foreground command instead.
 
 #### Why did this run take three hours?
 

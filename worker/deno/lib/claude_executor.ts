@@ -52,8 +52,11 @@ const DEFAULT_CHARS_PER_TOKEN = 4;
  * - `"hard-timeout"` — the wall-clock `timeoutSeconds` watchdog fired.
  * - `"no-output"` — the silence watchdog fired because stdout was idle for
  *   `noOutputTimeout` seconds (Issue #1825).
+ * - `"call-storm"` — the call-storm guard stopped a run that was polling
+ *   rather than working: dozens of tool calls a minute with no working-tree
+ *   change (Issue #2230).
  */
-export type ClaudeTimeoutReason = "hard-timeout" | "no-output";
+export type ClaudeTimeoutReason = "hard-timeout" | "no-output" | "call-storm";
 
 /** Result of a Claude CLI execution. */
 export interface ClaudeExecutionResult {

@@ -27,6 +27,27 @@ export const AGENT_PROGRESS_INTERVAL_MS = 60_000;
 /** Longest tool-detail fragment carried into a progress line. */
 const DETAIL_MAX_LENGTH = 80;
 
+/**
+ * How far back the tool-call history reaches, in milliseconds (Issue #2230).
+ *
+ * The call-storm guard counts calls over a sliding window of minutes, so
+ * quarter of an hour of history is ample; anything older is dropped because
+ * a timestamp nobody can ask about is only memory. A window longer than this
+ * therefore undercounts — {@link AgentProgressTracker.toolCallsSince} says so.
+ */
+export const TOOL_CALL_HISTORY_MS = 900_000;
+
+/**
+ * Hard cap on retained tool-call timestamps (Issue #2230).
+ *
+ * The retention window alone is bounded by time, not by rate, and the runs
+ * this guard exists for are precisely the ones calling tools as fast as they
+ * can. The cap keeps the history a fixed size whatever the rate: 5000 calls
+ * is far above any threshold worth configuring, and well below anything that
+ * costs memory worth counting.
+ */
+const TOOL_CALL_HISTORY_MAX = 5_000;
+
 /** Options for {@link AgentProgressTracker}. */
 export interface AgentProgressTrackerOptions {
   /** Phase name shown in each line (execute, planning, grill-me, …). */
@@ -64,6 +85,13 @@ export interface AgentActivitySnapshot {
    * construction time.
    */
   lastChunkAtMs: number;
+  /**
+   * The most recent tool call, as the progress line words it (Issue #2230) —
+   * `Bash echo w252`. Undefined until the first tool call. The call-storm
+   * reason carries it so an operator reading the log sees the loop itself,
+   * not just its rate.
+   */
+  lastToolSummary?: string;
 }
 
 /** Tool-like Codex item types counted as progress (Issue #1702). */
@@ -88,6 +116,8 @@ export class AgentProgressTracker {
   #lastTool: LastToolCall | undefined;
   #lastEmitMs: number;
   #lastChunkMs: number;
+  /** Recent tool-call times, oldest first, for the call-storm guard. */
+  #toolCallTimes: number[] = [];
   /** Codex item ids already counted, so started+completed is not two calls. */
   #seenCodexItems = new Set<string>();
 
@@ -108,9 +138,52 @@ export class AgentProgressTracker {
   snapshot(): AgentActivitySnapshot {
     return {
       toolCalls: this.#toolCalls,
-      ...(this.#lastTool ? { lastToolCallAtMs: this.#lastTool.atMs } : {}),
+      ...(this.#lastTool
+        ? {
+          lastToolCallAtMs: this.#lastTool.atMs,
+          lastToolSummary: this.#lastTool.summary,
+        }
+        : {}),
       lastChunkAtMs: this.#lastChunkMs,
     };
+  }
+
+  /**
+   * Tool calls recorded at or after `sinceMs` (Issue #2230).
+   *
+   * Pure, like {@link snapshot}: the sliding-window count the call-storm
+   * guard reads. History older than {@link TOOL_CALL_HISTORY_MS} — or beyond
+   * the retained maximum — has been dropped, so a window wider than the
+   * retention counts only what is left rather than inventing the rest.
+   *
+   * @param sinceMs - Epoch-ms the window opens at, inclusive.
+   * @returns How many tool calls fall inside the window.
+   */
+  toolCallsSince(sinceMs: number): number {
+    let count = 0;
+    // Oldest first, so the first in-window entry ends the scan.
+    for (let i = this.#toolCallTimes.length - 1; i >= 0; i--) {
+      const atMs = this.#toolCallTimes[i];
+      if (atMs === undefined || atMs < sinceMs) break;
+      count++;
+    }
+    return count;
+  }
+
+  /** Record one tool call and age the history out (Issue #2230). */
+  #recordCall(summary: string, atMs: number): void {
+    this.#toolCalls++;
+    this.#lastTool = { summary, atMs };
+    this.#toolCallTimes.push(atMs);
+    const cutoff = atMs - TOOL_CALL_HISTORY_MS;
+    let drop = 0;
+    while (
+      drop < this.#toolCallTimes.length &&
+      (this.#toolCallTimes[drop] ?? 0) < cutoff
+    ) drop++;
+    const overflow = this.#toolCallTimes.length - drop - TOOL_CALL_HISTORY_MAX;
+    if (overflow > 0) drop += overflow;
+    if (drop > 0) this.#toolCallTimes.splice(0, drop);
   }
 
   /**
@@ -161,11 +234,7 @@ export class AgentProgressTracker {
         const detail = describeToolInput(
           (block as { input?: unknown }).input,
         );
-        this.#toolCalls++;
-        this.#lastTool = {
-          summary: detail ? `${name} ${detail}` : name,
-          atMs,
-        };
+        this.#recordCall(detail ? `${name} ${detail}` : name, atMs);
       }
     }
   }
@@ -222,11 +291,7 @@ export class AgentProgressTracker {
       file_path: item.file_path,
       url: item.url,
     });
-    this.#toolCalls++;
-    this.#lastTool = {
-      summary: detail ? `${name} ${detail}` : name,
-      atMs,
-    };
+    this.#recordCall(detail ? `${name} ${detail}` : name, atMs);
   }
 
   #maybeEmit(): void {

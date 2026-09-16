@@ -89,6 +89,10 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "progress_extension_stall_seconds",
   // Working-tree sampling interval (Issue #4295)
   "progress_extension_check_seconds",
+  // Call-storm stall guard (Issue #2230)
+  "call_storm_enabled",
+  "call_storm_calls",
+  "call_storm_window_seconds",
   // Agent transcript tee (Issue #1141) — off by default; the only operator
   // switch for the raw agent stream-json transcript.
   "agent_transcript_enabled",

@@ -14,6 +14,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { CallStormPolicy } from "./call_storm.ts";
 import {
   compareDescendantCpu,
   type DescendantCpuSnapshot,
@@ -43,6 +44,33 @@ export interface ProgressExtensionConfig {
   progressExtensionGrantSeconds?: number;
   progressExtensionStallSeconds?: number;
   progressExtensionCheckSeconds?: number;
+  /** Call-storm stall guard (Issue #2230). */
+  callStormEnabled?: boolean;
+  callStormCalls?: number;
+  callStormWindowSeconds?: number;
+}
+
+/**
+ * Build the call-storm policy from config (Issue #2230).
+ *
+ * The guard rides the interim check, so it is wired here beside the probes
+ * that check runs. Returns `undefined` when the operator turned it off or
+ * left a tunable at a value that cannot be measured — in which case nothing
+ * is evaluated and a polling run keeps the budget it had before #2230.
+ *
+ * @param config - Worker config (or the subset above).
+ * @returns The policy, or `undefined` when the guard is off.
+ */
+export function buildCallStormPolicy(
+  config: ProgressExtensionConfig,
+): CallStormPolicy | undefined {
+  if (!config.callStormEnabled) return undefined;
+  const callThreshold = config.callStormCalls ?? 0;
+  const windowSeconds = config.callStormWindowSeconds ?? 0;
+  // Config validation rejects these, so reaching here means a caller built
+  // the config by hand. Refuse to guard rather than stop every run.
+  if (callThreshold <= 0 || windowSeconds <= 0) return undefined;
+  return { enabled: true, windowSeconds, callThreshold };
 }
 
 /**
@@ -146,6 +174,10 @@ export async function buildProgressExtension(
   await clearWindDownNotice(repoDir);
 
   const baseline = await probeWorktreeFingerprint(repoDir);
+  // The call-storm guard (Issue #2230) rides the same interim check: a run
+  // polling a background job turn by turn is stopped there rather than at a
+  // deadline an hour away.
+  const callStorm = buildCallStormPolicy(config);
   return {
     policy: {
       enabled: true,
@@ -161,6 +193,7 @@ export async function buildProgressExtension(
     // can read between polls of a long-running job (Issue #508).
     onWindDown: (notice: RunBudgetNotice) =>
       writeWindDownNotice(repoDir, notice),
+    ...(callStorm ? { callStorm } : {}),
     ...(onExtension ? { onExtension } : {}),
     ...(ceilingMs !== undefined ? { ceilingMs } : {}),
     ...(typicalGateSeconds !== undefined ? { typicalGateSeconds } : {}),
