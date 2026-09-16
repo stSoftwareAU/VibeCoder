@@ -476,6 +476,7 @@
         "worker/deno/lib/builtin_prompt_overrides.ts",
         "worker/deno/lib/bump_deps.ts",
         "worker/deno/lib/bump_diff_scan.ts",
+        "worker/deno/lib/call_storm.ts",
         "worker/deno/lib/checkout_persist_credentials_scanner.ts",
         "worker/deno/lib/ci_failure_classifier.ts",
         "worker/deno/lib/ci_failure_issue.ts",

@@ -113,6 +113,15 @@ export interface ClaudeExecutionResult {
    */
   watchdogLateSeconds?: number;
   /**
+   * Why the call-storm guard stopped the run (Issue #2230).
+   *
+   * Present only with `timeoutReason: "call-storm"`. Its own field, not the
+   * extension telemetry's `refusalReason`: no extension was refused, and the
+   * execute phase puts this string in the failure reason so the issue comment
+   * names the loop rather than blaming the clock.
+   */
+  stallReason?: string;
+  /**
    * Set when the post-kill wait expired before the child settled
    * (Issue #4254): the runner abandoned `child.status` and the stream
    * pumps after this many seconds rather than blocking for hours. When

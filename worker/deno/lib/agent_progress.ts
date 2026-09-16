@@ -46,7 +46,7 @@ export const TOOL_CALL_HISTORY_MS = 900_000;
  * is far above any threshold worth configuring, and well below anything that
  * costs memory worth counting.
  */
-const TOOL_CALL_HISTORY_MAX = 5_000;
+export const TOOL_CALL_HISTORY_MAX = 5_000;
 
 /** Options for {@link AgentProgressTracker}. */
 export interface AgentProgressTrackerOptions {

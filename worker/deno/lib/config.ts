@@ -27,6 +27,10 @@ import { resolveRunMode } from "./run_mode.ts";
 import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
+import {
+  TOOL_CALL_HISTORY_MAX,
+  TOOL_CALL_HISTORY_MS,
+} from "./agent_progress.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
 import { parseContainerExtension } from "./container_extension_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
@@ -658,6 +662,25 @@ export async function loadConfig(
       `call_storm_window_seconds must be positive, got ` +
         `${callStormWindowSeconds}. A non-positive window has no rate to ` +
         `measure. Set call_storm_enabled: false to turn the guard off instead.`,
+    );
+  }
+  // The tracker's history is what the guard can see (Issue #2230). A window
+  // or a threshold beyond it would be accepted and then quietly under-count
+  // or never fire, which is the silent failure this codebase refuses.
+  const callStormHistorySeconds = TOOL_CALL_HISTORY_MS / 1000;
+  if (callStormWindowSeconds > callStormHistorySeconds) {
+    throw new Error(
+      `call_storm_window_seconds must not exceed the ` +
+        `${callStormHistorySeconds}s of tool-call history the progress ` +
+        `tracker retains, got ${callStormWindowSeconds}. A wider window ` +
+        `would count only the part of itself the tracker still remembers.`,
+    );
+  }
+  if (callStormCalls > TOOL_CALL_HISTORY_MAX) {
+    throw new Error(
+      `call_storm_calls must not exceed the ${TOOL_CALL_HISTORY_MAX} tool ` +
+        `calls the progress tracker retains, got ${callStormCalls}. A higher ` +
+        `threshold could never be reached, so the guard would never fire.`,
     );
   }
   // Self-scheduling for auto-filed worker diagnostics (Issue #505). On by

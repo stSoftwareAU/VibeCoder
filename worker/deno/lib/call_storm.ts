@@ -17,6 +17,15 @@
  * Pure: no I/O, no timers, no `Date.now()`. Every input is supplied by the
  * caller, so the rules are exhaustively unit-testable.
  *
+ * The tree is the only progress signal read here, and that is deliberate.
+ * Issue #508 made a descendant process burning CPU count as progress for the
+ * *deadline* decision, because an agent supervising external work is
+ * working — but polling that work turn by turn is still the wrong way to wait
+ * for it, and is what costs a model turn a second. An agent that waits the
+ * way the prompt tells it to, inside one bounded foreground command, issues
+ * no tool calls at all while it waits, so it cannot trip this guard however
+ * long the command takes.
+ *
  * Fail-safe direction, deliberately the opposite of the extension policy's:
  * this guard *kills inside the budget*, so it fires only on affirmative
  * evidence. A tree probe that answers `unknown` never trips it — an
@@ -27,6 +36,23 @@
  */
 
 import type { TreeProgressState } from "./progress_extension.ts";
+
+/**
+ * Consecutive storm checks required before a run is stopped (Issue #2230).
+ *
+ * One window is a warning, not a verdict. Sixty calls in five minutes is
+ * twelve a minute, and a read-heavy investigation — read the issue, grep the
+ * repo, read what the grep found — can genuinely reach that before its first
+ * edit. Two consecutive windows cannot: ten minutes of that rate with not one
+ * byte changed is the poll loop, not the investigation. The incident this
+ * guard exists for ran at ~25 calls a minute for twenty minutes, so it is
+ * still stopped inside the second window.
+ *
+ * The verdict itself stays per-window — {@link decideCallStorm} answers "is
+ * this window a storm?" — and the caller counts the consecutive ones, because
+ * the streak is state and this module is pure.
+ */
+export const CALL_STORM_CONSECUTIVE_CHECKS = 2;
 
 /** Tunables the guard reads. Mirrors the `call_storm_*` config keys. */
 export interface CallStormPolicy {

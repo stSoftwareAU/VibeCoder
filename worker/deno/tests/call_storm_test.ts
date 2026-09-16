@@ -10,6 +10,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  CALL_STORM_CONSECUTIVE_CHECKS,
   type CallStormPolicy,
   callStormWindowMs,
   decideCallStorm,
@@ -163,5 +164,38 @@ Deno.test("decideCallStorm - a sub-minute window reads in seconds", () => {
   assert(
     verdict.reason.includes("5 calls in 45s"),
     `the window must read in seconds: ${verdict.reason}`,
+  );
+});
+
+Deno.test("decideCallStorm - a mixed window reads as minutes and seconds", () => {
+  const verdict = decideCallStorm({
+    toolCalls: 70,
+    treeState: "unchanged",
+    treeUnchangedForMs: 330_000,
+  }, { enabled: true, windowSeconds: 330, callThreshold: 60 });
+  assert(verdict.stalled);
+  if (!verdict.stalled) return;
+  assert(
+    verdict.reason.includes("70 calls in 5m30s"),
+    `a window of minutes and seconds must read as both: ${verdict.reason}`,
+  );
+});
+
+Deno.test("decideCallStorm - one window is a warning, so a storm needs more than one check", () => {
+  // The read-heavy shape the shipped defaults could otherwise stop: sixty
+  // Read/Grep calls in the first five minutes of a run, before the first
+  // edit. The window verdict is a storm — that is what this function
+  // answers — but the runner requires CALL_STORM_CONSECUTIVE_CHECKS of them
+  // in a row, so ten minutes of it, not five, is what stops a run.
+  const exploration = decideCallStorm({
+    toolCalls: 60,
+    treeState: "unchanged",
+    treeUnchangedForMs: WINDOW_MS,
+    lastToolSummary: "Read worker/deno/lib/claude_runner.ts",
+  }, POLICY);
+  assert(exploration.stalled, "the window itself reads as a storm");
+  assert(
+    CALL_STORM_CONSECUTIVE_CHECKS >= 2,
+    "one window must never be enough to stop a run",
   );
 });

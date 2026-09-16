@@ -9,6 +9,10 @@
  */
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  TOOL_CALL_HISTORY_MAX,
+  TOOL_CALL_HISTORY_MS,
+} from "../lib/agent_progress.ts";
 import { loadConfig } from "../lib/config.ts";
 import { detectUnknownConfigKeys } from "../lib/config_unknown_keys.ts";
 import {
@@ -109,6 +113,58 @@ Deno.test("call storm config - a window with no rate to measure is refused (Issu
       );
     },
   );
+});
+
+Deno.test("call storm config - a window wider than the tracker's history is refused (Issue #2230)", async () => {
+  // The tracker keeps 15 minutes of tool-call times, so a 30-minute window
+  // would be accepted and then silently count half of itself.
+  await withTempConfig(
+    minimalConfig({ call_storm_window_seconds: 1800 }),
+    async (configPath) => {
+      const error = await assertRejects(() => loadConfig(configPath), Error);
+      assert(
+        error.message.includes("call_storm_window_seconds must not exceed"),
+        `the refusal must name the key: ${error.message}`,
+      );
+      assert(
+        error.message.includes(`${TOOL_CALL_HISTORY_MS / 1000}s`),
+        `the refusal must name the retention: ${error.message}`,
+      );
+    },
+  );
+});
+
+Deno.test("call storm config - a threshold beyond the retained history is refused (Issue #2230)", async () => {
+  // A threshold the tracker could never count to is a guard that never
+  // fires — accepted silently, it would look enabled and do nothing.
+  await withTempConfig(
+    minimalConfig({ call_storm_calls: TOOL_CALL_HISTORY_MAX + 1 }),
+    async (configPath) => {
+      const error = await assertRejects(() => loadConfig(configPath), Error);
+      assert(
+        error.message.includes("call_storm_calls must not exceed"),
+        `the refusal must name the key: ${error.message}`,
+      );
+      assert(
+        error.message.includes(`${TOOL_CALL_HISTORY_MAX}`),
+        `the refusal must name the cap: ${error.message}`,
+      );
+    },
+  );
+});
+
+Deno.test("call storm config - the shipped defaults sit inside the tracker's history (Issue #2230)", async () => {
+  await withTempConfig(minimalConfig(), async (configPath) => {
+    const config = await loadConfig(configPath);
+    assert(
+      (config.callStormWindowSeconds ?? 0) * 1000 <= TOOL_CALL_HISTORY_MS,
+      "the default window must be countable",
+    );
+    assert(
+      (config.callStormCalls ?? 0) <= TOOL_CALL_HISTORY_MAX,
+      "the default threshold must be reachable",
+    );
+  });
 });
 
 Deno.test("call storm config - the guard reaches the runner option (Issue #2230)", async () => {

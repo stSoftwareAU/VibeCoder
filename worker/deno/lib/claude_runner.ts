@@ -105,7 +105,11 @@ import {
   type AgentTranscriptWriter,
   maybeCreateAgentTranscriptWriter,
 } from "./agent_transcript.ts";
-import { callStormWindowMs, decideCallStorm } from "./call_storm.ts";
+import {
+  CALL_STORM_CONSECUTIVE_CHECKS,
+  callStormWindowMs,
+  decideCallStorm,
+} from "./call_storm.ts";
 import {
   combineExternalEvidence,
   combineTreeEvidence,
@@ -318,6 +322,16 @@ export interface ClaudeRunResult {
    * hard-timeout results so the diagnostics can say so.
    */
   watchdogLateSeconds?: number;
+  /**
+   * Why the call-storm guard stopped the run (Issue #2230).
+   *
+   * Present only with `timeoutReason: "call-storm"`, and carried in its own
+   * field rather than folded into the extension telemetry: no extension was
+   * refused, so reporting the storm as a refusal would state something that
+   * did not happen. The execute phase puts it in the failure reason so the
+   * issue comment names the loop.
+   */
+  stallReason?: string;
   /**
    * Set when the post-kill wait expired before the child settled
    * (Issue #4254): the runner abandoned `child.status` and the stream
@@ -1339,6 +1353,8 @@ export async function runClaudeWithTimeout(
     // survived the tree kill and held the stdout pipe open.
     let killFiredMs = 0;
     let watchdogLateSeconds: number | undefined;
+    // Why the call-storm guard stopped the run, when it did (Issue #2230).
+    let stallReason: string | undefined;
     let killBoundResolve: ((v: "kill-bound") => void) | undefined;
     const killBound = new Promise<"kill-bound">((resolve) => {
       killBoundResolve = resolve;
@@ -1443,6 +1459,11 @@ export async function runClaudeWithTimeout(
     // The call-storm guard reads it, so a run that edits a file every few
     // minutes can never be mistaken for one that only polls.
     let lastTreeAdvancedMs = startMs;
+    // Consecutive interim checks that read as a storm (Issue #2230). One
+    // window is a warning, not a verdict: a read-heavy investigation can
+    // genuinely make dozens of calls in five minutes before its first edit,
+    // so the run is stopped only when the next check agrees.
+    let callStormStreak = 0;
     // The same for external work (Issue #508): a descendant process burning
     // CPU is progress even when the checkout never moves, and an interim
     // reading is carried into the next deadline decision for one interval.
@@ -1522,8 +1543,10 @@ export async function runClaudeWithTimeout(
      * @param nowMs - When the check that decided this ran.
      */
     const fireCallStorm = (reason: string, nowMs: number) => {
-      // Name the stalled signal wherever the extension telemetry is read.
-      lastRefusalReason = reason;
+      // Its own field, not the extension telemetry's `refusalReason`: no
+      // extension was refused here, and saying one was would report something
+      // that did not happen.
+      stallReason = reason;
       killTelemetry = snapshotExtensions(nowMs);
       const elapsedSeconds = Math.round((nowMs - startMs) / 1000);
       logger?.info(
@@ -1695,8 +1718,13 @@ export async function runClaudeWithTimeout(
 
     /**
      * An interim check inside the budget (Issue #4295): sample the progress
-     * signals and re-arm. It can never kill — the deadline is what guards the
-     * budget — so a fault only downgrades the sample to `unknown`.
+     * signals and re-arm. A probe fault only downgrades the sample to
+     * `unknown` — the deadline is what guards the budget.
+     *
+     * One thing here *can* end the run (Issue #2230): consecutive checks that
+     * read as a call storm — a flood of tool calls with a checkout that has
+     * not moved — stop the agent, because a run polling its own background
+     * job would otherwise spend the whole budget one `echo` at a time.
      */
     const sampleTree = async (
       opts: ProgressExtensionOptions,
@@ -1727,8 +1755,20 @@ export async function runClaudeWithTimeout(
       // spend the whole budget one echo at a time.
       const storm = checkCallStorm(opts, outcome, atMs);
       if (storm) {
-        fireCallStorm(storm, atMs);
-        return;
+        callStormStreak++;
+        if (callStormStreak >= CALL_STORM_CONSECUTIVE_CHECKS) {
+          fireCallStorm(storm, atMs);
+          return;
+        }
+        logger?.warn(
+          `[call-storm] ${storm} — check ${callStormStreak} of ` +
+            `${CALL_STORM_CONSECUTIVE_CHECKS}; the run is stopped if the ` +
+            `next check agrees`,
+        );
+      } else {
+        // Any check that is not a storm spends the evidence: the streak has
+        // to be consecutive, or a busy run would accumulate one over hours.
+        callStormStreak = 0;
       }
       armHardWatchdog();
     };
@@ -2332,6 +2372,7 @@ export async function runClaudeWithTimeout(
         ...(watchdogLateSeconds !== undefined && watchdogLateSeconds > 0
           ? { watchdogLateSeconds }
           : {}),
+        ...(stallReason ? { stallReason } : {}),
         ...(killIncompleteSeconds !== undefined
           ? { killIncompleteSeconds }
           : {}),
@@ -2872,6 +2913,11 @@ async function runRetryLadder(
           // abandoned post-kill wait must survive into the diagnostics.
           ...(result.value.watchdogLateSeconds !== undefined
             ? { watchdogLateSeconds: result.value.watchdogLateSeconds }
+            : {}),
+          // Why the call-storm guard stopped the run (Issue #2230), so the
+          // failure reason can name the loop rather than blame the clock.
+          ...(result.value.stallReason
+            ? { stallReason: result.value.stallReason }
             : {}),
           ...(result.value.killIncompleteSeconds !== undefined
             ? { killIncompleteSeconds: result.value.killIncompleteSeconds }
