@@ -18,6 +18,10 @@ import {
   type CodegraphRunLogger,
   prepareCodegraphRun,
 } from "../lib/codegraph_run.ts";
+import {
+  assertCodegraphRootedAt,
+  codegraphServerRoot,
+} from "./support/codegraph_mcp_root.ts";
 
 /** A logger that keeps what it was told, so a test can read the status line. */
 function recordingLogger(): CodegraphRunLogger & {
@@ -92,7 +96,15 @@ Deno.test("prepareCodegraphRun - an indexed run gains the line and the server", 
   assert(typeof mcp === "object", "an indexed run must name its servers");
   assertEquals(mcp.playwright, false);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
-  assertEquals(mcp.servers?.codegraph?.args, ["serve", "--mcp"]);
+  assertEquals(mcp.servers?.codegraph?.args, [
+    "serve",
+    "--mcp",
+    "--path",
+    "/tmp/checkout",
+  ]);
+  // The root is the checkout the index was built in, never the agent's own
+  // working directory (Issue #2200).
+  assertCodegraphRootedAt(mcp, preparer.calls[0]?.repoDir, "codegraph_run");
   // The browser grant it already had is preserved, never widened.
   const withBrowser = run.mcpConfig(true);
   assert(typeof withBrowser === "object");
@@ -120,6 +132,33 @@ Deno.test("prepareCodegraphRun - a failed index adds neither half", async () => 
     assertEquals(run.applyPrompt("the prompt"), "the prompt");
     assertEquals(run.mcpConfig(true), true);
     assertEquals(run.mcpConfig(), undefined);
+  }
+});
+
+Deno.test("prepareCodegraphRun - the server follows the checkout that was indexed (Issue #2200)", async () => {
+  // Two different checkouts, so the root is read from the run rather than
+  // matching one fixture path by coincidence.
+  for (const checkout of ["/work/repo-one", "/elsewhere/repo-two"]) {
+    const logger = recordingLogger();
+    const preparer = fakePreparer({
+      status: "ok",
+      enabled: true,
+      nodeCount: 1,
+      relationshipCount: 2,
+    });
+    const run = await prepareCodegraphRun({
+      repoDir: checkout,
+      enabled: true,
+      logger,
+      prepare: preparer.prepare,
+    });
+
+    assertEquals(preparer.calls[0]?.repoDir, checkout);
+    assertEquals(codegraphServerRoot(run.mcpConfig(false)), checkout);
+    assertEquals(
+      codegraphServerRoot(run.mcpConfigOption(true).mcpConfig),
+      checkout,
+    );
   }
 });
 

@@ -46,7 +46,7 @@ import { codegraphMcpServer } from "../lib/codegraph_context.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 /** The CodeGraph server entry, as the phases hand it to the runner. */
-const codegraphServer = codegraphMcpServer();
+const codegraphServer = codegraphMcpServer("/w/repo");
 
 // ---------------------------------------------------------------------------
 // Child-environment sanitisation (Issue #3203)

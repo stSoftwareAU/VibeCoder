@@ -134,6 +134,17 @@ export const CODEGRAPH_UNAVAILABLE_MARKER = "[CODEGRAPH_UNAVAILABLE]";
 export const CODEGRAPH_EXPLORE_TOOL = "codegraph_explore";
 
 /**
+ * The `codegraph serve` flag naming the project the server resolves.
+ *
+ * `codegraph serve --help` at v1.6.0 (the pinned version, run on the host):
+ * `-p, --path <path>  Project path (optional for MCP mode, uses rootUri from
+ * client)`. Without it the server falls back to the client's `rootUri` — the
+ * agent's working directory — which is the parent of the clone on the planning
+ * and question paths (Issue #2200).
+ */
+export const CODEGRAPH_ROOT_FLAG = "--path";
+
+/**
  * The one prompt line an enabled run gains, telling the agent to query the
  * index before it searches files.
  *
@@ -328,19 +339,31 @@ export async function prepareCodegraphContext(
  * Only `command`, `args` and `env` are named, because those are the keys
  * `buildCodexMcpConfigArgs` (`codex_executor.ts`) translates into Codex `-c`
  * overrides — it ignores `cwd` — so one entry serves Claude and Codex alike.
- * The server inherits the agent's working directory, which is the checkout it
- * must resolve the index from.
+ * That is exactly why the checkout is named in the **arguments**: `cwd` would
+ * be dropped by the Codex translation, and the agent's own working directory
+ * is the parent of the clone on the planning and question paths (Issue #2200),
+ * where an unrooted server would resolve no index at all.
  *
+ * @param repoDir - Absolute path of the indexed checkout the server must resolve
  * @returns The server specification, fresh on each call so a caller may mutate it
+ * @throws If `repoDir` is empty — a server rooted nowhere would silently
+ *   resolve the working directory again, which is the fault this argument
+ *   exists to remove
  */
-export function codegraphMcpServer(): {
+export function codegraphMcpServer(repoDir: string): {
   command: string;
   args: string[];
   env: Record<string, string>;
 } {
+  if (repoDir.trim() === "") {
+    throw new Error(
+      "codegraphMcpServer needs the indexed checkout to root the MCP " +
+        "server at (Issue #2200)",
+    );
+  }
   return {
     command: "codegraph",
-    args: ["serve", "--mcp"],
+    args: ["serve", "--mcp", CODEGRAPH_ROOT_FLAG, repoDir],
     env: { ...CODEGRAPH_ENV },
   };
 }

@@ -199,7 +199,9 @@ export async function prepareCodegraphRun(
       ? {}
       : { relationships: result.relationshipCount }),
   });
-  return buildRun(result, providerId, logger);
+  // `repoDir` is non-empty on every branch that can reach `ok`, which is the
+  // only status `buildRun` roots a server for (Issue #2200).
+  return buildRun(result, repoDir ?? "", providerId, logger);
 }
 
 /**
@@ -244,9 +246,17 @@ function describeOutcome(result: CodegraphContextResult): string {
     " (Issue #2159)";
 }
 
-/** Bind the decisions to one prepared result. */
+/**
+ * Bind the decisions to one prepared result.
+ *
+ * `repoDir` is the checkout the index was built in, and the server is rooted
+ * there explicitly: the agent's working directory is the parent of the clone
+ * on the planning and question paths, so a server left to inherit it would
+ * resolve no index while the run still reported `ok` (Issue #2200).
+ */
 function buildRun(
   result: CodegraphContextResult,
+  repoDir: string,
   providerId: string,
   logger: CodegraphRunLogger,
 ): CodegraphRun {
@@ -257,7 +267,7 @@ function buildRun(
     wired
       ? {
         playwright: playwright === true,
-        servers: { codegraph: codegraphMcpServer() },
+        servers: { codegraph: codegraphMcpServer(repoDir) },
       }
       : playwright;
   return {

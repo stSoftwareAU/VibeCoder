@@ -20,6 +20,7 @@ import {
   type CodegraphContextResult,
   type PrepareCodegraphContextOptions,
 } from "../lib/codegraph_context.ts";
+import { assertCodegraphRootedAt } from "./support/codegraph_mcp_root.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 
 /** What one phase run handed the agent. */
@@ -169,6 +170,11 @@ Deno.test("execute_claude_phase - an indexed run gets the line and the server to
   assert(typeof mcp === "object", "the codegraph server must be requested");
   assertEquals(mcp.playwright, false);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
+  assertCodegraphRootedAt(
+    mcp,
+    observed.prepared[0]?.repoDir,
+    "execute_claude_phase",
+  );
 
   assertEquals(result.codegraphContext?.status, "ok");
   assertEquals(result.codegraphContext?.queries, 7);
@@ -220,5 +226,10 @@ Deno.test("execute_claude_phase - a screenshot run keeps its browser grant besid
   const mcp = observed.runOptions?.mcpConfig;
   assert(typeof mcp === "object");
   assertEquals(mcp.playwright, true);
-  assertEquals(mcp.servers?.codegraph?.args, ["serve", "--mcp"]);
+  assertEquals(mcp.servers?.codegraph?.args, [
+    "serve",
+    "--mcp",
+    "--path",
+    "/tmp/codegraph-2159-work/repo",
+  ]);
 });
