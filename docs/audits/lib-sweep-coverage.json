@@ -6,7 +6,7 @@
       "issue": 1214,
       "chunk": "12a",
       "title": "subprocess and argv construction",
-      "ledger": "docs/audits/security-sweep-1610-lib-delta-12a-12c.md",
+      "ledger": "docs/audits/security-sweep-2182-lib-delta-12a-12c.md",
       "definition": "grep -rl \"Deno.Command\" lib/ --include='*.ts' | grep -v '_test\\.ts$'",
       "status": "swept",
       "paths": [
@@ -60,13 +60,13 @@
         "worker/deno/lib/workflow_auditor.ts",
         "worker/deno/lib/write_repo_allowlist.ts"
       ],
-      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
+      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
     },
     {
       "issue": 1215,
       "chunk": "12b",
       "title": "filesystem, path and temp-file handling",
-      "ledger": "docs/audits/security-sweep-1610-lib-delta-12a-12c.md",
+      "ledger": "docs/audits/security-sweep-2182-lib-delta-12a-12c.md",
       "definition": "grep -rl \"Deno.writeTextFile|Deno.writeFile|Deno.remove|Deno.mkdir|Deno.makeTempDir|Deno.symlink|Deno.open\" lib/ minus 12a",
       "status": "swept",
       "paths": [
@@ -154,13 +154,13 @@
         "worker/deno/lib/work_volume_tiers.ts",
         "worker/deno/lib/worker_log_cleanup.ts"
       ],
-      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
+      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
     },
     {
       "issue": 1216,
       "chunk": "12c",
       "title": "untrusted GitHub-data ingestion",
-      "ledger": "docs/audits/security-sweep-1610-lib-delta-12a-12c.md",
+      "ledger": "docs/audits/security-sweep-2182-lib-delta-12a-12c.md",
       "definition": "grep -rl \"gh_spawn|runGhOrThrow|spawnGh|JSON.parse\" lib/ minus 12a and 12b",
       "status": "swept",
       "paths": [
@@ -363,7 +363,7 @@
         "worker/deno/lib/worker_token_privilege_scanner.ts",
         "worker/deno/lib/workflow_annotation_fetcher.ts"
       ],
-      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
+      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
     },
     {
       "issue": 1217,
@@ -1609,7 +1609,7 @@
       "ledger": "docs/audits/security-sweep-2172-milestone-groups-gate.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: plan_milestone_groups.ts, markdown_table.ts (#2172)",
       "status": "swept",
-      "sweptAt": "de3581eca8ebb42d6ce8001622c20b15e67e90c3",
+      "sweptAt": "5f3e6d9b8c3fcf29d421fc63a307a0242f92547a",
       "paths": [
         "worker/deno/lib/markdown_table.ts",
         "worker/deno/lib/plan_milestone_groups.ts"
