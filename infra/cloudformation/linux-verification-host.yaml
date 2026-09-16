@@ -65,9 +65,17 @@ Parameters:
   VibeCoderRepositoryUrl:
     Type: String
     Default: https://github.com/stSoftwareAU/VibeCoder.git
-    AllowedPattern: ^https://[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+$
+    AllowedPattern: ^https://[A-Za-z0-9._~:/@%+-]+$
     Description: >-
       HTTPS clone URL of the checkout the bootstrap clones for verification.
+      The value is interpolated into the bootstrap's clone command line, so the
+      pattern is the boundary that keeps it out of the shell: it admits only
+      the characters a clone URL needs and no shell metacharacter — in
+      particular no `$`, `(` or `)`, which would otherwise make a
+      deployer-supplied parameter run as root during cloud-init (Issue #2180).
+      Never embed a credential here: stack parameters are readable through
+      `describe-stacks` and the rendered user data, and the documented flow
+      authenticates interactively in the session instead.
 
   HostAgentCli:
     Type: String
@@ -278,8 +286,10 @@ Resources:
             # instructions a reader would follow, not a private variant.
             #
             # Shell variables are written ${!LIKE_THIS} because CloudFormation
-            # renders this block through Fn::Sub; only the two stack
-            # parameters below are substituted.
+            # renders this block through Fn::Sub; the only substitutions are
+            # the three stack parameters HostAgentCli, VibeCoderRepositoryUrl
+            # and AutoStopHours, each of which is constrained by its
+            # AllowedValues or AllowedPattern before it reaches this shell.
             set -euo pipefail
 
             STATUS=/var/log/vibe-bootstrap.status
