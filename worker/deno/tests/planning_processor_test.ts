@@ -36,6 +36,8 @@ import {
 import { planningProcessorCommand } from "../commands/planning_processor.ts";
 import { validateFailureDetectionCriteria } from "../lib/failure_detection_gate.ts";
 import { COVERAGE_TABLE_REQUIREMENT } from "../lib/plan_coverage_gate.ts";
+import { MILESTONES_TABLE_REQUIREMENT } from "../lib/plan_milestone_groups.ts";
+import { MAX_MILESTONE_TITLE_LENGTH } from "../lib/planning_milestone.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
@@ -5332,4 +5334,239 @@ Deno.test("processIssuePlanning - a plan ordered against its dependency edges st
   assertEquals(result.ok, true);
   assertEquals(closedIssue, true);
   assertEquals(labels.includes("needs-human"), false);
+});
+
+// ============================================================================
+// Milestone-groups gate wired at closePlanningIssue() (Issue #2172)
+//
+// The publish turn groups its sub-issues by file area and posts a
+// `## Milestones` table on the parent. The gate rules on that table's
+// structure only; a missing table keeps the legacy single-milestone path, and
+// a broken one escalates *and* still creates the legacy milestone so overnight
+// delivery keeps working.
+// ============================================================================
+
+/**
+ * A parent read carrying a covered `## Plan Coverage` table for the two
+ * sub-issues this run publishes, plus whatever `table` lines follow it.
+ */
+function milestonesReadWith(
+  table: string[],
+  subIssueNumbers: number[] = [101, 102],
+): string {
+  return JSON.stringify({
+    body: "Parent",
+    comments: [{
+      author: { login: FLEET_LOGIN },
+      body: [
+        "## Plan published",
+        "",
+        ...subIssueNumbers.map((n, i) =>
+          `${i + 1}. #${n} — Part (\`enhancement\`)`
+        ),
+        "",
+        "## Plan Coverage",
+        "",
+        "| Ask | Covered by | Notes |",
+        "| --- | --- | --- |",
+        `| Add the auth module | ${
+          subIssueNumbers.map((n) => `#${n}`).join(", ")
+        } | All published |`,
+        "",
+        ...table,
+      ].join("\n"),
+    }],
+  });
+}
+
+/** Run a planning close that publishes `subIssueNumbers` against `table`. */
+async function runPlanningWithMilestones(
+  table: string[],
+  subIssueNumbers: number[] = [101, 102],
+): Promise<{
+  result: Awaited<ReturnType<typeof processIssuePlanning>>;
+  closedIssue: boolean;
+  labels: string[];
+  comments: string[];
+  milestonePosts: string[][];
+  milestoneAssignments: string[][];
+}> {
+  const ctx = makeContext();
+  const claudeOutput = [
+    "Created the following sub-issues:",
+    ...subIssueNumbers.map((n) =>
+      `- https://github.com/org/repo/issues/${n} — Part`
+    ),
+  ].join("\n");
+  let closedIssue = false;
+  const labels: string[] = [];
+  const comments: string[] = [];
+  const milestonePosts: string[][] = [];
+  const milestoneAssignments: string[][] = [];
+  let nextMilestoneNumber = 7;
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: { output: claudeOutput, exitCode: 0, timedOut: false },
+        }),
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(milestonesReadWith(table, subIssueNumbers));
+        }
+        if (args[0] === "api") {
+          if (
+            args.includes("POST") && args.some((a) => a.endsWith("/milestones"))
+          ) {
+            milestonePosts.push(args);
+            const posted = args.find((a) => a.startsWith("title="))?.slice(
+              "title=".length,
+            ) ?? "#100 Break down auth";
+            return Promise.resolve(
+              JSON.stringify({ number: nextMilestoneNumber++, title: posted }),
+            );
+          }
+          return Promise.resolve("[]");
+        }
+        if (args[0] === "issue" && args[1] === "edit") {
+          const at = args.indexOf("--milestone");
+          if (at !== -1) milestoneAssignments.push([args[2]!, args[at + 1]!]);
+        }
+        if (args.includes("close")) closedIssue = true;
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const result = await processIssuePlanning(ctx, {
+    promptsDir: PROMPTS_DIR,
+    ghClient: makeGateClient(labels, comments),
+    logger: deps.logger,
+    deps,
+  });
+  return {
+    result,
+    closedIssue,
+    labels,
+    comments,
+    milestonePosts,
+    milestoneAssignments,
+  };
+}
+
+Deno.test("processIssuePlanning - no `## Milestones` table closes the parent with one milestone (Issue #2172)", async () => {
+  const { result, closedIssue, labels, comments, milestonePosts } =
+    await runPlanningWithMilestones([]);
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.processed, true);
+  assertEquals(closedIssue, true);
+  // The legacy path: no escalation, and the single plan-wide milestone is
+  // still created for the two sub-issues.
+  assertEquals(labels.includes("needs-human"), false);
+  assertEquals(comments.some((c) => c.includes("Plan milestones gate")), false);
+  assertEquals(milestonePosts.length, 1);
+});
+
+Deno.test("processIssuePlanning - a sound `## Milestones` table closes the parent without escalating (Issue #2172)", async () => {
+  const { result, closedIssue, labels, comments } =
+    await runPlanningWithMilestones([
+      "## Milestones",
+      "",
+      "| Milestone | File area | Sub-issues |",
+      "| --- | --- | --- |",
+      "| auth: module | worker/auth | #101 |",
+      "| store: sessions | worker/store | #102 |",
+    ]);
+
+  assertEquals(result.ok, true);
+  assertEquals(closedIssue, true);
+  assertEquals(labels.includes("needs-human"), false);
+  assertEquals(comments.some((c) => c.includes("Plan milestones gate")), false);
+});
+
+Deno.test("processIssuePlanning - a sound table creates one milestone per multi-issue group (Issue #2175)", async () => {
+  const { milestonePosts, milestoneAssignments, labels } =
+    await runPlanningWithMilestones([
+      "## Milestones",
+      "",
+      "| Milestone | File area | Sub-issues |",
+      "| --- | --- | --- |",
+      "| auth module | worker/auth | #101, #102 |",
+      "| session store | worker/store | #103, #104 |",
+      "| — | docs | #105 |",
+    ], [101, 102, 103, 104, 105]);
+
+  assertEquals(labels.includes("needs-human"), false);
+  // Two groups of 2+ → two milestones; the single-sub-issue group gets none.
+  assertEquals(milestonePosts.length, 2);
+  const postedTitles = milestonePosts.map((p) =>
+    p.find((a) => a.startsWith("title="))!.slice("title=".length)
+  );
+  assertEquals(postedTitles, [
+    "#100 worker auth: auth module",
+    "#100 worker store: session store",
+  ]);
+  for (const title of postedTitles) {
+    assertEquals(title.length <= MAX_MILESTONE_TITLE_LENGTH, true);
+  }
+  // Each sub-issue is assigned to its own group's milestone, and #105 to none.
+  assertEquals(milestoneAssignments, [
+    ["101", "#100 worker auth: auth module"],
+    ["102", "#100 worker auth: auth module"],
+    ["103", "#100 worker store: session store"],
+    ["104", "#100 worker store: session store"],
+  ]);
+});
+
+Deno.test("processIssuePlanning - a broken `## Milestones` table escalates and still creates the legacy milestone (Issue #2172)", async () => {
+  // #102 sits in no group, and the second row names no file area.
+  const { result, closedIssue, labels, comments, milestonePosts } =
+    await runPlanningWithMilestones([
+      "## Milestones",
+      "",
+      "| Milestone | File area | Sub-issues |",
+      "| --- | --- | --- |",
+      "| auth: module | worker/auth | #101 |",
+      "| store: sessions |  | |",
+    ]);
+
+  assertEquals(result.ok, true);
+  // The plan is published, so the run still completes and the parent closes —
+  // delivery continues while a human regroups.
+  if (result.ok) assertEquals(result.value.processed, true);
+  assertEquals(closedIssue, true);
+  assertEquals(labels.includes("needs-human"), true);
+
+  const escalation = comments.find((c) => c.includes("Plan milestones gate"));
+  assert(escalation !== undefined, "the gate posts a paired comment");
+  assertStringIncludes(escalation, "#102");
+  assertStringIncludes(escalation, "no file area");
+  assertStringIncludes(escalation, "Next step:");
+
+  // The fallback still ships the plan on a single milestone.
+  assertEquals(milestonePosts.length, 1);
+});
+
+Deno.test("fallback publish prompts carry the shared milestones-table requirement (Issue #2172)", () => {
+  const singleInvocation = buildSingleInvocationPlanningPrompt({
+    repo: "org/repo",
+    issueNumber: 2172,
+    issueTitle: "Break down the planner",
+    issueBody: "Needs sub-issues.",
+  });
+  const critiqueFallback = buildCritiqueFallbackPublishPrompt({
+    repo: "org/repo",
+    issueNumber: 2172,
+  });
+
+  // Both in-code fallbacks publish sub-issues, and the milestone-groups gate
+  // runs on whatever they publish — so both must state the rule, from the one
+  // shared constant that sits beside the gate implementing it.
+  assertStringIncludes(singleInvocation, MILESTONES_TABLE_REQUIREMENT);
+  assertStringIncludes(critiqueFallback, MILESTONES_TABLE_REQUIREMENT);
 });

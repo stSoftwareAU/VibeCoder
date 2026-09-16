@@ -48,6 +48,26 @@ flowchart TD
 - **Purpose:** Define how the worker handles issues that belong to a GitHub milestone: create/sync `milestone/<name>` branch, implement issues one at a time with PRs targeting that branch, and create a final PR from the milestone branch to the default branch when all milestone issues are closed.
 - **Scope:** Milestone branch creation and sync; issue selection with milestone-aware open-PR blocking; PR targeting milestone branch (uses "Closes #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)); milestone completion detection; final consolidation PR; closing the GitHub milestone after merge.
 
+### Several milestones from one plan
+
+A planning run no longer produces at most one milestone. When the plan's
+`## Milestones` table groups its sub-issues by file area and passes the
+structural gate, the worker creates **one milestone per group of two or more
+sub-issues**, titled `#<N> <area>: <short description>` (for example
+`#2163 infra: options trading`), and assigns each sub-issue to its own group's
+milestone only. A group of a single sub-issue — or one whose `Milestone` cell
+is `—` — gets **no** milestone and merges straight to the default branch. A
+plan may create at most **four** milestones. Two rows naming the same file area
+share one milestone, and the worker warns when that happens.
+
+Each is an ordinary milestone from this document's point of view: its own
+`milestone/<slug>` branch, its own one-PR-per-target-branch budget, its own
+final consolidation PR — so the streams run in parallel rather than serialising
+one plan onto a single branch. Every group's milestone keeps the same `#<N>`
+prefix, so `trackingIssueFromMilestoneTitle` escalates all of them to the same
+planning parent. See
+[planning-and-questions.md](planning-and-questions.md#-auto-milestone-for-multi-issue-plans).
+
 ## 🔀 One PR per target branch
 
 In a single repo, issues either target the **default branch** (no milestone) or a **milestone branch**. The worker creates **at most one open PR per target branch**:
@@ -125,6 +145,7 @@ The milestone completion check (`check_and_handle_milestone_completions()`) only
 2. The issue is closed manually or by the worker after the merge.
 3. Once all issues are closed, the worker detects completion and creates the final PR from `milestone/<name>` to the default branch.
 4. After the final PR is merged, the GitHub milestone itself is closed.
+5. Only then is a **cross-milestone** `Depends on #N` satisfied — an issue in another milestone that names a closed sub-issue of this one stays held until this milestone closes (see [Projects and dependencies](projects-and-dependencies.md#-mixed-dependencies-and-milestones)).
 
 ## 📊 Diagram: milestone branch flow
 

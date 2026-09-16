@@ -25,6 +25,17 @@ export interface IssueState {
   number: number;
   state: "OPEN" | "CLOSED";
   title?: string;
+  /**
+   * The issue's milestone title, or `null` when it has none (Issue #2173).
+   *
+   * Carried so the selection-time dependency gate can hold a dependant whose
+   * closed dependency still sits in another *open* milestone — that
+   * dependency's code only reaches the default branch once its milestone's
+   * final PR merges. `undefined` means the fetcher did not report a milestone
+   * (an older cached entry, or a test fetcher), which reads the same as "no
+   * milestone": it never triggers the cross-milestone hold.
+   */
+  milestone?: string | null;
 }
 
 /**
