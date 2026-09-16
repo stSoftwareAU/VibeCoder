@@ -1352,11 +1352,16 @@ network hiccups, and even its own mistakes:
   one round rather than an unanswered run to the cap.
 - **Stop rule: stall guard + runaway ceiling (Issue #1933)** — a round count
   no longer halts a productive grilling. Before each round the processor reads
-  the numbered question stems of every round posted since the latest Ready
-  comment (`grill_me_stall_guard.ts`): the grilling is *stalled* when every
-  stem of the latest round, normalised, already appeared in an earlier one,
-  and `maxGrillMeRounds` (default `20`) is the runaway ceiling whose
-  ceiling-th round is itself the forced final round. Either trigger renders
+  the numbered question stems of every **fleet-authored** round posted since
+  the latest Ready comment (`grill_me_stall_guard.ts`): the grilling is
+  *stalled* when every stem of the latest round, normalised, already appeared
+  in an earlier one, and `maxGrillMeRounds` (default `20`) is the runaway
+  ceiling whose ceiling-th round is itself the forced final round. The two
+  inputs differ on purpose (Issue #2237): rounds are matched by heading marker
+  with no author check, so the ceiling counts every marker-carrying round
+  (#1560, #3768) while the stall guard — which *acts* on what it reads — sees
+  only the rounds `selectFleetAuthoredRounds` attributes to a fleet account,
+  and an unresolved fleet identity yields no stall. Either trigger renders
   `{{FORCED_FINAL_INSTRUCTION}}` into the prompt, which must then post
   `## Grill-Me — Ready for Next Phase` with the trigger line under its TL;DR
   and each open question recorded as a named assumption. Only a forced final

@@ -16,6 +16,21 @@
  *     the forced final one, so a grilling posts at most `maxGrillMeRounds`
  *     rounds since its latest Ready comment.
  *
+ * The two read **different inputs**, and Issue #2237 is why the distinction is
+ * structural rather than a convention. Round comments are selected by heading
+ * marker with no author check (`carriesRoundMarker` in
+ * `grill_me_processor.ts`, deliberately so since #1560 and #3768), so any
+ * account that can comment on the issue can post a `## Grill-Me Round N`
+ * comment. Inflating the author-agnostic **count** is harmless — it only
+ * brings the converging ceiling closer — but the stall guard *acts* on the
+ * stems it reads, so one forged comment repeating the worker's own published
+ * questions ended the clarification loop early. {@link decideGrillMeStop}
+ * therefore takes the stall input and the ceiling input as two separate
+ * parameters: `fleetRoundBodies` (author-verified) and `roundCount`
+ * (author-agnostic). Nothing type-level stops a caller passing one where the
+ * other belongs, but it has to name both, so feeding the author-agnostic
+ * bodies to the stall guard is now a visible choice rather than the default.
+ *
  * When either trips, the next round is a **forced final round**: the prompt is
  * told it must post the Ready comment and record each still-open question as a
  * named assumption. Only a forced final round that fails to post Ready
@@ -167,7 +182,12 @@ function normalisedStems(body: string): string[] {
  * latest, so a grilling that recovered with a fresh question is productive
  * again.
  *
- * @param roundBodies - Round comment bodies of this grilling, oldest first
+ * Callers pass **fleet-authored** bodies only: this function decides that the
+ * grilling must stop asking, so a body written by anyone who can comment on
+ * the issue is not evidence it may act on (Issue #2237).
+ *
+ * @param roundBodies - Fleet-authored round comment bodies of this grilling,
+ *   oldest first
  */
 export function isRoundStalled(roundBodies: readonly string[]): boolean {
   if (roundBodies.length < 2) return false;
@@ -183,22 +203,34 @@ export function isRoundStalled(roundBodies: readonly string[]): boolean {
 /**
  * Decide whether the next grill-me round must be a forced final round.
  *
- * @param opts.roundBodies - Round comment bodies of this grilling, oldest first
+ * The two inputs are deliberately separate — see the module comment. Passing
+ * the author-agnostic bodies as `fleetRoundBodies` reopens Issue #2237;
+ * passing only the fleet-authored count as `roundCount` regresses #1560 and
+ * #3768 by letting a peer identity's rounds escape the ceiling.
+ *
+ * @param opts.fleetRoundBodies - Bodies of this grilling's rounds that a
+ *   **fleet** account authored, oldest first. The stall guard's only input,
+ *   because it acts on what it reads (Issue #2237).
+ * @param opts.roundCount - How many rounds this grilling has posted, counted
+ *   **author-agnostically**. The runaway ceiling's only input (#1560, #3768).
  * @param opts.latestRoundNumber - Issue-wide heading number of the newest round
  * @param opts.maxRounds - Runaway ceiling (`maxGrillMeRounds`)
  * @returns The trigger, or `null` when the next round is an ordinary one
  */
 export function decideGrillMeStop(opts: {
-  roundBodies: readonly string[];
+  fleetRoundBodies: readonly string[];
+  roundCount: number;
   latestRoundNumber: number;
   maxRounds: number;
 }): GrillMeStopTrigger | null {
-  if (isRoundStalled(opts.roundBodies)) {
+  if (isRoundStalled(opts.fleetRoundBodies)) {
     return { kind: "stall", roundNumber: opts.latestRoundNumber };
   }
   // The ceiling-th round is itself the forced final round, so a grilling never
-  // posts more than `maxRounds` rounds since its latest Ready comment.
-  if (opts.roundBodies.length + 1 >= opts.maxRounds) {
+  // posts more than `maxRounds` rounds since its latest Ready comment. This
+  // count stays author-agnostic (#1560, #3768): a forged round can only bring
+  // the ceiling closer, and the ceiling round converges.
+  if (opts.roundCount + 1 >= opts.maxRounds) {
     return { kind: "ceiling", ceiling: opts.maxRounds };
   }
   return null;
