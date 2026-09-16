@@ -1,6 +1,13 @@
 /**
  * PR merge-conflict resolution processor (Issue #84).
  *
+ * **Merge conflicts are the worker's to resolve — never a person's.** A
+ * conflicting PR is handled here end to end (replay onto the current base,
+ * the deterministic rules, the resolution agent on the residue, retried
+ * across cycles). No outcome of this processor may label a PR or issue
+ * `needs-human` for a conflict or ask a human to merge; a path that does is
+ * a bug (Issues #2214, #2226).
+ *
  * This is the handler Issue #4373 deferred to and nobody implemented. The
  * branch updater refuses to side-pick a conflict — correctly, after a rebase
  * silently destroyed a PR's own changes — and hands the PR off to "the

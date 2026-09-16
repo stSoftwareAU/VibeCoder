@@ -2277,6 +2277,17 @@ reaction fails towards *processing the comment again*.
 
 ## 🎯 4. Milestone and dependency handling
 
+> **Merge conflicts are the worker's to resolve — never a person's.** The
+> fleet tries to avoid them (bring-forward before every PR, the milestone
+> sync every cycle); when one occurs anyway, the worker handles it end to end:
+> the deterministic triage rules, the resolution agent on the residue, the
+> attempt budget across cycles (Issue #1778), and the roll-back of the
+> offending PRs when the budget is spent (Issue #1781). **No path may reopen a
+> planning issue, apply `needs-human`, or ask a human to merge for a
+> conflict.** Every comment the sync or the conflict processor posts is a
+> record of what the automatic ladder did and will do next. A path that hands
+> a conflict to a human is a bug to fix, not a design (Issues #2214, #2226).
+
 ### 🌿 Milestone branch lifecycle: `worker/deno/lib/git_branch.ts`
 
 [git_branch.ts](../worker/deno/lib/git_branch.ts) manages milestone branches:

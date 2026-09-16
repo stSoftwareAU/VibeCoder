@@ -158,7 +158,7 @@ Deno.test("escalateSyncConflict - a needs-human that no sync escalation put ther
   assert(!stub.body().includes("is cleared"), stub.body());
 });
 
-Deno.test("escalateSyncConflict - a resolution nobody chose still reopens the closed parent, labels it needs-human, and says so (Issue #2214 keeps #1769)", async () => {
+Deno.test("escalateSyncConflict - a resolution nobody chose posts its record on the closed parent without reopening or labelling it either (Issue #2226)", async () => {
   const stub = ghStub({ state: "CLOSED", labels: [], comments: [] });
   const posted = await escalateSyncConflict(
     REPO,
@@ -169,10 +169,13 @@ Deno.test("escalateSyncConflict - a resolution nobody chose still reopens the cl
   );
 
   assertEquals(posted, true);
-  assertEquals(stub.reopens().length, 1, "a real escalation reopens");
-  assertEquals(stub.added(), ["needs-human"]);
-  assertStringIncludes(
-    stub.body(),
-    "needs a human, and this is the milestone's own planning issue",
+  assertEquals(stub.reopens(), [], "the ladder acts on it, not a person");
+  assertEquals(stub.added(), []);
+  const body = stub.body();
+  assert(body.length > 0, "the record is posted");
+  assert(
+    !body.includes("needs a human, and this is the milestone's own planning"),
+    body,
   );
+  assert(!body.includes("Reopened by the milestone branch sync"), body);
 });

@@ -949,8 +949,8 @@ Deno.test("syncMilestoneBranches - a streak escalation with nowhere to go is rec
   }
 });
 
-Deno.test("syncMilestoneBranches - a closed parent planning issue is reopened and commented on once (Issue #1769)", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "issue-1769-reopen-" });
+Deno.test("syncMilestoneBranches - a closed parent planning issue is commented on once and never reopened or labelled (Issues #1769, #2226)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2226-no-reopen-" });
   try {
     const calls: string[][] = [];
     const streakPath = milestoneSyncStreakPath(dir);
@@ -963,24 +963,28 @@ Deno.test("syncMilestoneBranches - a closed parent planning issue is reopened an
       }));
     }
 
+    // Merge conflicts are the worker's to handle: no sync outcome asks a
+    // person, so the closed planning issue stays closed and unlabelled.
     assertEquals(
-      calls.filter((c) => c[0] === "issue" && c[1] === "reopen").map((c) =>
-        c[2]
-      ),
-      ["1730"],
-      "reopened once, on the first cycle only",
+      calls.filter((c) => c[0] === "issue" && c[1] === "reopen"),
+      [],
+      "never reopened",
     );
-    const labels = calls
-      .filter((c) => c.includes("--add-label"))
-      .map((c) => c[c.indexOf("--add-label") + 1]);
-    assertEquals(labels, ["needs-human"], "no pickup label is ever added");
+    assertEquals(
+      calls.filter((c) => c.includes("--add-label")),
+      [],
+      "never labelled",
+    );
 
     const comments = calls.filter((c) =>
       c[0] === "issue" && c[1] === "comment"
     );
     assertEquals(comments.length, 1, "a second cycle posts nothing");
     assertEquals(comments[0]![2], "1730");
-    assertStringIncludes(comments[0]!.join(" "), "Reopened by the milestone");
+    assert(
+      !comments[0]!.join(" ").includes("Reopened by the milestone"),
+      "no reopen preamble",
+    );
     assertEquals(escalationCreateCalls(calls).length, 0);
   } finally {
     await Deno.remove(dir, { recursive: true });

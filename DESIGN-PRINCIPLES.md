@@ -236,6 +236,36 @@ fixing a genuine root cause in a shared *dependency's* own repo is still correct
 isolation forbids centralising a per-repo quality gate, not fixing a bug where it
 lives. Recorded for the worker in the `prompts/coding_guidelines/` template.
 
+### Merge conflicts are the worker's to resolve — never a person's
+
+**The fleet tries to avoid merge conflicts; when one occurs anyway, the Vibe
+Coder handles it end to end. No path may hand a conflict to a human.**
+
+Avoidance comes first: every branch is brought forward onto its base before
+its PR is raised, and the milestone branch sync merges the default branch into
+every active milestone branch each cycle. When a conflict still occurs, the
+automatic ladder is the whole answer:
+
+1. **Replay** — the PR's own commits are replayed onto the current base, so a
+   rewritten or moved base is never read as a conflict in the change itself.
+2. **Deterministic rules** — the triage settles the shapes that have one right
+   answer (both sides only added to a ledger or manifest → union; a version the
+   milestone already carries → ported; a test file resolves only when one side
+   keeps every case and every line of the other).
+3. **The resolution agent** on the residue, bounded by the cycle's budget
+   (Issue #1778), and its merged tree verified with the repository's own check
+   before anything is pushed — a red tree is rolled back, never pushed.
+4. **Retry across cycles** within a bounded attempt budget, and when the budget
+   is spent, **roll back** the PRs that introduced the conflict and reopen
+   their issues for the fleet to redo (Issue #1781).
+
+Every comment the sync or the conflict processor posts is a **record** of what
+the ladder did and will do next, on the thread as it stands. It never reopens a
+planning issue, never applies `needs-human`, and never asks a person to merge
+(Issues #2214, #2226). A path that does is a bug to fix the same day, not a
+design choice. The canonical operator manual is
+[docs/INTERNALS.md § Milestone and dependency handling](docs/INTERNALS.md).
+
 ### Milestone independence
 
 A PR targeting the default branch must not block issues in milestones.
