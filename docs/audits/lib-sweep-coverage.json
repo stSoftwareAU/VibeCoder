@@ -1609,7 +1609,7 @@
       "ledger": "docs/audits/security-sweep-2099-graft-context.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: graft_context.ts (#2099)",
       "status": "swept",
-      "sweptAt": "9b91698c8c308125c80f594039b445184942054f",
+      "sweptAt": "9bea06e552ed6670ae718833483094ac512da4a6",
       "paths": [
         "worker/deno/lib/graft_context.ts"
       ]

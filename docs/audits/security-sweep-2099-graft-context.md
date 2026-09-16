@@ -40,7 +40,7 @@ Each is read below.
 | network | none |
 | resource bounds | the build is capped at 300 s and the ask at 30 s by `runWithTimeout`, which kills the child on expiry. The query is capped at 64 KiB. The bundle is deliberately **uncapped** — it is the payload — and is bounded downstream by the prompt budget, not here |
 | secret surface | holds no credential. Diagnostics are bounded to 300 characters and single-lined before they reach the log, and the bundle passes through `redactSecrets` inside `sanitiseDelimiterPatterns` before it reaches the prompt |
-| fail direction | fail-loud-but-never-fatal: every fault logs one `[GRAFT_UNAVAILABLE] <reason>` line at `warn` and returns `status: "failed"`. There is no path that returns `ok` without a bundle and both figures, so "no failure marker" can never read as success. The function neither throws nor rejects — a seam that throws is caught and reported as a spawn failure |
+| fail direction | fail-loud-but-never-fatal: every fault logs one `[GRAFT_UNAVAILABLE] <reason>` line at `warn` and returns `status: "failed"`. There is no path that returns `ok` without a bundle and both figures — an ask that exits 0 having printed nothing is itself a `failed` outcome (pinned by `a zero-exit ask returning an empty bundle fails rather than reporting ok`) — so "no failure marker" can never read as success. The function neither throws nor rejects — a seam that throws is caught and reported as a spawn failure |
 | blast radius | on a host with `graft_context.enabled` false (the default) the module spawns nothing and returns `off` at once. On an enabled host the worst outcome is a missing bundle and a recorded `failed` status |
 
 ### The one deliberate risk, named
