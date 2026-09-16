@@ -27,7 +27,9 @@
  * questions ended the clarification loop early. {@link decideGrillMeStop}
  * therefore takes the stall input and the ceiling input as two separate
  * parameters: `fleetRoundBodies` (author-verified) and `roundCount`
- * (author-agnostic). A caller cannot satisfy one with the other by accident.
+ * (author-agnostic). Nothing type-level stops a caller passing one where the
+ * other belongs, but it has to name both, so feeding the author-agnostic
+ * bodies to the stall guard is now a visible choice rather than the default.
  *
  * When either trips, the next round is a **forced final round**: the prompt is
  * told it must post the Ready comment and record each still-open question as a

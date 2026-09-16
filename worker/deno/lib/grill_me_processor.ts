@@ -654,10 +654,12 @@ export function countGrillMeRoundsSince(
  * The round comments of the *current* grilling — those posted after
  * `sinceTimestamp` — in chronological order (Issue #1933).
  *
- * The stall guard reads the question stems of these rounds, and
- * {@link countGrillMeRoundsSince} counts them, so both see exactly the same
- * window: a reopened grilling is judged on its own rounds, never on the ones
- * the previous convergence spent.
+ * {@link countGrillMeRoundsSince} counts these rounds and the stall guard
+ * reads the stems of the fleet-authored ones, so both are scoped to the same
+ * *window*: a reopened grilling is judged on its own rounds, never on the ones
+ * the previous convergence spent. The two differ only in the author gate the
+ * stall decision applies afterwards ({@link selectFleetAuthoredRounds},
+ * Issue #2237).
  *
  * @param comments - Issue comments (chronological order)
  * @param sinceTimestamp - ISO timestamp to collect after; `null` collects all
@@ -693,10 +695,13 @@ export function collectGrillMeRoundsSince(
  * counted as "already asked". The comment author is the only authenticated
  * part of a comment, so it is the evidence the stall decision needs.
  *
- * Fail direction: an unresolved fleet identity keeps **no** rounds, so the
- * stall guard sees fewer than two rounds and the grilling stays productive.
- * An extra round of questions costs the developer a reply; a grilling forced
- * to convert their still-open questions into assumptions cannot be undone.
+ * Fail direction: an unresolved fleet identity matches nothing, so **no**
+ * rounds are kept, the stall guard sees fewer than two of them, and the
+ * grilling stays productive. An extra round of questions costs the developer
+ * a reply; a grilling forced to convert their still-open questions into named
+ * assumptions cannot be undone. {@link isFleetAuthor} gives that for free — it
+ * rejects every login against an empty set, and rejects a blank or missing
+ * author against any set — so there is no separate branch to keep in step.
  *
  * @param rounds - Round comments of this grilling, chronological order
  * @param fleetLogins - The fleet identity, from
@@ -707,7 +712,6 @@ export function selectFleetAuthoredRounds(
   rounds: readonly GitHubComment[],
   fleetLogins: readonly string[],
 ): GitHubComment[] {
-  if (fleetLogins.length === 0) return [];
   const fleet = [...fleetLogins];
   return rounds.filter((c) => isFleetAuthor(c.author, fleet));
 }
