@@ -81,7 +81,13 @@ export const callbackConformanceCommand: Command = {
       };
     }
 
-    if (args.host_failure !== undefined) {
+    // Both spellings (Issue #2184): `parseArgs` does no dash/underscore
+    // normalisation, so `--host-failure` — the form every other flag on this
+    // command uses — arrives under its own key, and guarding the underscore
+    // alone left the kebab spelling silently dropped.
+    if (
+      args.host_failure !== undefined || args["host-failure"] !== undefined
+    ) {
       // Loud rather than silently green: the fixture runs where the worker
       // runs, and `callbacks.host_failure` is a **host** path the host
       // launcher spawns (Issue #2107). Accepting the flag and quietly

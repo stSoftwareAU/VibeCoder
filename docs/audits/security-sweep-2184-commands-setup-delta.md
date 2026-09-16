@@ -19,21 +19,25 @@ Siblings:
 [`security-sweep-1612-commands-setup-delta.md`](security-sweep-1612-commands-setup-delta.md)
 (the previous delta).
 
-> **This result is empty.** Every added module and every modified hunk in
-> both slices' drift lists was read, and no candidate survived Phase 3
-> triage. Slice 13 is nil and slice 14 is nil; each nil is stated
-> explicitly below, per slice, so a later run does not have to re-derive
-> it. Three residuals are recorded rather than hidden — they are bounds
-> that are narrower than a reader of the code comment would expect, not
-> reachable defects.
+> **Two survivors, both in slice 13; slice 14 is nil.** Every added module
+> and every modified hunk in both drift lists was read. One candidate is
+> filed as #2243 — it lives in `lib/`, reached from `commands/work_on_issue.ts`
+> — and one is a self-contained fail-silent defect in a slice-13 module,
+> fixed here with a regression test. Slice 14's nil is stated explicitly
+> below, per slice, so a later run does not have to re-derive it. Three
+> residuals are recorded rather than hidden: they are bounds narrower than a
+> reader of the code comment would expect, not reachable defects.
 
 ```mermaid
 flowchart LR
     D["sweep-drift at 5476e0da"] --> A["13 · 1 added · 11 modified"]
     D --> B["14 · 0 added · 2 modified"]
-    A --> N["nil — no surviving finding"]
-    B --> N
+    A --> F["#2243 filed<br/>lib/implementation_comments.ts"]
+    A --> X["fixed here<br/>callback_conformance.ts"]
+    B --> N["nil"]
     style N fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style F fill:#ffba08,stroke:#e85d04,color:#000
+    style X fill:#ffba08,stroke:#e85d04,color:#000
 ```
 
 ## Scope and method
@@ -83,15 +87,20 @@ was read in full.
 Triage followed [`SECURITY-SCAN.md`](../SECURITY-SCAN.md) Phase 3
 (refute-unless-proven): a candidate that could not be traced from a **named**
 hostile or degraded field to the dangerous use was dropped rather than filed,
-and each drop is recorded below. The four open `security` issues at this
-record are #2216, #2231, #2236 and #2237; none of the candidates considered
-here duplicated one, and #2236 is noted where its site adjoins this slice.
+and each drop is recorded below. Phase 3's **independent verification** ran as
+a second detection pass over the same hunks in a fresh context that never saw
+the first pass's reasoning; both survivors below came from it, and its
+refutations are folded into the lists that follow. The four open `security`
+issues at this record are #2216, #2231, #2236 and #2237; neither survivor
+duplicates one, and #2236 is noted where its site adjoins this slice.
 
 ## Findings
 
 | ID | Site | Severity | Confidence | Disposition |
 | -- | ---- | -------- | ---------- | ----------- |
-| —  | —    | —        | —          | **nil** — no surviving finding in 13 or 14 |
+| [#2243](https://github.com/stSoftwareAU/VibeCoder/issues/2243) | `lib/implementation_comments.ts:239`, from `commands/work_on_issue.ts` | Low | High | **filed** — the selection cap runs ahead of the flood detector and the suspicious-pattern audit, which `comment_trust_filter.ts` places deliberately before every cap |
+| SEC-2184-F1 | `commands/callback_conformance.ts:84` | Low | High | **fixed here** — `--host-failure` bypassed the Issue #2107 refusal and the fixture reported a proven contract for a hook it never ran |
+| — | `worker/deno/setup` | — | — | **nil** — no surviving finding in slice 14 |
 
 ## Slice 13 — commands CLI entry points
 
@@ -102,7 +111,7 @@ record). Drift at generation HEAD `5476e0da`: **1 added, 11 modified,
 | Path | Band | Disposition |
 | ---- | ---- | ----------- |
 | `worker/deno/commands/codex_budget.ts` | C | **added** — read in full. Opt-in operator diagnostic over `CODEX_HOME`; read-only, spawns nothing, runs no Codex turn. Every rendered line is metadata and the whole message goes through `redactSecrets` |
-| `worker/deno/commands/callback_conformance.ts` | C | read — adds the `cycle` event and **refuses** `--host_failure` with a reason rather than accepting and dropping it (Issue #2107). A narrowing, and a loud one |
+| `worker/deno/commands/callback_conformance.ts` | C | read — adds the `cycle` event and **refuses** `--host_failure` (Issue #2107). **SEC-2184-F1**: the refusal matched the underscore spelling only, so `--host-failure` was dropped and the fixture reported green. Fixed here |
 | `worker/deno/commands/container_build_heal.ts` | B2 | read — a single JSDoc line widening `healable` to cover a mute build step (Issue #2089). No executable change in this file |
 | `worker/deno/commands/container_restart_backoff.ts` | B2 | read — the escalation channel moves from the crash-notification path to the operator's own `callbacks.host_failure` hook (Issue #2108), read once via `readHostFailureHook`. `--repo-dir` retired with the GitHub channel; `log_dir` and the hook now resolve through one `hostConfigPath()` |
 | `worker/deno/commands/milestone_branch_sync.ts` | A3 | read — drops the cooldown, the empty `lastSyncTimes` map and the activity ledger so an explicit invocation syncs now (Issue #1776). Removes pacing, adds no new ref or argv |
@@ -111,12 +120,50 @@ record). Drift at generation HEAD `5476e0da`: **1 added, 11 modified,
 | `worker/deno/commands/prompt_builder.ts` | A1 | read — accepts `--issue-comments` on `build-issue-prompt` (Issue #1910). No boundary id is accepted, so the blob is scrubbed whole, exactly as the planning and question operations scrub theirs |
 | `worker/deno/commands/run_core.ts` | B1 | read — clears the module-level provider override before the deps build so the previous run's switch cannot outlive it (Issue #2062). Resets to configured state; grants nothing |
 | `worker/deno/commands/sweep_drift.ts` | C | read — the default git runner is now rooted at `--repo` (Issue #2178), because repo-relative pathspecs run from elsewhere matched nothing and every slice reported a clean drift it had not earned |
-| `worker/deno/commands/work_on_issue.ts` | A1 | read — comment selection and trust annotation move to `lib/implementation_comments.ts` (Issue #1910); `formatIssueComments` deleted rather than left as a second path |
+| `worker/deno/commands/work_on_issue.ts` | A1 | read — comment selection and trust annotation move to `lib/implementation_comments.ts` (Issue #1910); `formatIssueComments` deleted rather than left as a second path. The boundary-id discipline survives the move; the audit ordering does not — **#2243**, sited in `lib/` |
 | `worker/deno/commands/worker_checkout_update.ts` | A3 | read — a crash-loop is reported to `callbacks.host_failure` instead of GitHub (Issues #2107, #2110), and the command supplies the self-heal sink's work directory itself rather than letting the sink read the environment |
 
 ### Slice 13 result
 
-**Nil.** No candidate in the twelve modules above survived Phase 3.
+**Two survivors**, described below; the other ten modules are nil.
+
+#### SEC-2184-F1 — the conformance fixture reported a hook it never ran
+
+`callback_conformance.ts` gained a guard in this window that refuses
+`--host_failure`, because the hook is a **host** path the host launcher
+spawns and the fixture runs inside the container: accepting the flag and
+quietly dropping it would report a passing contract for a hook nothing there
+ever ran. The guard reads `args.host_failure` only.
+
+`parseArgs` (`worker/deno/mod.ts:415`) does no dash/underscore normalisation
+— `arg.slice(2)` is the key verbatim — so `--host-failure`, the spelling
+every other flag on this command uses (`--timeout-seconds`), arrives as
+`args["host-failure"]`. The guard did not fire, `parseArguments` iterates
+`CONTAINER_CALLBACK_EVENTS` only so the value was dropped, and the command
+returned `success: true`: the exact fail-silent outcome the guard exists to
+prevent, left open for one spelling. Fixed here by guarding both spellings,
+covered by
+`worker/deno/tests/callback_conformance_test.ts::callback_conformance command - the kebab spelling is refused too (Issue #2184)`,
+which fails against the unfixed guard.
+
+#### #2243 — the comment-flood audit is suppressed on the implementation path
+
+Filed rather than fixed. `commands/work_on_issue.ts` now delegates to
+`lib/implementation_comments.ts`, which **selects** before delegating to
+`prepareTrustAnnotatedCommentList`. `comment_trust_filter.ts:294-308` places
+`detectCommentFlood` and the suspicious-pattern collection deliberately
+*before any caps*, "so a flood is reported even when the surplus is later
+dropped" (#1342, #2873) — and `selectImplementationComments` is a cap (20
+comments, 12,000 characters, trusted humans first). A thread of 15 untrusted
+comments of ~1,200 characters fits only ten into the budget, so the
+`> 10` threshold is never reached and no
+`[SECURITY] [COMMENT_FLOOD]` event is raised on an implementation run, where
+the same thread trips it on the planning, question and PR-feedback routes.
+Low: detection telemetry only — the downstream `maxUntrustedCommentCount: 5`
+and `maxUntrustedCommentChars: 2000` caps still bound what reaches the
+prompt. The defect is sited in `lib/`, and restoring the invariant means
+auditing the full annotated set while the selection bounds only what is
+carried — more than a one-line change, hence the issue.
 
 ### Commands refutations
 
@@ -140,7 +187,9 @@ record). Drift at generation HEAD `5476e0da`: **1 added, 11 modified,
   returns the plain `author: body` blob with no id, so it is scrubbed whole,
   and `capFormattedComments` still bounds it (#3648). Selection now precedes
   the trust formatter, which *narrows* what an untrusted flood can occupy —
-  trusted humans take the budget first.
+  trusted humans take the budget first. What that same pre-selection *does*
+  break is the audit ordering `comment_trust_filter.ts` relies on — filed
+  separately as #2243, above.
 - **`pr_ci_processor` fleet set omitting `service_accounts`.** The call
   passes `fleetPrAuthors: config.fleetPrAuthors ?? []` and no
   `serviceAccounts`, which reads like the #209 miss — a sibling configured

@@ -275,3 +275,24 @@ Deno.test("callback_conformance command - --host_failure is refused, never silen
   assert(result.message.includes("--host_failure"), result.message);
   assert(result.message.includes("host"), result.message);
 });
+
+Deno.test("callback_conformance command - the kebab spelling is refused too (Issue #2184)", async () => {
+  // `parseArgs` does no dash/underscore normalisation, so `--host-failure` —
+  // the spelling every other flag on this command uses (`--timeout-seconds`)
+  // — arrives under a different key. Guarding only `host_failure` let the
+  // kebab form be dropped and the fixture report a proven contract for a hook
+  // it never ran: the exact fail-silent outcome the Issue #2107 guard exists
+  // to prevent, left open for one spelling.
+  for (const key of ["host_failure", "host-failure"]) {
+    const result = await callbackConformanceCommand.execute(
+      { [key]: "/opt/hooks/host-failure.sh" },
+      buildDefaultWorkerConfig(),
+    );
+
+    assertEquals(result.success, false, key);
+    assert(
+      result.message.includes("--host_failure"),
+      `${key} → ${result.message}`,
+    );
+  }
+});
