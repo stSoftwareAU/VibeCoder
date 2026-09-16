@@ -389,6 +389,14 @@ invocation (mode `0600`) and removed after it exits:
     "kind": "pr",
     "prNumber": 807,
     "phase": "completion"
+  },
+  "codegraph": {
+    "enabled": true,
+    "status": "ok",
+    "indexSeconds": 42.5,
+    "nodeCount": 18412,
+    "relationshipCount": 51903,
+    "queries": 7
   }
 }
 ```
@@ -425,6 +433,12 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_OUTCOME_PHASE`             | `outcome.phase`                 | no             | Phase that terminated the run                                                                                        |
 | `VIBECODER_OUTCOME_FAILURE_CLASS`     | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked                                                    |
 | `VIBECODER_PR_NUMBER`                 | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                            |
+| `VIBECODER_CODEGRAPH_ENABLED`         | `codegraph.enabled`             | yes            | Whether the host's CodeGraph switch was on for this run (`true` or `false`)                                          |
+| `VIBECODER_CODEGRAPH_STATUS`          | `codegraph.status`              | yes            | `ok`, `failed`, `unsupported` (no MCP transport on this provider) or `off` (switch off)                              |
+| `VIBECODER_CODEGRAPH_INDEX_SECONDS`   | `codegraph.indexSeconds`        | no             | Wall-clock seconds the index step took, when it was started                                                          |
+| `VIBECODER_CODEGRAPH_NODE_COUNT`      | `codegraph.nodeCount`           | no             | Nodes in the index                                                                                                   |
+| `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT` | `codegraph.relationshipCount` | no          | Relationships (edges) in the index                                                                                   |
+| `VIBECODER_CODEGRAPH_QUERIES`         | `codegraph.queries`             | no             | `codegraph_explore` calls the agent made this run                                                                    |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `VIBECODER_CLAIMS_ATTEMPTED`, `VIBECODER_CLAIMS_TAKEN` and
@@ -432,6 +446,17 @@ A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `rate_limited`, `shutdown`, `error`). It does **not** receive run-only scalars
 (`RESULT`, `REPOSITORY`, `ISSUE_NUMBER`, `EXIT_CODE`, …), so it cannot be
 mistaken for a run hook.
+
+`codegraph` is an **additive** block (Issue #2162, part of #2145) carried by
+every run document, so the CodeGraph trial's figures are comparable across
+hosts. A host without the switch reports
+`{ "enabled": false, "status": "off" }` rather than nothing at all, and a run
+whose index step failed reports `"status": "failed"` with whatever figures it
+did gather. Each figure — `indexSeconds`, `nodeCount`, `relationshipCount`,
+`queries` — is **omitted** when the step never produced it, because a missing
+count must not read as an index of zero nodes. Nothing else in the contract
+moved: `schemaVersion` stays at 2, and a hook that knows nothing about
+CodeGraph ignores the block.
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).
@@ -683,6 +708,7 @@ Two differences to plan for:
 | The runner, environment, capture | `worker/deno/lib/run_callbacks.ts`             |
 | Host-failure payload and invoker | `worker/deno/lib/host_failure_hook.ts`         |
 | Context assembly and transcript  | `worker/deno/lib/run_callback_context.ts`      |
+| `codegraph` block and figures    | `worker/deno/lib/codegraph_context.ts`         |
 | Exactly-once guard               | `worker/deno/lib/issue_callback_guard.ts`      |
 | Conformance fixture              | `worker/deno/lib/callback_conformance.ts`      |
 | `callback-conformance` command   | `worker/deno/commands/callback_conformance.ts` |

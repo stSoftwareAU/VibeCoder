@@ -36,6 +36,7 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { FailureCategory } from "./failure_diagnosis.ts";
 import type { RunOutcome } from "./run_outcome.ts";
 import {
@@ -140,7 +141,26 @@ export interface IssueRunCallbackContext {
    * `sessionLogPath` is not.
    */
   sessionLogAbsentReason?: SessionLogAbsentReason;
+  /**
+   * What this run's CodeGraph step produced (Issue #2162, part of #2145).
+   *
+   * Absent only on a context a caller assembled without it; the document and
+   * the environment then report {@link CODEGRAPH_OFF}, so a host without the
+   * switch is explicitly comparable with one that has it rather than silent.
+   */
+  codegraph?: CodegraphContextResult;
 }
+
+/**
+ * What a run with no CodeGraph step reports (Issue #2162).
+ *
+ * Stated rather than omitted: "this host never ran CodeGraph" and "this
+ * document predates the block" must not look the same in the trial figures.
+ */
+export const CODEGRAPH_OFF: CodegraphContextResult = Object.freeze({
+  enabled: false,
+  status: "off",
+});
 
 /**
  * The structured outcome a fleet archive can count without reading a
@@ -267,6 +287,11 @@ export interface TerminalIssueRun {
    * provider reported no usage (Issue #1948).
    */
   telemetryAbsentReason?: TelemetryAbsentReason;
+  /**
+   * What this run's CodeGraph step produced (Issue #2162), when the run
+   * reported one.
+   */
+  codegraph?: CodegraphContextResult;
 }
 
 /** What became of one hook invocation. */
@@ -368,7 +393,38 @@ export function buildCallbackContextDocument(
     document.telemetryAbsentReason = context.telemetryAbsentReason;
   }
   if (context.outcome !== undefined) document.outcome = context.outcome;
+  // Emitted on every run (Issue #2162): the trial compares hosts by these
+  // figures, and a host that never ran CodeGraph has to say so rather than
+  // leave the reader to infer it from an absent key.
+  document.codegraph = codegraphBlock(context.codegraph);
   return document;
+}
+
+/**
+ * The `codegraph` block for one run, carrying only the figures it gathered.
+ *
+ * A figure the step never produced is **omitted**, exactly like the rest of
+ * the context: a missing node count must not read as an index of zero nodes.
+ *
+ * @param codegraph - What the run's CodeGraph step produced, when it ran
+ * @returns The block, defaulting to {@link CODEGRAPH_OFF}
+ */
+function codegraphBlock(
+  codegraph: CodegraphContextResult = CODEGRAPH_OFF,
+): Record<string, unknown> {
+  const block: Record<string, unknown> = {
+    enabled: codegraph.enabled,
+    status: codegraph.status,
+  };
+  if (codegraph.indexSeconds !== undefined) {
+    block.indexSeconds = codegraph.indexSeconds;
+  }
+  if (codegraph.nodeCount !== undefined) block.nodeCount = codegraph.nodeCount;
+  if (codegraph.relationshipCount !== undefined) {
+    block.relationshipCount = codegraph.relationshipCount;
+  }
+  if (codegraph.queries !== undefined) block.queries = codegraph.queries;
+  return block;
 }
 
 /** The versioned JSON document handed to a cycle hook (Issue #1955). */
@@ -462,6 +518,19 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_OUTCOME_PHASE", context.outcome?.phase);
   put(env, "VIBECODER_OUTCOME_FAILURE_CLASS", context.outcome?.failureClass);
   put(env, "VIBECODER_PR_NUMBER", context.outcome?.prNumber);
+  // Issue #2162: the same two scalars on every run, and each figure only
+  // when the run actually has it.
+  const codegraph = context.codegraph ?? CODEGRAPH_OFF;
+  put(env, "VIBECODER_CODEGRAPH_ENABLED", String(codegraph.enabled));
+  put(env, "VIBECODER_CODEGRAPH_STATUS", codegraph.status);
+  put(env, "VIBECODER_CODEGRAPH_INDEX_SECONDS", codegraph.indexSeconds);
+  put(env, "VIBECODER_CODEGRAPH_NODE_COUNT", codegraph.nodeCount);
+  put(
+    env,
+    "VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT",
+    codegraph.relationshipCount,
+  );
+  put(env, "VIBECODER_CODEGRAPH_QUERIES", codegraph.queries);
   return env;
 }
 

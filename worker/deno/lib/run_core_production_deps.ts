@@ -3898,6 +3898,11 @@ export async function createProductionRunCoreDeps(
             ? { telemetryAbsentReason: result.telemetryAbsentReason }
             : {}),
           ...(result.phase && !isExpectedSkip ? { phase: result.phase } : {}),
+          // The CodeGraph figures for the post-run callbacks (Issue #2162);
+          // a skip never ran the index step, so it reports none.
+          ...(result.codegraph && !isExpectedSkip
+            ? { codegraph: result.codegraph }
+            : {}),
         },
       };
     },

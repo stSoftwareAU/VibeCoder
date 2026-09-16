@@ -404,6 +404,12 @@ export interface WorkOnIssueResult {
    * but leaves the labels alone.
    */
   ladderApplied?: boolean;
+  /**
+   * What this run's CodeGraph step produced (Issue #2162, part of #2145),
+   * read from {@link PhaseState.codegraphContext} once the run is over so
+   * the query tally is final. Carried to the post-run callback context.
+   */
+  codegraph?: CodegraphContextResult;
 }
 
 /**

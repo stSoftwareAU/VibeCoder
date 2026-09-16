@@ -4114,3 +4114,43 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "workOnIssue - the run's CodeGraph figures travel out on the result (Issue #2162)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ctx = makeContext({
+      issueBody: "Fix the bug in `src/auth/login.ts:45`",
+    });
+    const deps = createMockDeps({
+      claude: {
+        prepareCodegraphContext: () =>
+          Promise.resolve({
+            status: "ok" as const,
+            enabled: true,
+            indexSeconds: 18.25,
+            nodeCount: 4_210,
+            relationshipCount: 9_004,
+          }),
+      },
+      github: {
+        runGhCommand: () =>
+          Promise.resolve("https://github.com/org/repo/pull/1"),
+      },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      },
+    });
+
+    const result = await workOnIssue(ctx, deps);
+
+    assertEquals(result.codegraph?.status, "ok");
+    assertEquals(result.codegraph?.enabled, true);
+    assertEquals(result.codegraph?.indexSeconds, 18.25);
+    assertEquals(result.codegraph?.nodeCount, 4_210);
+    assertEquals(result.codegraph?.relationshipCount, 9_004);
+  },
+});
