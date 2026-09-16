@@ -287,9 +287,10 @@ Resources:
             #
             # Shell variables are written ${!LIKE_THIS} because CloudFormation
             # renders this block through Fn::Sub; the only substitutions are
-            # the three stack parameters HostAgentCli, VibeCoderRepositoryUrl
-            # and AutoStopHours, each of which is constrained by its
-            # AllowedValues or AllowedPattern before it reaches this shell.
+            # three stack parameters, each constrained before it reaches this
+            # shell — HostAgentCli by AllowedValues, VibeCoderRepositoryUrl by
+            # AllowedPattern, and AutoStopHours by Type: Number and its
+            # MinValue/MaxValue bounds.
             set -euo pipefail
 
             STATUS=/var/log/vibe-bootstrap.status

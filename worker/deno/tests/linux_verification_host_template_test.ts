@@ -466,14 +466,16 @@ Deno.test("the repository URL parameter admits no shell metacharacter, because t
   );
   const allowed = new RegExp(String(parameter.AllowedPattern));
 
-  // Real clone URLs still pass — a fork, a self-hosted host:port, and the
-  // userinfo form a private fork needs before the host has any credential.
+  // Real clone URLs still pass — a fork, a self-hosted host:port, and a
+  // userinfo host. `:` and `@` stay in the set because a URL needs them, not
+  // because a credential belongs there: putting a token in this parameter is
+  // refused by the operator manual, which the pattern cannot enforce.
   for (
     const url of [
       String(parameter.Default),
       "https://github.com/someone/fork.git",
       "https://git.example.internal:8443/team/vibe-coder.git",
-      "https://x-access-token:placeholder@github.com/org/private.git",
+      "https://mirror@git.example.internal/team/vibe-coder.git",
     ]
   ) {
     assert(
