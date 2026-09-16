@@ -70,6 +70,7 @@ export const RUN_FAILURE_CLASSES = [
   "no-output",
   "agent-outcome",
   "workflow-gate",
+  "repo-config",
   "unknown",
 ] as const;
 
@@ -395,6 +396,17 @@ export function classifyRunFailure(
         failureClass: "token-scope",
         rationale:
           "The worker's token lacks the workflow scope the change needs — a host credential gap, not a worker defect.",
+      };
+    case "repo_config":
+      // Issue #2220: the repository refused the milestone branch (a ruleset,
+      // a protection, or a missing permission). An operator clears it in the
+      // repository's settings; no worker code change would help, so it is
+      // never auto-filed as a worker defect.
+      return {
+        fixability: "not_code_fixable",
+        failureClass: "repo-config",
+        rationale:
+          "The repository refused the milestone branch (ruleset, protection or permission) — a repository configuration fault, not a worker defect.",
       };
     case "push_failure":
       // A rejected push is usually permissions/protection or a race — not
