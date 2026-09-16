@@ -482,13 +482,17 @@ is the one optional-looking fact that is present on **every** run context:
   `VIBECODER_GRAFT_ENABLED` and `VIBECODER_GRAFT_STATUS`. A host that never
   switched Graft on reports `{ "enabled": false, "status": "off" }` rather than
   omitting the block, so an archive can compare a host without the switch
-  against one with it instead of reading silence as a missing run. A run that
-  ended before the collection was reached reports that same `off` block —
-  nothing was attempted either way.
+  against one with it instead of reading silence as a missing run.
 - `status` is `ok` when the bundle came back, `failed` when the collection was
   attempted and did not, and `off` when nothing was attempted. A `failed`
-  collection still reports whichever figures it reached, so a failure is
-  visible as a failure rather than as a clean-looking `off`.
+  collection reports whichever figures it reached, so a failure the run
+  recorded is visible as a failure rather than as a clean-looking `off`.
+- The two fields are independent, and `{ "enabled": true, "status": "off" }` is
+  the combination worth reading: the host **had** Graft switched on and the run
+  ended before the collection — a setup failure, a refused claim, a run that
+  threw. `enabled` always states the host's real switch setting, never a
+  default, so an early exit on a Graft host is never archived as a host that
+  never opted in.
 - `buildSeconds`, `bundleChars`, `nodeCount` and `callEdgeCount` are present
   only when the collection actually reached them, and are omitted — never
   emitted empty or nought — when it did not.

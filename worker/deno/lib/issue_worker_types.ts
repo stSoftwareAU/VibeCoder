@@ -238,10 +238,12 @@ export interface PhaseState {
    * What the Graft repo-context collection did for this run (Issue #2102,
    * part of #2060).
    *
-   * Set by the execute phase beside {@link PhaseState.claudeRunStats}. It has
-   * no reader yet — the run-stats comment that reports the status and figures
-   * is a later sub-issue of #2060 — so this is the carrier that lets it read
-   * the outcome. Absent when the run never reached the collection.
+   * Set by the execute phase beside {@link PhaseState.claudeRunStats}, and
+   * read by the run-stats comment (Issue #2105) and by
+   * {@link WorkOnIssueResult.graftContext}, which carries it to the post-run
+   * callback context (Issue #2104). Absent when the run never reached the
+   * collection — the callback block reports that as `off` against the host's
+   * real switch setting.
    */
   graftContext?: GraftContextResult;
   /**
@@ -394,8 +396,12 @@ export interface WorkOnIssueResult {
   /**
    * What the run's Graft repo-context collection did (Issue #2104, part of
    * #2060), lifted from {@link PhaseState.graftContext} so the main loop can
-   * carry it into the post-run callback context. Absent when the run ended
-   * before the collection was reached.
+   * carry it into the post-run callback context.
+   *
+   * Present on every result the pipeline returns: a run that ended before the
+   * collection reports `status: "off"` with `enabled` read from the host's
+   * real switch, so an archive never mistakes an early exit on a Graft host
+   * for a host that never opted in. Absent only when the run threw.
    */
   graftContext?: GraftContextResult;
   /**

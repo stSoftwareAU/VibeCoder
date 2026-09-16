@@ -33,6 +33,7 @@ import {
   type RunOutcome,
   withRunOutcomeNotes,
 } from "./run_outcome.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { deleteResumeState } from "./resume_state_store.ts";
 import {
   handOffAnalysisOnly,
@@ -208,7 +209,15 @@ export async function workOnIssue(
       // What this run's Graft collection did (Issue #2104). Derived here for
       // the same reason the outcome is: every terminal return leaves it on
       // the state, so the callback context needs no per-return plumbing.
-      ...(state.graftContext ? { graftContext: state.graftContext } : {}),
+      //
+      // A run that ended before the collection still states the switch
+      // truthfully rather than defaulting to `enabled: false`: on a host with
+      // Graft on, `{ enabled: true, status: "off" }` says the switch was on
+      // and this run ended first, which a fabricated `false` would have
+      // archived as a switched-off host and poisoned the comparison the block
+      // exists for.
+      graftContext: state.graftContext ??
+        { status: "off", enabled: isGraftContextEnabled(ctx.config) },
       // Issue #1949: a phase that already stepped the failure ladder says so,
       // so the main loop does not step it a second time in the same run.
       ...(state.failureLadderApplied ? { ladderApplied: true } : {}),

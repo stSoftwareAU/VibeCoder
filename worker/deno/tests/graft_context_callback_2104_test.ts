@@ -7,7 +7,9 @@
  * collection reached them. A host that never opted in reports
  * `{ enabled: false, status: "off" }` rather than nothing, so a GRQ-23 run is
  * comparable with every other host in the logs repo instead of being
- * indistinguishable from a worker too old to report.
+ * indistinguishable from a worker too old to report. `enabled` states the
+ * host's real switch even when the run ended before the collection, so an
+ * early exit on a Graft host is never archived as a host that never opted in.
  *
  * The path is exercised rather than asserted a field at a time: `workOnIssue`
  * lifts the collection off the phase state, and the context builder and the
@@ -127,9 +129,10 @@ Deno.test("#2104 - a host with the switch off reports an explicit `off` block", 
   );
 });
 
-Deno.test("#2104 - a run that ended before the collection still carries the block", () => {
-  // The comparability rule: no run is allowed to be silent about Graft, so a
-  // run with nothing to report reports the same block a switched-off host does.
+Deno.test("#2104 - a run that reported no collection at all still carries the block", () => {
+  // The comparability rule: no run is allowed to be silent about Graft. This
+  // is the last resort — a run that threw before `workOnIssue` could state the
+  // switch; an ordinary early exit states it truthfully (see below).
   const run = terminalRun();
   assert(!("graft" in run), "the fixture must supply no collection");
   assertEquals(graftBlock(run), { enabled: false, status: "off" });
@@ -213,4 +216,65 @@ Deno.test("#2104 - workOnIssue lifts the run's collection onto its result", asyn
     !("bundle" in (result.graftContext ?? {})),
     "the bundle must be dropped before the outcome is recorded",
   );
+});
+
+Deno.test("#2104 - a run that ended before the collection states the host's real switch", async () => {
+  // The fabricated-`false` trap: a Graft host whose run was refused the claim
+  // never reaches the collection, and archiving it as `enabled: false` would
+  // make it indistinguishable from a host that never opted in — the exact
+  // comparison the block exists for.
+  const config = buildDefaultWorkerConfig();
+  config.graftContext = { ...config.graftContext, enabled: true };
+  const deps = createMockDeps({
+    issues: {
+      claimIssue: () =>
+        Promise.resolve({
+          ok: true,
+          value: { claimed: false, reason: "already_assigned" as const },
+        }),
+    },
+  });
+
+  const result = await workOnIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2104,
+    issueTitle: "Record the Graft figures",
+    issueBody: "The claim was refused, so the collection never ran.",
+    issueLabels: [],
+    issueComments: "",
+    githubUser: "testbot",
+    config,
+  }, deps);
+
+  assertEquals(result.graftContext, { status: "off", enabled: true });
+  assertEquals(
+    graftBlock(terminalRun({ graft: result.graftContext })),
+    { enabled: true, status: "off" },
+  );
+});
+
+Deno.test("#2104 - a host with the switch off reports `enabled: false` on the same path", async () => {
+  const deps = createMockDeps({
+    issues: {
+      claimIssue: () =>
+        Promise.resolve({
+          ok: true,
+          value: { claimed: false, reason: "already_assigned" as const },
+        }),
+    },
+  });
+
+  const result = await workOnIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2104,
+    issueTitle: "Record the Graft figures",
+    issueBody: "The switch is off, so nothing was attempted.",
+    issueLabels: [],
+    issueComments: "",
+    githubUser: "testbot",
+    // Graft is off by default, so this is the fleet's ordinary host.
+    config: buildDefaultWorkerConfig(),
+  }, deps);
+
+  assertEquals(result.graftContext, { status: "off", enabled: false });
 });

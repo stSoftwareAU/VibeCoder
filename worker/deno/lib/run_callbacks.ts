@@ -131,11 +131,17 @@ export interface CallbackGraftContext {
  *
  * `enabled` and `status` are present on **every** run so an archive can
  * compare a host that never opted in with one that did, rather than reading
- * a missing block as a missing run. A run that ended before the collection
- * was reached reports the same `{ enabled: false, status: "off" }` block as
- * a host with the switch off: nothing was attempted either way. A collection
- * that *was* attempted and failed reports `status: "failed"` with whatever
- * figures it reached — never a clean-looking `off`.
+ * a missing block as a missing run. A collection that *was* attempted and
+ * failed reports `status: "failed"` with whatever figures it reached — never
+ * a clean-looking `off`.
+ *
+ * `enabled` states the host's real switch, so `{ enabled: true, status:
+ * "off" }` is a run that ended before the collection on a Graft host. The
+ * `{ enabled: false, status: "off" }` returned for a run that reported no
+ * collection at all is the last resort — a run that threw before
+ * `workOnIssue` could state the switch — and not a default the ordinary
+ * early-exit paths fall back to: `workOnIssue` supplies the truthful block
+ * on every result it returns.
  *
  * Built field by field rather than spread, so the bundle text a
  * `GraftContextResult` may still carry can never reach a hook.
