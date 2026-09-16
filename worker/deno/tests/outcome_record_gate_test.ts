@@ -3,8 +3,8 @@
  *
  * The behaviour under test is the fault the fleet actually filed: an
  * invocation of `container-restart-backoff` that Deno refuses the hostname
- * read to, whose escalation is therefore titled `unknown-host` and shared by
- * every host in the fleet.
+ * read to, whose host-failure payload therefore names `unknown-host` — the
+ * same nameless host every other machine in the fleet reports under.
  *
  * Two halves: the finder against sources whose contents are known, then the
  * four real call sites — `run.sh`, `run.ps1`, `loop.sh`, `loop.ps1` — which is

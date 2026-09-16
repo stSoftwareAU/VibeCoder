@@ -25,7 +25,6 @@
  *   | `shared_cooldown`          | do not suppress the work            |
  *   | `failure_detection_resume` | retry rather than escalate          |
  *   | `escalate_as_work`         | file a fresh escalation             |
- *   | `host_escalation`          | create, never comment elsewhere     |
  *   | `collaborator_precheck`    | file a fresh issue                  |
  *   | `best_practices_relabel`   | write no labels                     |
  *
@@ -67,7 +66,6 @@ import {
   resumeFailureDetectionRepair,
 } from "../lib/failure_detection_resume.ts";
 import { escalateAsWork } from "../lib/escalate_as_work.ts";
-import { fileOrCommentIssue } from "../lib/host_escalation.ts";
 import {
   PRECHECK_DEDUP_TAG,
   verifyMonitoredCollaborators,
@@ -945,89 +943,6 @@ Deno.test("escalate as work - a fleet-authored title still deduplicates", async 
   assertEquals(result.value.issueNumber, 55);
   assertEquals(result.value.filed, false);
   assertEquals(gh.comments().length, 1, "an ongoing blockage stays one issue");
-});
-
-// ===========================================================================
-// 6b. host_escalation.ts — "commented" must mean the fleet's own issue
-// ===========================================================================
-
-Deno.test("host escalation - a planted title is created fresh, never commented on", async () => {
-  const commands: string[][] = [];
-  const delivery = await fileOrCommentIssue({
-    repo: REPO,
-    title: "GRQ-23: the checkout could not be updated",
-    body: "the report",
-    env: {},
-  }, {
-    ghFn: (args: readonly string[]) => {
-      commands.push([...args]);
-      if (args[1] === "list") {
-        return Promise.resolve({
-          code: 0,
-          stdout: JSON.stringify([{
-            number: 8,
-            title: "GRQ-23: the checkout could not be updated",
-            author: { login: OUTSIDER },
-          }]),
-          stderr: "",
-          success: true,
-        });
-      }
-      return Promise.resolve({
-        code: 0,
-        stdout: "",
-        stderr: "",
-        success: true,
-      });
-    },
-    fleetAuthors: FLEET,
-  });
-
-  assertEquals(
-    delivery,
-    "created",
-    "reporting 'commented' when the report landed on a stranger's issue is a lie",
-  );
-  assert(
-    !commands.some((c) => c[1] === "comment"),
-    "the escalation body must not be posted onto an attacker-chosen issue",
-  );
-});
-
-Deno.test("host escalation - a fleet-authored title is still commented on", async () => {
-  const commands: string[][] = [];
-  const delivery = await fileOrCommentIssue({
-    repo: REPO,
-    title: "GRQ-23: the checkout could not be updated",
-    body: "the report",
-    env: {},
-  }, {
-    ghFn: (args: readonly string[]) => {
-      commands.push([...args]);
-      if (args[1] === "list") {
-        return Promise.resolve({
-          code: 0,
-          stdout: JSON.stringify([{
-            number: 8,
-            title: "GRQ-23: the checkout could not be updated",
-            author: { login: HOST },
-          }]),
-          stderr: "",
-          success: true,
-        });
-      }
-      return Promise.resolve({
-        code: 0,
-        stdout: "",
-        stderr: "",
-        success: true,
-      });
-    },
-    fleetAuthors: FLEET,
-  });
-
-  assertEquals(delivery, "commented", "one issue per host per condition");
-  assertEquals(commands.filter((c) => c[1] === "comment").length, 1);
 });
 
 // ===========================================================================
