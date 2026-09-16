@@ -546,9 +546,13 @@ Deno.test("processIssueQuestion - the run-stats comment carries the Graft figure
   assertEquals(result.ok, true);
   const stats = comments.find((body) => body.includes("run model stats"));
   assert(stats, "expected the question round to post its run-stats comment");
-  assertStringIncludes(
-    stats,
-    `- **Graft:** ok — build 12.5 s, bundle ${BUNDLE.length} chars, 820 nodes, 1,204 call edges`,
+  // The figures the collector reported, rendered on the comment's own line.
+  const graftLine = stats.split("\n").find((l) => l.startsWith("- **Graft:**"));
+  assertEquals(
+    graftLine,
+    `- **Graft:** ok — build 12.5 s, bundle ${
+      BUNDLE.length.toLocaleString("en-AU")
+    } chars, 820 nodes, 1,204 call edges`,
   );
 });
 

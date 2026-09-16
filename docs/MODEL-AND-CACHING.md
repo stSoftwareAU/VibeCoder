@@ -1108,6 +1108,13 @@ flowchart TD
   aggregation infrastructure. Each comment states that the figures are an
   estimate covering the run that posted them, and that the total only sums the
   comments visible on the issue.
+- **The run's Graft figures.** When the run collected a Graft bundle
+  ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection)),
+  one extra bullet — `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714
+  nodes, 22,908 call edges` — is appended to the rendered block (Issue #2105).
+  It is the only addition to the format, carries no cost figure, and is omitted
+  entirely by a caller that has no outcome, so a run without Graft posts exactly
+  the bytes it posted before.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.

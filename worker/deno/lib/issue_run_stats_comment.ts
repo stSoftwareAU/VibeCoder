@@ -187,10 +187,15 @@ function graftFigure(
     : undefined;
 }
 
-/** Seconds to at most one decimal place, so `47` never reads as `47.0`. */
+/**
+ * Seconds to at most one decimal place, so `47` never reads as `47.0`.
+ *
+ * Deliberately unseparated: a build is bounded by the Graft build timeout, so
+ * a figure with a thousands separator on the integers and none on the
+ * fractions would be the only inconsistency the line could carry.
+ */
 function formatGraftSeconds(seconds: number): string {
-  const rounded = Math.round(seconds * 10) / 10;
-  return Number.isInteger(rounded) ? formatCount(rounded) : rounded.toFixed(1);
+  return String(Math.round(seconds * 10) / 10);
 }
 
 /**
