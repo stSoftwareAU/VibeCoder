@@ -42,6 +42,7 @@ import {
 import {
   conflictEscalationKey,
   conflictEscalationMarker,
+  conflictEscalationMarkerPrefix,
   hasConflictEscalationComment,
 } from "./milestone_conflict_dedup.ts";
 import {
@@ -56,18 +57,21 @@ import {
 import { closeResolvedSyncDiagnostics } from "./milestone_sync_diagnostic_closeout.ts";
 import { closeLandedMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
 import {
+  clearSyncCursor,
   concludeConflictAttempt,
   type ConflictAttemptOutcome,
   type ConflictAttemptRecord,
   isConflictAttemptDue,
   isConflictBudgetExhausted,
   isRepeatedFailureReason,
+  loadSyncCursor,
   loadSyncStreaks,
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   openConflictAttempt,
   recordDefaultSha,
   resetConflictLedgerOnSuccess,
+  saveSyncCursor,
   saveSyncStreaks,
   type SyncStreakEntry,
   syncStreakKey,
@@ -275,6 +279,18 @@ export interface MilestoneBranchSyncDeps {
     result: "ok" | "skipped" | "failed";
   }) => Promise<boolean>;
   /**
+   * Path of the sync cursor file (Issue #2215). When set, a pass that stops
+   * for lack of budget records the repository it stopped at, and the next
+   * pass starts there; a completed pass clears it. Unset: every pass starts
+   * from the first repository.
+   */
+  cursorPath?: string;
+  /**
+   * Least handler budget (ms) a milestone sync is started with
+   * (Issue #2215). Default {@link MIN_MS_PER_MILESTONE_SYNC}.
+   */
+  minMsPerMilestoneSync?: number;
+  /**
    * Path of the per-branch failure-streak file (Issue #4260, proposal 2).
    * When set, a branch that fails to sync for
    * {@link MILESTONE_SYNC_ESCALATION_THRESHOLD} consecutive cycles gets a
@@ -344,6 +360,28 @@ export interface ConflictConclusion {
   reason: string;
   /** The rung that could not decide, when the failure was a conflict. */
   rung?: ConflictLadderRung;
+}
+
+/**
+ * Least handler budget a milestone sync is started with (Issue #2215): a
+ * fetch, a merge, the merged tree's own check and a push. Below it the pass
+ * stops cleanly, records where it stopped, and the next cycle resumes there
+ * — instead of the watchdog abandoning the handler mid-merge with nothing
+ * logged and the next pass starting over from the first repository.
+ */
+export const MIN_MS_PER_MILESTONE_SYNC = 3 * 60 * 1000;
+
+/**
+ * The repositories in pass order: from `startAt` round to the one before
+ * it (Issue #2215). A start the list does not carry leaves the order as is.
+ */
+export function rotateReposFrom(
+  repos: readonly string[],
+  startAt: string | undefined,
+): string[] {
+  const index = startAt === undefined ? -1 : repos.indexOf(startAt);
+  if (index <= 0) return [...repos];
+  return [...repos.slice(index), ...repos.slice(0, index)];
 }
 
 /**
@@ -1006,8 +1044,20 @@ export async function syncMilestoneBranches(
   // (Issue #1778). Spent by the first branch that actually conflicts while
   // holding it — a branch that merged cleanly asked nothing of the agent.
   let agentSpent = false;
+  // Issue #2215: resume where the previous pass stopped for lack of budget.
+  const cursor = deps.cursorPath ? await loadSyncCursor(deps.cursorPath) : null;
+  const orderedRepos = rotateReposFrom(repos, cursor?.repo);
+  if (cursor && orderedRepos[0] === cursor.repo && repos[0] !== cursor.repo) {
+    log(
+      `Milestone sync resumes from ${cursor.repo}, where the previous pass ` +
+        `stopped for lack of budget (Issue #2215)`,
+    );
+  }
+  const minMsPerMilestone = deps.minMsPerMilestoneSync ??
+    MIN_MS_PER_MILESTONE_SYNC;
+  let stoppedAt: { repo: string; milestoneBranch: string } | undefined;
 
-  for (const repo of repos) {
+  for (const repo of orderedRepos) {
     // Issue #2030: the lane runs beside the issue pool, so the clone is
     // leased for the whole repository pass and given back whatever happens.
     let lease: RepoLease | null | undefined;
@@ -1088,6 +1138,24 @@ export async function syncMilestoneBranches(
           );
           skipped++;
           continue;
+        }
+        // Issue #2215: a sync that cannot finish inside what the handler has
+        // left is not started — the pass stops here, the cursor records it,
+        // and the next cycle picks up at this repository.
+        if (
+          deps.deadlineEpochMs !== undefined &&
+          deps.deadlineEpochMs - now() < minMsPerMilestone
+        ) {
+          stoppedAt = { repo, milestoneBranch: milestone.milestoneBranch };
+          log(
+            `Milestone sync stopped before '${milestone.milestoneBranch}' in ` +
+              `${repo}: ${
+                Math.max(0, Math.round((deps.deadlineEpochMs - now()) / 1000))
+              }s of handler budget left, under the ${
+                Math.round(minMsPerMilestone / 1000)
+              }s a sync needs — resuming here next cycle (Issue #2215)`,
+          );
+          break;
         }
 
         // Verify the milestone branch exists on the remote. An EMPTY
@@ -1237,6 +1305,12 @@ export async function syncMilestoneBranches(
         // marker, a refused commit, a throw — leaves the grant spent rather
         // than handing a second branch a second run.
         if (agentAllowed) agentSpent = true;
+        // Issue #2215: named before it starts, so a slow merge or check is
+        // never a silent gap in the log.
+        log(
+          `Syncing milestone branch '${milestone.milestoneBranch}' in ${repo}` +
+            `${agentAllowed ? " (agent rung offered)" : ""}`,
+        );
 
         // Attempt sync
         let syncResult: Awaited<ReturnType<SyncBranchFn>>;
@@ -1510,11 +1584,35 @@ export async function syncMilestoneBranches(
           }
         }
       }
+      if (stoppedAt) break;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(`WARNING: Milestone branch sync failed for ${repo}: ${message}`);
     } finally {
       lease?.release();
+    }
+    if (stoppedAt) break;
+  }
+  if (deps.cursorPath) {
+    try {
+      if (stoppedAt) {
+        const unvisited = orderedRepos.length -
+          orderedRepos.indexOf(stoppedAt.repo) - 1;
+        await saveSyncCursor(deps.cursorPath, stoppedAt);
+        log(
+          `Milestone sync pass incomplete: stopped at ${stoppedAt.repo} with ` +
+            `${unvisited} repositor${unvisited === 1 ? "y" : "ies"} not ` +
+            `reached; the cursor resumes the next pass there (Issue #2215)`,
+        );
+      } else if (cursor) {
+        await clearSyncCursor(deps.cursorPath);
+      }
+    } catch (err) {
+      log(
+        `WARNING: Could not record the milestone sync cursor: ${
+          err instanceof Error ? err.message : String(err)
+        } (Issue #2215)`,
+      );
     }
   }
 
@@ -1590,6 +1688,29 @@ export async function escalateSyncConflict(
     return true;
   }
 
+  // Issue #2214: a conflict the worker resolved itself is a notice, not an
+  // escalation. It used to travel the escalation path unchanged, which
+  // reopened the closed planning issue, labelled it `needs-human` and led
+  // with "needs a human" — on VibeCoder#2145, #2163 and NEAT-AI-Ockham#130
+  // a success read as a hand-off. The notice now leaves a closed parent
+  // closed, applies no label, and clears the `needs-human` an earlier sync
+  // escalation of this very branch left behind.
+  if (conflict.resolution === "auto") {
+    return await escalateToExistingIssue(
+      repo,
+      milestone,
+      body,
+      what,
+      ghCommandFn,
+      log,
+      undefined,
+      {
+        informational: true,
+        addendum: (issue) =>
+          clearEarlierSyncEscalation(repo, issue, milestone, ghCommandFn, log),
+      },
+    );
+  }
   return await escalateToExistingIssue(
     repo,
     milestone,
@@ -1598,6 +1719,78 @@ export async function escalateSyncConflict(
     ghCommandFn,
     log,
   );
+}
+
+/**
+ * Clear the `needs-human` an earlier sync escalation of this branch applied
+ * (Issue #2214), once the branch has synced.
+ *
+ * Only a label this pass itself put there is touched: the issue must carry
+ * `needs-human` AND a sync-conflict marker for this milestone branch. A
+ * `needs-human` a person applied, or another pass, is left alone. Nothing is
+ * closed — a reopen is reverted by the reader, who can see from the notice
+ * that the sync has cleared. Best-effort: a failure is logged, and the
+ * notice still goes out.
+ *
+ * @returns A line for the notice when the label was removed, else "".
+ */
+async function clearEarlierSyncEscalation(
+  repo: string,
+  issueNumber: number,
+  milestone: ActiveMilestone,
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+): Promise<string> {
+  try {
+    const raw = await ghCommandFn([
+      "issue",
+      "view",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--json",
+      "labels,comments",
+    ]);
+    const parsed = JSON.parse(raw) as {
+      labels?: { name?: unknown }[];
+      comments?: { body?: unknown }[];
+    };
+    const labelled = (parsed.labels ?? []).some((l) =>
+      l?.name === "needs-human"
+    );
+    if (!labelled) return "";
+    const prefix = conflictEscalationMarkerPrefix(milestone.milestoneBranch);
+    const escalatedHere = (parsed.comments ?? []).some((c) =>
+      typeof c?.body === "string" && c.body.includes(prefix)
+    );
+    if (!escalatedHere) return "";
+    await ghCommandFn([
+      "issue",
+      "edit",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--remove-label",
+      "needs-human",
+    ]);
+    log(
+      `Removed needs-human from issue #${issueNumber} in ${repo}: the ` +
+        `milestone sync escalation for '${milestone.milestoneBranch}' it ` +
+        `carried has cleared (Issue #2214).`,
+    );
+    return `The \`needs-human\` an earlier sync escalation for ` +
+      `\`${milestone.milestoneBranch}\` applied is cleared: the branch has ` +
+      `synced. If that escalation is what reopened this issue, it can be ` +
+      `closed again.`;
+  } catch (err) {
+    log(
+      `Could not clear an earlier sync escalation on issue #${issueNumber} ` +
+        `in ${repo}: ${
+          err instanceof Error ? err.message : String(err)
+        } (Issue #2214). The notice still goes out.`,
+    );
+    return "";
+  }
 }
 
 /**
@@ -1736,6 +1929,11 @@ async function escalateMergeGateFailure(
  *   again, and is not reopened either (Issue #1786). Another host's streak
  *   file is invisible here, so the marker on the issue is the shared record.
  *   Fails open — an unreadable thread is reported again.
+ * @param options.informational - The post needs nobody (Issue #2214): a
+ *   closed parent stays closed, no label is applied, and no "needs a human"
+ *   preamble is written.
+ * @param options.addendum - Text appended to the body once the destination
+ *   is known — a success reports there what it cleared.
  * @returns True when the escalation reached a human, or had nowhere to go.
  */
 async function escalateToExistingIssue(
@@ -1746,6 +1944,10 @@ async function escalateToExistingIssue(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
   dedupMarker?: string,
+  options: {
+    informational?: boolean;
+    addendum?: (issue: number) => Promise<string>;
+  } = {},
 ): Promise<boolean> {
   const target: MilestoneEscalationTarget =
     await resolveMilestoneEscalationTarget({
@@ -1756,6 +1958,7 @@ async function escalateToExistingIssue(
       },
       ghCommandFn,
       log,
+      ...(options.informational ? { reopenClosedParent: false } : {}),
       ...(dedupMarker !== undefined
         ? {
           alreadyEscalated: (issueNumber: number) =>
@@ -1792,11 +1995,12 @@ async function escalateToExistingIssue(
       `needs a human, and this is the milestone's own planning issue ` +
       `(Issue #1769)._\n\n`
     : "";
+  const addendum = options.addendum ? await options.addendum(target.issue) : "";
 
   return await postEscalationComment(
     repo,
     target.issue,
-    `${preamble}${body}`,
+    `${preamble}${body}${addendum ? `\n\n${addendum}` : ""}`,
     ghCommandFn,
     log,
     what,

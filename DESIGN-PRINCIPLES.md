@@ -877,6 +877,34 @@ single final milestone PR.
 - **Always on, no opt-out.** A milestone can be detached manually if unwanted.
 - **Two gates.** Parent already has a milestone → keep the inheritance path
   (no new milestone). Fewer than two sub-issues → no milestone.
+- **One milestone per file-area group (Issue #2175).** When the parent carries
+  a `## Milestones` table that the structural gate accepted (Issue #2172),
+  `maybeCreatePlanningMilestone()` takes those groups and creates **one
+  milestone per group of two or more sub-issues** — `#<N> <area>: <short
+  description>` — assigning each sub-issue to its own group's milestone only.
+  A group of one sub-issue — or one whose `Milestone` cell is `—`, the table's
+  own way of saying "default branch" — gets no milestone and keeps the default
+  branch as its PR base. Why: a whole plan on one milestone branch serialises work that
+  touches unrelated file areas; splitting by area lets the fleet run the
+  streams in parallel without landing in merge hell. The four-milestone cap is
+  the gate's rule and is deliberately not re-implemented in the helper — one
+  rule, one place. With no groups the behaviour is unchanged: one milestone for
+  the plan.
+- **Two rows on one file area share one milestone, and say so.** The gate
+  permits file overlap between groups (planner judgement), but the sanitised
+  area *is* the milestone's identity — so two such rows resolve to one
+  milestone and one branch. That collision is warned about by area before any
+  API call rather than reported as two independent streams: a partial outcome
+  dressed as success is exactly what the fail-loud rule forbids.
+- **A group's identity is its marker, never a shared prefix.** A grouped
+  milestone's marker carries the sanitised area
+  (`<!-- planning-milestone parent="N" area="infra" -->`) and a grouped lookup
+  stops at marker-then-exact-title. The legacy leading-`#<N>` match runs on the
+  **ungrouped** path only and skips any description carrying an `area=` marker.
+  Both restrictions exist for the same reason: every group's milestone of one
+  plan starts with the same `#<N>`, so a prefix match would let one group — or
+  a later ungrouped run — adopt a sibling's milestone and pile two streams of
+  work onto one branch.
 - **Safe, short names (Issue #1690).** `buildPlanningMilestoneTitle()` is the
   one helper that names a planning milestone. The title is `#<N> <short
   description>`, at most `MAX_MILESTONE_TITLE_LENGTH` (60) characters
@@ -911,7 +939,9 @@ single final milestone PR.
   planning closure.
 
 **Implementation:** `maybeCreatePlanningMilestone()` in
-[`worker/deno/lib/planning_milestone.ts`](worker/deno/lib/planning_milestone.ts)
+[`worker/deno/lib/planning_milestone.ts`](worker/deno/lib/planning_milestone.ts),
+the groups from `runMilestoneGroupsGate()` in
+[`worker/deno/lib/plan_milestone_groups.ts`](worker/deno/lib/plan_milestone_groups.ts),
 and `fetchNativeSubIssueNumbers()` in
 [`worker/deno/lib/native_sub_issues.ts`](worker/deno/lib/native_sub_issues.ts),
 called from the single `closePlanningIssue()` chokepoint in

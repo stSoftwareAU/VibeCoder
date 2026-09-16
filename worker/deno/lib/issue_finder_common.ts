@@ -34,6 +34,12 @@ import type {
 } from "./issue_dependencies.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import type { InFlightClaim } from "./work_stream.ts";
+import { fetchOpenMilestoneClosedCounts } from "./issue_query.ts";
+import {
+  ISSUE_BODY_CACHE_PREFIX,
+  ISSUE_STATE_CACHE_PREFIX,
+  ISSUE_SUB_ISSUES_CACHE_PREFIX,
+} from "./issue_cache.ts";
 
 /**
  * Options for the issue finder.
@@ -315,12 +321,15 @@ export function createIssueFetcher(
   };
 }
 
-/** Cache key prefix for a referenced issue's state (Issue #1818). */
-export const ISSUE_STATE_CACHE_PREFIX = "issue_state_v1_";
-/** Cache key prefix for a referenced issue's body (Issue #1818). */
-export const ISSUE_BODY_CACHE_PREFIX = "issue_body_v1_";
-/** Cache key prefix for a referenced issue's sub-issue numbers (Issue #1818). */
-export const ISSUE_SUB_ISSUES_CACHE_PREFIX = "issue_sub_issues_v1_";
+// Issue #1818: the per-issue cache key prefixes are defined beside the cache
+// itself so the close chokepoint can invalidate the same keys this fetcher
+// writes; re-exported here because callers have always imported them from this
+// module.
+export {
+  ISSUE_BODY_CACHE_PREFIX,
+  ISSUE_STATE_CACHE_PREFIX,
+  ISSUE_SUB_ISSUES_CACHE_PREFIX,
+};
 
 /** The uncached reads behind {@link createIssueFetcher}. */
 function uncachedIssueFetcher(
@@ -335,12 +344,15 @@ function uncachedIssueFetcher(
         "--repo",
         repo,
         "--json",
-        "number,state,title",
+        // Issue #2173: `milestone` rides this existing per-dependency call, so
+        // the cross-milestone hold costs no extra `gh` call per candidate.
+        "number,state,title,milestone",
       ]);
       const parsed = JSON.parse(output) as {
         number: number;
         state: string;
         title: string;
+        milestone?: { title?: string } | null;
       };
       return {
         number: parsed.number,
@@ -348,6 +360,7 @@ function uncachedIssueFetcher(
         // reports `MERGED`, which must resolve to CLOSED (not OPEN).
         state: normaliseIssueState(parsed.state),
         title: parsed.title,
+        milestone: parsed.milestone?.title ?? null,
       };
     },
     async getSubIssues(repo: string, issueNumber: number) {
@@ -430,17 +443,83 @@ export function buildOpenIssueStateMap(
 }
 
 /**
+ * The candidate's milestone context for the cross-milestone dependency hold
+ * (Issue #2173).
+ */
+export interface MilestoneScope {
+  /** The candidate issue's milestone title (`""` when it has none). */
+  candidateMilestone: string;
+  /**
+   * Whether `title` is still an open milestone in the candidate's repo.
+   * Resolved lazily — only a closed dependency carrying a *different*
+   * milestone consults it — and may reject, which fails safe (blocked).
+   */
+  isMilestoneOpen: (title: string) => Promise<boolean> | boolean;
+}
+
+/**
+ * Build the lazy open-milestone lookup behind {@link MilestoneScope}
+ * (Issue #2173).
+ *
+ * Backed by the cached open-milestone listing
+ * {@link fetchOpenMilestoneClosedCounts}, whose keys are the titles of the
+ * repo's open milestones (its first 100, the page size that listing requests),
+ * so a repo's listing costs at most one `gh` call per iteration, shared by
+ * every candidate. The listing is fetched on the first
+ * query and never when no dependency needs it; a failed listing rejects
+ * rather than reading as "no open milestones" (fail loud, and fail safe at
+ * the gate).
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param cache - Optional iteration cache
+ * @param ghFn - Optional gh command function for testing
+ * @returns A predicate answering "is this milestone still open?"
+ */
+export function createOpenMilestoneLookup(
+  repo: string,
+  cache?: IssueCache,
+  ghFn?: (args: string[]) => Promise<string>,
+): (title: string) => Promise<boolean> {
+  let listing: Promise<Map<string, number>> | undefined;
+  return async (title: string) => {
+    // The promise is cached, so concurrent callers share one in-flight call.
+    // A rejection is not cached: the next candidate retries rather than
+    // inheriting a transient failure for the whole iteration.
+    if (!listing) {
+      listing = fetchOpenMilestoneClosedCounts(repo, cache, ghFn);
+      listing.catch(() => {
+        listing = undefined;
+      });
+    }
+    return (await listing).has(title);
+  };
+}
+
+/**
  * Check if an issue is blocked by dependencies or sub-issues.
  *
  * Issue #1808: when `openStateMap` is supplied, child-issue and
  * forward-dependency state lookups resolve from the local map first;
  * misses fall back to the per-issue fetcher path.
+ *
+ * Issue #2173: when `milestoneScope` is supplied, a **closed** same-repo
+ * dependency that sits in a *different*, still-open milestone keeps blocking.
+ * Its code reaches the default branch — and so the dependant's milestone
+ * branch — only once that milestone's final PR merges, so releasing the
+ * dependant on close alone would build it against work that is not there yet.
+ * A dependency with no milestone, or one in the candidate's own milestone, is
+ * satisfied on close exactly as before. Omitting `milestoneScope` keeps the
+ * pre-#2173 behaviour; a failed open-milestone lookup fails safe (blocked).
+ *
+ * The hold is same-repo only: milestone titles are per-repository, so another
+ * repo's milestone title has no meaning in this repo's open-milestone listing.
  */
 export async function isDependencyBlocked(
   repo: string,
   issueNumber: number,
   fetcher: IssueFetcher,
   openStateMap?: OpenIssueStateMap,
+  milestoneScope?: MilestoneScope,
 ): Promise<boolean> {
   try {
     // Check parent/child blocking
@@ -468,12 +547,30 @@ export async function isDependencyBlocked(
       if (isSameRepo && openStateMap?.has(dep.number)) {
         return true;
       }
+      let depState: IssueState;
       try {
-        const depState = await fetcher.getIssueState(depRepo, dep.number);
-        if (depState.state === "OPEN") return true;
+        depState = await fetcher.getIssueState(depRepo, dep.number);
       } catch {
         // If we can't check, assume blocked (fail safe)
         return true;
+      }
+      if (depState.state === "OPEN") return true;
+
+      // Issue #2173: the dependency is closed, but if it belongs to another
+      // milestone of *this* repo that is still open, its merged code has not
+      // reached the default branch yet — keep holding the dependant.
+      const depMilestone = depState.milestone;
+      if (
+        milestoneScope && isSameRepo && depMilestone &&
+        depMilestone !== milestoneScope.candidateMilestone
+      ) {
+        try {
+          if (await milestoneScope.isMilestoneOpen(depMilestone)) return true;
+        } catch {
+          // Unreadable open-milestone listing — fail safe (blocked) rather
+          // than releasing the dependant against unmerged work.
+          return true;
+        }
       }
     }
 

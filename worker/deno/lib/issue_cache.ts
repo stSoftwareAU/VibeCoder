@@ -33,6 +33,28 @@ import { hardenStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
 import { redactJsonStrings } from "./redact_json.ts";
 
 /**
+ * Cache key prefix for a referenced issue's state (Issue #1818).
+ *
+ * Lives here, beside the cache itself, so both the dependency fetcher
+ * (`issue_finder_common.ts`) and the close chokepoint that invalidates its
+ * entries (`issue_close_notifier.ts`) read one definition — the notifier sits
+ * under `gh_spawn.ts`, which the finder's own import graph reaches, so it
+ * cannot import the finder directly. The prefix used to be written out twice,
+ * and bumping one spelling left a close invalidating a key nothing wrote.
+ *
+ * Bumped to `v2` by Issue #2173: the payload now carries `milestone`, and a
+ * `v1` entry without it would read as "no milestone" and silently *release* a
+ * dependant the cross-milestone hold should keep blocking.
+ */
+export const ISSUE_STATE_CACHE_PREFIX = "issue_state_v2_";
+
+/** Cache key prefix for a referenced issue's body (Issue #1818). */
+export const ISSUE_BODY_CACHE_PREFIX = "issue_body_v1_";
+
+/** Cache key prefix for a referenced issue's sub-issue numbers (Issue #1818). */
+export const ISSUE_SUB_ISSUES_CACHE_PREFIX = "issue_sub_issues_v1_";
+
+/**
  * Default cache directory: per-account, under the shared temporary root.
  *
  * @param lookup - Environment reader, injectable for tests.
