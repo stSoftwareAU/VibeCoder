@@ -1614,6 +1614,18 @@
         "worker/deno/lib/markdown_table.ts",
         "worker/deno/lib/plan_milestone_groups.ts"
       ]
+    },
+    {
+      "issue": 2220,
+      "chunk": "top-up-2220",
+      "title": "top-up: the milestone-refusal label release",
+      "ledger": "docs/audits/security-sweep-2220-milestone-refusal-release.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_branch_refusal_release.ts (#2220)",
+      "status": "swept",
+      "sweptAt": "1048e6d2f10593f671a94f748e7a5b764e4cabc7",
+      "paths": [
+        "worker/deno/lib/milestone_branch_refusal_release.ts"
+      ]
     }
   ],
   "roots": [
