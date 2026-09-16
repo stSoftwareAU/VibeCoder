@@ -476,3 +476,200 @@ Deno.test("agent_progress - started then completed of the same Codex item counts
   tracker.feed(codexItemLine("item.completed", item));
   assertEquals(tracker.snapshot().toolCalls, 1);
 });
+
+// =============================================================================
+// Per-tool tally (Issue #2157)
+// =============================================================================
+
+Deno.test("agent_progress - tallies Claude tool_use blocks by name (Issue #2157)", () => {
+  const tracker = new AgentProgressTracker({
+    phase: "execute",
+    intervalMs: 60_000,
+    log: () => undefined,
+    now: () => 1_000_000,
+  });
+
+  tracker.feed(toolUseLine("Read", { file_path: "README.md" }));
+  tracker.feed(toolUseLine("Read", { file_path: "AGENTS.md" }));
+  tracker.feed(toolUseLine("Bash", { command: "deno test" }));
+  tracker.feed(
+    toolUseLine("mcp__codegraph__codegraph_explore", { query: "who calls x" }),
+  );
+  tracker.feed(
+    toolUseLine("mcp__codegraph__codegraph_explore", { query: "callers of y" }),
+  );
+
+  const snapshot = tracker.snapshot();
+  assertEquals(snapshot.toolCallCounts, {
+    Read: 2,
+    Bash: 1,
+    mcp__codegraph__codegraph_explore: 2,
+  });
+  // The total is unchanged and still equals the sum of the tally.
+  assertEquals(snapshot.toolCalls, 5);
+  assertEquals(
+    Object.values(snapshot.toolCallCounts).reduce((a, b) => a + b, 0),
+    snapshot.toolCalls,
+  );
+});
+
+Deno.test("agent_progress - tallies Codex mcp_tool_call items by name (Issue #2157)", () => {
+  const tracker = new AgentProgressTracker({
+    phase: "execute",
+    intervalMs: 60_000,
+    log: () => undefined,
+    now: () => 1_000_000,
+  });
+
+  tracker.feed(codexItemLine("item.completed", {
+    id: "item_1",
+    item_type: "mcp_tool_call",
+    server: "codegraph",
+    name: "codegraph_explore",
+  }));
+  tracker.feed(codexItemLine("item.completed", {
+    id: "item_2",
+    item_type: "mcp_tool_call",
+    server: "codegraph",
+    name: "codegraph_explore",
+  }));
+  // No name — the server stands in, exactly as the progress line's label does.
+  tracker.feed(codexItemLine("item.completed", {
+    id: "item_3",
+    item_type: "mcp_tool",
+    server: "codegraph",
+  }));
+  tracker.feed(codexItemLine("item.completed", {
+    id: "item_4",
+    item_type: "command_execution",
+    command: "deno test",
+  }));
+
+  const snapshot = tracker.snapshot();
+  assertEquals(snapshot.toolCallCounts, {
+    codegraph_explore: 2,
+    codegraph: 1,
+    Bash: 1,
+  });
+  assertEquals(snapshot.toolCalls, 4);
+});
+
+Deno.test("agent_progress - a Codex item seen started then completed is tallied once (Issue #2157)", () => {
+  const tracker = new AgentProgressTracker({
+    phase: "execute",
+    intervalMs: 60_000,
+    log: () => undefined,
+    now: () => 1_000_000,
+  });
+  const item = {
+    id: "item_7",
+    item_type: "mcp_tool_call",
+    server: "codegraph",
+    name: "codegraph_explore",
+  };
+  tracker.feed(codexItemLine("item.started", item));
+  tracker.feed(codexItemLine("item.completed", item));
+
+  const snapshot = tracker.snapshot();
+  assertEquals(snapshot.toolCallCounts, { codegraph_explore: 1 });
+  assertEquals(snapshot.toolCalls, 1);
+});
+
+Deno.test("agent_progress - non-tool lines leave the tally empty (Issue #2157)", () => {
+  const tracker = new AgentProgressTracker({
+    phase: "execute",
+    intervalMs: 60_000,
+    log: () => undefined,
+    now: () => 1_000_000,
+  });
+
+  tracker.feed('{"type":"system","subtype":"init"}\n');
+  tracker.feed(
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n',
+  );
+  tracker.feed(codexItemLine("item.completed", {
+    id: "item_0",
+    item_type: "reasoning",
+    text: "thinking",
+  }));
+  tracker.feed("not json at all\n");
+
+  const snapshot = tracker.snapshot();
+  assertEquals(snapshot.toolCallCounts, {});
+  assertEquals(snapshot.toolCalls, 0);
+});
+
+Deno.test({
+  name:
+    "agent_progress - runClaudeWithTimeout carries the per-tool tally on runStats (Issue #2157)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const line = (name: string) =>
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{
+            type: "tool_use",
+            name,
+            input: { file_path: "worker/deno/lib/live.ts" },
+          }],
+        },
+      });
+    const stub = await createAgentStub(
+      `printf '%s\\n' '${line("Edit")}'\n` +
+        `printf '%s\\n' '${line("mcp__codegraph__codegraph_explore")}'\n` +
+        `printf '%s\\n' '${line("mcp__codegraph__codegraph_explore")}'\n` +
+        `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
+      { prefix: "agent_progress_stub_" },
+    );
+
+    try {
+      const { runClaudeWithTimeout } = await import("../lib/claude_runner.ts");
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        agentBinaryPath: stub.path,
+        phase: "execute",
+        timeoutSeconds: 30,
+        killAfterSeconds: 1,
+        clock: fakeClock(),
+      });
+      assert(result.ok);
+      assertEquals(result.value.runStats?.toolCallCounts, {
+        Edit: 1,
+        mcp__codegraph__codegraph_explore: 2,
+      });
+    } finally {
+      await stub.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "agent_progress - runClaudeWithTimeout leaves toolCallCounts absent for a stream with no tool events (Issue #2157)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const stub = await createAgentStub(
+      `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
+      { prefix: "agent_progress_stub_" },
+    );
+
+    try {
+      const { runClaudeWithTimeout } = await import("../lib/claude_runner.ts");
+      const result = await runClaudeWithTimeout({
+        prompt: "test",
+        agentBinaryPath: stub.path,
+        phase: "execute",
+        timeoutSeconds: 30,
+        killAfterSeconds: 1,
+        clock: fakeClock(),
+      });
+      assert(result.ok);
+      assertEquals(result.value.runStats?.toolCallCounts, undefined);
+    } finally {
+      await stub.dispose();
+    }
+  },
+});
