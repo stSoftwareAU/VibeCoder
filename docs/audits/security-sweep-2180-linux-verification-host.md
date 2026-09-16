@@ -27,6 +27,10 @@ Sibling on the same parent:
 | --------------------------------------------------- | --------------- |
 | `infra/cloudformation/linux-verification-host.yaml` | 377             |
 
+Counted at the base of this change. The committed file is longer: this change
+adds the tightened `AllowedPattern`'s rationale and corrects the bootstrap's
+substitution comment.
+
 Read against the two artefacts that bound it:
 `worker/deno/tests/linux_verification_host_template_test.ts` (the only automated
 gate on a template no CI deploys) and `docs/EC2-LINUX-VERIFICATION.md` (the
