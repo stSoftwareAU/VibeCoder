@@ -163,6 +163,23 @@ export const CODEGRAPH_OFF: CodegraphContextResult = Object.freeze({
 });
 
 /**
+ * What a run that reported no CodeGraph step publishes (Issue #2162).
+ *
+ * `off` states that the **host switch** was off, so a run that ended before
+ * the index step on a switched-on host must not borrow it: that run would be
+ * counted on the switch-off side of the trial it is meant to make
+ * comparable. It reports `failed` instead — the same reading
+ * `prepareCodegraphRun` gives any run whose switch was on and whose index
+ * never arrived.
+ *
+ * @param switchedOn - Whether the host's `codegraph_context.enabled` is on
+ * @returns The block such a run publishes
+ */
+export function codegraphNotRun(switchedOn: boolean): CodegraphContextResult {
+  return switchedOn ? { enabled: true, status: "failed" } : CODEGRAPH_OFF;
+}
+
+/**
  * The structured outcome a fleet archive can count without reading a
  * transcript (Issue #1947).
  */
@@ -358,7 +375,10 @@ function readEnvSafe(name: string): string | undefined {
  * The versioned JSON document handed to a hook.
  *
  * Optional facts are omitted rather than emitted empty, so `sessionId in ctx`
- * is a truthful test of "this run had a session".
+ * is a truthful test of "this run had a session". The `codegraph` block
+ * (Issue #2162) is the deliberate exception: it is present on every run,
+ * because a trial figure the reader has to infer from an absent key is worse
+ * than one stated as `off`.
  */
 export function buildCallbackContextDocument(
   context: IssueRunCallbackContext,

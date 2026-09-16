@@ -317,7 +317,11 @@ import {
   loadResumeState,
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
-import { invokeCycleCallback, invokeRunCallbacks } from "./run_callbacks.ts";
+import {
+  codegraphNotRun,
+  invokeCycleCallback,
+  invokeRunCallbacks,
+} from "./run_callbacks.ts";
 import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
 import { hasAnyRunCallback, hasCycleCallback } from "./run_callbacks_config.ts";
 import {
@@ -4292,7 +4296,14 @@ export async function createProductionRunCoreDeps(
       releasedSessionIds.delete(key);
       const invocations = await invokeRunCallbacks({
         callbacks: config.callbacks,
-        context: buildIssueRunCallbackContext(run, {
+        // Issue #2162: a run that never reported a CodeGraph step still
+        // publishes the block, and on a switched-on host it says `failed`
+        // rather than `off` — see `codegraphNotRun`.
+        context: buildIssueRunCallbackContext({
+          ...run,
+          codegraph: run.codegraph ??
+            codegraphNotRun(config.codegraphContext.enabled),
+        }, {
           runId: getRunId(),
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),

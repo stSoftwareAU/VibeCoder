@@ -205,6 +205,27 @@ const CODEGRAPH_CASES: Array<
     codegraph: { enabled: false, status: "off" },
     expected: { enabled: false, status: "off" },
   },
+  {
+    // A genuine zero is a figure, not an absence: an index of zero nodes and
+    // an index whose counts were never read must not publish the same block.
+    name: "ok with zero figures",
+    codegraph: {
+      enabled: true,
+      status: "ok",
+      indexSeconds: 0,
+      nodeCount: 0,
+      relationshipCount: 0,
+      queries: 0,
+    },
+    expected: {
+      enabled: true,
+      status: "ok",
+      indexSeconds: 0,
+      nodeCount: 0,
+      relationshipCount: 0,
+      queries: 0,
+    },
+  },
 ];
 
 Deno.test(
@@ -262,6 +283,20 @@ Deno.test(
     assertEquals(off.VIBECODER_CODEGRAPH_NODE_COUNT, undefined);
     assertEquals(off.VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT, undefined);
     assertEquals(off.VIBECODER_CODEGRAPH_QUERIES, undefined);
+
+    // Zero is exported, never dropped: "0 queries" is a measurement of the
+    // trial, and an omitted scalar would read as "this run never reported".
+    const zero = buildCallbackEnv(
+      {
+        ...FULL_CONTEXT,
+        codegraph: { enabled: true, status: "ok", nodeCount: 0, queries: 0 },
+      },
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    assertEquals(zero.VIBECODER_CODEGRAPH_NODE_COUNT, "0");
+    assertEquals(zero.VIBECODER_CODEGRAPH_QUERIES, "0");
   },
 );
 

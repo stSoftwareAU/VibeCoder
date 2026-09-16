@@ -403,42 +403,42 @@ invocation (mode `0600`) and removed after it exits:
 
 The same facts are exported as scalars, one variable each:
 
-| Environment variable                  | JSON field                      | Always present | Meaning                                                                                                              |
-| ------------------------------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `VIBECODER_CALLBACK_SCHEMA_VERSION`   | `schemaVersion`                 | yes            | Contract version — see [Versioning](#versioning--the-contract-is-additive)                                            |
-| `VIBECODER_CALLBACK_EVENT`            | `event`                         | yes            | `success`, `failure`, `always`, `cycle` or `host_failure`                                                            |
-| `VIBECODER_CALLBACK_CONTEXT`          | —                               | yes            | Path to the JSON document for this invocation                                                                        |
-| `VIBECODER_RUN_ID`                    | `runId`                         | yes            | Worker run id                                                                                                        |
-| `VIBECODER_RESULT`                    | `result`                        | yes            | The run's own result: `success` or `failure`                                                                         |
-| `VIBECODER_REPOSITORY`                | `repository`                    | yes            | `owner/repo` the run worked                                                                                          |
-| `VIBECODER_ISSUE_NUMBER`              | `issueNumber`                   | yes            | Issue number the run worked                                                                                          |
-| `VIBECODER_HOST`                      | `host`                          | yes            | Host the worker runs on                                                                                              |
-| `VIBECODER_WORKER_NAME`               | `workerName`                    | no             | Operator-configured worker name                                                                                      |
-| `VIBECODER_PROVIDER`                  | `provider`                      | no             | Agent provider that served the run                                                                                   |
-| `VIBECODER_SESSION_ID`                | `sessionId`                     | no             | Agent session id                                                                                                     |
-| `VIBECODER_SESSION_LOG_PATH`          | `sessionLogPath`                | no             | Absolute path to this run's transcript, verified on disk                                                             |
-| `VIBECODER_SESSION_LOG_ABSENT_REASON` | `sessionLogAbsentReason`        | no             | Why the path is missing (`tee_disabled`, `log_dir_unavailable`, `size_cap_exceeded`, `write_failed`, `file_missing`) |
-| `VIBECODER_STARTED_AT`                | `startedAt`                     | yes            | ISO-8601 claim time                                                                                                  |
-| `VIBECODER_FINISHED_AT`               | `finishedAt`                    | yes            | ISO-8601 termination time                                                                                            |
-| `VIBECODER_DURATION_SECONDS`          | `durationSeconds`               | yes            | Wall-clock seconds from claim to termination                                                                         |
-| `VIBECODER_EXIT_CODE`                 | `exitCode`                      | yes            | `0` on success, non-zero on failure                                                                                  |
-| `VIBECODER_INPUT_TOKENS`              | `telemetry.inputTokens`         | no             | Input tokens the run reported                                                                                        |
-| `VIBECODER_OUTPUT_TOKENS`             | `telemetry.outputTokens`        | no             | Output tokens the run reported                                                                                       |
-| `VIBECODER_CACHE_CREATION_TOKENS`     | `telemetry.cacheCreationTokens` | no             | Cache-creation tokens                                                                                                |
-| `VIBECODER_CACHE_READ_TOKENS`         | `telemetry.cacheReadTokens`     | no             | Cache-read tokens                                                                                                    |
-| `VIBECODER_ESTIMATED_COST_USD`        | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
-| `VIBECODER_TELEMETRY_ABSENT_REASON`   | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
-| `VIBECODER_OUTCOME_KIND`              | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
-| `VIBECODER_OUTCOME_CATEGORY`          | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                 |
-| `VIBECODER_OUTCOME_PHASE`             | `outcome.phase`                 | no             | Phase that terminated the run                                                                                        |
-| `VIBECODER_OUTCOME_FAILURE_CLASS`     | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked                                                    |
-| `VIBECODER_PR_NUMBER`                 | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                            |
-| `VIBECODER_CODEGRAPH_ENABLED`         | `codegraph.enabled`             | yes            | Whether the host's CodeGraph switch was on for this run (`true` or `false`)                                          |
-| `VIBECODER_CODEGRAPH_STATUS`          | `codegraph.status`              | yes            | `ok`, `failed`, `unsupported` (no MCP transport on this provider) or `off` (switch off)                              |
-| `VIBECODER_CODEGRAPH_INDEX_SECONDS`   | `codegraph.indexSeconds`        | no             | Wall-clock seconds the index step took, when it was started                                                          |
-| `VIBECODER_CODEGRAPH_NODE_COUNT`      | `codegraph.nodeCount`           | no             | Nodes in the index                                                                                                   |
-| `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT` | `codegraph.relationshipCount` | no          | Relationships (edges) in the index                                                                                   |
-| `VIBECODER_CODEGRAPH_QUERIES`         | `codegraph.queries`             | no             | `codegraph_explore` calls the agent made this run                                                                    |
+| Environment variable                     | JSON field                      | Always present | Meaning                                                                                                              |
+| ---------------------------------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `VIBECODER_CALLBACK_SCHEMA_VERSION`      | `schemaVersion`                 | yes            | Contract version — see [Versioning](#versioning--the-contract-is-additive)                                           |
+| `VIBECODER_CALLBACK_EVENT`               | `event`                         | yes            | `success`, `failure`, `always`, `cycle` or `host_failure`                                                            |
+| `VIBECODER_CALLBACK_CONTEXT`             | —                               | yes            | Path to the JSON document for this invocation                                                                        |
+| `VIBECODER_RUN_ID`                       | `runId`                         | yes            | Worker run id                                                                                                        |
+| `VIBECODER_RESULT`                       | `result`                        | yes            | The run's own result: `success` or `failure`                                                                         |
+| `VIBECODER_REPOSITORY`                   | `repository`                    | yes            | `owner/repo` the run worked                                                                                          |
+| `VIBECODER_ISSUE_NUMBER`                 | `issueNumber`                   | yes            | Issue number the run worked                                                                                          |
+| `VIBECODER_HOST`                         | `host`                          | yes            | Host the worker runs on                                                                                              |
+| `VIBECODER_WORKER_NAME`                  | `workerName`                    | no             | Operator-configured worker name                                                                                      |
+| `VIBECODER_PROVIDER`                     | `provider`                      | no             | Agent provider that served the run                                                                                   |
+| `VIBECODER_SESSION_ID`                   | `sessionId`                     | no             | Agent session id                                                                                                     |
+| `VIBECODER_SESSION_LOG_PATH`             | `sessionLogPath`                | no             | Absolute path to this run's transcript, verified on disk                                                             |
+| `VIBECODER_SESSION_LOG_ABSENT_REASON`    | `sessionLogAbsentReason`        | no             | Why the path is missing (`tee_disabled`, `log_dir_unavailable`, `size_cap_exceeded`, `write_failed`, `file_missing`) |
+| `VIBECODER_STARTED_AT`                   | `startedAt`                     | yes            | ISO-8601 claim time                                                                                                  |
+| `VIBECODER_FINISHED_AT`                  | `finishedAt`                    | yes            | ISO-8601 termination time                                                                                            |
+| `VIBECODER_DURATION_SECONDS`             | `durationSeconds`               | yes            | Wall-clock seconds from claim to termination                                                                         |
+| `VIBECODER_EXIT_CODE`                    | `exitCode`                      | yes            | `0` on success, non-zero on failure                                                                                  |
+| `VIBECODER_INPUT_TOKENS`                 | `telemetry.inputTokens`         | no             | Input tokens the run reported                                                                                        |
+| `VIBECODER_OUTPUT_TOKENS`                | `telemetry.outputTokens`        | no             | Output tokens the run reported                                                                                       |
+| `VIBECODER_CACHE_CREATION_TOKENS`        | `telemetry.cacheCreationTokens` | no             | Cache-creation tokens                                                                                                |
+| `VIBECODER_CACHE_READ_TOKENS`            | `telemetry.cacheReadTokens`     | no             | Cache-read tokens                                                                                                    |
+| `VIBECODER_ESTIMATED_COST_USD`           | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
+| `VIBECODER_TELEMETRY_ABSENT_REASON`      | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
+| `VIBECODER_OUTCOME_KIND`                 | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
+| `VIBECODER_OUTCOME_CATEGORY`             | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                |
+| `VIBECODER_OUTCOME_PHASE`                | `outcome.phase`                 | no             | Phase that terminated the run                                                                                        |
+| `VIBECODER_OUTCOME_FAILURE_CLASS`        | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked                                                    |
+| `VIBECODER_PR_NUMBER`                    | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                            |
+| `VIBECODER_CODEGRAPH_ENABLED`            | `codegraph.enabled`             | yes            | Whether the host's CodeGraph switch was on for this run (`true` or `false`)                                          |
+| `VIBECODER_CODEGRAPH_STATUS`             | `codegraph.status`              | yes            | `ok`, `failed`, `unsupported` (no MCP transport on this provider) or `off` (switch off)                              |
+| `VIBECODER_CODEGRAPH_INDEX_SECONDS`      | `codegraph.indexSeconds`        | no             | Wall-clock seconds the index step took, when it was started                                                          |
+| `VIBECODER_CODEGRAPH_NODE_COUNT`         | `codegraph.nodeCount`           | no             | Nodes in the index                                                                                                   |
+| `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT` | `codegraph.relationshipCount`   | no             | Relationships (edges) in the index                                                                                   |
+| `VIBECODER_CODEGRAPH_QUERIES`            | `codegraph.queries`             | no             | `codegraph_explore` calls the agent made this run                                                                    |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `VIBECODER_CLAIMS_ATTEMPTED`, `VIBECODER_CLAIMS_TAKEN` and
@@ -454,9 +454,13 @@ hosts. A host without the switch reports
 whose index step failed reports `"status": "failed"` with whatever figures it
 did gather. Each figure — `indexSeconds`, `nodeCount`, `relationshipCount`,
 `queries` — is **omitted** when the step never produced it, because a missing
-count must not read as an index of zero nodes. Nothing else in the contract
-moved: `schemaVersion` stays at 2, and a hook that knows nothing about
-CodeGraph ignores the block.
+count must not read as an index of zero nodes; a figure of `0` is published as
+`0`, because zero nodes is a measurement rather than an absence. `off` means
+the **switch** was off: a run on a switched-on host that ended before the
+index step reports `"status": "failed"` instead, so it is never counted on the
+switch-off side of the trial. Nothing else in the contract moved:
+`schemaVersion` stays at 2, and a hook that knows nothing about CodeGraph
+ignores the block.
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).
@@ -702,13 +706,13 @@ Two differences to plan for:
 
 ## Reference
 
-| Concern                          | Implementation                                 |
-| -------------------------------- | ---------------------------------------------- |
-| `callbacks` block and validation | `worker/deno/lib/run_callbacks_config.ts`      |
-| The runner, environment, capture | `worker/deno/lib/run_callbacks.ts`             |
-| Host-failure payload and invoker | `worker/deno/lib/host_failure_hook.ts`         |
-| Context assembly and transcript  | `worker/deno/lib/run_callback_context.ts`      |
-| `codegraph` block and figures    | `worker/deno/lib/codegraph_context.ts`         |
-| Exactly-once guard               | `worker/deno/lib/issue_callback_guard.ts`      |
-| Conformance fixture              | `worker/deno/lib/callback_conformance.ts`      |
-| `callback-conformance` command   | `worker/deno/commands/callback_conformance.ts` |
+| Concern                             | Implementation                                 |
+| ----------------------------------- | ---------------------------------------------- |
+| `callbacks` block and validation    | `worker/deno/lib/run_callbacks_config.ts`      |
+| The runner, environment, capture    | `worker/deno/lib/run_callbacks.ts`             |
+| Host-failure payload and invoker    | `worker/deno/lib/host_failure_hook.ts`         |
+| Context assembly and transcript     | `worker/deno/lib/run_callback_context.ts`      |
+| CodeGraph figures the block carries | `worker/deno/lib/codegraph_context.ts`         |
+| Exactly-once guard                  | `worker/deno/lib/issue_callback_guard.ts`      |
+| Conformance fixture                 | `worker/deno/lib/callback_conformance.ts`      |
+| `callback-conformance` command      | `worker/deno/commands/callback_conformance.ts` |
