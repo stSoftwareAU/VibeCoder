@@ -316,6 +316,15 @@ flowchart TD
   where the evidence gate and the PR expect them. `container-build.yml`
   drives the generated server end to end (initialize → navigate → screenshot
   → PNG on disk), so a channel or version drift fails the build.
+- **Other MCP servers ride the same file without widening that grant**
+  (Issue #2156). `mcpConfig` also takes an object —
+  `{ playwright?: boolean; servers?: Record<string, { command; args?; env? }> }`
+  — so a run can be handed a server such as CodeGraph with
+  `playwright: false` and get a config carrying that entry and no browser
+  entry at all. `mcpConfig: true` remains exactly the Playwright-only request
+  described above, byte-for-byte. The file keeps its `playwright-mcp-*.json`
+  name, and Codex still reads the same file as `-c mcp_servers.<name>.*`
+  overrides, so no provider changes.
 - **The prompts say so too.** The coding-guidelines template (from v37 onward)
   tells the agent it runs unattended in a sandboxed container with no host
   browser or desktop, mandates this headless browser for every browser task, and
