@@ -30,6 +30,7 @@ import {
   processGrillMe,
   selectFleetAuthoredRounds,
 } from "../lib/grill_me_processor.ts";
+import { decideGrillMeStop } from "../lib/grill_me_stall_guard.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubComment, GitHubIssue, WorkerConfig } from "../types.ts";
@@ -276,3 +277,44 @@ Deno.test("selectFleetAuthoredRounds - a blank author is never fleet", () => {
   ];
   assertEquals(selectFleetAuthoredRounds(rounds, [FLEET_USER]), []);
 });
+
+// ---------------------------------------------------------------------------
+// decideGrillMeStop — the two inputs disagreeing is the whole point of the
+// split, so each direction is asserted directly and not only through the
+// processor.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "decideGrillMeStop - a stalled pair excluded from the fleet bodies runs an ordinary round (Issue #2237)",
+  () => {
+    const stem = "### Questions\n\n1. What is the stop rule?";
+    assertEquals(
+      decideGrillMeStop({
+        // Two rounds were posted, but only one of them is fleet-authored, so
+        // the guard has nothing to compare and the grilling stays productive.
+        fleetRoundBodies: [stem],
+        roundCount: 2,
+        latestRoundNumber: 2,
+        maxRounds: 20,
+      }),
+      null,
+    );
+  },
+);
+
+Deno.test(
+  "decideGrillMeStop - the ceiling trips on the author-agnostic count alone (Issues #1560, #3768)",
+  () => {
+    assertEquals(
+      decideGrillMeStop({
+        // Not one round is attributable to the fleet, yet 19 rounds have been
+        // posted: the ceiling must still make the next round the final one.
+        fleetRoundBodies: [],
+        roundCount: 19,
+        latestRoundNumber: 19,
+        maxRounds: 20,
+      }),
+      { kind: "ceiling", ceiling: 20 },
+    );
+  },
+);
