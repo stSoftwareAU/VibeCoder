@@ -38,6 +38,7 @@
 
 import type { Logger } from "../types.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
@@ -174,6 +175,12 @@ export async function reportPhaseDegradation(args: {
    * caller supplies nothing.
    */
   env?: EnvLookup;
+  /**
+   * What this run's CodeGraph step produced (Issue #2161). Carried onto both
+   * the healthy and the degraded stats comment, so the trial's figures are
+   * reported on every run the phase completes — not only the healthy ones.
+   */
+  codegraph?: CodegraphContextResult;
 }): Promise<DegradationVerdict> {
   const {
     phase,
@@ -215,6 +222,7 @@ export async function reportPhaseDegradation(args: {
       postComment,
       logger,
       ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
+      ...(args.codegraph ? { codegraph: args.codegraph } : {}),
     });
     return verdict;
   }
@@ -242,6 +250,7 @@ export async function reportPhaseDegradation(args: {
   const body = buildIssueRunStatsComment({
     phase,
     claudeResults,
+    ...(args.codegraph ? { codegraph: args.codegraph } : {}),
   });
   if (body) {
     try {

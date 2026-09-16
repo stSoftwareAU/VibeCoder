@@ -199,6 +199,20 @@ CodeGraph window can distinguish "the index was there" from "the agent used it".
 Tokens, cost and model come from the same run-stats comment as for any other
 run, so no separate accounting is kept.
 
+The CodeGraph line (#2161) closes the stats block of the run-stats comment,
+below `Degraded:` and above the cumulative issue total, and carries whichever
+figures the step reached:
+
+```text
+- **CodeGraph:** ok — index 1.8 s, 4,120 nodes, 9,870 relationships, 14 queries
+- **CodeGraph:** failed — index 300 s
+- **CodeGraph:** unsupported (gemini)
+- **CodeGraph:** off
+```
+
+It is a status line, never a cost line: the issue cost tally parses only the
+`Estimated cost` shape, so these figures never move the published total.
+
 ## 7. 📊 Results — Graft window
 
 _Template — fill in when the Graft window closes._

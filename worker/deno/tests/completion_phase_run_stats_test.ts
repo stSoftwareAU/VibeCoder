@@ -249,3 +249,60 @@ Deno.test("completion - an unextended run reports no extension counters (Issue #
     `an unextended run must not mention extensions: ${stats.body}`,
   );
 });
+
+Deno.test("completion - reports the run's CodeGraph figures in the stats comment (Issue #2161)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    codegraphContext: {
+      status: "ok",
+      enabled: true,
+      indexSeconds: 1.8,
+      nodeCount: 4120,
+      relationshipCount: 9870,
+      queries: 14,
+    },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(
+    stats.body,
+    "- **CodeGraph:** ok — index 1.8 s, 4,120 nodes, 9,870 relationships, 14 queries",
+  );
+  // The figures are reported beside the spend, never counted as spend.
+  assertStringIncludes(stats.body, "Estimated cost (USD, estimate only)");
+});
+
+Deno.test("completion - a failed CodeGraph step is reported, not hidden (Issue #2161)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    codegraphContext: { status: "failed", enabled: true, indexSeconds: 300 },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(stats.body, "- **CodeGraph:** failed — index 300 s");
+});
+
+Deno.test("completion - a run with no CodeGraph step mentions none (Issue #2161)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assert(
+    !stats.body.includes("CodeGraph"),
+    `a run without the step must not mention it: ${stats.body}`,
+  );
+});

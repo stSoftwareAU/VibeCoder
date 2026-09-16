@@ -236,6 +236,11 @@ export async function workOnIssueHandleNoChanges(
             serviceAccounts: ctx.config.serviceAccounts ?? [],
           }),
         },
+        // This run's CodeGraph figures (Issue #2161) — reported here too, so
+        // an already-resolved wrap-up is not a hole in the trial's data.
+        ...(state.codegraphContext
+          ? { codegraph: state.codegraphContext }
+          : {}),
       });
       // Unassign
       await ghClient.unassignIssue(repo, issueNumber, [githubUser]);
