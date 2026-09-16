@@ -224,16 +224,19 @@ Deno.test("collectGraftContext - invokes graft with the documented argv, env and
     assertEquals(build.args, ["build", "--no-gitignore", "--no-ignore"]);
     assertEquals(build.cwd, repoDir);
     assertEquals(build.env?.DO_NOT_TRACK, "1");
+    // The literal is asserted on what the runner was handed, so the chain the
+    // issue specifies — 300 s, reaching the subprocess — is pinned in one
+    // assertion rather than by comparing a constant with its own value.
+    assertEquals(build.timeoutMs, 300_000);
     assertEquals(build.timeoutMs, GRAFT_BUILD_TIMEOUT_MS);
-    assertEquals(GRAFT_BUILD_TIMEOUT_MS, 300_000);
 
     const ask = runner.calls[1]!;
     assertEquals(ask.executable, "graft");
     assertEquals(ask.args, ["ask", "--source", "find the retry policy"]);
     assertEquals(ask.cwd, repoDir);
     assertEquals(ask.env?.DO_NOT_TRACK, "1");
+    assertEquals(ask.timeoutMs, 30_000);
     assertEquals(ask.timeoutMs, GRAFT_ASK_TIMEOUT_MS);
-    assertEquals(GRAFT_ASK_TIMEOUT_MS, 30_000);
 
     // The deterministic tree-sitter graph only — never the LSP tier.
     for (const call of runner.calls) {
@@ -338,6 +341,108 @@ Deno.test("collectGraftContext - a spawn error (binary missing) fails without th
     assertEquals(warns.length, 1);
     assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
     assertStringIncludes(warns[0]!, "os error 2");
+  });
+});
+
+Deno.test("collectGraftContext - a run seam that throws is reported, not propagated", async () => {
+  await withRepo(async (repoDir) => {
+    const { warns, logger } = recordingLogger();
+    const throwingRun: GraftRunner = () => {
+      throw new Error("spawn EACCES");
+    };
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: throwingRun,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "failed");
+    assertEquals(result.enabled, true);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
+    assertStringIncludes(warns[0]!, "spawn EACCES");
+  });
+});
+
+Deno.test("collectGraftContext - a git seam that throws is reported and spawns no graft", async () => {
+  await withRepo(async (repoDir) => {
+    const runner = fakeRunner([]);
+    const { warns, logger } = recordingLogger();
+    const throwingGit: GraftGitRunner = () => {
+      throw new Error("git vanished mid-run");
+    };
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: throwingGit,
+    });
+
+    assertEquals(result.status, "failed");
+    assertEquals(runner.calls.length, 0);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
+    assertStringIncludes(warns[0]!, "git vanished mid-run");
+  });
+});
+
+Deno.test("collectGraftContext - a git-path answer of nothing fails rather than writing to the repo root", async () => {
+  await withRepo(async (repoDir) => {
+    const runner = fakeRunner([]);
+    const { warns, logger } = recordingLogger();
+
+    // Exit 0 with empty stdout: no failure marker, but no answer either — the
+    // shape that must not be read as success.
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: fakeGit("   \n", 0).git,
+    });
+
+    assertEquals(result.status, "failed");
+    assertEquals(runner.calls.length, 0);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
+    assertStringIncludes(warns[0]!, "git printed nothing");
+  });
+});
+
+Deno.test("collectGraftContext - a zero-exit ask returning an empty bundle fails rather than reporting ok", async () => {
+  await withRepo(async (repoDir) => {
+    // `graft build` succeeds, the graph is readable, and `graft ask` exits 0 —
+    // but with nothing to show. An `ok` here would record a clean Graft run
+    // that delivered no bundle at all.
+    const runner = fakeRunner([ok(""), ok("   \n  ")]);
+    const { warns, logger } = recordingLogger();
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "failed");
+    assertEquals(result.bundle, undefined);
+    // The figures gathered before the fault are still reported, so a `failed`
+    // status stays diagnosable.
+    assertEquals(result.nodeCount, 3);
+    assertEquals(result.callEdgeCount, 2);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
+    assertStringIncludes(warns[0]!, "empty bundle");
   });
 });
 
