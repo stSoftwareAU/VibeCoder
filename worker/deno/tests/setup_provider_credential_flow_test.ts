@@ -15,6 +15,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { setupConfigEnv } from "./support/setup_config_env.ts";
 import {
   checkCredentialPreflight,
   credentialPreflightMessage,
@@ -55,7 +56,9 @@ async function runSetupFunction(
       VIBE_IMAGE_AGENT_PROVIDERS: "",
       HOME: tmp,
       TMPDIR: tmp,
-      CONFIG_FILE: options.configFile ?? `${tmp}/.config.json`,
+      // Issue #2144: both spellings, so the host's own CONFIG_PATH cannot
+      // reach setup.sh and trip its "both set and different" guard.
+      ...setupConfigEnv(options.configFile ?? `${tmp}/.config.json`),
       ...options.env,
     },
     stdin: options.stdin === undefined ? "null" : "piped",
