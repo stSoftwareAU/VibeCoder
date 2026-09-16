@@ -448,6 +448,118 @@ Deno.test("every UserData substitution resolves to a declared parameter or pseud
   );
 });
 
+Deno.test("only the three stack parameters the bootstrap needs are substituted into it", () => {
+  // Every name on this list is a deployer-supplied value landing in a root
+  // shell, so the list is the review surface: widening it means reviewing the
+  // sink the new value reaches (Issue #2180).
+  assertEquals(
+    [...new Set(substitutionNames(userDataScript()))].sort(),
+    ["AutoStopHours", "HostAgentCli", "VibeCoderRepositoryUrl"],
+    "a new UserData substitution needs its sink reviewed before this list grows",
+  );
+});
+
+Deno.test("the repository URL parameter admits no shell metacharacter, because the clone line is a live command-substitution sink", async () => {
+  const parameter = asRecord(
+    section("Parameters").VibeCoderRepositoryUrl,
+    "VibeCoderRepositoryUrl",
+  );
+  const allowed = new RegExp(String(parameter.AllowedPattern));
+
+  // Real clone URLs still pass — a fork, a self-hosted host:port, and a
+  // userinfo host. `:` and `@` stay in the set because a URL needs them, not
+  // because a credential belongs there: putting a token in this parameter is
+  // refused by the operator manual, which the pattern cannot enforce.
+  for (
+    const url of [
+      String(parameter.Default),
+      "https://github.com/someone/fork.git",
+      "https://git.example.internal:8443/team/vibe-coder.git",
+      "https://mirror@git.example.internal/team/vibe-coder.git",
+    ]
+  ) {
+    assert(
+      allowed.test(url),
+      `a real clone URL must still be accepted: ${url}`,
+    );
+  }
+
+  // Fn::Sub substitutes the value into a double-quoted shell string, so a
+  // `$( … )` inside it runs in the outer bootstrap shell — as root, before
+  // runuser is reached. Demonstrate the sink rather than assert about it: the
+  // pattern above is the only thing standing between a deployer-supplied
+  // parameter and arbitrary root code, so its tightness is the control.
+  const payload = "https://github.com/x$(touch$IFS./INJECTED)y.git";
+  const directory = await Deno.makeTempDir({ prefix: "vibe-clone-sink-" });
+  try {
+    const line = renderedUserData({ VibeCoderRepositoryUrl: payload })
+      .split("\n")
+      .map((raw) => raw.trim())
+      .find((raw) => raw.startsWith("runuser") && raw.includes("git clone"));
+    assert(line !== undefined, "the bootstrap should clone the checkout");
+    const result = await new Deno.Command("bash", {
+      args: ["-c", `runuser() { :; }\nRUNTIME=/home/ubuntu/runtime\n${line}`],
+      cwd: directory,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(result.success, true, new TextDecoder().decode(result.stderr));
+    const injected = await Deno.stat(`${directory}/INJECTED`).then(
+      () => true,
+      () => false,
+    );
+    assert(
+      injected,
+      "premise changed: the clone line no longer interpolates the URL into a shell string, so this test should be rewritten around the new sink",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+
+  for (
+    const metacharacter of [
+      "$",
+      "`",
+      "(",
+      ")",
+      ";",
+      "&",
+      "'",
+      '"',
+      "|",
+      "<",
+      ">",
+      "\\",
+      " ",
+      "\t",
+      "\n",
+      "*",
+      "?",
+      "!",
+      "#",
+      "{",
+      "}",
+      "[",
+      "]",
+      "=",
+      ",",
+    ]
+  ) {
+    assertEquals(
+      allowed.test(`https://github.com/org/repo${metacharacter}x.git`),
+      false,
+      `AllowedPattern admits ${
+        JSON.stringify(metacharacter)
+      } into the clone command line`,
+    );
+  }
+  assertEquals(
+    allowed.test(payload),
+    false,
+    "the reproduced payload must be refused at the parameter boundary",
+  );
+});
+
 Deno.test("the rendered UserData script is valid bash", async () => {
   const rendered = renderedUserData();
   const check = new Deno.Command("bash", {
