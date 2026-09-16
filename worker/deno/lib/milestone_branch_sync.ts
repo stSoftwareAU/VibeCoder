@@ -4,6 +4,15 @@
  * Proactively merges the default branch into active milestone branches
  * to reduce drift and avoid merge conflicts on the final summary PR.
  *
+ * **Merge conflicts are the worker's to resolve — never a person's.** The
+ * fleet tries to avoid them; when one occurs, this module handles it end to
+ * end: the triage rules, the resolution agent, the attempt budget across
+ * cycles (Issue #1778), and the roll-back of the offending PRs when the
+ * budget is spent (Issue #1781). No outcome here reopens a planning issue,
+ * applies `needs-human`, or asks anyone to do anything (Issues #2214,
+ * #2226): every comment the sync posts is a record of what the ladder did
+ * and will do next. A path that hands a conflict to a human is a bug.
+ *
  * Every open milestone whose branch exists is swept on every cycle in which
  * the default-branch tip moved (Issue #1776): the cadence is one comparison
  * between the tip git reports and the tip the branch was last successfully
@@ -1705,7 +1714,6 @@ export async function escalateSyncConflict(
       log,
       undefined,
       {
-        informational: true,
         addendum: (issue) =>
           clearEarlierSyncEscalation(repo, issue, milestone, ghCommandFn, log),
       },
@@ -1929,12 +1937,9 @@ async function escalateMergeGateFailure(
  *   again, and is not reopened either (Issue #1786). Another host's streak
  *   file is invisible here, so the marker on the issue is the shared record.
  *   Fails open — an unreadable thread is reported again.
- * @param options.informational - The post needs nobody (Issue #2214): a
- *   closed parent stays closed, no label is applied, and no "needs a human"
- *   preamble is written.
  * @param options.addendum - Text appended to the body once the destination
  *   is known — a success reports there what it cleared.
- * @returns True when the escalation reached a human, or had nowhere to go.
+ * @returns True when the post went out, or had nowhere to go.
  */
 async function escalateToExistingIssue(
   repo: string,
@@ -1945,7 +1950,6 @@ async function escalateToExistingIssue(
   log: (message: string) => void,
   dedupMarker?: string,
   options: {
-    informational?: boolean;
     addendum?: (issue: number) => Promise<string>;
   } = {},
 ): Promise<boolean> {
@@ -1958,7 +1962,6 @@ async function escalateToExistingIssue(
       },
       ghCommandFn,
       log,
-      ...(options.informational ? { reopenClosedParent: false } : {}),
       ...(dedupMarker !== undefined
         ? {
           alreadyEscalated: (issueNumber: number) =>
@@ -1990,17 +1993,14 @@ async function escalateToExistingIssue(
     return true;
   }
 
-  const preamble = target.kind === "parent" && target.reopened
-    ? `_Reopened by the milestone branch sync: \`${milestone.milestoneBranch}\` ` +
-      `needs a human, and this is the milestone's own planning issue ` +
-      `(Issue #1769)._\n\n`
-    : "";
+  // Issue #2226: no preamble, no reopen, no label — the post is a record
+  // for whoever reads the thread, and the ladder acts on it, not a person.
   const addendum = options.addendum ? await options.addendum(target.issue) : "";
 
   return await postEscalationComment(
     repo,
     target.issue,
-    `${preamble}${body}${addendum ? `\n\n${addendum}` : ""}`,
+    `${body}${addendum ? `\n\n${addendum}` : ""}`,
     ghCommandFn,
     log,
     what,

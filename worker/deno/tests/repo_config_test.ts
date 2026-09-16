@@ -8,7 +8,7 @@
  * TDD: These tests define expected behaviour before implementation.
  */
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import type { RepoConfig } from "../types.ts";
 import {
   buildQualityInstructions,
@@ -237,7 +237,9 @@ Deno.test("repo_config - buildQualityInstructions requires one foreground gate r
     `guidance must ask for a single foreground gate run:\n${result}`,
   );
   assertEquals(
-    lower.includes("never start ./quality.sh in the background"),
+    lower.includes(
+      "never start ./quality.sh, the full test suite, a build, or any other long-running command in the background",
+    ),
     true,
     `guidance must forbid backgrounding the gate:\n${result}`,
   );
@@ -253,7 +255,9 @@ Deno.test("repo_config - buildQualityInstructions applies the same no-polling ru
   // org/repo-b configures `yarn test` as its quality command.
   const result = buildQualityInstructions(repoConfigs, "org/repo-b");
   assertEquals(
-    result.includes("Never start yarn test in the background"),
+    result.includes(
+      "Never start yarn test, the full test suite, a build, or any other long-running command in the background",
+    ),
     true,
     `the custom command must carry the same guidance:\n${result}`,
   );
@@ -587,4 +591,16 @@ Deno.test("repo_config - getCiProviders throws on malformed config", () => {
     Error,
     "Invalid ciProviders",
   );
+});
+
+Deno.test("repo_config - buildQualityInstructions forbids backgrounding any long-running command and polling it, not only the gate (Issue #2230)", () => {
+  const text = buildQualityInstructions(undefined, "owner/repo");
+  assertStringIncludes(
+    text,
+    "Never start ./quality.sh, the full test suite, a build, or any other long-running command in the background and poll for it",
+  );
+  assertStringIncludes(text, "`echo` wait loop");
+  assertStringIncludes(text, "one bounded foreground command");
+  assertStringIncludes(text, "timeout 900");
+  assertStringIncludes(text, "Run only the test files your change touches");
 });

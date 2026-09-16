@@ -13,9 +13,11 @@
  * already exists. This module answers the only question that matters — which
  * one — in three steps:
  *
- *   1. the milestone's **parent planning issue**, reopened when planning has
- *      already closed it (a reopened parent gets `needs-human`, never a
- *      pickup label: it is for a human to read, not for the fleet to pick up);
+ *   1. the milestone's **parent planning issue**, as it stands — open or
+ *      closed. It is never reopened and never labelled (Issue #2226): a sync
+ *      post is the record of what the automatic ladder did and will do
+ *      next, not a request for a person, and a reopened `needs-human`
+ *      planning issue was exactly what the user kept closing by hand;
  *   2. otherwise the **oldest open non-tracking child** of the milestone,
  *      which is where a human working the milestone is already looking;
  *   3. otherwise **nowhere** — the caller logs one line and stops. Filing an
@@ -42,10 +44,8 @@ export type GhCommandFn = (args: string[]) => Promise<string>;
 export type MilestoneEscalationTarget =
   | {
     kind: "parent";
-    /** The milestone's parent planning issue. */
+    /** The milestone's parent planning issue, as it stands. */
     issue: number;
-    /** True when this escalation is what reopened it. */
-    reopened: boolean;
   }
   | {
     kind: "child";
@@ -89,7 +89,7 @@ export function decideMilestoneEscalationTarget(
 ): MilestoneEscalationTarget {
   const parent = candidates.parentIssue;
   if (parent !== null && Number.isInteger(parent) && parent > 0) {
-    return { kind: "parent", issue: parent, reopened: false };
+    return { kind: "parent", issue: parent };
   }
 
   let oldest: number | null = null;
@@ -124,34 +124,23 @@ export interface ResolveMilestoneEscalationTargetOptions {
   /** Fleet-identity inputs for the tracking-child exclusion (Issue #1246). */
   verification?: MilestoneTrackerVerification;
   /**
-   * Whether a closed parent is reopened to carry the post (default true).
-   *
-   * False for a notice that needs nobody (Issue #2214) — a sync that
-   * resolved its conflict itself: the comment lands on the closed issue as
-   * it stands, and no `needs-human` is applied.
-   */
-  reopenClosedParent?: boolean;
-  /**
-   * Whether the destination already carries this escalation (Issue #1786).
-   *
-   * Asked before the parent is reopened, so an escalation that has already
-   * gone out never reopens an issue a human has since closed.
+   * Whether the destination already carries this escalation (Issue #1786),
+   * so the same report is not posted every cycle.
    */
   alreadyEscalated?: (issueNumber: number) => Promise<boolean>;
 }
 
 /**
- * Resolve the destination of a milestone-sync escalation, reopening the
- * parent planning issue when it is the destination and is closed.
+ * Resolve the destination of a milestone-sync post.
  *
  * Best-effort by design: a lookup that fails degrades the answer rather than
- * failing the sync, and says so in the log instead of going quiet. The one
- * thing it never does is create an issue.
+ * failing the sync, and says so in the log instead of going quiet. Two things
+ * it never does: create an issue, and reopen or label one (Issue #2226) — a
+ * comment on a closed planning issue is a fine record, and the automatic
+ * ladder (the attempt budget, then the roll-back) is what acts on it.
  *
  * When `alreadyEscalated` answers true for the destination, the answer is
- * `already-escalated` and nothing is reopened (Issue #1786) — reopening an
- * issue a human closed, only to then post nothing, undoes their close with no
- * explanation.
+ * `already-escalated` and nothing is posted (Issue #1786).
  *
  * @param options - Repo, milestone, `gh` runner and log sink.
  * @returns The destination — parent, oldest open child, or none.
@@ -159,7 +148,7 @@ export interface ResolveMilestoneEscalationTargetOptions {
 export async function resolveMilestoneEscalationTarget(
   options: ResolveMilestoneEscalationTargetOptions,
 ): Promise<MilestoneEscalationTarget> {
-  const { repo, milestone, ghCommandFn, log } = options;
+  const { milestone } = options;
   const parentIssue = trackingIssueFromMilestoneTitle(milestone.title);
   const children = parentIssue === null ? await readOpenChildren(options) : [];
 
@@ -175,28 +164,6 @@ export async function resolveMilestoneEscalationTarget(
     return { kind: "already-escalated", issue: decision.issue };
   }
 
-  if (decision.kind !== "parent") return decision;
-
-  if (await isIssueClosed(repo, decision.issue, ghCommandFn, log)) {
-    if (options.reopenClosedParent === false) {
-      log(
-        `Issue #${decision.issue} in ${repo} is closed and stays closed — ` +
-          `the milestone sync notice for '${milestone.title}' needs nobody, ` +
-          `so it is posted there as it stands (Issue #2214).`,
-      );
-      return { ...decision, reopened: false };
-    }
-    return {
-      ...decision,
-      reopened: await reopenParentIssue(
-        repo,
-        decision.issue,
-        milestone,
-        ghCommandFn,
-        log,
-      ),
-    };
-  }
   return decision;
 }
 
@@ -239,95 +206,4 @@ async function readOpenChildren(
     return [];
   }
   return result.value;
-}
-
-/**
- * True when the issue is closed. An unreadable state answers `false`: the
- * escalation comment is attempted either way, and a needless reopen is a
- * worse outcome than a comment on an issue that was open all along.
- */
-async function isIssueClosed(
-  repo: string,
-  issueNumber: number,
-  ghCommandFn: GhCommandFn,
-  log: (message: string) => void,
-): Promise<boolean> {
-  try {
-    const out = await ghCommandFn([
-      "issue",
-      "view",
-      String(issueNumber),
-      "--repo",
-      repo,
-      "--json",
-      "state",
-      "--jq",
-      ".state",
-    ]);
-    return out.trim().toUpperCase() === "CLOSED";
-  } catch (err) {
-    log(
-      `Could not read the state of issue #${issueNumber} in ${repo} before ` +
-        `escalating a milestone sync: ${
-          err instanceof Error ? err.message : String(err)
-        } (Issue #1769).`,
-    );
-    return false;
-  }
-}
-
-/**
- * Reopen the parent planning issue so the escalation lands somewhere open.
- *
- * `needs-human` is added because the reopened issue is for a person to read;
- * no pickup label is ever added, so reopening cannot put the milestone's
- * planning back into the fleet's work queue. A label the repository does not
- * define is logged rather than swallowed, and never blocks the reopen.
- *
- * @returns True when the reopen succeeded, so the caller can say why the
- *   issue is open again in the escalation comment it is about to post.
- */
-async function reopenParentIssue(
-  repo: string,
-  issueNumber: number,
-  milestone: EscalationMilestone,
-  ghCommandFn: GhCommandFn,
-  log: (message: string) => void,
-): Promise<boolean> {
-  try {
-    await ghCommandFn(["issue", "reopen", String(issueNumber), "--repo", repo]);
-  } catch (err) {
-    log(
-      `Could not reopen issue #${issueNumber} in ${repo} to carry a ` +
-        `milestone sync escalation for '${milestone.title}': ${
-          err instanceof Error ? err.message : String(err)
-        } (Issue #1769). The escalation comment is still attempted.`,
-    );
-    return false;
-  }
-
-  log(
-    `Reopened issue #${issueNumber} in ${repo} to carry a milestone sync ` +
-      `escalation for '${milestone.title}' (Issue #1769).`,
-  );
-
-  try {
-    await ghCommandFn([
-      "issue",
-      "edit",
-      String(issueNumber),
-      "--repo",
-      repo,
-      "--add-label",
-      "needs-human",
-    ]);
-  } catch (err) {
-    log(
-      `Reopened issue #${issueNumber} in ${repo} but could not label it ` +
-        `needs-human: ${
-          err instanceof Error ? err.message : String(err)
-        } (Issue #1769).`,
-    );
-  }
-  return true;
 }

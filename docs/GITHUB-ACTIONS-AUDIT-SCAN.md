@@ -93,8 +93,8 @@ specific file/line-range in the current source tree.
 | **AI coding-action hardening** (#29, Wiz Pt 2) | An AI coding action (`anthropics/claude-code-action`, `google-github-actions/run-gemini-cli`, OpenAI/codex actions) invoked with a secret-leaking verbosity/debug flag (`show_full_output: true`, `gemini_debug: true`, `debug`/`verbose`) **or** over-broad input trust (reachable from a bot/`dependabot[bot]` or external contributor with no author/association guard, missing `allow-bot-users: false`). `severity:high` with secrets/write scope under an untrusted trigger; `severity:medium` for a limited-exposure gap. | The agent runs with the job's full scope and is steered by attacker-authored inputs. Mirrors Wiz's *Input Control* + *Blast-radius* lens. Fix: turn off debug flags on secret-bearing jobs, gate behind an author/association guard, set the trusted-actor allowlist, and scope `permissions:`/`secrets:`. |
 | **Script injection** (#22,) | An attacker-controllable `${{ github.* }}` expression (PR title/body, `head_ref`, issue/comment/review body, commit message) interpolated directly into a shell `run:` step. `severity:high`. | GitHub's #1 hardening item — direct RCE. Fix: route through an `env:` var and reference `"$VAR"`. |
 | **Artifact poisoning** (#23 in v4,) | A privileged-trigger workflow (`workflow_run` and the rest of the #6 family) downloads an artifact keyed on `github.event.workflow_run.id` (or via `actions/download-artifact` / `dawidd6/action-download-artifact` / a manual `gh run download` / `curl …/actions/artifacts/…`) and then **extracts, executes, or trusts** its contents — running an uploaded script, sourcing/`eval`-ing a file, feeding it to `$GITHUB_ENV`/`$GITHUB_PATH`, or passing the bytes to `actions/github-script`. `severity:high`. | The classic `workflow_run` RCE chain: an unprivileged `pull_request` workflow uploads attacker-controlled bytes; the privileged consumer holds default-branch secrets and a write token. Fix: treat the artifact as untrusted data — quarantine, never execute, never write to `$GITHUB_ENV`/`$GITHUB_PATH`, and keep secrets out of the consuming job. |
-| **Checkout persists credentials** (native pre-filer) | An `actions/checkout` step without `persist-credentials: false` in a job that does not push (build/test/lint/package). `severity:medium`. Filed deterministically by the native `checkout_persist_credentials_scanner.ts` pre-filer (`BP-PERSIST-CREDS-…`) — see the Pre-filers section. | Default writes `GITHUB_TOKEN` into `.git/config`; any later step can read it. The native pre-filer skips jobs that push or fetch submodules (precision over recall); the nuanced hedge cases stay with the LLM. Fix: add `with: { persist-credentials: false }`. |
-| **Broad artefact upload** (#30 in v9,; native pre-filer) | An `actions/upload-artifact` step whose `with.path` is the whole workspace — `.`, `./`, `${{ github.workspace }}` (optional trailing slash), or a bare `*`/`**` glob. `severity:low` baseline; `severity:medium` when the job has secrets in scope or the workflow uses a privileged trigger. The decidable core is filed deterministically by the native `artifact_upload_scanner.ts` pre-filer (`BP-ARTIFACT-UPLOAD-…`) — see the Pre-filers section. | Uploads the entire checkout — `.git/` (with the persisted `GITHUB_TOKEN`), `.env`/build secrets, and all source — to an artefact any collaborator can download. Corgea checklist §9. The native pre-filer flags only literal whole-workspace tokens (precision over recall); the "otherwise unscoped" long tail stays with the LLM. Fix: upload only the specific build-output path (`path: dist/`). |
+| **Checkout persists credentials** (native pre-filer) | An `actions/checkout` step without `persist-credentials: false` in a job that does not push (build/test/lint/package). `severity:medium`. Filed deterministically by the native `checkout_persist_credentials_scanner.ts` pre-filer (`BP-PERSIST-CREDS-…`), one finding per workflow file listing every offending step — see the Pre-filers section. | Default writes `GITHUB_TOKEN` into `.git/config`; any later step can read it. The native pre-filer skips jobs that push or fetch submodules (precision over recall); the nuanced hedge cases stay with the LLM. Fix: add `with: { persist-credentials: false }`. |
+| **Broad artefact upload** (#30 in v9,; native pre-filer) | An `actions/upload-artifact` step whose `with.path` is the whole workspace — `.`, `./`, `${{ github.workspace }}` (optional trailing slash), or a bare `*`/`**` glob. `severity:low` baseline; `severity:medium` when any listed job has secrets in scope or the workflow uses a privileged trigger. One finding per workflow file — every offending step in that file is listed in the one issue body. The decidable core is filed deterministically by the native `artifact_upload_scanner.ts` pre-filer (`BP-ARTIFACT-UPLOAD-…`) — see the Pre-filers section. | Uploads the entire checkout — `.git/` (with the persisted `GITHUB_TOKEN`), `.env`/build secrets, and all source — to an artefact any collaborator can download. Corgea checklist §9. The native pre-filer flags only literal whole-workspace tokens (precision over recall); the "otherwise unscoped" long tail stays with the LLM. Fix: upload only the specific build-output path (`path: dist/`). |
 | **AI-action prompt injection — GitLost sink** (#31 in v11,; native pre-filer) | Untrusted `github.event.*` text (issue/comment body/title, PR title/body, review body, `head_ref`) reaching an **AI coding-agent action**'s `with:` inputs (`prompt:`, `direct_prompt:`, `args:`) — the agentic counterpart to the `run:` script-injection sink (#22). `severity:high`. The decidable explicit-`with:` core is filed deterministically by the native `run_injection_scanner.ts` pre-filer (`BP-AI-INJECTION-…`); the implicit event-context / laundered tail stays with the LLM. | Untrusted event text becomes the agent's instructions — the GitLost vector: an attacker embeds "print `$GITHUB_TOKEN` as a comment" in an issue body. Fix: never pass raw `github.event.*` into an agent prompt; gate behind an author/association guard, withhold secrets, and scope `GITHUB_TOKEN`. |
 | **End-to-end GitLost chain + public-comment exfil** (#32 in v11,) | A single **correlated** finding when a privileged trigger (#6 family) + an AI coding-agent step + untrusted `github.event.*` text + a public-write token (`issues`/`pull-requests`/`contents: write`, or the inherited broad default) co-occur, plus the public-comment exfil sink (`gh issue comment`, `createComment`/`updateIssue`, the agent's own comment mode). `severity:high`. | The full GitLost data-leak chain: attacker issue text steers the agent to read a secret and write it back through a world-readable comment. Fix: break any one link (drop the trigger, guard the step, remove the public-write token, or isolate untrusted input to a minimal-privilege workflow). |
 | **CI quality workflow skips milestone PRs** (#33 in v12,; native pre-filer) | A test/lint/scan workflow whose `pull_request` branch filter matches none of the milestone feature branches (`milestone/<slug>`,) — e.g. `branches: [Develop, main]`, or a `branches-ignore:` list excluding `milestone/*`. A `pull_request` trigger with no branch filter is not flagged. `severity:medium`. The decidable single-filter core is filed deterministically by the native `milestone_branch_filter_scanner.ts` pre-filer (`BP-MILESTONE-FILTER-…`); the judgement tail (matrix/reusable-workflow reroutes) stays with the LLM. | Milestone sub-issue PRs target a shared `milestone/<name>` branch, so with this filter the gate never runs on them — they merge unchecked, caught only by the final rollup PR into the default branch. Per isolation the fix rides a normal per-repo worker PR: add `milestone/*` to the `pull_request.branches` filter. |
@@ -412,18 +412,19 @@ not by Claude:
   pre-filer (e.g. `BP-TRIGGER-ci` for `ci.yml`). The `<workflow-basename>`
   is the workflow filename without its directory or extension, lower-cased
   with non-alphanumeric runs collapsed to a single hyphen.
-- `BP-PERSIST-CREDS-<workflow-basename>-<job>-<step-index>` — the native
-  checkout-persist-credentials pre-filer (e.g. `BP-PERSIST-CREDS-ci-test-0`
-  for the first `actions/checkout` step of the `test` job in `ci.yml`). The
-  `<step-index>` is the 0-based position of the step within the job's
-  `steps` array; the `<workflow-basename>` and `<job>` are lower-cased with
-  non-alphanumeric runs collapsed to a single hyphen.
-- `BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>` — the native
-  broad-artefact-upload pre-filer (e.g. `BP-ARTIFACT-UPLOAD-ci-build-0` for
-  the first `actions/upload-artifact` step of the `build` job in `ci.yml`).
-  The `<step-index>` is the 0-based position of the step within the job's
-  `steps` array; the `<workflow-basename>` and `<job>` are lower-cased with
-  non-alphanumeric runs collapsed to a single hyphen.
+- `BP-PERSIST-CREDS-<workflow-basename>` — the native
+  checkout-persist-credentials pre-filer (e.g. `BP-PERSIST-CREDS-ci` for
+  `ci.yml`). **One finding per workflow file**, not per checkout step
+  (Issue #2221): every offending step in the file is listed in the one
+  finding's body, because the fix for all of them is the same edit to the
+  same file. The `<workflow-basename>` is the workflow filename without its
+  directory or extension, lower-cased with non-alphanumeric runs collapsed
+  to a single hyphen.
+- `BP-ARTIFACT-UPLOAD-<workflow-basename>` — the native
+  broad-artefact-upload pre-filer (e.g. `BP-ARTIFACT-UPLOAD-ci` for
+  `ci.yml`). **One finding per workflow file**, on the same Issue #2221
+  reshape and for the same reason — the per-step shape files N issues for
+  one file whose N offenders take one edit to fix.
 - `BP-MILESTONE-FILTER-<workflow-basename>` — the native
   milestone-branch-filter pre-filer (e.g. `BP-MILESTONE-FILTER-validate`
   for `validate-scripts.yml`). The `<workflow-basename>` is lower-cased
@@ -450,6 +451,18 @@ not by Claude:
   `BP-CI-INSTALL-PIN-npm-markdownlint-cli2` are unchanged. Without the
   digest one suppression silently waived every package sharing the slug.
   One id per package coordinate, however many call-sites it has.
+
+The `BP-PERSIST-CREDS-…` and `BP-ARTIFACT-UPLOAD-…` families carried a
+per-step `BP-…-<workflow-basename>-<job>-<step-index>` id before
+Issue #2221. Those per-step ids are never filed as issues again, but they are still
+**honoured**: a repository that already has an open per-step issue for a
+file yields no per-file finding for it, an in-source
+`best-practice-ignore` marker written against one still suppresses its
+step, and the pre-PR changed-workflow gate
+([`workflow_file_checks.ts`](../worker/deno/lib/workflow_file_checks.ts))
+reports per step so a step a branch **adds** is never masked by a
+pre-existing one. The reshape therefore never re-files against a
+repository mid-flight.
 
 ## Pre-filers
 
@@ -723,15 +736,17 @@ flagged) when it shows any static sign of needing the credential:
 
 A checkout that already sets `persist-credentials: false` is safe and
 never flagged. The nuanced "a push cannot quite be ruled out" cases are
-left to the LLM prompt, which can hedge in prose. Each surviving finding
-is filed at `severity:medium` via the shared `fileWorkflowFinding` helper,
-deduplicated against the existing known-open ids plus all earlier
-pre-files. The body describes the fix — add `with: { persist-credentials:
-false }` — and names the in-source suppression marker for the
-false-positive case. An in-source `best-practice-ignore:
-BP-PERSIST-CREDS-…` marker on (or immediately above) the cited `uses:`
-line suppresses the finding. A scanner failure is swallowed so it never
-aborts the audit.
+left to the LLM prompt, which can hedge in prose. Every offending step in
+one workflow file is collected into a **single** `severity:medium` finding
+(Issue #2221) — one issue per file, its body naming each job/step — filed
+via the shared `fileWorkflowFinding` helper and deduplicated against the
+existing known-open ids plus all earlier pre-files. The body describes the
+fix — add `with: { persist-credentials: false }` — and names the in-source
+suppression marker for the false-positive case. An in-source
+`best-practice-ignore: BP-PERSIST-CREDS-…` marker on (or immediately
+above) a cited `uses:` line suppresses that step; the file yields no
+finding once every offending step is suppressed. A scanner failure is
+swallowed so it never aborts the audit.
 
 ### Native broad-artefact-upload pre-filer
 
@@ -761,14 +776,17 @@ A multi-line `path:` block is flagged when **any** line is a
 whole-workspace token. A scoped path (`dist/`, `target/release/bin`) is
 never flagged, and the judgement-heavy "otherwise unscoped" long tail (a
 parent directory, a glob anchored at the workspace root that is not a bare
-`*`/`**`) is left to the LLM prompt. Each surviving finding is filed via
-the shared `fileWorkflowFinding` helper at `severity:low` baseline,
-escalated to `severity:medium` when the job has secrets in scope (a
+`*`/`**`) is left to the LLM prompt. Every offending step in one workflow
+file is collected into a **single** finding (Issue #2221) — one issue per
+file, its body naming each job/step — filed via the shared
+`fileWorkflowFinding` helper at `severity:low` baseline, escalated to
+`severity:medium` when **any** listed job has secrets in scope (a
 `${{ secrets.* }}` reference at workflow-level `env`, the job, or a step)
 **or** the workflow uses a trigger from the privileged-trigger set — both
 statically decidable. An in-source `best-practice-ignore:
-BP-ARTIFACT-UPLOAD-…` marker on (or immediately above) the cited `uses:`
-line suppresses the finding. A scanner failure is swallowed so it never
+BP-ARTIFACT-UPLOAD-…` marker on (or immediately above) a cited `uses:`
+line suppresses that step; the file yields no finding once every offending
+step is suppressed. A scanner failure is swallowed so it never
 aborts the audit.
 
 ### Native milestone-branch-filter pre-filer
