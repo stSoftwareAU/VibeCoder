@@ -105,6 +105,13 @@ export interface StorePruneDialect {
   volumeListArgs: readonly string[];
   volumeRemoveArgs: readonly string[];
   builderDeleteArgs: readonly string[];
+  /**
+   * How to stop the builder first (Issue #2262). Apple `container` refuses
+   * `builder delete` on a running builder ("not stopped, use --force"), and
+   * the builder is running after every launch that built the image — the
+   * only time it is big. Empty for a runtime whose delete needs no stop.
+   */
+  builderStopArgs?: readonly string[];
 }
 
 /** One prune request. */
@@ -393,6 +400,26 @@ export async function pruneContainerStore(
       deps.log(`${tag} ${detail}`);
       steps.push({ step: "builder", ok: true, removed: [], detail });
     } else {
+      // Issue #2262: stop first. A builder that is not running, or not
+      // there, is the state the delete wants; any other refusal is logged
+      // and the delete is still attempted, so the runtime's own answer is
+      // what the log carries.
+      const stopArgs = options.dialect.builderStopArgs ?? [];
+      if (stopArgs.length > 0) {
+        const stopped = await deps.runRuntime(stopArgs);
+        if (stopped.code !== 0) {
+          const why = firstLine(stopped.stderr) || firstLine(stopped.stdout) ||
+            "no output";
+          if (
+            !/not running|not found|no such|does not exist|already stopped|is stopped/i
+              .test(why)
+          ) {
+            deps.log(
+              `${tag} builder stop before delete exited ${stopped.code}: ${why}`,
+            );
+          }
+        }
+      }
       const result = await deps.runRuntime(options.dialect.builderDeleteArgs);
       if (result.code === 0) {
         // Issue #493: say what it reclaimed, not only the reading that

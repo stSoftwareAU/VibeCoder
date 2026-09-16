@@ -235,12 +235,46 @@ Deno.test("pruneContainerStore - deletes the builder when free space is below th
     dialect: APPLE,
     storePath: "/store",
   });
-  assertEquals(
-    calls.some((c) => c[0] === "builder" && c[1] === "delete"),
-    true,
-  );
+  // Issue #2262: the runtime refuses to delete a running builder, and the
+  // builder is running after every launch that built the image — so the
+  // stop comes first, then the delete.
+  const builderCalls = calls.filter((c) => c[0] === "builder").map((c) => c[1]);
+  assertEquals(builderCalls, ["stop", "delete"]);
   const builder = outcome.steps.find((s) => s.step === "builder")!;
   assertEquals(builder.removed, ["builder"]);
+});
+
+Deno.test("pruneContainerStore - a builder that is not running is still deleted, and the stop's answer is not a failure (Issue #2262)", async () => {
+  const { deps, calls, log } = makeDeps({
+    free: { availableBytes: 23 * GB, totalBytes: 460 * GB },
+    responses: (args) =>
+      args[0] === "builder" && args[1] === "stop"
+        ? { code: 1, stdout: "", stderr: "Error: builder is not running" }
+        : undefined,
+  });
+  const outcome = await pruneContainerStore(deps, {
+    dialect: APPLE,
+    storePath: "/store",
+  });
+  assertEquals(
+    calls.filter((c) => c[0] === "builder").map((c) => c[1]),
+    ["stop", "delete"],
+  );
+  assertEquals(outcome.steps.find((s) => s.step === "builder")!.removed, [
+    "builder",
+  ]);
+  assertEquals(
+    log.some((l) => l.includes("builder stop before delete")),
+    false,
+  );
+});
+
+Deno.test("pruneContainerStore - with room to spare the builder is neither stopped nor deleted (Issue #2262)", async () => {
+  const { deps, calls } = makeDeps({
+    free: { availableBytes: 200 * GB, totalBytes: 460 * GB },
+  });
+  await pruneContainerStore(deps, { dialect: APPLE, storePath: "/store" });
+  assertEquals(calls.some((c) => c[0] === "builder"), false);
 });
 
 Deno.test("pruneContainerStore - a runtime without a builder container skips that step", async () => {
