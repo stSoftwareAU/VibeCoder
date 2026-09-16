@@ -882,13 +882,20 @@ single final milestone PR.
   `maybeCreatePlanningMilestone()` takes those groups and creates **one
   milestone per group of two or more sub-issues** — `#<N> <area>: <short
   description>` — assigning each sub-issue to its own group's milestone only.
-  A group of one sub-issue gets no milestone and keeps the default branch as
-  its PR base. Why: a whole plan on one milestone branch serialises work that
+  A group of one sub-issue — or one whose `Milestone` cell is `—`, the table's
+  own way of saying "default branch" — gets no milestone and keeps the default
+  branch as its PR base. Why: a whole plan on one milestone branch serialises work that
   touches unrelated file areas; splitting by area lets the fleet run the
   streams in parallel without landing in merge hell. The four-milestone cap is
   the gate's rule and is deliberately not re-implemented in the helper — one
   rule, one place. With no groups the behaviour is unchanged: one milestone for
   the plan.
+- **Two rows on one file area share one milestone, and say so.** The gate
+  permits file overlap between groups (planner judgement), but the sanitised
+  area *is* the milestone's identity — so two such rows resolve to one
+  milestone and one branch. That collision is warned about by area before any
+  API call rather than reported as two independent streams: a partial outcome
+  dressed as success is exactly what the fail-loud rule forbids.
 - **A group's identity is its marker, never a shared prefix.** A grouped
   milestone's marker carries the sanitised area
   (`<!-- planning-milestone parent="N" area="infra" -->`) and a grouped lookup

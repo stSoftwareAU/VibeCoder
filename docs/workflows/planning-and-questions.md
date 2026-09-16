@@ -835,14 +835,24 @@ run overnight" workflow (see [milestones.md](milestones.md)).
   older, long-titled milestone (milestone #50 and its kind) is therefore found
   and reused **exactly as it is** — the worker never renames a milestone, so
   active milestone branches and in-flight work are untouched.
-- **A group never adopts a sibling's milestone.** A grouped milestone's marker
-  carries its area (`<!-- planning-milestone parent="N" area="infra" -->`), and
-  a grouped lookup stops at that marker and the exact title — it never falls
-  back to the shared leading `#<N>`, which every group of the same plan
-  carries. The legacy `#<N>` fallback runs on the **ungrouped** path only, and
-  skips any milestone whose description names an area. So re-running planning
-  reuses each group's own milestone, and neither path can pull a second group's
-  work onto one branch.
+- **A group never adopts another area's milestone.** A grouped milestone's
+  marker carries its area
+  (`<!-- planning-milestone parent="N" area="infra" -->`), and a grouped lookup
+  stops at that marker and the exact title — it never falls back to the shared
+  leading `#<N>`, which every group of the same plan carries. The legacy `#<N>`
+  fallback runs on the **ungrouped** path only, and skips any milestone whose
+  description names an area. So re-running planning reuses each group's own
+  milestone, and neither path can pull a differently-scoped group's work onto
+  one branch.
+- **Two rows on one file area share one milestone, loudly.** The gate
+  deliberately allows two groups to name the same area, and the area *is* the
+  milestone's identity — so those rows resolve to a single milestone and a
+  single branch. That is reported with a WARNING naming the areas rather than
+  passed off as two independent streams.
+- **A `—` milestone row never gets one.** A row whose `Milestone` cell is `—`
+  (or `none`) merges straight to the default branch whatever its size, exactly
+  as the table's own contract says — the worker does not invent a name the
+  planner declined to give.
 - **Non-fatal.** A milestone create/assign hiccup is logged and swallowed — it
   never aborts closing the planning issue.
 

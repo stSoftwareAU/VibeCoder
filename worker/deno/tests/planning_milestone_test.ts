@@ -945,3 +945,57 @@ Deno.test("maybeCreatePlanningMilestone — a sub-issue no group names is report
     true,
   );
 });
+
+Deno.test("maybeCreatePlanningMilestone — a `—` milestone row gets no milestone whatever its size", async () => {
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11, 12, 13],
+    groups: [
+      group("infra", "options trading", [10, 11]),
+      // `—` in the table's Milestone cell parses to "": the planner said this
+      // group merges straight to the default branch.
+      group("docs", "", [12, 13]),
+    ],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+
+  assertEquals(state.calls.filter((c) => c.includes("POST")).length, 1);
+  assertEquals(result.milestones?.[1]?.skippedReason, "no-milestone-row");
+  assertEquals(result.milestones?.[1]?.milestoneNumber, undefined);
+  const edits = state.calls.filter((c) => c[0] === "issue" && c[1] === "edit");
+  assertEquals(edits.map((c) => c[2]), ["10", "11"]);
+});
+
+Deno.test("maybeCreatePlanningMilestone — two groups on one file area are reported, not silently merged", async () => {
+  const warnings: string[] = [];
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [10, 11, 12, 13],
+    // The gate permits file overlap, so two rows can name one area — they then
+    // share a milestone and a branch, which must never pass unremarked.
+    groups: [
+      group("worker/deno", "first stream", [10, 11]),
+      group("worker deno", "second stream", [12, 13]),
+    ],
+    ghCommandFn: groupedGh(state),
+    logger: {
+      ...silentLogger,
+      warn: (message: string) => warnings.push(message),
+    },
+  });
+
+  assertEquals(
+    warnings.some((w) => w.includes("same file area more than once")),
+    true,
+  );
+  // Both groups still land on the one milestone the shared area resolves to.
+  assertEquals(result.milestones?.[0]?.milestoneNumber, 100);
+  assertEquals(result.milestones?.[1]?.milestoneNumber, 100);
+});

@@ -55,8 +55,10 @@ A planning run no longer produces at most one milestone. When the plan's
 structural gate, the worker creates **one milestone per group of two or more
 sub-issues**, titled `#<N> <area>: <short description>` (for example
 `#2163 infra: options trading`), and assigns each sub-issue to its own group's
-milestone only. A group of a single sub-issue gets **no** milestone and merges
-straight to the default branch. A plan may create at most **four** milestones.
+milestone only. A group of a single sub-issue — or one whose `Milestone` cell
+is `—` — gets **no** milestone and merges straight to the default branch. A
+plan may create at most **four** milestones. Two rows naming the same file area
+share one milestone, and the worker warns when that happens.
 
 Each is an ordinary milestone from this document's point of view: its own
 `milestone/<slug>` branch, its own one-PR-per-target-branch budget, its own

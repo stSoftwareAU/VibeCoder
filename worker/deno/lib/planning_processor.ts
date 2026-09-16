@@ -2394,15 +2394,29 @@ async function closePlanningIssue(
   });
   for (const milestone of planningMilestones.milestones ?? []) {
     if (milestone.milestoneNumber === undefined) {
-      logger.info(
-        "Milestone group: no milestone — this group merges straight to the default branch (Issue #2175)",
-        {
-          repo,
-          issueNumber,
-          area: milestone.area,
-          reason: milestone.skippedReason ?? "unknown",
-        },
-      );
+      const deliberate = milestone.skippedReason === "too-few-sub-issues" ||
+        milestone.skippedReason === "no-milestone-row";
+      // A deliberate skip and a GitHub failure are not the same outcome, so
+      // they are never reported with the same words or at the same level: a
+      // group that lost its milestone to an error must not read as a design
+      // decision.
+      const context = {
+        repo,
+        issueNumber,
+        area: milestone.area,
+        reason: milestone.skippedReason ?? "unknown",
+      };
+      if (deliberate) {
+        logger.info(
+          "Milestone group: no milestone — this group merges straight to the default branch (Issue #2175)",
+          context,
+        );
+      } else {
+        logger.warn(
+          "Milestone group: failed to create the group's milestone — its sub-issues keep the default branch (Issue #2175)",
+          context,
+        );
+      }
       continue;
     }
     logger.info(
