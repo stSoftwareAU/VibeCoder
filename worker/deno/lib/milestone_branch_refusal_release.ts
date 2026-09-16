@@ -19,6 +19,10 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 import { detectFailureCategory } from "./failure_diagnosis.ts";
 import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
 
@@ -45,6 +49,14 @@ export interface RefusalReleaseOptions {
   ghCommandFn: GhCommandFn;
   /** Cap on issues fetched per label. Defaults to 100. */
   limit?: number;
+  /**
+   * Fleet identity inputs for the failure-record author check. Omitted
+   * means "read the configured fleet identity", which is what every
+   * production caller does.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
+  /** Sink for the author-check warnings. Defaults to `console.warn`. */
+  log?: (message: string) => void;
 }
 
 /** What one sweep did. */
@@ -130,15 +142,38 @@ function parseLabelledIssues(raw: string): LabelledIssue[] {
   return out;
 }
 
-/** Parse `gh issue view --json comments` output, oldest first, or throw. */
-function parseCommentBodies(raw: string): string[] {
+/** One comment as read from `gh issue view --json comments`. */
+interface CommentRow {
+  /** Login of whoever wrote it — the only authenticated part of a comment. */
+  author?: string | null;
+  body: string;
+}
+
+/**
+ * Parse `gh issue view --json comments` output, oldest first, or throw.
+ *
+ * `author` is rendered as `{ login }` by `gh` and as a bare login by the
+ * worker's own `GitHubComment`, so both shapes are accepted — the same
+ * normalisation `idle_task_freshness.ts` does at its own comment read.
+ */
+function parseCommentRows(raw: string): CommentRow[] {
   const parsed = JSON.parse(raw) as { comments?: unknown };
   if (!Array.isArray(parsed?.comments)) {
     throw new Error("expected a 'comments' array");
   }
-  return parsed.comments
-    .map((c) => (c as { body?: unknown })?.body)
-    .filter((b): b is string => typeof b === "string");
+  const rows: CommentRow[] = [];
+  for (const entry of parsed.comments) {
+    const record = entry as { body?: unknown; author?: unknown };
+    if (typeof record?.body !== "string") continue;
+    const author = record.author;
+    const login = typeof author === "string"
+      ? author
+      : typeof (author as { login?: unknown })?.login === "string"
+      ? (author as { login: string }).login
+      : null;
+    rows.push({ author: login, body: record.body });
+  }
+  return rows;
 }
 
 /**
@@ -204,6 +239,7 @@ export async function releaseMilestoneBranchRefusalLabels(
     ghCommandFn,
     limit = 100,
   } = options;
+  const log = options.log ?? ((message: string) => console.warn(message));
   const labels = options.labels ?? {
     failedLabel: DEFAULT_LABEL_CONFIG.failedLabel,
     failedOnceLabel: DEFAULT_LABEL_CONFIG.failedOnceLabel,
@@ -281,7 +317,21 @@ export async function releaseMilestoneBranchRefusalLabels(
         "--json",
         "comments",
       ]);
-      bodies = parseCommentBodies(raw);
+      // Only the comment AUTHOR is authenticated: a failure record is
+      // plain Markdown anyone who can comment on the repository may write,
+      // and here a forged one REMOVES a `failed` label and puts the issue
+      // back in the queue. Filter every comment through the fleet identity
+      // before it is read as a record (the `alert_dedup_authors.ts`
+      // chokepoint). Fail direction: an unresolvable fleet set discards
+      // every comment, so no record is found and the label is kept.
+      const rows = await selectFleetAuthoredComments(
+        parseCommentRows(raw),
+        `milestone-branch refusal release ${repo}#${issueNumber}`,
+        options.authorOptions ?? {},
+        log,
+        "no failure record is recognised and the issue keeps its labels",
+      );
+      bodies = rows.map((row) => row.body);
     } catch (err) {
       outcome.errors.push(
         `reading comments on #${issueNumber}: ${

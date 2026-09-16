@@ -713,6 +713,7 @@ export async function selfHealMilestoneBranches(
             milestoneTitle: milestone.title,
             milestoneBranch,
             ghCommandFn,
+            log,
           });
           if (release.released.length > 0) {
             log(

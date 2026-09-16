@@ -212,10 +212,19 @@ Deno.test("refusalIsMostRecentFailure - the escalation comment counts as the ref
 // releaseMilestoneBranchRefusalLabels
 // ===========================================================================
 
+/** The fleet login the fake repository's failure records are written by. */
+const FLEET_AUTHOR = "VibeCoderST";
+
+/** Author options every direct sweep call states instead of a config file. */
+const FLEET = { fleetAuthors: [FLEET_AUTHOR] };
+
+/** A comment body, optionally with the login that wrote it. */
+type FakeComment = string | { body: string; author: string };
+
 interface FakeIssue {
   number: number;
   labels: string[];
-  comments: string[];
+  comments: FakeComment[];
 }
 
 /** Drive the sweep against an in-memory repository. */
@@ -237,7 +246,11 @@ function fakeGh(issues: FakeIssue[]) {
     if (args[1] === "view") {
       const issue = byNumber.get(Number(args[2]));
       return Promise.resolve(JSON.stringify({
-        comments: (issue?.comments ?? []).map((body) => ({ body })),
+        comments: (issue?.comments ?? []).map((c) =>
+          typeof c === "string"
+            ? { body: c, author: { login: FLEET_AUTHOR } }
+            : { body: c.body, author: { login: c.author } }
+        ),
       }));
     }
     if (args[1] === "edit") {
@@ -273,6 +286,7 @@ Deno.test("releaseMilestoneBranchRefusalLabels - releases the refusal's issues a
     milestoneTitle: MILESTONE,
     milestoneBranch: BRANCH,
     ghCommandFn: gh.fn,
+    authorOptions: FLEET,
   });
 
   assertEquals(outcome.alreadySwept, false);
@@ -302,6 +316,7 @@ Deno.test("releaseMilestoneBranchRefusalLabels - sweeps a branch once per run (I
     milestoneTitle: MILESTONE,
     milestoneBranch: BRANCH,
     ghCommandFn: gh.fn,
+    authorOptions: FLEET,
   });
   assertEquals(first.released, [123]);
 
@@ -311,6 +326,7 @@ Deno.test("releaseMilestoneBranchRefusalLabels - sweeps a branch once per run (I
     milestoneTitle: MILESTONE,
     milestoneBranch: BRANCH,
     ghCommandFn: gh.fn,
+    authorOptions: FLEET,
   });
   assertEquals(second.alreadySwept, true);
   assertEquals(second.released, []);
@@ -328,10 +344,63 @@ Deno.test("releaseMilestoneBranchRefusalLabels - a gh fault is reported, never s
     milestoneTitle: MILESTONE,
     milestoneBranch: BRANCH,
     ghCommandFn: fn,
+    authorOptions: FLEET,
   });
   assertEquals(outcome.released, []);
   assertEquals(outcome.errors.length, 2, outcome.errors.join(" | "));
   assertStringIncludes(outcome.errors[0] ?? "", "gh: 403");
+});
+
+Deno.test("releaseMilestoneBranchRefusalLabels - a refusal record written outside the fleet releases nothing (Issue #2220)", async () => {
+  // A failure record is plain Markdown, and on a public repository anyone who
+  // can comment may write one. Here a forged record REMOVES a `failed` label
+  // and puts the issue back in the queue, so the comment author — the only
+  // authenticated part of a comment — decides whether it is a record at all.
+  resetMilestoneBranchRefusalSweepsForTest();
+  const issues: FakeIssue[] = [
+    {
+      number: 200,
+      labels: ["failed"],
+      comments: [{ body: REFUSAL_COMMENT, author: "drive-by-account" }],
+    },
+  ];
+  const gh = fakeGh(issues);
+  const outcome = await releaseMilestoneBranchRefusalLabels({
+    repo: REPO,
+    milestoneTitle: MILESTONE,
+    milestoneBranch: BRANCH,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+  assertEquals(outcome.released, []);
+  assertEquals(outcome.retained, [200]);
+  assertEquals(gh.byNumber.get(200)?.labels, ["failed"]);
+});
+
+Deno.test("releaseMilestoneBranchRefusalLabels - an unresolvable fleet keeps every label (Issue #2220)", async () => {
+  // Fail direction: when the fleet identity cannot be resolved no comment can
+  // be attributed, so no record is recognised and nothing is released.
+  resetMilestoneBranchRefusalSweepsForTest();
+  const issues: FakeIssue[] = [
+    { number: 201, labels: ["failed-once"], comments: [REFUSAL_COMMENT] },
+  ];
+  const gh = fakeGh(issues);
+  const warnings: string[] = [];
+  const outcome = await releaseMilestoneBranchRefusalLabels({
+    repo: REPO,
+    milestoneTitle: MILESTONE,
+    milestoneBranch: BRANCH,
+    ghCommandFn: gh.fn,
+    authorOptions: { fleetAuthors: [] },
+    log: (message) => warnings.push(message),
+  });
+  assertEquals(outcome.released, []);
+  assertEquals(outcome.retained, [201]);
+  assertEquals(gh.byNumber.get(201)?.labels, ["failed-once"]);
+  assert(
+    warnings.some((w) => w.includes("fleet author set unresolved")),
+    "the unresolvable fleet is said out loud, never silent",
+  );
 });
 
 Deno.test("buildRefusalReleaseComment - names the branch and every label removed (Issue #2220)", () => {
@@ -407,7 +476,13 @@ Deno.test("setup phase - a successful milestone branch releases the refusal's si
       issueComments: "",
       githubUser: "vibe-worker",
       milestoneTitle: MILESTONE,
-      config: { ...buildDefaultWorkerConfig(), workDir },
+      // The sweep only trusts a failure record a fleet account wrote, so
+      // the phase's own config has to name the fleet (Issue #2220).
+      config: {
+        ...buildDefaultWorkerConfig(),
+        workDir,
+        fleetPrAuthors: [FLEET_AUTHOR],
+      },
     };
     const state: PhaseState = {
       branchName: "",

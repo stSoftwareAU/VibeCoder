@@ -409,6 +409,17 @@ export async function workOnIssueSetupBranch(
         failedOnceLabel: config.failedOnceLabel,
       },
       ghCommandFn: deps.github.runGhCommand,
+      // The fleet identity is resolved from the config this phase already
+      // holds rather than re-read from disk, as `label_clarification.ts`
+      // does — one notion of "the fleet", no second config read.
+      authorOptions: {
+        fleetAuthors: resolveFleetMaintenanceAuthorSet({
+          githubUser,
+          fleetPrAuthors: config.fleetPrAuthors,
+          serviceAccounts: config.serviceAccounts,
+        }),
+      },
+      log: (message) => logger.warn(message, { repo }),
     });
     if (release.released.length > 0) {
       logger.info(
