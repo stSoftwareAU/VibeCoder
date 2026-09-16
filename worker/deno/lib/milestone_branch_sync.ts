@@ -57,18 +57,21 @@ import {
 import { closeResolvedSyncDiagnostics } from "./milestone_sync_diagnostic_closeout.ts";
 import { closeLandedMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
 import {
+  clearSyncCursor,
   concludeConflictAttempt,
   type ConflictAttemptOutcome,
   type ConflictAttemptRecord,
   isConflictAttemptDue,
   isConflictBudgetExhausted,
   isRepeatedFailureReason,
+  loadSyncCursor,
   loadSyncStreaks,
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   openConflictAttempt,
   recordDefaultSha,
   resetConflictLedgerOnSuccess,
+  saveSyncCursor,
   saveSyncStreaks,
   type SyncStreakEntry,
   syncStreakKey,
@@ -276,6 +279,18 @@ export interface MilestoneBranchSyncDeps {
     result: "ok" | "skipped" | "failed";
   }) => Promise<boolean>;
   /**
+   * Path of the sync cursor file (Issue #2215). When set, a pass that stops
+   * for lack of budget records the repository it stopped at, and the next
+   * pass starts there; a completed pass clears it. Unset: every pass starts
+   * from the first repository.
+   */
+  cursorPath?: string;
+  /**
+   * Least handler budget (ms) a milestone sync is started with
+   * (Issue #2215). Default {@link MIN_MS_PER_MILESTONE_SYNC}.
+   */
+  minMsPerMilestoneSync?: number;
+  /**
    * Path of the per-branch failure-streak file (Issue #4260, proposal 2).
    * When set, a branch that fails to sync for
    * {@link MILESTONE_SYNC_ESCALATION_THRESHOLD} consecutive cycles gets a
@@ -345,6 +360,28 @@ export interface ConflictConclusion {
   reason: string;
   /** The rung that could not decide, when the failure was a conflict. */
   rung?: ConflictLadderRung;
+}
+
+/**
+ * Least handler budget a milestone sync is started with (Issue #2215): a
+ * fetch, a merge, the merged tree's own check and a push. Below it the pass
+ * stops cleanly, records where it stopped, and the next cycle resumes there
+ * — instead of the watchdog abandoning the handler mid-merge with nothing
+ * logged and the next pass starting over from the first repository.
+ */
+export const MIN_MS_PER_MILESTONE_SYNC = 3 * 60 * 1000;
+
+/**
+ * The repositories in pass order: from `startAt` round to the one before
+ * it (Issue #2215). A start the list does not carry leaves the order as is.
+ */
+export function rotateReposFrom(
+  repos: readonly string[],
+  startAt: string | undefined,
+): string[] {
+  const index = startAt === undefined ? -1 : repos.indexOf(startAt);
+  if (index <= 0) return [...repos];
+  return [...repos.slice(index), ...repos.slice(0, index)];
 }
 
 /**
@@ -1007,8 +1044,20 @@ export async function syncMilestoneBranches(
   // (Issue #1778). Spent by the first branch that actually conflicts while
   // holding it — a branch that merged cleanly asked nothing of the agent.
   let agentSpent = false;
+  // Issue #2215: resume where the previous pass stopped for lack of budget.
+  const cursor = deps.cursorPath ? await loadSyncCursor(deps.cursorPath) : null;
+  const orderedRepos = rotateReposFrom(repos, cursor?.repo);
+  if (cursor && orderedRepos[0] === cursor.repo && repos[0] !== cursor.repo) {
+    log(
+      `Milestone sync resumes from ${cursor.repo}, where the previous pass ` +
+        `stopped for lack of budget (Issue #2215)`,
+    );
+  }
+  const minMsPerMilestone = deps.minMsPerMilestoneSync ??
+    MIN_MS_PER_MILESTONE_SYNC;
+  let stoppedAt: { repo: string; milestoneBranch: string } | undefined;
 
-  for (const repo of repos) {
+  for (const repo of orderedRepos) {
     // Issue #2030: the lane runs beside the issue pool, so the clone is
     // leased for the whole repository pass and given back whatever happens.
     let lease: RepoLease | null | undefined;
@@ -1089,6 +1138,24 @@ export async function syncMilestoneBranches(
           );
           skipped++;
           continue;
+        }
+        // Issue #2215: a sync that cannot finish inside what the handler has
+        // left is not started — the pass stops here, the cursor records it,
+        // and the next cycle picks up at this repository.
+        if (
+          deps.deadlineEpochMs !== undefined &&
+          deps.deadlineEpochMs - now() < minMsPerMilestone
+        ) {
+          stoppedAt = { repo, milestoneBranch: milestone.milestoneBranch };
+          log(
+            `Milestone sync stopped before '${milestone.milestoneBranch}' in ` +
+              `${repo}: ${
+                Math.max(0, Math.round((deps.deadlineEpochMs - now()) / 1000))
+              }s of handler budget left, under the ${
+                Math.round(minMsPerMilestone / 1000)
+              }s a sync needs — resuming here next cycle (Issue #2215)`,
+          );
+          break;
         }
 
         // Verify the milestone branch exists on the remote. An EMPTY
@@ -1238,6 +1305,12 @@ export async function syncMilestoneBranches(
         // marker, a refused commit, a throw — leaves the grant spent rather
         // than handing a second branch a second run.
         if (agentAllowed) agentSpent = true;
+        // Issue #2215: named before it starts, so a slow merge or check is
+        // never a silent gap in the log.
+        log(
+          `Syncing milestone branch '${milestone.milestoneBranch}' in ${repo}` +
+            `${agentAllowed ? " (agent rung offered)" : ""}`,
+        );
 
         // Attempt sync
         let syncResult: Awaited<ReturnType<SyncBranchFn>>;
@@ -1511,11 +1584,35 @@ export async function syncMilestoneBranches(
           }
         }
       }
+      if (stoppedAt) break;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(`WARNING: Milestone branch sync failed for ${repo}: ${message}`);
     } finally {
       lease?.release();
+    }
+    if (stoppedAt) break;
+  }
+  if (deps.cursorPath) {
+    try {
+      if (stoppedAt) {
+        const unvisited = orderedRepos.length -
+          orderedRepos.indexOf(stoppedAt.repo) - 1;
+        await saveSyncCursor(deps.cursorPath, stoppedAt);
+        log(
+          `Milestone sync pass incomplete: stopped at ${stoppedAt.repo} with ` +
+            `${unvisited} repositor${unvisited === 1 ? "y" : "ies"} not ` +
+            `reached; the cursor resumes the next pass there (Issue #2215)`,
+        );
+      } else if (cursor) {
+        await clearSyncCursor(deps.cursorPath);
+      }
+    } catch (err) {
+      log(
+        `WARNING: Could not record the milestone sync cursor: ${
+          err instanceof Error ? err.message : String(err)
+        } (Issue #2215)`,
+      );
     }
   }
 
