@@ -16,6 +16,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { setupConfigEnv } from "./support/setup_config_env.ts";
 
 const setupPath = new URL("../../../setup.sh", import.meta.url).pathname;
 
@@ -44,7 +45,9 @@ async function captureSetupRunArgs(): Promise<string[]> {
 
     const cmd = new Deno.Command("bash", {
       args: ["-c", script],
-      env: { ARGS_FILE: argsFile, CONFIG_FILE: `${tmp}/.config.json` },
+      // Issue #2144: both spellings, so the host's own CONFIG_PATH cannot
+      // reach setup.sh and trip its "both set and different" guard.
+      env: { ARGS_FILE: argsFile, ...setupConfigEnv(`${tmp}/.config.json`) },
     });
     const { code } = await cmd.output();
     assertEquals(code, 0, "bash harness should exit cleanly");

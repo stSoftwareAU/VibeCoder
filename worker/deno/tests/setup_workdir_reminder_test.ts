@@ -21,6 +21,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { setupConfigEnv } from "./support/setup_config_env.ts";
 
 const setupPath = new URL("../../../setup.sh", import.meta.url).pathname;
 
@@ -55,7 +56,7 @@ async function remind(
     env: {
       PATH: `${stubDir}:/usr/bin:/bin`,
       HOME: tmp,
-      CONFIG_FILE: `${tmp}/.config.json`,
+      ...setupConfigEnv(`${tmp}/.config.json`),
     },
     stdin: "null",
   }).output();
@@ -218,7 +219,7 @@ Deno.test("remind_obsolete_host_work_dirs - honours an explicit WORK_DIR overrid
         PATH: `${stubDir}:/usr/bin:/bin`,
         HOME: tmp,
         WORK_DIR: `${tmp}/elsewhere`,
-        CONFIG_FILE: `${tmp}/.config.json`,
+        ...setupConfigEnv(`${tmp}/.config.json`),
       },
       stdin: "null",
     }).output();
@@ -339,7 +340,7 @@ Deno.test("remove_cache_only_host_work_dir - refuses an empty path, /, and HOME 
         env: {
           PATH: "/usr/bin:/bin",
           HOME: tmp,
-          CONFIG_FILE: `${tmp}/.config.json`,
+          ...setupConfigEnv(`${tmp}/.config.json`),
         },
         stdin: "null",
       }).output();
