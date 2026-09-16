@@ -144,14 +144,14 @@ End the draft with a `## Milestones` grouping — one line per group giving the 
 
 - **options trading: infra** — `infra/` — "Add the trading stack", "Wire the trading alarms"
 - **options trading: lambdas** — `lambdas/` — "Add the pricing handler"
-- **—** — `docs/` — "Document the trading runbook"
+- **—** — `pwa/` — "Add the trading screen"
 ```
 
 <examples>
 <example>
-<situation>A plan drafts five sub-issues: two adding CDK resources under `infra/`, two adding handlers under `lambdas/`, and one updating the operator runbook under `docs/`. The only file all three sets touch is `deno.json`, for a new import.</situation>
-<action>Draft three groups — `infra/`, `lambdas/` and `docs/` — and record them as two milestones plus a `—` row for the single docs sub-issue.</action>
-<reason>`deno.json` is housekeeping, so it is not a real collision. The two multi-sub-issue groups run as parallel milestones; the lone docs sub-issue merges straight to the default branch, so it takes no milestone and does not count towards the cap of 4.</reason>
+<situation>A plan drafts five sub-issues: two adding CDK resources under `infra/`, two adding handlers under `lambdas/`, and one adding the matching screen under `pwa/`. The only file all three sets touch is `deno.json`, for a new import.</situation>
+<action>Draft three groups — `infra/`, `lambdas/` and `pwa/` — and record them as two milestones plus a `—` row for the single `pwa/` sub-issue.</action>
+<reason>`deno.json` is housekeeping, so it is not a real collision. The two multi-sub-issue groups run as parallel milestones; the lone `pwa/` sub-issue merges straight to the default branch, so it takes no milestone and does not count towards the cap of 4.</reason>
 </example>
 
 <example>
