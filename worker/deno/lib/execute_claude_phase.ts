@@ -1314,6 +1314,18 @@ async function executeClaudePhaseBody(
         // layered in (Issue #2048); undefined keeps the active provider,
         // exactly as before.
         agentProvider: invocationAgentProvider,
+        // The checkout the agent works in (Issue #2159). Without it the
+        // runner's `mcpRequest && cwd` gate writes no MCP configuration at
+        // all, so this path would append the CodeGraph prompt line and
+        // silently drop the server that line tells the agent to call — and
+        // Issue #192's browser grant below was inert here for the same
+        // reason. Naming it states what the phase already assumes: every git
+        // call it makes runs against the process working directory, which is
+        // this checkout.
+        cwd: repoDir,
+        // The rate/usage-limit signal belongs on the work volume, never in
+        // the per-issue clone the `cwd` above now names (Issue #4315).
+        workDir,
         // Browser/network capability is granted on need, not by default
         // (Issue #192): only an issue that must produce screenshot evidence
         // gets the Playwright MCP server. A backend issue's agent has no

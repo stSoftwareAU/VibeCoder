@@ -111,6 +111,17 @@ export interface CodegraphRun {
    */
   mcpConfig(playwright?: boolean): boolean | AgentMcpServerRequest | undefined;
   /**
+   * The same decision as {@link mcpConfig}, spread-ready.
+   *
+   * A caller that passes no `mcpConfig` today must keep passing none, so an
+   * `undefined` answer has to become an *absent key* rather than a present
+   * one — spreading `{}` is the only way to say that. Written here so the
+   * omission rule has one implementation instead of one per call site.
+   */
+  mcpConfigOption(
+    playwright?: boolean,
+  ): { mcpConfig?: boolean | AgentMcpServerRequest };
+  /**
    * Fold one completed invocation's stats into the result.
    *
    * Called once per invocation, so a path that makes several (planning) sums
@@ -138,22 +149,17 @@ export async function prepareCodegraphRun(
   // Resolved only when the switch is on: an off host must spend nothing, and
   // `prepareCodegraphContext` short-circuits before it reads the id anyway.
   let providerId = "";
-  if (enabled) {
-    try {
-      providerId = selectAgentProvider(
-        options.agentProvider,
-        options.env ? { env: options.env } : {},
-      ).id;
-    } catch (err) {
-      logger.warn(
-        `${CODEGRAPH_UNAVAILABLE_MARKER} the run's agent provider could not ` +
-          `be resolved: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return buildRun({ status: "failed", enabled: true }, providerId, logger);
-    }
+  let result: CodegraphContextResult;
+  if (enabled && (providerId = resolveProviderId(options, logger)) === "") {
+    // A provider that cannot be resolved is a recorded outcome, never a
+    // silent skip: the status line below still names it `failed`, which is
+    // what the trial's figure reader looks for.
+    result = { status: "failed", enabled: true };
+  } else {
+    result = await prepare({ repoDir, enabled, providerId, logger });
   }
 
-  const result = await prepare({ repoDir, enabled, providerId, logger });
+  // Exactly one status line per run, on every path through this function.
   logger.info(describeOutcome(result), {
     codegraphStatus: result.status,
     ...(result.indexSeconds === undefined
@@ -165,6 +171,32 @@ export async function prepareCodegraphRun(
       : { relationships: result.relationshipCount }),
   });
   return buildRun(result, providerId, logger);
+}
+
+/**
+ * The provider id this run will use, or `""` when it could not be resolved.
+ *
+ * `selectAgentProvider` throws on an unregistered id and on a provider the
+ * running image did not install. Caught here so losing the index cannot fail
+ * the run: the fault is logged with the usual marker, and the agent
+ * invocation that follows raises the real provider error on its own.
+ */
+function resolveProviderId(
+  options: PrepareCodegraphRunOptions,
+  logger: CodegraphRunLogger,
+): string {
+  try {
+    return selectAgentProvider(
+      options.agentProvider,
+      options.env ? { env: options.env } : {},
+    ).id;
+  } catch (err) {
+    logger.warn(
+      `${CODEGRAPH_UNAVAILABLE_MARKER} the run's agent provider could not ` +
+        `be resolved: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return "";
+  }
 }
 
 /** The one status line a run logs, naming the status and whatever figures. */
@@ -190,17 +222,24 @@ function buildRun(
   logger: CodegraphRunLogger,
 ): CodegraphRun {
   const wired = result.status === "ok";
+  const mcpConfig = (
+    playwright?: boolean,
+  ): boolean | AgentMcpServerRequest | undefined =>
+    wired
+      ? {
+        playwright: playwright === true,
+        servers: { codegraph: codegraphMcpServer() },
+      }
+      : playwright;
   return {
     result,
     applyPrompt: (prompt: string) =>
       wired ? `${prompt}\n\n${CODEGRAPH_PROMPT_LINE}` : prompt,
-    mcpConfig: (playwright?: boolean) =>
-      wired
-        ? {
-          playwright: playwright === true,
-          servers: { codegraph: codegraphMcpServer() },
-        }
-        : playwright,
+    mcpConfig,
+    mcpConfigOption: (playwright?: boolean) => {
+      const request = mcpConfig(playwright);
+      return request === undefined ? {} : { mcpConfig: request };
+    },
     record: (stats?: CodegraphInvocationStats) => {
       const queries = countCodegraphQueries(stats?.toolCallCounts);
       if (queries !== undefined) {

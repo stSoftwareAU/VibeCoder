@@ -170,6 +170,9 @@ Deno.test("prepareCodegraphRun - a provider that differs is reported, not correc
     repoDir: "/tmp/checkout",
     enabled: true,
     agentProvider: "claude",
+    // Named rather than read from the process: this host's image stamp
+    // happens to install Claude, and the test must not depend on that.
+    env: () => undefined,
     logger,
     prepare: preparer.prepare,
   });
@@ -192,6 +195,7 @@ Deno.test("prepareCodegraphRun - an unresolvable provider fails the index, not t
     repoDir: "/tmp/checkout",
     enabled: true,
     agentProvider: "not-a-registered-provider",
+    env: () => undefined,
     logger,
     prepare: preparer.prepare,
   });
@@ -203,5 +207,11 @@ Deno.test("prepareCodegraphRun - an unresolvable provider fails the index, not t
   assert(
     logger.lines.some((l) => l.message.includes("[CODEGRAPH_UNAVAILABLE]")),
     "the fault must be logged loudly",
+  );
+  assert(
+    logger.lines.some((l) =>
+      l.message.includes("CodeGraph context: status=failed")
+    ),
+    "one status line is logged per run, on every path",
   );
 });

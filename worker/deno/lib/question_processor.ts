@@ -387,7 +387,6 @@ async function _processQuestionWithHeartbeat(
     prepare: deps.claude.prepareCodegraphContext,
   });
   carrier.codegraphContext = codegraph.result;
-  const codegraphMcp = codegraph.mcpConfig();
 
   // Execute Claude with question timeout
   const claudeResult = await deps.claude.runClaudeWithRetry(
@@ -403,7 +402,7 @@ async function _processQuestionWithHeartbeat(
       logger,
       // Absent unless the index built, so a switched-off run writes no MCP
       // configuration at all — exactly as before.
-      ...(codegraphMcp === undefined ? {} : { mcpConfig: codegraphMcp }),
+      ...codegraph.mcpConfigOption(),
     },
     {
       maxRetries: config.maxRateLimitRetries,

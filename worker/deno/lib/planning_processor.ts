@@ -1247,12 +1247,12 @@ export async function processIssuePlanning(
   let runOutcome: RunOutcome | undefined;
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every one of them carries it (Issue #2159).
-  const carrier: { codegraphContext?: CodegraphContextResult } = {};
+  const codegraphCarrier: { codegraphContext?: CodegraphContextResult } = {};
   try {
     const result = await _processPlanningWithHeartbeat(
       ctx,
       processorDeps,
-      carrier,
+      codegraphCarrier,
     );
     runOutcome = outcomeForNonCodingResult(
       "planning",
@@ -1260,10 +1260,13 @@ export async function processIssuePlanning(
       (Date.now() - runStartedAtMs) / 1000,
       "planning round posted — sub-issues created",
     );
-    return result.ok && carrier.codegraphContext
+    return result.ok && codegraphCarrier.codegraphContext
       ? {
         ok: true,
-        value: { ...result.value, codegraphContext: carrier.codegraphContext },
+        value: {
+          ...result.value,
+          codegraphContext: codegraphCarrier.codegraphContext,
+        },
       }
       : result;
   } catch (err) {
@@ -1285,7 +1288,7 @@ export async function processIssuePlanning(
 async function _processPlanningWithHeartbeat(
   ctx: IssueContext,
   processorDeps: PlanningProcessorDeps,
-  carrier: { codegraphContext?: CodegraphContextResult },
+  codegraphCarrier: { codegraphContext?: CodegraphContextResult },
 ): Promise<Result<PlanningResult>> {
   const env = processorDeps.env ?? processEnvLookup;
   const {
@@ -1496,12 +1499,9 @@ async function _processPlanningWithHeartbeat(
     logger,
     prepare: deps.claude.prepareCodegraphContext,
   });
-  carrier.codegraphContext = codegraph.result;
-  const codegraphMcp = codegraph.mcpConfig();
+  codegraphCarrier.codegraphContext = codegraph.result;
   /** The `mcpConfig` every planning invocation gets: absent unless indexed. */
-  const codegraphMcpOption = codegraphMcp === undefined
-    ? {}
-    : { mcpConfig: codegraphMcp };
+  const codegraphMcpOption = codegraph.mcpConfigOption();
 
   // --- Turn 1: draft the plan as text only ---
   const draftResult = await deps.claude.runClaudeWithRetry(
@@ -2057,10 +2057,7 @@ async function closePlanningIssue(
    */
   codegraph?: CodegraphRun,
 ): Promise<Result<PlanningResult>> {
-  const codegraphMcp = codegraph?.mcpConfig();
-  const codegraphMcpOption = codegraphMcp === undefined
-    ? {}
-    : { mcpConfig: codegraphMcp };
+  const codegraphMcpOption = codegraph?.mcpConfigOption() ?? {};
   // Sub-issue numbers the run created — resolved once and reused below.
   // Issue #2900: union the text-extracted URLs with the parent's *native*
   // GitHub sub-issues. Text extraction is fragile — when Claude printed the

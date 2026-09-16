@@ -52,6 +52,15 @@ server without the line leaves an indexed repository the agent never queries.
 Either half alone is a defect the trial's figures would silently absorb, which
 is why the pair is decided here rather than at each of the four call sites.
 
+## The caller contract this module cannot enforce
+
+`mcpConfig` names a request; the runner decides whether to honour it. A call
+site that passes a request but no `cwd` gets no MCP configuration written at
+all (`claude_runner.ts`, the `mcpRequest && cwd` gate), which would append the
+prompt line and drop the server it names — the pair invariant broken from
+outside this module. Each of the four wired call sites therefore passes the
+checkout as `cwd`, and the issue-path suite asserts it.
+
 ## Verdict
 
 **Swept, no findings.** The module is pure decision-making over values the

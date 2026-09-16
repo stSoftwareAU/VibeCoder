@@ -497,6 +497,14 @@ async function executeClaudeBody(
     logger,
     prepare: deps.claude.prepareCodegraphContext,
   });
+  // The #1550 infrastructure retry re-enters this body, which prepares a
+  // second time (a cheap `sync` — `.codegraph/` survives). The earlier
+  // attempt's queries were still made and still cost tokens, so they are
+  // carried forward rather than replaced.
+  const priorQueries = state.codegraphContext?.queries;
+  if (priorQueries !== undefined) {
+    codegraph.result.queries = (codegraph.result.queries ?? 0) + priorQueries;
+  }
   state.codegraphContext = codegraph.result;
   // Appended to the built prompt rather than written into the template, for
   // the same reason as the prior-progress note above: it is run-conditional,

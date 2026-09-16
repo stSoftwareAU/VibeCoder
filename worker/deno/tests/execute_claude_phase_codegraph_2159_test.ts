@@ -194,6 +194,22 @@ Deno.test("execute_claude_phase - a failed index adds neither half and never fai
   }
 });
 
+Deno.test("execute_claude_phase - the run names the checkout, so the MCP request is honoured", async () => {
+  // Without a `cwd` the runner's `mcpRequest && cwd` gate writes no MCP
+  // configuration, so the phase would append the prompt line and silently
+  // drop the server it names — one half of the pair without the other.
+  const observed: Observed = { prepared: [] };
+  await runExecuteClaudePhase(
+    options({ codegraphContextEnabled: true }),
+    createDeps(observed, { status: "ok", enabled: true }),
+  );
+
+  assertEquals(observed.runOptions?.cwd, "/tmp/codegraph-2159-work/repo");
+  assertEquals(observed.runOptions?.cwd, observed.prepared[0]?.repoDir);
+  // The work volume stays the rate-limit signal's home (Issue #4315).
+  assertEquals(observed.runOptions?.workDir, "/tmp/codegraph-2159-work");
+});
+
 Deno.test("execute_claude_phase - a screenshot run keeps its browser grant beside the index", async () => {
   const observed: Observed = { prepared: [] };
   await runExecuteClaudePhase(
