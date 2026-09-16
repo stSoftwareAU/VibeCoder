@@ -2036,6 +2036,145 @@ Deno.test("run.sh - a host below its floor resets the work volume before the bui
   }
 });
 
+Deno.test("run.sh - a trim-refused host within its volume's own size of the floor resets it before the build (Issue #2253)", async () => {
+  // GRQ-23 16:50Z: 430 MB above the floor with a 22 GB image over 6 GB of
+  // live data; the pool drained minutes later and the cycle was lost.
+  const floorKb = 15 * 1024 * 1024;
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: "Error: failed to build",
+    // 32 MB above the floor, under the 64 MB the image holds.
+    STUB_DF_AVAIL_KB: String(floorKb + 32 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+    // The previous launch's own reading: this runtime refused the trim.
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    await Deno.writeTextFile(
+      `${harness.logDir}/host-disk.json`,
+      JSON.stringify({
+        availableBytes: 1,
+        totalBytes: 2,
+        measuredAt: 0,
+        path: store,
+        workVolumeTrimRefused: true,
+      }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "the stubbed build must still fail");
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, `pre-build reset of ${WORK_VOLUME_NAME}`);
+    assertStringIncludes(log, "is within 64 MB of the claiming");
+    assertStringIncludes(log, "Issue #2253");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the same margin on a runtime that honours the trim resets nothing (Issue #2253)", async () => {
+  const floorKb = 15 * 1024 * 1024;
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: "Error: failed to build",
+    STUB_DF_AVAIL_KB: String(floorKb + 32 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    await Deno.writeTextFile(
+      `${harness.logDir}/host-disk.json`,
+      JSON.stringify({
+        availableBytes: 1,
+        totalBytes: 2,
+        measuredAt: 0,
+        path: store,
+        workVolumeTrimRefused: false,
+      }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "the stubbed build must still fail");
+    assertEquals(await removedVolumes(harness), []);
+    assertEquals(
+      (await runCoreLog(harness)).includes("pre-build reset"),
+      false,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a trim-refused host clear of the floor by more than its volume holds resets nothing (Issue #2253)", async () => {
+  const floorKb = 15 * 1024 * 1024;
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: "Error: failed to build",
+    // 256 MB above the floor: more than the 64 MB image could allocate again.
+    STUB_DF_AVAIL_KB: String(floorKb + 256 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+    await Deno.mkdir(harness.logDir, { recursive: true });
+    await Deno.writeTextFile(
+      `${harness.logDir}/host-disk.json`,
+      JSON.stringify({
+        availableBytes: 1,
+        totalBytes: 2,
+        measuredAt: 0,
+        path: store,
+        workVolumeTrimRefused: true,
+      }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "the stubbed build must still fail");
+    assertEquals(await removedVolumes(harness), []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - above its floor nothing is reset before the build (Issue #2092)", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "1",
