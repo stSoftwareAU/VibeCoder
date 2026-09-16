@@ -1042,7 +1042,7 @@ export async function runClaudeWithTimeout(
   const mcpRequest: AgentMcpServerRequest | undefined =
     options.mcpConfig === true
       ? {}
-      : typeof options.mcpConfig === "object" && options.mcpConfig !== null
+      : typeof options.mcpConfig === "object"
       ? options.mcpConfig
       : undefined;
   const mcpConfigPath = mcpRequest && cwd

@@ -153,6 +153,30 @@ export function defaultMcpConfigDir(
 }
 
 /**
+ * The `mcpServers` map from the generated Playwright configuration.
+ *
+ * A shape carrying no entries is a fault, not an empty map (Issue #2156):
+ * coalescing it away would write a config holding the additional servers and
+ * no browser entry for a run that asked for the browser — a requested
+ * capability dropped silently.
+ *
+ * @param generated - The JSON {@link generateMcpConfig} produced
+ * @returns The server map to merge the additional servers over
+ * @throws Error when the JSON carries no non-empty `mcpServers` map
+ */
+function playwrightServers(generated: string): Record<string, unknown> {
+  const servers = (JSON.parse(generated) as {
+    mcpServers?: Record<string, unknown>;
+  }).mcpServers;
+  if (!servers || Object.keys(servers).length === 0) {
+    throw new Error(
+      "the generated Playwright configuration carries no mcpServers entry",
+    );
+  }
+  return servers;
+}
+
+/**
  * Build the MCP server configuration for a run and write it beside the other
  * worker cache files. Returns the file path, or undefined when no server was
  * requested or the config could not be produced (logged, never thrown).
@@ -203,27 +227,19 @@ export async function ensureAgentMcpConfig(
     return undefined;
   }
   try {
-    const playwrightContent = withPlaywright
-      ? generate(options.cwd, screenshotDir)
-      : undefined;
-    // Playwright alone is written verbatim, so the file a browser run gets is
-    // byte-for-byte what it got before Issue #2156.
-    const content = playwrightContent !== undefined && extraNames.length === 0
-      ? playwrightContent
-      : JSON.stringify(
-        {
-          mcpServers: {
-            ...(playwrightContent === undefined
-              ? {}
-              : (JSON.parse(playwrightContent) as {
-                mcpServers?: Record<string, unknown>;
-              }).mcpServers ?? {}),
-            ...extra,
-          },
-        },
+    let content: string;
+    if (!withPlaywright) {
+      content = JSON.stringify({ mcpServers: { ...extra } }, null, 2);
+    } else {
+      const generated = generate(options.cwd, screenshotDir);
+      // Playwright alone is written verbatim, so the file a browser run gets
+      // is byte-for-byte what it got before Issue #2156.
+      content = extraNames.length === 0 ? generated : JSON.stringify(
+        { mcpServers: { ...playwrightServers(generated), ...extra } },
         null,
         2,
       );
+    }
     const dir = options.configDir ?? defaultMcpConfigDir({
       ...(options.workDir ? { workDir: options.workDir } : {}),
       ...(options.env ? { env: options.env } : {}),

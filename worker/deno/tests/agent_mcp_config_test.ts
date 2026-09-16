@@ -351,3 +351,29 @@ Deno.test("agent mcp config - requesting no server at all writes nothing and say
     logs.join(),
   );
 });
+
+Deno.test("agent mcp config - a browser request the generator cannot satisfy fails loud rather than writing a browserless config (Issue #2156)", async () => {
+  const logs: string[] = [];
+  const written: string[] = [];
+  const path = await ensureAgentMcpConfig({
+    cwd: "/w/repo",
+    configDir: "/should-not-be-used",
+    servers: { codegraph: codegraphMcpServer() },
+    // A generated shape with no server map: the browser the caller asked for
+    // must not be dropped into a config carrying only the extra server.
+    generate: () => JSON.stringify({ mcpServers: {} }),
+    writeFile: (p) => {
+      written.push(p);
+      return Promise.resolve();
+    },
+    log: (m) => {
+      logs.push(m);
+    },
+  });
+  assertEquals(path, undefined);
+  assertEquals(written, []);
+  assert(
+    logs.some((l) => l.includes("no mcpServers entry")),
+    logs.join(),
+  );
+});
