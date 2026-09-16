@@ -68,6 +68,6 @@ if [[ -n "$DENO_CMD" ]] && [[ -f "$SCRIPT_DIR/worker/deno/quality.ts" ]]; then
         ${SEQUENTIAL_ARG[@]+"${SEQUENTIAL_ARG[@]}"}
 else
     echo "ERROR: Deno is required but not installed"
-    echo "Install with: curl -fsSL https://deno.land/install.sh | sh"
+    echo "Install the pinned, checksum-verified build with: ./infra/host/install-deno.sh (Linux) — or see https://deno.com/"
     exit 1
 fi

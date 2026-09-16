@@ -585,12 +585,76 @@ flowchart TD
     D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
 ```
 
+#### 🗺️ Milestones table and structural gate (Issue #2172)
+
+A planning run groups its sub-issues by **file area** so the fleet can work
+several milestones in parallel instead of serialising one milestone branch
+(Issue #2163). The publish turn records that grouping as a `## Milestones`
+table in the same summary comment as the coverage table — one row per group,
+naming the milestone, the file area and the group's sub-issues:
+
+```markdown
+## Milestones
+
+| Milestone | File area | Sub-issues |
+| --- | --- | --- |
+| infra: options trading | infra/ | #101, #102 |
+| backend: options trading | backend/lambdas | #103, #104 |
+| — | docs/ | #105 |
+```
+
+A `—` in `Milestone` marks a group of one sub-issue that merges **straight to
+the default branch** and gets no milestone at all, exactly as a
+single-sub-issue plan does today.
+
+**The gate.** `worker/deno/lib/plan_milestone_groups.ts` re-reads the parent at
+`closePlanningIssue()` — the same chokepoint as the coverage gate, never a
+second one — and locates the table by its **column signature** (a milestone
+column, a file-area column and a sub-issues column), so the adjacent
+`## Plan Coverage` table is skipped rather than parsed as this one. It rules on
+**structure only**:
+
+| Rejected | Never rejected |
+| --- | --- |
+| a published sub-issue in no group, or in two groups | two groups touching the same file area |
+| a group naming no file area | the file areas the planner chose |
+| a fifth group carrying two or more sub-issues | any number of `—` single-sub-issue rows |
+
+File overlap is deliberately left to planner judgement: a structural gate
+cannot tell an accepted housekeeping overlap (`deno.json`, a lockfile) from a
+real collision, so it would reject sound plans.
+
+**What happens on each outcome.** A parent with **no** `## Milestones` table
+takes the legacy path — one milestone for the whole plan — and closes exactly
+as before; the prompts teach the table ([#2174](#-grouping-sub-issues-by-file-area-issue-2174))
+but a degraded run or an operator's own planning template may publish none, and
+a missing table must never strand a planning run. A table that is present but
+**structurally broken** escalates through the shared `escalateToHuman()`
+chokepoint (`needs-human` plus a paired comment naming every offending row)
+**and** still creates the legacy single milestone, so overnight delivery
+continues while a human regroups. Both in-code fallback publish prompts
+interpolate the same `MILESTONES_TABLE_REQUIREMENT` constant that lives beside
+the gate, so a degraded run does not publish a table the gate is bound to
+reject. An **accepted** grouping is handed to `maybeCreatePlanningMilestone()`,
+which creates one milestone per group of two or more sub-issues (Issue #2175 —
+see [Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)).
+
+```mermaid
+flowchart TD
+    A["closePlanningIssue() — 2+ sub-issues published,<br/>parent owns no milestone"] --> B{"## Milestones table found?"}
+    B -->|no| L["Legacy path: one milestone for the plan<br/>close the parent"]
+    B -->|yes| C{"Every sub-issue in exactly one group,<br/>every group names a file area,<br/>at most 4 multi-sub-issue groups?"}
+    C -->|yes| D["Grouping accepted:<br/>one milestone per group of 2+ sub-issues"]
+    C -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each offending row"]
+    E --> L
+```
+
 #### 🔐 Every close-out signal is author-verified (Issue #1244)
 
-Four reads decide whether a planning parent may be closed, and all four used to
-read text **any GitHub account can write** without asking who wrote it. The
-author is the only part of a match GitHub authenticates, so each is now filtered
-through the fleet author check (`selectFleetAuthoredMatches` /
+Five reads decide whether a planning parent may be closed, and every one of
+them reads text **any GitHub account can write** — once without asking who
+wrote it. The author is the only part of a match GitHub authenticates, so each
+is now filtered through the fleet author check (`selectFleetAuthoredMatches` /
 `selectFleetAuthoredComments`) against the fleet identity — this host's login ∪
 `fleet_pr_authors` ∪ `service_accounts`, never `allowed_authors` and never
 `--author @me`, which would break cross-host convergence:
@@ -601,6 +665,7 @@ through the fleet author check (`selectFleetAuthoredMatches` /
 | `listSubIssuesViaIssueList()` — `Part of #N` / `Parent: #N` / `Child of #N` in any body | the same close path, and it suppressed the #1219 retry | the same |
 | `fetchNothingToDoSignal()` — `Nothing to do —` in any comment | skip the carrier sub-issue, dropping real work | one comment |
 | `runPlanCoverageGate()` — first comment carrying a coverage table wins | pass the gate before the parent's own failing table is read | one comment with a two-column table |
+| `runMilestoneGroupsGate()` — first comment carrying a `## Milestones` table wins | how the plan's sub-issues are grouped into milestones | one comment with a three-column table |
 
 **The fail direction is always towards doing the work.** An unattributable match
 — including *every* match when the fleet identity cannot be resolved — is
@@ -735,6 +800,19 @@ auto-merges into a shared `milestone/<name>` branch, and the default branch is
 updated via a **single final PR** once all sub-issues close — the "review once /
 run overnight" workflow (see [milestones.md](milestones.md)).
 
+- **One milestone per file-area group.** When the publish turn posts a
+  `## Milestones` table grouping its sub-issues by file area and that table
+  passes the
+  [structural gate](#-milestones-table-and-structural-gate-issue-2172), the
+  worker creates **one milestone per group** that carries two or more
+  sub-issues, and assigns each sub-issue to its own group's milestone only.
+  Each is titled `#<N> <area>: <short description>` — for example
+  `#2163 infra: options trading` — so the fleet can work several milestones in
+  parallel instead of serialising a whole plan onto one branch. A group of a
+  **single** sub-issue gets no milestone at all: that sub-issue keeps the
+  default branch as its PR base. With no table — or a table the gate rejected —
+  the plan takes the legacy path below: one milestone for the whole plan. The
+  gate caps a plan at **four** milestones (groups of one do not count).
 - **Always on, no opt-out.** Detach the milestone manually in the rare case you
   do not want it.
 - **Single sub-issue → no milestone.** A plan that yields just one sub-issue is
@@ -758,6 +836,24 @@ run overnight" workflow (see [milestones.md](milestones.md)).
   older, long-titled milestone (milestone #50 and its kind) is therefore found
   and reused **exactly as it is** — the worker never renames a milestone, so
   active milestone branches and in-flight work are untouched.
+- **A group never adopts another area's milestone.** A grouped milestone's
+  marker carries its area
+  (`<!-- planning-milestone parent="N" area="infra" -->`), and a grouped lookup
+  stops at that marker and the exact title — it never falls back to the shared
+  leading `#<N>`, which every group of the same plan carries. The legacy `#<N>`
+  fallback runs on the **ungrouped** path only, and skips any milestone whose
+  description names an area. So re-running planning reuses each group's own
+  milestone, and neither path can pull a differently-scoped group's work onto
+  one branch.
+- **Two rows on one file area share one milestone, loudly.** The gate
+  deliberately allows two groups to name the same area, and the area *is* the
+  milestone's identity — so those rows resolve to a single milestone and a
+  single branch. That is reported with a WARNING naming the areas rather than
+  passed off as two independent streams.
+- **A `—` milestone row never gets one.** A row whose `Milestone` cell is `—`
+  (or `none`) merges straight to the default branch whatever its size, exactly
+  as the table's own contract says — the worker does not invent a name the
+  planner declined to give.
 - **Non-fatal.** A milestone create/assign hiccup is logged and swallowed — it
   never aborts closing the planning issue.
 
@@ -767,15 +863,90 @@ flowchart TD
     B -- Yes --> C[: sub-issues inherit it]
     B -- No --> D{N ≥ 2?}
     D -- No --> E[Single sub-issue — no milestone]
-    D -- Yes --> F[Auto-create '#N short description' milestone]
-    F --> G[Assign every sub-issue to it]
-    G --> H[Milestone-branch delivery: shared branch + one final PR]
+    D -- Yes --> G{"Sound '## Milestones' table?"}
+    G -- No --> F[Auto-create one '#N short description' milestone]
+    F --> I[Assign every sub-issue to it]
+    G -- Yes --> P[For each group in the table]
+    P --> S{"Group has 2+ sub-issues?"}
+    S -- No --> T[No milestone — default branch]
+    S -- Yes --> M["Auto-create '#N area: short description' milestone<br/>assign that group's sub-issues only"]
+    I --> H[Milestone-branch delivery: shared branch + one final PR]
+    M --> H
 ```
 
 Implementation: `worker/deno/lib/planning_milestone.ts`
-(`buildPlanningMilestoneTitle` for the name, `ensurePlanningMilestone` for the
-lookup/reuse), called from `closePlanningIssue` in
-`worker/deno/lib/planning_processor.ts`.
+(`buildPlanningMilestoneTitle` for the name, `planningMilestoneMarker` for the
+per-group identity, `ensurePlanningMilestone` for the lookup/reuse), called
+from `closePlanningIssue` in `worker/deno/lib/planning_processor.ts`, which
+passes it the groups `runMilestoneGroupsGate`
+(`worker/deno/lib/plan_milestone_groups.ts`) accepted.
+
+#### 🧩 Grouping sub-issues by file area (Issue #2174)
+
+One milestone for the whole plan serialises delivery. The planning prompts
+therefore group the plan by **file area** — the top-level directory or
+subsystem each sub-issue touches — so groups that cannot collide are delivered
+as parallel milestones. The grouping is **planner judgement**; the structural
+gate above ([Milestones table and structural
+gate](#-milestones-table-and-structural-gate-issue-2172)) only checks the shape
+of what was published.
+
+The draft prompt (`prompts/planning/prompt.md`) carries the rule:
+
+- **Every sub-issue names its area** — a `File area:` line in its `## Context`,
+  beside `Covers ask:`, taken from the files the planner actually read.
+- **Split when the groups share only housekeeping files** — `deno.json`,
+  `Cargo.toml`, `*.lock`, `CHANGELOG.md`, `README.md`, plus **at most one**
+  further file the planner names explicitly, with its reason, in the sub-issue
+  body. A shared housekeeping file is not a collision.
+- **Merge when they share real work** — two groups that would edit the same
+  **source or test** file are one group. A plan whose groups all merge is a
+  single milestone, exactly the behaviour before grouping existed.
+- **Shared work becomes a foundation group** — drafted first, with each
+  dependant recording `Depends on: <working title>` as usual. Those links are
+  the cross-milestone dependency hold: a dependant in another group waits until
+  the foundation sub-issue closes, so keep foundation groups small.
+- **At most 4 milestones** — a group of one sub-issue takes no milestone
+  (written `—`), merges straight to the default branch, and does not count
+  towards the cap.
+- **No grouping when the parent owns a milestone** — every sub-issue inherits
+  it via `--milestone`, so there is nothing to group.
+
+The critique/publish prompt (`prompts/planning_critique/prompt.md`) attacks the
+grouping (file overlap between groups, a group with no file area, more than
+four milestones) and publishes the surviving grouping as the `## Milestones`
+table, immediately after `## Plan Coverage` in the same summary comment. It
+never passes `--milestone` for a group it names there — milestone creation
+belongs to the worker, and `--milestone` on `gh issue create` stays reserved
+for the inheritance path where the parent already owns one.
+
+**What the worker does with the table today.** It reads and gates it, and
+nothing more: `closePlanningIssue()` logs a sound grouping and still creates
+the **legacy single milestone** for the whole plan, exactly as the [#2172
+section](#-milestones-table-and-structural-gate-issue-2172) describes. Creating
+one milestone per group — and assigning each group's sub-issues to it — is
+**Issue #2175**. Until that lands, a published grouping is recorded rather than
+acted on, so the prompts teach the grouping ahead of the machinery that
+consumes it.
+
+```mermaid
+flowchart TD
+    A[Draft sub-issues] --> B[Label each with its file area]
+    B --> C{Two groups edit the same<br/>source or test file?}
+    C -->|yes| D[Merge them into one group]
+    C -->|"no — only housekeeping shared"| E[Keep them separate]
+    D --> F{More than 4 multi-sub-issue groups?}
+    E --> F
+    F -->|"yes — merge the closest groups"| C
+    F -->|no| G["Publish the ## Milestones table<br/>(groups of one written —)"]
+```
+
+`worker/deno/tests/planning_multi_milestone_prompts_test.ts` is the anti-drift
+guard: it fails when either prompt loses the rule, and it feeds every example
+table the publish prompt teaches to the real `extractMilestoneGroups()` /
+`validateMilestoneGroups()` pair, so a taught table that the gate would reject
+on its own structure — an unnamed file area, a sub-issue in two rows, a fifth
+milestone — fails there rather than in production.
 
 #### 📈 Degraded-model observability
 

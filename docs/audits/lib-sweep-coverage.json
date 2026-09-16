@@ -1601,6 +1601,19 @@
       "paths": [
         "worker/deno/lib/summary_rule_gate_retry.ts"
       ]
+    },
+    {
+      "issue": 2172,
+      "chunk": "top-up-2172",
+      "title": "top-up: the milestone-groups gate and the shared table primitives",
+      "ledger": "docs/audits/security-sweep-2172-milestone-groups-gate.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: plan_milestone_groups.ts, markdown_table.ts (#2172)",
+      "status": "swept",
+      "sweptAt": "de3581eca8ebb42d6ce8001622c20b15e67e90c3",
+      "paths": [
+        "worker/deno/lib/markdown_table.ts",
+        "worker/deno/lib/plan_milestone_groups.ts"
+      ]
     }
   ],
   "roots": [

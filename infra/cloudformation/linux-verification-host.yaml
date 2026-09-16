@@ -303,15 +303,19 @@ Resources:
             # unzip is not decoration: the Deno installer aborts without it.
             apt-get install -y curl ca-certificates git gh jq podman uidmap unzip
 
-            # Deno and the coding-agent CLI have no distribution package; the
-            # upstream installers are the documented path. Both install under
-            # the ubuntu user's home, never as root.
-            #
-            # `set -o pipefail` is repeated inside each login shell on purpose:
-            # the outer shell's options do not cross runuser, so without it a
-            # failed download exits 0 through the interpreter and the bootstrap
-            # would carry on as though the install had worked.
-            runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://deno.land/install.sh | sh'
+            # The checkout comes first: the installers below read their pins
+            # from it.
+            runuser -l ubuntu -c "git clone ${VibeCoderRepositoryUrl} $RUNTIME"
+
+            # Deno and the coding-agent CLI have no distribution package. They
+            # used to come from the vendors' `curl | sh` installers — unpinned
+            # and unverified, unlike every toolchain the container fetches.
+            # The checkout's host installers download the release asset the
+            # image pins, verify its SHA-256, and only then install it under
+            # the ubuntu user's home, never as root (Issue #2199). Each script
+            # is `set -o pipefail` itself, so a failed download fails the
+            # bootstrap rather than carrying on as though it had worked.
+            runuser -l ubuntu -c "$RUNTIME/infra/host/install-deno.sh"
 
             # The agent runs inside the image, so the host takes a CLI only
             # when it is asked for one. The Codex-only verification of Issue
@@ -319,7 +323,7 @@ Resources:
             # one unconditionally would refuse the very run this host exists
             # for (HostAgentCli defaults to none).
             if [ "${HostAgentCli}" = "claude" ]; then
-              runuser -l ubuntu -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'
+              runuser -l ubuntu -c "$RUNTIME/infra/host/install-claude.sh"
             fi
 
             cat > /etc/profile.d/vibe-verification.sh <<'PROFILE'
@@ -327,8 +331,6 @@ Resources:
             export PATH="$HOME/.deno/bin:$HOME/.local/bin:$PATH"
             PROFILE
             chmod 0644 /etc/profile.d/vibe-verification.sh
-
-            runuser -l ubuntu -c "git clone ${VibeCoderRepositoryUrl} $RUNTIME"
 
             # Rootless podman containers die with the login session unless the
             # user lingers.
