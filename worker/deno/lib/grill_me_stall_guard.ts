@@ -116,7 +116,10 @@ const TRAILING_STEM_CHARS = new Set([
  *
  * The walk visits each trailing character once and stops at the first
  * character that is not stripped, so the cost is linear in the length of the
- * run and the result is character-for-character what the regex produced.
+ * run. The result matches the regex for every input this function can
+ * receive: `\s` also covers exotic Unicode spaces the set omits, but the
+ * caller has already collapsed whitespace to a single U+0020 before the
+ * strip, so none of them can reach it.
  *
  * @param text - Stem text, already lower-cased and whitespace-collapsed
  * @returns The text without its trailing punctuation and whitespace

@@ -22,8 +22,9 @@ Siblings:
 
 > **Three candidates survived; two are filed and one is fixed here.** Every
 > added module and every modified hunk in the drift lists was read. 12f is nil
-> and 12d is nil; 12e produced all three survivors. The nils are stated
-> explicitly so a later run does not have to re-derive them.
+> and 12d reads nil for its own sink classes; all three survivors count against
+> 12e. The nils are stated explicitly so a later run does not have to re-derive
+> them.
 
 ```mermaid
 flowchart LR
@@ -83,7 +84,7 @@ attacker-controlled input reaches a sink unsafely.
 | ID                                                             | Site                                                                | Severity | Confidence | Disposition                                                                                                                             |
 | -------------------------------------------------------------- | ------------------------------------------------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | [#2236](https://github.com/stSoftwareAU/VibeCoder/issues/2236) | `worker/deno/lib/pr_ci_processor.ts:1590` `_processCiWithHeartbeat` | Medium   | High       | **filed** — the agent's `.pr_response_message` is posted verbatim as a fleet comment, and CI-fix markers are parsed from fleet comments |
-| [#2237](https://github.com/stSoftwareAU/VibeCoder/issues/2237) | `worker/deno/lib/grill_me_stall_guard.ts:119` `isRoundStalled`      | Low      | High       | **filed** — the stall decision reads round comments selected by heading marker with no author gate                                      |
+| [#2237](https://github.com/stSoftwareAU/VibeCoder/issues/2237) | `worker/deno/lib/grill_me_stall_guard.ts:172` `isRoundStalled`      | Low      | High       | **filed** — the stall decision reads round comments selected by heading marker with no author gate                                      |
 | —                                                              | `worker/deno/lib/grill_me_stall_guard.ts` `normaliseQuestionStem`   | Low      | High       | **fixed here** — quadratic trailing-punctuation strip over unauthored comment text; regression test added                               |
 
 Deduped against the open `security` issues at sweep time —
@@ -129,13 +130,19 @@ covers them.
 | `worker/deno/lib/run_core.ts`             | read — an operator-configured provider fallback probed on a health failure, a billing classification log, per-cycle callbacks, a GraphQL-quota re-probe                                                     |
 | `worker/deno/lib/workflow_scope.ts`       | read — three-state scope reading, a bounded push-refusal regex, and a quote of git's stderr that is redacted **before** it is cut                                                                           |
 
-**12d is nil.** The #2236 survivor is recorded against 12e, which owns the
-`.pr_response_message` reader and the marker module the finding turns on; the
-`pr_ci_processor.ts` hunks are listed here because 12d owns that path. No 12d
-hunk introduces attacker-controlled input reaching an environment, configuration
-or secret sink unsafely: the new Codex child-env builder can only narrow what
-the subprocess sees, and every credential the drift adds to a map, a log or a
-signal file is a pool **label**, never token material.
+**12d is nil for this slice's own sink classes** — environment reads and writes,
+configuration parsing, and secret handling. No 12d hunk brings
+attacker-controlled input to one of them: the new Codex child-env builder can
+only narrow what the subprocess sees, and every credential the drift adds to a
+map, a log or a signal file is a pool **label**, never token material.
+
+`pr_ci_processor.ts` is the one qualification, and it is stated rather than
+buried. 12d owns that path, so its hunks are listed here — but the #2236
+survivor those hunks lead to is an untrusted-ingestion finding, not an
+env/config/secret one, and the modules it turns on (`pr_branch_preparation.ts`'s
+`.pr_response_message` reader and `ci_fix_attempt_markers.ts`) are 12e's. The
+finding is therefore counted against 12e, which is why the findings table sites
+it at a 12d-owned file while this slice reads nil.
 
 ## Slice 12e — closing pass over the remainder
 
@@ -504,16 +511,20 @@ Slices 12d, 12e and 12f now point at this file and carry
 `sweptAt: 9395461966809ac1a5c7223dcf80b4e7cc1c324f` —
 `git merge-base origin/main HEAD` at list-generation time, per the rule #2178
 documents in `docs/SECURITY-SCAN.md`, not the later commit that contains this
-prose. The fourteen top-up slices whose module was read above carry the same
-commit and keep their own records as `ledger`, since those records still
-describe the module and only the sweep point moved.
+prose. The twelve top-up slices whose fourteen modules were read above carry the
+same commit — 12y owns three of those modules — and keep their own records as
+`ledger`, since each record still describes the module and only the sweep point
+moved. #2183 asks for `ledger` to be bumped too; it deliberately is not here,
+because repointing those twelve at this record would replace a description of
+the module with one that merely lists it.
 
-Regenerating the report after the bump leaves 12e reporting two modified modules
-— `host_path_style.ts` and `lib_sweep_coverage.ts` — because the new `sweptAt`
-is the merge-base while the drift list above was measured from the older #1611
-record. The older baseline is an ancestor of the new one, so its list is a
-superset: both modules are in the 12e table above and both were read. No module
-is left unaccounted for.
+Regenerating the report after the bump leaves 12e reporting three modified
+modules: `host_path_style.ts` and `lib_sweep_coverage.ts`, which changed on the
+milestone branch between the new merge-base `sweptAt` and HEAD, plus
+`grill_me_stall_guard.ts`, which this change itself edits. The older #1611
+baseline is an ancestor of the new one, so its drift list is a superset of the
+new one: all three are in the tables above and all three were read. No module is
+left unaccounted for.
 
 The same edit repoints slice `top-up-2189`, whose `sweptAt` (`379f8c5fbf6a…`)
 was a squash-deleted feature-branch commit: `sweep-drift` failed outright on it,
