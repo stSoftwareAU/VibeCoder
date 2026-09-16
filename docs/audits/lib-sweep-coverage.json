@@ -1591,6 +1591,18 @@
       ]
     },
     {
+      "issue": 2189,
+      "chunk": "top-up-2189",
+      "title": "top-up: the in-run summary-rule gate recovery",
+      "ledger": "docs/audits/security-sweep-2189-summary-rule-gate-retry.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: summary_rule_gate_retry.ts (#2189)",
+      "status": "swept",
+      "sweptAt": "379f8c5fbf6a4932a781dea31b39bbd0862dc934",
+      "paths": [
+        "worker/deno/lib/summary_rule_gate_retry.ts"
+      ]
+    },
+    {
       "issue": 2100,
       "chunk": "top-up-2100",
       "title": "top-up: the callback mode resolver",
