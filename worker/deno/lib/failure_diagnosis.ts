@@ -11,6 +11,7 @@
 
 import { assertNever } from "./assert_never.ts";
 import { isWorkflowScopePushRefusal } from "./workflow_scope.ts";
+import { isRepoLevelMilestoneBranchRefusal } from "./milestone_branch_rejection.ts";
 import {
   type ExtensionTelemetry,
   formatTimeoutExtensionSummary,
@@ -57,6 +58,16 @@ export type FailureCategory =
    * next claim resumes the branch.
    */
   | "scheduled_release"
+  /**
+   * The repository refused the milestone branch this run needed — a ruleset,
+   * a branch protection, or a permission the fleet account lacks (Issue
+   * #2220). A property of the REPOSITORY, not of the issue: the same refusal
+   * meets every sibling issue in the milestone, so it must not be recorded
+   * against any of them. Categorised `unknown` until now, which sent sixteen
+   * GRQ-FX-validation sub-issues up the `failed-once` → `failed` ladder for
+   * one `do_not_enforce_on_create: false` flag.
+   */
+  | "repo_config"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -77,6 +88,8 @@ export type CategoryDisplay =
   | "infrastructure-error"
   | "task-not-understood"
   | "scheduled-release"
+  /** Issue #2220: the repository refused the milestone branch. */
+  | "repo-config"
   | "unknown";
 
 /** Parsed diagnostic context for zero-output failures (Issue #533). */
@@ -278,6 +291,18 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
     return "token_scope";
   }
 
+  // Issue #2220: a repository-level refusal of the MILESTONE branch. Checked
+  // before the generic push rule, which is what swallowed it: the refusal
+  // text says `GH013` / `Repository rule violations` / `remote rejected` and
+  // `Failed to push milestone branch`, none of which the push patterns
+  // match, so the category came out `unknown` and the issue was blamed for
+  // the repository's ruleset. Narrow on purpose (see
+  // `isRepoLevelMilestoneBranchRefusal`): an ordinary feature-branch
+  // protection refusal stays `push_failure` and keeps its bounded retry.
+  if (isRepoLevelMilestoneBranchRefusal(failureMessage)) {
+    return "repo_config";
+  }
+
   if (
     failureMessage.includes("Git push failed") ||
     failureMessage.includes("git push failed")
@@ -369,6 +394,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "interrupted",
   "scheduled_release",
   "workflow_gate",
+  "repo_config",
   "unknown",
 ]);
 
@@ -421,6 +447,14 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // retry into — the next claim resumes the preserved WIP instead.
     case "scheduled_release":
       return false;
+    // A repository refusing the milestone branch is not infrastructure
+    // either (Issue #2220). The infrastructure arm exists to retry a
+    // transient fault; this one is a persisted repository setting, so the
+    // bounded retry could only burn five claims on a refusal that will be
+    // identical every time. `handleIssueFailure` short-circuits it before
+    // the ladder is reached.
+    case "repo_config":
+      return false;
     default:
       return false;
   }
@@ -461,6 +495,8 @@ export function getFailureCategoryDisplay(
       return "task-not-understood";
     case "scheduled_release":
       return "scheduled-release";
+    case "repo_config":
+      return "repo-config";
     case "unknown":
       return "unknown";
     default:
@@ -763,6 +799,12 @@ export function getFailureDiagnosis(
 - Fix the named file \u2014 or, for a scanner finding that genuinely does not apply, add a \`# best-practice-ignore: <finding-id>\` comment beside the offending line
 - When the run had already raised its pull request, that PR stays open and carries the outstanding finding \u2014 the work is delivered, the finding is not`;
 
+    case "repo_config":
+      return `- The repository refused the milestone branch this run had to base its work on — a ruleset, a branch protection, or a permission the fleet account lacks
+- This is a **repository configuration** fault, not a property of this issue: the same refusal meets every sibling issue in the milestone
+- No \`failed-once\` or \`failed\` label was applied, and the issue stays claimable — once the repository is fixed, the next scan picks it up with no human action
+- The most common cause is a \`milestone/**\` ruleset whose \`required_status_checks\` rule has \`do_not_enforce_on_create: false\`, which refuses the very push that would create the branch`;
+
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
@@ -847,6 +889,10 @@ export function getFailureDiagnosisOneliner(
       return "Likely cause: Claude could not determine what changes to make.";
     case "evidence_missing":
       return "Likely cause: screenshot evidence required but not provided.";
+    // Deliberately not "Likely cause": nothing was guessed. The repository
+    // refused the branch and said so (Issue #2220).
+    case "repo_config":
+      return "Repository configuration refused the milestone branch — the same refusal meets every issue in the milestone, so this issue is left unlabelled and claimable.";
     // Deliberately not "Likely cause": nothing was guessed. The worker's own
     // gate refused the run and named the finding (Issue #2044).
     case "workflow_gate":
