@@ -1072,10 +1072,10 @@ reported as what it is — the work is done, the summary is short:
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
-With **no** PR for the run's branch the gate blocks exactly as before — the whole
-point of a pre-PR gate is that the next attempt writes the summary the comment
-asks for. Either way the gate's remediation comment is posted, so the shortfall
-is on the issue thread rather than only in one host's log.
+With **no** PR for the run's branch the run recovers in-run before the block
+stands — see [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
+below. Either way the gate's remediation comment is posted, so the shortfall is
+on the issue thread rather than only in one host's log.
 
 **Two gates are deliberate exceptions, and they run first.** The changed-workflow
 file checks above are the second: a workflow file carrying a finding is a defect
@@ -1142,17 +1142,65 @@ flowchart TD
     WF -->|"clean or nothing in scope"| G{"Summary gates<br/>rule satisfied?"}
     G -->|yes| PR["gh pr create"]
     G -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
-    Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
+    Q -->|no| R{"First summary-rule block<br/>of this run?"}
+    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, quality gate,<br/>completion again (Issue #2189)"]
+    RT --> G
+    R -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style WF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style RT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style S fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style F fill:#c45858,stroke:#6b2020,color:#fff
     style F2 fill:#c45858,stroke:#6b2020,color:#fff
 ```
+
+## 🔁 The in-run recovery from a summary-rule block
+
+A block with no PR still ended the run, and that was the whole cost. GRQ-23's
+logs for the fortnight from 2026-09-15 on one host: 12 runs reached a PR, the
+acceptance-criteria closure gate blocked 4, and 3 of those were failed
+`no_pr:unknown:completion`. Both overnight blocks — VibeCoder#2099 (top-priority)
+and VibeCoder#2156 — carried the same verdict, *the PR summary carries no
+`## Acceptance Criteria` closure block*, on a branch that was pushed and
+quality-gated. The next run, a whole agent session, existed only to add a
+documentation block to it.
+
+The prompt is not the lever: `prompts/issue/prompt.md` already documents the
+block and its rules in full, and the agent still omits it in a quarter of the
+runs that reach completion here. The gate's *response* is. So the summary gates
+now recover the way the security-fix gate does
+([Issue #1575](../security-fix-gate-feedback.md#the-in-run-retry-issue-1575)):
+
+1. the verdict is recorded on the run state and the log reads
+   `PR-summary rule block — recovering once in-run`;
+2. the agent is re-invoked **fresh** — never `--resume`, because the previous
+   turn already concluded the work was finished — with the gate's own
+   remediation comment replayed into the prompt, told to edit the summary file
+   and commit, and nothing else;
+3. the quality gate runs again over the changed tree, then the completion gates.
+
+A run that satisfies the gate on the re-run raises its PR. A **second** block in
+the same run fails exactly as a block did before, with the comment already on
+the thread — the same verdict is never posted twice, so the thread records the
+shortfall rather than the number of attempts at it. A recovery invocation the
+worker could not launch at all — a rate limit, a failed spawn — changed nothing
+on the branch, so the original block stands unaltered.
+
+All three summary gates route through it: closure (#518), independent review
+(#663) and reproduction status (#521). The two exceptions above do not — the
+security-fix and changed-workflow gates report defects in the change, not
+documentation shortfalls, so they still stop the run.
+
+**Implementation.**
+[`summary_rule_gate_retry.ts`](../../worker/deno/lib/summary_rule_gate_retry.ts)
+and `reportSummaryRuleBlock` / `workOnIssueCompletion` in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
+(Issue #2189).
 
 ## ⏳ A PR the content-creation throttle refused — deferred, never failed
 
