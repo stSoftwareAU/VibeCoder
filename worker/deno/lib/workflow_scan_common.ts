@@ -261,6 +261,63 @@ export function isFindingSuppressed(
 }
 
 // ---------------------------------------------------------------------------
+// selectLiveSteps
+// ---------------------------------------------------------------------------
+
+/** Options for {@link selectLiveSteps}. */
+export interface SelectLiveStepsOptions<T> {
+  /** The workflow file the steps came from — scanned for in-source markers. */
+  file: WorkflowFile;
+  /** The per-file stable id the finding would be filed under. */
+  findingId: string;
+  /** The per-step id of one step (the shape the family filed pre-#2221). */
+  stepId(step: T): string;
+  /** Stable ids suppressed by prior triage. */
+  suppressedIds: ReadonlySet<string>;
+  /** Stable ids that already have an open finding. */
+  knownOpenIds: ReadonlySet<string>;
+}
+
+/**
+ * Apply the dedup and suppression rules the **per-file** pre-filer
+ * families share (Issue #2221), returning the offending steps that still
+ * deserve a finding — empty when the file yields none.
+ *
+ * The rules, in order:
+ *
+ *   - The per-file id being suppressed, or already open, covers the file.
+ *   - **Migration.** An open *per-step* id for any offending step covers
+ *     the file too: a repository that already carries the pre-#2221
+ *     per-step issues is not re-filed under the per-file id.
+ *   - A step is dropped on its own when its per-step id was suppressed by
+ *     triage, or when an in-source `best-practice-ignore` marker for
+ *     either the per-file id or its per-step id sits on (or immediately
+ *     above) its cited line. The file yields no finding once every step
+ *     is dropped.
+ *
+ * Pure aside from reading `file.rawText`.
+ */
+export function selectLiveSteps<T extends { line: number }>(
+  steps: readonly T[],
+  opts: SelectLiveStepsOptions<T>,
+): T[] {
+  if (steps.length === 0) return [];
+  const { file, findingId, stepId, suppressedIds, knownOpenIds } = opts;
+
+  if (suppressedIds.has(findingId) || knownOpenIds.has(findingId)) return [];
+  if (steps.some((step) => knownOpenIds.has(stepId(step)))) return [];
+
+  return steps.filter((step) => {
+    const id = stepId(step);
+    if (suppressedIds.has(id)) return false;
+    if (isFindingSuppressed(file.rawText, step.line, findingId, file.path)) {
+      return false;
+    }
+    return !isFindingSuppressed(file.rawText, step.line, id, file.path);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // fileWorkflowFinding
 // ---------------------------------------------------------------------------
 
