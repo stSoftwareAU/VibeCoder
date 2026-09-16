@@ -63,13 +63,16 @@ decision is not re-litigated from memory:
 ### 1.2 🔌 Where CodeGraph is wired in
 
 An enabled host prepares the index **once per run**, before the agent is
-invoked, on three paths — the standalone issue phase
+invoked, on the five run kinds the trial covers — the standalone issue phase
 (`worker/deno/lib/execute_claude_phase.ts`), the main-loop issue phase
-(`worker/deno/lib/phases/execute_phase.ts`), and the planning and question
-processors. Planning makes several invocations in one round (draft, critique,
-the explicit retry, the Failure-Detection self-repair); they share one index
-and their `codegraph_explore` calls are summed into a single figure for the
-run.
+(`worker/deno/lib/phases/execute_phase.ts`), the planning and question
+processors, and the reactive PR paths: PR feedback
+(`worker/deno/lib/pr_feedback_processor.ts`) and CI fix
+(`worker/deno/lib/pr_ci_processor.ts`). Planning makes several invocations in
+one round (draft, critique, the explicit retry, the Failure-Detection
+self-repair) and a CI fix makes a second when the post-quality gate asks for
+one; they share one index and their `codegraph_explore` calls are summed into a
+single figure for the run.
 
 The MCP entry and the prompt line are handed over **together or not at all**:
 the line without the server tells the agent to call a tool that does not

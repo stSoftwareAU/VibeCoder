@@ -24,7 +24,7 @@ a completed invocation's tool tally into the result.
 
 | Input | Source | How it is handled |
 | ----- | ------ | ----------------- |
-| `repoDir` | the worker's own checkout path | passed straight through to `prepareCodegraphContext`, which is where it is used; never interpolated into an argv, a path or a prompt here |
+| `repoDir` | the worker's own checkout path, optional since Issue #2160 | tested for absence (absent or empty) and otherwise passed straight through to `prepareCodegraphContext`, which is where it is used; never interpolated into an argv, a path or a prompt here. A run that names no checkout is recorded as `failed` rather than handed half the pair |
 | `enabled` | the host `.config.json` switch | a boolean, compared only |
 | `agentProvider` | the repo pin or the per-invocation selection, both worker-owned | handed to `selectAgentProvider`, which validates it; a throw is caught, reported as `[CODEGRAPH_UNAVAILABLE]` and turned into `status: "failed"` |
 | `prompt` (in `applyPrompt`) | the built issue/planning/question prompt | **appended to**, never parsed or rewritten. The added text is the module-level `CODEGRAPH_PROMPT_LINE` constant, so no caller-supplied or issue-supplied text can reach it |
@@ -40,7 +40,7 @@ a completed invocation's tool tally into the result.
 | regex safety | no regex |
 | filesystem | none |
 | secret surface | holds no credential. The two log lines carry a status, four integers and two provider ids |
-| fail direction | fail-loud-but-never-fatal: the only thing that can throw here is the provider resolution, which is caught, logged with the `[CODEGRAPH_UNAVAILABLE]` marker and recorded as `failed`. The agent invocation that follows raises the real provider fault on its own, so the fault is never swallowed — only prevented from being reported as a CodeGraph success |
+| fail direction | fail-loud-but-never-fatal: two things are recorded as `failed` here, each logged with the `[CODEGRAPH_UNAVAILABLE]` marker — a provider resolution that throws, which is caught, and (since Issue #2160) a run that names no checkout to index. The agent invocation that follows raises the real provider fault on its own, so the fault is never swallowed — only prevented from being reported as a CodeGraph success |
 | blast radius | with the switch off (the default) the module resolves no provider and every decision returns the caller's own value, so the run is byte-identical to one from before the trial existed |
 
 ## The invariant this module exists to hold
@@ -50,7 +50,7 @@ test, so no caller can add one without the other. Handing the agent the line
 without the server tells it to call a tool that does not exist; handing it the
 server without the line leaves an indexed repository the agent never queries.
 Either half alone is a defect the trial's figures would silently absorb, which
-is why the pair is decided here rather than at each of the four call sites.
+is why the pair is decided here rather than at each of the six call sites.
 
 ## The caller contract this module cannot enforce
 
@@ -58,8 +58,12 @@ is why the pair is decided here rather than at each of the four call sites.
 site that passes a request but no `cwd` gets no MCP configuration written at
 all (`claude_runner.ts`, the `mcpRequest && cwd` gate), which would append the
 prompt line and drop the server it names — the pair invariant broken from
-outside this module. Each of the four wired call sites therefore passes the
-checkout as `cwd`, and the issue-path suite asserts it.
+outside this module. Each of the six wired call sites therefore passes the
+same checkout as `cwd` that it names as `repoDir`, and every wired suite
+asserts that the two match. Since Issue #2160 the module also refuses to
+report `ok` for a checkout that is absent or empty, because that gate reads
+falsiness rather than `undefined`, so the commonest way to break the contract
+from outside is now caught inside.
 
 ## Verdict
 

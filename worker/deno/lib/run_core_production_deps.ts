@@ -1838,6 +1838,9 @@ export async function createProductionRunCoreDeps(
             claudeTimeout: reactivePhaseTimeout(config, "pr-feedback"),
             claudeNoOutputTimeout: config.claudeNoOutputTimeout,
             maxRateLimitRetries: config.maxRateLimitRetries,
+            // Issue #2160: the trial switch, so PR feedback on an enabled
+            // host is offered the same repo-context index the issue runs get.
+            codegraphContextEnabled: config.codegraphContext.enabled,
             workerId,
             // Issue #185: lets the escape-hatch verifier recognise a follow-up
             // the worker filed under its own login as trusted.
@@ -2056,6 +2059,9 @@ export async function createProductionRunCoreDeps(
             claudeTimeout: reactivePhaseTimeout(config, "ci-fix"),
             claudeNoOutputTimeout: config.claudeNoOutputTimeout,
             maxRateLimitRetries: config.maxRateLimitRetries,
+            // Issue #2160: the trial switch, so a CI fix on an enabled host
+            // is offered the same repo-context index the issue runs get.
+            codegraphContextEnabled: config.codegraphContext.enabled,
             // Issue #3582: cap auto-fix attempts per stable failure signature.
             maxAutoFixAttempts: resolveMaxAutoFixAttempts(config, check.repo),
             // Issue #580: the retry counters live on the work volume, not on
