@@ -3954,6 +3954,77 @@ children are never touched, so a finished milestone's branch is not resurrected
 on every scan cycle. Merged PRs are never touched, and PRs auto-closed by a past
 branch deletion are not reopened.
 
+#### The refusal is never recorded against the issue (Issue #2220)
+
+A repo-level branch refusal is a fact about the **repository**, so it must not
+be written onto the sub-issues that met it. Until #2220 it was: the refusal
+text (`GH013`, `Repository rule violations`, `Failed to push milestone
+branch`) matched no pattern in `detectFailureCategory`, came out `unknown`,
+and `unknown` is not an infrastructure category — so every setup refusal went
+straight up the `failed-once` → `failed` ladder. On
+`stSoftwareAU/GRQ-FX-validation` sixteen sub-issues took `failed-once` in
+under a minute each without touching a line of code, six went on to `failed`,
+and when the ruleset was repaired nothing released any of them.
+
+Two changes close that:
+
+- **`repo_config` is its own failure category.**
+  `isRepoLevelMilestoneBranchRefusal` (`milestone_branch_rejection.ts`)
+  requires *both* a repo-level refusal signature *and* a milestone branch in
+  the message, so an ordinary protected-branch push refusal stays
+  `push_failure` with its bounded infrastructure retry. `handleIssueFailure`
+  short-circuits `repo_config` exactly as it does `scheduled_release`: it
+  writes one **Automated Processing Paused (Repository Configuration)**
+  comment and applies no label, leaving the issue claimable. In
+  `coding_failure_ladder.ts` the class gets its own `record-only`
+  disposition, so the failure earns the plain cooldown rather than the
+  escalating 2 h → 6 h → 24 h one and never reaches the three-strike
+  `needs-human` park — skipping the ladder while leaving the cooldown in
+  place would have re-created the same human chore one rung later. It is
+  deliberately **not** `transient`: a transient decision returns before
+  `handleIssueFailure` is reached, and the main loop's only route into that
+  call is `planCodingFailure`'s `applyLadder`, so a transient refusal would
+  have left every sibling issue with no written record at all. The
+  disposition withholds the label and the cooldown; the comment is still
+  written.
+- **The run that opens the branch releases the backlog.** Once
+  `ensureMilestoneBranchExists` succeeds — including via the #2079 in-run
+  repair — `releaseMilestoneBranchRefusalLabels`
+  (`milestone_branch_refusal_release.ts`) lists the milestone's open
+  `failed-once` / `failed` issues, reads each one's **most recent** failure
+  record, and removes the labels only where `detectFailureCategory` calls that
+  record `repo_config`. Judging it by the category, not by a bare refusal
+  pattern, means the whole precedence order applies: a quality-gate record
+  that merely *quotes* the branch and the ruleset's words is `quality_check`
+  and keeps its label. Both success paths call it — the setup phase, and the
+  per-cycle `selfHealMilestoneBranches` pass, which is the only one that
+  reaches a milestone whose children **all** reached `failed`, since those are
+  filtered out of label discovery and can never claim their way into setup.
+  Only a comment a **fleet** account wrote counts as a failure record: a
+  record is plain Markdown anyone able to comment could forge, and here a
+  forged one would strip a genuine `failed` label, so every comment is
+  filtered through `selectFleetAuthoredComments` (`alert_dedup_authors.ts`)
+  first. An unresolvable fleet identity discards every comment, which keeps
+  the label. The sweep runs once per branch per process, releases that claim
+  if a `gh` fault stopped it finishing, and returns every fault to the caller,
+  which logs it — a half-run sweep is never reported as a clean one.
+
+```mermaid
+flowchart TD
+    A[setup: ensure milestone branch] --> B{Refused?}
+    B -- "repo-level (GH013)" --> C[category: repo_config]
+    C --> D[Comment once<br/>NO failed-once / failed]
+    D --> E[Issue stays claimable]
+    B -- "per-issue fault" --> F[Existing ladder<br/>failed-once → failed]
+    B -- no --> G[Branch exists]
+    G --> H[Sweep the milestone's<br/>failed-once / failed issues<br/>setup phase + self-heal pass]
+    H --> I{Newest fleet-authored<br/>failure record<br/>is the refusal?}
+    I -- yes --> J[Remove labels + comment]
+    I -- no --> K[Leave the label alone]
+    style C fill:#f4a261,stroke:#b5651d,color:#000
+    style J fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ### 📊 Token usage tracking
 
 [credit_tracker.ts](../worker/deno/lib/credit_tracker.ts) now logs token usage
