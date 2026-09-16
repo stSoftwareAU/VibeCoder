@@ -180,6 +180,66 @@ export function milestoneSyncStreakPath(workDir: string): string {
   return `${workDir}/milestone_sync_failures.json`;
 }
 
+/**
+ * Where the sync left off when its budget ran out (Issue #2215).
+ *
+ * The sync is one handler under one watchdog, and a pass over every
+ * repository's milestones does not always fit the cycle that is left — on
+ * GRQ-23 a pass started 13 minutes before the cycle end was abandoned
+ * mid-way, silently, and the next cycle started over from the first
+ * repository, so the milestones at the end of the list were never reached.
+ * The cursor names the repository (and branch) the next cycle starts from.
+ */
+export interface SyncCursor {
+  repo: string;
+  milestoneBranch?: string;
+}
+
+/** Path of the per-host sync cursor (Issue #2215). */
+export function milestoneSyncCursorPath(workDir: string): string {
+  return `${workDir}/milestone_sync_cursor.json`;
+}
+
+/** Load the cursor; a missing or corrupt file reads as none. */
+export async function loadSyncCursor(path: string): Promise<SyncCursor | null> {
+  try {
+    const parsed = JSON.parse(await Deno.readTextFile(path)) as unknown;
+    if (
+      parsed && typeof parsed === "object" &&
+      typeof (parsed as SyncCursor).repo === "string" &&
+      (parsed as SyncCursor).repo.includes("/")
+    ) {
+      const branch = (parsed as SyncCursor).milestoneBranch;
+      return {
+        repo: (parsed as SyncCursor).repo,
+        ...(typeof branch === "string" && branch
+          ? { milestoneBranch: branch }
+          : {}),
+      };
+    }
+  } catch {
+    // Absent or unreadable: the pass starts from the top.
+  }
+  return null;
+}
+
+/** Save the cursor, best-effort. */
+export async function saveSyncCursor(
+  path: string,
+  cursor: SyncCursor,
+): Promise<void> {
+  await Deno.writeTextFile(path, JSON.stringify(cursor, null, 2) + "\n");
+}
+
+/** Remove the cursor once a pass completes; a missing file is fine. */
+export async function clearSyncCursor(path: string): Promise<void> {
+  try {
+    await Deno.remove(path);
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) throw err;
+  }
+}
+
 /** Load streaks; a missing or corrupt file reads as empty. */
 export async function loadSyncStreaks(path: string): Promise<SyncStreaks> {
   try {

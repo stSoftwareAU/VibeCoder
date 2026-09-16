@@ -107,6 +107,7 @@ Use this body structure for each proposed sub-issue:
 ## Context
 Part of #{{ISSUE_NUMBER}}
 Covers ask: [the ask from the parent issue this sub-issue satisfies, worded so it can be matched to a row in the coverage table the publish turn posts]
+File area: [the top-level directory or subsystem this sub-issue touches, e.g. `infra/`, `lambdas/`, `pwa/` — see "Group sub-issues by file area" below]
 [Relevant context from the parent issue]
 ```
 </sub_issue_body_template>
@@ -124,6 +125,41 @@ flowchart LR
 ### Dependencies between sub-issues
 
 When one task must finish before another can begin, record it — in the draft, as `Depends on: <working title>` in the dependent sub-issue's body. The published issue carries `Depends on #N`, which the worker uses to order work and skip blocked issues until their dependencies close; the self-critique turn substitutes the real `#N` when it publishes, so no issue number exists for you to write in this turn. Add a dependency only when task B would fail to compile, test, or function without task A (schema before code using it, shared utility before its importers, config before features reading it, test infrastructure before tests). Do not add dependencies between truly independent tasks that touch different files — unnecessary dependencies serialise work and slow delivery.
+
+### Group sub-issues by file area
+
+Sub-issues that touch different parts of the tree can be delivered as separate milestones running in parallel; sub-issues that edit the same file cannot, and delivering them in parallel lands the fleet in merge conflicts. So group the plan by **file area** — the top-level directory or subsystem each sub-issue touches (`infra/`, `lambdas/`, `pwa/`, `worker/deno/lib/`), taken from the files you actually read this turn.
+
+- **Name the area in every sub-issue.** Each body carries a `File area: <top-level directory or subsystem>` line in its `## Context`, beside the `Covers ask:` line.
+- **Split into two or more milestones when the groups share only housekeeping files.** The housekeeping files are `deno.json`, `Cargo.toml`, `*.lock`, `CHANGELOG.md` and `README.md`, plus at most one further file you name explicitly — with the reason it is safe to share — in the sub-issue body of each group that touches it.
+- **Merge groups that share real work.** Two groups that would both edit the same source or test file are one group: merge them. A plan whose groups all merge is a single milestone, exactly as today.
+- **Shared work becomes a foundation group.** Work two or more groups need goes in its own foundation group, drafted first, and each dependant records `Depends on: <working title>` as above.
+- **At most 4 milestones.** A plan that wants more is over-split — merge the closest groups until 4 remain. A group holding a single sub-issue gets no milestone (write `—` for it), merges straight to the default branch, and does not count towards the cap.
+- **Skip the grouping when the `<milestone_instructions>` block above is non-empty.** The parent already owns a milestone and every sub-issue inherits it, so there is nothing to split — still record each sub-issue's `File area:` line, and make the whole plan one group naming that milestone.
+
+End the draft with a `## Milestones` grouping — one line per group giving the milestone short name, the file area, and the working titles it carries:
+
+```
+## Milestones
+
+- **options trading: infra** — `infra/` — "Add the trading stack", "Wire the trading alarms"
+- **options trading: lambdas** — `lambdas/` — "Add the pricing handler"
+- **—** — `pwa/` — "Add the trading screen"
+```
+
+<examples>
+<example>
+<situation>A plan drafts five sub-issues: two adding CDK resources under `infra/`, two adding handlers under `lambdas/`, and one adding the matching screen under `pwa/`. The only file all three sets touch is `deno.json`, for a new import.</situation>
+<action>Draft three groups — `infra/`, `lambdas/` and `pwa/` — and record them as two milestones plus a `—` row for the single `pwa/` sub-issue.</action>
+<reason>`deno.json` is housekeeping, so it is not a real collision. The two multi-sub-issue groups run as parallel milestones; the lone `pwa/` sub-issue merges straight to the default branch, so it takes no milestone and does not count towards the cap of 4.</reason>
+</example>
+
+<example>
+<situation>The same plan's `lambdas/` group and a proposed `api/` group would both edit `lambdas/pricing/handler.ts` — one to add the endpoint, the other to change its response shape.</situation>
+<action>Merge the two into one group, with one file area covering both, and record a single milestone for the merged group.</action>
+<reason>The near miss that grouping is for: a shared **source** file is a real collision, not housekeeping, so two milestone branches would edit the same file and conflict on merge. When every group merges this way, the plan is one milestone — the behaviour before grouping existed.</reason>
+</example>
+</examples>
 
 ### Planning Guidelines
 
@@ -145,4 +181,4 @@ Produce your draft plan as text in this turn. **Do not run `gh issue create`, an
 - the full body using the structure above (including `Part of #{{ISSUE_NUMBER}}` and any `Depends on: <working title>` lines — symbolic, never an invented `#N`),
 - the descriptive labels you would apply.
 
-Then give the ask list — each ask with the proposed sub-issue covering it, or `Out of scope` and the reason — followed by the suggested implementation order (dependencies first), the dependency relationships, and any assumptions you made. This draft is internal working material — it is **not** posted to the issue. The next turn will adversarially critique and revise it before anything is published.
+Then give the ask list — each ask with the proposed sub-issue covering it, or `Out of scope` and the reason — followed by the suggested implementation order (dependencies first), the dependency relationships, any assumptions you made, and finally the `## Milestones` grouping described above. This draft is internal working material — it is **not** posted to the issue. The next turn will adversarially critique and revise it before anything is published.

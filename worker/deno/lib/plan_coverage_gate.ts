@@ -41,6 +41,11 @@ import {
   type AlertDedupAuthorOptions,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
+import {
+  exceedsTableScanCap,
+  findMarkdownTable,
+  MAX_TABLE_SCAN_CHARS,
+} from "./markdown_table.ts";
 
 /** One row of the published coverage table. */
 export interface CoverageRow {
@@ -107,15 +112,12 @@ export const COVERAGE_GATE_NEXT_STEP =
 /**
  * Characters of one candidate scanned for the coverage table (Issue #1245).
  *
- * Every comment on the planning parent is attacker-influenceable — a comment
- * body is writable by any account on a public repository — and the gate
- * re-reads them on every planning close. A coverage table is a few hundred
- * characters, so a bounded scan loses nothing real and keeps an oversized
- * body cheap to reject. The value is the one `ci_failure_issue.ts` uses for
- * the issue bodies it parses; unlike that module this one **rejects** rather
- * than truncating, because half a coverage table is not a coverage table.
+ * The bound itself is {@link MAX_TABLE_SCAN_CHARS}, shared with every other
+ * gate that parses a table out of an attacker-writable comment body
+ * (Issue #2172); this alias keeps the coverage gate's own callers and tests
+ * reading in coverage terms.
  */
-export const MAX_COVERAGE_SCAN_CHARS = 64 * 1024;
+export const MAX_COVERAGE_SCAN_CHARS = MAX_TABLE_SCAN_CHARS;
 
 /**
  * Is this candidate too large to scan for a coverage table?
@@ -124,29 +126,8 @@ export const MAX_COVERAGE_SCAN_CHARS = 64 * 1024;
  * reports the skip cannot drift apart (Issue #1245).
  */
 export function exceedsCoverageScanCap(markdown: string): boolean {
-  return markdown.length > MAX_COVERAGE_SCAN_CHARS;
+  return exceedsTableScanCap(markdown);
 }
-
-// A table row line: starts with an optional indent then a pipe.
-const ROW_RE = /^\s{0,3}\|/;
-
-/**
- * A separator row, e.g. `| --- | :--- | ---: |`.
- *
- * Read as: a leading pipe, one cell, then any number of `|`-prefixed cells,
- * then an optional closing pipe. A cell is a single `-+` run with optional
- * alignment colons and surrounding whitespace.
- *
- * **No two quantifiers here can consume the same character** — every
- * whitespace run is bounded by a literal `|`, a `-`, a `:` or the anchor, so
- * a failing match backtracks linearly rather than exploring splits. Two
- * shapes have been quadratic on this line (Issue #1245): the original
- * `[\s:|-]*-[\s:|-]*` (adjacent classes both containing `-`, 5.4 s on 40 000
- * dashes), and a `\s*\|?\s*$` tail (adjacent whitespace runs either side of
- * an optional pipe, 4.2 s on 64 000 spaces). The closing pipe therefore
- * carries its own trailing whitespace — `(?:\|\s*)?$`, never `\|?\s*$`.
- */
-const SEPARATOR_RE = /^\s{0,3}\|\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*(?:\|\s*)?$/;
 
 // Header cell that names the ask column.
 const ASK_HEADER_RE = /^(ask|asks|requirement|requirements)\b/i;
@@ -170,14 +151,6 @@ function isBracketedPlaceholder(trimmed: string): boolean {
   return /^\[[\s\S]*\]$/.test(trimmed);
 }
 
-/** Split one markdown table row into trimmed cells, honouring `\|` escapes. */
-function splitRow(line: string): string[] {
-  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return trimmed
-    .split(/(?<!\\)\|/)
-    .map((cell) => cell.replace(/\\\|/g, "|").trim());
-}
-
 /**
  * Extract the coverage table from a markdown blob.
  *
@@ -194,36 +167,23 @@ function splitRow(line: string): string[] {
  *   when the blob carries no coverage table or exceeds the scan cap.
  */
 export function extractCoverageTable(markdown: string): CoverageRow[] | null {
-  if (exceedsCoverageScanCap(markdown)) return null;
-  const lines = markdown.split(/\r?\n/);
+  const table = findMarkdownTable(
+    markdown,
+    (headers) =>
+      headers.some((h) => ASK_HEADER_RE.test(h)) &&
+      headers.some((h) => COVERED_HEADER_RE.test(h)),
+  );
+  if (table === null) return null;
 
-  for (let i = 0; i < lines.length - 1; i++) {
-    const line = lines[i]!;
-    if (!ROW_RE.test(line) || SEPARATOR_RE.test(line)) continue;
-    if (!SEPARATOR_RE.test(lines[i + 1]!)) continue;
+  const askIdx = table.headers.findIndex((h) => ASK_HEADER_RE.test(h));
+  const coveredIdx = table.headers.findIndex((h) => COVERED_HEADER_RE.test(h));
+  const notesIdx = table.headers.findIndex((h) => NOTES_HEADER_RE.test(h));
 
-    const headers = splitRow(line);
-    const askIdx = headers.findIndex((h) => ASK_HEADER_RE.test(h));
-    const coveredIdx = headers.findIndex((h) => COVERED_HEADER_RE.test(h));
-    if (askIdx < 0 || coveredIdx < 0) continue;
-    const notesIdx = headers.findIndex((h) => NOTES_HEADER_RE.test(h));
-
-    const rows: CoverageRow[] = [];
-    for (let j = i + 2; j < lines.length; j++) {
-      const rowLine = lines[j]!;
-      if (!ROW_RE.test(rowLine)) break;
-      if (SEPARATOR_RE.test(rowLine)) continue;
-      const cells = splitRow(rowLine);
-      rows.push({
-        ask: cells[askIdx] ?? "",
-        coveredBy: cells[coveredIdx] ?? "",
-        notes: notesIdx >= 0 ? cells[notesIdx] ?? "" : "",
-      });
-    }
-    return rows;
-  }
-
-  return null;
+  return table.rows.map((cells) => ({
+    ask: cells[askIdx] ?? "",
+    coveredBy: cells[coveredIdx] ?? "",
+    notes: notesIdx >= 0 ? cells[notesIdx] ?? "" : "",
+  }));
 }
 
 /**

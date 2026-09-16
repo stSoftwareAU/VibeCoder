@@ -44,6 +44,7 @@ import {
 } from "./fleet_authors.ts";
 import {
   buildOpenIssueStateMap,
+  createOpenMilestoneLookup,
   type FindIssuesOptions,
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
@@ -145,6 +146,12 @@ export async function collectLowPriorityCandidates(
   // `getIssueState` calls inside `isDependencyBlocked` collapse to
   // local map reads on the warm path.
   const openStateMap = buildOpenIssueStateMap(repoAllIssues);
+
+  // Issue #2173: the lazy open-milestone lookup for the cross-milestone
+  // dependency hold. Built once per repo and shared by every candidate; the
+  // listing is only fetched if a closed dependency actually carries a
+  // different milestone.
+  const isMilestoneOpen = createOpenMilestoneLookup(repo, options.cache, ghFn);
 
   // Issue #1344: Verify operational labels were added by trusted users.
   // Issue #3225: exclude fleet worker logins (own host + siblings) from the
@@ -338,7 +345,10 @@ export async function collectLowPriorityCandidates(
     }
 
     if (
-      await isDependencyBlocked(repo, issue.number, fetcher, openStateMap)
+      await isDependencyBlocked(repo, issue.number, fetcher, openStateMap, {
+        candidateMilestone: milestoneTitle,
+        isMilestoneOpen,
+      })
     ) {
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       continue;

@@ -5133,7 +5133,7 @@ async function syncMilestoneBranchesFn(
   deadlineEpochMs?: number,
 ): Promise<void> {
   const { syncMilestoneBranches } = await import("./milestone_branch_sync.ts");
-  const { milestoneSyncStreakPath } = await import(
+  const { milestoneSyncCursorPath, milestoneSyncStreakPath } = await import(
     "./milestone_sync_streak.ts"
   );
   const { readLocalDefaultTip } = await import("./milestone_default_tip.ts");
@@ -5287,6 +5287,7 @@ async function syncMilestoneBranchesFn(
     // tracking issue (proposal 2).
     emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
     streakPath: milestoneSyncStreakPath(workDir),
+    cursorPath: milestoneSyncCursorPath(workDir),
     // Issue #1778: the conflict ledger's pacing and the one-agent-per-cycle
     // bound both read the handler's own budget. The agent timeout stated
     // here is the one `runMergeConflictAgent` is bound to above, so a rung

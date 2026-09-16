@@ -86,6 +86,13 @@ import {
   recordPartialFailureDetectionRepair,
 } from "./failure_detection_repair_label.ts";
 import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
+import {
+  escalateMilestoneGroupOffenders,
+  type MilestoneGroup,
+  MILESTONES_TABLE_REQUIREMENT,
+  runMilestoneGroupsGate,
+  validateMilestoneGroups,
+} from "./plan_milestone_groups.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { EscalateToHumanDeps } from "./needs_human_escalation.ts";
@@ -968,7 +975,7 @@ ${delimiters.bodyEnd}
 ${commentsSection}${delimiters.untrustedEnd}
 ${buildBoundaryIntegrityInstruction(delimiters.boundaryId)}
 
-Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed. ${COVERAGE_TABLE_REQUIREMENT}${milestoneNote}`;
+Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed. ${COVERAGE_TABLE_REQUIREMENT} ${MILESTONES_TABLE_REQUIREMENT}${milestoneNote}`;
 }
 
 /**
@@ -1125,7 +1132,7 @@ export function buildCritiqueFallbackPublishPrompt(opts: {
     }"\` in every \`gh issue create\` command.`
     : "";
 
-  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${FAILURE_DETECTION_REQUIREMENT} ${COVERAGE_TABLE_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
+  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${FAILURE_DETECTION_REQUIREMENT} ${COVERAGE_TABLE_REQUIREMENT} ${MILESTONES_TABLE_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2306,7 +2313,91 @@ async function closePlanningIssue(
       });
     }
   }
-  // Issue #1120: coverage is deliberately the only plan gate here. A planning
+  // Issue #2172 (part of #2163): structural gate on the `## Milestones` table.
+  // A planning run groups its sub-issues by file area so the fleet can work
+  // several milestones in parallel, and the publish turn records the grouping
+  // as a table on the parent. The gate rules on structure only — a published
+  // sub-issue in no group or in two, a group naming no file area, and the
+  // 4-milestone cap — never on file overlap, which is planner judgement.
+  //
+  // Runs only when the run published 2+ sub-issues (fewer is one sub-issue
+  // straight to the default branch, so there is nothing to group) and the
+  // parent owns no milestone of its own (the #1300 inheritance path keeps
+  // ownership, exactly as `maybeCreatePlanningMilestone` gates on it).
+  //
+  // A sound grouping is carried to `maybeCreatePlanningMilestone` below, which
+  // creates one milestone per group of 2+ sub-issues (Issue #2175); anything
+  // else leaves it undefined and the legacy single-milestone path runs.
+  let soundMilestoneGroups: MilestoneGroup[] | undefined;
+  if (
+    textSubIssueNumbers.length >= 2 &&
+    (parentMilestoneTitle ?? "").trim() === ""
+  ) {
+    const milestoneVerdict = await runMilestoneGroupsGate({
+      repo,
+      parentIssueNumber: issueNumber,
+      ghCommandFn: deps.github.runGhCommand,
+      logger,
+      // A comment is writable by anyone, and the first candidate carrying a
+      // table wins — so only fleet-authored comments are candidates (#1244).
+      authorOptions: planningAuthorOptions(config, githubUser, logger),
+    });
+
+    if (!milestoneVerdict.tableFound) {
+      // Deliberate: the prompts teach the table (#2174) but cannot be
+      // relied on — a degraded run or an operator's own template may publish
+      // none — so a plan with no `## Milestones` table takes the legacy path
+      // — one milestone for the whole plan — rather than stranding the run. A read failure is reported as such; the coverage gate above has
+      // already escalated the same unreadable parent.
+      logger.info(
+        "Milestone-groups gate: no `## Milestones` table on the parent — one milestone for the plan, as today (Issue #2172)",
+        { repo, issueNumber, readFailed: milestoneVerdict.readFailed === true },
+      );
+    } else {
+      const offenders = validateMilestoneGroups(
+        milestoneVerdict.groups,
+        textSubIssueNumbers,
+      );
+      if (offenders.length === 0) {
+        // The grouping is sound — one milestone per group below (Issue #2175).
+        soundMilestoneGroups = milestoneVerdict.groups;
+        logger.info(
+          "Milestone-groups gate: the published `## Milestones` table is structurally sound (Issue #2172)",
+          {
+            repo,
+            issueNumber,
+            groups: milestoneVerdict.groups
+              .map((g) => `${g.title === "" ? "—" : g.title} [${g.area}]`)
+              .join(" | "),
+          },
+        );
+      } else {
+        logger.warn(
+          `Milestone-groups gate: ${offenders.length} row(s) break the grouping rules — escalating to a human and falling back to a single milestone (Issue #2172)`,
+          {
+            repo,
+            issueNumber,
+            offenders: offenders.map((o) => o.subject).join(" | "),
+          },
+        );
+        // The shared needs-human chokepoint — not a second escalation path. A
+        // broken grouping needs a human to regroup; the legacy single
+        // milestone below still ships the plan in the meantime.
+        await escalateMilestoneGroupOffenders({
+          ghClient,
+          repo,
+          parentIssueNumber: issueNumber,
+          needsHumanLabel: config.needsHumanLabel,
+          offenders,
+          githubUser,
+          logger,
+          deps: labelDepsFor(deps.github.runGhCommand),
+        });
+      }
+    }
+  }
+
+  // Issue #1120: there is deliberately no MVP-slice gate beside them. A planning
   // run puts its sub-issues in a milestone, and a milestone merges as a whole
   // from its own feature branch (docs/workflows/milestones.md), so ordering
   // partial value inside one — the removed MVP-slice gate — delivers nothing.
@@ -2358,15 +2449,58 @@ async function closePlanningIssue(
   // assign every sub-issue to it. This opts the sub-issues into the existing
   // milestone-branch delivery workflow (Issue #1300). Idempotent and
   // best-effort — a failure must never abort planning closure.
-  await maybeCreatePlanningMilestone({
+  const planningMilestones = await maybeCreatePlanningMilestone({
     repo,
     parentIssueNumber: issueNumber,
     parentIssueTitle,
     parentMilestoneTitle,
     subIssueNumbers,
+    // Issue #2175: with a sound `## Milestones` grouping, one milestone per
+    // group of 2+ sub-issues instead of one for the whole plan. Undefined
+    // keeps the legacy single-milestone behaviour.
+    ...(soundMilestoneGroups ? { groups: soundMilestoneGroups } : {}),
     ghCommandFn: deps.github.runGhCommand,
     logger,
   });
+  for (const milestone of planningMilestones.milestones ?? []) {
+    if (milestone.milestoneNumber === undefined) {
+      const deliberate = milestone.skippedReason === "too-few-sub-issues" ||
+        milestone.skippedReason === "no-milestone-row";
+      // A deliberate skip and a GitHub failure are not the same outcome, so
+      // they are never reported with the same words or at the same level: a
+      // group that lost its milestone to an error must not read as a design
+      // decision.
+      const context = {
+        repo,
+        issueNumber,
+        area: milestone.area,
+        reason: milestone.skippedReason ?? "unknown",
+      };
+      if (deliberate) {
+        logger.info(
+          "Milestone group: no milestone — this group merges straight to the default branch (Issue #2175)",
+          context,
+        );
+      } else {
+        logger.warn(
+          "Milestone group: failed to create the group's milestone — its sub-issues keep the default branch (Issue #2175)",
+          context,
+        );
+      }
+      continue;
+    }
+    logger.info(
+      "Milestone group: created or reused one milestone for the group (Issue #2175)",
+      {
+        repo,
+        issueNumber,
+        area: milestone.area,
+        milestoneTitle: milestone.milestoneTitle,
+        milestoneNumber: milestone.milestoneNumber,
+        assigned: milestone.assigned.join(", "),
+      },
+    );
+  }
 
   // Issue #2650: on a degraded run, tag the parent issue and every sub-issue
   // with the non-reserved `degraded-model` label so silent model degradation is
