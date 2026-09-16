@@ -585,12 +585,73 @@ flowchart TD
     D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
 ```
 
+#### 🗺️ Milestones table and structural gate (Issue #2172)
+
+A planning run groups its sub-issues by **file area** so the fleet can work
+several milestones in parallel instead of serialising one milestone branch
+(Issue #2163). The publish turn records that grouping as a `## Milestones`
+table in the same summary comment as the coverage table — one row per group,
+naming the milestone, the file area and the group's sub-issues:
+
+```markdown
+## Milestones
+
+| Milestone | File area | Sub-issues |
+| --- | --- | --- |
+| infra: options trading | infra/ | #101, #102 |
+| backend: options trading | backend/lambdas | #103, #104 |
+| — | docs/ | #105 |
+```
+
+A `—` in `Milestone` marks a group of one sub-issue that merges **straight to
+the default branch** and gets no milestone at all, exactly as a
+single-sub-issue plan does today.
+
+**The gate.** `worker/deno/lib/plan_milestone_groups.ts` re-reads the parent at
+`closePlanningIssue()` — the same chokepoint as the coverage gate, never a
+second one — and locates the table by its **column signature** (a milestone
+column, a file-area column and a sub-issues column), so the adjacent
+`## Plan Coverage` table is skipped rather than parsed as this one. It rules on
+**structure only**:
+
+| Rejected | Never rejected |
+| --- | --- |
+| a published sub-issue in no group, or in two groups | two groups touching the same file area |
+| a group naming no file area | the file areas the planner chose |
+| a fifth group carrying two or more sub-issues | any number of `—` single-sub-issue rows |
+
+File overlap is deliberately left to planner judgement: a structural gate
+cannot tell an accepted housekeeping overlap (`deno.json`, a lockfile) from a
+real collision, so it would reject sound plans.
+
+**What happens on each outcome.** A parent with **no** `## Milestones` table
+takes the legacy path — one milestone for the whole plan — and closes exactly
+as before; the gate landed ahead of the prompts that teach the table, and a
+missing table must never strand a planning run. A table that is present but
+**structurally broken** escalates through the shared `escalateToHuman()`
+chokepoint (`needs-human` plus a paired comment naming every offending row)
+**and** still creates the legacy single milestone, so overnight delivery
+continues while a human regroups. Both in-code fallback publish prompts
+interpolate the same `MILESTONES_TABLE_REQUIREMENT` constant that lives beside
+the gate, so a degraded run does not publish a table the gate is bound to
+reject.
+
+```mermaid
+flowchart TD
+    A["closePlanningIssue() — 2+ sub-issues published,<br/>parent owns no milestone"] --> B{"## Milestones table found?"}
+    B -->|no| L["Legacy path: one milestone for the plan<br/>close the parent"]
+    B -->|yes| C{"Every sub-issue in exactly one group,<br/>every group names a file area,<br/>at most 4 multi-sub-issue groups?"}
+    C -->|yes| D[Grouping accepted]
+    C -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each offending row"]
+    E --> L
+```
+
 #### 🔐 Every close-out signal is author-verified (Issue #1244)
 
-Four reads decide whether a planning parent may be closed, and all four used to
-read text **any GitHub account can write** without asking who wrote it. The
-author is the only part of a match GitHub authenticates, so each is now filtered
-through the fleet author check (`selectFleetAuthoredMatches` /
+Five reads decide whether a planning parent may be closed, and every one of
+them reads text **any GitHub account can write** — once without asking who
+wrote it. The author is the only part of a match GitHub authenticates, so each
+is now filtered through the fleet author check (`selectFleetAuthoredMatches` /
 `selectFleetAuthoredComments`) against the fleet identity — this host's login ∪
 `fleet_pr_authors` ∪ `service_accounts`, never `allowed_authors` and never
 `--author @me`, which would break cross-host convergence:
@@ -601,6 +662,7 @@ through the fleet author check (`selectFleetAuthoredMatches` /
 | `listSubIssuesViaIssueList()` — `Part of #N` / `Parent: #N` / `Child of #N` in any body | the same close path, and it suppressed the #1219 retry | the same |
 | `fetchNothingToDoSignal()` — `Nothing to do —` in any comment | skip the carrier sub-issue, dropping real work | one comment |
 | `runPlanCoverageGate()` — first comment carrying a coverage table wins | pass the gate before the parent's own failing table is read | one comment with a two-column table |
+| `runMilestoneGroupsGate()` — first comment carrying a `## Milestones` table wins | how the plan's sub-issues are grouped into milestones | one comment with a three-column table |
 
 **The fail direction is always towards doing the work.** An unattributable match
 — including *every* match when the fleet identity cannot be resolved — is
