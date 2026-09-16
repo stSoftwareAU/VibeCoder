@@ -743,8 +743,38 @@ Deno.test("driftSince - an unreachable sweptAt names the slice, the commit and t
   assertStringIncludes(message, "fatal: bad object");
   // The remedy, so the report is actionable without reading the source.
   assertStringIncludes(message, "reachable from the default branch");
+  // Anchored at origin/main: an unanchored git log run on a feature branch
+  // hands back another feature-branch commit, which is the defect itself.
   assertStringIncludes(
     message,
-    `git log -1 --format=%H -- ${ledger.slices[0]!.ledger}`,
+    `git log --diff-filter=A -1 --format=%H origin/main -- ` +
+      `${ledger.slices[0]!.ledger}`,
   );
+});
+
+Deno.test("driftSince - a non-zero git exit with no stderr still names the slice (Issue #2178)", async () => {
+  // Git said nothing: the report must still fail loud, and still say which
+  // slice and which commit, rather than reporting an empty drift.
+  const ledger = ledgerFixture([{
+    chunk: "top-up-2178",
+    paths: ["worker/deno/lib/a.ts"],
+  }]);
+  let thrown: unknown;
+  try {
+    await driftSince(
+      ledger,
+      ledger.slices[0]!,
+      ["worker/deno/lib/a.ts"],
+      fakeGit({
+        "--diff-filter=A": { code: 128, stdout: "", stderr: "   \n" },
+      }),
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assert(thrown instanceof SweepLedgerError, String(thrown));
+  const message = (thrown as SweepLedgerError).message;
+  assertStringIncludes(message, "top-up-2178");
+  assertStringIncludes(message, FIXTURE_COMMIT);
+  assertStringIncludes(message, "git diff --diff-filter=A exited 128");
 });

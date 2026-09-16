@@ -351,7 +351,10 @@ function rootsForSlice(
  * The message a failed drift diff throws (Issue #2178).
  *
  * Names the slice, the `sweptAt` git could not resolve and the remedy, so
- * the operator can repoint the entry without reading this source. Git's own
+ * the operator can repoint the entry without reading this source. The remedy
+ * is anchored at `origin/main`: run on the feature branch the failure is
+ * usually hit from, an unanchored `git log` hands back another
+ * feature-branch commit — the very thing squash-merge deletes. Git's own
  * stderr is kept verbatim at the end.
  *
  * @param slice - The slice whose diff failed.
@@ -373,7 +376,8 @@ function driftFailureMessage(
     `sweptAt ${slice.sweptAt} could not be diffed against HEAD`,
     `sweptAt must be a commit reachable from the default branch — a ` +
     `feature-branch commit is deleted by squash-merge`,
-    `repoint it with: git log -1 --format=%H -- ${slice.ledger}`,
+    `repoint it with: git log --diff-filter=A -1 --format=%H origin/main ` +
+    `-- ${slice.ledger}`,
     detail,
   ].join("; ");
 }
