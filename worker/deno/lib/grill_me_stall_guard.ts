@@ -78,6 +78,56 @@ export function parseQuestionStems(body: string): string[] {
 }
 
 /**
+ * Trailing characters a question stem is compared without: sentence
+ * punctuation and whitespace.
+ */
+const TRAILING_STEM_CHARS = new Set([
+  ".",
+  ",",
+  ";",
+  ":",
+  "!",
+  "?",
+  "\u2026", // …
+  "\u2014", // —
+  "\u2013", // –
+  " ",
+  "\t",
+  "\n",
+  "\r",
+  "\f",
+  "\v",
+  "\u00a0",
+]);
+
+/**
+ * Strip {@link TRAILING_STEM_CHARS} from the end of a stem, in one backward
+ * walk (Issue #2183).
+ *
+ * This was `replace(/[.,;:!?…—–\s]+$/u, "")`, and that is quadratic: the
+ * regex is unanchored, so the engine retries the match at every start offset
+ * and each retry rescans the whole run before failing at `$`. Round comments
+ * are collected by heading marker with **no author gate** (`carriesRoundMarker`
+ * in `grill_me_processor.ts`, deliberately so since Issue #1560), so any
+ * commenter could hand the guard a 65 536-character stem ending in one
+ * non-punctuation character and spend seconds of worker CPU per pass. The
+ * delta sweep of ledger slices 12d–12f measured 43 ms at 10 000 characters
+ * against 695 ms at 40 000 — a 4x input costing 16x.
+ *
+ * The walk visits each trailing character once and stops at the first
+ * character that is not stripped, so the cost is linear in the length of the
+ * run and the result is character-for-character what the regex produced.
+ *
+ * @param text - Stem text, already lower-cased and whitespace-collapsed
+ * @returns The text without its trailing punctuation and whitespace
+ */
+function stripTrailingPunctuation(text: string): string {
+  let end = text.length;
+  while (end > 0 && TRAILING_STEM_CHARS.has(text[end - 1]!)) end--;
+  return text.slice(0, end);
+}
+
+/**
  * Normalise a question stem for exact comparison (Issue #1933).
  *
  * Lower-case, strip Markdown emphasis markers (`*`, `_`, backticks), collapse
@@ -89,13 +139,13 @@ export function parseQuestionStems(body: string): string[] {
  * @returns The normalised form used for comparison
  */
 export function normaliseQuestionStem(stem: string): string {
-  return stem
-    .toLowerCase()
-    .replace(/[*_`]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[.,;:!?…—–\s]+$/u, "")
-    .trim();
+  return stripTrailingPunctuation(
+    stem
+      .toLowerCase()
+      .replace(/[*_`]/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  ).trim();
 }
 
 /** Normalised stems of one round, with empties dropped. */
