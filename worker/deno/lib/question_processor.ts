@@ -41,6 +41,7 @@ import {
   collectGraftContext,
   describeGraftContext,
   type GraftContextCollector,
+  graftContextFacts,
   type GraftContextResult,
   type GraftContextSlot,
   graftQueryFor,
