@@ -56,6 +56,16 @@ interface LastToolCall {
 export interface AgentActivitySnapshot {
   /** Tool calls seen since the run started. */
   toolCalls: number;
+  /**
+   * Tool name → number of calls, summing to {@link toolCalls} (Issue #2157).
+   *
+   * The same events the total counts, kept per name so a caller can ask how
+   * often one tool was used — "how many `codegraph_explore` queries did the
+   * agent make?" — without a second pass over the stream. Claude blocks are
+   * keyed on the block `name`; Codex items on the resolved tool name (the
+   * same label the progress line shows). Empty until the first tool call.
+   */
+  toolCallCounts: Readonly<Record<string, number>>;
   /** Epoch-ms of the most recent tool call, or undefined if none yet. */
   lastToolCallAtMs?: number;
   /**
@@ -85,6 +95,8 @@ export class AgentProgressTracker {
   readonly #startMs: number;
   #carry = "";
   #toolCalls = 0;
+  /** Tool name → calls, beside the total (Issue #2157). */
+  #toolCallCounts = new Map<string, number>();
   #lastTool: LastToolCall | undefined;
   #lastEmitMs: number;
   #lastChunkMs: number;
@@ -108,9 +120,16 @@ export class AgentProgressTracker {
   snapshot(): AgentActivitySnapshot {
     return {
       toolCalls: this.#toolCalls,
+      toolCallCounts: Object.fromEntries(this.#toolCallCounts),
       ...(this.#lastTool ? { lastToolCallAtMs: this.#lastTool.atMs } : {}),
       lastChunkAtMs: this.#lastChunkMs,
     };
+  }
+
+  /** Count one call of `name` against both the total and the per-tool tally. */
+  #countToolCall(name: string): void {
+    this.#toolCalls++;
+    this.#toolCallCounts.set(name, (this.#toolCallCounts.get(name) ?? 0) + 1);
   }
 
   /**
@@ -161,7 +180,7 @@ export class AgentProgressTracker {
         const detail = describeToolInput(
           (block as { input?: unknown }).input,
         );
-        this.#toolCalls++;
+        this.#countToolCall(name);
         this.#lastTool = {
           summary: detail ? `${name} ${detail}` : name,
           atMs,
@@ -222,7 +241,7 @@ export class AgentProgressTracker {
       file_path: item.file_path,
       url: item.url,
     });
-    this.#toolCalls++;
+    this.#countToolCall(name);
     this.#lastTool = {
       summary: detail ? `${name} ${detail}` : name,
       atMs,
