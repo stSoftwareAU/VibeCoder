@@ -110,7 +110,7 @@ import {
 } from "./self_heal_events.ts";
 
 // Re-exported for the callers and tests that knew this helper by its old
-// home; the channel itself now lives in host_escalation.ts (Issue #556).
+// home; it now lives in host_escalation.ts alongside the host id (Issue #556).
 export { parseOriginRepo };
 
 /**

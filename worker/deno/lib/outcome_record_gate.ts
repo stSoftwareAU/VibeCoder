@@ -8,11 +8,12 @@
  * invocation missing the flag reports `unknown-host` for its `<phase>`
  * failure.
  *
- * That is not a cosmetic loss. The host is how a reader — and, since Issue
- * #2108, the operator's own `callbacks.host_failure` hook — tells one
- * machine's outage from another's, so every host in the fleet collapses onto
- * one nameless report per phase. Issues #709, #710 and #711 are the three
- * that arrived that way: three phases, one nameless host, nothing to act on.
+ * That is not a cosmetic loss. Since Issue #2108 the report is the
+ * `callbacks.host_failure` payload the operator's own hook receives, and its
+ * `host` field is the only thing telling one machine's outage from another's
+ * — so every host in the fleet collapses onto one nameless report per phase.
+ * Issues #709, #710 and #711 are the three that arrived that way: three
+ * phases, one nameless host, nothing to act on.
  *
  * `loop.sh` has carried the flag since Issue #633; the other three call sites
  * were never updated with it. One flag across four scripts is exactly the
@@ -100,8 +101,8 @@ export function findOutcomeRecordInvocations(
       ...(namesHost ? {} : {
         fault: `${file}:${index + 1}: the ${OUTCOME_RECORDER} invocation ` +
           `omits ${HOSTNAME_PERMISSION}, so Deno.hostname() throws and the ` +
-          `escalation it files is titled "unknown-host" — which is also its ` +
-          "deduplication key, so every host in the fleet shares one report " +
+          'host-failure payload it hands the hook names "unknown-host" — ' +
+          "every host in the fleet then reports under one nameless host " +
           "(Issue #709)",
       }),
     });
