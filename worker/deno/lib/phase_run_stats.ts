@@ -39,6 +39,7 @@
 import type { Logger } from "../types.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import type { EnvLookup } from "./env_lookup.ts";
+import type { GraftContextResult } from "./graft_context.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import {
@@ -174,6 +175,14 @@ export async function reportPhaseDegradation(args: {
    * caller supplies nothing.
    */
   env?: EnvLookup;
+  /**
+   * What the round's Graft collection did (Issue #2105, part of #2060).
+   * Reported on both the healthy and the degraded comment, so the figures are
+   * readable on the issue whichever way the round went. Omitted — a phase that
+   * collects no bundle, or a round that ended before the collection — renders
+   * exactly the comment this recorder rendered before.
+   */
+  graft?: GraftContextResult;
 }): Promise<DegradationVerdict> {
   const {
     phase,
@@ -189,6 +198,7 @@ export async function reportPhaseDegradation(args: {
   const claudeResults = Array.isArray(claudeResult)
     ? claudeResult
     : [claudeResult];
+  const graft = args.graft ? { graft: args.graft } : {};
   const invocations = claudeResults.flatMap((result) =>
     buildPhaseInvocations(phase, result)
   );
@@ -215,6 +225,7 @@ export async function reportPhaseDegradation(args: {
       postComment,
       logger,
       ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
+      ...graft,
     });
     return verdict;
   }
@@ -242,6 +253,7 @@ export async function reportPhaseDegradation(args: {
   const body = buildIssueRunStatsComment({
     phase,
     claudeResults,
+    ...graft,
   });
   if (body) {
     try {

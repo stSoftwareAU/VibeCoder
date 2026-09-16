@@ -505,6 +505,8 @@ async function _processQuestionWithHeartbeat(
       listIssueComments: (r, i) => ghClient.getIssueComments(r, i),
       runGhCommand: deps.github.runGhCommand,
       logger,
+      // The round's Graft figures ride the same comment (Issue #2105).
+      ...(graftSlot.result ? { graft: graftSlot.result } : {}),
     });
   } catch (err) {
     logger.warn("Question degraded-model detection failed (non-fatal)", {

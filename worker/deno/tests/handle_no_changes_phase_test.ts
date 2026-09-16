@@ -571,6 +571,47 @@ Deno.test(
 );
 
 Deno.test(
+  "handle_no_changes_phase - the run-stats comment states a failed Graft run (Issue #2105)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-4-8"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+      graftContext: { status: "failed", enabled: true, buildSeconds: 300 },
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    const stats = calls.postComment.find((c) =>
+      c.body.includes(ISSUE_RUN_STATS_MARKER)
+    );
+    assert(stats, "expected a run-stats comment on the closed issue");
+    assert(
+      stats.body.includes("- **Graft:** failed — build 300 s"),
+      `expected the Graft line, got:\n${stats.body}`,
+    );
+  },
+);
+
+Deno.test(
   "handle_no_changes_phase - already-complete close posts no stats when Claude produced none",
   async () => {
     const calls = makeStubGhCalls();

@@ -484,8 +484,13 @@ export function phaseDisplayName(phase: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
-/** Format an integer with thousands separators (locale-independent). */
-function formatCount(n: number): string {
+/**
+ * Format an integer with thousands separators (locale-independent).
+ *
+ * Exported since Issue #2105 so the Graft line on the run-stats comment
+ * renders its counts exactly as the stats block above it does.
+ */
+export function formatCount(n: number): string {
   return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
