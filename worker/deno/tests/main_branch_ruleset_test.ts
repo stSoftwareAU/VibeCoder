@@ -221,3 +221,82 @@ Deno.test("diffLiveRuleset - reports a changed ref condition", async () => {
   const fields = diffLiveRuleset(live, committed).map((d) => d.field);
   assert(fields.includes("conditions.ref_name.include"), fields.join(", "));
 });
+
+// ---------------------------------------------------------------------------
+// Issue #2169 — pull_request parameters are compared, in both directions
+// ---------------------------------------------------------------------------
+
+type LiveRules = {
+  rules: Array<{ type: string; parameters?: Record<string, unknown> }>;
+};
+
+function pullRequestRule(payload: LiveRules): Record<string, unknown> {
+  const rule = payload.rules.find((r) => r.type === "pull_request");
+  if (!rule?.parameters) throw new Error("no pull_request rule");
+  return rule.parameters;
+}
+
+Deno.test("diffLiveRuleset - a live pull_request rule weaker than the committed one is drift, not agreement (Issue #2169)", async () => {
+  const committed = await loadMainBranchRuleset();
+  const live = asLive(committed) as LiveRules;
+  pullRequestRule(live).require_code_owner_review = false;
+  const drift = diffLiveRuleset(live, committed);
+  assertEquals(drift.length, 1, JSON.stringify(drift));
+  assertEquals(drift[0]?.field, "rules.pull_request.require_code_owner_review");
+  assertStringIncludes(drift[0]?.detail ?? "", "applied false, committed true");
+});
+
+Deno.test("diffLiveRuleset - a live pull_request rule stronger than the committed one is drift too — the PUT would downgrade it (Issue #2169)", async () => {
+  // The live shape on 2026-09-16: code-owner review on, the file said off.
+  const committed = JSON.parse(
+    JSON.stringify(await loadMainBranchRuleset()),
+  ) as Awaited<ReturnType<typeof loadMainBranchRuleset>>;
+  pullRequestRule(committed as unknown as LiveRules).require_code_owner_review =
+    false;
+  const live = asLive(committed) as LiveRules;
+  pullRequestRule(live).require_code_owner_review = true;
+  pullRequestRule(live).required_approving_review_count = 1;
+  const fields = diffLiveRuleset(live, committed).map((d) => d.field).sort();
+  assertEquals(fields, [
+    "rules.pull_request.require_code_owner_review",
+    "rules.pull_request.required_approving_review_count",
+  ]);
+});
+
+Deno.test("diffLiveRuleset - a parameter GitHub returns that the file does not carry is drift (Issue #2169)", async () => {
+  const committed = await loadMainBranchRuleset();
+  const live = asLive(committed) as LiveRules;
+  pullRequestRule(live).require_future_setting = true;
+  const drift = diffLiveRuleset(live, committed);
+  assertEquals(drift.map((d) => d.field), [
+    "rules.pull_request.require_future_setting",
+  ]);
+  assertStringIncludes(drift[0]?.detail ?? "", "not committed");
+});
+
+Deno.test("diffLiveRuleset - allowed_merge_methods is compared as a set, so order is not drift but a new method is (Issue #2169)", async () => {
+  const committed = await loadMainBranchRuleset();
+  const live = asLive(committed) as LiveRules;
+  pullRequestRule(live).allowed_merge_methods = ["squash"];
+  assertEquals(diffLiveRuleset(live, committed), []);
+  pullRequestRule(live).allowed_merge_methods = ["merge", "squash"];
+  const drift = diffLiveRuleset(live, committed);
+  assertEquals(drift.map((d) => d.field), [
+    "rules.pull_request.allowed_merge_methods",
+  ]);
+});
+
+Deno.test("diffLiveRuleset - the committed main.json requires code-owner review and secret-scanning alert resolution, as the live ruleset does (Issue #2169)", async () => {
+  const committed = await loadMainBranchRuleset();
+  assertEquals(
+    pullRequestRule(committed as unknown as LiveRules)
+      .require_code_owner_review,
+    true,
+  );
+  assert(
+    committed.rules.some((r) =>
+      r.type === "require_secret_scanning_alert_resolution"
+    ),
+    "the live ruleset carries the secret-scanning rule; the file must too",
+  );
+});

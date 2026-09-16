@@ -183,12 +183,89 @@ export function setDiff(
 }
 
 /**
+ * Rule types whose parameters {@link diffRulesetPayloads} leaves to a
+ * dedicated diff — `diffRequiredStatusChecks` compares the contexts as a set
+ * and says what each difference lets merge, which a field-by-field note
+ * cannot.
+ */
+const PARAMETERS_DIFFED_ELSEWHERE: ReadonlySet<string> = new Set([
+  "required_status_checks",
+]);
+
+/** Canonical JSON: sorted object keys, primitive arrays as sorted sets. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) {
+    const items = value.map(canonical);
+    if (value.every((v) => v === null || typeof v !== "object")) items.sort();
+    return `[${items.join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${
+      Object.keys(record).sort().map((k) =>
+        `${JSON.stringify(k)}:${canonical(record[k])}`
+      ).join(",")
+    }}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/**
+ * Compare the parameters of every rule both payloads carry (Issue #2169).
+ *
+ * The rule types alone said "agree" while the live `pull_request` rule
+ * required code-owner review and the committed one did not — and the
+ * suggested `PUT` would have replaced the stronger live rule with the weaker
+ * file, unflagged. Every parameter key on either side is compared, so a
+ * setting GitHub adds later is drift too, never silently ignored.
+ */
+export function diffRuleParameters(
+  applied: RulesetRule[],
+  committed: RulesetRule[],
+): RulesetDrift[] {
+  const drift: RulesetDrift[] = [];
+  for (const wantedRule of committed) {
+    if (PARAMETERS_DIFFED_ELSEWHERE.has(wantedRule.type)) continue;
+    const appliedRule = applied.find((rule) => rule.type === wantedRule.type);
+    if (!appliedRule) continue; // a missing rule is reported by type above
+    const wanted = wantedRule.parameters ?? {};
+    const live = appliedRule.parameters ?? {};
+    const keys = [...new Set([...Object.keys(wanted), ...Object.keys(live)])]
+      .sort();
+    for (const key of keys) {
+      const field = `rules.${wantedRule.type}.${key}`;
+      if (!(key in live)) {
+        drift.push({
+          field,
+          detail: `committed ${canonical(wanted[key])}, not applied`,
+        });
+      } else if (!(key in wanted)) {
+        drift.push({
+          field,
+          detail: `applied ${canonical(live[key])}, not committed`,
+        });
+      } else if (canonical(live[key]) !== canonical(wanted[key])) {
+        drift.push({
+          field,
+          detail: `applied ${canonical(live[key])}, committed ${
+            canonical(wanted[key])
+          }`,
+        });
+      }
+    }
+  }
+  return drift;
+}
+
+/**
  * Compare the ruleset GitHub applies against the committed payload.
  *
  * Every field that could weaken enforcement is compared, not just the rule
  * types: a ruleset with a bypass actor is technically still "active" and
- * protects nothing, and one whose enforcement dropped to `evaluate` reports
- * without blocking. An empty array means the two agree.
+ * protects nothing, one whose enforcement dropped to `evaluate` reports
+ * without blocking, and a `pull_request` rule whose parameters differ can
+ * require nothing of a review (Issue #2169). An empty array means the two
+ * agree.
  */
 export function diffRulesetPayloads(
   live: unknown,
@@ -266,6 +343,7 @@ export function diffRulesetPayloads(
   for (const type of ruleDiff.extra) {
     note("rules", `rule "${type}" is applied but not committed`);
   }
+  drift.push(...diffRuleParameters(applied.rules, committed.rules));
 
   return drift;
 }
