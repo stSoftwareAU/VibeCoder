@@ -392,6 +392,13 @@ export interface WorkOnIssueResult {
    */
   telemetryAbsentReason?: TelemetryAbsentReason;
   /**
+   * What the run's Graft repo-context collection did (Issue #2104, part of
+   * #2060), lifted from {@link PhaseState.graftContext} so the main loop can
+   * carry it into the post-run callback context. Absent when the run ended
+   * before the collection was reached.
+   */
+  graftContext?: GraftContextResult;
+  /**
    * The setup phase was refused the claim (Issue #1193): another host holds
    * the issue, so this run has nothing to release. The main loop passes it
    * to `releaseIssueClaim`, which then releases nothing — without it the

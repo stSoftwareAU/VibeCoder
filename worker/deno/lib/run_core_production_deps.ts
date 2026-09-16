@@ -3917,6 +3917,11 @@ export async function createProductionRunCoreDeps(
           ...(result.telemetryAbsentReason && !isExpectedSkip
             ? { telemetryAbsentReason: result.telemetryAbsentReason }
             : {}),
+          // What the run's Graft collection did (Issue #2104), for the
+          // callback context. A skip never reached the collection.
+          ...(result.graftContext && !isExpectedSkip
+            ? { graftContext: result.graftContext }
+            : {}),
           ...(result.phase && !isExpectedSkip ? { phase: result.phase } : {}),
         },
       };

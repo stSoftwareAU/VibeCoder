@@ -205,6 +205,10 @@ export async function workOnIssue(
       outcome,
       ...(telemetry ? { telemetry } : {}),
       ...(telemetryAbsentReason ? { telemetryAbsentReason } : {}),
+      // What this run's Graft collection did (Issue #2104). Derived here for
+      // the same reason the outcome is: every terminal return leaves it on
+      // the state, so the callback context needs no per-return plumbing.
+      ...(state.graftContext ? { graftContext: state.graftContext } : {}),
       // Issue #1949: a phase that already stepped the failure ladder says so,
       // so the main loop does not step it a second time in the same run.
       ...(state.failureLadderApplied ? { ladderApplied: true } : {}),

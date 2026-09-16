@@ -97,6 +97,17 @@ const ADDITIVE_ENV = [
   "VIBECODER_MODEL",
 ] as const;
 
+/**
+ * The Graft figures added without a version bump (Issue #2104) — present
+ * only when the collection actually reached them.
+ */
+const GRAFT_FIGURE_ENV = [
+  "VIBECODER_GRAFT_BUILD_SECONDS",
+  "VIBECODER_GRAFT_BUNDLE_CHARS",
+  "VIBECODER_GRAFT_NODE_COUNT",
+  "VIBECODER_GRAFT_CALL_EDGE_COUNT",
+] as const;
+
 /** A run that has every optional fact, so every field is exercised. */
 const FULL_CONTEXT: IssueRunCallbackContext = {
   runId: "vibe-mtk92vcu-ebcc11",
@@ -123,11 +134,19 @@ const FULL_CONTEXT: IssueRunCallbackContext = {
     model: "claude-opus-4-6",
   },
   outcome: { kind: "pr", prNumber: 267, phase: "completion" },
+  graft: {
+    enabled: true,
+    status: "ok",
+    buildSeconds: 12.5,
+    bundleChars: 4096,
+    nodeCount: 820,
+    callEdgeCount: 1204,
+  },
 };
 
 /** The same run with every additive field of Issue #2100 unsupplied. */
 const WITHOUT_ADDITIVE: IssueRunCallbackContext = (() => {
-  const { mode: _mode, telemetry, ...rest } = FULL_CONTEXT;
+  const { mode: _mode, graft: _graft, telemetry, ...rest } = FULL_CONTEXT;
   const { turns: _turns, model: _model, ...leanTelemetry } = telemetry ?? {};
   return { ...rest, telemetry: leanTelemetry };
 })();
@@ -271,5 +290,93 @@ Deno.test(
     );
     const missing = SCHEMA_1_ENV.filter((name) => env[name] === undefined);
     assertEquals(missing, [], "an additive change dropped a schema 1 scalar");
+  },
+);
+
+Deno.test(
+  "#2104 - every run carries the Graft block, whatever the collection did",
+  () => {
+    // The point of the block is comparability: `ok`, `failed` and `off` all
+    // report `enabled` and `status`, so a host is never silent about Graft.
+    const shapes: Array<[IssueRunCallbackContext["graft"], boolean, string]> = [
+      [{ enabled: true, status: "ok", nodeCount: 820 }, true, "ok"],
+      [{ enabled: true, status: "failed", buildSeconds: 301 }, true, "failed"],
+      [{ enabled: false, status: "off" }, false, "off"],
+      // A run that ended before the collection reports the `off` block too.
+      [undefined, false, "off"],
+    ];
+    for (const [graft, enabled, status] of shapes) {
+      const document = buildCallbackContextDocument(
+        { ...FULL_CONTEXT, ...(graft ? { graft } : { graft: undefined }) },
+        "always",
+      );
+      const block = document.graft as Record<string, unknown>;
+      assertEquals(typeof block, "object", `graft missing for ${status}`);
+      assertEquals(block.enabled, enabled, `graft.enabled wrong for ${status}`);
+      assertEquals(block.status, status, `graft.status wrong for ${status}`);
+
+      const env = buildCallbackEnv(
+        { ...FULL_CONTEXT, ...(graft ? { graft } : { graft: undefined }) },
+        "always",
+        "/tmp/context.json",
+        () => undefined,
+      );
+      assertEquals(env.VIBECODER_GRAFT_ENABLED, String(enabled));
+      assertEquals(env.VIBECODER_GRAFT_STATUS, status);
+    }
+  },
+);
+
+Deno.test(
+  "#2104 - the four Graft figures travel when reached and are omitted when not",
+  () => {
+    const document = buildCallbackContextDocument(FULL_CONTEXT, "always");
+    assertEquals(document.graft, {
+      enabled: true,
+      status: "ok",
+      buildSeconds: 12.5,
+      bundleChars: 4096,
+      nodeCount: 820,
+      callEdgeCount: 1204,
+    });
+    const env = buildCallbackEnv(
+      FULL_CONTEXT,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    assertEquals(env.VIBECODER_GRAFT_BUILD_SECONDS, "12.5");
+    assertEquals(env.VIBECODER_GRAFT_BUNDLE_CHARS, "4096");
+    assertEquals(env.VIBECODER_GRAFT_NODE_COUNT, "820");
+    assertEquals(env.VIBECODER_GRAFT_CALL_EDGE_COUNT, "1204");
+
+    const lean = buildCallbackEnv(
+      WITHOUT_ADDITIVE,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    for (const name of GRAFT_FIGURE_ENV) {
+      assertEquals(lean[name], undefined, `${name} exported without a figure`);
+    }
+  },
+);
+
+Deno.test(
+  "#2104 - the Graft block left schemaVersion and every earlier field alone",
+  () => {
+    assertEquals(CALLBACK_SCHEMA_VERSION, 2);
+    const document = buildCallbackContextDocument(FULL_CONTEXT, "always");
+    for (const [field, type] of Object.entries(SCHEMA_1_DOCUMENT)) {
+      assertEquals(typeof document[field], type, `document.${field} moved`);
+    }
+    const env = buildCallbackEnv(
+      FULL_CONTEXT,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    const missing = SCHEMA_1_ENV.filter((name) => env[name] === undefined);
+    assertEquals(missing, [], "the Graft block dropped an earlier scalar");
   },
 );

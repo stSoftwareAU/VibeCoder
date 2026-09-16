@@ -24,6 +24,7 @@ import type {
   TerminalIssueRun,
   TerminalScanCycle,
 } from "./run_callbacks.ts";
+import { callbackGraftFacts } from "./run_callbacks.ts";
 import { classifyRunFailure } from "./run_outcome_classifier.ts";
 import {
   agentTranscriptDir,
@@ -211,6 +212,10 @@ export function buildIssueRunCallbackContext(
       telemetryAbsentReason: run.telemetryAbsentReason ??
         "agent_not_invoked",
     }),
+    // Issue #2104: what this run's Graft collection did, rebuilt field by
+    // field so the bundle text can never ride along. Absent when the run
+    // ended before the collection — the document reports `off` for it.
+    ...(run.graft ? { graft: callbackGraftFacts(run.graft) } : {}),
     ...(outcome ? { outcome } : {}),
   };
 }

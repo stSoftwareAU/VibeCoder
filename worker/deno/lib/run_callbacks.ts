@@ -100,6 +100,66 @@ export interface CallbackRunTelemetry {
 }
 
 /**
+ * What the run's Graft repo-context collection did (Issue #2104, part of
+ * #2060).
+ *
+ * Structurally the recorded half of `GraftContextResult` — the bundle itself
+ * is never carried here, and {@link callbackGraftFacts} rebuilds the block
+ * field by field so it can never travel even if a caller hands one in.
+ */
+export interface CallbackGraftContext {
+  /** Whether the host switch was on for this run. */
+  enabled: boolean;
+  /** `off` when the switch was off, `ok` on a full bundle, else `failed`. */
+  status: "ok" | "failed" | "off";
+  /** Wall-clock seconds `graft build` took, when it was started. */
+  buildSeconds?: number;
+  /** Characters of bundle text `graft ask` returned. */
+  bundleChars?: number;
+  /** Nodes in the built graph. */
+  nodeCount?: number;
+  /** Edges in the built graph whose relation is `calls`. */
+  callEdgeCount?: number;
+}
+
+/**
+ * The Graft block every run reports, whether or not it collected anything.
+ *
+ * `enabled` and `status` are present on **every** run so an archive can
+ * compare a host that never opted in with one that did, rather than reading
+ * a missing block as a missing run. A run that ended before the collection
+ * was reached reports the same `{ enabled: false, status: "off" }` block as
+ * a host with the switch off: nothing was attempted either way. A collection
+ * that *was* attempted and failed reports `status: "failed"` with whatever
+ * figures it reached — never a clean-looking `off`.
+ *
+ * Built field by field rather than spread, so the bundle text a
+ * `GraftContextResult` may still carry can never reach a hook.
+ *
+ * @param graft - What the run's collection did, when it reached one
+ * @returns The block for the document and the environment
+ */
+export function callbackGraftFacts(
+  graft?: CallbackGraftContext,
+): CallbackGraftContext {
+  if (!graft) return { enabled: false, status: "off" };
+  return {
+    enabled: graft.enabled,
+    status: graft.status,
+    ...(graft.buildSeconds !== undefined
+      ? { buildSeconds: graft.buildSeconds }
+      : {}),
+    ...(graft.bundleChars !== undefined
+      ? { bundleChars: graft.bundleChars }
+      : {}),
+    ...(graft.nodeCount !== undefined ? { nodeCount: graft.nodeCount } : {}),
+    ...(graft.callEdgeCount !== undefined
+      ? { callEdgeCount: graft.callEdgeCount }
+      : {}),
+  };
+}
+
+/**
  * Facts about one terminal issue run, handed to every hook it triggers.
  *
  * Optional fields are omitted from the context document and the environment
@@ -143,6 +203,12 @@ export interface IssueRunCallbackContext {
   exitCode: number;
   /** Token and cost telemetry, when available. */
   telemetry?: CallbackRunTelemetry;
+  /**
+   * What this run's Graft collection did (Issue #2104). Absent means the run
+   * ended before the collection was reached; the document reports the `off`
+   * block either way, so every run is comparable.
+   */
+  graft?: CallbackGraftContext;
   /**
    * Structured run outcome (Issue #1947). Present when the worker computed
    * one; omitted members stay omitted, same as the rest of the context.
@@ -278,6 +344,8 @@ export interface TerminalIssueRun {
   mode?: string;
   /** Token and cost telemetry, when the run's invocations reported it. */
   telemetry?: CallbackRunTelemetry;
+  /** What the run's Graft collection did, when it reached one (#2104). */
+  graft?: CallbackGraftContext;
   /** What the run achieved, when the worker computed a {@link RunOutcome}. */
   outcome?: RunOutcome;
   /** Terminating phase name, when known (setup, execute, completion, …). */
@@ -389,6 +457,9 @@ export function buildCallbackContextDocument(
     document.telemetryAbsentReason = context.telemetryAbsentReason;
   }
   if (context.outcome !== undefined) document.outcome = context.outcome;
+  // Issue #2104: emitted on every run, never omitted — see
+  // {@link callbackGraftFacts} for why absence is reported as `off`.
+  document.graft = callbackGraftFacts(context.graft);
   return document;
 }
 
@@ -481,6 +552,15 @@ export function buildCallbackEnv(
     "VIBECODER_TELEMETRY_ABSENT_REASON",
     context.telemetryAbsentReason,
   );
+  const graft = callbackGraftFacts(context.graft);
+  // Issue #2104: both scalars on every run; the four figures only when the
+  // collection actually reached them.
+  put(env, "VIBECODER_GRAFT_ENABLED", String(graft.enabled));
+  put(env, "VIBECODER_GRAFT_STATUS", graft.status);
+  put(env, "VIBECODER_GRAFT_BUILD_SECONDS", graft.buildSeconds);
+  put(env, "VIBECODER_GRAFT_BUNDLE_CHARS", graft.bundleChars);
+  put(env, "VIBECODER_GRAFT_NODE_COUNT", graft.nodeCount);
+  put(env, "VIBECODER_GRAFT_CALL_EDGE_COUNT", graft.callEdgeCount);
   put(env, "VIBECODER_OUTCOME_KIND", context.outcome?.kind);
   put(env, "VIBECODER_OUTCOME_CATEGORY", context.outcome?.category);
   put(env, "VIBECODER_OUTCOME_PHASE", context.outcome?.phase);

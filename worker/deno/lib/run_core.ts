@@ -101,6 +101,7 @@ import {
   type RunOutcome,
 } from "./run_outcome.ts";
 import type {
+  CallbackGraftContext,
   CallbackRunTelemetry,
   CycleEndReason,
   CycleFleetSummary,
@@ -791,6 +792,13 @@ export interface RunCoreDeps {
        * `telemetry` is not, on a run that actually ran.
        */
       telemetryAbsentReason?: TelemetryAbsentReason;
+      /**
+       * What the run's Graft repo-context collection did (Issue #2104, part
+       * of #2060) — status, and the figures it reached. Carried into the
+       * callback context so a GRQ-23 run is comparable with the rest of the
+       * fleet. Absent when the run ended before the collection.
+       */
+      graftContext?: CallbackGraftContext;
       /**
        * Terminating phase name, when the run ran (Issue #1947).
        */
@@ -2021,6 +2029,8 @@ interface TerminalRun {
   mode?: string;
   /** Token and cost telemetry the run reported, when it reported any. */
   telemetry?: CallbackRunTelemetry;
+  /** What the run's Graft collection did, when it reached one (#2104). */
+  graft?: CallbackGraftContext;
   /** What the run achieved, when the worker computed a RunOutcome. */
   outcome?: RunOutcome;
   /** Terminating phase, when known. */
@@ -2036,8 +2046,8 @@ interface TerminalRun {
 }
 
 /**
- * Copy mode / outcome / telemetry / phase from a processIssue result onto a
- * TerminalRun (`mode` added by Issue #2100).
+ * Copy mode / outcome / telemetry / Graft / phase from a processIssue result
+ * onto a TerminalRun (`mode` added by Issue #2100, `graft` by Issue #2104).
  */
 function withProcessCallbackFacts(
   ran: TerminalRun,
@@ -2046,6 +2056,7 @@ function withProcessCallbackFacts(
     value?: {
       mode?: string;
       telemetry?: CallbackRunTelemetry;
+      graftContext?: CallbackGraftContext;
       outcome?: RunOutcome;
       phase?: string;
       telemetryAbsentReason?: TelemetryAbsentReason;
@@ -2063,6 +2074,7 @@ function withProcessCallbackFacts(
     ...ran,
     ...(value.mode ? { mode: value.mode } : {}),
     ...(value.telemetry ? { telemetry: value.telemetry } : {}),
+    ...(value.graftContext ? { graft: value.graftContext } : {}),
     ...(value.outcome ? { outcome: value.outcome } : {}),
     ...(value.phase ? { phase: value.phase } : {}),
     ...(value.telemetryAbsentReason
@@ -2109,6 +2121,7 @@ function dispatchIssueCallbacks(
         finishedAtEpochMs: deps.now(),
         ...(ran.mode ? { mode: ran.mode } : {}),
         ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
+        ...(ran.graft ? { graft: ran.graft } : {}),
         ...(ran.outcome ? { outcome: ran.outcome } : {}),
         ...(ran.phase ? { phase: ran.phase } : {}),
         ...(ran.telemetryAbsentReason
