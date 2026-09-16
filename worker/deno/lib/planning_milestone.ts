@@ -223,6 +223,17 @@ function carriesGroupedMarker(description: string): boolean {
   );
 }
 
+/**
+ * Whether a milestone already belongs to a **different** file-area group than
+ * the one `ownMarker` identifies. Such a milestone is never a match, however
+ * well its title reads: adopting it would put two streams of work on one
+ * branch (Issue #2175).
+ */
+function isForeignGroup(description: string, ownMarker: string): boolean {
+  return carriesGroupedMarker(description) &&
+    !description.includes(ownMarker);
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -238,6 +249,9 @@ export interface MaybeCreatePlanningMilestoneOptions {
    * Explicit short name for the plan, preferred over the parent issue title
    * when the caller has one (Issue #1690). Sanitised and bounded like any
    * other title text; blank falls back to the issue title.
+   *
+   * Ignored on the grouped path (Issue #2175): each group's own `Milestone`
+   * cell names that group's milestone, and one plan-wide short title cannot.
    */
   plannedShortTitle?: string;
   /**
@@ -760,7 +774,14 @@ function findPlanningMilestone(
   const byMarker = entries.find((e) => e.description.includes(marker));
   if (byMarker) return byMarker.milestone;
 
-  const byTitle = entries.find((e) => e.milestone.title === wantTitle);
+  // The title carries a *bounded* area while the marker carries the full one,
+  // so two long areas can generate the same title from different markers.
+  // Matching on title alone would then hand one group the other's milestone,
+  // so a candidate that already belongs to a different group is skipped here
+  // too — not only on the legacy-prefix rung below.
+  const byTitle = entries.find((e) =>
+    e.milestone.title === wantTitle && !isForeignGroup(e.description, marker)
+  );
   if (byTitle) return byTitle.milestone;
 
   // Grouped lookups stop here: a group's identity is its marker or its exact
@@ -768,7 +789,7 @@ function findPlanningMilestone(
   if (sanitiseMilestoneTitleText(fileArea ?? "") !== "") return null;
 
   const byPrefix = entries.find((e) =>
-    !carriesGroupedMarker(e.description) &&
+    !isForeignGroup(e.description, marker) &&
     trackingIssueFromMilestoneTitle(e.milestone.title) === parentIssueNumber
   );
   return byPrefix ? byPrefix.milestone : null;

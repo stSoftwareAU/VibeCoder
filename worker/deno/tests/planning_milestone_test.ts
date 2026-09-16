@@ -999,3 +999,36 @@ Deno.test("maybeCreatePlanningMilestone — two groups on one file area are repo
   assertEquals(result.milestones?.[0]?.milestoneNumber, 100);
   assertEquals(result.milestones?.[1]?.milestoneNumber, 100);
 });
+
+Deno.test("maybeCreatePlanningMilestone — an identical title is not adopted from another group", async () => {
+  // Both areas bound to the same title-area, so the generated titles collide
+  // while the markers differ. Matching on title alone would hand this group
+  // the sibling's milestone.
+  const longA = "worker deno lib planning milestone alpha stream";
+  const longB = "worker deno lib planning milestone beta stream";
+  const state = {
+    listing: [{
+      number: 100,
+      title: buildPlanningMilestoneTitle(2163, "Parent", "shared", longA),
+      description: `${planningMilestoneMarker(2163, longA)} grouping`,
+    }] as unknown[],
+    calls: [] as string[][],
+  };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    subIssueNumbers: [12, 13],
+    groups: [group(longB, "shared", [12, 13])],
+    ghCommandFn: groupedGh(state),
+    logger: silentLogger,
+  });
+
+  // The titles really do collide — that is what makes this a trap.
+  assertEquals(
+    buildPlanningMilestoneTitle(2163, "Parent", "shared", longA),
+    buildPlanningMilestoneTitle(2163, "Parent", "shared", longB),
+  );
+  assertEquals(state.calls.filter((c) => c.includes("POST")).length, 1);
+  assertEquals(result.milestones?.[0]?.milestoneNumber, 101);
+});

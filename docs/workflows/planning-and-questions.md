@@ -802,7 +802,8 @@ run overnight" workflow (see [milestones.md](milestones.md)).
 
 - **One milestone per file-area group.** When the publish turn posts a
   `## Milestones` table grouping its sub-issues by file area and that table
-  passes the [structural gate](#-auto-milestone-for-multi-issue-plans), the
+  passes the
+  [structural gate](#-milestones-table-and-structural-gate-issue-2172), the
   worker creates **one milestone per group** that carries two or more
   sub-issues, and assigns each sub-issue to its own group's milestone only.
   Each is titled `#<N> <area>: <short description>` — for example
