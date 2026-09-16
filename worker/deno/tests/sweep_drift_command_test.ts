@@ -1,8 +1,10 @@
 /**
  * Tests for the sweep-drift command (Issue #1609).
  *
- * The command formats one block per slice. Git is injected; these tests
- * never spawn a real process.
+ * The command formats one block per slice. Git is injected, so the formatting
+ * and collection tests never spawn a real process. The one exception is the
+ * `sweepGitRunnerFor` test (Issue #2178), which builds a throwaway repository
+ * to prove the runner resolves repo-relative pathspecs against `--repo`.
  *
  * Australian English spelling throughout.
  */
@@ -12,6 +14,7 @@ import {
   collectSweepDrift,
   formatSweepDriftReport,
   sweepDriftCommand,
+  sweepGitRunnerFor,
 } from "../commands/sweep_drift.ts";
 import type { SweepCoverageLedger } from "../lib/lib_sweep_coverage.ts";
 
@@ -82,4 +85,46 @@ Deno.test("collectSweepDrift - one block per slice from the injected runner (Iss
 
 Deno.test("sweep-drift command - is registered under the documented name (Issue #1609)", () => {
   assertEquals(sweepDriftCommand.name, "sweep-drift");
+});
+
+Deno.test("sweepGitRunnerFor - resolves repo-relative pathspecs against --repo, not the process cwd (Issue #2178)", async () => {
+  // Fail direction: before this change the runner spawned git in the worker's
+  // own working directory, so `-- worker/deno/lib` matched nothing whenever
+  // that directory was not the repository root and every slice reported an
+  // empty drift — a clean report for a ledger nobody had diffed.
+  const repoRoot = await Deno.makeTempDir({ prefix: "sweep-drift-" });
+  const git = async (...args: string[]) => {
+    const { code } = await new Deno.Command("git", {
+      args,
+      cwd: repoRoot,
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    assertEquals(code, 0, `git ${args.join(" ")} failed`);
+  };
+  try {
+    await git("init", "--quiet");
+    await git("config", "user.email", "test@example.com");
+    await git("config", "user.name", "Test");
+    await Deno.mkdir(`${repoRoot}/sub`);
+    await Deno.writeTextFile(`${repoRoot}/sub/a.txt`, "one\n");
+    await git("add", "-A");
+    await git("commit", "--quiet", "-m", "first");
+    await Deno.writeTextFile(`${repoRoot}/sub/a.txt`, "two\n");
+    await git("commit", "--quiet", "-a", "-m", "second");
+
+    const result = await sweepGitRunnerFor(repoRoot)([
+      "diff",
+      "--name-only",
+      "--diff-filter=M",
+      "HEAD~1",
+      "HEAD",
+      "--",
+      "sub",
+    ]);
+    assertEquals(result.code, 0, result.stderr);
+    assertEquals(result.stdout.trim(), "sub/a.txt");
+  } finally {
+    await Deno.remove(repoRoot, { recursive: true });
+  }
 });

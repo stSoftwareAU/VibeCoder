@@ -60,7 +60,7 @@
         "worker/deno/lib/workflow_auditor.ts",
         "worker/deno/lib/write_repo_allowlist.ts"
       ],
-      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
+      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
     },
     {
       "issue": 1215,
@@ -154,7 +154,7 @@
         "worker/deno/lib/work_volume_tiers.ts",
         "worker/deno/lib/worker_log_cleanup.ts"
       ],
-      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
+      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
     },
     {
       "issue": 1216,
@@ -363,7 +363,7 @@
         "worker/deno/lib/worker_token_privilege_scanner.ts",
         "worker/deno/lib/workflow_annotation_fetcher.ts"
       ],
-      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
+      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
     },
     {
       "issue": 1217,
@@ -422,7 +422,7 @@
         "worker/deno/lib/unit_test_passes.ts",
         "worker/deno/lib/workflow_scope.ts"
       ],
-      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
+      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
     },
     {
       "issue": 1219,
@@ -872,7 +872,7 @@
         "worker/deno/lib/worktree_progress.ts",
         "worker/deno/lib/xml_escape.ts"
       ],
-      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
+      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
     },
     {
       "issue": 1325,
@@ -885,7 +885,7 @@
         "worker/deno/lib/gh_body_file_io.ts",
         "worker/deno/lib/gh_timeout.ts"
       ],
-      "sweptAt": "00c1d95924a0adf7eaf419219ade7283b3e11480"
+      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341"
     },
     {
       "issue": 1443,
@@ -934,7 +934,7 @@
       "paths": [
         "worker/deno/lib/worker_state_paths.ts"
       ],
-      "sweptAt": "beba5b6428a8b69e939489fc0d1b8e533b2f89b0"
+      "sweptAt": "6d4a59dc42998204bbf9ec73f45e43810bb9c8a4"
     },
     {
       "issue": 1668,
@@ -982,7 +982,7 @@
       "paths": [
         "worker/deno/lib/pr_bot_lookup.ts"
       ],
-      "sweptAt": "00710432980dff1bfa712068558acd9eec2d03f6"
+      "sweptAt": "fc2b79b1fa0876f52824c8256057bf08ffa48ca0"
     },
     {
       "issue": 1885,
@@ -1006,7 +1006,7 @@
       "paths": [
         "worker/deno/lib/reapproval_superseded_handoff.ts"
       ],
-      "sweptAt": "3e0f1a4de011350ed772e10df1216a4d7d48bd59"
+      "sweptAt": "53aabd13fba980911d5ed25a892536dfb6e520ba"
     },
     {
       "issue": 1218,
@@ -1015,7 +1015,7 @@
       "ledger": "docs/audits/security-sweep-1612-commands-setup-delta.md",
       "definition": "ls commands/*.ts | grep -v _test.ts",
       "status": "swept",
-      "sweptAt": "3ec544a22e5a43264e7576aab425919e6b8f3b8a",
+      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341",
       "paths": [
         "worker/deno/commands/analyse_failed_once.ts",
         "worker/deno/commands/answer_sanitiser.ts",
@@ -1176,7 +1176,7 @@
       "ledger": "docs/audits/security-sweep-1612-commands-setup-delta.md",
       "definition": "ls setup/*.ts | grep -v _test.ts",
       "status": "swept",
-      "sweptAt": "3ec544a22e5a43264e7576aab425919e6b8f3b8a",
+      "sweptAt": "9442a93225c2adb41b641a1f021ad99458fb6341",
       "paths": [
         "worker/deno/setup/agent_providers.ts",
         "worker/deno/setup/best_practices_relabel.ts",
@@ -1211,7 +1211,7 @@
       "ledger": "docs/audits/security-sweep-1822-workflow-file-checks.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: workflow_file_checks.ts (#1822)",
       "status": "swept",
-      "sweptAt": "6c7fc07336ad1b10cdd17c9db32a5b75118f9e3d",
+      "sweptAt": "4eb02c0c733703491e41faeddc1595aa2d4753f0",
       "paths": [
         "worker/deno/lib/workflow_file_checks.ts"
       ]
@@ -1223,7 +1223,7 @@
       "ledger": "docs/audits/security-sweep-1823-action-pin-resolver.md",
       "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: action_pin_resolver.ts (#1823)",
       "status": "swept",
-      "sweptAt": "fe545122ac033ff4304ce6c3b635851e8f3e46d5",
+      "sweptAt": "4eb02c0c733703491e41faeddc1595aa2d4753f0",
       "paths": [
         "worker/deno/lib/action_pin_resolver.ts"
       ]
@@ -1235,7 +1235,7 @@
       "ledger": "docs/audits/security-sweep-1859-changed-workflow-gate.md",
       "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: changed_workflow_gate.ts (#1859)",
       "status": "swept",
-      "sweptAt": "73b80a6f0355917642fb2a8c3249cdc504f519e6",
+      "sweptAt": "581de35f7a026af8e9931dffed91b66574b3be07",
       "paths": [
         "worker/deno/lib/changed_workflow_gate.ts"
       ]
@@ -1250,7 +1250,7 @@
       "paths": [
         "worker/deno/lib/merge_conflict_agent.ts"
       ],
-      "sweptAt": "176af2fb8ecb9c8f438bdd38bd226f0dc2711d25"
+      "sweptAt": "624ca0ede491370759a88ba03bd1f11310366ce5"
     },
     {
       "issue": 1770,
@@ -1262,7 +1262,7 @@
       "paths": [
         "worker/deno/lib/milestone_rollback_marker.ts"
       ],
-      "sweptAt": "05f72ab8a77db1980fb3dea8a92792de9f8b4863"
+      "sweptAt": "624ca0ede491370759a88ba03bd1f11310366ce5"
     },
     {
       "issue": 1771,
@@ -1274,7 +1274,7 @@
       "paths": [
         "worker/deno/lib/milestone_rollback.ts"
       ],
-      "sweptAt": "0556572a9b4b8e750a1540b2203e4bf693601e5b"
+      "sweptAt": "624ca0ede491370759a88ba03bd1f11310366ce5"
     },
     {
       "issue": 1774,
@@ -1286,7 +1286,7 @@
       "paths": [
         "worker/deno/lib/pr_live_state.ts"
       ],
-      "sweptAt": "04a62ac5cbf76201450a9712549d3ad3e8707a6d"
+      "sweptAt": "624ca0ede491370759a88ba03bd1f11310366ce5"
     },
     {
       "issue": 1776,
@@ -1298,7 +1298,7 @@
       "paths": [
         "worker/deno/lib/milestone_default_tip.ts"
       ],
-      "sweptAt": "23e899b98daa8613993a16ba10f5b7e2abc28d61"
+      "sweptAt": "624ca0ede491370759a88ba03bd1f11310366ce5"
     },
     {
       "issue": 1781,
@@ -1310,7 +1310,7 @@
       "paths": [
         "worker/deno/lib/milestone_rollback_requeue.ts"
       ],
-      "sweptAt": "137f25be5460cbeebaa7cc68a359d05c9108922b"
+      "sweptAt": "eebe47243f5a634a25e831f582f76450490212b6"
     },
     {
       "issue": 1697,
@@ -1324,7 +1324,7 @@
         "worker/deno/lib/codex_budget.ts",
         "worker/deno/lib/codex_budget_source.ts"
       ],
-      "sweptAt": "d5445e2bc2b961872a7fbd75f10250cd088456f9"
+      "sweptAt": "4aeeef52ea89a6d8b7603cf01cdf626c3c46882e"
     },
     {
       "issue": 1695,
@@ -1338,7 +1338,7 @@
         "worker/deno/lib/claude_output_adapter.ts",
         "worker/deno/lib/codex_output_adapter.ts"
       ],
-      "sweptAt": "1a42e917ba7a77eb604cd22a1cb3e18582f7d5b4"
+      "sweptAt": "4aeeef52ea89a6d8b7603cf01cdf626c3c46882e"
     },
     {
       "issue": 1696,
@@ -1354,7 +1354,7 @@
         "worker/deno/lib/provider_quota_scheduler.ts",
         "worker/deno/lib/provider_quota_scope.ts"
       ],
-      "sweptAt": "adfd4a9fff74efc4eb7eb582b751d885c2aec2c3"
+      "sweptAt": "4aeeef52ea89a6d8b7603cf01cdf626c3c46882e"
     },
     {
       "issue": 1910,
@@ -1363,7 +1363,7 @@
       "ledger": "docs/audits/security-sweep-1910-implementation-comments.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12y recorded their coverage: implementation_comments.ts (#1910)",
       "status": "swept",
-      "sweptAt": "7e3881dd756ecd6b2f39b4977588e92abad05d44",
+      "sweptAt": "fb59c3cc27acbf14d4c15d15d0d07f74bde84b60",
       "paths": [
         "worker/deno/lib/implementation_comments.ts"
       ]
@@ -1380,7 +1380,7 @@
         "worker/deno/lib/provider_auto_selection.ts",
         "worker/deno/lib/provider_auto_state.ts"
       ],
-      "sweptAt": "acaba2ae8675ed02a00cd2c50875e1f820736faf"
+      "sweptAt": "cb025b42a7054a4eefefc457889cbda25e49a50a"
     },
     {
       "issue": 1938,
@@ -1389,7 +1389,7 @@
       "ledger": "docs/audits/security-sweep-1938-gemini-token-usage.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: gemini_token_usage.ts (#1938)",
       "status": "swept",
-      "sweptAt": "bb3b968edd71d8ae8183ecad7dcbaf85e4bb3290",
+      "sweptAt": "d769f2fc817d5271a39aa79a6ac07a897872aa14",
       "paths": [
         "worker/deno/lib/gemini_token_usage.ts"
       ]
@@ -1401,7 +1401,7 @@
       "ledger": "docs/audits/security-sweep-1877-ci-fix-attempt-markers.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: ci_fix_attempt_markers.ts (#1877)",
       "status": "swept",
-      "sweptAt": "2d294bc3e5e50f7c160bb469e35d07e2af20d1d1",
+      "sweptAt": "e965e018b6f4543aa1090e6c701ee03ab52cb46d",
       "paths": [
         "worker/deno/lib/ci_fix_attempt_markers.ts"
       ]
@@ -1413,7 +1413,7 @@
       "ledger": "docs/audits/security-sweep-1878-workflow-job-needs.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12aa recorded their coverage: workflow_job_needs.ts (#1878)",
       "status": "swept",
-      "sweptAt": "d72345e3a008a54356fba376387984d56ae00a3b",
+      "sweptAt": "e965e018b6f4543aa1090e6c701ee03ab52cb46d",
       "paths": [
         "worker/deno/lib/workflow_job_needs.ts"
       ]
@@ -1425,7 +1425,7 @@
       "ledger": "docs/audits/security-sweep-1879-ci-fix-pr-markers.md",
       "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: ci_fix_pr_markers.ts (#1879)",
       "status": "swept",
-      "sweptAt": "d0d30d458b6e08116ebb549bcbb817728af204f0",
+      "sweptAt": "e965e018b6f4543aa1090e6c701ee03ab52cb46d",
       "paths": [
         "worker/deno/lib/ci_fix_pr_markers.ts"
       ]
@@ -1437,7 +1437,7 @@
       "ledger": "docs/audits/security-sweep-1880-ci-base-branch-check.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12ac recorded their coverage: ci_base_branch_check.ts (#1880)",
       "status": "swept",
-      "sweptAt": "2a01c53d9429ebcb3db1d18c94fa48e23a66c493",
+      "sweptAt": "e965e018b6f4543aa1090e6c701ee03ab52cb46d",
       "paths": [
         "worker/deno/lib/ci_base_branch_check.ts"
       ]
@@ -1449,7 +1449,7 @@
       "ledger": "docs/audits/security-sweep-1951-deferred-pr.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: secondary_rate_limit.ts, pr_creation_retry.ts, deferred_pr_store.ts, deferred_pr_drain.ts and phases/pr_deferral.ts (#1951)",
       "status": "swept",
-      "sweptAt": "0fc56ced62f912f3434d314ac0f72ea576978a6e",
+      "sweptAt": "ce564214d73689ba316cb6dbe2b9b7b5392dee26",
       "paths": [
         "worker/deno/lib/deferred_pr_drain.ts",
         "worker/deno/lib/deferred_pr_store.ts",
@@ -1465,7 +1465,7 @@
       "ledger": "docs/audits/security-sweep-1968-json-insertion-union.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12ag recorded their coverage: json_insertion_union.ts (#1968)",
       "status": "swept",
-      "sweptAt": "e2f50c4837bd6b7c1a363c51748dc621b8dcfc71",
+      "sweptAt": "50be3b8f499a2f25496e17996f215f2ed19b7315",
       "paths": [
         "worker/deno/lib/json_insertion_union.ts"
       ]
@@ -1477,7 +1477,7 @@
       "ledger": "docs/audits/security-sweep-1953-git-stdin-message.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: git_stdin_message.ts (#1953)",
       "status": "swept",
-      "sweptAt": "d3034d431e8a0fa49949ee6b7f423660fd80142e",
+      "sweptAt": "c0601382cb5886c8c2a968f0593d5e50748a8ed4",
       "paths": [
         "worker/deno/lib/git_stdin_message.ts"
       ]
@@ -1525,7 +1525,7 @@
       "ledger": "docs/audits/security-sweep-1965-milestone-gate-repair.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_gate_repair.ts (#1965)",
       "status": "swept",
-      "sweptAt": "aa6e138edd260da47c854a0815799f4b14136628",
+      "sweptAt": "f4e269bc6d5a7eddfcc17ae0e26642d7f27cfa43",
       "paths": [
         "worker/deno/lib/milestone_gate_repair.ts"
       ]
@@ -1537,7 +1537,7 @@
       "ledger": "docs/audits/security-sweep-1956-toolchain-selfcheck.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: toolchain_selfcheck.ts (#1956)",
       "status": "swept",
-      "sweptAt": "f21b89b153fe50e85827e8aa813084357df7137f",
+      "sweptAt": "e0fc0b171c52493444825f34731e8c1468ba67ec",
       "paths": [
         "worker/deno/lib/toolchain_selfcheck.ts"
       ]
@@ -1561,7 +1561,7 @@
       "ledger": "docs/audits/security-sweep-1923-provider-billing.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: provider_billing.ts (#1923)",
       "status": "swept",
-      "sweptAt": "915d45bb2c2ed9b5a92a3e47038f0dabc42eb448",
+      "sweptAt": "076f86c8238572600083628dd051983dac93a611",
       "paths": [
         "worker/deno/lib/provider_billing.ts"
       ]
@@ -1573,7 +1573,7 @@
       "ledger": "docs/audits/security-sweep-2079-milestone-create-block.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_create_block_repair.ts (#2079)",
       "status": "swept",
-      "sweptAt": "f0ede81ed152ca2337c75fe94aabf85b30d26f9e",
+      "sweptAt": "376fbadcb1e7c17ae5ca46bf06fbcda27cd9305d",
       "paths": [
         "worker/deno/lib/milestone_create_block_repair.ts"
       ]
@@ -1585,7 +1585,7 @@
       "ledger": "docs/audits/security-sweep-2107-host-failure-hook.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: host_failure_hook.ts (#2107)",
       "status": "swept",
-      "sweptAt": "cf3996520b029eac1b320d1b0af9ae7395b0e404",
+      "sweptAt": "75172c1d5474145ea17e5303992de90d7673458c",
       "paths": [
         "worker/deno/lib/host_failure_hook.ts"
       ]
