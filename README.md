@@ -306,8 +306,13 @@ reports progress, escalations and crashes the same way.
 
 **SSH, Remote Desktop, screen sharing, a management UI and terminal access to
 the host are not required for normal operation.** No inbound port is opened.
-Local logs (the host log directory) remain useful for diagnosis, but a recoverable failure is
-reported through GitHub rather than left to disappear into a host log.
+Local logs (the host log directory) remain useful for diagnosis, and a failure
+inside a run is still reported through GitHub. A **host-level** failure — the
+launcher crash-looping, the checkout update failing run after run — happens
+before any issue is claimed, so it is reported through the deployment's own
+[`callbacks.host_failure` hook](docs/CALLBACKS.md#host-level-failures--callbackshost_failure),
+or, when none is configured, to the host log and the self-heal events. It is
+never filed as an issue on a public repository.
 
 For production, run via cron (macOS/Linux) or Task Scheduler (Windows) every 5
 minutes:

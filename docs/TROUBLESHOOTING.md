@@ -126,12 +126,12 @@ for that host leads with it:
 A launcher that fails before claiming work has no issue to comment on, so the
 escalation goes to this host's own `callbacks.host_failure` hook — the
 operator's channel, whatever it is (Issue #2108, see
-[Callbacks](CALLBACKS.md#the-host-failure-hook)). It used to file (or comment
-on) an issue in the worker's own repository, which published a host's outage to
-a public repository; it no longer writes to GitHub at all. A crash *during* an
-issue still comments on that issue through the crash channel, which runs
-unchanged — but once a hook is configured it is the hook's exit status alone
-that says whether anybody was told.
+[Callbacks](CALLBACKS.md#host-level-failures--callbackshost_failure)). It
+writes nothing to GitHub at all — the public escalation issues it once filed
+are gone, and [Release Notes](RELEASE-NOTES.md) carries that contract change.
+A crash *during* an issue still comments on that issue through the crash
+channel, which runs unchanged — but once a hook is configured it is the hook's
+exit status alone that says whether anybody was told.
 
 **With no hook configured**, the failure is reported to the host log and the
 self-heal events and nowhere else: `self-heal-summary` shows an `escalated`
@@ -393,7 +393,7 @@ once for the streak, and one whose `callbacks` block will not parse logs
 `config_invalid` with the reason. Neither is retried — nothing about the host
 changes between runs — and neither stops the update itself. If a stuck host is
 producing no alert at all, that line in `run_core.log` is the first thing to
-check; see [Callbacks](CALLBACKS.md#the-host-failure-hook).
+check; see [Callbacks](CALLBACKS.md#host-level-failures--callbackshost_failure).
 
 On a host running `update_mode: "frozen"` the same warning appears with a
 different message (Issue #624):
