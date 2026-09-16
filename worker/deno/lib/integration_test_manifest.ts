@@ -91,6 +91,10 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/secrets_mount_test.ts",
   "tests/setup_config_atomic_write_test.ts",
   "tests/setup_credential_provisioning_test.ts",
+  // Issue #2144: drives setup.sh's resolve_config_file under an ambient
+  // CONFIG_PATH, the host variable that turned 40 cases of the setup_*
+  // suites beside it red. Same shape, same script, same list.
+  "tests/setup_config_env_test.ts",
   "tests/setup_launchagent_prompt_test.ts",
   "tests/setup_lockfile_test.ts",
   "tests/setup_provider_credential_flow_test.ts",
