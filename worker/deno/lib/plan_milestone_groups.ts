@@ -86,10 +86,11 @@ export const MAX_MILESTONE_GROUPS = 4;
  *
  * Held beside the gate — not beside the prompts — so the instruction and the
  * rule {@link validateMilestoneGroups} actually implements cannot drift apart,
- * exactly as `COVERAGE_TABLE_REQUIREMENT` does for the coverage gate. The
- * versioned templates under `prompts/planning_critique/` state the same rule
- * in their own words; this constant is what the degraded in-code fallbacks
- * interpolate.
+ * exactly as `COVERAGE_TABLE_REQUIREMENT` does for the coverage gate. This
+ * constant is what the degraded in-code fallbacks interpolate; teaching the
+ * same table in `prompts/planning/prompt.md` and
+ * `prompts/planning_critique/prompt.md` is Issue #2174, which is why the gate
+ * must tolerate a plan that carries no table at all.
  */
 export const MILESTONES_TABLE_REQUIREMENT =
   "Your summary comment on the parent issue must also carry a " +

@@ -2321,7 +2321,7 @@ async function closePlanningIssue(
     }
   }
 
-  // Issue #1120: coverage is deliberately the only plan gate here. A planning
+  // Issue #1120: there is deliberately no MVP-slice gate beside them. A planning
   // run puts its sub-issues in a milestone, and a milestone merges as a whole
   // from its own feature branch (docs/workflows/milestones.md), so ordering
   // partial value inside one — the removed MVP-slice gate — delivers nothing.

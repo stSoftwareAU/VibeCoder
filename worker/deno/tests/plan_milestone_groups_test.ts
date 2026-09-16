@@ -521,3 +521,66 @@ Deno.test("escalateMilestoneGroupOffenders - labels the parent and names the row
   assertStringIncludes(comments[0]?.body ?? "", "#102");
   assertStringIncludes(comments[0]?.body ?? "", "Next step:");
 });
+
+// ---------------------------------------------------------------------------
+// Bounded scan and escalation failure (Issue #1245 / fail-loud)
+// ---------------------------------------------------------------------------
+
+Deno.test("runMilestoneGroupsGate - an oversized comment is skipped loudly and a real table still decides", async () => {
+  const warnings: string[] = [];
+  const oversized = PUBLISHED_COMMENT +
+    "filler line\n".repeat(Math.ceil((64 * 1024) / 12));
+  const verdict = await runMilestoneGroupsGate({
+    repo: "owner/repo",
+    parentIssueNumber: 42,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify({
+        // The parent body carries the real table, so the run must reach it
+        // rather than stopping on the unscannable comment.
+        body: PUBLISHED_COMMENT,
+        comments: [{ body: oversized, author: { login: FLEET_LOGIN } }],
+      })),
+    logger: makeCapturingLogger(warnings),
+    authorOptions: FLEET_OPTIONS,
+  });
+  assertEquals(verdict.tableFound, true);
+  assertEquals(verdict.groups.length, 3);
+  assert(
+    warnings.some((w) => w.includes("oversized candidate")),
+    "the skipped candidate is reported, not silently dropped",
+  );
+});
+
+Deno.test("escalateMilestoneGroupOffenders - a failed escalation is reported, not swallowed", async () => {
+  const errors: string[] = [];
+  const { client } = makeStubClient();
+  const failing: GitHubClient = {
+    ...client,
+    addLabel: () => Promise.reject(new Error("label API down")),
+    postComment: () => Promise.reject(new Error("comment API down")),
+  };
+  const escalated = await escalateMilestoneGroupOffenders({
+    ghClient: failing,
+    repo: "owner/repo",
+    parentIssueNumber: 42,
+    needsHumanLabel: "needs-human",
+    offenders: validateMilestoneGroups([], [101]),
+    logger: {
+      ...makeSilentLogger(),
+      error: (message: string) => {
+        errors.push(message);
+      },
+    },
+    deps: {
+      github: {
+        ensureLabelExists: () =>
+          Promise.resolve({ ok: true, value: undefined } as Result<void>),
+      },
+    },
+  });
+  assertEquals(escalated, false);
+  assert(
+    errors.some((e) => e.includes("Milestone-groups gate")),
+    "the failed escalation is logged loudly",
+  );
+});
