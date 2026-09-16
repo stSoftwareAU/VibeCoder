@@ -182,6 +182,9 @@ export const prCiProcessorCommand: Command = {
           // larger issue-work claudeTimeout.
           claudeTimeout: config.ciFixTimeout || undefined,
           claudeModel: config.claudeModel || undefined,
+          // Issue #2160: the trial switch, so a single-shot CI fix on an
+          // enabled host is offered the same repo-context index.
+          codegraphContextEnabled: config.codegraphContext.enabled,
           // Pass repo-specific config so the post-Claude quality check picks
           // up per-repo Docker images and timeouts (Issue #1456).
           repoConfigs: config.repoConfig,

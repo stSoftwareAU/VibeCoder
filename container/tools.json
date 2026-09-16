@@ -295,6 +295,20 @@
       },
       "repos": ["stSoftwareAU/NEAT-AI-core"],
       "notes": "The first library toolchain: it puts no command on the PATH, so it declares the modules it makes importable instead of `commands` (Issue #1628). With bats-core in the image (Issue #1595) NEAT-AI-core's `bats tests/scripts` suite executes rather than skips, and 31 of its tests then failed with ModuleNotFoundError: No module named 'yaml' — its workflow-assertion suites parse workflow YAML with an inline python3 script that imports PyYAML, which their CI runners carry and the image did not. Installed by the pinned pip with --target into the interpreter's own purelib directory, so `python3 -c \"import yaml\"` resolves it: a /opt/<tool> virtualenv, as codespell uses, would never satisfy that consumer, and --target leaves the PEP 668 externally-managed system environment untouched. PyYAML ships a C extension, so the wheel is per-architecture and its name carries the cp<major><minor> interpreter tag; the fragment derives that tag from the running python3 rather than restating it, so a base-image interpreter bump 404s the fetch instead of installing bytes this manifest never pinned. PyYAML declares no runtime dependencies, so --no-deps is a fully pinned install. Verified twice: the image build itself (container/toolchains/pyyaml.sh imports the module and compares the reported version with this pin, so a broken install fails the build) and the container-build workflow's module loop, which imports each declared module through the image's own python3 and counts what it verified against this manifest (Issue #1705)."
+    },
+    {
+      "id": "codegraph",
+      "version": "1.6.0",
+      "fragment": "toolchains/codegraph.sh",
+      "commands": ["codegraph"],
+      "versionCommand": "codegraph",
+      "source": "https://github.com/colbymchenry/codegraph/releases",
+      "sha256": {
+        "amd64": "de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e80b879ba73ef216b0",
+        "arm64": "6dc935a7b8f1a61e688a578b98ea34680eb2e36d7b91db079d64f4011f1a668f"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "The code-structure indexer trialled as a second repo-context candidate (Issue #2153, parent #2145). Unlike every other entry here this toolchain exists for the worker's own trial, not for a monitored repository's quality gate — nothing in the fleet's gates invokes it, so it is absent from REQUIRED_REPO_TOOLCHAIN_COMMANDS; `repos` names this repository because parseContainerManifest rejects an empty list, not because a gate here needs the binary. Both digests are the release's own codegraph-linux-x64/arm64.tar.gz entries from its SHA256SUMS, copied rather than computed from a download. The release is not a bare binary: each tarball extracts a codegraph-linux-<asset arch>/ bundle carrying bin/codegraph (a POSIX shell launcher), its own node runtime and lib/, so the fragment installs the whole bundle under /opt/codegraph and symlinks /usr/local/bin/codegraph at it — the launcher resolves symlinks to find its own bundle directory, which is what makes the symlink work. `codegraph --version` prints the bare version, so the manifest needs no versionArgs and the start-up self-check probes it unchanged. Two consequences of the shape: the bundle is about 62 MB downloaded and 280 MB unpacked per architecture, well above every other fragment here bar rust and semgrep; and naming this repository in `repos` makes bakedToolsForRepo treat `codegraph` as baked for it, so a gate-skip finding for that command here would be suppressed — a no-op today, because no gate invokes it."
     }
   ],
   "tools": [

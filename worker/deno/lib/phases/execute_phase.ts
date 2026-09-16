@@ -83,6 +83,7 @@ import {
 import { escalateToHuman } from "../needs_human_escalation.ts";
 import { joinRedacted, redactedTail } from "../redacted_text.ts";
 import { reportRunDeadline } from "../slot_context.ts";
+import { prepareCodegraphRun } from "../codegraph_run.ts";
 
 /**
  * True when the worker branch has at least one commit ahead of its base
@@ -480,9 +481,35 @@ async function executeClaudeBody(
   // user prompt, so the budget check below measures it like any other prompt
   // input. Independent of `enable_session_resume` and of the provider: the
   // committed file is the contract, a `--resume` transcript is the bonus.
-  const userPrompt = state.resumedFromCheckpoint
+  const resumedPrompt = state.resumedFromCheckpoint
     ? basePrompt + buildPriorProgressNote(issueNumber, state.handoverNote)
     : basePrompt;
+
+  // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
+  // Prepared against the checkout the agent will work in — the same path it
+  // is handed as `cwd`. Off, nothing is spawned and the prompt and MCP
+  // configuration below are exactly what they were. On and indexed, the run
+  // gains the `codegraph` MCP entry and the one prompt line together; on any
+  // other status it gains neither, and the run proceeds regardless.
+  const codegraph = await prepareCodegraphRun({
+    repoDir: state.repoPath,
+    enabled: config.codegraphContext.enabled,
+    logger,
+    prepare: deps.claude.prepareCodegraphContext,
+  });
+  // The #1550 infrastructure retry re-enters this body, which prepares a
+  // second time (a cheap `sync` — `.codegraph/` survives). The earlier
+  // attempt's queries were still made and still cost tokens, so they are
+  // carried forward rather than replaced.
+  const priorQueries = state.codegraphContext?.queries;
+  if (priorQueries !== undefined) {
+    codegraph.result.queries = (codegraph.result.queries ?? 0) + priorQueries;
+  }
+  state.codegraphContext = codegraph.result;
+  // Appended to the built prompt rather than written into the template, for
+  // the same reason as the prior-progress note above: it is run-conditional,
+  // and appending leaves the cached prefix untouched.
+  const userPrompt = codegraph.applyPrompt(resumedPrompt);
 
   // --- Context budget hard ceiling (Issue #3713) ---
   // The budget check used to be observational only, so an issue whose prompt
@@ -694,7 +721,9 @@ async function executeClaudeBody(
           model: config.claudeModel || undefined,
           cwd: state.repoPath,
           // Opt-in browser (Issue #192) — see `screenshotRequired` above.
-          mcpConfig: screenshotRequired,
+          // Issue #2159 layers the `codegraph` server beside that grant on an
+          // enabled run whose index built, and changes nothing otherwise.
+          mcpConfig: codegraph.mcpConfig(screenshotRequired),
           logger,
           sessionResumeState: state.sessionResumeState,
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
@@ -794,6 +823,9 @@ async function executeClaudeBody(
     // Cumulative (Issue #3756): the exhausted invocation's tokens were billed
     // and must be recorded before its result is replaced.
     recordClaudeRunStats(state, claudeResult.value);
+    // Issue #2159: cumulative like the stats above — a credential switch
+    // makes a second invocation whose queries belong to the same run.
+    codegraph.record(claudeResult.value.runStats);
     supersededOutput = state.claudeOutput;
     // Inside the phase deadline: the switched-to invocation gets the budget
     // this phase has left, never a fresh hour on top of the one just spent.
@@ -822,6 +854,8 @@ async function executeClaudeBody(
   // time using what is recorded here. Recording is cumulative: the #1550
   // infrastructure retry re-enters this body.
   recordClaudeRunStats(state, claudeResult.value);
+  // Issue #2159: this invocation's `codegraph_explore` tally.
+  codegraph.record(claudeResult.value.runStats);
 
   // Check for timeout (Issue #1188 — detailed failure messages)
   if (claudeResult.value.timedOut) {

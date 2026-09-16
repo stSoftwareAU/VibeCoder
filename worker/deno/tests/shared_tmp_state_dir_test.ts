@@ -180,7 +180,10 @@ Deno.test("agent mcp config - is not written into a world-writable directory", a
     const path = await ensureAgentMcpConfig({
       cwd: "/w/some-clone",
       configDir: dir,
-      generate: () => "{}",
+      // A realistic shape: since Issue #2156 a generated config carrying no
+      // browser entry is itself refused, which would mask the refusal under
+      // test here.
+      generate: () => JSON.stringify({ mcpServers: { playwright: {} } }),
       log: (message) => messages.push(message),
     });
 

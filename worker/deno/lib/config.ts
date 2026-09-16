@@ -33,6 +33,7 @@ import {
 } from "./agent_progress.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
 import { parseContainerExtension } from "./container_extension_config.ts";
+import { parseCodegraphContext } from "./codegraph_context_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
 import {
@@ -976,6 +977,17 @@ export async function loadConfig(
   const includeCodebaseMap = file.include_codebase_map ??
     OPERATIONAL_DEFAULTS.includeCodebaseMap;
 
+  // CodeGraph repo context (Issue #2154, part of #2145). Off unless the host
+  // asks for it; a malformed block fails the load loudly here rather than
+  // reading as off and silently withholding the index the operator configured.
+  const parsedCodegraphContext = parseCodegraphContext(file.codegraph_context);
+  if (!parsedCodegraphContext.ok) {
+    throw new Error(
+      `Config file ${configPath} is invalid: ${parsedCodegraphContext.error}`,
+    );
+  }
+  const codegraphContext = parsedCodegraphContext.value;
+
   const config: WorkerConfig = {
     allowedAuthors,
     allowedAuthor,
@@ -1079,6 +1091,7 @@ export async function loadConfig(
     deepseekPhaseModelOverrides,
     includeRecentActivity,
     includeCodebaseMap,
+    codegraphContext,
     recentActivityMergedPrLimit,
     recentActivityCommitLimit,
     recentActivityMaxTokens,

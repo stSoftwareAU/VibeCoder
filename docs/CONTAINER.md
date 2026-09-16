@@ -88,11 +88,12 @@ weight.
 | `bats-core` 1.14.0                                  | `bats`                                    | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it       |
 | `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
 | `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
+| `codegraph` 1.6.0 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 
 `rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
-`bats-core`, `codespell` and `pyyaml` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`bats-core`, `codespell`, `pyyaml` and `codegraph` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
 SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
@@ -102,7 +103,7 @@ that exemption honest. Adding one is a fragment, a `container/tools.json`
 entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
 added to one of the Containerfile's `install-toolchains.sh` runs.
 
-Seven consequences worth knowing:
+Eight consequences worth knowing:
 
 - **Rust is pinned to 1.98.0, not `stable`.** That is the channel
   NEAT-AI-scorer, NEAT-AI-Lamarck, NEAT-AI-Backpropagation and NEAT-AI-Forests
@@ -180,6 +181,19 @@ Seven consequences worth knowing:
   tag; the fragment derives that tag from the running `python3` rather than
   restating it, so a base-image interpreter bump 404s the fetch instead of
   installing bytes the manifest never pinned.
+- **`codegraph` exists for the worker, not for a monitored gate** (Issue
+  #2153, parent #2145). It is the one toolchain here no repository's
+  `quality.sh` invokes: CodeGraph is trialled as a second repo-context
+  candidate, so the consumer is the worker's own runs. `repos` still names
+  this repository because `parseContainerManifest` rejects an empty list, and
+  it is absent from `REQUIRED_REPO_TOOLCHAIN_COMMANDS` because no gate would
+  miss it. The release is a bundle rather than a bare binary (a
+  `bin/codegraph` shell launcher, its own `node` runtime and `lib/`), so the
+  fragment installs the whole tree under
+  `/opt/codegraph` and symlinks `/usr/local/bin/codegraph` at the launcher,
+  which resolves symlinks itself to find its bundle directory. That bundle is
+  about 62 MB downloaded and 280 MB unpacked, so it is the third-largest
+  toolchain in the image after `rust` and `semgrep`.
 
 Node.js is the runtime `markdownlint-cli2`, Playwright and the Gemini CLI
 provider need; the worker itself is Deno. Its layer is built **before** the
@@ -302,6 +316,19 @@ flowchart TD
   where the evidence gate and the PR expect them. `container-build.yml`
   drives the generated server end to end (initialize → navigate → screenshot
   → PNG on disk), so a channel or version drift fails the build.
+- **Other MCP servers ride the same file without needing that grant**
+  (Issue #2156). `mcpConfig` also takes an object —
+  `{ playwright?: boolean; servers?: Record<string, { command; args?; env? }> }`
+  — so a run can be handed a server such as CodeGraph with
+  `playwright: false` and get a config carrying that entry and no browser
+  entry at all. The browser is still granted only where the caller asks for
+  it: `playwright` defaults to `true`, so an object that leaves it unset asks
+  for the browser as plainly as `mcpConfig: true` does, and an additional
+  server named `playwright` is refused rather than allowed to replace the
+  hardened entry above. `mcpConfig: true` remains exactly the Playwright-only
+  request described above, byte-for-byte. The file keeps its
+  `playwright-mcp-*.json` name, and Codex still reads the same file as
+  `-c mcp_servers.<name>.*` overrides, so no provider changes.
 - **The prompts say so too.** The coding-guidelines template (from v37 onward)
   tells the agent it runs unattended in a sandboxed container with no host
   browser or desktop, mandates this headless browser for every browser task, and
@@ -332,11 +359,11 @@ never neither, and `parseContainerManifest` rejects the manifest otherwise.
 restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
-`cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml` and
-`rust` are fragments (Issues #1594, #1595, #1596, #1628) — they are the fetch-verify-extract
-toolchains, whose `ARG` blocks and `RUN` bodies were the bulk of the
-Containerfile's size. `node`, `npm`, `markdownlint-cli2` and
-`semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
+`cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml`,
+`codegraph` and `rust` are fragments (Issues #1594, #1595, #1596, #1628
+and #2153) — they are the fetch-verify-extract toolchains, whose `ARG` blocks
+and `RUN` bodies were the bulk of the Containerfile's size. `node`, `npm`,
+`markdownlint-cli2` and `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
 the npm- and pip-installed tools have their own steps.
 
 The exemption from the `ARG` rule is only safe while something else proves the

@@ -8,6 +8,8 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { CODEGRAPH_CONTEXT_KEYS } from "./codegraph_context_config.ts";
+
 /**
  * Warning about an unknown configuration key.
  */
@@ -182,6 +184,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "include_codebase_map",
   "timeline_cache_ttl_seconds",
 
+  // CodeGraph repo context (Issue #2154, part of #2145)
+  "codegraph_context",
+
   // Verbosity settings (Issue #1330)
   "verbosity",
 
@@ -227,6 +232,22 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Custom label → non-public prompt file mappings (Issue #846, part of #843)
   "custom_label_prompts",
+]);
+
+/**
+ * Recognised keys **inside** a top-level block that takes an object value,
+ * keyed by the block's own name (Issue #2154).
+ *
+ * Only blocks whose vocabulary is small and fixed belong here: a typo inside
+ * one is as invisible as a typo at the top level, so it earns the same warning.
+ * Free-form maps (`repo_config`, `phase_model_overrides`, …) are deliberately
+ * absent — their keys are operator-chosen, so nothing could be checked.
+ */
+export const KNOWN_NESTED_CONFIG_KEYS: ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> = new Map([
+  ["codegraph_context", CODEGRAPH_CONTEXT_KEYS],
 ]);
 
 /**
@@ -281,9 +302,26 @@ function levenshteinDistance(a: string, b: string): number {
  * @returns The suggested correct key, or null if no close match found
  */
 export function suggestSimilarKey(unknownKey: string): string | null {
+  return suggestFrom(unknownKey, KNOWN_CONFIG_KEYS);
+}
+
+/**
+ * Suggest the most likely intended key from a given candidate set.
+ *
+ * The two strategies {@link suggestSimilarKey} documents, applied to whichever
+ * vocabulary is in play — the top-level keys, or the keys of one nested block.
+ *
+ * @param unknownKey - The unrecognised key.
+ * @param candidates - The keys that would have been recognised.
+ * @returns The suggested key, or null if no close match found.
+ */
+function suggestFrom(
+  unknownKey: string,
+  candidates: ReadonlySet<string>,
+): string | null {
   // Strategy 1: Try camelCase → snake_case conversion
   const snakeVersion = camelToSnake(unknownKey);
-  if (KNOWN_CONFIG_KEYS.has(snakeVersion)) {
+  if (candidates.has(snakeVersion)) {
     return snakeVersion;
   }
 
@@ -293,7 +331,7 @@ export function suggestSimilarKey(unknownKey: string): string | null {
   let bestMatch: string | null = null;
   let bestDistance = maxDistance + 1;
 
-  for (const knownKey of KNOWN_CONFIG_KEYS) {
+  for (const knownKey of candidates) {
     const distance = levenshteinDistance(unknownKey, knownKey);
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -320,16 +358,57 @@ export function detectUnknownConfigKeys(
 
   for (const key of Object.keys(data)) {
     if (!KNOWN_CONFIG_KEYS.has(key)) {
-      const suggestion = suggestSimilarKey(key);
-      const message = suggestion
-        ? `Unknown config key "${key}" in .config.json. Did you mean "${suggestion}"?`
-        : `Unknown config key "${key}" in .config.json. This attribute is not recognised and will be ignored.`;
+      warnings.push(unknownKeyWarning(key, KNOWN_CONFIG_KEYS));
+      continue;
+    }
 
-      warnings.push({ field: key, message, suggestion });
+    // Issue #2154: a block with its own vocabulary gets the same treatment one
+    // level down — a typo inside it would otherwise read as a setting the
+    // operator made and the worker never saw.
+    const nestedKeys = KNOWN_NESTED_CONFIG_KEYS.get(key);
+    if (!nestedKeys) continue;
+    const block = data[key];
+    if (typeof block !== "object" || block === null || Array.isArray(block)) {
+      // A malformed block is the block parser's to refuse, not ours to guess at.
+      continue;
+    }
+    for (const nested of Object.keys(block)) {
+      if (nestedKeys.has(nested)) continue;
+      warnings.push(unknownKeyWarning(nested, nestedKeys, key));
     }
   }
 
   return warnings;
+}
+
+/**
+ * Build one warning for an unrecognised key.
+ *
+ * @param key - The unrecognised key, as written in the file.
+ * @param candidates - The keys that would have been recognised in its position.
+ * @param blockPrefix - The enclosing block, for a nested key.
+ * @returns The warning, with a suggestion when a close match exists.
+ */
+function unknownKeyWarning(
+  key: string,
+  candidates: ReadonlySet<string>,
+  blockPrefix?: string,
+): UnknownKeyWarning {
+  const qualify = (name: string) =>
+    blockPrefix ? `${blockPrefix}.${name}` : name;
+  const suggestion = suggestFrom(key, candidates);
+  const field = qualify(key);
+  const message = suggestion
+    ? `Unknown config key "${field}" in .config.json. Did you mean "${
+      qualify(suggestion)
+    }"?`
+    : `Unknown config key "${field}" in .config.json. This attribute is not recognised and will be ignored.`;
+
+  return {
+    field,
+    message,
+    suggestion: suggestion ? qualify(suggestion) : null,
+  };
 }
 
 /**

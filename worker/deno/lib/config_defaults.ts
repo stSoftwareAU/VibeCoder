@@ -411,6 +411,12 @@ export const OPERATIONAL_DEFAULTS = {
    */
   includeCodebaseMap: true,
   /**
+   * The CodeGraph repo-context switch (Issue #2154, part of #2145). Off by
+   * default: turning it on adds an index step at run start and a `codegraph`
+   * MCP entry, so a host opts in rather than inherits it.
+   */
+  codegraphContext: { enabled: false },
+  /**
    * TTL in seconds for the issue-timeline cache used by label-author
    * checks (Issue #1673). Defaults to 5 minutes — shorter than the
    * 10-minute issues TTL because timelines mutate when labels are
@@ -1501,6 +1507,10 @@ export function buildDefaultWorkerConfig(
     recentActivityCacheTtlSeconds:
       OPERATIONAL_DEFAULTS.recentActivityCacheTtlSeconds,
     includeCodebaseMap: OPERATIONAL_DEFAULTS.includeCodebaseMap,
+    // Fresh object per config: the default must never be shared and mutated.
+    codegraphContext: {
+      enabled: OPERATIONAL_DEFAULTS.codegraphContext.enabled,
+    },
     timelineCacheTtlSeconds: OPERATIONAL_DEFAULTS.timelineCacheTtlSeconds,
     enableSessionResume: OPERATIONAL_DEFAULTS.enableSessionResume,
     verbosity: DEFAULT_VERBOSITY,

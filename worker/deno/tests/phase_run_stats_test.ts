@@ -34,6 +34,7 @@ import {
   setPhaseModelConfigOverrides,
 } from "../lib/claude_executor.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
+import type { CodegraphContextResult } from "../lib/codegraph_context.ts";
 
 /** The four newly-promoted reactive phases plus their expected stats heading. */
 const PROMOTED_PHASES: Array<{ phase: string; heading: string }> = [
@@ -465,4 +466,106 @@ Deno.test("reportPhaseDegradation - a run with no stats and no flags is silent",
   assertEquals(verdict.degraded, false);
   assertEquals(addLabelCalls.length, 0);
   assertEquals(comments.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// CodeGraph figures on the planning-shaped path (Issue #2161)
+// ---------------------------------------------------------------------------
+
+/** What a healthy indexed run's CodeGraph step produced. */
+const INDEXED: CodegraphContextResult = {
+  status: "ok",
+  enabled: true,
+  indexSeconds: 4.2,
+  nodeCount: 2500,
+  relationshipCount: 7100,
+  queries: 6,
+};
+
+Deno.test("reportPhaseDegradation - a healthy round reports the run's CodeGraph figures (Issue #2161)", async () => {
+  pinPhasesToFable();
+  const { ghCommandFn } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  const verdict = await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2161,
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    listIssueComments: () => Promise.resolve([]),
+    codegraph: INDEXED,
+  });
+
+  resetModelResolution();
+  assertEquals(verdict.degraded, false);
+  assertEquals(comments.length, 1);
+  assertStringIncludes(
+    comments[0]!.body,
+    "- **CodeGraph:** ok — index 4.2 s, 2,500 nodes, 7,100 relationships, 6 queries",
+  );
+});
+
+Deno.test("reportPhaseDegradation - a degraded round reports them too (Issue #2161)", async () => {
+  // The degraded path posts its own comment rather than going through the
+  // one-per-run guard, so it needs the figures threaded separately — a
+  // degraded round must not be a hole in the trial's data.
+  pinPhasesToFable();
+  const { ghCommandFn, addLabelCalls } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  const verdict = await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2161,
+    claudeResult: { runStats: runStats(["claude-opus-4-8"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    codegraph: { status: "failed", enabled: true, indexSeconds: 300 },
+  });
+
+  resetModelResolution();
+  assert(verdict.degraded, "opus when fable expected must be degraded");
+  assertEquals(addLabelCalls.length, 1);
+  assertEquals(comments.length, 1);
+  assertStringIncludes(
+    comments[0]!.body,
+    "- **CodeGraph:** failed — index 300 s",
+  );
+});
+
+Deno.test("reportPhaseDegradation - a round with no CodeGraph step mentions none (Issue #2161)", async () => {
+  pinPhasesToFable();
+  const { ghCommandFn } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2161,
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    listIssueComments: () => Promise.resolve([]),
+  });
+
+  resetModelResolution();
+  assertEquals(comments.length, 1);
+  assert(
+    !comments[0]!.body.includes("CodeGraph"),
+    `a round without the step must not mention it: ${comments[0]!.body}`,
+  );
 });
