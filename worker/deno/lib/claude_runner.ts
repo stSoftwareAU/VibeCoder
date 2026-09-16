@@ -16,7 +16,10 @@
  */
 
 import type { AgentDecodedOutput, AgentFailure } from "./agent_output.ts";
-import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
+import {
+  type AgentMcpServerRequest,
+  ensureAgentMcpConfig,
+} from "./agent_mcp_config.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
@@ -510,8 +513,13 @@ export interface RunClaudeOptions {
    * tool, so a prompt-injected agent working a backend issue cannot reach
    * arbitrary or internal hosts through it. Absent or `false` means no
    * browser.
+   *
+   * The object form (Issue #2156) carries additional servers — CodeGraph —
+   * independently of that browser grant: `{ playwright: false, servers: … }`
+   * writes a config with those servers and no browser entry. `true` is
+   * exactly `{ playwright: true }`, so a browser run is unchanged.
    */
-  mcpConfig?: boolean;
+  mcpConfig?: boolean | AgentMcpServerRequest;
   /**
    * Memory-pressure probe consulted when the run is SIGKILLed with no
    * watchdog firing (Issue #4374). Defaults to the host probe; injectable
@@ -1029,8 +1037,19 @@ export async function runClaudeWithTimeout(
   // caller declares the browser needed (Issue #192) — a cwd alone no longer
   // grants outbound browser/network capability to a run that has no use for
   // it. Best-effort even then: absent on failure.
-  const mcpConfigPath = options.mcpConfig === true && cwd
+  // `true` is the Playwright-only request; the object form (Issue #2156) names
+  // what it wants. Anything falsy writes no config at all.
+  const mcpRequest: AgentMcpServerRequest | undefined =
+    options.mcpConfig === true
+      ? { playwright: true }
+      : typeof options.mcpConfig === "object"
+      ? options.mcpConfig
+      : undefined;
+  const mcpConfigPath = mcpRequest && cwd
     ? await ensureAgentMcpConfig({
+      // The request is spread first: the clone path, the logger and the
+      // work dir below are this call's to set, never the caller's to shadow.
+      ...mcpRequest,
       cwd,
       log: (message) => logger?.warn?.(message),
       ...(options.workDir ? { workDir: options.workDir } : {}),
