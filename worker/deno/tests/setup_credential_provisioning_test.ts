@@ -11,6 +11,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { setupConfigEnv } from "./support/setup_config_env.ts";
 import {
   checkCredentialPreflight,
   credentialPreflightMessage,
@@ -120,7 +121,7 @@ function provision(
       env: {
         PATH: path,
         HOME: tmp,
-        CONFIG_FILE: `${tmp}/.config.json`,
+        ...setupConfigEnv(`${tmp}/.config.json`),
         ...env,
       },
       stdin: "null",
@@ -519,7 +520,7 @@ function interactiveFlow(
         HOME: tmp,
         // Pty transcripts land here, so the tests can assert none survive.
         TMPDIR: tmp,
-        CONFIG_FILE: `${tmp}/.config.json`,
+        ...setupConfigEnv(`${tmp}/.config.json`),
       },
       stdin: "piped",
       stdout: "piped",
