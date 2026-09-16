@@ -17,7 +17,7 @@ ends.
 |              |                                                                                                                                  |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
 | Trial host   | **GRQ-23** — one host, both candidates, sequential windows                                                                       |
-| Switches     | `graft_context.enabled`, `codegraph_context.enabled` — both host-level, both default `false` ([Configuration](CONFIGURATION.md)) |
+| Switches     | `codegraph_context.enabled` ([Configuration](CONFIGURATION.md)) and Graft's own `graft_context.enabled`, which ships with milestone #2060 and is not on every build — both host-level, both default `false` |
 | Bar          | ≥ 10% lower tokens **or** cost per completed implementation run, no worse success rate                                           |
 | First judged | after **2 days** or **20** completed GRQ-23 runs, whichever is later                                                             |
 | Status       | 🟡 protocol recorded, windows not yet run                                                                                        |
@@ -35,6 +35,9 @@ ends.
 | Model calls to index     | none                                                                                         | none                                                                                         |
 | Host switch              | `graft_context.enabled`                                                                      | `codegraph_context.enabled`                                                                  |
 | Failure marker           | `[GRAFT_UNAVAILABLE]`                                                                        | `[CODEGRAPH_UNAVAILABLE]`                                                                    |
+
+The Graft column is as milestone #2060 specifies that trial; the CodeGraph
+column is what `worker/deno/lib/codegraph_context.ts` does today.
 
 Neither switch reads the other, and a run never fails because its repo-context
 tool did: the tool is an accelerator, so a failed index logs its marker and the
@@ -59,8 +62,9 @@ decision is not re-litigated from memory:
 
 ## 2. 📼 Motivation, not evidence
 
-The trial was prompted by a published one-run-per-setup comparison on a frozen
-commit of an unrelated repository:
+The trial was prompted by a published one-run-per-setup comparison
+([youtu.be/Xr2MjfirjqA](https://youtu.be/Xr2MjfirjqA)) on a frozen commit of an
+unrelated repository:
 
 | Setup             | Tokens | Wall clock | Index                             |
 | ----------------- | ------ | ---------- | --------------------------------- |
@@ -71,7 +75,7 @@ commit of an unrelated repository:
 These figures are **motivation only — not evidence**, and no decision cites
 them. One run per setup on one repository is a reason to measure, not a result:
 the presenter says so, and so does this page. The only figures that count
-towards the bar are the ones this trial records on GRQ-23 under §5.
+towards the bar are the ones this trial records on GRQ-23, in §7 and §8.
 
 ## 3. 📏 The bar
 
@@ -99,7 +103,7 @@ host would make each candidate's figures unreadable:
 
 ```mermaid
 flowchart LR
-    A["Baseline<br/>both switches false"] --> B["Graft window<br/>graft_context.enabled = true"]
+    A["Before the trial<br/>both switches false"] --> B["Graft window<br/>graft_context.enabled = true"]
     B --> C["Manual switch-over<br/>operator edits GRQ-23 .config.json"]
     C --> D["CodeGraph window<br/>codegraph_context.enabled = true<br/>Graft off, same window length"]
     D --> E["Human verdict<br/>per candidate, against §3"]
@@ -130,14 +134,18 @@ A run is excluded from **either** window's figures when:
 Everything else counts. In particular a run whose status is `failed` — the
 switch was on and the index or the server did not come up — **stays in** the
 candidate's figures: a tool that fails on an enabled host has spent the run's
-time and delivered nothing, and hiding that would flatter it. A run whose status
-is `off` is a baseline run, and baseline runs are the comparison the 10% is
-measured against.
+time and delivered nothing, and hiding that would flatter it.
+
+The comparison the 10% is measured against is **the other hosts' runs over the
+same window length**, not GRQ-23's own history: a GRQ-23 run whose status is
+`off` fell outside the window (the switch is on for the whole of it) and is not
+part of either candidate's figures.
 
 ## 6. 📥 Where each figure is read from
 
-Every run records its repo-context figures on two surfaces, and the trial reads
-them from there rather than from ad-hoc logs:
+Each window's figures are read from two per-run surfaces rather than from
+ad-hoc logs. Both surfaces are still being built — the sub-issue that lands each
+is named in its cell, and a window cannot open before its own two have landed:
 
 | Surface                     | Graft                     | CodeGraph                     |
 | --------------------------- | ------------------------- | ----------------------------- |
