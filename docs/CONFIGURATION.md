@@ -1753,14 +1753,12 @@ injection (Issue #2060). It defaults to **`false`**, and a host whose
 `.config.json` carries no `graft_context` block behaves exactly as it does
 today — nothing is built, nothing is injected, and no prompt changes.
 
-This key is the configuration surface (Issue #2098). As of Issue #2102 it is
-live for the **issue**, **planning** and **question** runs: each collects a
-bundle before its prompt is built and injects it when the collection
-succeeded. The **PR feedback** and **CI fix** builders accept a bundle
-(Issue #2101) but nothing collects one for them yet; the run-stats fields land
-with the rest of #2060. An enabled host therefore changes those two phases'
-prompts not at all, and a host that leaves the switch off is unaffected
-everywhere.
+This key is the configuration surface (Issue #2098). As of Issue #2103 it is
+live for all five phases that accept a bundle — the **issue**, **planning**
+and **question** runs (Issue #2102) and the **PR feedback** and **CI fix**
+runs (Issue #2103): each collects a bundle before its prompt is built and
+injects it when the collection succeeded. The run-stats fields land with the
+rest of #2060. A host that leaves the switch off is unaffected everywhere.
 
 **What it turns on.** On an enabled host, each run builds a
 [Graft](https://github.com/trailhq/Graft) tree-sitter code graph of the
@@ -1769,8 +1767,15 @@ section beside the existing `CLAUDE.md` / `AGENTS.md` repo-context docs. The
 switch is per host, not per repository: an enabled host uses Graft for every
 repository it works on. Five builders accept a bundle (Issue #2101) —
 **issue**, **planning**, **question**, **PR feedback** and **CI fix** — and
-the first three collect one (Issue #2102). The query is the issue title and
-body. The bundle renders as a fenced untrusted document, tagged
+all five collect one (Issues #2102 and #2103). The query is the issue title
+and body on the three issue-shaped runs; on the two PR runs it is the PR title
+plus the feedback comment text (PR feedback) or the failing check's name,
+annotations and CI log excerpt (CI fix). The PR title costs one
+`gh pr view --json title`, made **only** on an enabled host; a title that
+cannot be read is warned about and the query is asked without it. On the PR
+runs the graph is built over the PR head branch, so the bundle is
+PR-author-influenced content — which is exactly why it is fenced as untrusted.
+The bundle renders as a fenced untrusted document, tagged
 `<document source="graft ask --source">` and named among the untrusted blocks
 the boundary-integrity instruction covers, because it reproduces repository
 source and is therefore data, never instructions. It is selected per query, so

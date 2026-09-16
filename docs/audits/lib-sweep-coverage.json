@@ -1650,6 +1650,18 @@
       "paths": [
         "worker/deno/lib/graft_context.ts"
       ]
+    },
+    {
+      "issue": 2103,
+      "chunk": "top-up-2103",
+      "title": "top-up: the PR-title read",
+      "ledger": "docs/audits/security-sweep-2103-pr-title-read.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_title_read.ts (#2103)",
+      "status": "swept",
+      "sweptAt": "8d71c2af80c01c9ff4c8b752d2317a18faefdf48",
+      "paths": [
+        "worker/deno/lib/pr_title_read.ts"
+      ]
     }
   ],
   "roots": [

@@ -20,11 +20,18 @@ import {
   GRAFT_LAYOUT_DIRS,
   graftContextFacts,
   graftQueryFor,
+  graftQueryForPr,
   MAX_GRAFT_QUERY_BYTES,
   truncateUtf8,
   utf8Length,
+  withGraftContext,
 } from "../lib/graft_context.ts";
-import type { GraftGitRunner, GraftRunner } from "../lib/graft_context.ts";
+import type {
+  GraftContextResult,
+  GraftContextSlot,
+  GraftGitRunner,
+  GraftRunner,
+} from "../lib/graft_context.ts";
 import {
   EXECUTABLE_IGNORED_DIRS,
   ignoredExecutableCleanArgs,
@@ -941,6 +948,75 @@ Deno.test("graftQueryFor - keeps the title when the body is empty", () => {
   // rather than handing it a query that starts with blank lines only.
   assertEquals(graftQueryFor("Fix the parser", ""), "Fix the parser\n\n");
   assertEquals(graftQueryFor("", ""), "\n\n");
+});
+
+// ---------------------------------------------------------------------------
+// graftQueryForPr — the query the two PR runs share (Issue #2103)
+// ---------------------------------------------------------------------------
+
+Deno.test("graftQueryForPr - joins the PR title and the feedback text", () => {
+  assertEquals(
+    graftQueryForPr("Fix the parser", "The retry loop never releases."),
+    "Fix the parser\n\nThe retry loop never releases.",
+  );
+});
+
+Deno.test("graftQueryForPr - a title that could not be read is dropped, not interpolated", () => {
+  // A failed `gh pr view` must leave the feedback text asking on its own,
+  // rather than a query that opens with two blank lines.
+  assertEquals(
+    graftQueryForPr(undefined, "boom in parse()"),
+    "boom in parse()",
+  );
+  assertEquals(graftQueryForPr("   ", "boom in parse()"), "boom in parse()");
+});
+
+// ---------------------------------------------------------------------------
+// withGraftContext — recording the outcome on a processor result (Issue #2103)
+// ---------------------------------------------------------------------------
+
+/** A stand-in for a processor result: its own payload plus the outcome slot. */
+interface TestResult {
+  summary: string;
+  graftContext?: GraftContextResult;
+}
+
+Deno.test("withGraftContext - records the outcome without the bundle", () => {
+  const slot: GraftContextSlot = {
+    result: { status: "ok", enabled: true, nodeCount: 7, bundle: "source" },
+  };
+  const result = withGraftContext<TestResult>(
+    { ok: true, value: { summary: "fixed" } },
+    slot,
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.summary, "fixed");
+  assertEquals(result.value.graftContext?.status, "ok");
+  assertEquals(result.value.graftContext?.nodeCount, 7);
+  // The bundle was spent on the prompt; a recorded result must never carry it.
+  assertEquals(result.value.graftContext?.bundle, undefined);
+});
+
+Deno.test("withGraftContext - an unreached collection records nothing", () => {
+  const result = withGraftContext<TestResult>(
+    { ok: true, value: { summary: "skipped" } },
+    {},
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.graftContext, undefined);
+});
+
+Deno.test("withGraftContext - a failed result is returned untouched", () => {
+  const error = new Error("the run failed");
+  const result = withGraftContext<TestResult>(
+    { ok: false, error },
+    { result: { status: "failed", enabled: true } },
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.error, error);
 });
 
 // ---------------------------------------------------------------------------

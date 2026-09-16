@@ -632,6 +632,56 @@ export function graftQueryFor(issueTitle: string, issueBody: string): string {
 }
 
 /**
+ * The `graft ask --source` query for a pull-request run (Issue #2103) — the
+ * PR title and the feedback or failing-check text.
+ *
+ * The title is read from the live PR and can be missing (a `gh pr view` that
+ * failed is warned about, not fatal). A missing title is *dropped* rather
+ * than interpolated as an empty line, so a degraded read asks Graft about the
+ * feedback text alone instead of a query that opens with blank lines.
+ *
+ * @param prTitle - The PR title, or `undefined` when it could not be read
+ * @param text - The feedback comment or failing-check text
+ * @returns The query text
+ */
+export function graftQueryForPr(
+  prTitle: string | undefined,
+  text: string,
+): string {
+  const title = prTitle?.trim() ?? "";
+  return title === "" ? text : graftQueryFor(title, text);
+}
+
+/**
+ * Attach a slot's outcome to an `ok` processor result, without its bundle
+ * (Issue #2103).
+ *
+ * The PR-feedback and CI-fix processors each return from a dozen or more
+ * places, most of them before the collection is reached. Both fill a
+ * {@link GraftContextSlot} at the collection point and hand the result
+ * through here on the way out, so the outcome is recorded once rather than on
+ * every exit — and an unset slot honestly means the run ended earlier.
+ * {@link graftContextFacts} drops the bundle, which has already been spent on
+ * the prompt and must never reach a recorded result.
+ *
+ * @param result - The processor's own result
+ * @param slot - The slot the collection filled, if it was reached
+ * @returns The result, carrying the outcome when there is one
+ */
+export function withGraftContext<
+  T extends { graftContext?: GraftContextResult },
+>(
+  result: Result<T>,
+  slot: GraftContextSlot,
+): Result<T> {
+  if (!result.ok || slot.result === undefined) return result;
+  return {
+    ok: true,
+    value: { ...result.value, graftContext: graftContextFacts(slot.result) },
+  };
+}
+
+/**
  * One log line stating what the collection did, with whatever figures it
  * gathered.
  *

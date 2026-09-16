@@ -17,6 +17,16 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
 import {
+  collectGraftContext,
+  describeGraftContext,
+  type GraftContextCollector,
+  type GraftContextResult,
+  type GraftContextSlot,
+  graftQueryForPr,
+  withGraftContext,
+} from "./graft_context.ts";
+import { prTitleForGraftQuery } from "./pr_title_read.ts";
+import {
   getCiCheckRetryCount,
   postCiFixMaxRetriesComment,
   recordCiCheckRetry,
@@ -187,6 +197,15 @@ export interface CiFixResult {
   retryCount: number;
   /** Human-readable summary. */
   summary: string;
+  /**
+   * What the Graft repo-context collection did this run (Issue #2103, part of
+   * #2060) — `off` on a host that has not opted in.
+   *
+   * Present only on a run that reached the collection: a lost PR lock, an
+   * exhausted retry budget, a credentials escalation or an already-diagnosed
+   * head all return before a prompt is built. Never carries the bundle itself.
+   */
+  graftContext?: GraftContextResult;
 }
 
 /** Dependencies specific to the CI fix processor. */
@@ -308,6 +327,22 @@ export interface CiProcessorDeps {
    * other parallel worker shares.
    */
   promptsDir?: string;
+  /**
+   * Whether this host collects a Graft repo-context bundle (Issue #2103,
+   * part of #2060, default: false).
+   *
+   * Threaded from `config.graftContext.enabled` by the dispatchers, which
+   * read it through `isGraftContextEnabled()`. Off, the collector returns
+   * `off` without spawning anything, so a host that never opted in behaves
+   * exactly as it does today.
+   */
+  graftContextEnabled?: boolean;
+  /**
+   * Collect the Graft repo-context bundle (Issue #2103). Optional —
+   * {@link collectGraftContext} is used when omitted, and it spawns nothing
+   * while the host switch is off.
+   */
+  collectGraftContext?: GraftContextCollector;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +433,70 @@ export function formatCiAnnotations(annotations: CheckAnnotation[]): string {
   return details;
 }
 
+/**
+ * Collect the Graft repo-context bundle for one CI-fix run (Issue #2103).
+ *
+ * The query is the PR title plus the failing-check text the processor already
+ * resolved — the check name, its annotations, and the CI log excerpt when one
+ * was fetched. The title costs one `gh pr view`, so it is read **only** on an
+ * enabled host; a host with the switch off makes no extra API call and the
+ * collector short-circuits to `off` without spawning anything. A title that
+ * cannot be read is warned about and dropped, because a degraded query beats
+ * no bundle at all.
+ *
+ * @param input - The CI fix input, for the repo, PR number and check name
+ * @param processorDeps - Processor dependencies (switch, seams, logger)
+ * @param failure - The failing-check text already assembled for the prompt
+ * @returns The collection outcome — never throws
+ */
+async function collectGraftForCiFix(
+  input: CiFixInput,
+  processorDeps: CiProcessorDeps,
+  failure: { annotationDetails: string; logExcerpt?: string },
+): Promise<GraftContextResult> {
+  const { repo, prNumber, checkName } = input;
+  const { logger, deps } = processorDeps;
+  const enabled = processorDeps.graftContextEnabled ?? false;
+  const collect = processorDeps.collectGraftContext ?? collectGraftContext;
+
+  const repoDir = processorDeps.workDir;
+  if (enabled && (repoDir === undefined || repoDir.length === 0)) {
+    // An enabled host with no checkout to graph is a fault, not an "off" run:
+    // reporting it as `off` would hide it among the hosts that never opted in.
+    logger.warn(
+      "[GRAFT_UNAVAILABLE] no checkout directory supplied to the CI fix processor",
+      { repo, prNumber, checkName },
+    );
+    return { status: "failed", enabled: true };
+  }
+
+  const prTitle = enabled
+    ? await prTitleForGraftQuery({
+      repo,
+      prNumber,
+      gh: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+      logger,
+    })
+    : undefined;
+
+  const failureText = [
+    checkName,
+    failure.annotationDetails,
+    failure.logExcerpt,
+  ].filter((part): part is string => part !== undefined && part.trim() !== "")
+    .join("\n\n");
+
+  return await collect({
+    // `workDir` already is the checkout, with the PR head branch on it
+    // (Issue #1673) — never `${workDir}/${repo}`. Only the disabled path can
+    // reach here without one, and it short-circuits before reading it.
+    repoDir: repoDir ?? "",
+    query: graftQueryForPr(prTitle, failureText),
+    enabled,
+    logger,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Main processor
 // ---------------------------------------------------------------------------
@@ -456,12 +555,20 @@ export async function processCiFailure(
     };
   }
 
+  // Filled once the run reaches the collection (Issue #2103); a lost lock, an
+  // exhausted retry budget or an escalation returns before a prompt is built
+  // and leaves it unset.
+  const graftSlot: GraftContextSlot = {};
+
   if (workerId === undefined || workerId.length === 0) {
     logger.warn(
       "pr_ci_lock=skipped reason=no-worker-id — CI fix is running unguarded",
       { repo, prNumber, checkName },
     );
-    return await _processCiFailureLocked(input, processorDeps);
+    return withGraftContext(
+      await _processCiFailureLocked(input, processorDeps, graftSlot),
+      graftSlot,
+    );
   }
 
   // Visible line under the hidden marker — a marker-only body renders as a
@@ -531,7 +638,10 @@ export async function processCiFailure(
   }
 
   try {
-    return await _processCiFailureLocked(input, processorDeps);
+    return withGraftContext(
+      await _processCiFailureLocked(input, processorDeps, graftSlot),
+      graftSlot,
+    );
   } finally {
     renewal?.stop();
     if (lockCommentId !== undefined) {
@@ -550,6 +660,7 @@ export async function processCiFailure(
 async function _processCiFailureLocked(
   input: CiFixInput,
   processorDeps: CiProcessorDeps,
+  graftSlot: GraftContextSlot,
 ): Promise<Result<CiFixResult>> {
   const { repo, prNumber, checkRunId, checkName } = input;
   const {
@@ -678,6 +789,7 @@ async function _processCiFailureLocked(
       input,
       processorDeps,
       newRetryCount,
+      graftSlot,
     );
     await recordCiMilestone(
       processorDeps,
@@ -765,6 +877,7 @@ async function _processCiWithHeartbeat(
   input: CiFixInput,
   processorDeps: CiProcessorDeps,
   newRetryCount: number,
+  graftSlot: GraftContextSlot,
 ): Promise<Result<CiFixResult>> {
   const { repo, prNumber, checkRunId, checkName, encodedAnnotations } = input;
   const {
@@ -1109,6 +1222,25 @@ async function _processCiWithHeartbeat(
       `fix attempt ${attemptCount + 1} of ${maxAutoFixAttempts}`,
   );
 
+  // Graft repo-context bundle (Issue #2103, part of #2060). Off on a host
+  // that has not opted in — the collector returns `off` without spawning. A
+  // `failed` collection is reported and the fix proceeds unbundled.
+  //
+  // Collected here rather than beside `loadRepoContextContent` above: every
+  // stand-down between the two — the auto-fix cap, the credentials
+  // escalation, an already-diagnosed head — returns without building a
+  // prompt, and a 300-second graph build spent on a run that never prompts is
+  // pure waste. The graph is built over the checkout itself (Issue #1673),
+  // which is the PR head branch, hence the untrusted fence around the bundle.
+  const graftContext = await collectGraftForCiFix(input, processorDeps, {
+    annotationDetails,
+    logExcerpt: prFailureActionsExcerpt,
+  });
+  graftSlot.result = graftContext;
+  if (graftContext.status !== "off") {
+    logger.info(describeGraftContext(graftContext), { repo, prNumber });
+  }
+
   // Build prompt — pass raw annotations so v4+ templates can surface the
   // failure classification (Issue #1692).
   const promptOptions: CiFixPromptOptions = {
@@ -1119,6 +1251,9 @@ async function _processCiWithHeartbeat(
     qualityInstructions,
     customInstructions,
     repoContextContent,
+    // Present only on an `ok` collection (Issue #2103); the builder renders
+    // nothing when it is undefined.
+    graftContextBundle: graftContext.bundle,
     annotations: annotations.map((a) => ({
       message: a.message,
       path: a.path,

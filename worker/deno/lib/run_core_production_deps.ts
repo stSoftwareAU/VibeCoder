@@ -123,6 +123,7 @@ import {
   findPrCommentsToFix,
 } from "./pr_maintenance.ts";
 import { processPrFeedback } from "./pr_feedback_processor.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { maybeFileIdleTaskCommand } from "../commands/maybe_file_idle_task.ts";
 import { runIdleTaskFilerCycle } from "./idle_task_filer_run.ts";
 import {
@@ -1845,6 +1846,8 @@ export async function createProductionRunCoreDeps(
             githubUser,
             trustedReviewBots: config.trustedReviewBots ?? [],
             repoConfigs: config.repoConfig,
+            // Issue #2103: the host switch for the Graft repo-context bundle.
+            graftContextEnabled: isGraftContextEnabled(config),
           },
         );
 
@@ -2071,6 +2074,8 @@ export async function createProductionRunCoreDeps(
             // fleet's own attempt record — the push-capable set, because
             // those are the accounts that actually run this lane.
             fleetLogins: resolveFleetMaintenanceAuthorSet(fleetPrAuthorInput),
+            // Issue #2103: the host switch for the Graft repo-context bundle.
+            graftContextEnabled: isGraftContextEnabled(config),
           },
         );
 
