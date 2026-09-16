@@ -62,6 +62,7 @@ import type { IssueFetcher, OpenIssueStateMap } from "./issue_dependencies.ts";
 import {
   buildOpenIssueStateMap,
   createIssueFetcher,
+  createOpenMilestoneLookup,
   type FindIssuesOptions,
   isDependencyBlocked,
   memoiseIssueFetcher,
@@ -254,6 +255,16 @@ export async function filterNewWorkEligible(
     }
   }
 
+  // Issue #2173: the lazy open-milestone lookup for the cross-milestone
+  // dependency hold. Built once per repo and shared by every candidate; the
+  // listing is only fetched if a closed dependency actually carries a
+  // different milestone.
+  const isMilestoneOpen = createOpenMilestoneLookup(
+    repo,
+    options.cache,
+    ctx.ghFn,
+  );
+
   const eligible: FilterableIssue[] = [];
 
   for (const issue of survived) {
@@ -352,6 +363,7 @@ export async function filterNewWorkEligible(
         issue.number,
         ctx.fetcher,
         ctx.openStateMap,
+        { candidateMilestone: milestoneTitle, isMilestoneOpen },
       )
     ) {
       note(issue, "dependency-blocked");

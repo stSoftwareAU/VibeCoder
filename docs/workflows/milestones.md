@@ -125,6 +125,7 @@ The milestone completion check (`check_and_handle_milestone_completions()`) only
 2. The issue is closed manually or by the worker after the merge.
 3. Once all issues are closed, the worker detects completion and creates the final PR from `milestone/<name>` to the default branch.
 4. After the final PR is merged, the GitHub milestone itself is closed.
+5. Only then is a **cross-milestone** `Depends on #N` satisfied — an issue in another milestone that names a closed sub-issue of this one stays held until this milestone closes (see [Projects and dependencies](projects-and-dependencies.md#-mixed-dependencies-and-milestones)).
 
 ## 📊 Diagram: milestone branch flow
 
