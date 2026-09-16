@@ -16,8 +16,11 @@ timeout, a missing binary, an absent or unparseable index — logs exactly one
 with whatever figures were gathered. Nothing throws: the bundle is an
 accelerator, so losing it must never fail a run.
 
-`/graft/` also joins `REQUIRED_GITIGNORE_PATTERNS`, so the graph can never be
-committed. Closes #2099.
+`/graft/` also joins `REQUIRED_GITIGNORE_PATTERNS`, so a checkout carrying the
+canonical pattern set cannot stage the graph. The two entries differ in reach
+and the docs now say which does the work: during a run it is the `info/exclude`
+line that is in force, because the enforcer's `.gitignore` edit is uncommitted
+and the per-run `git reset --hard` reverts it. Closes #2099.
 
 ## Evidence
 
@@ -91,7 +94,7 @@ integration config and which this diff does not touch.
 
 ## Test Plan
 
-Added `worker/deno/tests/graft_context_test.ts` (26 tests, none spawning):
+Added `worker/deno/tests/graft_context_test.ts` (34 tests, none spawning):
 
 - off → `status: "off"`, no `run` and no `git` call, nothing logged
 - happy path → `ok` with `buildSeconds`, `bundleChars`, `nodeCount: 3`,
@@ -110,13 +113,16 @@ Added `worker/deno/tests/graft_context_test.ts` (26 tests, none spawning):
 - a failed `git rev-parse` fails loud and spawns no `graft`
 - the exclude file gains `/graft/` exactly once across two calls, is created
   when absent, and an absolute `--git-path` answer (lane worktree) resolves
+- an exclude file whose last pattern has no trailing newline is not fused onto
+  — both the operator's entry and `/graft/` survive as separate lines
 - an over-long query is truncated on a code-point boundary; a short one is
   passed through untouched
 - `truncateUtf8` boundaries: empty, exact limit, zero, split four-byte
   character
 - `formatGraftContextSection`: empty → `""`; the section is tagged
   `<document source="graft ask --source">`; a bundle carrying delimiter-shaped
-  text cannot close the fence
+  text cannot close the fence; a credential planted in the bundle is redacted
+  before it is fenced
 - the scoped ignored clean's real pathspecs erase no part of the `graft/`
   layout
 
