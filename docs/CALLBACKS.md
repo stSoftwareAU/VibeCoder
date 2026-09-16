@@ -489,13 +489,16 @@ is the one optional-looking fact that is present on **every** run context:
   recorded is visible as a failure rather than as a clean-looking `off`.
 - The two fields are independent, and `{ "enabled": true, "status": "off" }` is
   the combination worth reading: the host **had** Graft switched on and the run
-  ended before the collection — a setup failure, a refused claim, a run that
-  threw. `enabled` always states the host's real switch setting, never a
-  default, so an early exit on a Graft host is never archived as a host that
-  never opted in.
+  ended before the collection — a setup failure, a refused claim. `enabled`
+  states the host's real switch setting rather than a default, so an early exit
+  on a Graft host is never archived as a host that never opted in. The one
+  exception is a run that threw outright: it reports
+  `{ "enabled": false, "status": "off" }`, because no result was built to read
+  the switch onto.
 - `buildSeconds`, `bundleChars`, `nodeCount` and `callEdgeCount` are present
-  only when the collection actually reached them, and are omitted — never
-  emitted empty or nought — when it did not.
+  only when the collection actually reached them, and are **omitted** — not
+  emitted as an empty string — when it did not. A figure that really is nought
+  is reported as `0`: a graph with no nodes is a measurement, not an absence.
 - The Graft **bundle text** is never published. It is repository source,
   already spent on the run's prompt; only the figures above cross the boundary.
 
