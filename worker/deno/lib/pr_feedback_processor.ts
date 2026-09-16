@@ -22,6 +22,16 @@ import {
   type PrFeedbackPromptOptions,
 } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
+import {
+  collectGraftContext,
+  describeGraftContext,
+  type GraftContextCollector,
+  type GraftContextResult,
+  type GraftContextSlot,
+  graftQueryForPr,
+  withGraftContext,
+} from "./graft_context.ts";
+import { readPrTitle } from "./pr_title_read.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
@@ -89,6 +99,15 @@ export interface PrFeedbackResult {
   changesPushed: boolean;
   /** Human-readable summary. */
   summary: string;
+  /**
+   * What the Graft repo-context collection did this run (Issue #2103, part of
+   * #2060) — `off` on a host that has not opted in.
+   *
+   * Present only on a run that reached the collection: a PR closed since the
+   * listing, a comment another worker claimed, or a failed branch checkout all
+   * return before a prompt is built. Never carries the bundle itself.
+   */
+  graftContext?: GraftContextResult;
 }
 
 /** Dependencies specific to the feedback processor. */
@@ -171,6 +190,22 @@ export interface PrFeedbackProcessorDeps {
    * other parallel worker shares.
    */
   promptsDir?: string;
+  /**
+   * Whether this host collects a Graft repo-context bundle (Issue #2103,
+   * part of #2060, default: false).
+   *
+   * Threaded from `config.graftContext.enabled` by the dispatchers, which
+   * read it through `isGraftContextEnabled()`. Off, the collector returns
+   * `off` without spawning anything, so a host that never opted in behaves
+   * exactly as it does today.
+   */
+  graftContextEnabled?: boolean;
+  /**
+   * Collect the Graft repo-context bundle (Issue #2103). Optional —
+   * {@link collectGraftContext} is used when omitted, and it spawns nothing
+   * while the host switch is off.
+   */
+  collectGraftContext?: GraftContextCollector;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +280,58 @@ export function buildFeedbackCommitMessage(
   return `Fix PR #${prNumber} feedback: ${truncatedBody}...
 
 Automated fix by auto-issue-worker`;
+}
+
+/**
+ * Collect the Graft repo-context bundle for one feedback run (Issue #2103).
+ *
+ * The query is the PR title plus the feedback text the processor already
+ * assembled. The title costs one `gh pr view`, so it is read **only** on an
+ * enabled host — a host with the switch off makes no extra API call and the
+ * collector short-circuits to `off` without spawning anything. A title that
+ * cannot be read is warned about and dropped: the bundle is an accelerator,
+ * and a degraded query beats no bundle at all.
+ *
+ * @param input - The feedback input, for the repo and PR number
+ * @param processorDeps - Processor dependencies (switch, seams, logger)
+ * @param feedbackText - The feedback comment text, as the prompt will carry it
+ * @returns The collection outcome — never throws
+ */
+async function collectGraftForFeedback(
+  input: PrFeedbackInput,
+  processorDeps: PrFeedbackProcessorDeps,
+  feedbackText: string,
+): Promise<GraftContextResult> {
+  const { repo, prNumber } = input;
+  const { logger, deps } = processorDeps;
+  const enabled = processorDeps.graftContextEnabled ?? false;
+  const collect = processorDeps.collectGraftContext ?? collectGraftContext;
+
+  let prTitle: string | undefined;
+  if (enabled) {
+    const title = await readPrTitle(
+      repo,
+      prNumber,
+      (args: string[]) => deps.github.runGhCommand(args),
+    );
+    if (title.ok) {
+      prTitle = title.value;
+    } else {
+      logger.warn(
+        `Graft query is missing the PR title: ${title.error.message}`,
+        { repo, prNumber },
+      );
+    }
+  }
+
+  return await collect({
+    // `workDir` already is the checkout, with the PR head branch on it
+    // (Issue #1673) — never `${workDir}/${repo}`.
+    repoDir: processorDeps.workDir,
+    query: graftQueryForPr(prTitle, feedbackText),
+    enabled,
+    logger,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -378,8 +465,16 @@ export async function processPrFeedback(
   }
   const heartbeatHandle: HeartbeatHandle = heartbeatStart.value;
 
+  // Filled once the run reaches the collection (Issue #2103); every exit
+  // above returns before a prompt is built and leaves it unset.
+  const graftSlot: GraftContextSlot = {};
   try {
-    return await _processFeedbackWithHeartbeat(input, processorDeps);
+    const result = await _processFeedbackWithHeartbeat(
+      input,
+      processorDeps,
+      graftSlot,
+    );
+    return withGraftContext(result, graftSlot);
   } finally {
     await stopHeartbeat(heartbeatHandle);
   }
@@ -392,6 +487,7 @@ export async function processPrFeedback(
 async function _processFeedbackWithHeartbeat(
   input: PrFeedbackInput,
   processorDeps: PrFeedbackProcessorDeps,
+  graftSlot: GraftContextSlot,
 ): Promise<Result<PrFeedbackResult>> {
   const { repo, prNumber, commentType, commentId, commentBody } = input;
   const {
@@ -454,6 +550,22 @@ async function _processFeedbackWithHeartbeat(
     logger,
   );
 
+  // Graft repo-context bundle (Issue #2103, part of #2060). Off on a host
+  // that has not opted in — the collector returns `off` without spawning. A
+  // `failed` collection is reported and the feedback run proceeds unbundled.
+  // The graph is built over the checkout itself (Issue #1673), which is the
+  // PR head branch `preparePrBranch` put there — hence the untrusted fence
+  // the builder renders the bundle behind.
+  const graftContext = await collectGraftForFeedback(
+    input,
+    processorDeps,
+    processedBody,
+  );
+  graftSlot.result = graftContext;
+  if (graftContext.status !== "off") {
+    logger.info(describeGraftContext(graftContext), { repo, prNumber });
+  }
+
   // Bundle unresolved trusted-bot review comments as additional prompt
   // context (Issue #1858). Failures degrade silently — no bundling
   // beats blocking PR feedback processing on a transient API error.
@@ -492,6 +604,9 @@ async function _processFeedbackWithHeartbeat(
     qualityInstructions,
     customInstructions,
     repoContextContent,
+    // Present only on an `ok` collection (Issue #2103); the builder renders
+    // nothing when it is undefined.
+    graftContextBundle: graftContext.bundle,
     additionalReviewComments: additionalReviewComments?.ok
       ? additionalReviewComments.value
       : undefined,

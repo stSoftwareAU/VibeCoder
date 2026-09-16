@@ -36,6 +36,7 @@ import {
   getCustomInstructions,
 } from "../lib/repo_config.ts";
 import type { CommentType } from "../lib/pr_comments.ts";
+import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
 
 // Re-export library functions for external use
 export { buildFeedbackCommitMessage, decodeCommentBody, summariseLargeComment };
@@ -188,6 +189,8 @@ export const prFeedbackProcessorCommand: Command = {
           claudeTimeout: config.prFeedbackTimeout || undefined,
           claudeModel: config.claudeModel || undefined,
           workerId,
+          // Issue #2103: the host switch for the Graft repo-context bundle.
+          graftContextEnabled: isGraftContextEnabled(config),
         };
 
         const result = await processPrFeedback(input, processorDeps);
