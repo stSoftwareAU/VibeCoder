@@ -323,6 +323,33 @@ function joinContextSections(...sections: readonly string[]): string {
 }
 
 /**
+ * Render the context documents a phase prompt carries in its user turn.
+ *
+ * The repo-context document is repo-stable; the Graft bundle beside it is
+ * selected per query, so both are fenced with this run's boundary and both
+ * stay in the user turn rather than the cached system prompt (Issue #2101).
+ * Returning the Graft section as well as the joined pair is what lets the
+ * caller name it among the untrusted blocks only when it actually rendered.
+ */
+function buildContextDocuments(
+  repoContextSection: string,
+  graftContextBundle: string | undefined,
+  boundaryId: string,
+): { graftContextSection: string; contextDocumentsSection: string } {
+  const graftContextSection = formatGraftContextSection(
+    graftContextBundle,
+    boundaryId,
+  );
+  return {
+    graftContextSection,
+    contextDocumentsSection: joinContextSections(
+      repoContextSection,
+      graftContextSection,
+    ),
+  };
+}
+
+/**
  * Name the recent-activity block carries in `untrustedBlocks` (Issue #1373).
  */
 const RECENT_ACTIVITY_BLOCK_NAME = "the recent repository activity summary";
@@ -856,15 +883,7 @@ export interface PlanningPromptOptions {
    * behind an untrusted fence, not the system prompt (Issue #3706).
    */
   repoContextContent?: string;
-  /**
-   * Bundle returned by `graft ask --source` for this task (Issue #2101, part
-   * of #2060). Rendered as a fenced untrusted document beside the repo-context
-   * docs — it is repository-derived, so it is data and never instructions.
-   *
-   * Selected per query, so it is deliberately kept out of the cacheable static
-   * prefix and out of `computeStaticPromptHash`: it rides in the per-run user
-   * turn, where a bundle that changes every run costs nothing in cache hits.
-   */
+  /** Graft `ask --source` bundle — see IssuePromptOptions (Issue #2101). */
   graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
@@ -969,18 +988,12 @@ export async function buildPlanningPrompt(
     delimiters.boundaryId,
   );
 
-  // The Graft bundle (Issue #2101, part of #2060) renders beside the
-  // repo-context document, in the same run boundary. It is query-dependent,
-  // so it stays in this per-run user turn and never joins the cached system
-  // prompt or its SHA.
-  const graftContextSection = formatGraftContextSection(
-    graftContextBundle,
-    delimiters.boundaryId,
-  );
-  const contextDocumentsSection = joinContextSections(
-    repoContextSection,
-    graftContextSection,
-  );
+  const { graftContextSection, contextDocumentsSection } =
+    buildContextDocuments(
+      repoContextSection,
+      graftContextBundle,
+      delimiters.boundaryId,
+    );
 
   const prompt =
     `I need you to plan the implementation for GitHub issue #${issueNumber} from repository ${repo}.
@@ -1257,15 +1270,7 @@ export interface QuestionPromptOptions {
    * behind an untrusted fence, not the system prompt (Issue #3706).
    */
   repoContextContent?: string;
-  /**
-   * Bundle returned by `graft ask --source` for this task (Issue #2101, part
-   * of #2060). Rendered as a fenced untrusted document beside the repo-context
-   * docs — it is repository-derived, so it is data and never instructions.
-   *
-   * Selected per query, so it is deliberately kept out of the cacheable static
-   * prefix and out of `computeStaticPromptHash`: it rides in the per-run user
-   * turn, where a bundle that changes every run costs nothing in cache hits.
-   */
+  /** Graft `ask --source` bundle — see IssuePromptOptions (Issue #2101). */
   graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
@@ -1346,18 +1351,12 @@ export async function buildQuestionPrompt(
     delimiters.boundaryId,
   );
 
-  // The Graft bundle (Issue #2101, part of #2060) renders beside the
-  // repo-context document, in the same run boundary. It is query-dependent,
-  // so it stays in this per-run user turn and never joins the cached system
-  // prompt or its SHA.
-  const graftContextSection = formatGraftContextSection(
-    graftContextBundle,
-    delimiters.boundaryId,
-  );
-  const contextDocumentsSection = joinContextSections(
-    repoContextSection,
-    graftContextSection,
-  );
+  const { graftContextSection, contextDocumentsSection } =
+    buildContextDocuments(
+      repoContextSection,
+      graftContextBundle,
+      delimiters.boundaryId,
+    );
 
   const prompt =
     `I need you to answer questions on GitHub issue #${issueNumber} from repository ${repo}.
@@ -1423,15 +1422,7 @@ export interface PrFeedbackPromptOptions {
    * behind an untrusted fence, not the system prompt (Issue #3706).
    */
   repoContextContent?: string;
-  /**
-   * Bundle returned by `graft ask --source` for this task (Issue #2101, part
-   * of #2060). Rendered as a fenced untrusted document beside the repo-context
-   * docs — it is repository-derived, so it is data and never instructions.
-   *
-   * Selected per query, so it is deliberately kept out of the cacheable static
-   * prefix and out of `computeStaticPromptHash`: it rides in the per-run user
-   * turn, where a bundle that changes every run costs nothing in cache hits.
-   */
+  /** Graft `ask --source` bundle — see IssuePromptOptions (Issue #2101). */
   graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
@@ -1599,18 +1590,12 @@ export async function buildPrFeedbackPrompt(
     delimiters.boundaryId,
   );
 
-  // The Graft bundle (Issue #2101, part of #2060) renders beside the
-  // repo-context document, in the same run boundary. It is query-dependent,
-  // so it stays in this per-run user turn and never joins the cached system
-  // prompt or its SHA.
-  const graftContextSection = formatGraftContextSection(
-    graftContextBundle,
-    delimiters.boundaryId,
-  );
-  const contextDocumentsSection = joinContextSections(
-    repoContextSection,
-    graftContextSection,
-  );
+  const { graftContextSection, contextDocumentsSection } =
+    buildContextDocuments(
+      repoContextSection,
+      graftContextBundle,
+      delimiters.boundaryId,
+    );
 
   const sanitisedComment = sanitiseDelimiterPatterns(commentBody);
   const botReviewSection = buildBotReviewCommentsSection(
@@ -2037,15 +2022,7 @@ export interface CiFixPromptOptions {
    * behind an untrusted fence, not the system prompt (Issue #3706).
    */
   repoContextContent?: string;
-  /**
-   * Bundle returned by `graft ask --source` for this task (Issue #2101, part
-   * of #2060). Rendered as a fenced untrusted document beside the repo-context
-   * docs — it is repository-derived, so it is data and never instructions.
-   *
-   * Selected per query, so it is deliberately kept out of the cacheable static
-   * prefix and out of `computeStaticPromptHash`: it rides in the per-run user
-   * turn, where a bundle that changes every run costs nothing in cache hits.
-   */
+  /** Graft `ask --source` bundle — see IssuePromptOptions (Issue #2101). */
   graftContextBundle?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
@@ -2194,18 +2171,12 @@ export async function buildCiFixPrompt(
     delimiters.boundaryId,
   );
 
-  // The Graft bundle (Issue #2101, part of #2060) renders beside the
-  // repo-context document, in the same run boundary. It is query-dependent,
-  // so it stays in this per-run user turn and never joins the cached system
-  // prompt or its SHA.
-  const graftContextSection = formatGraftContextSection(
-    graftContextBundle,
-    delimiters.boundaryId,
-  );
-  const contextDocumentsSection = joinContextSections(
-    repoContextSection,
-    graftContextSection,
-  );
+  const { graftContextSection, contextDocumentsSection } =
+    buildContextDocuments(
+      repoContextSection,
+      graftContextBundle,
+      delimiters.boundaryId,
+    );
 
   // The check name and annotation text are GitHub-sourced and
   // attacker-influenceable (Issue #2606), so sanitise delimiter-like
