@@ -626,9 +626,21 @@ Deno.test("the UserData script installs the launcher prerequisites and clones th
     );
   }
   const script = userDataScript();
-  assertStringIncludes(script, "https://deno.land/install.sh");
-  assertStringIncludes(script, "https://claude.ai/install.sh");
-  assertStringIncludes(script, "git clone ${VibeCoderRepositoryUrl}");
+  // Issue #2199: the vendors' `curl | sh` installers are gone; the checkout's
+  // pinned, checksum-verified installers run after the clone they read from.
+  assertStringIncludes(script, "$RUNTIME/infra/host/install-deno.sh");
+  assert(!script.includes("install.sh |"), "no curl-pipe installer remains");
+  assert(!script.includes("deno.land/install.sh"), "no vendor Deno installer");
+  assert(
+    !script.includes("claude.ai/install.sh"),
+    "no vendor Claude installer",
+  );
+  const clone = script.indexOf("git clone ${VibeCoderRepositoryUrl}");
+  assert(clone >= 0, "the bootstrap clones the checkout");
+  assert(
+    clone < script.indexOf("install-deno.sh"),
+    "the clone precedes the installer that reads its pins from it",
+  );
 });
 
 /**
@@ -691,7 +703,8 @@ Deno.test("the host installs no coding-agent CLI by default (Issue #736)", async
 
   // A Claude verification still gets one by passing the parameter.
   const claudeRun = (await installedAgentCli("claude")).join("\n");
-  assertStringIncludes(claudeRun, "https://claude.ai/install.sh");
+  // `$RUNTIME` is the bootstrap's own variable, unset in this simulation.
+  assertStringIncludes(claudeRun, "/infra/host/install-claude.sh");
   assertStringIncludes(claudeRun, "claude --version");
 });
 
