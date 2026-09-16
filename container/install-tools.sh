@@ -25,9 +25,9 @@
 #   6. remove the downloaded archive.
 #
 # Like install-providers.sh, the WHOLE set is validated first — id shape,
-# duplicate ids, a supported archive extension, and a URL+SHA for the build
-# architecture — before anything is downloaded, so a bad set never leaves a
-# half-installed image behind. `set -euo pipefail`; any failure aborts loudly
+# duplicate ids, a supported archive extension, a URL+SHA for the build
+# architecture, and a bin/env value that carries no newline — before anything is
+# downloaded, so a bad set never leaves a half-installed image behind. `set -euo pipefail`; any failure aborts loudly
 # with the offending tool id named (parent #5: no partial image).
 #
 # Install prefix, build architecture and env file are overridable via the
@@ -137,6 +137,20 @@ for ((i = 0; i < count; i++)); do
     [[ "${strip}" =~ ^[0-9]+$ ]] ||
         fail "tool \"${id}\" has a non-integer stripComponents: ${strip}."
 
+    # The environment hand-off is one KEY=value per LINE, so a bin entry or an
+    # env value carrying a newline writes a second line the reader cannot tell
+    # from a real one — a `PATH=` aimed anywhere on the host. Refused for the
+    # whole set before anything downloads, so the confinement the prefix
+    # promises is a property of the file rather than of the spec's goodwill.
+    # Read as an assignment rather than an `if jq -e`: a bin/env block jq
+    # cannot walk at all must abort here, not read as "found no newline".
+    line_safe="$(jq -r --argjson idx "${i}" \
+        '[(.[$idx].bin // [])[], ((.[$idx].env // {}) | to_entries[] | .value)]
+         | all(type == "string" and (contains("\n") or contains("\r") | not))' \
+        "${spec}")"
+    [[ "${line_safe}" == "true" ]] ||
+        fail "tool \"${id}\" has a bin entry or env value that is not a newline-free string: ${ENV_FILE} is one KEY=value per line, so such a value would inject a line of its own."
+
     ids+=("${id}")
     urls+=("${url}")
     shas+=("${sha}")
@@ -165,7 +179,10 @@ extract_zip() { # <archive> <dest> <strip>
             return 1
         fi
         src="$(find "${src}" -mindepth 1 -maxdepth 1)"
-        [[ -d "${src}" ]] || {
+        # A strip level must be a real directory: descending through a symlink
+        # would copy the link TARGET's tree — anything on the build host — into
+        # the tool's prefix, which `tar --strip-components` never does.
+        [[ -d "${src}" && ! -L "${src}" ]] || {
             rm -rf "${stage}"
             return 1
         }
