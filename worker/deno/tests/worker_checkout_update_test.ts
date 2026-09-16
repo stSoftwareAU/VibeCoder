@@ -32,9 +32,11 @@ import {
   resolveSelfHealEventsWorkDir,
   SKIP_CHECKOUT_UPDATE_ENV,
   updateWorkerCheckout,
+  workerCheckoutUpdateCommand,
 } from "../commands/worker_checkout_update.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import { CHECKOUT_UPDATE_FAILURE_STREAK_FILE } from "../lib/checkout_update.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 /** A bare remote on `trunk` plus a clone of it, in a fresh temp directory. */
 async function makeCheckout(): Promise<{
@@ -900,4 +902,33 @@ Deno.test("resolveSelfHealEventsWorkDir - --work-dir, then WORK_DIR, then HOME (
     resolveSelfHealEventsWorkDir({ "work-dir": "   " }, envFrom({ HOME: "" })),
     undefined,
   );
+});
+
+Deno.test("worker-checkout-update - the command's own execute wires the self-heal sink (Issues #2110, #4250)", async () => {
+  const { setSelfHealEventsWorkDir } = await import(
+    "../lib/self_heal_events.ts"
+  );
+  const { tmp, remote, clone, logDir } = await makeCheckout();
+  // Unwired sink: anything that appears under the work dir got there through
+  // `--work-dir` and through nothing else.
+  setSelfHealEventsWorkDir(undefined);
+  try {
+    await Deno.remove(remote, { recursive: true });
+    await seedQualifyingStreak(logDir);
+    await writeConfig(clone, { repos: ["stSoftwareAU/VibeCoder"] });
+
+    const result = await workerCheckoutUpdateCommand.execute(
+      { "base-dir": clone, "log-dir": logDir, "work-dir": tmp },
+      buildDefaultWorkerConfig({ repos: [] }),
+    );
+
+    assertEquals(result.success, false, "the update itself still failed loud");
+    const events = await Deno.readTextFile(`${tmp}/logs/self-heal.jsonl`);
+    assertStringIncludes(events, '"module":"checkout_update"');
+    assertStringIncludes(events, '"action":"escalated"');
+    assertStringIncludes(events, "no_hook_configured");
+  } finally {
+    setSelfHealEventsWorkDir(undefined);
+    await Deno.remove(tmp, { recursive: true });
+  }
 });

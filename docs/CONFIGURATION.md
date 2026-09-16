@@ -1265,8 +1265,10 @@ writes to `/workspace` and that mount can become read-only (Issue #509). The
 branch is read from the checkout's own `origin/HEAD`.
 
 The command runs before the launch plan is built, and so before the
-configuration load, so it reads `update_mode` and `pinned_ref` out of
-`.config.json` under `--base-dir` itself.
+configuration load, so it reads `update_mode`, `pinned_ref` and
+`callbacks.host_failure` out of `.config.json` under `--base-dir` itself.
+`--work-dir` says where its self-heal events go — `WORK_DIR`, then `HOME`,
+when it is not given (Issue #2110).
 
 ```bash
 deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname \

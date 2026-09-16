@@ -522,7 +522,7 @@ Deno.test("updateCheckout - a corrupt escalation store re-escalates rather than 
   });
 });
 
-Deno.test("updateCheckout - a spool entry written before the attempt count reads as one attempt (Issue #2110)", async () => {
+Deno.test("updateCheckout - a spool entry written before the attempt count reads as no attempts (Issue #2110)", async () => {
   await withLogDir(async (options, paths) => {
     await Deno.mkdir(options.logDir, { recursive: true });
     // The pre-#2110 shape: evidence, no attempts field.
@@ -553,8 +553,8 @@ Deno.test("updateCheckout - a spool entry written before the attempt count reads
 
     assertEquals(
       attempts,
-      [2],
-      "the queued entry exists because an attempt failed, so it counts as one",
+      [1],
+      "an old entry has no attempt count, so the bound starts afresh",
     );
   });
 });

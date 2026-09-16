@@ -49,12 +49,12 @@
  * (Issue #1018). So delivery is re-armed and bounded: it is attempted on every
  * failing run at or above the threshold until one invocation returns `ok` or
  * {@link CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS} attempts have failed, the
- * settled-streak marker is recorded on delivery, and evidence that could not
+ * settled-streak marker is recorded on delivery, and a report that could not
  * be delivered is spooled in `<logDir>/checkout-update-escalation` — one entry
  * per streak, overwritten, carrying the attempt count — so the next failing
- * run retries it. The fifth failed attempt records `escalation_lost` once,
- * settles the streak and drops that spool, so a hook that never works cannot
- * make every launch pay for it.
+ * run knows which attempt it is on and reports the streak afresh. The fifth
+ * failed attempt records `escalation_lost` once, settles the streak and drops
+ * that spool, so a hook that never works cannot make every launch pay for it.
  *
  * **Recovery delivers nothing** (Issue #2110). A run that updates cleanly ends
  * the streak: it clears `<logDir>/checkout-update-failure-streak` and the
@@ -920,16 +920,16 @@ function parseSpooledEscalation(
       };
     }
   }
-  // A spool entry written before Issue #2110 carries no attempt count. It
-  // reads as one attempt already spent, not as none: the entry exists
-  // *because* an attempt failed, and counting it as zero would hand a
-  // never-working hook one extra try per upgrade.
+  // A spool entry written before Issue #2110 carries no attempt count, and
+  // reads as zero: a host upgrading mid-streak gets the full bound of
+  // attempts rather than a shortened one, which is the direction that
+  // reports the fault rather than losing it.
   const rawAttempts = record["attempts"];
   const attempts =
     typeof rawAttempts === "number" && Number.isFinite(rawAttempts) &&
       rawAttempts > 0
       ? Math.floor(rawAttempts)
-      : 1;
+      : 0;
   return { repoDir, streak, error, checkout, spooledAt, attempts };
 }
 
@@ -938,8 +938,8 @@ function parseSpooledEscalation(
  *
  * Anything that stops the file meaning what it says — absent, unreadable,
  * malformed — reads as "nothing escalated, nothing queued". That is the safe
- * direction: it re-attempts an escalation the deduplicated channel folds into
- * the issue already open, rather than silencing a host running stale code.
+ * direction: it re-attempts a report the operator's hook may receive twice,
+ * rather than silencing a host running stale code.
  */
 async function defaultReadEscalationState(
   logDir: string,

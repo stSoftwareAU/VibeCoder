@@ -37,6 +37,7 @@ import {
   directoryServicesUid,
   emptyCheckoutStreak,
   gitStepExitStatus,
+  invokeCheckoutUpdateFailureHook,
   parseCheckoutStreak,
   parseOriginRepo,
   resetCheckoutToDefaultBranch,
@@ -1228,4 +1229,50 @@ Deno.test("createDefaultCheckoutUpdateDeps - a caller that names no hook escalat
 
   const configured = createDefaultCheckoutUpdateDeps(CONFIGURED_HOOK);
   assertEquals(configured.hostFailureHook, CONFIGURED_HOOK);
+});
+
+Deno.test("invokeCheckoutUpdateFailureHook - a hook that cannot be spawned comes back non-ok, never thrown (Issue #2110)", async () => {
+  // The production `escalate` seam. Its whole contract is that the transport
+  // failure the caller has to retry arrives as a *status*: a hook path that
+  // does not exist must not throw out of the update, or the checkout failure
+  // it is reporting would be masked by the reporting of it.
+  const invocation = await invokeCheckoutUpdateFailureHook({
+    repoDir: "/tmp/checkout",
+    logDir: "/tmp/logs",
+    streak: 3,
+    streakStartedAt: 1_600_000_000,
+    error: "git fetch origin failed (exit code 128)",
+    checkout: null,
+    attempt: 1,
+  }, {
+    path: `${Deno.makeTempDirSync()}/no-such-host-failure-hook.sh`,
+    timeoutSeconds: 5,
+  });
+
+  assertEquals(invocation.event, "host_failure");
+  assert(
+    invocation.status !== "ok",
+    "an unspawnable hook never reports delivery",
+  );
+});
+
+Deno.test("invokeCheckoutUpdateFailureHook - a hook that takes delivery reports ok (Issue #2110)", async () => {
+  const dir = await Deno.makeTempDir();
+  const hook = `${dir}/host-failure.sh`;
+  await Deno.writeTextFile(hook, "#!/bin/sh\nexit 0\n");
+  await Deno.chmod(hook, 0o755);
+
+  const invocation = await invokeCheckoutUpdateFailureHook({
+    repoDir: "/tmp/checkout",
+    logDir: "/tmp/logs",
+    streak: 3,
+    streakStartedAt: 1_600_000_000,
+    error: "git fetch origin failed (exit code 128)",
+    checkout: { branch: "Develop", dirtyFiles: 0 },
+    attempt: 2,
+  }, { path: hook, timeoutSeconds: 10 });
+
+  assertEquals(invocation.status, "ok");
+  assertEquals(invocation.exitCode, 0);
+  await Deno.remove(dir, { recursive: true });
 });
