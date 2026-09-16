@@ -1680,7 +1680,10 @@ async function _processCiWithHeartbeat(
   // Read .pr_response_message if Claude created one (Issue #1455).
   // Used as the PR comment body when push succeeds, replacing the hardcoded
   // default with Claude's own summary of what it fixed.
-  const customMessage = await readPrResponseMessage(processorDeps.workDir);
+  const customMessage = await readPrResponseMessage(
+    processorDeps.workDir,
+    logger,
+  );
 
   // Issue #3708 (SEC-6403af1e8b72): the CI-fix prompt carries the same escape
   // hatch as PR feedback, so this path can also end with a follow-up issue

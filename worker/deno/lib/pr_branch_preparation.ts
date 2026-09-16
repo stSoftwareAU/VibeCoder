@@ -17,6 +17,7 @@
 import type { Logger } from "../types.ts";
 import type { GitDeps } from "./issue_worker_wiring.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { PR_RESPONSE_MESSAGE_FILE } from "./worker_state_paths.ts";
 import {
   assertSafeGitRef,
@@ -201,12 +202,24 @@ export function prResponseMessagePath(workDir: string): string {
  * question/partial-answer path (`answer_sanitiser.ts`, #3195), the logger, and
  * the crash notifier already apply.
  *
+ * Marker neutralisation (Issue #2236): the same message is concatenated into
+ * comment bodies the **fleet account** authors, and those bodies are the
+ * fleet-wide record of CI-fix attempts and deferrals (Issue #1879) — gated on
+ * the comment's author, not on where inside the body a marker came from. A
+ * `<!-- vibe-ci-fix-attempt … -->` smuggled into this file would therefore be
+ * read back as the fleet's own claim. Every HTML-comment delimiter in the
+ * agent's text is made inert here, at the one chokepoint all three PR-comment
+ * consumers read through, and the defusal is logged rather than swallowed.
+ * The worker's own marker is appended afterwards and still parses normally.
+ *
  * @param workDir - Working directory where Claude runs.
- * @returns Trimmed, secret-redacted file contents, or `undefined` if the file
- *          is missing or empty.
+ * @param logger - Optional logger, so a defused marker is reported loudly.
+ * @returns Trimmed, secret-redacted, marker-inert file contents, or
+ *          `undefined` if the file is missing or empty.
  */
 export async function readPrResponseMessage(
   workDir: string | undefined,
+  logger?: Logger,
 ): Promise<string | undefined> {
   if (!workDir) return undefined;
   const path = prResponseMessagePath(workDir);
@@ -220,8 +233,20 @@ export async function readPrResponseMessage(
     }
     const trimmed = content.trim();
     if (trimmed.length === 0) return undefined;
-    // Redact secrets before the message leaves for a public PR comment.
-    return redactSecrets(trimmed);
+    // Redact secrets before the message leaves for a public PR comment, then
+    // make any marker syntax it carries inert (Issue #2236).
+    const neutralised = neutraliseAgentMarkers(redactSecrets(trimmed));
+    if (neutralised.neutralised > 0) {
+      logger?.security(
+        "AGENT_MARKER_NEUTRALISED",
+        `Neutralised ${neutralised.neutralised} HTML-comment delimiter(s) in ` +
+          `${PR_RESPONSE_MESSAGE_FILE} so agent-authored text cannot forge a ` +
+          `fleet marker (names seen: ${
+            neutralised.names.join(", ") || "none"
+          })`,
+      );
+    }
+    return neutralised.text;
   } catch {
     return undefined;
   }

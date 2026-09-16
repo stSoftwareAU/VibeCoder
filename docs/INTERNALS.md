@@ -1980,6 +1980,13 @@ signature and posts one comment per signature. Nothing reads or writes
 `*.autofix.json` any more; a repeat "no change required" on a new head is
 appended to the existing comment via `GitHubClient.updateComment`.
 
+Because those comment bodies carry the agent's own `.pr_response_message`
+verbatim, marker syntax in agent-authored text is neutralised at the
+`readPrResponseMessage` chokepoint
+([agent_marker_neutralisation.ts](../worker/deno/lib/agent_marker_neutralisation.ts))
+before anything is posted — otherwise a forged attempt or deferral marker
+would be read back as the fleet's own record (Issue #2236).
+
 **Priority** — runs at priority 1.55 in the main loop, after spelling fixes
 (1.5) but before branch updates (1.6).
 

@@ -1711,6 +1711,18 @@
       "paths": [
         "worker/deno/lib/codegraph_run.ts"
       ]
+    },
+    {
+      "issue": 2236,
+      "chunk": "top-up-2236",
+      "title": "top-up: agent marker neutralisation",
+      "ledger": "docs/audits/security-sweep-2236-agent-marker-neutralisation.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: agent_marker_neutralisation.ts (#2236)",
+      "status": "swept",
+      "sweptAt": "88ca212f2711e3cb007a836bbccb61af4793f07e",
+      "paths": [
+        "worker/deno/lib/agent_marker_neutralisation.ts"
+      ]
     }
   ],
   "roots": [
