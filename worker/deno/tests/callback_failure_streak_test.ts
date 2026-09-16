@@ -1,28 +1,25 @@
 /**
- * A callback that fails on every issue is reported once (Issue #1092).
+ * A callback that fails on every issue is recorded once, locally (Issue #2111).
  *
  * Regression cover for the GRQ-23 incident of 2026-09-05: the `always` hook
  * failed on every issue across at least five runs, cost ~100s of slot time
- * each time, and raised nothing. The properties that matter are that the
- * condition surfaces at all, that it surfaces exactly once per streak rather
- * than once per issue, and that a success clears it so the report always
- * says something true about now.
+ * each time, and raised nothing a human saw. The properties that matter are
+ * that the condition surfaces at all, that it surfaces exactly once per streak
+ * rather than once per issue, that a success clears it so the record always
+ * says something true about now — and, since Issue #2111, that the whole
+ * exchange stays inside the container: the log and the count file are the
+ * record, and the module has no seam that could reach `gh`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import * as streakModule from "../lib/callback_failure_streak.ts";
 import {
   CALLBACK_FAILURE_ESCALATION_THRESHOLD,
   CALLBACK_FAILURE_STREAK_FILE,
-  type CallbackFailureReport,
-  callbackFailureReportBody,
   type CallbackFailureStreaks,
-  callbackFailureTitle,
-  callbackRecoveryBody,
-  type CallbackRecoveryReport,
   recordCallbackOutcomes,
-  workerCheckoutDir,
 } from "../lib/callback_failure_streak.ts";
 import {
   CALLBACK_SCHEMA_VERSION,
@@ -60,15 +57,25 @@ function memoryStore(initial: CallbackFailureStreaks = {}) {
   };
 }
 
+/** Captures both log sinks, which are now the entire output of the module. */
+function sinks() {
+  const logs: string[] = [];
+  const errors: string[] = [];
+  return {
+    logs,
+    errors,
+    deps: {
+      log: (message: string) => logs.push(message),
+      logError: (message: string) => errors.push(message),
+    },
+  };
+}
+
 Deno.test(
-  "#1092 - a hook failing on every issue is reported exactly once per streak, not once per issue",
+  "#2111 - the threshold crossing writes one error record carrying every fact",
   async () => {
     const store = memoryStore();
-    const reports: CallbackFailureReport[] = [];
-    const escalate = (report: CallbackFailureReport) => {
-      reports.push(report);
-      return Promise.resolve();
-    };
+    const { logs, errors, deps } = sinks();
 
     // Ten issues in a row, all failing the same way.
     for (let issue = 1; issue <= 10; issue++) {
@@ -76,41 +83,71 @@ Deno.test(
         "/work",
         [invocation()],
         { repository: RUN.repository, issueNumber: issue },
-        { ...store, escalate },
+        { ...store, ...deps },
       );
     }
 
-    assertEquals(reports.length, 1, JSON.stringify(reports));
-    const report = reports[0]!;
-    assertEquals(report.event, "always");
-    assertEquals(report.streak, CALLBACK_FAILURE_ESCALATION_THRESHOLD);
-    assertEquals(report.issueNumber, CALLBACK_FAILURE_ESCALATION_THRESHOLD);
-    assertEquals(report.path, "/opt/vibe-hooks/always.sh");
+    assertEquals(errors.length, 1, JSON.stringify(errors));
+    const record = errors[0]!;
+    assertStringIncludes(record, "always");
+    assertStringIncludes(record, "/opt/vibe-hooks/always.sh");
     assertStringIncludes(
-      report.stderr,
-      "Write access to repository not granted",
+      record,
+      `${CALLBACK_FAILURE_ESCALATION_THRESHOLD} consecutive`,
     );
+    // The crossing run, not the tenth: the record is written once, at three.
+    assertStringIncludes(
+      record,
+      `${RUN.repository}#${CALLBACK_FAILURE_ESCALATION_THRESHOLD}`,
+    );
+    assertStringIncludes(record, "failed, exit 1, 100.9s");
+    assertStringIncludes(record, "Write access to repository not granted");
+    assertStringIncludes(
+      record,
+      `callback schema version this worker exports: ${CALLBACK_SCHEMA_VERSION}`,
+    );
+    assertStringIncludes(record, "docs/CALLBACKS.md");
+    // One multi-line record, not a line per fact.
+    assert(record.includes("\n"), record);
+    // Nothing else to say: later failures in the streak add no output at all.
+    assertEquals(logs, []);
     // The count keeps climbing so a later read knows how long it has run.
     assertEquals(store.read().always, 10);
   },
 );
 
 Deno.test(
-  "#1092 - a single success clears the streak, so the next fault is reported afresh",
+  "#2111 - the stderr in the record is redacted",
   async () => {
     const store = memoryStore();
-    const reports: CallbackFailureReport[] = [];
-    const escalate = (report: CallbackFailureReport) => {
-      reports.push(report);
-      return Promise.resolve();
-    };
+    const { errors, deps } = sinks();
+    const leaky = invocation({
+      stderr: "fatal: auth failed with GITHUB_TOKEN=ghp_" + "a".repeat(36),
+    });
+    for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
+      await recordCallbackOutcomes("/work", [leaky], RUN, {
+        ...store,
+        ...deps,
+      });
+    }
+    assertEquals(errors.length, 1);
+    assert(!errors[0]!.includes("ghp_" + "a".repeat(36)), errors[0]);
+    assertStringIncludes(errors[0]!, "REDACTED");
+  },
+);
+
+Deno.test(
+  "#2111 - a single success clears the streak, so the next fault is recorded afresh",
+  async () => {
+    const store = memoryStore();
+    const { errors, deps } = sinks();
     const record = (inv: CallbackInvocation) =>
-      recordCallbackOutcomes("/work", [inv], RUN, { ...store, escalate });
+      recordCallbackOutcomes("/work", [inv], RUN, { ...store, ...deps });
 
     for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
       await record(invocation());
     }
-    assertEquals(reports.length, 1);
+    assertEquals(errors.length, 1);
 
     await record(invocation({ status: "ok", exitCode: 0 }));
     assertEquals(store.read().always, 0);
@@ -118,41 +155,85 @@ Deno.test(
     for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
       await record(invocation());
     }
-    assertEquals(reports.length, 2, "a fresh streak is a fresh incident");
+    assertEquals(errors.length, 2, "a fresh streak is a fresh record");
   },
 );
 
 Deno.test(
-  "#1092 - a timed-out and an un-spawnable hook extend the same streak as a non-zero exit",
+  "#2111 - recovery after a recorded streak logs exactly one line and resets the count",
   async () => {
     const store = memoryStore();
-    const reports: CallbackFailureReport[] = [];
-    const escalate = (report: CallbackFailureReport) => {
-      reports.push(report);
-      return Promise.resolve();
-    };
+    const { logs, errors, deps } = sinks();
     const record = (inv: CallbackInvocation) =>
-      recordCallbackOutcomes("/work", [inv], RUN, { ...store, escalate });
+      recordCallbackOutcomes("/work", [inv], RUN, { ...store, ...deps });
+    const success = invocation({
+      status: "ok",
+      exitCode: 0,
+      durationMs: 2_300,
+    });
+
+    // Below the threshold nothing was recorded, so recovery says nothing.
+    await record(invocation());
+    await record(invocation());
+    await record(success);
+    assertEquals(errors.length, 0);
+    assertEquals(logs, [], "no record, so nothing to retire");
+    assertEquals(store.read().always, 0);
+
+    // The GRQ-23 shape of 2026-09-12: recorded, then the hook is upgraded and
+    // the next issue's invocation succeeds.
+    for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
+      await record(invocation());
+    }
+    assertEquals(errors.length, 1);
+    const streaks = await recordCallbackOutcomes(
+      "/work",
+      [success],
+      { repository: "stSoftwareAU/GRQ-AutoTrader", issueNumber: 266 },
+      { ...store, ...deps },
+    );
+
+    assertEquals(logs.length, 1, JSON.stringify(logs));
+    assertStringIncludes(logs[0]!, "always");
+    assertStringIncludes(logs[0]!, "/opt/vibe-hooks/always.sh");
+    assertStringIncludes(logs[0]!, "stSoftwareAU/GRQ-AutoTrader#266");
+    assertStringIncludes(
+      logs[0]!,
+      `${CALLBACK_FAILURE_ESCALATION_THRESHOLD} consecutive`,
+    );
+    assertEquals(logs[0]!.includes("\n"), false, "one line, not a record");
+    assertEquals(streaks.always, 0);
+    assertEquals(store.read().always, 0);
+
+    // The streak is over: a later success has nothing left to retire.
+    await record(success);
+    assertEquals(logs.length, 1);
+  },
+);
+
+Deno.test(
+  "#2111 - a timed-out and an un-spawnable hook extend the same streak as a non-zero exit",
+  async () => {
+    const store = memoryStore();
+    const { errors, deps } = sinks();
+    const record = (inv: CallbackInvocation) =>
+      recordCallbackOutcomes("/work", [inv], RUN, { ...store, ...deps });
 
     await record(invocation({ status: "timed_out", exitCode: 124 }));
     await record(invocation({ status: "spawn_failed", exitCode: -1 }));
     await record(invocation({ status: "failed", exitCode: 1 }));
 
-    assertEquals(reports.length, 1);
-    assertEquals(reports[0]!.status, "failed");
-    assertEquals(reports[0]!.streak, 3);
+    assertEquals(errors.length, 1);
+    assertStringIncludes(errors[0]!, "failed, exit 1");
+    assertStringIncludes(errors[0]!, "3 consecutive");
   },
 );
 
 Deno.test(
-  "#1092 - streaks are per event: a failing always does not report a healthy success hook",
+  "#2111 - streaks are per event: a failing always does not record a healthy success hook",
   async () => {
     const store = memoryStore();
-    const reports: CallbackFailureReport[] = [];
-    const escalate = (report: CallbackFailureReport) => {
-      reports.push(report);
-      return Promise.resolve();
-    };
+    const { errors, deps } = sinks();
 
     for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
       await recordCallbackOutcomes(
@@ -162,195 +243,28 @@ Deno.test(
           invocation({ event: "always" }),
         ],
         RUN,
-        { ...store, escalate },
+        { ...store, ...deps },
       );
     }
 
-    assertEquals(reports.length, 1);
-    assertEquals(reports[0]!.event, "always");
+    assertEquals(errors.length, 1);
+    assertStringIncludes(errors[0]!, "The always callback");
     assertEquals(store.read().success, 0);
     assertEquals(store.read().always, CALLBACK_FAILURE_ESCALATION_THRESHOLD);
   },
 );
 
 Deno.test(
-  "#1092 - an escalation that cannot be delivered is reported loud and never alters the run",
+  "#2111 - each event's recovery retires its own record",
   async () => {
     const store = memoryStore();
-    const errors: string[] = [];
-
-    for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
-      await recordCallbackOutcomes("/work", [invocation()], RUN, {
-        ...store,
-        escalate: () => Promise.reject(new Error("gh issue create exited 1")),
-        logError: (message) => errors.push(message),
-      });
-    }
-
-    assertEquals(errors.length, 1, JSON.stringify(errors));
-    assertStringIncludes(errors[0]!, "gh issue create exited 1");
-    assertStringIncludes(errors[0]!, "always");
-  },
-);
-
-Deno.test(
-  "#1092 - no callbacks configured means nothing is read, written or reported",
-  async () => {
-    let touched = false;
-    const streaks = await recordCallbackOutcomes("/work", [], RUN, {
-      readStreaks: () => {
-        touched = true;
-        return Promise.resolve({});
-      },
-      writeStreaks: () => {
-        touched = true;
-        return Promise.resolve();
-      },
-      escalate: () => {
-        touched = true;
-        return Promise.resolve();
-      },
-    });
-    assertEquals(streaks, {});
-    assertEquals(touched, false);
-  },
-);
-
-Deno.test(
-  "#1092 - the streak survives the run boundary the condition survives",
-  async () => {
-    const workDir = await Deno.makeTempDir({ prefix: "issue1092-streak-" });
-    try {
-      // Run 1 of the host: two failures, below the threshold, nothing raised.
-      const reports: CallbackFailureReport[] = [];
-      const escalate = (report: CallbackFailureReport) => {
-        reports.push(report);
-        return Promise.resolve();
-      };
-      await recordCallbackOutcomes(workDir, [invocation()], RUN, { escalate });
-      await recordCallbackOutcomes(workDir, [invocation()], RUN, { escalate });
-      assertEquals(reports.length, 0);
-
-      const persisted = JSON.parse(
-        await Deno.readTextFile(`${workDir}/${CALLBACK_FAILURE_STREAK_FILE}`),
-      );
-      assertEquals(persisted.always, 2);
-
-      // Run 2 of the host, a fresh process: the third failure tips it over.
-      await recordCallbackOutcomes(workDir, [invocation()], RUN, { escalate });
-      assertEquals(reports.length, 1);
-      assertEquals(reports[0]!.streak, 3);
-    } finally {
-      await Deno.remove(workDir, { recursive: true });
-    }
-  },
-);
-
-Deno.test(
-  "workerCheckoutDir - honours VIBE_BASE_DIR, else resolves the repository root (Issue #1092)",
-  () => {
-    assertEquals(
-      workerCheckoutDir(() => "/opt/vibe-coder"),
-      "/opt/vibe-coder",
-    );
-    const fallback = workerCheckoutDir(() => undefined);
-    // The module lives at worker/deno/lib/, so the fallback is the repo root.
-    assert(
-      fallback.endsWith("/") && !fallback.includes("/worker/deno/lib"),
-      fallback,
-    );
-  },
-);
-
-// ---------------------------------------------------------------------------
-// Issues #2039 / #2041: the report closes itself when the hook recovers.
-//
-// On 2026-09-11 a contract bump broke every deployed hook on every host. The
-// worker raised one report per host per hook — eight issues — and each body
-// promised "a single successful invocation clears it". The counter cleared;
-// the issues stayed open until a human closed all eight by hand. A report
-// that needs a human to retire it after the condition has gone is exactly
-// the manual step the streak exists to remove.
-// ---------------------------------------------------------------------------
-
-function recoveryDeps(store: ReturnType<typeof memoryStore>) {
-  const reports: CallbackFailureReport[] = [];
-  const recoveries: CallbackRecoveryReport[] = [];
-  return {
-    reports,
-    recoveries,
-    deps: {
-      ...store,
-      escalate: (report: CallbackFailureReport) => {
-        reports.push(report);
-        return Promise.resolve();
-      },
-      resolve: (report: CallbackRecoveryReport) => {
-        recoveries.push(report);
-        return Promise.resolve();
-      },
-    },
-  };
-}
-
-Deno.test(
-  "#2039 - a success after a reported streak closes the report; a success after an unreported one closes nothing",
-  async () => {
-    const store = memoryStore();
-    const { reports, recoveries, deps } = recoveryDeps(store);
-    const record = (inv: CallbackInvocation) =>
-      recordCallbackOutcomes("/work", [inv], RUN, deps);
-    const success = invocation({
-      status: "ok",
-      exitCode: 0,
-      durationMs: 2_300,
-    });
-
-    // Below the threshold nothing was filed, so there is nothing to close.
-    await record(invocation());
-    await record(invocation());
-    await record(success);
-    assertEquals(reports.length, 0);
-    assertEquals(recoveries.length, 0, "no report, so no closure");
-
-    // The GRQ-23 shape of 2026-09-12: reported, then the hook is upgraded and
-    // the next issue's invocation succeeds.
-    for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
-      await record(invocation());
-    }
-    assertEquals(reports.length, 1);
-    await recordCallbackOutcomes(
-      "/work",
-      [success],
-      { repository: "stSoftwareAU/GRQ-AutoTrader", issueNumber: 266 },
-      deps,
-    );
-    assertEquals(recoveries, [{
-      event: "always",
-      path: "/opt/vibe-hooks/always.sh",
-      streak: CALLBACK_FAILURE_ESCALATION_THRESHOLD,
-      repository: "stSoftwareAU/GRQ-AutoTrader",
-      issueNumber: 266,
-    }]);
-    assertEquals(store.read().always, 0);
-
-    // The streak is over: a later success has nothing left to close.
-    await record(success);
-    assertEquals(recoveries.length, 1);
-  },
-);
-
-Deno.test(
-  "#2039 - a long streak's recovery reports how long it ran, and each event closes its own report",
-  async () => {
-    const store = memoryStore();
-    const { recoveries, deps } = recoveryDeps(store);
+    const { logs, deps } = sinks();
     for (let i = 0; i < 10; i++) {
       await recordCallbackOutcomes(
         "/work",
         [invocation({ event: "failure" }), invocation({ event: "always" })],
         RUN,
-        deps,
+        { ...store, ...deps },
       );
     }
     await recordCallbackOutcomes(
@@ -360,83 +274,107 @@ Deno.test(
         invocation({ event: "always", status: "ok", exitCode: 0 }),
       ],
       RUN,
-      deps,
+      { ...store, ...deps },
     );
-    assertEquals(recoveries.map((r) => [r.event, r.streak]), [
-      ["failure", 10],
-      ["always", 10],
-    ]);
+    assertEquals(logs.length, 2, JSON.stringify(logs));
+    assertStringIncludes(logs[0]!, "The failure callback");
+    assertStringIncludes(logs[0]!, "10 consecutive");
+    assertStringIncludes(logs[1]!, "The always callback");
+    assertStringIncludes(logs[1]!, "10 consecutive");
   },
 );
 
 Deno.test(
-  "#2039 - a closure that cannot be delivered is reported loud, and the streak still clears",
+  "#2111 - no callbacks configured means nothing is read, written or recorded",
   async () => {
-    const store = memoryStore({
-      always: CALLBACK_FAILURE_ESCALATION_THRESHOLD,
-    });
-    const errors: string[] = [];
-    const streaks = await recordCallbackOutcomes(
-      "/work",
-      [invocation({ status: "ok", exitCode: 0 })],
-      RUN,
-      {
-        ...store,
-        escalate: () => Promise.resolve(),
-        resolve: () => Promise.reject(new Error("gh issue close exited 1")),
-        logError: (message) => errors.push(message),
+    let touched = false;
+    const { logs, errors, deps } = sinks();
+    const streaks = await recordCallbackOutcomes("/work", [], RUN, {
+      ...deps,
+      readStreaks: () => {
+        touched = true;
+        return Promise.resolve({});
       },
-    );
-    assertEquals(streaks.always, 0);
-    assertEquals(errors.length, 1, JSON.stringify(errors));
-    assertStringIncludes(errors[0]!, "gh issue close exited 1");
-    assertStringIncludes(errors[0]!, "always");
+      writeStreaks: () => {
+        touched = true;
+        return Promise.resolve();
+      },
+    });
+    assertEquals(streaks, {});
+    assertEquals(touched, false);
+    assertEquals(logs, []);
+    assertEquals(errors, []);
   },
 );
 
 Deno.test(
-  "#2039 - the report names the schema version the worker exports and promises to close itself",
-  () => {
-    const report: CallbackFailureReport = {
-      event: "always",
-      path: "/workspace/.grq-vibecoder/callbacks/always.sh",
-      streak: 3,
-      repository: "stSoftwareAU/NEAT-AI-core",
-      issueNumber: 680,
-      status: "failed",
-      exitCode: 1,
-      durationSeconds: 0.02,
-      stderr:
-        "[grq:always] ERROR: unsupported callback schema version 2 (this extension understands 1); refusing to guess at the contract",
-    };
-    assertEquals(
-      callbackFailureTitle("always", "GRQ-23"),
-      "Post-run always callback failing on GRQ-23",
-    );
-    const body = callbackFailureReportBody(report, "GRQ-23");
-    assertStringIncludes(body, "stSoftwareAU/NEAT-AI-core#680");
-    assertStringIncludes(
-      body,
-      `callback schema version ${CALLBACK_SCHEMA_VERSION}`,
-    );
-    assertStringIncludes(body, "upgrade the extension");
-    assertStringIncludes(body, "closes this issue itself");
-    // The 2026-09-11 outage was the worker's contract bump, not the
-    // deployment's doing; the report must not pin the blame in advance.
-    assert(!body.includes("not a worker one"), body);
+  "#2111 - the streak survives the run boundary the condition survives",
+  async () => {
+    const workDir = await Deno.makeTempDir({ prefix: "issue2111-streak-" });
+    try {
+      // Run 1 of the host: two failures, below the threshold, nothing said.
+      const { errors, deps } = sinks();
+      await recordCallbackOutcomes(workDir, [invocation()], RUN, deps);
+      await recordCallbackOutcomes(workDir, [invocation()], RUN, deps);
+      assertEquals(errors.length, 0);
 
-    const recovery = callbackRecoveryBody(
-      {
-        event: "always",
-        path: report.path,
-        streak: 7,
-        repository: "stSoftwareAU/GRQ-AutoTrader",
-        issueNumber: 266,
-      },
-      "GRQ-23",
-    );
-    assertStringIncludes(recovery, "stSoftwareAU/GRQ-AutoTrader#266");
-    assertStringIncludes(recovery, "7 consecutive");
-    assertStringIncludes(recovery, "GRQ-23");
+      const persisted = JSON.parse(
+        await Deno.readTextFile(`${workDir}/${CALLBACK_FAILURE_STREAK_FILE}`),
+      );
+      assertEquals(persisted.always, 2);
+
+      // Run 2 of the host, a fresh process: the third failure tips it over.
+      await recordCallbackOutcomes(workDir, [invocation()], RUN, deps);
+      assertEquals(errors.length, 1);
+      assertStringIncludes(errors[0]!, "3 consecutive");
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "#2111 - a whole streak and its recovery spawn no process, so nothing can reach gh",
+  async () => {
+    // Any `gh` call would go through Deno.Command; swap it for one that
+    // refuses, so a re-added GitHub seam fails this test rather than the
+    // fleet. Restored in `finally` so no later test inherits the stub.
+    const realCommand = Deno.Command;
+    const spawned: string[] = [];
+    // deno-lint-ignore no-explicit-any
+    (Deno as any).Command = class {
+      constructor(command: string | URL) {
+        spawned.push(String(command));
+        throw new Error(`the streak must spawn nothing, got ${command}`);
+      }
+    };
+    try {
+      const store = memoryStore();
+      const { logs, errors, deps } = sinks();
+      const record = (inv: CallbackInvocation) =>
+        recordCallbackOutcomes("/work", [inv], RUN, { ...store, ...deps });
+      for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
+        await record(invocation());
+      }
+      await record(invocation({ status: "ok", exitCode: 0 }));
+      assertEquals(spawned, []);
+      assertEquals(errors.length, 1, "the record still went to the log");
+      assertEquals(logs.length, 1, "the recovery still went to the log");
+    } finally {
+      Deno.Command = realCommand;
+    }
+  },
+);
+
+Deno.test(
+  "#2111 - the module's only callable export is the recorder itself",
+  () => {
+    // No escalator, no resolver, no title or body builder for an issue that
+    // is never filed: a caller has nothing here it could point at GitHub.
+    const callable = Object.entries(streakModule)
+      .filter(([, value]) => typeof value === "function")
+      .map(([name]) => name)
+      .sort();
+    assertEquals(callable, ["recordCallbackOutcomes"]);
   },
 );
