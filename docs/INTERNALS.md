@@ -3716,6 +3716,35 @@ cycle-deadline watchdog rather than the flat 600-second one.
 pre-merge guard skips it with `the conflict budget is spent` rather than
 charging a fourth attempt and re-entering the hand-off every cooldown.
 
+**Two passes, and a share of the budget each (Issue #2215).** The bound above
+says *how many* agent runs a cycle allows; it said nothing about how long one
+milestone may keep the handler. On GRQ-23 one resolution spent the handler's
+whole 795 s watchdog budget, the handler was abandoned, and every milestone
+behind it in the fleet-wide repository order went unsynced — including a
+both-added ledger file the triage settles by union in seconds.
+[`milestone_sync_pacing.ts`](../worker/deno/lib/milestone_sync_pacing.ts) is
+the answer, in three parts:
+
+- **Cheap rungs before expensive ones.** `syncMilestoneBranches` makes a cheap
+  pass over *every* milestone with `agentAllowed: false`, and only then an
+  agent pass over the conflicts it could not settle. A ledger union never
+  waits behind an agent.
+- **A share, not the remainder.** `milestoneAttemptShareMs` divides the budget
+  left by the work still to do (this repository's remaining milestones plus
+  one per repository behind it), floored at `MIN_MILESTONE_ATTEMPT_MS`. The
+  agent pass sizes `grantAgentRun` from that share rather than from the whole
+  handler budget. An attempt that outruns its share is abandoned: it concludes
+  `disrupted` and is charged nothing, the rest of that repository is left for
+  the next cycle — its clone belongs to the attempt still running inside it —
+  and its `RepoLease` is released only when that attempt settles.
+- **Stalest first.** `openConflictAttempt` stamps `lastVisitedAt` on the
+  ledger entry, and `orderReposByStaleness` / `orderMilestonesByStaleness`
+  order the sweep by it, so what the budget starved goes first next cycle.
+
+A milestone attempted twice in one cycle — cheaply, then with the agent — is
+one cycle's verdict, not two: the failure streak is counted once per branch per
+cycle, so Issue #4260's escalation threshold still means three cycles.
+
 ##### Sync before new work — the child run's own pre-cut sync
 
 The periodic sweep is not the only thing that merges the default branch down. A

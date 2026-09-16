@@ -1103,6 +1103,12 @@ interface LedgerMilestone {
   title: string;
   branch: string;
   failure: LedgerFailure;
+  /**
+   * What the *agent* attempt produces, when the two-pass sweep reaches this
+   * milestone with the rung granted (Issue #2215). Absent means the agent
+   * attempt produces whatever {@link LedgerMilestone.failure} does.
+   */
+  agentFailure?: LedgerFailure;
 }
 
 /** The failing (or succeeding) sync outcome one ledger milestone produces. */
@@ -1229,7 +1235,10 @@ function ledgerDeps(
       const milestone = options.milestones.find((m) =>
         m.branch === milestoneBranch
       )!;
-      return Promise.resolve(ledgerOutcome(milestone.failure, milestoneBranch));
+      const failure = syncOptions?.agentAllowed && milestone.agentFailure
+        ? milestone.agentFailure
+        : milestone.failure;
+      return Promise.resolve(ledgerOutcome(failure, milestoneBranch));
     },
     defaultTipShaFn: () =>
       Promise.resolve({
@@ -1393,7 +1402,10 @@ Deno.test("syncMilestoneBranches - the same tip waits out the cooldown and a mov
       return movedInner(repo, branch, base, opts);
     };
     await syncMilestoneBranches(movedDeps);
-    assertEquals(movedAttempts, 1);
+    // Two attempts, not one (Issue #2215): the cheap pass tries every
+    // milestone with the deterministic rungs only, and the agent pass then
+    // returns to the conflict those rungs could not settle.
+    assertEquals(movedAttempts, 2);
     assertEquals((await readLedger(streakPath))?.conflictAttempts, 2);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -1567,9 +1579,12 @@ Deno.test("syncMilestoneBranches - too little of the cycle left denies the agent
       }],
       streakPath,
       nowMs: 10_000,
-      // A minute of handler budget cannot cover an agent run plus its
-      // overhead, so the rung is refused before it is started (Issue #1693).
-      deadlineEpochMs: 70_000,
+      // Two minutes of handler budget covers the cheap attempt but cannot
+      // cover an agent run plus its overhead, so the rung is refused before
+      // it is started (Issue #1693). Raised from 70s by Issue #2215: below
+      // the sweep's own per-attempt floor nothing is attempted at all, which
+      // is a different refusal from the one this test is about.
+      deadlineEpochMs: 130_000,
       agentTimeoutMs: DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
       grants,
     }));
@@ -2116,12 +2131,18 @@ Deno.test("syncMilestoneBranches - a merge that fails after the agent ran keeps 
   try {
     const streakPath = milestoneSyncStreakPath(dir);
     const grants: Record<string, { allowed: boolean; seconds?: number }> = {};
-    // The first branch fails with a plain error — the shape `git_pull.ts`
-    // returns when the resolution was made and the commit or the guards then
-    // refused it, i.e. after the agent has already run.
+    // The first branch conflicts, so the agent pass returns to it
+    // (Issue #2215), and that attempt fails with a plain error — the shape
+    // `git_pull.ts` returns when the resolution was made and the commit or
+    // the guards then refused it, i.e. after the agent has already run.
     await syncMilestoneBranches(ledgerDeps([], {
       milestones: [
-        { title: LEDGER_TITLE, branch: LEDGER_BRANCH, failure: "plain" },
+        {
+          title: LEDGER_TITLE,
+          branch: LEDGER_BRANCH,
+          failure: "conflict",
+          agentFailure: "plain",
+        },
         { title: SECOND_TITLE, branch: SECOND_BRANCH, failure: "conflict" },
       ],
       streakPath,
@@ -2156,8 +2177,11 @@ Deno.test("syncMilestoneBranches - a clean merge refunds the grant to the next b
     }));
 
     // Nothing collided on the first branch, so no rung was climbed and the
-    // conflicting branch still gets the cycle's agent.
-    assertEquals(grants[LEDGER_BRANCH]?.allowed, true);
+    // conflicting branch still gets the cycle's agent. Issue #2215 made the
+    // first half of that stronger: a branch that merges cleanly is never
+    // offered the rung at all, because the cheap pass runs every milestone
+    // before any agent does.
+    assertEquals(grants[LEDGER_BRANCH]?.allowed, false);
     assertEquals(grants[SECOND_BRANCH]?.allowed, true);
     assertEquals(
       await readLedger(streakPath, SECOND_BRANCH).then((e) =>

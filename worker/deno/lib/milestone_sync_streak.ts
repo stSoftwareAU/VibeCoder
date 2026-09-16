@@ -141,6 +141,18 @@ export interface SyncStreakEntry {
   /** The most recent concluded attempt, whatever it concluded. */
   lastAttempt?: ConflictAttemptRecord;
   /**
+   * ISO timestamp of the last cycle that got as far as *attempting* this
+   * branch (Issue #2215) — written by {@link openConflictAttempt}, so it
+   * records a visit whatever the attempt then concluded.
+   *
+   * It is what the sweep orders its milestones by: one the budget never
+   * reached carries an older stamp (or none) and goes first next cycle, so a
+   * repository that ate a whole cycle's budget cannot eat the next one too.
+   * Kept across a success, unlike the failure count — it is a visit record,
+   * not a verdict.
+   */
+  lastVisitedAt?: string;
+  /**
    * ISO timestamp before which no further attempt is due. Set by a concluded
    * failure to now + {@link DEFAULT_CONFLICT_COOLDOWN_HOURS}, and cleared by
    * {@link recordDefaultSha} when the default tip moves — a conflict that
@@ -285,6 +297,7 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const attempts = optionalCount(entry.conflictAttempts);
   const rollbacks = optionalCount(entry.rollbacks);
   const openedAt = optionalText(entry.attemptOpenedAt);
+  const visitedAt = optionalText(entry.lastVisitedAt);
   const deferUntil = optionalText(entry.deferUntil);
   const syncedSha = optionalText(entry.lastSyncedDefaultSha);
   const lastAttempt = readLastAttempt(entry.lastAttempt);
@@ -294,6 +307,10 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
+    // Issue #2215: the visit record the next cycle's order is read from. An
+    // unparseable stamp is dropped, which reads as "never visited" — the
+    // direction that visits the branch again rather than parking it.
+    ...(visitedAt ? { lastVisitedAt: visitedAt } : {}),
     // An unparseable deferral is kept, not dropped: dropping it would read a
     // corrupt value as "no cooldown applies", which is the permissive
     // direction on a safety bound. `isConflictAttemptDue` refuses it instead,
@@ -359,12 +376,18 @@ function clearDeferralIfTipMoved(
  * as disrupted on the next cycle, and leaves the budget where it was — the
  * PR ladder's rule for an attempt marker with no conclusion (#395, #1693),
  * applied to a milestone branch.
+ *
+ * Opening is also the branch's **visit** record (Issue #2215): this is the
+ * one point the sweep commits to spending time on it, so the stamp the next
+ * cycle's stalest-first order reads is written here rather than by a second
+ * writer that could drift from it.
  */
 export function openConflictAttempt(
   entry: SyncStreakEntry,
   nowMs: number = Date.now(),
 ): SyncStreakEntry {
-  return { ...entry, attemptOpenedAt: new Date(nowMs).toISOString() };
+  const at = new Date(nowMs).toISOString();
+  return { ...entry, attemptOpenedAt: at, lastVisitedAt: at };
 }
 
 /**

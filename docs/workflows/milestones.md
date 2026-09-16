@@ -230,6 +230,58 @@ Two hosts used to spend the same rung on the same branch — the sync's attempt 
 
 And because a sibling may still land the same sync while this host is resolving it, the sync re-fetches the milestone branch **right before** the gate and push: if the default tip is already an ancestor of the remote branch, the local merge is discarded, the remote branch adopted, and the outcome is a success with nothing pushed.
 
+### Two passes, and a share of the budget each (Issue #2215)
+
+The sweep is one handler under one watchdog. On GRQ-23 a single conflict
+resolution took that handler's whole 795 s budget: the watchdog abandoned the
+handler, every milestone behind it in the fleet-wide repository order went
+unsynced, and a both-added `docs/audits/lib-sweep-coverage.json` — the shape
+the triage settles by union in seconds — was left conflicting for a human to
+merge by hand. The PR merge-conflict pass stands down on `milestone/**` heads
+by design (Issue #1772), so nothing else would ever have touched it. Next
+cycle the same repository came first and ate the budget again.
+
+Three rules answer that, and together they mean the sweep reaches **every**
+milestone **every** cycle:
+
+1. **Cheap rungs before expensive ones, across milestones.** The sweep makes
+   two passes. The first offers every milestone in the fleet the deterministic
+   rungs only — the triage, the dependency rules, the ported rung — and no
+   agent. Only once that pass is done does the second offer the agent rung to
+   the conflicts those rungs could not settle. A ledger union can therefore
+   never wait behind an agent.
+2. **A share, not the remainder.** Each attempt is bounded by the handler
+   budget left divided by the work still to do, floored at
+   `MIN_MILESTONE_ATTEMPT_MS` (60 s). An attempt that outruns its share is
+   **abandoned**: it concludes `disrupted` and is charged nothing, exactly as
+   an attempt the watchdog killed already is. Nothing else in that repository
+   is touched for the rest of the cycle — the clone belongs to the attempt
+   still running inside it — and its lease is given back only once that
+   attempt settles, so an issue slot cannot reset the clone from under it.
+3. **Stalest first.** Opening an attempt stamps `lastVisitedAt` on the
+   branch's ledger entry, and both repositories and milestones are ordered by
+   it. A milestone the budget never reached carries no stamp, so it goes
+   first on the next cycle; the repository that ate a cycle's budget goes
+   last.
+
+```mermaid
+flowchart TD
+    A["Cycle: milestones, stalest first"] --> B["Cheap pass<br/>triage + rules + ported, no agent"]
+    B -->|settled| S["Synced"]
+    B -->|conflict left| Q["Queued for the agent pass"]
+    B -->|outran its share| D["disrupted — charged nothing,<br/>first next cycle"]
+    Q --> C{"budget left covers<br/>one agent run?"}
+    C -- no --> K["Keeps this cycle's rules-only conclusion"]
+    C -- yes --> G["Agent pass, bounded by its share"]
+    G -->|settled| S
+    G -->|outran its share| D
+```
+
+The cycle still grants **one** agent run in total (Issue #1778) and still
+refuses to start one the budget cannot cover (Issue #1693) — what changed is
+that the rung is sized to one milestone's share rather than to everything that
+is left, and that no milestone waits behind it for its own cheap attempt.
+
 ### Conflict triage
 
 A conflicted sync used to have two moves, and both were wrong: taking the
