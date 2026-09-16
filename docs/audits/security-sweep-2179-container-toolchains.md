@@ -64,7 +64,7 @@ invoke them:
 | `:166` | `COPY tools.json /tmp/toolchain-manifest.json` |
 | `:193-195` | `bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml` |
 | `:217-220` | `bash /tmp/install-toolchains.sh rust`, then `rm -rf` of the fragments, the script and the manifest |
-| `:395` | `ARG VIBE_CONTAINER_TOOLS=""` |
+| `:399` | `ARG VIBE_CONTAINER_TOOLS=""` |
 | `:401` | `COPY install-tools.sh /tmp/install-tools.sh` |
 | `:403-407` | `printf '%s' "${VIBE_CONTAINER_TOOLS}" > "${spec}"`, then `bash /tmp/install-tools.sh "${spec}"` when non-empty, then `rm -f` |
 
@@ -115,7 +115,7 @@ That gate already covers these files: `.github/workflows/validate-scripts.yml`
 runs a pinned, SHA-256-verified `shellcheck` 0.11.0 over `find . -name "*.sh"`
 in the required `validate` job. No new gate was needed and none was added.
 
-Turning on every optional check surfaces 22 notes and nothing else:
+Turning on every optional check surfaces 21 notes and nothing else (11 × SC2154, 5 × SC2250, 2 × SC2310, 3 × SC2312):
 
 | Check | Where | Triage |
 | ----- | ----- | ------ |
@@ -236,15 +236,16 @@ newline-free string. **Regression test.**
 | # | Case | Verdict |
 | - | ---- | ------- |
 | 1 | Every fetch verifies a manifest SHA-256 before use; a mismatch aborts | **Refuted** (no defect) — see below |
-| 2 | The `container_tools` spec cannot escape `/opt/vibe-tools/<id>` | **Confirmed**, three ways — findings 1, 2 and 3, all fixed here |
+| 2 | The `container_tools` spec cannot escape `/opt/vibe-tools/<id>` | **Confirmed**, three ways — findings 1, 2 and 3. No issue number: all three are fixed in this change, so none survived to be filed |
 | 3 | `TOOLCHAIN_DIR` / `TOOLCHAIN_MANIFEST` / `VIBE_TOOLS_PREFIX` and the unquoted `${CURL_RETRY}` | **Refuted** — see below |
 | 4 | The `python3 -c` bodies in `codespell.sh` / `pyyaml.sh` | **Refuted** — see below |
 | 5 | The toolchain `id` allowlist before `bash "${TOOLCHAIN_DIR}/${id}.sh"` | **Refuted** — see below |
 
 ### Case 1 — every fetch is verified, and a mismatch aborts
 
-Fourteen `curl` invocations exist across the eleven files. **Every one** is
-followed, before the bytes are used, by
+Twelve `curl` invocations exist across the eleven files — fourteen *fetches*,
+because `rust.sh` calls its one `install_rust_pkg` three times, once per
+component package. **Every one** is followed, before the bytes are used, by
 `echo "${checksum}  ${archive}" | sha256sum -c -` against a pin the fragment
 read from `container/tools.json` with `jq -er`, or — in `install-tools.sh` — by
 `echo "${sha}  ${archive}" | sha256sum -c -` against the spec's digest, whose
@@ -278,6 +279,13 @@ The `environment` half is findings 1 and 3. The extraction half:
   value.
 - **The `id` cannot escape.** `^[a-z][a-z0-9-]*$` admits no `/` and no `.`, so
   `${TOOLS_PREFIX}/${id}` is always one level under the prefix.
+- **An `=` inside a value is not a second vector — empty.**
+  `container/entrypoint.sh:517-521` splits each line at the **first** `=`, so
+  `KEY=<prefix>/a=b` yields the key `KEY` and the value `<prefix>/a=b`: the
+  extra `=` stays inside the value and the path stays inside the prefix. A
+  `bin` entry behaves the same way, because its line is `PATH=` plus a path.
+  The issue named this vector alongside the newline; it is stated here rather
+  than left to be inferred from the newline finding.
 - **What survived was the symlinked strip level** — finding 2.
 
 **Accepted residual: extraction preserves the archive's file modes.** The build
