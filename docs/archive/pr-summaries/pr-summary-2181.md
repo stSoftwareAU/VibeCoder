@@ -9,7 +9,9 @@ hunk by hunk and triaged per `docs/SECURITY-SCAN.md` Phase 3. Adds one file,
 
 **One finding survived triage** and is filed as
 [#2216](https://github.com/stSoftwareAU/VibeCoder/issues/2216)
-(`SEC-3cc92c0a026b`, `severity:medium`, `confidence:high`, CWE-693):
+(`severity:medium`, `confidence:high`, CWE-693; its stable `SEC-<hex>` id is
+stamped on the issue and recorded at
+`docs/audits/security-sweep-2181-shell-entry-points-delta.md:132`):
 `heal_untrimmable_volumes` (`run.sh:1518`) applies the Issue #2117
 minimum-size guard only when the volume's size can be measured —
 
@@ -34,6 +36,23 @@ mark which volumes may be reset for disk, and the assertion at
 `run_sh_launcher_test.ts:1791` must change with it. The one-line fail-closed
 variant would also change the work volume's Issue #478 heal behaviour on
 unmeasurable stores — a trade to decide, not to assume.
+
+**This PR closes no security finding and carries no security fix**, so it has
+no regression test to cite: the branch changes documentation only, and the one
+surviving finding stays open as #2216 to be fixed under its own issue, whose PR
+carries the regression test in `worker/deno/tests/run_sh_launcher_test.ts`.
+That is what Issue #2181 asks for — "fix in-change only a one-line defect" and
+"a fix PR for any finding carries its regression test". The finding's raw
+`SEC-<hex>` id is therefore cited by location above rather than repeated in this
+PR body, because the security-fix gate
+(`referencesFindingId`, `worker/deno/lib/security_fix_gate.ts:385`) activates on
+that literal appearing in a PR body and then requires fail-before/pass-after
+test evidence, which a detect-only sweep that changes no code cannot truthfully
+supply; the gate's own contract is that it fires for a PR that *closes* a
+security finding, which this one does not. Nothing downstream is weakened: Phase
+4 dedups on the `<!-- finding-id: … -->` marker in the issue body
+(`docs/SECURITY-SCAN.md:470-492`), never on a PR body, and that marker is on
+#2216.
 
 Four of the five #1221 findings were fixed inside this window (#1298, #1299,
 #1300, #1301, all closed); each was re-read at its new form rather than taken
@@ -103,7 +122,7 @@ predated later edits and its PASS had gone stale.
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — Record names the base commit, the head commit and every hunk range read per file; nil results stated explicitly per category — evidence: `docs/audits/security-sweep-2181-shell-entry-points-delta.md:18-23` (commits and command), `:26-60` (6 / 17 / 21 hunk ranges, verified character-for-character against a regenerated diff by the reviewer), `:254-338` (nine categories stated empty) — reviewer: partial — reason: the reviewer verified every hunk range as exact but found the `run.sh` heading claiming "22 hunks" over 21 listed; corrected to 21 in `aca2859b` and confirmed against `git diff … -- run.sh | grep -c '^@@'` = 21.
-- **met** — Surviving findings filed as `security` issues and cross-referenced; refutations recorded — evidence: #2216 (`security`, `bug`, `severity:medium`, `confidence:high`), cross-referenced both ways at `…-delta.md:131-135`; seven refutations at `:194-252`; three non-findings at `:340-366` — reviewer: partial — reason: the reviewer found #2216 missing the `<!-- finding-id: SEC-… -->` and `<!-- cwe: … -->` markers that `docs/SECURITY-SCAN.md:470-492` makes the Phase 4 dedup key; without them the next scan would re-file the same root cause. Stamped `SEC-3cc92c0a026b` / `CWE-693` (matching `FINDING_ID_RE`, `worker/deno/lib/security_sarif.ts:75`) and cross-referenced in the record.
+- **met** — Surviving findings filed as `security` issues and cross-referenced; refutations recorded — evidence: #2216 (`security`, `bug`, `severity:medium`, `confidence:high`), cross-referenced both ways at `…-delta.md:131-135`; seven refutations at `:194-252`; three non-findings at `:340-366` — reviewer: partial — reason: the reviewer found #2216 missing the `<!-- finding-id: SEC-… -->` and `<!-- cwe: … -->` markers that `docs/SECURITY-SCAN.md:470-492` makes the Phase 4 dedup key; without them the next scan would re-file the same root cause. Stamped with the finding's stable `SEC-<hex>` id and `CWE-693` (matching `FINDING_ID_RE`, `worker/deno/lib/security_sarif.ts:75`) and cross-referenced in the record at `…-delta.md:132` and `:137`.
 - **met** — `./quality.sh < /dev/null` passes — evidence: full gate re-run in the foreground after the final edit, exit 0, every check PASSED — reviewer: missing — reason: the reviewer was right at the time. My first gate run preceded a later edit to the SC2310 triage row, whose unescaped `||` split a five-column table into seven cells and failed MD056, so that earlier PASS was stale. Pipes escaped in `aca2859b` and the gate re-run green; `markdownlint-cli2` reports 0 issues.
 
 ## Standards Review
