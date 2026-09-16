@@ -1616,6 +1616,18 @@
       ]
     },
     {
+      "issue": 2220,
+      "chunk": "top-up-2220",
+      "title": "top-up: the milestone-refusal label release",
+      "ledger": "docs/audits/security-sweep-2220-milestone-refusal-release.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_branch_refusal_release.ts (#2220)",
+      "status": "swept",
+      "sweptAt": "bd0159781ecf4a0542ade739fdbb8ab1dca4a850",
+      "paths": [
+        "worker/deno/lib/milestone_branch_refusal_release.ts"
+      ]
+    },
+    {
       "issue": 2154,
       "chunk": "top-up-2154",
       "title": "top-up: the CodeGraph context switch",

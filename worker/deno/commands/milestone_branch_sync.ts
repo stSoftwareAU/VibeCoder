@@ -74,6 +74,12 @@ export const milestoneBranchSyncCommand: Command = {
           ensureDefaultBranchCurrent,
         ),
       localCloneExistsFn,
+      // Issue #2220: the refusal sweep may only remove the labels this
+      // deployment actually uses, which are operator-configurable.
+      failureLabels: {
+        failedLabel: config.failedLabel,
+        failedOnceLabel: config.failedOnceLabel,
+      },
       log: (msg: string) => logs.push(msg),
     });
 

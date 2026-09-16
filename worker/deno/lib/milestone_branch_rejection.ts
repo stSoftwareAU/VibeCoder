@@ -56,6 +56,48 @@ export function isRepoLevelBranchRejection(message: string): boolean {
 }
 
 /**
+ * Signatures placing a refusal on a **milestone** branch specifically.
+ *
+ * {@link isRepoLevelBranchRejection} answers "would the repository refuse
+ * this for every issue?", which is true of an ordinary feature-branch
+ * protection failure too. The failure *category* (Issue #2220) must be
+ * narrower than that: a protected-branch push refusal on a feature branch is
+ * still the per-issue push failure it has always been, retried by the
+ * bounded infrastructure ladder. Only the milestone-branch refusal is a
+ * fault the whole milestone shares, so only it skips the ladder.
+ *
+ * The last two patterns match the REFUSED REF itself
+ * (`refs/heads/milestone/<slug>`, `-> milestone/<slug>`), which is what the
+ * raw remote text carries when no worker-written sentence survived into the
+ * message. They are deliberately not a bare `milestone/<slug>` match: a
+ * milestone child's base branch is named in plenty of later-phase failure
+ * messages, and pairing a bare mention with a generic repo-level signature
+ * ("protected branch", "required status check") would reclassify an
+ * ordinary PR-creation or child-push refusal as a repository fault — no
+ * label, no ladder, no attempt consumed.
+ */
+const MILESTONE_BRANCH_CONTEXT: readonly RegExp[] = [
+  /Failed to (?:ensure|push) milestone branch/i,
+  /Milestone branch unavailable/i,
+  /refs\/heads\/milestone\/[A-Za-z0-9._-]+/,
+  /->\s*milestone\/[A-Za-z0-9._-]+/,
+];
+
+/**
+ * True when `message` is a repository-level refusal of a **milestone**
+ * branch — the fault that belongs to the repository's ruleset or protection
+ * rather than to the issue being worked (Issue #2220).
+ *
+ * Both halves must hold: the refusal must be repo-level, and it must name a
+ * milestone branch. Either alone is a failure the existing categories
+ * already describe correctly.
+ */
+export function isRepoLevelMilestoneBranchRefusal(message: string): boolean {
+  if (!isRepoLevelBranchRejection(message)) return false;
+  return MILESTONE_BRANCH_CONTEXT.some((re) => re.test(message));
+}
+
+/**
  * An operator-facing explanation of a repo-level rejection, appended to the
  * escalation so the reader need not re-derive it from a raw git error.
  *
