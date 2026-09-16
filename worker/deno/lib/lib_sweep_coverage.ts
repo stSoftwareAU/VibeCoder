@@ -348,21 +348,20 @@ function rootsForSlice(
 }
 
 /**
- * The message a failed drift diff throws (Issue #2178).
+ * Failure message for a git exit inside {@link driftSince} (Issue #2178).
  *
- * Names the slice, the `sweptAt` git could not resolve and the remedy, so
- * the operator can repoint the entry without reading this source. The remedy
- * is anchored at `origin/main`: run on the feature branch the failure is
- * usually hit from, an unanchored `git log` hands back another
- * feature-branch commit — the very thing squash-merge deletes. Git's own
- * stderr is kept verbatim at the end.
+ * The bare git stderr — `fatal: bad object 00c1d959…` — named neither the
+ * slice nor the remedy, so a `sweep-drift` run against a ledger holding a
+ * squash-deleted feature-branch commit failed without saying which slice to
+ * repoint. Naming the chunk, its `sweptAt` and the fix makes the failure
+ * actionable on sight.
  *
  * @param slice - The slice whose diff failed.
- * @param filter - The `--diff-filter` letter that was running.
+ * @param filter - The `--diff-filter` value that was running.
  * @param code - Git's exit code.
- * @param stderr - Git's stderr, possibly empty.
+ * @param stderr - Git's stderr, carried verbatim.
  */
-function driftFailureMessage(
+function describeDriftGitFailure(
   slice: SweepSlice,
   filter: string,
   code: number,
@@ -371,15 +370,11 @@ function driftFailureMessage(
   const detail = stderr.trim().length > 0
     ? stderr.trim()
     : `git diff --diff-filter=${filter} exited ${code}`;
-  return [
-    `${LIB_SWEEP_LEDGER_PATH}: slice ${slice.chunk} (#${slice.issue}) ` +
-    `sweptAt ${slice.sweptAt} could not be diffed against HEAD`,
-    `sweptAt must be a commit reachable from the default branch — a ` +
-    `feature-branch commit is deleted by squash-merge`,
-    `repoint it with: git log --diff-filter=A -1 --format=%H origin/main ` +
-    `-- ${slice.ledger}`,
-    detail,
-  ].join("; ");
+  return `${LIB_SWEEP_LEDGER_PATH}: slice ${slice.chunk} (#${slice.issue}) ` +
+    `could not be diffed from sweptAt ${slice.sweptAt}: ${detail}\n` +
+    `  sweptAt must be a commit reachable from the default branch — a ` +
+    `feature-branch commit is deleted by squash-merge. Repoint it with: ` +
+    `git log --diff-filter=A -1 --format=%H origin/main -- ${slice.ledger}`;
 }
 
 /**
@@ -388,8 +383,7 @@ function driftFailureMessage(
  *
  * Git is an injected runner so unit tests never spawn. A non-zero exit
  * throws a {@link SweepLedgerError} naming the slice, its `sweptAt` and the
- * remedy — a bare `fatal: bad object <sha>` never says which of the ledger's
- * slices to repoint (Issue #2178). An empty diff is an empty report.
+ * remedy (Issue #2178); an empty diff is an empty report.
  *
  * @param ledger - Parsed ledger (roots + every claimed path).
  * @param slice - The slice whose drift to measure.
@@ -420,7 +414,7 @@ export async function driftSince(
       ]);
       if (result.code !== 0) {
         throw new SweepLedgerError(
-          driftFailureMessage(slice, filter, result.code, result.stderr),
+          describeDriftGitFailure(slice, filter, result.code, result.stderr),
         );
       }
       const target = filter === "A" ? added : modified;

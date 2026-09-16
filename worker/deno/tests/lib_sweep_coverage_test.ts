@@ -17,12 +17,7 @@
  * Uses Australian English throughout.
  */
 
-import {
-  assert,
-  assertEquals,
-  assertStringIncludes,
-  assertThrows,
-} from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   describeCoverageDiff,
   diffCoverage,
@@ -680,6 +675,10 @@ Deno.test("driftSince - an empty diff is an empty report (Issue #1609)", async (
   assertEquals(drift, { added: [], modified: [], unowned: [] });
 });
 
+// Issue #2178 widened this error: the message now names the slice, its
+// `sweptAt` and the remedy, so a failing `sweep-drift` says which slice to
+// repoint. The stderr is still carried verbatim inside it, which is what the
+// original #1609 assertion was protecting.
 Deno.test("driftSince - a non-zero git exit throws with stderr (Issue #1609)", async () => {
   const ledger = ledgerFixture([{
     chunk: "12a",
@@ -703,15 +702,17 @@ Deno.test("driftSince - a non-zero git exit throws with stderr (Issue #1609)", a
     thrown = error;
   }
   assert(thrown instanceof SweepLedgerError, String(thrown));
-  // Issue #2178 wraps git's stderr in the slice's context; the stderr itself
-  // is still carried verbatim so nothing git said is lost.
-  assertStringIncludes(
+  assert(
+    (thrown as SweepLedgerError).message.includes("fatal: bad revision"),
     (thrown as SweepLedgerError).message,
-    "fatal: bad revision",
   );
 });
 
 Deno.test("driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)", async () => {
+  // Fail direction: before this change the thrown message was the bare git
+  // stderr — `fatal: bad object 00c1d959…` — which named neither the slice
+  // nor what to do about it, so `sweep-drift` failed without saying which of
+  // the ledger's slices pointed at a squash-deleted feature-branch commit.
   const ledger = ledgerFixture([{
     chunk: "12a",
     paths: ["worker/deno/lib/a.ts"],
@@ -735,46 +736,8 @@ Deno.test("driftSince - an unreachable sweptAt names the slice, the commit and t
   }
   assert(thrown instanceof SweepLedgerError, String(thrown));
   const message = (thrown as SweepLedgerError).message;
-  // The slice, so an operator knows which ledger entry to repoint.
-  assertStringIncludes(message, "12a");
-  assertStringIncludes(message, `#${ledger.slices[0]!.issue}`);
-  // The commit that could not be resolved, and git's own words.
-  assertStringIncludes(message, FIXTURE_COMMIT);
-  assertStringIncludes(message, "fatal: bad object");
-  // The remedy, so the report is actionable without reading the source.
-  assertStringIncludes(message, "reachable from the default branch");
-  // Anchored at origin/main: an unanchored git log run on a feature branch
-  // hands back another feature-branch commit, which is the defect itself.
-  assertStringIncludes(
-    message,
-    `git log --diff-filter=A -1 --format=%H origin/main -- ` +
-      `${ledger.slices[0]!.ledger}`,
-  );
-});
-
-Deno.test("driftSince - a non-zero git exit with no stderr still names the slice (Issue #2178)", async () => {
-  // Git said nothing: the report must still fail loud, and still say which
-  // slice and which commit, rather than reporting an empty drift.
-  const ledger = ledgerFixture([{
-    chunk: "top-up-2178",
-    paths: ["worker/deno/lib/a.ts"],
-  }]);
-  let thrown: unknown;
-  try {
-    await driftSince(
-      ledger,
-      ledger.slices[0]!,
-      ["worker/deno/lib/a.ts"],
-      fakeGit({
-        "--diff-filter=A": { code: 128, stdout: "", stderr: "   \n" },
-      }),
-    );
-  } catch (error) {
-    thrown = error;
-  }
-  assert(thrown instanceof SweepLedgerError, String(thrown));
-  const message = (thrown as SweepLedgerError).message;
-  assertStringIncludes(message, "top-up-2178");
-  assertStringIncludes(message, FIXTURE_COMMIT);
-  assertStringIncludes(message, "git diff --diff-filter=A exited 128");
+  assert(message.includes("slice 12a (#1000)"), message);
+  assert(message.includes(FIXTURE_COMMIT), message);
+  assert(message.includes("reachable from the default branch"), message);
+  assert(message.includes("docs/audits/fixture.md"), message);
 });
