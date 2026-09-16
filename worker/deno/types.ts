@@ -449,6 +449,13 @@ export interface WorkerConfig {
    */
   includeCodebaseMap: boolean;
   /**
+   * The CodeGraph repo-context switch, read from the `.config.json`
+   * `codegraph_context` block (Issue #2154, part of #2145) and validated by
+   * `parseCodegraphContext()` in `lib/codegraph_context_config.ts`. Off unless
+   * the host asks for it, so an unconfigured host is unchanged.
+   */
+  codegraphContext: CodegraphContextConfig;
+  /**
    * Cache TTL in seconds for the issue-timeline cache (Issue #1673).
    * Used by label-authorship checks (`wasLabelAddedByAllowedAuthor`,
    * `getLabelLastAddInfo`). Defaults to 300 seconds (5 minutes).
@@ -595,6 +602,17 @@ export interface GitHubComment {
     eyes: number;
     confused: number;
   };
+}
+
+/**
+ * The CodeGraph repo-context switch as the worker reads it (Issue #2154).
+ *
+ * Parsed from the `.config.json` `codegraph_context` block by
+ * `parseCodegraphContext()` in `lib/codegraph_context_config.ts`.
+ */
+export interface CodegraphContextConfig {
+  /** Whether a run indexes the repository with CodeGraph (default: false). */
+  enabled: boolean;
 }
 
 /**
@@ -1290,6 +1308,13 @@ export interface ConfigFile {
   recent_activity_cache_ttl_seconds?: number;
   /** Whether to inject the generated codebase map into prompts (Issue #4281) */
   include_codebase_map?: boolean;
+  /**
+   * Raw `codegraph_context` block (Issue #2154). Typed `unknown` because it is
+   * operator-written JSON: `parseCodegraphContext()` in
+   * `lib/codegraph_context_config.ts` is the trust boundary that turns it into
+   * a {@link CodegraphContextConfig} or fails the config load.
+   */
+  codegraph_context?: unknown;
   /** Cache TTL in seconds for the issue-timeline cache (Issue #1673) */
   timeline_cache_ttl_seconds?: number;
   /** Whether to enable CLI session resume across phases (Issue #1324) */

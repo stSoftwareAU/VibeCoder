@@ -485,7 +485,7 @@ export function phaseDisplayName(phase: string): string {
 }
 
 /** Format an integer with thousands separators (locale-independent). */
-function formatCount(n: number): string {
+export function formatCount(n: number): string {
   return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 

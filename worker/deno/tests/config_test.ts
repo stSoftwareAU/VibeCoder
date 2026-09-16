@@ -1902,3 +1902,117 @@ Deno.test("config - loadConfig warns about the duplicate once per process (Issue
     assertEquals(second, []);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CodeGraph repo-context switch (Issue #2154, part of #2145)
+// ---------------------------------------------------------------------------
+
+/** Run `fn` with `console.error` captured, returning what it wrote. */
+async function capturingConfigErrors(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const lines: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    console.error = originalError;
+  }
+  return lines;
+}
+
+Deno.test("config - codegraph_context absent defaults to off with no warning (Issue #2154)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const errors = await capturingConfigErrors(async () => {
+      const config = await loadConfig(configPath);
+      assertEquals(config.codegraphContext.enabled, false);
+    });
+    assertEquals(errors, [], "An absent block must not warn");
+  });
+});
+
+Deno.test("config - codegraph_context enabled true loads as on (Issue #2154)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    codegraph_context: { enabled: true },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.codegraphContext.enabled, true);
+  });
+});
+
+Deno.test("config - codegraph_context enabled false loads as off (Issue #2154)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    codegraph_context: { enabled: false },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.codegraphContext.enabled, false);
+  });
+});
+
+Deno.test("config - a non-boolean codegraph_context.enabled fails the load (Issue #2154)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    codegraph_context: { enabled: "yes" },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    assertStringIncludes(error.message, "codegraph_context.enabled");
+  });
+});
+
+Deno.test("config - a non-object codegraph_context block fails the load (Issue #2154)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    codegraph_context: "on",
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    assertStringIncludes(error.message, "codegraph_context");
+  });
+});
+
+Deno.test("config - an unknown key inside codegraph_context warns (Issue #2154)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    codegraph_context: { enabled: true, enabeld: true },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    let loaded = false;
+    const errors = await capturingConfigErrors(async () => {
+      const config = await loadConfig(configPath);
+      loaded = config.codegraphContext.enabled;
+    });
+    assertEquals(loaded, true, "An unknown nested key warns, it does not fail");
+    assertEquals(errors.length, 1, "Expected one warning block");
+    assertStringIncludes(errors[0]!, "codegraph_context.enabeld");
+    assertStringIncludes(errors[0]!, "enabled");
+  });
+});

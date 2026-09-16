@@ -77,6 +77,15 @@ export interface RunStats {
   /** Worker-measured wall-clock duration in milliseconds. */
   wallClockMs: number;
   /**
+   * Tool name → number of calls made during the run (Issue #2157).
+   *
+   * Layered on by the runner from the progress tracker's snapshot, which
+   * already parses the Claude `tool_use` blocks and Codex tool items the
+   * stream carries. Absent when the stream had no tool events at all, so a
+   * reader can tell "no tools used" from "this run predates the tally".
+   */
+  toolCallCounts?: Record<string, number>;
+  /**
    * Id of the coding-agent provider that produced this run (Issue #4109).
    *
    * A Quorum run makes several invocations on different vendors in one
@@ -280,6 +289,11 @@ export interface AggregatedRunStats {
   /** Summed worker wall-clock duration in milliseconds across calls. */
   wallClockMs: number;
   /**
+   * Summed per-tool call counts across calls (Issue #2157), or undefined when
+   * no call reported a tally.
+   */
+  toolCallCounts?: Record<string, number>;
+  /**
    * Anthropic prompt-cache hit rate across the aggregated calls (Issue #4282).
    *
    * Derived from the same summed {@link tokenUsage}, so a prefix regression —
@@ -319,6 +333,7 @@ export function aggregateRunStats(statsList: RunStats[]): AggregatedRunStats {
   let numTurns: number | undefined;
   let durationMs = 0;
   let wallClockMs = 0;
+  const toolCallCounts = new Map<string, number>();
 
   for (const stats of statsList) {
     for (const m of stats.servedModels) pushDistinct(servedModels, m);
@@ -336,6 +351,9 @@ export function aggregateRunStats(statsList: RunStats[]): AggregatedRunStats {
     }
     if (stats.durationMs !== undefined) durationMs += stats.durationMs;
     wallClockMs += stats.wallClockMs;
+    for (const [tool, count] of Object.entries(stats.toolCallCounts ?? {})) {
+      toolCallCounts.set(tool, (toolCallCounts.get(tool) ?? 0) + count);
+    }
   }
 
   return {
@@ -345,6 +363,9 @@ export function aggregateRunStats(statsList: RunStats[]): AggregatedRunStats {
     efforts,
     tokenUsage,
     ...(numTurns !== undefined ? { numTurns } : {}),
+    ...(toolCallCounts.size > 0
+      ? { toolCallCounts: Object.fromEntries(toolCallCounts) }
+      : {}),
     durationMs,
     wallClockMs,
     cacheHitRate: computeCacheHitRate(tokenUsage),

@@ -42,7 +42,11 @@ import {
   withAgentStub,
 } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+import { codegraphMcpServer } from "../lib/codegraph_context.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+
+/** The CodeGraph server entry, as the phases hand it to the runner. */
+const codegraphServer = codegraphMcpServer();
 
 // ---------------------------------------------------------------------------
 // Child-environment sanitisation (Issue #3203)
@@ -953,6 +957,71 @@ Deno.test({
       assertEquals(spawned, true, "claude must have been spawned");
     } finally {
       resetWriteRepoAllowlist();
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// The object form of `mcpConfig` (Issue #2156)
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - the object form of mcpConfig writes a browserless config and passes it as --mcp-config; false and absent pass nothing (Issue #2156)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const workDir = await Deno.makeTempDir({ prefix: "mcp-object-" });
+    const argvFile = `${workDir}/argv.txt`;
+    const recordArgv =
+      `printf '%s\\n' "$@" > "${argvFile}"\nprintf '%s\\n' '{"type":"result","result":"done"}'\nexit 0\n`;
+    const run = (mcpConfig: RunClaudeOptions["mcpConfig"]) =>
+      withStubClaude(recordArgv, (agentBinaryPath) =>
+        runClaudeWithTimeout({
+          clock: fakeClock(),
+          prompt: "P",
+          model: "m",
+          cwd: workDir,
+          workDir,
+          agentBinaryPath,
+          timeoutSeconds: 30,
+          killAfterSeconds: 2,
+          ...(mcpConfig === undefined ? {} : { mcpConfig }),
+        }));
+    try {
+      await run({ playwright: false, servers: { codegraph: codegraphServer } });
+      const argv = (await Deno.readTextFile(argvFile)).split("\n");
+      const idx = argv.indexOf("--mcp-config");
+      assert(idx >= 0, `expected --mcp-config in ${argv.join(" ")}`);
+      const config = JSON.parse(await Deno.readTextFile(argv[idx + 1]!));
+      // The browser grant of Issue #192 is untouched by an extra server.
+      assertEquals(Object.keys(config.mcpServers), ["codegraph"]);
+      assertEquals(config.mcpServers.codegraph.command, "codegraph");
+
+      await run({ playwright: false });
+      const none = (await Deno.readTextFile(argvFile)).split("\n");
+      assertEquals(
+        none.includes("--mcp-config"),
+        false,
+        `an empty request wires nothing: ${none.join(" ")}`,
+      );
+
+      await run(false);
+      assertEquals(
+        (await Deno.readTextFile(argvFile)).split("\n").includes(
+          "--mcp-config",
+        ),
+        false,
+      );
+
+      await run(undefined);
+      assertEquals(
+        (await Deno.readTextFile(argvFile)).split("\n").includes(
+          "--mcp-config",
+        ),
+        false,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
     }
   },
 });
