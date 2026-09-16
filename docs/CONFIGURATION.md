@@ -1796,6 +1796,18 @@ logs one `Graft context: <status> — <figures>` line, so a run that asked for a
 bundle always says what came back — `failed` as loudly as `ok`. A run on a
 host with the switch off logs neither line.
 
+**What the issue itself shows.** The worker log is private to the host, so the
+[per-issue run-stats comment](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)
+carries the same outcome as one bullet beside the run's costs (Issue #2105) —
+`- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714 nodes, 22,908 call
+edges` on a full collection, the figures it reached on a `failed` one
+(`- **Graft:** failed — build 300 s`), and `- **Graft:** off` when the host
+switch is off. The line is a bullet of the stats block and never counts toward
+the estimated-cost tally. It rides the comment the issue and question rounds
+post; a planning run posts its stats through the planning processor's own
+render, which carries no Graft bullet — its outcome is in the
+`Graft context:` log line alone.
+
 **Query size.** The bundle query is passed to `graft ask --source` as a single
 argument, truncated to **64 KiB** of UTF-8 on a character boundary, so it
 stays well under Linux's 128 KiB single-argument limit (Issue #2099). A query that is

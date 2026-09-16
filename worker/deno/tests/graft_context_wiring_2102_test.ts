@@ -271,7 +271,7 @@ function makeContext(
 }
 
 /** A gh client that answers every call the two processors make. */
-function makeGhClient() {
+function makeGhClient(comments: string[] = []) {
   return {
     getIssue: () =>
       Promise.resolve({
@@ -287,7 +287,10 @@ function makeGhClient() {
     getIssueComments: () => Promise.resolve([]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
-    postComment: () => Promise.resolve(undefined),
+    postComment: (_repo: string, _issueNumber: number, body: string) => {
+      comments.push(body);
+      return Promise.resolve(undefined);
+    },
     editIssue: () => Promise.resolve(),
     assignIssue: () => Promise.resolve(),
     unassignIssue: () => Promise.resolve(),
@@ -500,6 +503,57 @@ Deno.test("processIssueQuestion - a failed collection is reported and the answer
     assertEquals(result.value.responseType, "answer");
     assertEquals(result.value.graftContext?.status, "failed");
   }
+});
+
+Deno.test("processIssueQuestion - the run-stats comment carries the Graft figures (Issue #2105)", async () => {
+  // The stats comment is rendered from the round's run stats, so this mock
+  // reports them where the shared `questionDeps` above has none.
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            output: "The parser reads the year from group 1.",
+            exitCode: 0,
+            timedOut: false,
+            runStats: {
+              servedModels: ["claude-fable-5-1-20260901"],
+              requestedModel: "fable",
+              wallClockMs: 1_000,
+              tokenUsage: {
+                inputTokens: 1_000,
+                outputTokens: 2_000,
+                cacheCreationTokens: 0,
+                cacheReadTokens: 0,
+              },
+            },
+          },
+        }),
+    },
+  });
+  const collector = fakeCollector(okOutcome());
+  const comments: string[] = [];
+
+  const result = await processIssueQuestion(questionContext(true), {
+    promptsDir: PROMPTS_DIR,
+    ghClient: makeGhClient(comments),
+    logger: deps.logger,
+    deps,
+    collectGraftContext: collector.collect,
+  });
+
+  assertEquals(result.ok, true);
+  const stats = comments.find((body) => body.includes("run model stats"));
+  assert(stats, "expected the question round to post its run-stats comment");
+  // The figures the collector reported, rendered on the comment's own line.
+  const graftLine = stats.split("\n").find((l) => l.startsWith("- **Graft:**"));
+  assertEquals(
+    graftLine,
+    `- **Graft:** ok — build 12.5 s, bundle ${
+      BUNDLE.length.toLocaleString("en-AU")
+    } chars, 820 nodes, 1,204 call edges`,
+  );
 });
 
 // ===========================================================================

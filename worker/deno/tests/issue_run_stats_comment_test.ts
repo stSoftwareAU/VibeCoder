@@ -7,6 +7,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildGraftStatsLine,
   buildIssueCostTotalLine,
   buildIssueRunStatsComment,
   buildIssueRunStatsMarker,
@@ -20,6 +21,7 @@ import {
   tallyIssueCost,
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
+import type { GraftContextResult } from "../lib/graft_context.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import type { RunStats } from "../lib/run_stats.ts";
 import type { Logger } from "../types.ts";
@@ -617,4 +619,164 @@ Deno.test("recordClaudeRunStats - keeps degradation signals, drops absent fields
 
   recordClaudeRunStats(state, {});
   assertEquals(Object.keys(state.claudeRunStats![1]!).length, 0);
+});
+
+// ============================================================================
+// Graft figures on the run-stats comment (Issue #2105, part of #2060)
+// ============================================================================
+
+/** A full `ok` collection, with every figure the collector gathers. */
+const GRAFT_OK: GraftContextResult = {
+  status: "ok",
+  enabled: true,
+  buildSeconds: 47,
+  bundleChars: 7_874,
+  nodeCount: 19_714,
+  callEdgeCount: 22_908,
+};
+
+/** The Graft line from a comment body, or `undefined` when there is none. */
+function graftLineOf(body: string): string | undefined {
+  return body.split("\n").find((line) => line.startsWith("- **Graft:**"));
+}
+
+Deno.test("buildGraftStatsLine - reports every figure an ok collection gathered", () => {
+  assertEquals(
+    buildGraftStatsLine(GRAFT_OK),
+    "- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714 nodes, 22,908 call edges",
+  );
+});
+
+Deno.test("buildGraftStatsLine - a failed collection reports the figures it reached", () => {
+  // The build timed out, so only the build seconds exist.
+  assertEquals(
+    buildGraftStatsLine({
+      status: "failed",
+      enabled: true,
+      buildSeconds: 300,
+    }),
+    "- **Graft:** failed — build 300 s",
+  );
+  // Nothing was reached at all — the status alone, never a half-rendered line.
+  assertEquals(
+    buildGraftStatsLine({ status: "failed", enabled: true }),
+    "- **Graft:** failed",
+  );
+});
+
+Deno.test("buildGraftStatsLine - the host switch being off is stated, not omitted", () => {
+  assertEquals(
+    buildGraftStatsLine({ status: "off", enabled: false }),
+    "- **Graft:** off",
+  );
+});
+
+Deno.test("buildGraftStatsLine - renders no line without an outcome", () => {
+  assertEquals(buildGraftStatsLine(undefined), "");
+});
+
+Deno.test("buildGraftStatsLine - fractional and unusable figures stay readable", () => {
+  assertEquals(
+    buildGraftStatsLine({
+      status: "ok",
+      enabled: true,
+      buildSeconds: 12.345,
+      bundleChars: Number.NaN,
+      nodeCount: 1_000,
+    }),
+    "- **Graft:** ok — build 12.3 s, 1,000 nodes",
+  );
+});
+
+Deno.test("buildGraftStatsLine - an unrecognised status cannot inject markdown", () => {
+  assertEquals(
+    buildGraftStatsLine({
+      status: "**evil**\n- injected" as GraftContextResult["status"],
+      enabled: true,
+    }),
+    "- **Graft:** unknown",
+  );
+});
+
+Deno.test("buildIssueRunStatsComment - carries the Graft line inside the stats block", () => {
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-graft-1",
+    graft: GRAFT_OK,
+  });
+
+  assertStringIncludes(body, buildGraftStatsLine(GRAFT_OK));
+  // Rendered as a bullet of the stats list, ahead of the disclaimer.
+  assert(
+    body.indexOf("- **Graft:**") < body.indexOf(ISSUE_RUN_STATS_DISCLAIMER),
+  );
+});
+
+Deno.test("buildIssueRunStatsComment - the Graft line leaves the cost tally alone", () => {
+  const withoutGraft = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-graft-2",
+  });
+  const withGraft = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-graft-2",
+    graft: GRAFT_OK,
+  });
+
+  assertEquals(tallyIssueCost([withGraft]), tallyIssueCost([withoutGraft]));
+  assertEquals(tallyIssueCost([withGraft]).partial, false);
+
+  // And the cumulative line across runs is the same with the figures present.
+  const later = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-graft-3",
+    priorComments: [withGraft],
+    graft: GRAFT_OK,
+  });
+  const laterWithout = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-graft-3",
+    priorComments: [withoutGraft],
+  });
+  assertEquals(
+    laterWithout.split("\n").find((l) => l.includes("Issue total across")),
+    later.split("\n").find((l) => l.includes("Issue total across")),
+  );
+});
+
+Deno.test("buildIssueRunStatsComment - a comment built without the argument is byte-identical", () => {
+  const args = {
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-graft-4",
+  };
+  const body = buildIssueRunStatsComment(args);
+
+  assertEquals(body, buildIssueRunStatsComment({ ...args, graft: undefined }));
+  assertEquals(graftLineOf(body), undefined);
+});
+
+Deno.test("postIssueRunStatsComment - posts the Graft figures with the run's costs", async () => {
+  const gh = makeGitHubDouble();
+
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2105,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    getIssueComments: gh.getIssueComments,
+    postComment: gh.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    graft: { status: "failed", enabled: true, buildSeconds: 300 },
+  });
+
+  assertEquals(result.posted, true);
+  assertEquals(gh.posted.length, 1);
+  assertEquals(graftLineOf(gh.posted[0]!), "- **Graft:** failed — build 300 s");
 });

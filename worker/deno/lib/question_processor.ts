@@ -41,6 +41,7 @@ import {
   collectGraftContext,
   describeGraftContext,
   type GraftContextCollector,
+  graftContextFacts,
   type GraftContextResult,
   type GraftContextSlot,
   graftQueryFor,
@@ -505,6 +506,12 @@ async function _processQuestionWithHeartbeat(
       listIssueComments: (r, i) => ghClient.getIssueComments(r, i),
       runGhCommand: deps.github.runGhCommand,
       logger,
+      // The round's Graft figures ride the same comment (Issue #2105). The
+      // facts only: the bundle is repository source, and nothing that large
+      // or that untrusted goes near a comment body.
+      ...(graftSlot.result
+        ? { graft: graftContextFacts(graftSlot.result) }
+        : {}),
     });
   } catch (err) {
     logger.warn("Question degraded-model detection failed (non-fatal)", {

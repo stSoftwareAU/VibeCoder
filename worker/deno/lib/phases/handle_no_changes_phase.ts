@@ -228,6 +228,9 @@ export async function workOnIssueHandleNoChanges(
         getIssueComments: (r, i) => ghClient.getIssueComments(r, i),
         postComment: (r, i, b) => ghClient.postComment(r, i, b),
         logger,
+        // What Graft did for this run (Issue #2105) — absent when the run
+        // never reached the collection.
+        ...(state.graftContext ? { graft: state.graftContext } : {}),
         // Fleet-authored comments only (Issue #1249, finding 12).
         authorOptions: {
           fleetAuthors: resolveFleetMaintenanceAuthorSet({
