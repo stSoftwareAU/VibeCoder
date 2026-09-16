@@ -1753,10 +1753,14 @@ injection (Issue #2060). It defaults to **`false`**, and a host whose
 `.config.json` carries no `graft_context` block behaves exactly as it does
 today — nothing is built, nothing is injected, and no prompt changes.
 
-This key is the configuration surface, landed ahead of the injection itself
-(Issue #2098); the build, bundle and run-stats fields it governs land with the
-rest of #2060. Setting it to `true` before then is accepted and changes
-nothing.
+This key is the configuration surface (Issue #2098). As of Issue #2102 it is
+live for the **issue**, **planning** and **question** runs: each collects a
+bundle before its prompt is built and injects it when the collection
+succeeded. The **PR feedback** and **CI fix** builders accept a bundle
+(Issue #2101) but nothing collects one for them yet; the run-stats fields land
+with the rest of #2060. An enabled host therefore changes those two phases'
+prompts not at all, and a host that leaves the switch off is unaffected
+everywhere.
 
 **What it turns on.** On an enabled host, each run builds a
 [Graft](https://github.com/trailhq/Graft) tree-sitter code graph of the
@@ -1775,17 +1779,16 @@ static prompt SHA: a bundle that differs on every issue costs no prompt-cache
 hits, and a phase run without one produces byte-identical prompt text to
 before.
 
-**When Graft is unavailable.** Once the injection change calls the runner, an
-enabled host that cannot run Graft — the clone's `info/exclude` cannot be
+**When Graft is unavailable.** An enabled host that cannot run Graft — the clone's `info/exclude` cannot be
 resolved or appended to, the binary is missing, the build or the query fails,
 the query succeeds but returns an empty bundle, or the graph index cannot be
 read — logs one `[GRAFT_UNAVAILABLE] <reason>` line at `warn`
 and records a `failed` Graft status. The run itself continues, without the
 bundle: the bundle is an accelerator, so a run never fails because Graft did.
-Grep the worker log for `[GRAFT_UNAVAILABLE]` to see why. Like the limits
-below, this is the behaviour `graft_context.ts` implements (Issue #2099); it
-is stated here so the switch is documented against what it turns on, and no
-such line is logged until #2060 wires the runner in.
+Grep the worker log for `[GRAFT_UNAVAILABLE]` to see why. Beside it the run
+logs one `Graft context: <status> — <figures>` line, so a run that asked for a
+bundle always says what came back — `failed` as loudly as `ok`. A run on a
+host with the switch off logs neither line.
 
 **Query size.** The bundle query is passed to `graft ask --source` as a single
 argument, truncated to **64 KiB** of UTF-8 on a character boundary, so it
@@ -1798,8 +1801,7 @@ returns is not capped.
 **30 seconds**. Past either limit the run continues without the bundle and
 records a `failed` Graft status — the bundle is an accelerator, so losing it
 never fails the run, and the loss is recorded rather than passed off as a
-clean run. These are the limits the injection change implements; they are
-stated here so the switch is documented against the behaviour it turns on.
+clean run.
 
 **Where the graph lives.** Graft writes its graph to `graft/` at the root of
 the repository checkout, which is persistent between runs, so an unchanged

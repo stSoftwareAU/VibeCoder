@@ -17,6 +17,7 @@ import type { SessionResumeState } from "./session_resume.ts";
 import type { FailedCheck, GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
+import type { GraftContextResult } from "./graft_context.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
@@ -233,6 +234,15 @@ export interface PhaseState {
    * the aggregate. Absent when Claude never ran.
    */
   claudeRunStats?: PhaseClaudeResult[];
+  /**
+   * What the Graft repo-context collection did for this run (Issue #2102,
+   * part of #2060).
+   *
+   * Set by the execute phase beside {@link PhaseState.claudeRunStats} and
+   * read by the completion phase, which reports the status and figures on the
+   * run-stats comment. Absent when the run never reached the collection.
+   */
+  graftContext?: GraftContextResult;
   /**
    * The PR this run raised or recovered (Issue #4325): set by the
    * completion phase so the run outcome can name it at claim release.

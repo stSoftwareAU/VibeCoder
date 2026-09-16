@@ -23,6 +23,7 @@ import { getPromptsCommit } from "../prompt_manager.ts";
 import { promptOverrideMappings } from "../custom_label_prompts_config.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
 import { detectScreenshotRequired } from "../execute_claude_phase.ts";
+import { describeGraftContext, graftQueryFor } from "../graft_context.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -433,12 +434,29 @@ async function executeClaudeBody(
     );
   }
 
+  // Graft repo-context bundle (Issue #2102, part of #2060). Off on a host
+  // that has not opted in — the collector returns `off` without spawning. A
+  // `failed` collection is reported on the phase state and the run proceeds
+  // unbundled: the bundle is an accelerator, never a precondition.
+  const graftContext = await deps.infrastructure.collectGraftContext({
+    repoDir: state.repoPath,
+    query: graftQueryFor(issueTitle, issueBody),
+    enabled: config.graftContext.enabled,
+    logger,
+  });
+  state.graftContext = graftContext;
+  if (graftContext.status !== "off") {
+    logger.info(describeGraftContext(graftContext), { repo, issueNumber });
+  }
+
   const promptResult = await deps.infrastructure.buildPrompt({
     repo,
     issueNumber: String(issueNumber),
     issueTitle,
     issueBody,
     issueLabels: ctx.issueLabels.join(","),
+    // Present only on an `ok` collection (Issue #2102).
+    graftContextBundle: graftContext.bundle,
     // The issue's comments (Issue #1910). Selected and trust-annotated where
     // the context was built, fenced by the builder: a maintainer who narrows
     // scope in a reply is now visible to the agent without the description
