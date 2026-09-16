@@ -52,12 +52,13 @@ step, so the index survives the next run's `git reset --hard` +
 directory in a clone that persists between runs — the class of persistence
 `ignored_path_clean.ts` exists to erase (Issue #1443).
 
-It is accepted, not overlooked. `.codegraph/` holds a SQLite index
-(`codegraph.db` and its `-wal` sidecar), a writer lock, and — only if
-`codegraph ui` is ever run, which the worker never does — saved UI trails.
-Nothing in the tree executes anything from it, and the only thing read back
-out of it is two integers via `codegraph status --json`. The directory names
-in the layout (`.codegraph`, `ui`, `trails`) are absent from
+It is accepted, not overlooked. At v1.6.0 `.codegraph/` holds files and no
+subdirectory: the SQLite index and its sidecars, an indexing lock, the daemon
+lock/socket/log (none written under `CODEGRAPH_NO_DAEMON=1`), an error log, a
+lessons database, and a `.gitignore` CodeGraph writes itself. Nothing in the
+tree executes anything from it, and the only thing read back out of it is two
+integers via `codegraph status --json`. The one directory name in the layout
+(`.codegraph`) is absent from
 `EXECUTABLE_IGNORED_DIRS`, so the scoped clean leaves it alone by construction
 rather than by accident — `the index survives the cleans a run starts with,
 where an ignored dependency directory does not` pins that against the real

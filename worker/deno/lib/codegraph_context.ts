@@ -44,21 +44,32 @@
  *
  * ## `.codegraph/` layout, and the scoped ignored clean
  *
- * CodeGraph writes a single directory at the checkout root:
+ * CodeGraph writes a single directory at the checkout root, holding files and
+ * no subdirectory of its own (read from the v1.6.0 source, below):
  *
  * ```text
  * .codegraph/
- * ├── codegraph.db      ← the SQLite index (plus its -wal sidecar)
- * ├── writer.pid        ← the live-writer lock of `serve --mcp`
- * └── ui/trails/        ← saved UI walks (only when `codegraph ui` is used)
+ * ├── codegraph.db      ← the SQLite index (plus its -wal / -shm sidecars)
+ * ├── codegraph.lock    ← the indexing lock `codegraph unlock` clears
+ * ├── daemon.pid        ← the shared MCP daemon's lock, and
+ * ├── daemon.sock       ←   its socket — neither is written under
+ * │                         CODEGRAPH_NO_DAEMON=1
+ * ├── daemon.log
+ * ├── errors.log        ← where a failed index writes its detail
+ * ├── lessons.db
+ * └── .gitignore        ← `*` plus `!.gitignore`, written by CodeGraph itself
  * ```
  *
  * That matters because `ignored_path_clean.ts` erases
  * `EXECUTABLE_IGNORED_DIRS` (`node_modules`, `build`, `dist`, `out`,
  * `target`, `vendor`, …) **at any depth** on every run, and an ignored path is
- * exactly what that control is scoped to. No component of the layout above is
- * named in that list, so `.codegraph/` is kept rather than erased;
- * {@link CODEGRAPH_LAYOUT_DIRS} pins the invariant and a test asserts it.
+ * exactly what that control is scoped to. The index directory is not named in
+ * that list and contains no directory that could be, so `.codegraph/` is kept
+ * rather than erased; {@link CODEGRAPH_LAYOUT_DIRS} pins the invariant, and a
+ * test runs the real cleans over a temp checkout to prove it — with
+ * `node_modules/` beside the index as the control that *is* erased. A future
+ * release writing a `build/` or `dist/` inside `.codegraph/` would have it
+ * erased each run: a rebuild cost, not a fault.
  *
  * ## Where the figures come from
  *
@@ -67,10 +78,12 @@
  * neither output carries the index totals, and `.codegraph/` holds a SQLite
  * database rather than a stats file. The machine-readable source is
  * `codegraph status --json`, whose `nodeCount` and `edgeCount` fields are the
- * totals reported here. Read from the CLI source at tag `v1.6.0`
- * (`src/bin/codegraph.ts`, the `status` command) — the pinned version
- * `container/tools.json` installs — because the binary is not on the host this
- * module was written on.
+ * totals reported here. Read from the CLI source at tag `v1.6.0` — the pinned
+ * version `container/tools.json` installs — because the binary is not on the
+ * host this module was written on: the figures from `src/bin/codegraph.ts`
+ * (the `status` command), and the layout above from `src/directory.ts`,
+ * `src/mcp/daemon-paths.ts` and the same CLI. Nothing here is taken from the
+ * project's `main`-branch README, which documents a later release.
  *
  * `init` is invoked with `--yes` for the same reason every other worker
  * subprocess is non-interactive: without it `init` prompts (the watch-fallback
@@ -131,16 +144,13 @@ export const CODEGRAPH_PROMPT_LINE =
   `This repository has a pre-built CodeGraph index: before grepping or reading files to find code, ask the \`${CODEGRAPH_EXPLORE_TOOL}\` MCP tool — it returns the relevant symbols' source and the call paths between them in one call.`;
 
 /**
- * Directory names appearing in the `.codegraph/` layout.
+ * Directory names appearing in the `.codegraph/` layout — at v1.6.0 the index
+ * directory itself, because everything CodeGraph writes inside it is a file.
  *
  * Pinned so a test can assert none of them is in `EXECUTABLE_IGNORED_DIRS`,
  * whose scoped `git clean` matches those names at any depth.
  */
-export const CODEGRAPH_LAYOUT_DIRS: readonly string[] = [
-  CODEGRAPH_INDEX_DIR,
-  "ui",
-  "trails",
-];
+export const CODEGRAPH_LAYOUT_DIRS: readonly string[] = [CODEGRAPH_INDEX_DIR];
 
 /**
  * Environment handed to every `codegraph` invocation.
