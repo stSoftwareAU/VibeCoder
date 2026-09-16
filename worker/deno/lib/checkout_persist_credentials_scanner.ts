@@ -30,10 +30,25 @@
  * prompt, which can hedge in prose. The native scanner files only the
  * unambiguous build/test/lint jobs.
  *
- * Stable id is `BP-PERSIST-CREDS-<workflow-basename>-<job>-<step-index>`.
+ * Stable id is `BP-PERSIST-CREDS-<workflow-basename>` — **one finding per
+ * workflow file**, not per checkout step (Issue #2221). Every offending
+ * step in the file is listed in the one finding's body, because the fix
+ * for all of them is the same edit to the same file: three lines under
+ * each `actions/checkout`. The per-step shape filed three issues for one
+ * `ci.yml`, producing three claims, three Claude invocations and three
+ * PRs into the same branch, of which only the first had anything to
+ * change. `BP-TRIGGER-<workflow-basename>` already uses per-file ids.
+ *
  * The `BP-` prefix is required: `idle_task_snapshot.listKnownOpenFindingIds`
  * defaults `idPrefix` to `BP-`, so a non-`BP-` id silently breaks dedup and
  * the LLM re-files.
+ *
+ * Migration (Issue #2221): a repository that already carries an open
+ * per-step `BP-PERSIST-CREDS-<workflow>-<job>-<step-index>` issue for a
+ * file is left alone — the legacy id counts as covering the new per-file
+ * id, so the reshape does not re-file against repositories mid-flight.
+ * In-source `best-practice-ignore` markers written against a legacy
+ * per-step id keep suppressing that step for the same reason.
  *
  * Severity is `medium` — a hardening gap that weakens the posture but is
  * not directly exploitable on its own (matches the documented band).
@@ -45,7 +60,7 @@
  */
 
 import {
-  isFindingSuppressed,
+  selectLiveSteps,
   type WorkflowFile,
   type WorkflowFindingSeverity,
 } from "./workflow_scan_common.ts";
@@ -85,23 +100,34 @@ const CREDENTIAL_USING_SET: ReadonlySet<string> = new Set(
   CREDENTIAL_USING_ACTIONS,
 );
 
-/** A single checkout-persist-credentials finding for one checkout step. */
-export interface CheckoutPersistCredentialsFinding {
-  /** Stable id `BP-PERSIST-CREDS-<basename>-<job>-<step-index>`. */
-  findingId: string;
-  /** Repo-relative workflow path, e.g. `.github/workflows/ci.yml`. */
-  workflowPath: string;
+/** One offending `actions/checkout` step inside a workflow file. */
+export interface CheckoutPersistCredentialsStep {
   /** Job name the step belongs to. */
   job: string;
   /** 0-based index of the step within the job's `steps` array. */
   stepIndex: number;
+  /** Best-effort 1-based line of the step's `uses:` declaration. */
+  line: number;
+}
+
+/**
+ * A checkout-persist-credentials finding for one workflow **file** —
+ * every offending checkout step in that file is listed in {@link steps}.
+ */
+export interface CheckoutPersistCredentialsFinding {
+  /** Stable id `BP-PERSIST-CREDS-<basename>` (one per workflow file). */
+  findingId: string;
+  /** Repo-relative workflow path, e.g. `.github/workflows/ci.yml`. */
+  workflowPath: string;
+  /** Every offending checkout step in this file, in file order. */
+  steps: readonly CheckoutPersistCredentialsStep[];
   /** Always `medium` — a hardening gap, not a direct exploit. */
   severity: WorkflowFindingSeverity;
   /** Issue title (carries the severity emoji prefix). */
   title: string;
   /** File the finding is raised against (the workflow path). */
   file: string;
-  /** Best-effort 1-based line number for the cited `uses:` location. */
+  /** Best-effort 1-based line of the **first** offending `uses:`. */
   lines: number;
   /** `## Why this matters` rationale. */
   whyItMatters: string;
@@ -234,9 +260,38 @@ function checkoutUsesLines(lines: readonly string[]): number[] {
 }
 
 /**
+ * The per-step id `BP-PERSIST-CREDS-<basename>-<job>-<step-index>` — the
+ * id this family **filed** before Issue #2221 reshaped it to one finding
+ * per workflow file.
+ *
+ * It is never filed as an issue again, but it stays the unit of the
+ * smaller decisions: an open per-step issue covers its file (the #2221
+ * migration), an in-source marker written against one still suppresses
+ * its step, and the pre-PR changed-workflow gate reports per step so a
+ * newly added offender is never masked by a pre-existing one
+ * (`workflow_file_checks.ts`).
+ */
+export function persistCredentialsStepId(
+  workflowPath: string,
+  job: string,
+  stepIndex: number,
+): string {
+  return `BP-PERSIST-CREDS-${slugify(workflowBasename(workflowPath))}-${
+    slugify(job)
+  }-${stepIndex}`;
+}
+
+/** The per-file stable id for a workflow path. */
+function persistCredentialsId(workflowPath: string): string {
+  return `BP-PERSIST-CREDS-${slugify(workflowBasename(workflowPath))}`;
+}
+
+/**
  * Scan every workflow file for `actions/checkout` steps lacking
  * `persist-credentials: false` and return one
- * {@link CheckoutPersistCredentialsFinding} per affected step.
+ * {@link CheckoutPersistCredentialsFinding} per affected **file**, listing
+ * every offending step in that file (Issue #2221 — the fix is one edit per
+ * file, so it is one issue per file).
  *
  * Behaviour:
  *   - Only `kind === "workflow"` files are scanned — `jobs.*.steps[]` is a
@@ -248,10 +303,14 @@ function checkoutUsesLines(lines: readonly string[]): number[] {
  *     checkout) is skipped entirely.
  *   - A checkout step that already sets `persist-credentials: false` is
  *     safe and never flagged.
- *   - A finding suppressed by an in-source `best-practice-ignore:
- *     BP-PERSIST-CREDS-…` marker near its cited line is dropped.
- *   - Findings whose stable id appears in `suppressedIds` or
- *     `knownOpenFindingIds` are dropped (the LLM / a prior run owns them).
+ *   - A step suppressed by an in-source `best-practice-ignore:
+ *     BP-PERSIST-CREDS-…` marker near its cited line — the per-file id or
+ *     its legacy per-step id — is dropped from the listing; the file
+ *     yields no finding once every offending step is suppressed.
+ *   - A file whose per-file id appears in `suppressedIds` or
+ *     `knownOpenFindingIds` yields no finding (the LLM / a prior run owns
+ *     it), and so does a file that still carries an **open legacy
+ *     per-step** id — the migration clause of Issue #2221.
  *
  * Findings are returned sorted by stable id for deterministic output.
  *
@@ -272,10 +331,11 @@ export function scanCheckoutPersistCredentials(
     const jobs = file.parsed.jobs;
     if (!isRecord(jobs)) continue;
 
-    const basename = slugify(workflowBasename(file.path));
     const rawLines = file.rawText.split("\n");
     const checkoutLines = checkoutUsesLines(rawLines);
     let checkoutSeen = 0;
+
+    const offending: CheckoutPersistCredentialsStep[] = [];
 
     for (const [jobName, jobValue] of Object.entries(jobs)) {
       if (!isRecord(jobValue)) continue;
@@ -297,18 +357,24 @@ export function scanCheckoutPersistCredentials(
         if (checkoutSetsPersistCredentialsFalse(step)) continue;
         if (jobNeedsCreds || checkoutWantsSubmodules(step)) continue;
 
-        const findingId = `BP-PERSIST-CREDS-${basename}-${
-          slugify(jobName)
-        }-${stepIndex}`;
-        if (suppressed.has(findingId)) continue;
-        if (knownOpen.has(findingId)) continue;
-        if (isFindingSuppressed(file.rawText, line, findingId, file.path)) {
-          continue;
-        }
-
-        findings.push(buildFinding(file, findingId, jobName, stepIndex, line));
+        offending.push({ job: jobName, stepIndex, line });
       }
     }
+
+    if (offending.length === 0) continue;
+    offending.sort((a, b) => a.line - b.line);
+
+    const findingId = persistCredentialsId(file.path);
+    const live = selectLiveSteps(offending, {
+      file,
+      findingId,
+      stepId: (s) => persistCredentialsStepId(file.path, s.job, s.stepIndex),
+      suppressedIds: suppressed,
+      knownOpenIds: knownOpen,
+    });
+    if (live.length === 0) continue;
+
+    findings.push(buildFinding(file, findingId, live));
   }
 
   findings.sort((a, b) => a.findingId.localeCompare(b.findingId));
@@ -318,38 +384,66 @@ export function scanCheckoutPersistCredentials(
 function buildFinding(
   file: WorkflowFile,
   id: string,
-  job: string,
-  stepIndex: number,
-  line: number,
+  steps: readonly CheckoutPersistCredentialsStep[],
 ): CheckoutPersistCredentialsFinding {
+  const count = steps.length;
+  const one = count === 1;
+  const plural = one ? "step" : "steps";
+  const stepList = steps
+    .map((s) => `job \`${s.job}\` step ${s.stepIndex} (line ${s.line})`)
+    .join(", ");
+
   return {
     findingId: id,
     workflowPath: file.path,
-    job,
-    stepIndex,
+    steps,
     severity: "medium",
-    title: `${MEDIUM_EMOJI} Job \`${job}\` checkout persists credentials ` +
-      `(\`${file.path}\`)`,
+    title: `${MEDIUM_EMOJI} ` +
+      (one
+        ? "A checkout step persists credentials"
+        : `${count} checkout steps persist credentials`) +
+      ` (\`${file.path}\`)`,
     file: file.path,
-    lines: line,
+    lines: steps[0]?.line ?? 1,
     whyItMatters:
-      `Job \`${job}\` step ${stepIndex} runs \`actions/checkout\` ` +
-      "without `persist-credentials: false`. By default checkout writes the " +
-      "workflow's `GITHUB_TOKEN` into `.git/config` as an auth header, where " +
-      "any later step in the job — including a compromised dependency or an " +
-      "injected script — can read it and act as the token. This job shows no " +
-      "static sign of pushing back to the repository or fetching private " +
-      "submodules, so it does not need the persisted credential, and keeping " +
-      "it on disk only widens the blast radius of a compromised step.",
-    suggestedFix:
-      "Add `persist-credentials: false` to the checkout step so the token is " +
-      "not written to disk:\n\n```yaml\n      - uses: actions/checkout@<sha>\n" +
+      `\`${file.path}\` has ${count} \`actions/checkout\` ${plural} without ` +
+      `\`persist-credentials: false\`: ${stepList}. By default checkout ` +
+      "writes the workflow's `GITHUB_TOKEN` into `.git/config` as an auth " +
+      "header, where any later step in the job — including a compromised " +
+      "dependency or an injected script — can read it and act as the token. " +
+      (one
+        ? "That job shows no static sign of pushing back to the repository " +
+          "or fetching private submodules, so it does not need the persisted " +
+          "credential"
+        : "None of these jobs shows a static sign of pushing back to the " +
+          "repository or fetching private submodules, so they do not need " +
+          "the persisted credential") +
+      ", and keeping it on disk only widens the blast radius of a " +
+      "compromised step." +
+      (one
+        ? ""
+        : ` All ${count} steps are fixed by the same edit to this one file, ` +
+          "so they are one finding."),
+    suggestedFix: "Add `persist-credentials: false` to " +
+      (one
+        ? "the checkout step listed above"
+        : `each of the ${count} checkout steps listed above`) +
+      " so the token is not written to disk:\n\n" +
+      "```yaml\n      - uses: actions/checkout@<sha>\n" +
       "        with:\n          persist-credentials: false\n```\n\nIf a later " +
-      "step in this job genuinely pushes back to the repository (or fetches a " +
-      "private submodule) using the checkout credential, this is a false " +
-      "positive — suppress it with an in-source `# best-practice-ignore: " +
-      `${id} — <reason>\` comment above the \`uses:\` line.`,
-    evidence: `\`${file.path}\`:${line} — \`uses: actions/checkout\` with no ` +
-      "`persist-credentials: false`",
+      "step in " + (one ? "that job" : "one of these jobs") +
+      " genuinely pushes back to the repository (or fetches a private " +
+      "submodule) using the checkout credential, that step is a false " +
+      "positive — suppress it with an in-source " +
+      `\`# best-practice-ignore: ${id} — <reason>\` comment above that ` +
+      "step's `uses:` line. Each step is suppressed on its own; the finding " +
+      "goes away once every listed step is fixed or suppressed.",
+    evidence: steps
+      .map(
+        (s) =>
+          `\`${file.path}\`:${s.line} — job \`${s.job}\` step ${s.stepIndex} ` +
+          "— `uses: actions/checkout` with no `persist-credentials: false`",
+      )
+      .join("\n"),
   };
 }
