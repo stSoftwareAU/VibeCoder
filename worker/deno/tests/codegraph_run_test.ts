@@ -247,6 +247,29 @@ Deno.test("prepareCodegraphRun - a run that names no checkout fails the index, n
   );
 });
 
+Deno.test("prepareCodegraphRun - an empty checkout path fails the index, not the run (Issue #2160)", async () => {
+  // `claude_runner.ts` gates the MCP write on `mcpRequest && cwd`, which is
+  // falsiness, not `undefined`: an empty checkout would otherwise be reported
+  // `ok`, append the prompt line and drop the server that line names.
+  const logger = recordingLogger();
+  const preparer = fakePreparer({ status: "ok", enabled: true });
+  const run = await prepareCodegraphRun({
+    repoDir: "",
+    enabled: true,
+    logger,
+    prepare: preparer.prepare,
+  });
+
+  assertEquals(preparer.calls.length, 0, "nothing may be prepared");
+  assertEquals(run.result.status, "failed");
+  assertEquals(run.applyPrompt("p"), "p", "no line without the server");
+  assertEquals(run.mcpConfigOption(), {}, "no MCP configuration is written");
+  assert(
+    logger.lines.some((l) => l.message.includes("[CODEGRAPH_UNAVAILABLE]")),
+    "the fault must be logged loudly",
+  );
+});
+
 Deno.test("prepareCodegraphRun - a switched-off host with no checkout stays off (Issue #2160)", async () => {
   const logger = recordingLogger();
   const preparer = fakePreparer({ status: "off", enabled: false });

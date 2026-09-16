@@ -202,6 +202,10 @@ Deno.test("pr_ci_processor - an indexed run gets the line and the server togethe
   });
 
   assertEquals(observed.prepared[0]?.repoDir, observed.workDir);
+  // The half of the pair invariant that lives outside `codegraph_run.ts`:
+  // the runner writes no MCP configuration for a request without a `cwd`, so
+  // the checkout indexed must be the checkout the agent is run in.
+  assertEquals(observed.runOptions[0]?.cwd, observed.prepared[0]?.repoDir);
 
   const prompt = String(observed.runOptions[0]?.prompt);
   assertStringIncludes(prompt, CODEGRAPH_PROMPT_LINE);
@@ -255,6 +259,7 @@ Deno.test("pr_ci_processor - the post-quality retry reuses the index, it does no
 
   const retry = observed.runOptions[1] ?? {};
   assertStringIncludes(String(retry.prompt), CODEGRAPH_PROMPT_LINE);
+  assertEquals(retry.cwd, observed.prepared[0]?.repoDir);
   const mcp = retry.mcpConfig as {
     servers?: Record<string, { command: string }>;
   };

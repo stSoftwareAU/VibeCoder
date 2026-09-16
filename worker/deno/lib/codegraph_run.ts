@@ -3,8 +3,10 @@
  *
  * `codegraph_context.ts` owns the index step, the MCP entry, the prompt line
  * and the query tally; this module is the one place that turns those four
- * surfaces into the decisions a run makes, so the issue, planning and question
- * paths share a single implementation rather than four near-copies.
+ * surfaces into the decisions a run makes, so the five wired run kinds — the
+ * issue, planning and question paths (Issue #2159) and the PR-feedback and
+ * CI-fix paths (Issue #2160) — share a single implementation rather than six
+ * near-copies.
  *
  * ## The pair is indivisible
  *
@@ -71,10 +73,13 @@ export interface PrepareCodegraphRunOptions {
   /**
    * Absolute path of the repository checkout to index.
    *
-   * Omitted names no checkout (Issue #2160): the CI-fix path's `workDir` is
-   * optional, and the runner writes no MCP configuration without a `cwd`, so
-   * a run that cannot name its clone is recorded as `failed` rather than
-   * handed a prompt line naming a server it never receives.
+   * Omitted — or empty — names no checkout (Issue #2160): the CI-fix path's
+   * `workDir` is optional, and the runner writes no MCP configuration without
+   * a truthy `cwd` (`claude_runner.ts`'s `mcpRequest && cwd` gate), so a run
+   * that cannot name its clone is recorded as `failed` rather than handed a
+   * prompt line naming a server it never receives. Empty is tested the same
+   * way as absent precisely because that gate reads falsiness, not
+   * `undefined`.
    */
   repoDir?: string;
   /** The host switch, from `config.codegraphContext.enabled`. */
@@ -157,7 +162,7 @@ export async function prepareCodegraphRun(
   // `prepareCodegraphContext` short-circuits before it reads the id anyway.
   let providerId = "";
   let result: CodegraphContextResult;
-  if (enabled && repoDir === undefined) {
+  if (enabled && (repoDir === undefined || repoDir === "")) {
     // Recorded, never silently downgraded to `off`: the switch was on and the
     // run got no index, which is what the trial's figure reader must see.
     logger.warn(

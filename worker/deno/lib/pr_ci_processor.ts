@@ -192,10 +192,12 @@ export interface CiFixResult {
   /**
    * What this run's CodeGraph step produced (Issue #2160, part of #2145).
    *
-   * Present on every outcome reached after the index step — `off` on a host
-   * whose switch is down, `unsupported` on a Gemini-routed run, and `ok` or
-   * `failed` otherwise, carrying `queries` summed across the fix attempt and
-   * the post-quality retry.
+   * Present on every **successful** outcome reached after the index step —
+   * `off` on a host whose switch is down, `unsupported` on a Gemini-routed
+   * run, and `ok` or `failed` otherwise, carrying `queries` summed across the
+   * fix attempt and the post-quality retry. A run that returns an error has no
+   * result object to carry it; the one status line is logged either way, which
+   * is where the trial reads a failed run's figure from.
    */
   codegraphContext?: CodegraphContextResult;
 }
@@ -694,7 +696,7 @@ async function _processCiFailureLocked(
   );
 
   // The body returns from a dozen places; the CodeGraph outcome is attached
-  // here instead, so every one of them carries it (Issue #2160).
+  // here instead, so every successful one carries it (Issue #2160).
   const carrier: { codegraphContext?: CodegraphContextResult } = {};
   try {
     const result = await _processCiWithHeartbeat(

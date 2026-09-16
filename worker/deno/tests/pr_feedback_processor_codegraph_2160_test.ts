@@ -157,6 +157,10 @@ Deno.test("pr_feedback_processor - an indexed run gets the line and the server t
   );
 
   assertEquals(observed.prepared[0]?.repoDir, "/tmp/codegraph-2160-clone");
+  // The half of the pair invariant that lives outside `codegraph_run.ts`:
+  // the runner writes no MCP configuration for a request without a `cwd`, so
+  // the checkout indexed must be the checkout the agent is run in.
+  assertEquals(observed.runOptions[0]?.cwd, observed.prepared[0]?.repoDir);
 
   const prompt = String(observed.runOptions[0]?.prompt);
   assertStringIncludes(prompt, CODEGRAPH_PROMPT_LINE);
