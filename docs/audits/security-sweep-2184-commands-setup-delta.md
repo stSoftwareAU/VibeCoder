@@ -99,7 +99,7 @@ duplicates one, and #2236 is noted where its site adjoins this slice.
 | ID | Site | Severity | Confidence | Disposition |
 | -- | ---- | -------- | ---------- | ----------- |
 | [#2243](https://github.com/stSoftwareAU/VibeCoder/issues/2243) | `lib/implementation_comments.ts:239`, from `commands/work_on_issue.ts` | Low | High | **filed** — the selection cap runs ahead of the flood detector and the suspicious-pattern audit, which `comment_trust_filter.ts` places deliberately before every cap |
-| SEC-2184-F1 | `commands/callback_conformance.ts:84` | Low | High | **fixed here** — `--host-failure` bypassed the Issue #2107 refusal and the fixture reported a proven contract for a hook it never ran |
+| SEC-2184-F1 | `commands/callback_conformance.ts:89` | Low | High | **fixed here** — `--host-failure` bypassed the Issue #2107 refusal and the fixture reported a proven contract for a hook it never ran |
 | — | `worker/deno/setup` | — | — | **nil** — no surviving finding in slice 14 |
 
 ## Slice 13 — commands CLI entry points

@@ -281,18 +281,13 @@ Deno.test("callback_conformance command - the kebab spelling is refused too (Iss
   // the spelling every other flag on this command uses (`--timeout-seconds`)
   // — arrives under a different key. Guarding only `host_failure` let the
   // kebab form be dropped and the fixture report a proven contract for a hook
-  // it never ran: the exact fail-silent outcome the Issue #2107 guard exists
-  // to prevent, left open for one spelling.
-  for (const key of ["host_failure", "host-failure"]) {
-    const result = await callbackConformanceCommand.execute(
-      { [key]: "/opt/hooks/host-failure.sh" },
-      buildDefaultWorkerConfig(),
-    );
+  // it never ran: the exact fail-silent outcome the Issue #2107 guard above
+  // exists to prevent, left open for one spelling.
+  const result = await callbackConformanceCommand.execute(
+    { "host-failure": "/opt/hooks/host-failure.sh" },
+    buildDefaultWorkerConfig(),
+  );
 
-    assertEquals(result.success, false, key);
-    assert(
-      result.message.includes("--host_failure"),
-      `${key} → ${result.message}`,
-    );
-  }
+  assertEquals(result.success, false);
+  assert(result.message.includes("--host_failure"), result.message);
 });
