@@ -635,14 +635,16 @@ chokepoint (`needs-human` plus a paired comment naming every offending row)
 continues while a human regroups. Both in-code fallback publish prompts
 interpolate the same `MILESTONES_TABLE_REQUIREMENT` constant that lives beside
 the gate, so a degraded run does not publish a table the gate is bound to
-reject.
+reject. An **accepted** grouping is handed to `maybeCreatePlanningMilestone()`,
+which creates one milestone per group of two or more sub-issues (Issue #2175 —
+see [Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)).
 
 ```mermaid
 flowchart TD
     A["closePlanningIssue() — 2+ sub-issues published,<br/>parent owns no milestone"] --> B{"## Milestones table found?"}
     B -->|no| L["Legacy path: one milestone for the plan<br/>close the parent"]
     B -->|yes| C{"Every sub-issue in exactly one group,<br/>every group names a file area,<br/>at most 4 multi-sub-issue groups?"}
-    C -->|yes| D[Grouping accepted]
+    C -->|yes| D["Grouping accepted:<br/>one milestone per group of 2+ sub-issues"]
     C -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each offending row"]
     E --> L
 ```

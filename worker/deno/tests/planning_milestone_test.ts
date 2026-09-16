@@ -920,3 +920,28 @@ Deno.test("maybeCreatePlanningMilestone — an empty group list falls back to th
   assertEquals(result.milestones, undefined);
   assertEquals(result.assigned, [10, 11]);
 });
+
+Deno.test("maybeCreatePlanningMilestone — a sub-issue no group names is reported, not lost quietly", async () => {
+  const warnings: string[] = [];
+  const state = { listing: [] as unknown[], calls: [] as string[][] };
+  const result = await maybeCreatePlanningMilestone({
+    repo: "o/r",
+    parentIssueNumber: 2163,
+    parentIssueTitle: "Parent",
+    // #99 is in no group — the gate should have caught that, so say so loudly.
+    subIssueNumbers: [10, 11, 99],
+    groups: [group("infra", "options trading", [10, 11])],
+    ghCommandFn: groupedGh(state),
+    logger: {
+      ...silentLogger,
+      warn: (message: string) => warnings.push(message),
+    },
+  });
+
+  assertEquals(result.created, true);
+  assertEquals(result.assigned, [10, 11]);
+  assertEquals(
+    warnings.some((w) => w.includes("no group for some sub-issues")),
+    true,
+  );
+});

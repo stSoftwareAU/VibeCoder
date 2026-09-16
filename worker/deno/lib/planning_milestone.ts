@@ -359,6 +359,22 @@ export async function maybeCreatePlanningMilestone(
   // or more sub-issues. An empty list is not a grouping — it falls through to
   // the single-milestone path below, unchanged.
   if (groups !== undefined && groups.length > 0) {
+    // A sub-issue the table never named would silently keep the default branch
+    // while its siblings move to a milestone branch. The gate rejects that
+    // (every published sub-issue must sit in exactly one row), so reaching
+    // here means the sets disagree — report it rather than lose it quietly.
+    const grouped = new Set(groups.flatMap((g) => g.subIssueNumbers));
+    const ungrouped = unique.filter((n) => !grouped.has(n));
+    if (ungrouped.length > 0) {
+      logger.warn(
+        "Planning milestone groups name no group for some sub-issues — they keep the default branch (Issue #2175)",
+        {
+          repo,
+          parentIssueNumber,
+          subIssueNumbers: ungrouped.join(", "),
+        },
+      );
+    }
     return await createGroupedPlanningMilestones({
       repo,
       parentIssueNumber,
