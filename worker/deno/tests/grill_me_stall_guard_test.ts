@@ -170,7 +170,8 @@ Deno.test("decideGrillMeStop - five answered productive rounds do not stop the g
   const bodies = [1, 2, 3, 4, 5].map((n) => round(`Question ${n}?`));
   assertEquals(
     decideGrillMeStop({
-      roundBodies: bodies,
+      fleetRoundBodies: bodies,
+      roundCount: bodies.length,
       latestRoundNumber: 5,
       maxRounds: 20,
     }),
@@ -185,7 +186,8 @@ Deno.test("decideGrillMeStop - a stalled latest round forces a final round namin
   ];
   assertEquals(
     decideGrillMeStop({
-      roundBodies: bodies,
+      fleetRoundBodies: bodies,
+      roundCount: bodies.length,
       latestRoundNumber: 2,
       maxRounds: 20,
     }),
@@ -198,7 +200,8 @@ Deno.test("decideGrillMeStop - the ceiling round itself is the forced final roun
   const bodies = Array.from({ length: 19 }, (_, i) => round(`Question ${i}?`));
   assertEquals(
     decideGrillMeStop({
-      roundBodies: bodies,
+      fleetRoundBodies: bodies,
+      roundCount: bodies.length,
       latestRoundNumber: 19,
       maxRounds: 20,
     }),
@@ -207,7 +210,8 @@ Deno.test("decideGrillMeStop - the ceiling round itself is the forced final roun
   // At 18 rounds the next round is the 19th — still an ordinary round.
   assertEquals(
     decideGrillMeStop({
-      roundBodies: bodies.slice(0, 18),
+      fleetRoundBodies: bodies.slice(0, 18),
+      roundCount: 18,
       latestRoundNumber: 18,
       maxRounds: 20,
     }),
@@ -219,7 +223,8 @@ Deno.test("decideGrillMeStop - a grilling already past the ceiling still forces 
   const bodies = Array.from({ length: 25 }, (_, i) => round(`Question ${i}?`));
   assertEquals(
     decideGrillMeStop({
-      roundBodies: bodies,
+      fleetRoundBodies: bodies,
+      roundCount: bodies.length,
       latestRoundNumber: 25,
       maxRounds: 20,
     }),
@@ -234,7 +239,8 @@ Deno.test("decideGrillMeStop - the stall guard is reported ahead of the ceiling"
   );
   assertEquals(
     decideGrillMeStop({
-      roundBodies: bodies,
+      fleetRoundBodies: bodies,
+      roundCount: bodies.length,
       latestRoundNumber: 19,
       maxRounds: 20,
     }),
@@ -244,14 +250,24 @@ Deno.test("decideGrillMeStop - the stall guard is reported ahead of the ceiling"
 
 Deno.test("decideGrillMeStop - a ceiling of one forces the very first round", () => {
   assertEquals(
-    decideGrillMeStop({ roundBodies: [], latestRoundNumber: 0, maxRounds: 1 }),
+    decideGrillMeStop({
+      fleetRoundBodies: [],
+      roundCount: 0,
+      latestRoundNumber: 0,
+      maxRounds: 1,
+    }),
     { kind: "ceiling", ceiling: 1 },
   );
 });
 
 Deno.test("decideGrillMeStop - an empty grilling under a normal ceiling runs an ordinary round", () => {
   assertEquals(
-    decideGrillMeStop({ roundBodies: [], latestRoundNumber: 0, maxRounds: 20 }),
+    decideGrillMeStop({
+      fleetRoundBodies: [],
+      roundCount: 0,
+      latestRoundNumber: 0,
+      maxRounds: 20,
+    }),
     null,
   );
 });

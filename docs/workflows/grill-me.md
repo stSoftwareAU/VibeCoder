@@ -563,19 +563,33 @@ Two things stop it, and both make the **next** round a forced final
 round rather than ending it on the spot:
 
 - **Stall guard.** Before running a round the worker parses the numbered
-  question stems of every round posted since the latest Ready comment. A
-  round is *stalled* when every one of its stems — lower-cased, whitespace
-  collapsed, trailing punctuation and Markdown emphasis stripped — already
-  appeared in an earlier round of the same grilling. One stalled round trips
-  the guard; a round asking anything new never does.
+  question stems of every **fleet-authored** round posted since the latest
+  Ready comment. A round is *stalled* when every one of its stems —
+  lower-cased, whitespace collapsed, trailing punctuation and Markdown
+  emphasis stripped — already appeared in an earlier round of the same
+  grilling. One stalled round trips the guard; a round asking anything new
+  never does.
 - **Runaway ceiling.** `maxGrillMeRounds` bounds a grilling that keeps
   finding new questions forever. The ceiling-th round is itself the forced
   final round, so a grilling posts at most that many rounds since its latest
-  Ready comment.
+  Ready comment. This count is **author-agnostic**: every round carrying the
+  marker counts, because a peer worker identity may have posted it.
+
+The stall guard reads only fleet-authored rounds
+([Issue #2237](https://github.com/stSoftwareAU/VibeCoder/issues/2237)).
+Round comments are matched by their `## Grill-Me Round N` heading with no
+author check, so anyone who can comment on the issue can post one; the count
+that reaches the converging ceiling is harmless, but the stall guard *acts*
+on the stems it reads, and one forged round repeating the worker's own
+published questions would otherwise end the clarification loop early. The
+comment author is the only authenticated part of a comment, so the stall
+decision sees a round only when a fleet account authored it, and an
+unresolved fleet identity leaves the grilling productive rather than forcing
+an early final round.
 
 ```mermaid
 flowchart TD
-    A[Developer replies] --> B{Latest round<br/>repeated every stem?}
+    A[Developer replies] --> B{Latest fleet-authored round<br/>repeated every stem?}
     B -- yes --> F[Forced final round]
     B -- no --> C{Next round is<br/>the 20th?}
     C -- yes --> F

@@ -337,10 +337,18 @@ function carriesMarkerHeading(body: string, marker: string): boolean {
  *
  * Only a marker that heads a line counts ({@link carriesMarkerHeading}), so a
  * quoted round in a developer's reply is not miscounted. A marker a commenter
- * types deliberately still inflates the count, and that fails safe in both
+ * types deliberately still inflates *this count*, and that fails safe in both
  * directions it can move: a higher count either continues the numbering or
  * brings the runaway ceiling closer, and the ceiling round is a forced final
- * round that converges — it never acts on the forgery.
+ * round that converges.
+ *
+ * That justification covers the **count** and nothing else (Issue #2237). The
+ * stall guard added by #1933 *acts* on the question stems it reads, so one
+ * forged `## Grill-Me Round N` comment repeating the worker's own published
+ * stems was enough to force an early final round — the worker did act on the
+ * forgery, which is what the paragraph above used to deny. The stall decision
+ * is now fed only the rounds {@link selectFleetAuthoredRounds} attributes to a
+ * fleet account; counting stays author-agnostic, so #1560 and #3768 hold.
  *
  * @param comments - Issue comments (chronological order)
  * @returns The number of prior rounds posted by any worker identity
@@ -669,6 +677,39 @@ export function collectGrillMeRoundsSince(
     const createdMs = Date.parse(c.createdAt);
     return Number.isNaN(createdMs) || createdMs > sinceMs;
   });
+}
+
+/**
+ * The rounds of a grilling that a **fleet account** actually authored
+ * (Issue #2237).
+ *
+ * {@link carriesRoundMarker} is author-agnostic on purpose: a peer worker
+ * identity may post the round (#1560, #3768). That is safe where the marker
+ * only ever *counts* — see {@link countGrillMeRounds} — but the stall guard
+ * decides that the grilling must stop asking the developer, and a comment
+ * body is writable by anyone who can comment on the issue. A single forged
+ * `## Grill-Me Round N` repeating the worker's own published stems therefore
+ * ended the clarification loop early, with the forger choosing which questions
+ * counted as "already asked". The comment author is the only authenticated
+ * part of a comment, so it is the evidence the stall decision needs.
+ *
+ * Fail direction: an unresolved fleet identity keeps **no** rounds, so the
+ * stall guard sees fewer than two rounds and the grilling stays productive.
+ * An extra round of questions costs the developer a reply; a grilling forced
+ * to convert their still-open questions into assumptions cannot be undone.
+ *
+ * @param rounds - Round comments of this grilling, chronological order
+ * @param fleetLogins - The fleet identity, from
+ *   {@link resolveSuppressionExcludedLogins}
+ * @returns The fleet-authored rounds, in the order given
+ */
+export function selectFleetAuthoredRounds(
+  rounds: readonly GitHubComment[],
+  fleetLogins: readonly string[],
+): GitHubComment[] {
+  if (fleetLogins.length === 0) return [];
+  const fleet = [...fleetLogins];
+  return rounds.filter((c) => isFleetAuthor(c.author, fleet));
 }
 
 /**
@@ -1513,8 +1554,25 @@ async function _processGrillMeWithHeartbeat(
     latestReadyTimestamp,
   );
   const cappedRounds = roundsSinceReady.length;
+  // The stall guard acts on the stems it reads, so it sees only the rounds a
+  // fleet account authored (Issue #2237). The ceiling keeps counting every
+  // marker-carrying round, fleet or not (#1560, #3768).
+  const fleetRounds = selectFleetAuthoredRounds(roundsSinceReady, fleetLogins);
+  if (fleetRounds.length < cappedRounds) {
+    logger.warn(
+      "Grill-me rounds authored outside the fleet excluded from the stall decision",
+      {
+        repo,
+        issueNumber,
+        cappedRounds,
+        fleetRounds: fleetRounds.length,
+        fleetLogins: fleetLogins.length,
+      },
+    );
+  }
   const stopTrigger = decideGrillMeStop({
-    roundBodies: roundsSinceReady.map((c) => c.body),
+    fleetRoundBodies: fleetRounds.map((c) => c.body),
+    roundCount: cappedRounds,
     latestRoundNumber: priorRounds,
     maxRounds,
   });
@@ -1527,6 +1585,7 @@ async function _processGrillMeWithHeartbeat(
         trigger: stopTrigger.kind,
         roundNumber: priorRounds + 1,
         cappedRounds,
+        fleetRounds: fleetRounds.length,
         maxRounds,
       },
     );
