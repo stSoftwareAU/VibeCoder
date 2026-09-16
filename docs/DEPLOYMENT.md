@@ -249,9 +249,11 @@ directory (e.g. `~/vibe-coder-runtime`) and do interactive work elsewhere —
 `git worktree` is a cheap way to keep development trees out of the
 appliance clone's way. When the bootstrap does hit this collision it now
 names it in the failure ("looks like an active development tree"), and
-after three consecutive failures it raises a deduplicated GitHub issue on
-the worker repository so an unattended host's absence is visible where you
-actually look.
+after three consecutive failures spanning at least fifteen minutes it fires
+the operator's `callbacks.host_failure` hook once, so an unattended host's
+absence reaches whoever runs that host — see
+[Host-Side Checkout Update](CONFIGURATION.md#-host-side-checkout-update).
+Nothing is filed on GitHub (Issue #2110).
 
 ## 🏁 Initial Setup
 
@@ -856,7 +858,7 @@ run time**. Editing it changes nothing until the image is rebuilt.
 Whichever supervisor you use — launchd, cron, systemd, Task Scheduler, `loop.sh` or `loop.ps1` — a container that exits non-zero is recovered by re-invoking the launcher, which reconstructs the environment and starts a fresh container. Two guards apply:
 
 - **Backoff instead of a restart storm.** Consecutive launcher failures are counted in `${WORK_DIR}/.container_restart_state.json`; `loop.sh` / `loop.ps1` wait longer after each one (base sleep doubled per failure, capped at 30 minutes) and reset after a successful run. Under a scheduler the fixed interval is the retry, and the launcher records the same counter itself.
-- **Escalation through GitHub.** The launcher records the phase it reached in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, so a failure is attributed to runtime detection, image build, work volume preparation, container start or the worker run. Past the phase's threshold — 2 for a failed image build, 3 otherwise — the failure is reported through the crash-notification channel (GitHub issue comment plus optional webhook, subject to its cooldown), naming the phase.
+- **Escalation through the deployment's own hook.** The launcher records the phase it reached in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, so a failure is attributed to runtime detection, image build, work volume preparation, container start or the worker run. Past the phase's threshold — 2 for a failed image build, 3 otherwise — the failure is delivered to this host's own `callbacks.host_failure` hook, naming the phase (Issue #2108, see [Callbacks](CALLBACKS.md#host-level-failures--callbackshost_failure)). A pre-claim failure has no issue to comment on and files none: a host with no hook configured records the escalation in its own log and self-heal events and nowhere else. The crash-notification channel runs unchanged for a crash *during* an issue — a comment on that issue plus the optional webhook, subject to its cooldown — but once a hook is configured it is the hook's exit status alone that says whether anybody was told.
 - **A quota pause is not a failure.** A run that stops because this host is out of Claude quota exits **75** and writes `quota-pause.json` in the host log directory. That is a scheduled outcome: the failure streak resets, nothing escalates, the container is not treated as suspect, and the supervisor re-probes at a fixed cadence (`VIBE_QUOTA_PAUSE_SLEEP_SECONDS`, default 3600 s) rather than doubling its wait — the quota may be extended before its stated reset. A host that genuinely *crashes* while out of quota writes no marker, so it backs off exactly as above.
 
 - **A worker already running is not a failure.** One worker per host is a design invariant (Issue #26): the work volumes are per-host singletons, so the pre-launch reaper stops a second launch rather than letting it die on a storage attachment. Both launchers exit **4** for it, and the recorder treats that status as its own outcome — the streak resets, the wait is the base cadence, and nothing escalates, however many times the scheduler fires while a long cycle is still running. The stop is still loud on stderr and in `self-heal-summary` (an `another_worker_running` event); it is simply not a fault. It used to exit **1**, which the recorder reads as "a bootstrap, config or loop failure the worker reported itself", so a healthy host reported itself broken for behaving exactly as designed (Issue #1056).

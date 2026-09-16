@@ -1579,6 +1579,18 @@
       ]
     },
     {
+      "issue": 2107,
+      "chunk": "top-up-2107",
+      "title": "top-up: the host-failure hook",
+      "ledger": "docs/audits/security-sweep-2107-host-failure-hook.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: host_failure_hook.ts (#2107)",
+      "status": "swept",
+      "sweptAt": "cf3996520b029eac1b320d1b0af9ae7395b0e404",
+      "paths": [
+        "worker/deno/lib/host_failure_hook.ts"
+      ]
+    },
+    {
       "issue": 2100,
       "chunk": "top-up-2100",
       "title": "top-up: the callback mode resolver",

@@ -1403,7 +1403,6 @@ helper serves every site. The directions are pinned by test in
 | [`shared_cooldown.ts`](worker/deno/lib/shared_cooldown.ts) | The whole fleet skipping an issue | **Do not suppress the work.** The `--jq` projection now carries `.user.login` through — it previously discarded the author before the check, leaving nothing to check. |
 | [`failure_detection_resume.ts`](worker/deno/lib/failure_detection_resume.ts) | Spending the retry budget, forcing `escalated` | **Retry.** An unverifiable tally counts as zero attempts rather than giving up on evidence it cannot read. |
 | [`escalate_as_work.ts`](worker/deno/lib/escalate_as_work.ts) | Posting the escalation body onto the matched issue | **File a fresh escalation.** Scoped by the work label *and* the author — applying a label needs triage permission. |
-| [`host_escalation.ts`](worker/deno/lib/host_escalation.ts) | Posting the host report onto the matched issue | **Create.** Reporting `"commented"` — success — for a report that landed on an issue the fleet never opened would be a lie. |
 | [`setup/collaborator_precheck.ts`](worker/deno/setup/collaborator_precheck.ts) | Posting the follow-up, which carries `gh api …/collaborators` invite commands | **File a fresh issue.** |
 | [`setup/best_practices_relabel.ts`](worker/deno/setup/best_practices_relabel.ts) | Writing derived labels onto the matched issue | **Write no labels.** |
 

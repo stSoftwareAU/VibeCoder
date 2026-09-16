@@ -15,7 +15,8 @@
 # Issue #4072: A failed launcher is recorded rather than retried blindly: the
 #              worker's `container-restart-backoff` command grows the wait
 #              across consecutive failures, records the recovery as a self-heal
-#              event and escalates a repeatedly failing host through GitHub.
+#              event and escalates a repeatedly failing host through the
+#              host's own callbacks.host_failure hook (Issue #2108).
 # Issue #1401: Each cycle ends by pulling the checkout, exactly as loop.sh
 #              does, so a supervised Windows host cannot run frozen code for
 #              ever. A failed pull is logged and the loop continues.
@@ -227,15 +228,15 @@ function Write-LoopLine {
 .DESCRIPTION
     Delegates to the worker's container-restart-backoff command, which grows
     the backoff across consecutive failures, records the recovery as a
-    self-heal event and escalates a repeatedly failing host through GitHub.
+    self-heal event and escalates a repeatedly failing host through the
+    host's own callbacks.host_failure hook (Issue #2108) - never GitHub.
     Falls back — loudly, never silently — to the base sleep when the recorder
     cannot run or does not answer with a plain integer (Issue #3234).
 
-    --allow-sys=hostname: the escalation is titled for the host. Without the
-    permission Deno.hostname() throws and the report is filed as
-    "unknown-host" - which is also its dedup key, so every host in the fleet
-    collapses onto one issue per phase (Issues #633, #709, #710). loop.sh has
-    carried the flag since Issue #633.
+    --allow-sys=hostname: the escalation names the host it is about. Without
+    the permission Deno.hostname() throws and the report says
+    "unknown-host", so every host in the fleet reports as the same machine
+    (Issues #633, #709, #710). loop.sh has carried the flag since Issue #633.
 
     --launch-log: this cycle's own record, so an escalation can quote the
     supervisor's account of the failure rather than only its exit status

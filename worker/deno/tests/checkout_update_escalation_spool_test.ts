@@ -1,28 +1,34 @@
 /**
- * Tests for the re-armed checkout-update escalation and its spool (Issue
- * #1018).
+ * Tests for the checkout-update escalation, its spool and its attempt bound
+ * (Issues #1018, #2110).
  *
  * The escalation of Issue #4204 fired once, at the exact moment the streak
- * equalled the threshold, and its `gh issue create` needs the network whose
- * loss is the dominant cause of the streak. A failed send was therefore lost
- * for ever: the host ran stale code with nothing but a log line.
+ * equalled the threshold, and a transport that fails is the dominant failure
+ * mode here — the fault being reported is often the fault that stops the
+ * report. A failed send was therefore lost for ever: the host ran stale code
+ * with nothing but a log line.
  *
- * These tests drive the two halves of the fix against the real on-disk state
- * under a temporary log directory — only the git and GitHub side effects are
- * stubbed:
- *   - a failed attempt leaves the streak eligible, so every later failing run
- *     tries again;
- *   - a successful attempt records the marker and stays quiet for the rest of
- *     the streak;
- *   - undelivered evidence is spooled and delivered once connectivity returns;
- *   - a successful update clears both the streak and the spool, so a stale
- *     entry cannot report a condition that has already cleared.
+ * Issue #2110 replaced the transport. The report is a `callbacks.host_failure`
+ * invocation on the host, never a GitHub issue, and the retry is bounded.
+ *
+ * These tests drive the whole thing against the real on-disk state under a
+ * temporary log directory — only the git side effects, the clock and the hook
+ * invocation are stubbed:
+ *   - the qualifying streak invokes the hook once, with the payload facts;
+ *   - an invocation that did not return `ok` spools its attempt count and is
+ *     retried on the next failing run;
+ *   - the fifth failed attempt records `escalation_lost` and settles the
+ *     streak, so the sixth run invokes nothing;
+ *   - a successful update invokes nothing at all and clears both files;
+ *   - `none` and `invalid` hook configuration invoke nothing and never block
+ *     the update.
  *
  * Australian English spelling throughout (behaviour, organisation, authorised).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS,
   CHECKOUT_UPDATE_ESCALATION_SPOOL_FILE,
   CHECKOUT_UPDATE_FAILURE_STREAK_FILE,
   type CheckoutEscalationState,
@@ -33,6 +39,13 @@ import {
   updateCheckout,
 } from "../lib/checkout_update.ts";
 import type { Result } from "../types.ts";
+import type { SelfHealEvent } from "../lib/self_heal_events.ts";
+import {
+  CONFIGURED_HOOK,
+  HOOK_FAILED,
+  HOOK_OK,
+  HOOK_PATH,
+} from "./support/checkout_escalation_hook.ts";
 
 /**
  * An hourly clock, one tick per failing run.
@@ -51,16 +64,20 @@ function hourlyClock(): () => number {
   };
 }
 
+/** The git failure these tests drive the streak with. */
+const GIT_FAILURE =
+  "git fetch origin failed (exit code 128): Could not resolve hostname github.com";
+
 /** A checkout update that always fails, as a lost network makes it. */
 const FAILING_RESET: Partial<CheckoutUpdateDeps> = {
   resetToDefaultBranch: () =>
     Promise.resolve({
       ok: false,
-      error: new Error(
-        "git fetch origin failed (exit code 128): Could not resolve hostname github.com",
-      ),
+      error: new Error(GIT_FAILURE),
     } as Result<void>),
   describeCheckoutState: () => Promise.resolve(null),
+  readHeadCommit: () => Promise.resolve(null),
+  hostFailureHook: CONFIGURED_HOOK,
   now: hourlyClock(),
 };
 
@@ -70,6 +87,7 @@ const OK_RESET: Partial<CheckoutUpdateDeps> = {
     Promise.resolve({ ok: true, value: undefined } as Result<void>),
   describeCheckoutState: () => Promise.resolve(null),
   readHeadCommit: () => Promise.resolve(null),
+  hostFailureHook: CONFIGURED_HOOK,
 };
 
 /** Run the body against a throwaway log directory and checkout path. */
@@ -107,98 +125,96 @@ async function readState(
   }
 }
 
-Deno.test("updateCheckout - a failed escalation is retried on every later failing run (Issue #1018)", async () => {
-  await withLogDir(async (options) => {
-    const attempts: number[] = [];
-    const offline: Partial<CheckoutUpdateDeps> = {
+/** Does the path exist? */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test("updateCheckout - the qualifying streak invokes the hook once, with the payload facts (Issue #2110)", async () => {
+  await withLogDir(async (options, paths) => {
+    const contexts: CheckoutUpdateEscalationContext[] = [];
+    const hooks: { path: string; timeoutSeconds: number }[] = [];
+    const delivering: Partial<CheckoutUpdateDeps> = {
       ...FAILING_RESET,
-      escalate: (context) => {
-        attempts.push(context.streak);
-        return Promise.reject(
-          new Error(
-            "gh issue create exited 1: error connecting to api.github.com",
-          ),
-        );
+      describeCheckoutState: () =>
+        Promise.resolve({ branch: "fix/local", dirtyFiles: 4 }),
+      escalate: (context, hook) => {
+        contexts.push(context);
+        hooks.push(hook);
+        return Promise.resolve(HOOK_OK);
       },
     };
 
     const outcomes = [];
     for (let run = 0; run < 5; run++) {
-      outcomes.push(await updateCheckout(options, offline));
+      outcomes.push(await updateCheckout(options, delivering));
     }
 
-    assertEquals(outcomes.map((outcome) => outcome.streak), [1, 2, 3, 4, 5]);
     assertEquals(
-      outcomes.every((outcome) => outcome.escalated),
-      false,
-      "a send that threw never counts as delivered",
-    );
-    assertEquals(
-      attempts,
-      [3, 4, 5],
-      "every run at or above the threshold retries while delivery keeps failing",
-    );
-  });
-});
-
-Deno.test("updateCheckout - a delivered escalation silences the rest of the streak (Issue #1018)", async () => {
-  await withLogDir(async (options, paths) => {
-    const attempts: number[] = [];
-    let deliveries = 0;
-    const flaky: Partial<CheckoutUpdateDeps> = {
-      ...FAILING_RESET,
-      escalate: (context) => {
-        attempts.push(context.streak);
-        // The first attempt (streak 3) throws; the second one lands.
-        if (attempts.length === 1) {
-          return Promise.reject(
-            new Error("error connecting to api.github.com"),
-          );
-        }
-        deliveries++;
-        return Promise.resolve();
-      },
-    };
-
-    const outcomes = [];
-    for (let run = 0; run < 6; run++) {
-      outcomes.push(await updateCheckout(options, flaky));
-    }
-
-    assertEquals(deliveries, 1, "exactly one issue is raised per streak");
-    assertEquals(
-      attempts,
-      [3, 4],
-      "the retry stops the moment one attempt is delivered",
+      contexts.length,
+      1,
+      "one delivered report per streak — later failures invoke nothing",
     );
     assertEquals(outcomes.map((outcome) => outcome.escalated), [
-      false,
       false,
       false,
       true,
       false,
       false,
     ]);
+
+    const context = contexts[0];
+    assertEquals(context?.streak, 3);
+    assertEquals(context?.attempt, 1);
+    assertEquals(context?.repoDir, options.repoDir);
+    assertEquals(
+      context?.checkout,
+      { branch: "fix/local", dirtyFiles: 4 },
+      "the payload carries the checkout state the failure was diagnosed with",
+    );
+    assert(
+      (context?.streakStartedAt ?? 0) > 0,
+      "the payload can say when the streak started",
+    );
+    assertStringIncludes(context?.error ?? "", "Could not resolve hostname");
+    assertEquals(hooks[0], {
+      path: HOOK_PATH,
+      timeoutSeconds: CONFIGURED_HOOK.kind === "hook"
+        ? CONFIGURED_HOOK.timeoutSeconds
+        : 0,
+    });
+
     const state = await readState(paths.spoolFile);
-    assertEquals(state?.escalatedStreak, 4, "the marker records the delivery");
+    assertEquals(state?.escalatedStreak, 3, "the marker records the delivery");
     assertEquals(state?.pending, null, "delivery empties the spool");
   });
 });
 
-Deno.test("updateCheckout - undelivered evidence is spooled and delivered once (Issue #1018)", async () => {
+Deno.test("updateCheckout - an invocation that is not ok spools its attempts and is retried (Issue #2110)", async () => {
   await withLogDir(async (options, paths) => {
-    // Three failing runs with no network at all: nothing is delivered, and the
-    // evidence is queued rather than lost.
-    for (let run = 0; run < 3; run++) {
-      await updateCheckout(options, {
-        ...FAILING_RESET,
-        escalate: () =>
-          Promise.reject(new Error("error connecting to api.github.com")),
-      });
-    }
+    const attempts: number[] = [];
+    const offline: Partial<CheckoutUpdateDeps> = {
+      ...FAILING_RESET,
+      escalate: (context) => {
+        attempts.push(context.attempt);
+        return Promise.resolve(HOOK_FAILED);
+      },
+    };
 
+    await updateCheckout(options, offline);
+    await updateCheckout(options, offline);
+    const third = await updateCheckout(options, offline);
+
+    assertEquals(third.escalated, false, "a non-ok status is not a delivery");
+    assertEquals(attempts, [1], "the first attempt is spent on the third run");
     const spooled = await readState(paths.spoolFile);
-    assertEquals(spooled?.escalatedStreak, 0);
+    assertEquals(spooled?.escalatedStreak, 0, "the streak is not settled yet");
+    assertEquals(spooled?.pending?.attempts, 1);
     assertEquals(spooled?.pending?.streak, 3);
     assertStringIncludes(
       spooled?.pending?.error ?? "",
@@ -209,40 +225,82 @@ Deno.test("updateCheckout - undelivered evidence is spooled and delivered once (
       "the spooled entry records when delivery was first attempted",
     );
 
-    // Connectivity returns while the checkout is still failing: the queued
-    // evidence is delivered, exactly once, and the spool is emptied.
-    const delivered: CheckoutUpdateEscalationContext[] = [];
-    for (let run = 0; run < 2; run++) {
-      await updateCheckout(options, {
-        ...FAILING_RESET,
-        escalate: (context) => {
-          delivered.push(context);
-          return Promise.resolve();
-        },
-      });
-    }
+    // The next failing run retries — the attempt count carries across runs.
+    await updateCheckout(options, offline);
+    assertEquals(attempts, [1, 2]);
+    assertEquals((await readState(paths.spoolFile))?.pending?.attempts, 2);
 
-    assertEquals(delivered.length, 1, "the spool delivers exactly once");
-    assertStringIncludes(
-      delivered[0]?.error ?? "",
-      "Could not resolve hostname github.com",
-    );
-    assert(
-      (delivered[0]?.spooledAt ?? "").length > 0,
-      "the delivered report says it was queued while the network was down",
-    );
-    const drained = await readState(paths.spoolFile);
-    assertEquals(drained?.pending ?? null, null);
+    // And the run whose hook works takes delivery, ending the retries.
+    const delivered = await updateCheckout(options, {
+      ...offline,
+      escalate: (context) => {
+        attempts.push(context.attempt);
+        return Promise.resolve(HOOK_OK);
+      },
+    });
+    assertEquals(delivered.escalated, true);
+    assertEquals(attempts, [1, 2, 3]);
+    assertEquals((await readState(paths.spoolFile))?.pending, null);
+
+    // The delivered streak stays quiet from then on.
+    await updateCheckout(options, offline);
+    assertEquals(attempts, [1, 2, 3]);
   });
 });
 
-Deno.test("updateCheckout - a successful update flushes the spool and clears it with the streak (Issue #1018)", async () => {
+Deno.test("updateCheckout - the fifth failed attempt loses the report and settles the streak (Issue #2110)", async () => {
+  await withLogDir(async (options, paths) => {
+    const attempts: number[] = [];
+    const logged: string[] = [];
+    const broken: Partial<CheckoutUpdateDeps> = {
+      ...FAILING_RESET,
+      escalate: (context) => {
+        attempts.push(context.attempt);
+        return Promise.resolve(HOOK_FAILED);
+      },
+      log: (_logDir, message) => {
+        logged.push(message);
+        return Promise.resolve();
+      },
+    };
+
+    // Runs 1-2 are below the threshold; runs 3-7 each spend one attempt, and
+    // run 8 must find the streak settled.
+    for (let run = 0; run < 8; run++) {
+      await updateCheckout(options, broken);
+    }
+
+    assertEquals(
+      attempts,
+      [1, 2, 3, 4, 5],
+      "the retry is bounded at CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS",
+    );
+    assertEquals(CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS, attempts.length);
+    assertEquals(
+      logged.filter((message) => message.includes("escalation_lost")).length,
+      1,
+      "the loss is recorded exactly once",
+    );
+    const state = await readState(paths.spoolFile);
+    assertEquals(
+      state?.escalatedStreak,
+      7,
+      "the streak is settled, so no later run tries again",
+    );
+    assertEquals(
+      state?.pending,
+      null,
+      "the abandoned report's spool is dropped — nothing will retry it",
+    );
+  });
+});
+
+Deno.test("updateCheckout - a successful update invokes nothing and clears both files (Issue #2110)", async () => {
   await withLogDir(async (options, paths) => {
     for (let run = 0; run < 3; run++) {
       await updateCheckout(options, {
         ...FAILING_RESET,
-        escalate: () =>
-          Promise.reject(new Error("error connecting to api.github.com")),
+        escalate: () => Promise.resolve(HOOK_FAILED),
       });
     }
     assert(
@@ -250,34 +308,36 @@ Deno.test("updateCheckout - a successful update flushes the spool and clears it 
       "precondition: an undelivered report is queued",
     );
 
-    // The run that recovers is the first that can reach GitHub, so it says
-    // what the outage never managed to — marked as already over.
-    const flushed: CheckoutUpdateEscalationContext[] = [];
+    const invoked: CheckoutUpdateEscalationContext[] = [];
+    const logged: string[] = [];
     const recovered = await updateCheckout(options, {
       ...OK_RESET,
       escalate: (context) => {
-        flushed.push(context);
+        invoked.push(context);
+        return Promise.resolve(HOOK_OK);
+      },
+      log: (_logDir, message) => {
+        logged.push(message);
         return Promise.resolve();
       },
     });
 
     assertEquals(recovered.ok, true);
-    assertEquals(flushed.length, 1, "the outage is reported after it ends");
-    assertEquals(flushed[0]?.recovered, true);
-    assertEquals(flushed[0]?.streak, 3);
-    assertStringIncludes(
-      flushed[0]?.error ?? "",
-      "Could not resolve hostname github.com",
+    assertEquals(
+      invoked,
+      [],
+      "recovery reports nothing — the condition has already cleared",
     );
     assertEquals(
       parseCheckoutStreak(await Deno.readTextFile(paths.streakFile)),
       emptyCheckoutStreak(),
     );
-    assertEquals(
-      await readState(paths.spoolFile),
-      null,
-      "a stale spool cannot report a condition that has already cleared",
+    assertEquals(await exists(paths.spoolFile), false);
+    const recoveryLine = logged.find((message) =>
+      message.includes("failure streak has ended")
     );
+    assert(recoveryLine !== undefined, "the streak's end is recorded locally");
+    assertStringIncludes(recoveryLine, "still undelivered");
 
     // The next streak starts clean: it escalates again at the threshold.
     const attempts: number[] = [];
@@ -286,7 +346,7 @@ Deno.test("updateCheckout - a successful update flushes the spool and clears it 
         ...FAILING_RESET,
         escalate: (context) => {
           attempts.push(context.streak);
-          return Promise.resolve();
+          return Promise.resolve(HOOK_OK);
         },
       });
     }
@@ -294,37 +354,142 @@ Deno.test("updateCheckout - a successful update flushes the spool and clears it 
   });
 });
 
-Deno.test("updateCheckout - a flush that cannot be delivered still clears the spool, loudly (Issue #1018)", async () => {
+Deno.test("updateCheckout - a recovery after a delivered report says the streak ended (Issue #2110)", async () => {
   await withLogDir(async (options, paths) => {
     for (let run = 0; run < 3; run++) {
       await updateCheckout(options, {
         ...FAILING_RESET,
-        escalate: () => Promise.reject(new Error("api.github.com is down")),
+        escalate: () => Promise.resolve(HOOK_OK),
       });
     }
 
     const logged: string[] = [];
     await updateCheckout(options, {
       ...OK_RESET,
-      escalate: () => Promise.reject(new Error("gh is not authenticated")),
+      escalate: () => {
+        throw new Error("recovery must never invoke the hook");
+      },
       log: (_logDir, message) => {
         logged.push(message);
         return Promise.resolve();
       },
     });
 
-    assertEquals(
-      await readState(paths.spoolFile),
-      null,
-      "the queue never outlives the condition it describes",
+    const recoveryLine = logged.find((message) =>
+      message.includes("failure streak has ended")
     );
+    assert(recoveryLine !== undefined);
+    assertEquals(
+      recoveryLine.includes("still undelivered"),
+      false,
+      "a delivered report is not reported as lost",
+    );
+    assertEquals(await exists(paths.spoolFile), false);
+  });
+});
+
+Deno.test("updateCheckout - no hook configured is recorded once and never blocks the update (Issue #2110)", async () => {
+  await withLogDir(async (options, paths) => {
+    const invoked: number[] = [];
+    const logged: string[] = [];
+    const noHook: Partial<CheckoutUpdateDeps> = {
+      ...FAILING_RESET,
+      hostFailureHook: { kind: "none" },
+      escalate: (context) => {
+        invoked.push(context.attempt);
+        return Promise.resolve(HOOK_OK);
+      },
+      log: (_logDir, message) => {
+        logged.push(message);
+        return Promise.resolve();
+      },
+    };
+
+    const outcomes = [];
+    for (let run = 0; run < 5; run++) {
+      outcomes.push(await updateCheckout(options, noHook));
+    }
+
+    assertEquals(invoked, [], "there is no hook to invoke");
+    assertEquals(
+      logged.filter((message) => message.includes("no_hook_configured")).length,
+      1,
+      "the absent hook is said once, not on every later failing run",
+    );
+    assertEquals(
+      outcomes.map((outcome) => outcome.streak),
+      [1, 2, 3, 4, 5],
+      "the update itself proceeds and keeps counting",
+    );
+    assertEquals(outcomes.every((outcome) => outcome.escalated), false);
+    assertEquals(
+      (await readState(paths.spoolFile))?.escalatedStreak,
+      3,
+      "the streak is settled: nothing about this host will change by retrying",
+    );
+  });
+});
+
+Deno.test("updateCheckout - an unreadable callbacks block is recorded as config_invalid (Issue #2110)", async () => {
+  await withLogDir(async (options) => {
+    const invoked: number[] = [];
+    const logged: string[] = [];
+    const broken: Partial<CheckoutUpdateDeps> = {
+      ...FAILING_RESET,
+      hostFailureHook: {
+        kind: "invalid",
+        error: "callbacks.host_failure must be a string",
+      },
+      escalate: (context) => {
+        invoked.push(context.attempt);
+        return Promise.resolve(HOOK_OK);
+      },
+      log: (_logDir, message) => {
+        logged.push(message);
+        return Promise.resolve();
+      },
+    };
+
+    const outcomes = [];
+    for (let run = 0; run < 4; run++) {
+      outcomes.push(await updateCheckout(options, broken));
+    }
+
+    assertEquals(invoked, [], "a hook that will not parse is never spawned");
+    const reported = logged.filter((message) =>
+      message.includes("config_invalid")
+    );
+    assertEquals(reported.length, 1);
+    assertStringIncludes(reported[0] ?? "", "must be a string");
+    assertEquals(outcomes.map((outcome) => outcome.streak), [1, 2, 3, 4]);
+  });
+});
+
+Deno.test("updateCheckout - a seam that throws is recorded and retried, never rethrown (Issue #2110)", async () => {
+  await withLogDir(async (options, paths) => {
+    const logged: string[] = [];
+    const outcome = await updateCheckout(options, {
+      ...FAILING_RESET,
+      readFailureStreak: () =>
+        Promise.resolve({ count: 2, firstFailureAt: 1_600_000_000 }),
+      escalate: () => Promise.reject(new Error("the hook seam blew up")),
+      log: (_logDir, message) => {
+        logged.push(message);
+        return Promise.resolve();
+      },
+    });
+
+    assertEquals(outcome.ok, false);
+    assertEquals(outcome.escalated, false);
+    assertStringIncludes(outcome.error ?? "", "Could not resolve hostname");
     assert(
       logged.some((message) =>
-        message.includes("could not be delivered") &&
-        message.includes("discard")
+        message.includes("escalation failed") &&
+        message.includes("the hook seam blew up")
       ),
-      "a report that never arrived is said out loud, never dropped in silence",
+      "the seam fault names itself rather than being folded into the status",
     );
+    assertEquals((await readState(paths.spoolFile))?.pending?.attempts, 1);
   });
 });
 
@@ -339,7 +504,7 @@ Deno.test("updateCheckout - a corrupt escalation store re-escalates rather than 
         ...FAILING_RESET,
         escalate: (context) => {
           attempts.push(context.streak);
-          return Promise.resolve();
+          return Promise.resolve(HOOK_OK);
         },
       });
     }
@@ -353,6 +518,43 @@ Deno.test("updateCheckout - a corrupt escalation store re-escalates rather than 
       (await readState(paths.spoolFile))?.escalatedStreak,
       3,
       "and the repaired store then keeps the rest of the streak quiet",
+    );
+  });
+});
+
+Deno.test("updateCheckout - a spool entry written before the attempt count reads as no attempts (Issue #2110)", async () => {
+  await withLogDir(async (options, paths) => {
+    await Deno.mkdir(options.logDir, { recursive: true });
+    // The pre-#2110 shape: evidence, no attempts field.
+    await Deno.writeTextFile(
+      paths.spoolFile,
+      JSON.stringify({
+        escalatedStreak: 0,
+        pending: {
+          repoDir: options.repoDir,
+          streak: 3,
+          error: GIT_FAILURE,
+          checkout: null,
+          spooledAt: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    );
+
+    const attempts: number[] = [];
+    await updateCheckout(options, {
+      ...FAILING_RESET,
+      readFailureStreak: () =>
+        Promise.resolve({ count: 3, firstFailureAt: 1_600_000_000 }),
+      escalate: (context) => {
+        attempts.push(context.attempt);
+        return Promise.resolve(HOOK_FAILED);
+      },
+    });
+
+    assertEquals(
+      attempts,
+      [1],
+      "an old entry has no attempt count, so the bound starts afresh",
     );
   });
 });
@@ -373,7 +575,7 @@ Deno.test("updateCheckout - a marker left over from an earlier streak does not s
         ...FAILING_RESET,
         escalate: (context) => {
           attempts.push(context.streak);
-          return Promise.resolve();
+          return Promise.resolve(HOOK_OK);
         },
       });
     }
@@ -393,8 +595,7 @@ Deno.test("updateCheckout - a spool that cannot be written is reported as unqueu
     for (let run = 0; run < 3; run++) {
       await updateCheckout(options, {
         ...FAILING_RESET,
-        escalate: () =>
-          Promise.reject(new Error("error connecting to api.github.com")),
+        escalate: () => Promise.resolve(HOOK_FAILED),
         writeEscalationState: () =>
           Promise.reject(new Error("read-only file system")),
         log: (_logDir, message) => {
@@ -415,5 +616,112 @@ Deno.test("updateCheckout - a spool that cannot be written is reported as unqueu
       ),
       "the persistence failure names its own cause",
     );
+  });
+});
+
+/** A self-heal event as these tests observe it through the seam. */
+type RecordedEvent = Omit<SelfHealEvent, "timestamp">;
+
+Deno.test("updateCheckout - the streak's outcome is recorded as self-heal events (Issue #2110)", async () => {
+  await withLogDir(async (options) => {
+    const events: RecordedEvent[] = [];
+
+    // Runs 3-7 spend the five attempts; the fifth loses the report.
+    for (let run = 0; run < 7; run++) {
+      await updateCheckout(options, {
+        ...FAILING_RESET,
+        escalate: () => Promise.resolve(HOOK_FAILED),
+        emitEvent: (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+      });
+    }
+
+    const escalated = events.filter((event) => event.action === "escalated");
+    assertEquals(escalated.length, CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS);
+    assertEquals(escalated[0]?.module, "checkout_update");
+    assertEquals(escalated[0]?.result, "failed");
+    assertEquals(escalated[0]?.details?.hookStatus, "failed");
+    assertEquals(escalated[0]?.details?.attempt, 1);
+    assertEquals(escalated[0]?.details?.streak, 3);
+    assertEquals(
+      escalated.map((event) => event.details?.attempt),
+      [1, 2, 3, 4, 5],
+      "each retry says which attempt it was",
+    );
+    assertEquals(
+      escalated.map((event) => event.details?.streak),
+      [3, 4, 5, 6, 7],
+      "and how long the streak had run by then",
+    );
+
+    const lost = events.filter((event) => event.action === "escalation_lost");
+    assertEquals(lost.length, 1, "the loss is recorded exactly once");
+    assertEquals(lost[0]?.module, "checkout_update");
+    assertEquals(lost[0]?.result, "failed");
+    assertEquals(
+      lost[0]?.details?.attempt,
+      CHECKOUT_UPDATE_ESCALATION_MAX_ATTEMPTS,
+      "the same `attempt` key as the escalated events, not `attempts`",
+    );
+    // The streak at the moment the report was abandoned: the run that spent
+    // the fifth attempt is the seventh failing run, not the third.
+    assertEquals(lost[0]?.details?.streak, 7);
+  });
+});
+
+Deno.test("updateCheckout - an absent hook is recorded as an escalated event too (Issue #2110)", async () => {
+  await withLogDir(async (options) => {
+    const events: RecordedEvent[] = [];
+
+    for (let run = 0; run < 4; run++) {
+      await updateCheckout(options, {
+        ...FAILING_RESET,
+        hostFailureHook: { kind: "none" },
+        emitEvent: (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+      });
+    }
+
+    assertEquals(events.length, 1, "said once, not on every failing run");
+    assertEquals(events[0]?.action, "escalated");
+    assertEquals(events[0]?.result, "skipped");
+    assertEquals(events[0]?.details?.hookStatus, "no_hook_configured");
+    assertEquals(events[0]?.details?.streak, 3);
+  });
+});
+
+Deno.test("updateCheckout - no escalation path spawns a process (Issues #2110, #2088)", async () => {
+  await withLogDir(async (options) => {
+    const originalCommand = Deno.Command;
+    const spawned: string[] = [];
+    // deno-lint-ignore no-explicit-any
+    (Deno as any).Command = class {
+      constructor(command: string | URL) {
+        spawned.push(String(command));
+        throw new Error(`the checkout update must spawn nothing: ${command}`);
+      }
+    };
+    try {
+      // A whole streak through to the loss, then a recovery — the real
+      // escalate seam, not a stub.
+      for (let run = 0; run < 8; run++) {
+        await updateCheckout(options, {
+          ...FAILING_RESET,
+          hostFailureHook: { kind: "none" },
+        });
+      }
+      await updateCheckout(options, {
+        ...OK_RESET,
+        hostFailureHook: { kind: "none" },
+      });
+    } finally {
+      // deno-lint-ignore no-explicit-any
+      (Deno as any).Command = originalCommand;
+    }
+    assertEquals(spawned, [], "no gh, no git, no hook — nothing is spawned");
   });
 });

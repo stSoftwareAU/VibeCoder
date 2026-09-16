@@ -4314,10 +4314,11 @@ export async function createProductionRunCoreDeps(
         log: (message) => logger.info(message),
         logError: (message) => logger.error(message),
       });
-      // Issue #1092: a hook that fails on every issue costs slot time on
-      // every issue and, until now, raised nothing across days of runs. The
-      // streak crossing the threshold raises exactly one deduplicated issue
-      // in the worker's own repository; a success clears it. Never throws.
+      // Issues #1092, #2111: a hook that fails on every issue costs slot time
+      // on every issue and, until now, raised nothing across days of runs. The
+      // streak crossing the threshold writes exactly one error record to this
+      // host's own log; a success clears it. Nothing is filed on GitHub, and
+      // it never throws.
       await recordCallbackOutcomes(
         config.workDir,
         invocations,

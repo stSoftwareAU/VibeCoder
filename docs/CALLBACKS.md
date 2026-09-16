@@ -25,6 +25,7 @@ Every property below is provable where you deploy — see
     "failure": "/opt/vibe-hooks/failure.sh",
     "always": "/opt/vibe-hooks/always.sh",
     "cycle": "/opt/vibe-hooks/cycle.sh",
+    "host_failure": "/opt/vibe-hooks/host-failure.sh",
     "timeout_seconds": 60
   }
 }
@@ -33,6 +34,10 @@ Every property below is provable where you deploy — see
 Every entry is optional, and a configuration without a `callbacks` block behaves
 exactly as before. A **malformed** block fails the config load rather than
 leaving an operator with a hook that silently never runs.
+
+`host_failure` is the one **host** path in the block (Issue #2107) — see
+[Host-level failures](#host-level-failures--callbackshost_failure). Every other
+key is resolved inside the container.
 
 ## Ordering and exactly-once scope
 
@@ -70,6 +75,160 @@ flowchart LR
 - Concurrent issue slots each receive their own context; hooks never share state
   between slots, and each slot's `always` runs for that slot alone.
 
+## Host-level failures — `callbacks.host_failure`
+
+A host-level failure — the container launcher crash-looping, the checkout
+update failing run after run — happens **before** any issue is claimed and
+before a container exists, so none of the hooks above can report it.
+`callbacks.host_failure` is that report, under the same contract: a versioned
+JSON document at `VIBECODER_CALLBACK_CONTEXT`, scalar `VIBECODER_*` facts, a
+cleared environment, and the same `timeout_seconds` budget.
+
+It is fired **host-side only**, by two callers: the launcher self-heal recorder
+(Issue #2108) and the host-side checkout update (Issue #2110). Nothing inside
+the container invokes it — a container-side condition such as the
+[callback-failure streak](#a-hook-that-fails-on-every-issue-is-recorded-once-locally)
+records locally and fires no hook (Issue #2111).
+
+```mermaid
+flowchart LR
+    F["Host failure persists"] --> R["Targeted read of<br/>callbacks.host_failure"]
+    R -- absent --> N["no_hook_configured — not a fault"]
+    R -- malformed --> E["config_invalid — reported, never repaired"]
+    R -- configured --> I["Hook spawned on the host"]
+    I --> O["ok / failed / timed_out / spawn_failed"]
+    O -- ok --> D["Delivered — nothing more for now"]
+    O -- not ok --> Q["Queued and retried,<br/>up to 5 attempts"]
+    Q -- lands --> D
+    Q -- 5th failure --> L["escalation_lost recorded"]
+```
+
+Three properties are specific to it:
+
+- **It is a host path.** The launcher spawns it on the host's own filesystem,
+  so — unlike every other key — a path inside the container is the wrong
+  answer. The [conformance fixture](#the-conformance-fixture) cannot drive it
+  for the same reason: the fixture runs where the worker runs.
+- **The read is targeted.** The host validates `host_failure` and
+  `timeout_seconds` only, so a `success` hook naming a container path it
+  cannot see never stops the host hook from firing. An absent key means no
+  hook; a malformed one is reported rather than quietly answered as absent.
+- **Failures only, never recovery.** The hook is told what is broken, never
+  that it healed: a condition that clears fires nothing and is one local line
+  in the host's own log. A hook that wants a recovery signal derives it from
+  the reports stopping.
+
+### What the hook receives
+
+The same cleared environment as every other hook — only `PATH`, `HOME`, `LANG`,
+`TZ` and `TMPDIR` are inherited — plus a versioned JSON document at
+`VIBECODER_CALLBACK_CONTEXT` (Issue #2107). `schemaVersion` stays at the
+contract's current version: a new event is not a breaking change to the fields
+an existing hook already reads (see
+[Versioning](#versioning--the-contract-is-additive)).
+
+```json
+{
+  "schemaVersion": 2,
+  "event": "host_failure",
+  "host": "worker-1",
+  "condition": "launcher",
+  "phase": "image_build",
+  "consecutiveFailures": 3,
+  "lastExitStatus": 1,
+  "backoffSeconds": 240,
+  "streakStartedAt": "2026-09-14T22:41:03.000Z",
+  "delivery": {
+    "kind": "first",
+    "count": 1
+  },
+  "attempt": 1,
+  "logTail": "…the failing attempt's captured output, redacted…",
+  "detail": "…free-text diagnosis, when the host has one…",
+  "checkout": {
+    "branch": "main",
+    "dirtyFiles": 0
+  }
+}
+```
+
+The scalars are exported one variable each; the multi-line facts live in the
+document alone, where no environment-size limit can turn them into a spawn
+failure:
+
+| Environment variable                | JSON field            | Always present | Meaning                                                                                                                                                                                          |
+| ----------------------------------- | --------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `VIBECODER_CALLBACK_SCHEMA_VERSION` | `schemaVersion`       | yes            | Contract version — unchanged by this event                                                                                                                                                       |
+| `VIBECODER_CALLBACK_EVENT`          | `event`               | yes            | Always `host_failure`                                                                                                                                                                            |
+| `VIBECODER_CALLBACK_CONTEXT`        | —                     | yes            | Path to the JSON document for this invocation                                                                                                                                                    |
+| `VIBECODER_HOST`                    | `host`                | yes            | Host the failure is on                                                                                                                                                                           |
+| `VIBECODER_HOST_FAILURE_CONDITION`  | `condition`           | yes            | `launcher` or `checkout_update`                                                                                                                                                                  |
+| `VIBECODER_HOST_FAILURE_PHASE`      | `phase`               | yes            | Phase within the condition: `runtime_detection`, `container_egress`, `image_build`, `volume_init`, `container_start` or `worker_run` for the launcher; `checkout_update` for the checkout update |
+| `VIBECODER_CONSECUTIVE_FAILURES`    | `consecutiveFailures` | yes            | Consecutive failures of this condition, including this one                                                                                                                                       |
+| `VIBECODER_LAST_EXIT_STATUS`        | `lastExitStatus`      | no             | Exit status of the most recent attempt, when one was observed                                                                                                                                    |
+| `VIBECODER_BACKOFF_SECONDS`         | `backoffSeconds`      | no             | Seconds the host waits before retrying, when it backs off                                                                                                                                        |
+| `VIBECODER_STREAK_STARTED_AT`       | `streakStartedAt`     | yes            | ISO-8601 timestamp of the first failure in the streak                                                                                                                                            |
+| `VIBECODER_DELIVERY_KIND`           | `delivery.kind`       | yes            | `first` report of this streak, or a `repeat` while it persists                                                                                                                                   |
+| `VIBECODER_DELIVERY_COUNT`          | `delivery.count`      | yes            | Reports delivered for this streak, including this one                                                                                                                                            |
+| `VIBECODER_ATTEMPT`                 | `attempt`             | yes            | Attempt number that produced this report — a retry of one report, not a new one                                                                                                                  |
+| —                                   | `logTail`             | no             | Tail of the failing attempt's output, redacted — document only                                                                                                                                   |
+| —                                   | `detail`              | no             | Free-text diagnosis — document only                                                                                                                                                              |
+| —                                   | `checkout`            | no             | `branch` and `dirtyFiles`, when the condition is `checkout_update` — document only                                                                                                               |
+
+Optional facts the host could not supply are **omitted** from both the document
+and the environment rather than emitted empty, so
+`[ -n "$VIBECODER_BACKOFF_SECONDS" ]` is a truthful test.
+
+### What the launcher sends
+
+The launcher self-heal recorder is the first caller (Issue #2108). It reports
+once the consecutive-failure count crosses the failing phase's threshold, and
+its cadence is the streak's, not the failure's:
+
+- **Crossing, then +1 h, then daily.** The threshold crossing delivers
+  immediately with `delivery` `first`/1; the first follow-up comes an hour
+  later and everything after that daily, each one `repeat` with the running
+  `delivery.count`. A genuinely stuck host stays visible without filling the
+  channel, and a hook can tell a new incident from an update of one it already
+  holds.
+- **A streak is its phase and its start.** Failures 4 … 54 of one ongoing
+  condition are the same streak, so they are the same report; a different
+  phase, or a clean run in between, starts a new one.
+- **Five attempts, then `escalation_lost`.** A delivery that returns anything
+  but `ok` is queued and retried on the next cycle — `attempt` counts them —
+  and the fifth failure records `escalation_lost` in the self-heal health
+  report rather than dropping the escalation silently. The per-cycle retry
+  stops there; the streak's own re-notify schedule still governs, so a host
+  that is still broken reports again when the schedule next falls due.
+- **`logTail` carries the launcher's own tail**, redacted before it leaves the
+  process: a hook is an operator's channel, not a trusted vault.
+- **No hook is not a fault.** A host with no `callbacks.host_failure` records
+  the `escalated` event locally with `no_hook_configured`; a `callbacks` block
+  that will not parse records `config_invalid` with the read's own error
+  beside it. When there is also no crash channel to fall back on there is
+  nothing left to try, so the report is not queued for retry at all — the
+  streak's re-notify schedule is the whole record.
+
+### What the checkout update sends
+
+The host-side checkout update is the other caller (Issue #2110). Its cadence:
+
+- **One report per streak.** Three consecutive failures spanning at least
+  fifteen minutes fire the hook once, with `condition` and `phase` both
+  `checkout_update` and `delivery` `first`/1. Later failures in the same streak
+  fire nothing.
+- **Five attempts, then `escalation_lost`.** An invocation that returns
+  anything but `ok` is retried on each later failing run — `attempt` counts
+  them — and the fifth failure abandons the report for that streak, recording
+  `escalation_lost` in `run_core.log` and `~/logs/self-heal.jsonl`.
+- **Failures only.** A run that updates cleanly fires no hook: the condition
+  has cleared, and the recovery is one local line.
+- **No hook is not a fault.** A host with no `callbacks.host_failure` records
+  `no_hook_configured` once per streak; a `callbacks` block that will not parse
+  records `config_invalid`. Neither blocks the update.
+
+See [Host-Side Checkout Update](CONFIGURATION.md#-host-side-checkout-update).
+
 ## Invocation and path rules
 
 - The configured path is executed **directly** — no shell, no `sh -c`, no
@@ -103,6 +262,9 @@ and fails on a path that cannot run.
 The worker runs **inside the container** — that is the only run mode
 ([Containment](CONTAINMENT.md)) — so a hook path is resolved on the filesystem
 the container sees, and a host path that is not mounted in is not visible to it.
+The one exception is `host_failure`, which the host launcher spawns before any
+container exists: its path is resolved on the **host** — see
+[Host-level failures](#host-level-failures--callbackshost_failure).
 
 ```mermaid
 flowchart LR
@@ -145,37 +307,35 @@ flowchart LR
 - Statuses a hook invocation can record: `ok`, `failed`, `timed_out`,
   `spawn_failed`.
 
-## A hook that fails on every issue is reported once
+## A hook that fails on every issue is recorded once, locally
 
 A hook fault is reported per invocation, which is right for a hook that fails
 once and wrong for a hook that cannot succeed at all. Observed on GRQ-23 on
 2026-09-05: the `always` hook failed on **every** issue across at least five
-runs, each failure costing about 100 seconds of slot time, and raised nothing a
-human ever saw. A fault that needs a human is itself a bug, so the worker now
-counts the streak and escalates it.
+runs, each failure costing about 100 seconds of slot time, and the only trace
+was one line per issue among the thousands the fleet writes. So the worker
+counts the streak and writes one record the operator of the host can act on.
 
 - The worker keeps a consecutive-failure count **per event** in
   `$WORK_DIR/callback-failure-streaks.json`. It survives the run boundary,
   because the condition does.
-- On the **third** consecutive failing issue, the worker files (or comments on)
-  one deduplicated issue in its **own** repository, titled
-  `Post-run <event> callback failing on <host>` — the shared host-escalation
-  channel, so an ongoing condition stays one incident however long it runs.
-- **One report per streak.** The fourth failure and the four-hundredth add
+- On the **third** consecutive failing issue, the worker writes **one** `ERROR`
+  record to its own log, naming the hook path, the streak, the last
+  `owner/repo#issue`, the status, the exit code, the duration, the hook's
+  captured (redacted) stderr, the callback schema version this worker exports,
+  and the remedy — so a hook refusing the version is diagnosed by the record
+  rather than by a human reading the raw stderr.
+- **One record per streak.** The fourth failure and the four-hundredth add
   nothing. A single successful invocation clears the count, so the next fault is
-  reported afresh.
-- **The report retires itself** (Issues #2039, #2041). The success that ends a
-  reported streak closes the issue the worker raised, with the recovery — which
-  run, after how many failures — as the closing comment. Only an issue a fleet
-  account opened is closed; somebody else's title match is left alone. A
-  success that ends a streak too short to have been reported closes nothing.
-- The report names the hook path, the last run, the exit code, the duration,
-  the hook's captured (redacted) stderr, and the callback schema version this
-  worker exports, so a hook refusing the version is diagnosed by the report
-  rather than by a human reading the stderr.
-- Delivery is best-effort in one direction only: a report that could not be
-  filed, or a closure that was refused, is logged as an error, and nothing
-  about it alters the run's own result.
+  recorded afresh.
+- **Recovery is one line.** The success that ends a recorded streak logs which
+  run succeeded and after how many failing issues. A success that ends a streak
+  too short to have been recorded logs nothing.
+- **Nothing leaves the container** (Issue #2111). The streak fires no hook,
+  spawns no process and makes no GitHub write: no issue is filed on the
+  threshold crossing, none is closed on recovery, and no `host_failure` hook is
+  invoked from inside the container. The log record and the count file are the
+  host's own record, and nothing about either alters the run's own result.
 
 **What a hook author owes in return.** The worker bounds a hook's wall clock and
 reports its outcome; it cannot see inside it. A hook that retries must classify
@@ -241,7 +401,7 @@ The same facts are exported as scalars, one variable each:
 | Environment variable                  | JSON field                      | Always present | Meaning                                                                                                              |
 | ------------------------------------- | ------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `VIBECODER_CALLBACK_SCHEMA_VERSION`   | `schemaVersion`                 | yes            | Contract version — see [Versioning](#versioning--the-contract-is-additive)                                            |
-| `VIBECODER_CALLBACK_EVENT`            | `event`                         | yes            | `success`, `failure`, `always` or `cycle`                                                                            |
+| `VIBECODER_CALLBACK_EVENT`            | `event`                         | yes            | `success`, `failure`, `always`, `cycle` or `host_failure`                                                            |
 | `VIBECODER_CALLBACK_CONTEXT`          | —                               | yes            | Path to the JSON document for this invocation                                                                        |
 | `VIBECODER_RUN_ID`                    | `runId`                         | yes            | Worker run id                                                                                                        |
 | `VIBECODER_RESULT`                    | `result`                        | yes            | The run's own result: `success` or `failure`                                                                         |
@@ -338,11 +498,11 @@ the fleet failed on every issue: no health heartbeat, no run archive, one
 escalation per host per hook, and a reinstall by hand on each host to recover.
 Nothing about the change needed a bump; the bump was the outage.
 
-The worker reports a hook that refuses its schema version the same way it
-reports any other permanent hook failure
-([above](#a-hook-that-fails-on-every-issue-is-reported-once)); the report
-names the version the worker exports so the remedy — upgrade the extension on
-that host — is the first line, not a diagnosis.
+The worker records a hook that refuses its schema version the same way it
+records any other permanent hook failure
+([above](#a-hook-that-fails-on-every-issue-is-recorded-once-locally)); the
+record names the version the worker exports so the remedy — upgrade the
+extension on that host — is the first line, not a diagnosis.
 
 ## Session logs are sensitive — redaction is the hook author's job
 
@@ -476,6 +636,10 @@ a **deliberate** fault (a hook told to exit non-zero or hang) always inject a
 fixture hook, since your hook cannot be asked to fail on demand, and the two
 observation checks use fixture hooks that report what they saw.
 
+`host_failure` is **not** exercised here: the fixture runs where the worker
+runs, and that hook is spawned on the host — see
+[Host-level failures](#host-level-failures--callbackshost_failure).
+
 Sample output:
 
 ```text
@@ -545,6 +709,7 @@ Two differences to plan for:
 | -------------------------------- | ---------------------------------------------- |
 | `callbacks` block and validation | `worker/deno/lib/run_callbacks_config.ts`      |
 | The runner, environment, capture | `worker/deno/lib/run_callbacks.ts`             |
+| Host-failure payload and invoker | `worker/deno/lib/host_failure_hook.ts`         |
 | Context assembly and transcript  | `worker/deno/lib/run_callback_context.ts`      |
 | Exactly-once guard               | `worker/deno/lib/issue_callback_guard.ts`      |
 | Conformance fixture              | `worker/deno/lib/callback_conformance.ts`      |
