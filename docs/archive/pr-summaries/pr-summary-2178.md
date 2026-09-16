@@ -1,136 +1,200 @@
-# Make every ledger `sweptAt` reachable from `main`
-
 ## Summary
 
-`sweep-drift` could not run against the committed ledger: 38 of the 49 slices
-in `docs/audits/lib-sweep-coverage.json` recorded a `sweptAt` that was a
-feature-branch commit, and squash-merge deleted every one of them. The first
-`git diff <sweptAt> HEAD` died with a bare `fatal: bad object 00c1d959…` that
-named no slice, so the whole report — the file list the delta sweeps of #2170
-regenerate from — was unobtainable.
+`sweep-drift` could not run against the committed coverage ledger: 38 of the 49
+slices in `docs/audits/lib-sweep-coverage.json` recorded a `sweptAt` that was a
+feature-branch commit, deleted by squash-merge, so `git diff <sweptAt> HEAD`
+died with `fatal: bad object …` on a full clone of `main`. Each of those 38 is
+repointed to the commit its written record landed at on `origin/main`;
+`driftSince` now names the offending slice when a diff fails; and
+`docs/SECURITY-SCAN.md` carries the rule that `sweptAt` must be reachable from
+the default branch. Closes #2178.
 
-Three changes:
+Three parts:
 
-- **Repointed 38 `sweptAt` values** to the commit each slice's written record
-  landed at on `main`. No slice was skipped: every record has landed.
-- **`driftSince` now fails naming the slice** — a non-zero git exit is wrapped
-  in a `SweepLedgerError` carrying the chunk, its issue, the `sweptAt` git
-  could not resolve, the remedy, and git's own stderr verbatim. Git stays an
-  injected runner, so no unit test spawns.
-- **Documented the rule** in the "Bounded-sweep visibility" section of
-  `docs/SECURITY-SCAN.md`: `sweptAt` is a commit reachable from the default
-  branch, never a feature-branch commit.
+1. **Ledger.** The 38 unreachable `sweptAt` values are repointed to their
+   record's landing commit on `main`. The 11 already-reachable slices are
+   untouched. No slice was skipped — every record has landed on `main`.
+2. **Fail loud, naming the slice.** `driftSince` wraps a non-zero git exit in a
+   `SweepLedgerError` carrying the chunk, its issue, its `sweptAt`, git's own
+   stderr verbatim, and the remedy.
+3. **Docs.** The `sweptAt` reachability rule sits beside the "Bounded-sweep
+   visibility" paragraph in `docs/SECURITY-SCAN.md`.
 
-Closes #2178.
-
-### Landing commit: `--diff-filter=A`, not the last touch
+### Landing commit: the adding commit, not the last touch
 
 The issue prescribed `git log -1 --format=%H origin/main -- <record>`. That
-returns the *most recent* commit touching the record, which for 8 of the 38
-slices is a later bulk edit rather than the landing commit — `top-up-1846`
-would have moved from its true landing commit `fc2b79b1` (10 Sep) forward to
-`50be3b8f` (12 Sep), silently erasing two days of drift. Under-reporting drift
-means a rewritten module is never re-read, so this diff takes the commit that
-*added* the record (`git log --diff-filter=A -1 --format=%H origin/main --
-<record>`), falling back to the plain form. Both are `main`-reachable; the add
-commit is the one that can never hide drift.
+returns the _last_ commit to touch the record, which for 8 slices is `50be3b8f`
+(#1968/#2020) — a commit that edited those records long after they landed. Using
+it would move `sweptAt` forward past real drift and report a security ledger as
+clean when it is not. The repoint therefore uses the commit that **added** the
+record:
+
+```
+git log --diff-filter=A -1 --format=%H origin/main -- <record>
+```
+
+Both the documented remedy and the `driftSince` error message name this command,
+and it reproduces all 38 committed values exactly (verified). This is the one
+deliberate departure from the issue's literal instruction; the values still
+satisfy the acceptance criterion, and they never under-report drift.
+
+### Flow
 
 ```mermaid
-flowchart LR
-    F["feature branch<br/>00c1d959 (sweptAt)"] -. "squash-merge<br/>deletes the commit" .-> X["✗ fatal: bad object"]
-    F --> M["main<br/>9442a932 (record lands)"]
-    M --> N["sweptAt := 9442a932<br/>reachable from main"]
-    N --> D["sweep-drift runs<br/>49 blocks"]
-    style X fill:#9d0208,stroke:#6a040f,color:#fff
+flowchart TD
+    A[sweep-drift --repo REPO] --> B[parse ledger]
+    B --> C{"git diff sweptAt..HEAD"}
+    C -- exit 0 --> D[one block per slice]
+    C -- "non-zero<br/>(bad object)" --> E["SweepLedgerError:<br/>slice 12a (#1214), sweptAt, remedy"]
+    style E fill:#c1121f,stroke:#780000,color:#fff
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
 ## Evidence
 
-Backend/CLI change — no web interface to screenshot. Evidence is command
-output and tests.
+Backend/CLI change — no web interface to screenshot. Evidence is command output
+and tests.
 
-Before (on a full clone of `main`):
+**Before** (ledger as committed on the milestone base, full clone of `main`):
 
-```text
-[2026-09-16 08:27:36Z] ERROR: Command failed: fatal: bad object 00c1d95924a0adf7eaf419219ade7283b3e11480
+```
+fatal: bad object 00c1d95924a0adf7eaf419219ade7283b3e11480
 ```
 
-After:
+**After**,
+`deno run --allow-read --allow-run --allow-env --allow-sys=hostname
+worker/deno/mod.ts sweep-drift --repo "$(pwd)"`
+— exit 0, 49 blocks:
 
-```text
-$ deno run --allow-read --allow-run --allow-env --allow-sys=hostname \
-    worker/deno/mod.ts sweep-drift --repo "$(pwd)"
+```
 ## 12a (#1214) subprocess and argv construction
 sweptAt: 9442a93225c2adb41b641a1f021ad99458fb6341
 added (0):
 modified (8):
   - worker/deno/lib/claude_env.ts
-  …
-$ echo $?            # 0
-$ grep -c '^## '     # 49 blocks for 49 slices
+  - worker/deno/lib/claude_runner.ts
+  ...
+unowned (0):
 ```
 
-Reachability of every entry, after the repointing:
+Reachability, all 49 slices:
 
-```text
+```
 $ for each slice: git merge-base --is-ancestor <sweptAt> origin/main
-unreachable: []
+unreachable: 0 of 49   (was 38 of 49)
 ```
 
-Full `./quality.sh` gate: **PASSED** (21 checks; `config integration` skipped
-as it requires credentials).
+`./quality.sh` passed in full (all 21 stages; `config integration` skipped as
+usual). It took **6m48s** on this run, not the 4s the run prompt estimated.
 
 ## Reproduction
 
-- **symptom** — `sweep-drift --repo "$(pwd)"` aborted on the first slice with
-  `fatal: bad object 00c1d95924a0adf7eaf419219ade7283b3e11480`, naming no
-  slice, so no drift report could be produced at all
-- **status** — `verified` — the command was run against the unfixed tree and
-  reproduced the exact `fatal: bad object` abort; the new unit test was
-  observed failing against the unwrapped `driftSince` (`Expected actual:
-  "fatal: bad object aaaa…" to contain: "12a"`) and passing after the fix, and
-  the command now exits 0 with 49 blocks
-- **regression test** — `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)`
+- **symptom** — `sweep-drift --repo "$(pwd)"` aborted with
+  `fatal: bad object 00c1d959…` on a non-shallow clone of `main`, because 38
+  slices pointed at squash-deleted feature-branch commits; the failure named
+  only the commit, never which slice held it
+- **status** — `verified` — the worktree was a depth-1 clone, so it was
+  unshallowed (`git fetch --unshallow`) to reproduce the reported condition; the
+  new `driftSince` test was then observed failing against the unfixed
+  `lib_sweep_coverage.ts` (`FAILED | 30 passed | 1 failed`) and passing after
+  the fix, and `sweep-drift` itself was run before and after
+- **regression test** —
+  `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)`
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — `sweep-drift --repo "$(pwd)"` completes on a fresh full clone of `main` and prints one block per slice — evidence: exit 0 and `grep -c '^## '` = 49 for 49 slices — reviewer: met
-- **met** — every `sweptAt` for a record on `main` satisfies `git merge-base --is-ancestor <sweptAt> origin/main` — evidence: `docs/audits/lib-sweep-coverage.json`, 0 of 49 unreachable after the change (38 of 49 before) — reviewer: met
-- **met** — a new unit test proves an unreachable commit produces an error naming the slice's chunk id and commit — evidence: `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)` — reviewer: met
-- **met** — `deno test`, `deno lint`, `deno fmt --check` pass and `docs/SECURITY-SCAN.md` carries the rule — evidence: full `./quality.sh` gate PASSED; `docs/SECURITY-SCAN.md:766` — reviewer: met
-- **unrequested** — the documented repointing command is `git log --diff-filter=A -1 --format=%H origin/main -- <record>` rather than the issue's plain `git log -1 …` — reviewer: unrequested — reason: the plain form returns a later touch for 8 slices and would silently erase drift; the add commit is the record's true landing commit and is equally `main`-reachable
-- **unrequested** — `docs/SECURITY-SCAN.md:772-775` adds the "38 of the 49 slices" history and a sentence on `driftSince`'s error — reviewer: unrequested — reason: the rule is unpersuasive without the failure it prevents, and the error sentence tells a reader where the enforcement lives
-- **unrequested** — the error also carries the slice's issue number and the `docs/audits/lib-sweep-coverage.json:` prefix — reviewer: unrequested — reason: the ledger prefix is this module's existing error convention, and the issue number is how an operator finds the slice's record
-- **unrequested** — `stderr.trim()` replaces `stderr.length > 0`, so whitespace-only stderr now falls through to the synthetic `exited <code>` detail, and the existing `driftSince - a non-zero git exit throws with stderr` assertion was relaxed from `assertEquals` to `assertStringIncludes` — reviewer: unrequested — reason: the relaxation is the documented consequence of wrapping the message (the test still asserts git's stderr survives verbatim); the trim stops a blank message replacing a useful one, and is covered by the new empty-stderr test
+- **met** — `sweep-drift --repo "$(pwd)"` completes on a fresh full clone of
+  `main` and prints one block per slice — evidence: exit 0, 49 `## <chunk>`
+  blocks, no `fatal: bad object`; `worker/deno/commands/sweep_drift.ts` —
+  reviewer: met
+- **met** — every `sweptAt` for a record on `main` satisfies
+  `git merge-base --is-ancestor <sweptAt> origin/main` — evidence: 38 values
+  repointed in `docs/audits/lib-sweep-coverage.json`, 49/49 now pass — reviewer:
+  met
+- **met** — a new unit test proves an unreachable commit produces an error
+  naming the slice's chunk id and commit — evidence:
+  `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)`
+  — reviewer: met
+- **met** — `deno test`, `deno lint`, `deno fmt --check` pass and
+  `docs/SECURITY-SCAN.md` carries the rule — evidence: full `./quality.sh` green
+  (deno tests / lint / type check / fmt all PASSED); rule at
+  `docs/SECURITY-SCAN.md:766` — reviewer: partial — reason: the reviewer ran
+  only the two touched suites and scored the test scope partial; the full gate
+  was run here and passed
+- **unrequested** — the default git runner is now built per repo
+  (`defaultSweepGitRunner` → `sweepGitRunnerFor(repoRoot)`, pinning git's cwd) —
+  reviewer: unrequested — reason: `driftSince` passes repo-relative pathspecs,
+  so run from any directory but the repo root every slice reported an empty
+  drift — a clean bill of health for a ledger nobody had diffed, which is
+  precisely the silent empty report this issue's Failure Detection forbids
+- **unrequested** — a new process-spawning test builds a throwaway git repo —
+  reviewer: unrequested — reason: it is the only way to prove the cwd fix;
+  `driftSince`'s own tests remain spawn-free as the issue requires, and the file
+  header records the carve-out
+- **unrequested** — the `SECURITY-SCAN.md` paragraph also documents
+  `driftSince`'s error wrapping — reviewer: unrequested — reason: the rule and
+  the failure that enforces it are useless apart; three lines
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — the printed remedy omitted `origin/main`, so an operator running it from the feature branch the failure is hit on would record another feature-branch commit — reproducing the defect — evidence: `worker/deno/lib/lib_sweep_coverage.ts:376` — reason: fixed in this diff; the remedy is now `git log --diff-filter=A -1 --format=%H origin/main -- <record>`, matching `docs/SECURITY-SCAN.md` exactly
-- **violation** — the new test pinned that unanchored remedy — evidence: `worker/deno/tests/lib_sweep_coverage_test.ts:746` — reason: fixed in this diff; the assertion now pins the anchored command
-- **violation** — the modified empty-stderr branch had no test — evidence: `worker/deno/lib/lib_sweep_coverage.ts:368` — reason: fixed in this diff by `driftSince - a non-zero git exit with no stderr still names the slice (Issue #2178)`
-- **violation** — the ledger data half of the fix ships with no regression test, so a future slice recorded from a feature branch returns the ledger to unrunnable — evidence: `docs/audits/lib-sweep-coverage.json:63` — reason: stands. The issue states this directly: reachability of the real ledger cannot be asserted in a unit test without spawning git, so `sweep-drift`'s own loud failure is the detection point. Enforcing reachability in `parseCoverageLedger` would make every ledger parse spawn git, which the injected-runner design exists to avoid
-- **violation** — `docs/archive/pr-summaries/pr-summary-2178.md` was absent — evidence: repository tree — reason: fixed in this diff; this file. The one existing-test modification (`assertEquals` → `assertStringIncludes`) is documented in the `unrequested` entry above
-- **clean** — Australian English throughout; no hidden or credential path staged; tests call `driftSince` through the existing injected `SweepGitRunner` seam rather than grepping source, spawning, or touching the clock; fail-loud preserved (`SweepLedgerError` still thrown, git's stderr kept verbatim); logic stays in `worker/deno/lib/`; `@std/assert` only; commit carries the `Vibe-Coder-Run-Id` trailer; all 38 replaced values were genuinely unreachable, so no reachable `sweptAt` was advanced and no real drift was erased
-
-## Known residual
-
-The three delta records still cite their original feature-branch commits in
-prose — `docs/audits/security-sweep-1610-lib-delta-12a-12c.md:11`,
-`security-sweep-1611-lib-delta-12d-12f.md:11` and
-`security-sweep-1612-commands-setup-delta.md:11`. Those sentences are a
-historical statement of the tree the sweep was actually read at, so rewriting
-them would falsify the record. `docs/audits/lib-sweep-coverage.json` is the
-machine-read source of truth and is now correct.
+- **violation** — the new test inherited the host's git config, so a developer
+  with `commit.gpgsign=true` globally got a red suite — evidence:
+  `worker/deno/tests/sweep_drift_command_test.ts:106` — reason: fixed here; the
+  fixture now pins `commit.gpgsign false`, matching
+  `worktree_progress_test.ts:40`. Re-run under the reviewer's exact repro
+  (`GIT_CONFIG_GLOBAL` with `gpgsign = true`): `5 passed | 0 failed`
+- **violation** — the fixture's git helper discarded stderr and asserted only on
+  the exit code, so a failure reported no reason — evidence:
+  `worker/deno/tests/sweep_drift_command_test.ts:100` — reason: fixed here;
+  stderr is piped and carried into the assertion message
+- **violation** — new public function `sweepGitRunnerFor` had no error-path
+  test, leaving the `!result.ok` branch unexercised — evidence:
+  `worker/deno/commands/sweep_drift.ts:46` — reason: fixed here; added
+  `sweepGitRunnerFor - a spawn failure is reported, never swallowed (Issue #2178)`
+- **violation** — no `docs/archive/pr-summaries/pr-summary-2178.md` — evidence:
+  absent from commit `53e6cc96` — reason: fixed here; this file
+- **violation** — advisory: the new test spawns real `git` in the unit pass,
+  which the prose reserves for integration tests — evidence:
+  `worker/deno/tests/sweep_drift_command_test.ts:97` — reason: stands. The
+  reviewer identified this as a prose-vs-classifier gap affecting five existing
+  unit-pass files (`git_timeout_test.ts`, `worktree_progress_test.ts` and three
+  others), not this diff; `runGitCommand` offers no injectable seam at this
+  layer, and the test costs 0.6s, well inside the 10s target
+- **clean** — ledger repoint correct and complete (every value an ancestor of
+  `origin/main`, no slice left behind); docs-with-code (renamed export has zero
+  stale references, docs included); fail-loud (`describeDriftGitFailure` carries
+  git's stderr verbatim, empty-stderr fallback preserved, `driftSince` still
+  throws rather than degrading to an empty report); test quality (real code,
+  real assertions, explicit fail-direction comments, the #1609 assertion widened
+  rather than deleted); parallel safety (no `Deno.env.set`, no `Deno.chdir`,
+  uniquely-prefixed temp dir removed in `finally`); commit safety (no hidden or
+  credential paths staged, run-id trailer present); Australian English; KISS/DRY
+  (a factory replacing a constant, one named helper rather than two inlined
+  messages); `deno fmt`/`lint`/`check` clean
 
 ## Test Plan
 
-- Added `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)` — injected runner returns `code: 128, stderr: "fatal: bad object …"`; asserts the message names the chunk (`12a`), the issue, the commit, git's stderr, the reachability rule and the anchored remedy.
-- Added `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - a non-zero git exit with no stderr still names the slice (Issue #2178)` — covers the empty-stderr branch: still throws, still names the slice, falls back to `git diff --diff-filter=A exited 128`.
-- Modified `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - a non-zero git exit throws with stderr (Issue #1609)` — `assertEquals` on the whole message relaxed to `assertStringIncludes`, because the message is now wrapped in the slice's context. Git's stderr is still asserted to survive verbatim.
-- Unchanged and still passing: the `driftSince` happy-path and empty-diff tests, plus the ledger-coverage gate that walks the real tree (32 tests in the file, 0 failures).
-- Full `./quality.sh` gate: PASSED.
+Added:
+
+- `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)`
+  — injected runner returns `code: 128, stderr: "fatal: bad object …"`; asserts
+  the message names the slice label, the commit, the reachability rule and the
+  record. Observed red against the unfixed code.
+- `worker/deno/tests/sweep_drift_command_test.ts::sweepGitRunnerFor - resolves repo-relative pathspecs against --repo, not the process cwd (Issue #2178)`
+  — throwaway repo; observed red with the `cwd` option removed.
+- `worker/deno/tests/sweep_drift_command_test.ts::sweepGitRunnerFor - a spawn failure is reported, never swallowed (Issue #2178)`
+  — covers the `!result.ok` branch.
+
+Modified (documented, per TDD rule 2):
+
+- `worker/deno/tests/lib_sweep_coverage_test.ts::driftSince - a non-zero git exit throws with stderr (Issue #1609)`
+  — the error message is deliberately wider now, so the exact-equality assertion
+  on the bare stderr became a containment assertion. The stderr it protected is
+  still asserted; the test was not removed, and a code comment at the test
+  records why.
+
+Full `./quality.sh`: PASSED (21 stages, `config integration` skipped).

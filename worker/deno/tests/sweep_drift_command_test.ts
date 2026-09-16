@@ -9,7 +9,7 @@
  * Australian English spelling throughout.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   collectSweepDrift,
   formatSweepDriftReport,
@@ -94,18 +94,27 @@ Deno.test("sweepGitRunnerFor - resolves repo-relative pathspecs against --repo, 
   // empty drift — a clean report for a ledger nobody had diffed.
   const repoRoot = await Deno.makeTempDir({ prefix: "sweep-drift-" });
   const git = async (...args: string[]) => {
-    const { code } = await new Deno.Command("git", {
+    const { code, stderr } = await new Deno.Command("git", {
       args,
       cwd: repoRoot,
       stdout: "null",
-      stderr: "null",
+      stderr: "piped",
     }).output();
-    assertEquals(code, 0, `git ${args.join(" ")} failed`);
+    // Carry git's own reason, never just the exit code: a fixture that fails
+    // for an unrelated reason must say which one.
+    assertEquals(
+      code,
+      0,
+      `git ${args.join(" ")} failed: ${new TextDecoder().decode(stderr)}`,
+    );
   };
   try {
     await git("init", "--quiet");
     await git("config", "user.email", "test@example.com");
     await git("config", "user.name", "Test");
+    // The fixture must not inherit the host's signing config, or a developer
+    // with `commit.gpgsign=true` globally gets a red suite for no reason.
+    await git("config", "commit.gpgsign", "false");
     await Deno.mkdir(`${repoRoot}/sub`);
     await Deno.writeTextFile(`${repoRoot}/sub/a.txt`, "one\n");
     await git("add", "-A");
@@ -127,4 +136,19 @@ Deno.test("sweepGitRunnerFor - resolves repo-relative pathspecs against --repo, 
   } finally {
     await Deno.remove(repoRoot, { recursive: true });
   }
+});
+
+Deno.test("sweepGitRunnerFor - a spawn failure is reported, never swallowed (Issue #2178)", async () => {
+  // The `!result.ok` branch is the only route by which a timeout or a spawn
+  // failure reaches driftSince's loud SweepLedgerError. A directory that does
+  // not exist makes the spawn throw, which runGitCommand reports as a failed
+  // Result rather than a git exit code.
+  const result = await sweepGitRunnerFor("/nonexistent-sweep-drift-repo")([
+    "diff",
+    "--name-only",
+    "HEAD",
+  ]);
+  assertEquals(result.code, 1);
+  assertEquals(result.stdout, "");
+  assert(result.stderr.length > 0, "the spawn failure must carry a reason");
 });
