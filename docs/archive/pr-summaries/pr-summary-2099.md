@@ -46,13 +46,17 @@ runs only at `setup.sh` time and its `.gitignore` edit is uncommitted;
 which reverts that edit and would then delete an untracked, unignored
 `graft/`. The exclude file is per-clone, survives reset/clean, and can never be
 staged — so it is the entry that actually keeps the graph between runs. The
-enforcer pattern is the separate guarantee that it is never committed.
+enforcer pattern is the separate guarantee that it is never committed — and
+this repository's own committed root `.gitignore` now carries the line too,
+because `graft/` is not hidden and the file's `.*` rule never reached it.
 
 **`graft/` and the scoped ignored clean.** `ignored_path_clean.ts` erases
 `EXECUTABLE_IGNORED_DIRS` at any depth on every run. The documented layout is
 `graft/.graph/wiring.json`; neither `graft` nor `.graph` is in that list, and
-`the scoped ignored clean erases no part of the graft/ layout` pins it against
-the real `ignoredExecutableCleanArgs()` pathspecs.
+`the scoped ignored clean erases no part of the graft/ layout` pins it two
+ways — `EXECUTABLE_IGNORED_DIRS` membership, and the real pathspecs
+`ignoredExecutableCleanArgs()` emits — so neither a change to the list nor a
+change to the pathspec syntax can erase the graph unnoticed.
 
 **Not confirmed on the image — stated plainly.** Graft is **not installed** in
 this container (`which graft` → not found; no `graft*` binary under `/opt`,
@@ -75,22 +79,34 @@ fixed on the default branch by #2140 and #2146 and no longer fail here. The
 only skip is `config integration`, which the gate skips on a host with no
 integration config and which this diff does not touch.
 
-## Standards Review
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — `enabled: false` → status `off`, no subprocess spawned — evidence: `worker/deno/tests/graft_context_test.ts::collectGraftContext - disabled returns off and spawns nothing` (asserts `runner.calls.length === 0`, `git.calls.length === 0`, nothing logged) — reviewer: met
+- **met** — happy path with a fake runner and a fixture `wiring.json` → status `ok` with `buildSeconds`, `bundleChars`, `nodeCount`, `callEdgeCount` and the bundle text — evidence: `worker/deno/tests/graft_context_test.ts::collectGraftContext - builds, asks, and reports the figures` (all five fields asserted; `nodeCount: 3`, `callEdgeCount: 2` from a four-edge fixture, so only `calls` edges are counted) — reviewer: met
+- **met** — every failure mode (build fail, build timeout, ask timeout, spawn error, missing `wiring.json`) → status `failed`, one `[GRAFT_UNAVAILABLE]` warn line, no throw — evidence: `worker/deno/tests/graft_context_test.ts::collectGraftContext - build non-zero exit fails without asking`, `- build timeout fails and still reports buildSeconds`, `- ask timeout fails with the graph figures present`, `- a spawn error (binary missing) fails without throwing`, `- missing wiring.json fails`, each asserting `warns.length === 1` — reviewer: met
+- **met** — `graft` is invoked with `DO_NOT_TRACK=1`, `build --no-gitignore --no-ignore`, `ask --source`, the 300 s / 30 s limits and no `--lsp` — evidence: `worker/deno/tests/graft_context_test.ts::collectGraftContext - invokes graft with the documented argv, env and limits` (exact argv arrays, `cwd`, `env.DO_NOT_TRACK === "1"`, `timeoutMs` 300_000 / 30_000 as literals, and both calls checked for `--lsp`) — reviewer: met
+- **met** — `/graft/` is appended to the git-resolved `info/exclude` exactly once across repeated calls, and is present in `REQUIRED_GITIGNORE_PATTERNS` — evidence: `worker/deno/tests/graft_context_test.ts::collectGraftContext - writes /graft/ to info/exclude exactly once across two calls`, `- resolves an absolute git-path answer (lane worktree)`, and `worker/deno/tests/gitignore_enforcer_test.ts::ensureGitignorePatterns - /graft/ is written exactly once across two passes (Issue #2099)` — reviewer: met
+- **met** — `deno task check`, `deno lint`, `deno task test` and the spawn-chokepoint scan pass, and the PR summary carries the `## Acceptance Criteria` and `## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — a code change owes a docs change: the operator text asserted present-tense runtime behaviour ("logs one `[GRAFT_UNAVAILABLE]` line", "records a `failed` Graft status") for a runner that has no caller yet, so an operator told to grep the log would find silence and read it as success — evidence: `docs/CONFIGURATION.md:1751` — reason: fixed here; both new paragraphs now carry the same "this is what #2099 implements, and #2060 wires in" hedge the neighbouring limits paragraph already had
-- **violation** — the same section contradicted itself: twelve lines above, "enabling the switch today changes nothing" — evidence: `docs/CONFIGURATION.md:1739` vs `:1751` — reason: fixed here by the same hedge
-- **violation** — a guarantee asserted on the weaker of the two mechanisms: "`/graft/` is in the canonical `.gitignore` pattern set … so the graph can never be committed", contradicted by this diff's own module header, which explains the `.gitignore` edit is uncommitted and reverted by the per-run `git reset --hard` — evidence: `docs/CONFIGURATION.md:1779` — reason: fixed here; the paragraph now says which of the two entries is actually in force during a run (`info/exclude`) and which is the belt to its braces
-- **violation** — test coverage expectations: no test pinned the redaction the sweep record claims for `formatGraftContextSection` — a credential planted in the bundle was never asserted redacted — evidence: `worker/deno/tests/graft_context_test.ts:795` — reason: fixed here; `a credential in the bundle is redacted before it is fenced (Issue #2099)` plants a token-shaped string and asserts it does not survive into the section
-- **violation** — test coverage expectations: the `needsNewline` branch was never exercised, so an `info/exclude` whose last pattern has no trailing newline — where a missing `\n` would fuse `/graft/` onto the operator's own entry and silently break both — went untested — evidence: `worker/deno/lib/graft_context.ts:464` — reason: fixed here; `an exclude file with no trailing newline is not fused onto (Issue #2099)` asserts both lines survive intact
-- **violation** — the sweep slice was anchored to `9bea06e552…`, which is not an object in this repository, so `driftSince` would throw for that slice — evidence: `docs/audits/lib-sweep-coverage.json:1612` — reason: fixed here; `sweptAt` now names `b7b29797…`, the empty-bundle commit the record's fail-direction claim actually depends on. (31 of the 51 pre-existing slices carry equally unresolvable anchors from squash-merged history; that is not this change's to fix)
-- **violation** — DRY: a second `truncateUtf8(text, maxBytes)` with the same contract already exists at `worker/deno/lib/security.ts:248` — evidence: `worker/deno/lib/graft_context.ts:630` — reason: **stands**. The existing one is module-private and strips a trailing replacement character rather than walking back over continuation bytes, so it is lossy on input that legitimately ends in U+FFFD; lifting it means editing `security.ts`, which this issue does not ask for and Change Scope forbids. Recorded rather than silently accepted
-- **violation** (minor) — production reads time through `lib/clock.ts` — evidence: `worker/deno/lib/graft_context.ts:242`, `:641` — reason: **stands**. `performance.now()` here measures a *duration* for a reported figure, not a deadline; the clock seam exists so tests can drive watchdogs without sleeping, and no watchdog is armed here — the two timeouts are enforced by `runWithTimeout`, which already has its own seam and whose limits the tests assert on what the injected runner was handed
-- **violation** (minor) — `formatGraftContextSection` duplicates the five-line body of `formatCodebaseMapSection` — evidence: `worker/deno/lib/graft_context.ts:556` vs `worker/deno/lib/codebase_map.ts:729` — reason: **stands**, for the same Change Scope reason as the `truncateUtf8` entry above; the issue asked for a section copying that shape
-- **violation** (minor) — the test harness's `fakeRunner` throws "unexpected spawn" as an over-spawn guard, but production catches every seam throw and converts it to `failed`, so the guard only bites in cases that separately assert `calls.length` — evidence: `worker/deno/tests/graft_context_test.ts:87` — reason: **stands**. It is a belt-and-braces guard, not an assertion any case relies on; the cases that care about spawn counts assert them directly, which is the stronger check
-- **clean** — the three surfaces that enumerate `.gitignore` patterns (`CODING-STANDARDS.md:535`, `prompts/coding_guidelines/`, `SECURITY.md:675`) were checked against `/graft/` joining `REQUIRED_GITIGNORE_PATTERNS` and need no update: they enumerate the **hidden-path allowlist** and the forbidden secret/key patterns, not the whole set, and `/graft/` is a build artefact — neither hidden nor secret-bearing. The related observation that the enforcer runs for every monitored repo regardless of `graft_context.enabled`, so a repo that never runs Graft gains a root-anchored ignore of a directory it never creates, is accurate, harmless, and exactly what the issue asked for
-- **clean** — Australian English throughout, no US spellings in any added line; fail-loud with no catch-and-ignore (the only swallowed exception is `AlreadyExists` on `mkdir`; a missing or wrong-shaped index errors rather than degrading to a zero count; a zero-exit ask that printed nothing is a failure, not `ok`); subprocess chokepoints — no `Deno.Command` in the module, `graft` only via `runWithTimeout` and `git` only via `runGitCommand`, both bounded and both injectable; injection surface — the query is one argv element and never a shell, the bundle reaches the prompt only through `sanitiseDelimiterPatterns` inside a `codeFenceFor` fence; path handling — both filesystem paths read and appended link-free with planted-symlink tests that also assert the link target is untouched, and an empty `--git-path` answer refused before anything spawns; test quality — 34 cases in 40 ms, no sleeps, no absolute-millisecond assertions, no real spawns, no source-grepping; commit safety — no hidden path staged outside the allowlist, no `git add -f`, every commit carries the run-id trailer
+- **violation** — the canonical pattern set gained `/graft/` but this repository's own committed root `.gitignore` did not, and `graft/` is not hidden so the file's `.*` rule never reached it — the #3660 precedent lands a non-hidden pattern on both surfaces and pins the root file by test — evidence: `.gitignore:48` — reason: fixed here; `/graft/` is now in the root file and `root .gitignore - ignores Graft's code graph (Issue #2099)` pins it, including that a nested `graft/` directory in our own source stays tracked
+- **violation** — the security-sweep record misstated its own subject: "three fixed regexes, all linear: `/\s+/g` over a bounded diagnostic". The module has one regex literal of its own, and its input is *unbounded* subprocess stderr — `detail()` collapses first and truncates afterwards — evidence: `docs/audits/security-sweep-2099-graft-context.md:37` — reason: fixed here; the row now states the real count, that the bound is applied after the scan, and why `\s+` is linear regardless
+- **violation** — the operator cause list for `[GRAFT_UNAVAILABLE]` omitted the `info/exclude` resolve/read/append failure — the one cause that fires before anything is spawned, so an operator hitting it would see a line matching no documented cause — evidence: `docs/CONFIGURATION.md:1752` — reason: fixed here; it is now the first cause listed
+- **violation** — the `graft/`-survives-the-clean invariant was pinned only on the *pathspec string format* `ignoredExecutableCleanArgs()` emits, so changing that syntax would leave the test green while `graft/` was erased — evidence: `worker/deno/tests/graft_context_test.ts:879` — reason: fixed here; the case now asserts `EXECUTABLE_IGNORED_DIRS` membership **and** the generated pathspecs, so neither a list change nor a syntax change can pass unseen
+- **violation** — "fake the external service, do not assert the request" (the Issue #470 scar): the argv/env/limits case asserts the literal request text of a CLI that is not installed on this image, so no execution has ever confirmed those subcommands and flags — evidence: `worker/deno/tests/graft_context_test.ts:209` — reason: **stands**, and named as the deliberate trade it is. Acceptance criterion 4 asks for exactly this assertion, and with no binary to run there is no stronger check available here; the PR summary and the module header both record the flags as an unverified assumption from #2060 rather than an observed fact
+- **violation** — `entriesOf` accepts an array *or* any object for `nodes`/`edges`, so a hypothetical summary-shaped index (`{"nodes":{"total":7}}`) would yield a confident wrong figure and a `status: "ok"` — evidence: `worker/deno/lib/graft_context.ts:563` — reason: **stands**. The real shape could not be observed (no binary on the image) and the two accepted shapes are the two the index is plausibly written in; every other shape fails loud. Narrowing it to the observed shape is #2060's job, once a real `wiring.json` exists to observe
+- **violation** (minor) — DRY: a module-private `truncateUtf8` with the same contract already exists at `worker/deno/lib/security.ts:248` — evidence: `worker/deno/lib/graft_context.ts:630` — reason: **stands**. That one strips a trailing replacement character rather than walking back over continuation bytes, so it is lossy on input legitimately ending in U+FFFD; lifting it means editing `security.ts`, which this issue does not ask for and Change Scope forbids
+- **violation** (minor) — production reads time through `lib/clock.ts` — evidence: `worker/deno/lib/graft_context.ts:242` — reason: **stands**. `performance.now()` here measures a *duration* for a reported figure, not a deadline; the clock seam exists so tests can drive watchdogs without sleeping, and the two real deadlines are enforced by `runWithTimeout`, which has its own seam
+- **clean** — Australian English throughout, with no Americanism anywhere in the patch including the new audit record
+- **clean** — fail-loud: every fault path returns `status: "failed"` with exactly one `warn` line (asserted per case); a zero-exit ask with an empty bundle is a failure, not `ok`; a missing or wrong-shaped index errors rather than degrading to a zero count; the only swallowed exception is `AlreadyExists` from `mkdir -p`; a throwing seam is caught and reported, never propagated
+- **clean** — subprocess chokepoints: no `Deno.Command` in the module, `graft` only via `runWithTimeout` and `git` only via `runGitCommand`, both bounded and both injectable; argv is literal arrays plus one query element, no shell and no concatenation; `DO_NOT_TRACK=1` is merged onto the inherited environment rather than clearing it, so the child keeps `PATH`
+- **clean** — secure coding: both filesystem paths are read and appended link-free with planted-link tests, an empty `--git-path` answer is refused before anything spawns, the query is cut on a code-point boundary to keep `execve` off `E2BIG`, and the bundle reaches the prompt only through `sanitiseDelimiterPatterns` (which redacts secrets) inside a fence it cannot close — pinned by a planted-token test
+- **clean** — test quality: 59 tests across the two suites (34 in `graft_context_test.ts`), unit-scoped, parallel-safe, temp dirs only, no real spawn, no sleep, no absolute wall-clock threshold, no source-grepping; every export has happy-path, error-path and edge coverage
+- **clean** — commit safety: no hidden path staged outside the allowlist, no `git add -f`, every commit carries the run-id trailer and references the issue
+- **clean** — docs owed by the code change: the three surfaces that enumerate `.gitignore` patterns (`CODING-STANDARDS.md`, `prompts/coding_guidelines/`, `SECURITY.md`) enumerate the hidden-path allowlist and the forbidden secret patterns, not the whole set, so a non-hidden build artefact needs no entry there
 
 ## Test Plan
 
@@ -123,10 +139,14 @@ Added `worker/deno/tests/graft_context_test.ts` (34 tests, none spawning):
   `<document source="graft ask --source">`; a bundle carrying delimiter-shaped
   text cannot close the fence; a credential planted in the bundle is redacted
   before it is fenced
-- the scoped ignored clean's real pathspecs erase no part of the `graft/`
-  layout
+- the scoped ignored clean erases no part of the `graft/` layout — asserted on
+  `EXECUTABLE_IGNORED_DIRS` membership and on the real pathspecs
 
 Extended `worker/deno/tests/gitignore_enforcer_test.ts`: `/graft/` in the
 canonical pattern list, `graft/.graph/wiring.json` ignored while
 `src/graft/parser.ts` is not (the pattern is root-anchored), and `/graft/`
-written exactly once across two enforcement passes.
+written exactly once across two enforcement passes. Added
+`root .gitignore - ignores Graft's code graph (Issue #2099)`, which runs the
+committed root `.gitignore` through `git check-ignore` and asserts
+`graft/.graph/wiring.json` is ignored while source under a nested `graft/`
+directory is not.

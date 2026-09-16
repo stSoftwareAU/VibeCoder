@@ -458,6 +458,31 @@ Deno.test("root .gitignore - ignores private key material (Issue #3660)", async 
   });
 });
 
+Deno.test("root .gitignore - ignores Graft's code graph (Issue #2099)", async () => {
+  // `graft/` is not hidden, so the `.*` rule does not reach it: this repo is a
+  // monitored repo too, and an enabled host builds a graph in this very
+  // checkout. The committed file must carry the line the enforcer requires.
+  const rootGitignore = new URL("../../../.gitignore", import.meta.url);
+  const contents = await Deno.readTextFile(rootGitignore);
+
+  await withTempDir(async (dir) => {
+    await initGitRepo(dir);
+    await Deno.writeTextFile(`${dir}/.gitignore`, contents);
+
+    assertEquals(
+      await gitCheckIgnore(dir, "graft/.graph/wiring.json"),
+      true,
+      "root .gitignore must ignore the Graft code graph",
+    );
+    // Root-anchored, so source of our own named `graft` stays tracked.
+    assertEquals(
+      await gitCheckIgnore(dir, "worker/deno/lib/graft/parser.ts"),
+      false,
+      "root .gitignore must not ignore source under a nested 'graft' directory",
+    );
+  });
+});
+
 Deno.test("ensureGitignorePatterns - .markdownlint-cli2.jsonc is NOT ignored", async () => {
   await withTempDir(async (dir) => {
     await initGitRepo(dir);

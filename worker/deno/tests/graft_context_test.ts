@@ -22,7 +22,10 @@ import {
   utf8Length,
 } from "../lib/graft_context.ts";
 import type { GraftGitRunner, GraftRunner } from "../lib/graft_context.ts";
-import { ignoredExecutableCleanArgs } from "../lib/ignored_path_clean.ts";
+import {
+  EXECUTABLE_IGNORED_DIRS,
+  ignoredExecutableCleanArgs,
+} from "../lib/ignored_path_clean.ts";
 import type { Result } from "../types.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 
@@ -874,10 +877,16 @@ Deno.test("formatGraftContextSection - a credential in the bundle is redacted be
 // ---------------------------------------------------------------------------
 
 Deno.test("the scoped ignored clean erases no part of the graft/ layout (Issue #1443)", () => {
-  // The real pathspecs the per-run clean is given. Every component of the
-  // `graft/` layout must be absent from them, at any depth.
+  // Two assertions, deliberately: the membership one survives a change to the
+  // pathspec syntax, and the pathspec one survives a change to how the list is
+  // expanded. Either alone could stay green while `graft/` was erased.
   const args = ignoredExecutableCleanArgs();
   for (const dir of GRAFT_LAYOUT_DIRS) {
+    assertEquals(
+      EXECUTABLE_IGNORED_DIRS.includes(dir),
+      false,
+      `'${dir}' must not be in EXECUTABLE_IGNORED_DIRS`,
+    );
     assertEquals(
       args.includes(`:(glob)**/${dir}`),
       false,
