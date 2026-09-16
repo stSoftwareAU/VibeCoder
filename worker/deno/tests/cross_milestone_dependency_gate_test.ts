@@ -19,6 +19,10 @@ import {
   createOpenMilestoneLookup,
   isDependencyBlocked,
 } from "../lib/issue_finder_common.ts";
+import { collectLowPriorityCandidates } from "../lib/collect_low_priority_candidates.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { IssueCache } from "../lib/issue_cache.ts";
+import type { WorkerConfig } from "../types.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const CANDIDATE = 2173;
@@ -313,4 +317,130 @@ Deno.test("createOpenMilestoneLookup propagates a failed listing", async () => {
     () => Promise.reject(new Error("gh api failed")),
   );
   await assertRejects(() => Promise.resolve(isOpen("Foundation")));
+});
+
+Deno.test("createOpenMilestoneLookup retries after a failed listing", async () => {
+  let attempt = 0;
+  const isOpen = createOpenMilestoneLookup(REPO, undefined, () => {
+    attempt++;
+    return attempt === 1
+      ? Promise.reject(new Error("gh api failed"))
+      : Promise.resolve(JSON.stringify([{ title: "Foundation" }]));
+  });
+  await assertRejects(() => Promise.resolve(isOpen("Foundation")));
+  // A transient failure is not cached — the next candidate gets a real answer.
+  assertEquals(await isOpen("Foundation"), true);
+  assertEquals(attempt, 2);
+});
+
+// ---------------------------------------------------------------------------
+// The scope is actually wired at a collector call site
+// ---------------------------------------------------------------------------
+
+/** A worker config with one repo and the low-priority label configured. */
+function makeConfig(): WorkerConfig {
+  return {
+    ...buildDefaultWorkerConfig(),
+    repos: ["owner/repo"],
+    allowedAuthors: ["alice"],
+    shuffleRepos: false,
+    workDir: Deno.makeTempDirSync({ prefix: "cross-milestone-workdir-" }),
+  };
+}
+
+/**
+ * A `gh` stub for one low-priority candidate in milestone "Dependant" whose
+ * body names a closed dependency (#10) in milestone "Foundation". Every call
+ * is recorded so the test can assert the gate adds no per-candidate call
+ * beyond the dependency's own `issue view`.
+ */
+function createCollectorGh(openMilestones: string[], calls: string[]) {
+  return (args: string[]): Promise<string> => {
+    const command = args.join(" ");
+    calls.push(command);
+    if (command.includes("milestones?state=open")) {
+      return Promise.resolve(
+        JSON.stringify(
+          openMilestones.map((title) => ({ title, closed_issues: 1 })),
+        ),
+      );
+    }
+    if (command.includes("sub_issues")) return Promise.resolve("[]");
+    if (command.includes("issue list")) {
+      return Promise.resolve(JSON.stringify([{
+        number: 42,
+        title: "Dependant work",
+        url: "https://github.com/owner/repo/issues/42",
+        assignees: [],
+        labels: [{ name: "low-priority" }],
+        createdAt: "2024-03-01T00:00:00Z",
+        author: { login: "alice" },
+        milestone: { title: "Dependant" },
+      }]));
+    }
+    if (command.includes("timeline")) {
+      return Promise.resolve(JSON.stringify([{
+        event: "labeled",
+        label: { name: "low-priority" },
+        actor: { login: "alice" },
+        created_at: "2024-03-01T00:00:00Z",
+      }]));
+    }
+    if (command.includes("issue view 10")) {
+      return Promise.resolve(JSON.stringify({
+        number: 10,
+        state: "CLOSED",
+        title: "Foundation work",
+        milestone: { title: "Foundation" },
+      }));
+    }
+    if (command.includes("issue view")) {
+      return Promise.resolve(JSON.stringify({
+        title: "Dependant work",
+        body: "Depends on #10",
+      }));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+async function collectWithOpenMilestones(
+  openMilestones: string[],
+  calls: string[],
+) {
+  const gh = createCollectorGh(openMilestones, calls);
+  const cache = new IssueCache(
+    Deno.makeTempDirSync({ prefix: "cross-milestone-cache-" }),
+    600,
+  );
+  return await collectLowPriorityCandidates(
+    "owner/repo",
+    makeConfig(),
+    { githubUser: "bot", ghCommandFn: gh, cache },
+    [],
+    [],
+    createIssueFetcher(gh),
+    [],
+  );
+}
+
+Deno.test("a collector holds a candidate whose dependency's milestone is open", async () => {
+  const calls: string[] = [];
+  const result = await collectWithOpenMilestones(
+    ["Foundation", "Dependant"],
+    calls,
+  );
+  assertEquals(result.candidates.length, 0);
+  // Exactly one open-milestone listing for the repo, not one per candidate.
+  assertEquals(
+    calls.filter((c) => c.includes("milestones?state=open")).length,
+    1,
+  );
+});
+
+Deno.test("the same collector releases the candidate once that milestone closes", async () => {
+  const calls: string[] = [];
+  const result = await collectWithOpenMilestones(["Dependant"], calls);
+  assertEquals(result.candidates.length, 1);
+  assertEquals(result.candidates[0]?.number, 42);
 });

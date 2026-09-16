@@ -58,7 +58,7 @@ When **all** issues in a milestone are completed (each milestone-issue PR has au
 ### 🔗 Issue relationships the worker honours
 
 1. **Forward dependencies ("Depends on" / "Blocked by")**  
-   In the issue body, text such as `Depends on ` or `Blocked by ` (and cross-repo forms) declares that this issue must not be worked on until issue is **closed**. The worker skips any issue that has an open dependency.
+   In the issue body, text such as `Depends on ` or `Blocked by ` (and cross-repo forms) declares that this issue must not be worked on until that issue is **closed** — and, when the dependency belongs to another milestone, until that milestone is closed too (see [Mixed dependencies and milestones](#-mixed-dependencies-and-milestones)). The worker skips any issue that has an open dependency.
 
 2. **Parent/child (sub-issues)**  
    A **parent** issue lists **children** (sub-issues) via:

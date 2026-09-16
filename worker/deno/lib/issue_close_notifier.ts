@@ -38,6 +38,7 @@ import {
 } from "./audit_mutation_classifier.ts";
 import { classifyIssueLifecycle } from "./gh_issue_lifecycle.ts";
 import type { IssueCache } from "./issue_cache.ts";
+import { ISSUE_STATE_CACHE_PREFIX } from "./issue_cache_keys.ts";
 import {
   type ProcessedIssueRegistry,
   sharedProcessedIssues,
@@ -73,7 +74,7 @@ export function closeInvalidatedCacheKeys(issueNumber: number): string[] {
     `issue_labels_${issueNumber}`,
     `pr_linkage_open_v2_${issueNumber}`,
     // Issue #1818: the dependency fetcher's cached state for this issue.
-    `issue_state_v1_${issueNumber}`,
+    `${ISSUE_STATE_CACHE_PREFIX}${issueNumber}`,
   ];
 }
 

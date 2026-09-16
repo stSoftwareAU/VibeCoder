@@ -35,6 +35,11 @@ import type {
 import type { FilterableIssue } from "./issue_filter.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import { fetchOpenMilestoneClosedCounts } from "./issue_query.ts";
+import {
+  ISSUE_BODY_CACHE_PREFIX,
+  ISSUE_STATE_CACHE_PREFIX,
+  ISSUE_SUB_ISSUES_CACHE_PREFIX,
+} from "./issue_cache_keys.ts";
 
 /**
  * Options for the issue finder.
@@ -316,12 +321,14 @@ export function createIssueFetcher(
   };
 }
 
-/** Cache key prefix for a referenced issue's state (Issue #1818). */
-export const ISSUE_STATE_CACHE_PREFIX = "issue_state_v1_";
-/** Cache key prefix for a referenced issue's body (Issue #1818). */
-export const ISSUE_BODY_CACHE_PREFIX = "issue_body_v1_";
-/** Cache key prefix for a referenced issue's sub-issue numbers (Issue #1818). */
-export const ISSUE_SUB_ISSUES_CACHE_PREFIX = "issue_sub_issues_v1_";
+// Issue #1818: the per-issue cache key prefixes live in a leaf module so the
+// close chokepoint can invalidate the same keys this fetcher writes; re-exported
+// here because callers have always imported them from this module.
+export {
+  ISSUE_BODY_CACHE_PREFIX,
+  ISSUE_STATE_CACHE_PREFIX,
+  ISSUE_SUB_ISSUES_CACHE_PREFIX,
+};
 
 /** The uncached reads behind {@link createIssueFetcher}. */
 function uncachedIssueFetcher(
@@ -454,9 +461,10 @@ export interface MilestoneScope {
  * (Issue #2173).
  *
  * Backed by the cached open-milestone listing
- * {@link fetchOpenMilestoneClosedCounts} — whose keys are exactly the open
- * milestone titles — so a repo's listing costs at most one `gh` call per
- * iteration, shared by every candidate. The listing is fetched on the first
+ * {@link fetchOpenMilestoneClosedCounts}, whose keys are the titles of the
+ * repo's open milestones (its first 100, the page size that listing requests),
+ * so a repo's listing costs at most one `gh` call per iteration, shared by
+ * every candidate. The listing is fetched on the first
  * query and never when no dependency needs it; a failed listing rejects
  * rather than reading as "no open milestones" (fail loud, and fail safe at
  * the gate).
