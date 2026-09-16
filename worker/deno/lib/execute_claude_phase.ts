@@ -59,6 +59,11 @@ import { setActiveRepoGeminiModelOverrides } from "./gemini_executor.ts";
 import { setActiveRepoDeepSeekModelOverrides } from "./deepseek_executor.ts";
 import type { AgentProviderSelector } from "./agent_provider.ts";
 import { resolveInvocationAgentProvider } from "./agent_provider.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import {
+  type PrepareCodegraphContextFn,
+  prepareCodegraphRun,
+} from "./codegraph_run.ts";
 import type { ProgressExtensionOptions } from "./progress_extension.ts";
 import {
   buildTimeoutFailureReason,
@@ -173,6 +178,14 @@ export interface ExecuteClaudePhaseResult {
   promptCacheHit?: boolean;
   /** Elapsed time in seconds. */
   elapsedSeconds?: number;
+  /**
+   * What this run's CodeGraph step produced (Issue #2159, part of #2145).
+   *
+   * Present on every outcome reached after the index step — `off` on a host
+   * whose switch is down, `unsupported` on a Gemini-routed run, and `ok` or
+   * `failed` otherwise, carrying `queries` once the run's tool tally was read.
+   */
+  codegraphContext?: CodegraphContextResult;
 }
 
 /** Options for the execute-claude phase. */
@@ -248,6 +261,16 @@ export interface ExecuteClaudePhaseOptions {
   includeCodebaseMap?: boolean;
   /** Directory for cached codebase maps (Issue #4281). */
   codebaseMapCacheDir?: string;
+  /**
+   * Whether to index the checkout with CodeGraph and offer the agent that
+   * index (Issue #2159, part of #2145, default: false).
+   *
+   * Threaded from `config.codegraphContext.enabled` by the same production
+   * wiring site that supplies {@link includeCodebaseMap}. Off, the run spawns
+   * nothing and its prompt and MCP configuration are byte-identical to a run
+   * from before the trial existed.
+   */
+  codegraphContextEnabled?: boolean;
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
   /** Warning threshold for the context budget (Issue #1327, default: 50). */
@@ -283,6 +306,14 @@ export interface ExecuteClaudePhaseDeps {
   buildIssuePrompt: (
     options: IssuePromptOptions,
   ) => Promise<Result<PromptParts>>;
+  /**
+   * Build or refresh the CodeGraph index for this run (Issue #2159).
+   *
+   * Optional so existing test doubles need no change — the real
+   * implementation is used when omitted. A test injects a fake preparer so no
+   * suite spawns `codegraph`.
+   */
+  prepareCodegraphContext?: PrepareCodegraphContextFn;
   /** Build the issue prompt with SHA-based cache integration (Issue #1273). */
   buildCachedIssuePrompt: (
     options: CachedIssuePromptOptions,
@@ -799,6 +830,27 @@ export async function runExecuteClaudePhase(
   options: ExecuteClaudePhaseOptions,
   deps: ExecuteClaudePhaseDeps = createDefaultDeps(),
 ): Promise<ExecuteClaudePhaseResult> {
+  // The phase body returns from two dozen places; the CodeGraph outcome is
+  // attached here instead, so every one of them carries it without a
+  // two-dozen-site edit that a new return could silently miss (Issue #2159).
+  const carrier: CodegraphCarrier = {};
+  const result = await executeClaudePhaseBody(options, deps, carrier);
+  return carrier.codegraphContext
+    ? { ...result, codegraphContext: carrier.codegraphContext }
+    : result;
+}
+
+/** Where the phase body leaves its CodeGraph outcome (Issue #2159). */
+interface CodegraphCarrier {
+  codegraphContext?: CodegraphContextResult;
+}
+
+/** Single-pass phase body — see {@link runExecuteClaudePhase}. */
+async function executeClaudePhaseBody(
+  options: ExecuteClaudePhaseOptions,
+  deps: ExecuteClaudePhaseDeps,
+  carrier: CodegraphCarrier,
+): Promise<ExecuteClaudePhaseResult> {
   const {
     repo,
     issueNumber,
@@ -833,6 +885,7 @@ export async function runExecuteClaudePhase(
       OPERATIONAL_DEFAULTS.recentActivityCacheTtlSeconds,
     includeCodebaseMap = OPERATIONAL_DEFAULTS.includeCodebaseMap,
     codebaseMapCacheDir,
+    codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     sessionResumeState,
     contextBudgetWarningPercent =
       OPERATIONAL_DEFAULTS.contextBudgetWarningPercent,
@@ -960,10 +1013,9 @@ export async function runExecuteClaudePhase(
   // tree hash, so this is a disk read on all but the first run after the
   // structure changes. A generation fault is logged and the run continues
   // unmapped — degraded, never silently blank.
+  const repoDir = `${workDir}/${repo.split("/").pop() ?? repo}`;
   let codebaseMap: string | undefined;
   if (includeCodebaseMap) {
-    const repoName = repo.split("/").pop() ?? repo;
-    const repoDir = `${workDir}/${repoName}`;
     const mapResult = await getOrGenerateCodebaseMap({
       repo,
       repoDir,
@@ -982,6 +1034,24 @@ export async function runExecuteClaudePhase(
       );
     }
   }
+
+  // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
+  // The same checkout the codebase map was built from. Off, this spawns
+  // nothing and every decision below is the one it always was; on, the run
+  // gains the `codegraph` MCP entry and the single prompt line — together or
+  // not at all. Losing the index never fails the run.
+  const codegraph = await prepareCodegraphRun({
+    repoDir,
+    enabled: codegraphContextEnabled,
+    ...(invocationAgentProvider
+      ? { agentProvider: invocationAgentProvider }
+      : {}),
+    logger,
+    ...(deps.prepareCodegraphContext
+      ? { prepare: deps.prepareCodegraphContext }
+      : {}),
+  });
+  carrier.codegraphContext = codegraph.result;
 
   // --- Previous security-fix gate verdict (Issue #4057) ---
   // A gate block leaves its verdict in worker run state. Replaying it here is
@@ -1059,13 +1129,19 @@ export async function runExecuteClaudePhase(
   // dynamic content (issue details) goes into the user prompt.
   const {
     systemPrompt,
-    prompt: userPrompt,
+    prompt: builtUserPrompt,
     promptSha,
     cacheHit: promptCacheHit,
     templateSource: promptTemplate,
   } = promptResult.value;
   // Issue #849: the traceability record names the file, beside the commit.
   deps.log(`Issue prompt template: ${promptTemplate ?? "unknown"}`);
+  // Issue #2159: the CodeGraph line is appended to the *built* prompt, never
+  // written into `prompts/issue/prompt.md`, because it is run-conditional —
+  // the same reason the codebase map is injected rather than templated. The
+  // cached static half is untouched, and the line lands outside every
+  // untrusted fence the builder wrote.
+  const userPrompt = codegraph.applyPrompt(builtUserPrompt);
 
   // --- Context budget monitoring and hard ceiling (Issues #1327, #3713) ---
   // Estimate token counts for each major prompt component and log the budget
@@ -1242,7 +1318,10 @@ export async function runExecuteClaudePhase(
         // (Issue #192): only an issue that must produce screenshot evidence
         // gets the Playwright MCP server. A backend issue's agent has no
         // browser tool to be steered into by prompt injection.
-        mcpConfig: screenshotRequired,
+        // Issue #2159 layers the `codegraph` server beside that grant on an
+        // enabled run whose index built; on every other status this is
+        // exactly `screenshotRequired`, as before.
+        mcpConfig: codegraph.mcpConfig(screenshotRequired),
         // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
         ...(options.progressExtension
           ? { progressExtension: options.progressExtension }
@@ -1263,6 +1342,10 @@ export async function runExecuteClaudePhase(
   }
 
   const elapsedSeconds = elapsedSince(startTime);
+
+  // Issue #2159: the run's `codegraph_explore` tally, read from the per-tool
+  // counts the runner collected (Issue #2157).
+  if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     return {
