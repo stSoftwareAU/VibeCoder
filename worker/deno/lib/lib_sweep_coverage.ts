@@ -348,11 +348,44 @@ function rootsForSlice(
 }
 
 /**
+ * The message a failed drift diff throws (Issue #2178).
+ *
+ * Names the slice, the `sweptAt` git could not resolve and the remedy, so
+ * the operator can repoint the entry without reading this source. Git's own
+ * stderr is kept verbatim at the end.
+ *
+ * @param slice - The slice whose diff failed.
+ * @param filter - The `--diff-filter` letter that was running.
+ * @param code - Git's exit code.
+ * @param stderr - Git's stderr, possibly empty.
+ */
+function driftFailureMessage(
+  slice: SweepSlice,
+  filter: string,
+  code: number,
+  stderr: string,
+): string {
+  const detail = stderr.trim().length > 0
+    ? stderr.trim()
+    : `git diff --diff-filter=${filter} exited ${code}`;
+  return [
+    `${LIB_SWEEP_LEDGER_PATH}: slice ${slice.chunk} (#${slice.issue}) ` +
+    `sweptAt ${slice.sweptAt} could not be diffed against HEAD`,
+    `sweptAt must be a commit reachable from the default branch — a ` +
+    `feature-branch commit is deleted by squash-merge`,
+    `repoint it with: git log -1 --format=%H -- ${slice.ledger}`,
+    detail,
+  ].join("; ");
+}
+
+/**
  * Modules a slice owns that changed since `sweptAt`, plus unowned modules
  * on disk under that slice's roots (Issue #1609).
  *
  * Git is an injected runner so unit tests never spawn. A non-zero exit
- * throws with the stderr; an empty diff is an empty report.
+ * throws a {@link SweepLedgerError} naming the slice, its `sweptAt` and the
+ * remedy — a bare `fatal: bad object <sha>` never says which of the ledger's
+ * slices to repoint (Issue #2178). An empty diff is an empty report.
  *
  * @param ledger - Parsed ledger (roots + every claimed path).
  * @param slice - The slice whose drift to measure.
@@ -383,9 +416,7 @@ export async function driftSince(
       ]);
       if (result.code !== 0) {
         throw new SweepLedgerError(
-          result.stderr.length > 0
-            ? result.stderr
-            : `git diff --diff-filter=${filter} exited ${result.code}`,
+          driftFailureMessage(slice, filter, result.code, result.stderr),
         );
       }
       const target = filter === "A" ? added : modified;

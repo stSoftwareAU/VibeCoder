@@ -17,7 +17,12 @@
  * Uses Australian English throughout.
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   describeCoverageDiff,
   diffCoverage,
@@ -698,5 +703,48 @@ Deno.test("driftSince - a non-zero git exit throws with stderr (Issue #1609)", a
     thrown = error;
   }
   assert(thrown instanceof SweepLedgerError, String(thrown));
-  assertEquals((thrown as SweepLedgerError).message, "fatal: bad revision");
+  // Issue #2178 wraps git's stderr in the slice's context; the stderr itself
+  // is still carried verbatim so nothing git said is lost.
+  assertStringIncludes(
+    (thrown as SweepLedgerError).message,
+    "fatal: bad revision",
+  );
+});
+
+Deno.test("driftSince - an unreachable sweptAt names the slice, the commit and the remedy (Issue #2178)", async () => {
+  const ledger = ledgerFixture([{
+    chunk: "12a",
+    paths: ["worker/deno/lib/a.ts"],
+  }]);
+  let thrown: unknown;
+  try {
+    await driftSince(
+      ledger,
+      ledger.slices[0]!,
+      ["worker/deno/lib/a.ts"],
+      fakeGit({
+        "--diff-filter=A": {
+          code: 128,
+          stdout: "",
+          stderr: `fatal: bad object ${FIXTURE_COMMIT}`,
+        },
+      }),
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assert(thrown instanceof SweepLedgerError, String(thrown));
+  const message = (thrown as SweepLedgerError).message;
+  // The slice, so an operator knows which ledger entry to repoint.
+  assertStringIncludes(message, "12a");
+  assertStringIncludes(message, `#${ledger.slices[0]!.issue}`);
+  // The commit that could not be resolved, and git's own words.
+  assertStringIncludes(message, FIXTURE_COMMIT);
+  assertStringIncludes(message, "fatal: bad object");
+  // The remedy, so the report is actionable without reading the source.
+  assertStringIncludes(message, "reachable from the default branch");
+  assertStringIncludes(
+    message,
+    `git log -1 --format=%H -- ${ledger.slices[0]!.ledger}`,
+  );
 });
