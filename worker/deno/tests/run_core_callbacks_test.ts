@@ -297,6 +297,63 @@ Deno.test("run_core callbacks - the terminal run carries the run's token telemet
   });
 });
 
+Deno.test("run_core callbacks - the terminal run carries what the run's Graft collection did (Issue #2104)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({
+        ok: true,
+        value: {
+          success: true,
+          graftContext: {
+            status: "ok" as const,
+            enabled: true,
+            buildSeconds: 12.5,
+            bundleChars: 4096,
+            nodeCount: 820,
+            callEdgeCount: 1204,
+          },
+        },
+      });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs[0]?.graft, {
+    status: "ok",
+    enabled: true,
+    buildSeconds: 12.5,
+    bundleChars: 4096,
+    nodeCount: 820,
+    callEdgeCount: 1204,
+  });
+});
+
+Deno.test("run_core callbacks - a run that reported no Graft collection carries none (Issue #2104)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runCycle(deps);
+
+  assert(runs.length === 1, "one terminal run was reported");
+  assert(!("graft" in runs[0]!), "graft is omitted, not invented");
+});
+
 Deno.test("run_core callbacks - the terminal run carries the mode the dispatch matched (Issue #2100)", async () => {
   const { runs, runIssueCallbacks } = recorder();
   const time = clock();

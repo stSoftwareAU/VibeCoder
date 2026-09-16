@@ -392,6 +392,14 @@ invocation (mode `0600`) and removed after it exits:
     "kind": "pr",
     "prNumber": 807,
     "phase": "completion"
+  },
+  "graft": {
+    "enabled": true,
+    "status": "ok",
+    "buildSeconds": 12.5,
+    "bundleChars": 4096,
+    "nodeCount": 820,
+    "callEdgeCount": 1204
   }
 }
 ```
@@ -431,6 +439,12 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_OUTCOME_PHASE`             | `outcome.phase`                 | no             | Phase that terminated the run                                                                                        |
 | `VIBECODER_OUTCOME_FAILURE_CLASS`     | `outcome.failureClass`          | no             | Classifier slug for a no-PR run, or for a PR a later step blocked                                                    |
 | `VIBECODER_PR_NUMBER`                 | `outcome.prNumber`              | no             | PR number when one exists, including a later-step failure                                                            |
+| `VIBECODER_GRAFT_ENABLED`             | `graft.enabled`                 | yes            | Whether the Graft repo-context switch was on for this run (`true`/`false`)                                           |
+| `VIBECODER_GRAFT_STATUS`              | `graft.status`                  | yes            | `ok`, `failed` or `off`                                                                                              |
+| `VIBECODER_GRAFT_BUILD_SECONDS`       | `graft.buildSeconds`            | no             | Wall-clock seconds `graft build` took                                                                                |
+| `VIBECODER_GRAFT_BUNDLE_CHARS`        | `graft.bundleChars`             | no             | Characters of bundle text `graft ask` returned                                                                       |
+| `VIBECODER_GRAFT_NODE_COUNT`          | `graft.nodeCount`               | no             | Nodes in the built graph                                                                                             |
+| `VIBECODER_GRAFT_CALL_EDGE_COUNT`     | `graft.callEdgeCount`           | no             | Edges in the built graph whose relation is `calls`                                                                   |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `VIBECODER_CLAIMS_ATTEMPTED`, `VIBECODER_CLAIMS_TAKEN` and
@@ -460,6 +474,34 @@ optional, and a hook written before they existed is unaffected:
   token total, falling back to that invocation's requested model when the API
   reported none. Tokens rather than estimated cost, so a model with no
   pricing row can still be named; it is present whenever `telemetry` is.
+
+The `graft` block was **added** the same way (Issue #2104, part of #2060), and
+is the one optional-looking fact that is present on **every** run context:
+
+- `graft.enabled` and `graft.status` are always emitted, and always exported as
+  `VIBECODER_GRAFT_ENABLED` and `VIBECODER_GRAFT_STATUS`. A host that never
+  switched Graft on reports `{ "enabled": false, "status": "off" }` rather than
+  omitting the block, so an archive can compare a host without the switch
+  against one with it instead of reading silence as a missing run.
+- `status` is `ok` when the bundle came back, `failed` when the collection was
+  attempted and did not, and `off` when nothing was attempted. A `failed`
+  collection reports whichever figures it reached, so a failure the run
+  recorded is visible as a failure rather than as a clean-looking `off`.
+- The two fields are independent, and `{ "enabled": true, "status": "off" }` is
+  the combination worth reading: the host **had** Graft switched on and the run
+  ended before the collection — a setup failure, a refused claim. `enabled`
+  states the host's real switch setting rather than a default, so an early exit
+  on a Graft host is never archived as a host that never opted in — on every
+  run that returned a result. Where no result carried a block at all — a run
+  that threw, or one the loop could not complete — the block falls back to
+  `{ "enabled": false, "status": "off" }`: the switch was never read, so this
+  says only that nothing was recorded.
+- `buildSeconds`, `bundleChars`, `nodeCount` and `callEdgeCount` are present
+  only when the collection actually reached them, and are **omitted** — not
+  emitted as an empty string — when it did not. A figure that really is nought
+  is reported as `0`: a graph with no nodes is a measurement, not an absence.
+- The Graft **bundle text** is never published. It is repository source,
+  already spent on the run's prompt; only the figures above cross the boundary.
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).
