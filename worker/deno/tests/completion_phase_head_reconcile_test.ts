@@ -173,7 +173,8 @@ Deno.test("completion - the ahead-of-base guard counts the WORKER branch, not HE
     (a) => a[0] === "rev-list" && !a.includes("--left-right"),
   );
   assert(revList, "expected the ahead guard to run");
-  assertEquals(revList[2], "Develop..issue-565-branding-hot-link");
+  // The base is origin's, not the clone's stale local branch (Issue #2147).
+  assertEquals(revList[2], "origin/Develop..issue-565-branding-hot-link");
 });
 
 Deno.test("completion - diverged agent/worker branches fail with the explicit reason, never reaching gh pr create (Issue #4286)", async () => {

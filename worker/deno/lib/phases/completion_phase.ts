@@ -643,7 +643,10 @@ async function runCompletionAttempt(
     result.reason,
     state,
     deps.logger,
-    { backoffMs: ctx.config.infraRetryBackoffMs },
+    {
+      backoffMs: ctx.config.infraRetryBackoffMs,
+      cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
+    },
   );
   return shouldRetry ? await completionBody(ctx, state, deps) : result;
 }
@@ -1285,12 +1288,21 @@ async function completionBody(
 
   // Changed files feed the screenshot gate below and the branch-evidence
   // section (Issue #4355), so they are resolved before the body is built.
+  // Issue #2147: the list is the branch's own changes, so it is diffed
+  // against the same resolved base as the ahead-of-base guard — the branch's
+  // real base (a milestone branch, not always the default branch), as origin
+  // has it. It used to diff against the local default branch, which a run
+  // never updates: on GRQ-AutoTrader#463 a stale local Develop made a
+  // 12-file Rust change read as 62 files including web/*.tsx, and the
+  // screenshot gate failed the run.
   let changedFiles: string[] = [];
-  const diffResult = await deps.git.runGitCommand(
-    ["diff", "--name-only", `${state.defaultBranch}...HEAD`],
-    { cwd: state.repoPath },
-  );
-  if (diffResult.ok) {
+  const diffResult = comparableBase.ok
+    ? await deps.git.runGitCommand(
+      ["diff", "--name-only", `${comparableBase.value}...HEAD`],
+      { cwd: state.repoPath },
+    )
+    : comparableBase;
+  if (diffResult.ok && diffResult.value.code === 0) {
     changedFiles = diffResult.value.stdout.trim().split("\n").filter((f) =>
       f.length > 0
     );

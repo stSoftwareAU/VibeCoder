@@ -10,10 +10,17 @@
  * failure was silently read as "no commits". A run that had in fact produced a
  * merged PR was then misclassified as analysis-only and escalated to a human.
  *
- * This resolves the base the safe way: prefer the local branch when it exists,
- * fall back to `origin/<base>` (fetching it first when the remote-tracking ref
- * is absent), and surface an error when neither can be produced — never a
+ * This resolves the base the safe way: prefer the remote-tracking ref
+ * `origin/<base>` when it exists, fall back to the local branch, then to a
+ * fetch of the base, and surface an error when none can be produced — never a
  * silent empty result that reads as "no changes".
+ *
+ * Issue #2147: the remote-tracking ref comes first because a run never
+ * updates the clone's *local* base — the bring-forward fetches and merges
+ * `origin/<base>`, and every `git fetch` refreshes it — so the local branch
+ * can lag origin by weeks. Diffing against that stale ref made a 12-file Rust
+ * change read as 62 files including `web/*.tsx` (GRQ-AutoTrader#463), and the
+ * screenshot gate failed the run.
  *
  * Factored out of `execute_phase.ts` so the completion phase's ahead-of-base
  * guard (#68) can reuse the same resolution.
@@ -48,9 +55,10 @@ export interface ResolveBaseRefOptions {
 /**
  * Resolve `baseBranch` to a ref usable in `git log <ref>..HEAD` on this clone.
  *
- * @returns the local branch when it resolves; otherwise `origin/<base>`,
- *   fetched if necessary. `ok: false` when the base cannot be produced at all
- *   — the caller must surface that, not treat it as "no changes".
+ * @returns `origin/<base>` when the remote-tracking ref resolves; otherwise
+ *   the local branch; otherwise `origin/<base>` after a fetch. `ok: false`
+ *   when the base cannot be produced at all — the caller must surface that,
+ *   not treat it as "no changes".
  */
 export async function resolveComparableBaseRef(
   runGit: GitRunner,
@@ -75,12 +83,15 @@ export async function resolveComparableBaseRef(
     return r.ok && r.value.code === 0;
   };
 
-  // 1. Local branch present — compare against it directly.
-  if (await resolves(baseBranch)) return { ok: true, value: baseBranch };
-
-  // 2. Remote-tracking ref already present.
+  // 1. Remote-tracking ref present — the base as the repository has it
+  //    (Issue #2147); the local branch is what the clone was made with and
+  //    nothing in a run moves it.
   const remoteRef = `${remote}/${baseBranch}`;
   if (await resolves(remoteRef)) return { ok: true, value: remoteRef };
+
+  // 2. Local branch present — a base the remote does not carry (a local-only
+  //    clone, or an offline run).
+  if (await resolves(baseBranch)) return { ok: true, value: baseBranch };
 
   // 3. Fetch the base from the remote, then retry the remote-tracking ref.
   const fetched = await runGit(["fetch", remote, baseBranch], { cwd });
