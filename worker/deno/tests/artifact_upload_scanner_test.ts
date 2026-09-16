@@ -155,9 +155,13 @@ jobs:
   assertEquals(findings.length, 1);
   const f = findings[0]!;
   assertEquals(f.severity, "low");
-  assertEquals(f.job, "build");
-  assertEquals(f.stepIndex, 1);
-  assertEquals(f.findingId, "BP-ARTIFACT-UPLOAD-ci-build-1");
+  assertEquals(f.steps, [{
+    job: "build",
+    stepIndex: 1,
+    line: 8,
+    hasSecrets: false,
+  }]);
+  assertEquals(f.findingId, "BP-ARTIFACT-UPLOAD-ci");
   assert(f.findingId.startsWith("BP-"));
   // Citation anchored to the upload-artifact uses line (line 8).
   assertEquals(f.lines, 8);
@@ -337,10 +341,67 @@ jobs:
   ];
   assertEquals(
     scanArtifactUploads(files, {
-      knownOpenFindingIds: ["BP-ARTIFACT-UPLOAD-ci-build-0"],
+      knownOpenFindingIds: ["BP-ARTIFACT-UPLOAD-ci"],
     }),
     [],
   );
+});
+
+// Issue #2221 migration: a repository that already carries an open
+// per-step issue for the file must not be re-filed under the per-file id.
+Deno.test("scan - an open legacy per-step id covers the per-file finding", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+on: push
+jobs:
+  build:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: .
+  test:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: ./
+`,
+    ),
+  ];
+  assertEquals(
+    scanArtifactUploads(files, {
+      knownOpenFindingIds: ["BP-ARTIFACT-UPLOAD-ci-test-0"],
+    }),
+    [],
+  );
+});
+
+Deno.test("scan - suppressedIds on a legacy per-step id drops only that step", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+on: push
+jobs:
+  build:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: .
+  test:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: ./
+`,
+    ),
+  ];
+  const findings = scanArtifactUploads(files, {
+    suppressedIds: ["BP-ARTIFACT-UPLOAD-ci-build-0"],
+  });
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]!.steps.map((s) => s.job), ["test"]);
 });
 
 Deno.test("scan - in-source best-practice-ignore marker suppresses the finding", () => {
@@ -371,7 +432,9 @@ Deno.test("scan - in-source best-practice-ignore marker suppresses the finding",
   }
 });
 
-Deno.test("scan - two flaggable jobs both produce findings, sorted by id", () => {
+// Issue #2221: N offending steps in one file yield exactly one finding
+// whose body names all N — the fix is one edit to that one file.
+Deno.test("scan - two flaggable jobs in one file yield ONE finding naming both", () => {
   const files = [
     wf(
       ".github/workflows/ci.yml",
@@ -392,8 +455,61 @@ jobs:
     ),
   ];
   const findings = scanArtifactUploads(files);
+  assertEquals(findings.length, 1);
+  const f = findings[0]!;
+  assertEquals(f.findingId, "BP-ARTIFACT-UPLOAD-ci");
+  assertEquals(f.steps.map((s) => s.job), ["test", "build"]);
+  for (const job of ["test", "build"]) {
+    assert(f.whyItMatters.includes(job), `whyItMatters names ${job}`);
+    assert(f.evidence.includes(job), `evidence names ${job}`);
+  }
+  assertEquals(f.lines, f.steps[0]!.line);
+});
+
+Deno.test("scan - two workflow files yield one finding each, sorted by id", () => {
+  const body = `on: push
+jobs:
+  build:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: .
+`;
+  const files = [
+    wf(".github/workflows/sbom.yml", body),
+    wf(".github/workflows/ci.yml", body),
+  ];
+  const findings = scanArtifactUploads(files);
   assertEquals(findings.length, 2);
-  // Sorted by stable id: "...-build-0" < "...-test-0".
-  assertEquals(findings[0]!.findingId, "BP-ARTIFACT-UPLOAD-ci-build-0");
-  assertEquals(findings[1]!.findingId, "BP-ARTIFACT-UPLOAD-ci-test-0");
+  assertEquals(findings[0]!.findingId, "BP-ARTIFACT-UPLOAD-ci");
+  assertEquals(findings[1]!.findingId, "BP-ARTIFACT-UPLOAD-sbom");
+});
+
+// One job with secrets in scope escalates the whole file's finding.
+Deno.test("scan - severity escalates when any listed job has secrets in scope", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+on: push
+jobs:
+  plain:
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: .
+  deploy:
+    env:
+      TOKEN: \${{ secrets.DEPLOY_TOKEN }}
+    steps:
+      - uses: actions/upload-artifact@v4
+        with:
+          path: ./
+`,
+    ),
+  ];
+  const findings = scanArtifactUploads(files);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]!.severity, "medium");
+  assertEquals(findings[0]!.steps.map((s) => s.hasSecrets), [false, true]);
 });

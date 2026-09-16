@@ -1630,19 +1630,22 @@ default, keep `pull_request` / `schedule` / `workflow_dispatch`) rides a normal
 worker PR through the pre-merge gate rather than a bulk YAML rewrite — and a
 native checkout-persist-credentials scan
 (`checkout_persist_credentials_scanner.ts`,) that files a
-`BP-PERSIST-CREDS-<workflow-basename>-<job>-<step-index>` finding at
-`severity:medium` for each `actions/checkout` step lacking `persist-credentials:
-false` in a job giving no static signal of needing the token (no `git
-push`/`fetch`, no known push action, no `submodules:` checkout) — the
+`BP-PERSIST-CREDS-<workflow-basename>` finding at
+`severity:medium` per **workflow file** whose `actions/checkout` steps lack
+`persist-credentials: false` in a job giving no static signal of needing the
+token (no `git push`/`fetch`, no known push action, no `submodules:`
+checkout), the body naming every offending job/step — one issue per file
+because one edit fixes them all (Issue #2221) — the
 long-documented v3-slot check #23 that was never actually
 implemented until now; nuanced hedge cases stay with the LLM — and a native
 broad-artefact-upload scan (`artifact_upload_scanner.ts`, gap
 from) that files a
-`BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>`
-finding for each `actions/upload-artifact` step whose `with.path` is the whole
-workspace (`.`, `./`, `${{ github.workspace }}`, `*`, `**`) at `severity:low`
-baseline (`severity:medium` when the job has secrets in scope or the workflow
-uses a privileged trigger) — the decidable core of v9 prompt check #30; the
+`BP-ARTIFACT-UPLOAD-<workflow-basename>`
+finding per **workflow file** whose `actions/upload-artifact` steps upload the
+whole workspace (`.`, `./`, `${{ github.workspace }}`, `*`, `**`) at
+`severity:low` baseline (`severity:medium` when any listed job has secrets in
+scope or the workflow uses a privileged trigger), on the same one-issue-per-file
+reshape (Issue #2221) — the decidable core of v9 prompt check #30; the
 "otherwise unscoped" long tail stays with the LLM — and a native
 milestone-branch-filter scan (`milestone_branch_filter_scanner.ts`,)
 that files a `BP-MILESTONE-FILTER-<workflow-basename>` finding at
@@ -1679,9 +1682,11 @@ with the retired bucket. The native SHA-pin pre-filer files
 pre-filer files `BP-INJECTION-<workflow-basename>-<job>-<step-index>` ids; the
 native workflow-trigger pre-filer files `BP-TRIGGER-<workflow-basename>` ids; the
 native checkout-persist-credentials pre-filer files
-`BP-PERSIST-CREDS-<workflow-basename>-<job>-<step-index>` ids; the native
+`BP-PERSIST-CREDS-<workflow-basename>` ids; the native
 broad-artefact-upload pre-filer files
-`BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>` ids; the native
+`BP-ARTIFACT-UPLOAD-<workflow-basename>` ids — both one per file since Issue
+#2221, with their pre-#2221 per-step ids still honoured for dedup and
+suppression so the reshape never re-files a repository mid-flight; the native
 milestone-branch-filter pre-filer files `BP-MILESTONE-FILTER-<workflow-basename>`
 ids; the native gitleaks-drift pre-filer files
 `BP-GITLEAKS-<CLASS>-<workflow-basename>` ids.

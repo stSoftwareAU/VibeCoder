@@ -61,9 +61,8 @@ jobs:
   assertEquals(findings.length, 1);
   const f = findings[0]!;
   assertEquals(f.severity, "medium");
-  assertEquals(f.job, "test");
-  assertEquals(f.stepIndex, 0);
-  assertEquals(f.findingId, "BP-PERSIST-CREDS-ci-test-0");
+  assertEquals(f.steps, [{ job: "test", stepIndex: 0, line: 7 }]);
+  assertEquals(f.findingId, "BP-PERSIST-CREDS-ci");
   assert(f.findingId.startsWith("BP-"));
   // Citation anchored to the checkout line (line 7).
   assertEquals(f.lines, 7);
@@ -85,7 +84,7 @@ jobs:
   ];
   const findings = scanCheckoutPersistCredentials(files);
   assertEquals(findings.length, 1);
-  assertEquals(findings[0]!.findingId, "BP-PERSIST-CREDS-lint-lint-0");
+  assertEquals(findings[0]!.findingId, "BP-PERSIST-CREDS-lint");
 });
 
 Deno.test("scan - persist-credentials: true (explicit) is flagged", () => {
@@ -105,7 +104,7 @@ jobs:
   ];
   const findings = scanCheckoutPersistCredentials(files);
   assertEquals(findings.length, 1);
-  assertEquals(findings[0]!.job, "build");
+  assertEquals(findings[0]!.steps.map((s) => s.job), ["build"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -290,10 +289,81 @@ jobs:
   ];
   assertEquals(
     scanCheckoutPersistCredentials(files, {
-      knownOpenFindingIds: ["BP-PERSIST-CREDS-ci-test-0"],
+      knownOpenFindingIds: ["BP-PERSIST-CREDS-ci"],
     }),
     [],
   );
+});
+
+// Issue #2221 migration: a repository that already carries an open
+// per-step issue for the file must not be re-filed under the per-file id.
+Deno.test("scan - an open legacy per-step id covers the per-file finding", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+jobs:
+  check-changes:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno task changed
+  quality:
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./quality.sh
+`,
+    ),
+  ];
+  assertEquals(
+    scanCheckoutPersistCredentials(files, {
+      knownOpenFindingIds: ["BP-PERSIST-CREDS-ci-quality-0"],
+    }),
+    [],
+  );
+});
+
+Deno.test("scan - a legacy per-step id for another file does not suppress this one", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno test
+`,
+    ),
+  ];
+  const findings = scanCheckoutPersistCredentials(files, {
+    knownOpenFindingIds: ["BP-PERSIST-CREDS-sbom-build-0"],
+  });
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]!.findingId, "BP-PERSIST-CREDS-ci");
+});
+
+Deno.test("scan - suppressedIds on a legacy per-step id drops only that step", () => {
+  const files = [
+    wf(
+      ".github/workflows/ci.yml",
+      `name: CI
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno test
+  lint:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno lint
+`,
+    ),
+  ];
+  const findings = scanCheckoutPersistCredentials(files, {
+    suppressedIds: ["BP-PERSIST-CREDS-ci-test-0"],
+  });
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]!.steps.map((s) => s.job), ["lint"]);
 });
 
 Deno.test("scan - in-source best-practice-ignore marker suppresses the finding", () => {
@@ -322,14 +392,76 @@ Deno.test("scan - in-source best-practice-ignore marker suppresses the finding",
   }
 });
 
-Deno.test("scan - two flaggable jobs both produce findings, sorted by id", () => {
+// Issue #2221: N offending steps in one file yield exactly one finding
+// whose body names all N — the fix is one edit to that one file.
+Deno.test("scan - three flaggable jobs in one file yield ONE finding naming all three", () => {
   const files = [
     wf(
       ".github/workflows/ci.yml",
       `name: CI
 jobs:
+  check-changes:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno task changed
+  quality:
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./quality.sh
+  version-guard:
+    steps:
+      - uses: actions/checkout@v4
+      - run: deno task version-guard
+`,
+    ),
+  ];
+  const findings = scanCheckoutPersistCredentials(files);
+  assertEquals(findings.length, 1);
+  const f = findings[0]!;
+  assertEquals(f.findingId, "BP-PERSIST-CREDS-ci");
+  assertEquals(f.steps.map((s) => s.job), [
+    "check-changes",
+    "quality",
+    "version-guard",
+  ]);
+  // The body names every offending job, and the citation anchors to the
+  // first offending checkout.
+  for (const job of ["check-changes", "quality", "version-guard"]) {
+    assert(f.whyItMatters.includes(job), `whyItMatters names ${job}`);
+    assert(f.evidence.includes(job), `evidence names ${job}`);
+  }
+  assertEquals(f.lines, f.steps[0]!.line);
+});
+
+Deno.test("scan - two workflow files yield one finding each, sorted by id", () => {
+  const steps = `jobs:
   test:
     steps:
+      - uses: actions/checkout@v4
+      - run: deno test
+`;
+  const files = [
+    wf(".github/workflows/sbom.yml", steps),
+    wf(".github/workflows/ci.yml", steps),
+  ];
+  const findings = scanCheckoutPersistCredentials(files);
+  assertEquals(findings.length, 2);
+  assertEquals(findings[0]!.findingId, "BP-PERSIST-CREDS-ci");
+  assertEquals(findings[1]!.findingId, "BP-PERSIST-CREDS-sbom");
+});
+
+Deno.test("scan - a marker above one checkout drops that step only", () => {
+  _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
+  try {
+    const files = [
+      wf(
+        ".github/workflows/ci.yml",
+        `name: CI
+jobs:
+  test:
+    steps:
+      # best-practice-ignore: BP-PERSIST-CREDS-ci — author=nigel expires=2099-12-31 needs the token
       - uses: actions/checkout@v4
       - run: deno test
   lint:
@@ -337,11 +469,42 @@ jobs:
       - uses: actions/checkout@v4
       - run: deno lint
 `,
-    ),
-  ];
-  const findings = scanCheckoutPersistCredentials(files);
-  assertEquals(findings.length, 2);
-  // Sorted by stable id: "...-lint-0" < "...-test-0".
-  assertEquals(findings[0]!.findingId, "BP-PERSIST-CREDS-ci-lint-0");
-  assertEquals(findings[1]!.findingId, "BP-PERSIST-CREDS-ci-test-0");
+      ),
+    ];
+    const findings = scanCheckoutPersistCredentials(files);
+    assertEquals(findings.length, 1);
+    assertEquals(findings[0]!.steps.map((s) => s.job), ["lint"]);
+  } finally {
+    _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
+  }
+});
+
+Deno.test("scan - a marker above every checkout drops the file entirely", () => {
+  _setSuppressionAllowlist(["nigel"]);
+  _setSuppressionCommitAuthors(["nigel"]);
+  try {
+    const files = [
+      wf(
+        ".github/workflows/ci.yml",
+        `name: CI
+jobs:
+  test:
+    steps:
+      # best-practice-ignore: BP-PERSIST-CREDS-ci — author=nigel expires=2099-12-31 needs the token
+      - uses: actions/checkout@v4
+      - run: deno test
+  lint:
+    steps:
+      # best-practice-ignore: BP-PERSIST-CREDS-ci — author=nigel expires=2099-12-31 needs the token
+      - uses: actions/checkout@v4
+      - run: deno lint
+`,
+      ),
+    ];
+    assertEquals(scanCheckoutPersistCredentials(files), []);
+  } finally {
+    _clearSuppressionAllowlist();
+    _clearSuppressionCommitAuthors();
+  }
 });

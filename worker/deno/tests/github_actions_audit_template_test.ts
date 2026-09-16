@@ -1623,7 +1623,7 @@ Deno.test(
     const c = creates[0]!;
     assertStringIncludes(
       c.body,
-      "<!-- finding-id: BP-PERSIST-CREDS-ci-test-0 -->",
+      "<!-- finding-id: BP-PERSIST-CREDS-ci -->",
     );
     assert(c.labels.includes(GITHUB_ACTIONS_AUDIT_LABEL));
     assert(c.labels.includes("severity:medium"));
@@ -1631,7 +1631,7 @@ Deno.test(
     // The pre-filed id is in Claude's known-open list so the LLM does not
     // double-file it.
     assert(scanReceived !== undefined);
-    assert(scanReceived!.knownOpen.includes("BP-PERSIST-CREDS-ci-test-0"));
+    assert(scanReceived!.knownOpen.includes("BP-PERSIST-CREDS-ci"));
   },
 );
 
@@ -1780,7 +1780,7 @@ Deno.test(
     const c = creates[0]!;
     assertStringIncludes(
       c.body,
-      "<!-- finding-id: BP-ARTIFACT-UPLOAD-ci-build-0 -->",
+      "<!-- finding-id: BP-ARTIFACT-UPLOAD-ci -->",
     );
     assert(c.labels.includes(GITHUB_ACTIONS_AUDIT_LABEL));
     // `on: pull_request` (not privileged) and no secrets → low severity.
@@ -1789,7 +1789,7 @@ Deno.test(
     // The pre-filed id is in Claude's known-open list so the LLM does not
     // double-file it.
     assert(scanReceived !== undefined);
-    assert(scanReceived!.knownOpen.includes("BP-ARTIFACT-UPLOAD-ci-build-0"));
+    assert(scanReceived!.knownOpen.includes("BP-ARTIFACT-UPLOAD-ci"));
   },
 );
 

@@ -335,11 +335,11 @@ Deno.test("changed-workflow gate - a traversing path is refused, not read", asyn
 });
 
 Deno.test("changed-workflow gate - a long finding list is truncated, and says so", async () => {
-  // 25 tag-pinned steps — more than the message names in full.
+  // 25 tag-pinned steps, each a distinct action coordinate — more
+  // findings than the message names in full.
   const steps = Array.from(
     { length: 25 },
-    (_, i) =>
-      `      - name: Step ${i}\n        uses: actions/checkout@v${i + 1}\n`,
+    (_, i) => `      - name: Step ${i}\n        uses: vendor${i}/action@v1\n`,
   )
     .join("");
   const many = seed(

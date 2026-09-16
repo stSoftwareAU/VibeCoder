@@ -412,18 +412,27 @@ not by Claude:
   pre-filer (e.g. `BP-TRIGGER-ci` for `ci.yml`). The `<workflow-basename>`
   is the workflow filename without its directory or extension, lower-cased
   with non-alphanumeric runs collapsed to a single hyphen.
-- `BP-PERSIST-CREDS-<workflow-basename>-<job>-<step-index>` — the native
-  checkout-persist-credentials pre-filer (e.g. `BP-PERSIST-CREDS-ci-test-0`
-  for the first `actions/checkout` step of the `test` job in `ci.yml`). The
-  `<step-index>` is the 0-based position of the step within the job's
-  `steps` array; the `<workflow-basename>` and `<job>` are lower-cased with
-  non-alphanumeric runs collapsed to a single hyphen.
-- `BP-ARTIFACT-UPLOAD-<workflow-basename>-<job>-<step-index>` — the native
-  broad-artefact-upload pre-filer (e.g. `BP-ARTIFACT-UPLOAD-ci-build-0` for
-  the first `actions/upload-artifact` step of the `build` job in `ci.yml`).
-  The `<step-index>` is the 0-based position of the step within the job's
-  `steps` array; the `<workflow-basename>` and `<job>` are lower-cased with
-  non-alphanumeric runs collapsed to a single hyphen.
+- `BP-PERSIST-CREDS-<workflow-basename>` — the native
+  checkout-persist-credentials pre-filer (e.g. `BP-PERSIST-CREDS-ci` for
+  `ci.yml`). **One finding per workflow file**, not per checkout step
+  (Issue #2221): every offending step in the file is listed in the one
+  finding's body, because the fix for all of them is the same edit to the
+  same file. The `<workflow-basename>` is the workflow filename without its
+  directory or extension, lower-cased with non-alphanumeric runs collapsed
+  to a single hyphen.
+- `BP-ARTIFACT-UPLOAD-<workflow-basename>` — the native
+  broad-artefact-upload pre-filer (e.g. `BP-ARTIFACT-UPLOAD-ci` for
+  `ci.yml`). **One finding per workflow file**, on the same Issue #2221
+  reshape and for the same reason — the per-step shape files N issues for
+  one file whose N offenders take one edit to fix.
+
+Both families carried a per-step
+`BP-…-<workflow-basename>-<job>-<step-index>` id before Issue #2221. Those
+legacy ids are never filed again, but they are still **honoured**: a
+repository that already has an open per-step issue for a file yields no
+per-file finding for it, and an in-source `best-practice-ignore` marker
+written against a legacy per-step id still suppresses its step. The
+reshape therefore never re-files against a repository mid-flight.
 - `BP-MILESTONE-FILTER-<workflow-basename>` — the native
   milestone-branch-filter pre-filer (e.g. `BP-MILESTONE-FILTER-validate`
   for `validate-scripts.yml`). The `<workflow-basename>` is lower-cased
@@ -723,14 +732,16 @@ flagged) when it shows any static sign of needing the credential:
 
 A checkout that already sets `persist-credentials: false` is safe and
 never flagged. The nuanced "a push cannot quite be ruled out" cases are
-left to the LLM prompt, which can hedge in prose. Each surviving finding
-is filed at `severity:medium` via the shared `fileWorkflowFinding` helper,
-deduplicated against the existing known-open ids plus all earlier
-pre-files. The body describes the fix — add `with: { persist-credentials:
+left to the LLM prompt, which can hedge in prose. Every offending step in one workflow file is
+collected into a **single** `severity:medium` finding (Issue #2221) — one
+issue per file, its body naming each job/step — filed via the shared
+`fileWorkflowFinding` helper and deduplicated against the existing
+known-open ids plus all earlier pre-files. The body describes the fix — add `with: { persist-credentials:
 false }` — and names the in-source suppression marker for the
 false-positive case. An in-source `best-practice-ignore:
-BP-PERSIST-CREDS-…` marker on (or immediately above) the cited `uses:`
-line suppresses the finding. A scanner failure is swallowed so it never
+BP-PERSIST-CREDS-…` marker on (or immediately above) a cited `uses:` line
+suppresses that step; the file yields no finding once every offending step
+is suppressed. A scanner failure is swallowed so it never
 aborts the audit.
 
 ### Native broad-artefact-upload pre-filer
@@ -761,14 +772,17 @@ A multi-line `path:` block is flagged when **any** line is a
 whole-workspace token. A scoped path (`dist/`, `target/release/bin`) is
 never flagged, and the judgement-heavy "otherwise unscoped" long tail (a
 parent directory, a glob anchored at the workspace root that is not a bare
-`*`/`**`) is left to the LLM prompt. Each surviving finding is filed via
-the shared `fileWorkflowFinding` helper at `severity:low` baseline,
-escalated to `severity:medium` when the job has secrets in scope (a
+`*`/`**`) is left to the LLM prompt. Every offending step in one workflow file is
+collected into a **single** finding (Issue #2221) — one issue per file,
+its body naming each job/step — filed via the shared
+`fileWorkflowFinding` helper at `severity:low` baseline, escalated to
+`severity:medium` when any listed job has secrets in scope (a
 `${{ secrets.* }}` reference at workflow-level `env`, the job, or a step)
 **or** the workflow uses a trigger from the privileged-trigger set — both
 statically decidable. An in-source `best-practice-ignore:
-BP-ARTIFACT-UPLOAD-…` marker on (or immediately above) the cited `uses:`
-line suppresses the finding. A scanner failure is swallowed so it never
+BP-ARTIFACT-UPLOAD-…` marker on (or immediately above) a cited `uses:` line
+suppresses that step; the file yields no finding once every offending step
+is suppressed. A scanner failure is swallowed so it never
 aborts the audit.
 
 ### Native milestone-branch-filter pre-filer
