@@ -4103,6 +4103,13 @@ Two properties follow from reading the record off the pull request:
   ([agent_marker_neutralisation.ts](../worker/deno/lib/agent_marker_neutralisation.ts))
   and the defusal is logged as `AGENT_MARKER_NEUTRALISED`; the worker's own
   marker is appended afterwards and still counts (Issue #2236).
+- **Nor can the failing check's name.** On a `pull_request`-triggered workflow
+  the job name comes from the head ref, so a fork chooses it — and the CI-fix
+  replies interpolate it into the same fleet-authored bodies. The name is made
+  inert by the same helper before it reaches any of them (the no-changes
+  reply, the pushed / push-failed replies, the lock and max-retries comments
+  and the heartbeat milestones), and the defusal is logged as
+  `CHECK_NAME_MARKER_NEUTRALISED` (Issue #2260).
 
 **One comment per failure signature.** The same failure diagnosed again on the
 **same head** posts nothing at all and runs no agent: nothing has changed

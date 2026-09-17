@@ -18,6 +18,7 @@ import type {
   CiFailureClassification,
 } from "./ci_failure_classifier.ts";
 import { assertNever } from "./assert_never.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 
 /**
  * Result of building a no-changes response.
@@ -91,6 +92,12 @@ export function buildCiNoChangesResponse(
 ): NoChangesResponse {
   const { category } = classification;
   const trailer = formatClassifierTrailer(classification);
+  // Issue #2260: on a `pull_request`-triggered workflow the job name comes
+  // from the head ref, so a fork chooses it. Every body below is posted by
+  // the fleet account, whose markers are the fleet-wide CI-fix record, so the
+  // name's HTML-comment delimiters are made inert by construction before it
+  // is interpolated — a check name can no longer open or close a marker.
+  const name = neutraliseAgentMarkers(checkName).text;
 
   switch (category) {
     case "code-fix-required": {
@@ -100,7 +107,7 @@ export function buildCiNoChangesResponse(
       // kept (and explicitly mentions `needs-human`) for any caller that
       // still inspects it.
       const reason =
-        `I reviewed the CI check failure (**${checkName}**) but could not produce a code fix. ` +
+        `I reviewed the CI check failure (**${name}**) but could not produce a code fix. ` +
         `The classifier indicates this requires a code change.${trailer}`;
       return {
         category,
@@ -108,7 +115,7 @@ export function buildCiNoChangesResponse(
         reason,
         nextStep: PR_ESCALATION_NEXT_STEP,
         body:
-          `I reviewed the CI check failure (**${checkName}**) but could not produce a code fix. ` +
+          `I reviewed the CI check failure (**${name}**) but could not produce a code fix. ` +
           `The classifier indicates this requires a code change, so a human reviewer is required — ` +
           `I have added the \`needs-human\` label.${trailer}`,
       };
@@ -119,7 +126,7 @@ export function buildCiNoChangesResponse(
       // nothing left to correct is in the BASE branch, not this PR. Say that,
       // because "CI is failing" would send a reviewer to the wrong place.
       const escalationReason =
-        `The **${checkName}** check scans every commit in the branch rather than the working ` +
+        `The **${name}** check scans every commit in the branch rather than the working ` +
         `tree, and I produced no content change to rebuild the branch around. A finding that ` +
         `survives with nothing left to correct is already in the base branch, so rewriting this ` +
         `PR cannot clear it.${trailer}`;
@@ -139,7 +146,7 @@ export function buildCiNoChangesResponse(
         category,
         addNeedsHuman: false,
         body:
-          `I reviewed the CI check failure (**${checkName}**) and it looks like a timing or timeout issue. ` +
+          `I reviewed the CI check failure (**${name}**) and it looks like a timing or timeout issue. ` +
           `No code change was applied — please re-run the failing check before escalating.${trailer}`,
       };
     case "infrastructure":
@@ -147,7 +154,7 @@ export function buildCiNoChangesResponse(
         category,
         addNeedsHuman: false,
         body:
-          `I reviewed the CI check failure (**${checkName}**) and it looks infrastructure-related ` +
+          `I reviewed the CI check failure (**${name}**) and it looks infrastructure-related ` +
           `(network, runner, or upstream service). No code change was applied — please re-run the ` +
           `failing check.${trailer}`,
       };
@@ -156,7 +163,7 @@ export function buildCiNoChangesResponse(
         category: "unknown",
         addNeedsHuman: false,
         body:
-          `I investigated the CI check failure (**${checkName}**) but could not determine a fix — ` +
+          `I investigated the CI check failure (**${name}**) but could not determine a fix — ` +
           `please review.${trailer}`,
       };
     default:
