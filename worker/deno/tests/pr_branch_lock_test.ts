@@ -15,7 +15,9 @@ import {
   buildLockBody,
   buildLockComment,
   cleanStaleBranchUpdateLocks,
+  DEFAULT_MAX_STALE_LOCK_DELETIONS,
   parseLockComment,
+  parseLockCommentPages,
   releaseBranchUpdateLock,
   startBranchUpdateLockRenewal,
 } from "../lib/pr_branch_lock.ts";
@@ -47,6 +49,18 @@ const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
  */
 const postedCommentUrl = (id: number) =>
   `https://github.com/org/repo/issues/42#issuecomment-${id}`;
+
+/**
+ * Does this `gh` call read the PR's comments?
+ *
+ * The read is `gh api --paginate <endpoint> --jq …` (Issue #2265), so the
+ * endpoint is no longer the second argument — the fixtures match on any
+ * argument naming the comments endpoint, and a delete is told apart by
+ * `-X DELETE`.
+ */
+const isCommentRead = (args: string[]) =>
+  !args.includes("DELETE") &&
+  args.some((a) => a.includes("/comments") && !a.includes("/comments/"));
 
 /** Create a mock gh command function that records calls and returns scripted responses. */
 function createMockGh(
@@ -134,7 +148,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock succeeds when no other locks
       return postedCommentUrl(100);
     }
     // Re-read comments — only our lock
-    if (args[0] === "api" && String(args[1]).includes("/comments")) {
+    if (args[0] === "api" && isCommentRead(args)) {
       return JSON.stringify([
         {
           id: 100,
@@ -177,7 +191,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock wins when earliest lock", as
     if (args[0] === "issue" && args[1] === "comment") {
       return postedCommentUrl(100);
     }
-    if (args[0] === "api" && String(args[1]).includes("/comments")) {
+    if (args[0] === "api" && isCommentRead(args)) {
       return JSON.stringify([
         {
           id: 100,
@@ -228,7 +242,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock loses when not earliest lock
     // Re-read comments — competitor has earlier lock
     if (
       args[0] === "api" &&
-      String(args[1]).includes("/comments") &&
+      isCommentRead(args) &&
       !args.includes("DELETE")
     ) {
       return JSON.stringify([
@@ -291,7 +305,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock cleans stale locks first", a
     // Fetch comments — multiple calls happen
     if (
       args[0] === "api" &&
-      String(args[1]).includes("/comments") &&
+      isCommentRead(args) &&
       !args.includes("DELETE")
     ) {
       commentsFetched++;
@@ -377,7 +391,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock returns not-acquired on veri
     if (args[0] === "issue" && args[1] === "comment") {
       return postedCommentUrl(100);
     }
-    if (args[0] === "api" && String(args[1]).includes("/comments")) {
+    if (args[0] === "api" && isCommentRead(args)) {
       // Stale lock check
       if (!args.includes("-X")) {
         throw new Error("API error");
@@ -453,7 +467,7 @@ Deno.test("pr_branch_lock - cleanStaleBranchUpdateLocks removes expired locks", 
   const { ghCommandFn } = createMockGh((args) => {
     if (
       args[0] === "api" &&
-      String(args[1]).includes("/comments") &&
+      isCommentRead(args) &&
       !args.includes("DELETE")
     ) {
       return JSON.stringify([
@@ -492,7 +506,7 @@ Deno.test("pr_branch_lock - cleanStaleBranchUpdateLocks handles empty response",
   const { ghCommandFn } = createMockGh((args) => {
     if (
       args[0] === "api" &&
-      String(args[1]).includes("/comments") &&
+      isCommentRead(args) &&
       !args.includes("DELETE")
     ) {
       return "[]";
@@ -534,7 +548,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock tie-breaks by created_at whe
     }
     if (
       args[0] === "api" &&
-      String(args[1]).includes("/comments") &&
+      isCommentRead(args) &&
       !args.includes("DELETE")
     ) {
       return JSON.stringify([
@@ -585,7 +599,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock returns correct lockCommentI
     }
     if (
       args[0] === "api" &&
-      String(args[1]).includes("/comments") &&
+      isCommentRead(args) &&
       !args.includes("DELETE")
     ) {
       return JSON.stringify([
@@ -648,7 +662,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock posts the note with the mark
       return postedCommentUrl(900);
     }
     if (
-      args[0] === "api" && String(args[1]).includes("/comments") &&
+      args[0] === "api" && isCommentRead(args) &&
       !args.includes("DELETE")
     ) {
       return JSON.stringify([
@@ -900,4 +914,258 @@ Deno.test("pr_branch_lock - an unresolvable fleet leaves the branch updatable", 
   if (result.ok) assertEquals(result.value.acquired, true);
   assertEquals(lines.length, 1);
   assertStringIncludes(lines[0]!, "the branch stays updatable");
+});
+
+// ---------------------------------------------------------------------------
+// Busy threads: pagination, litter and expiry (Issue #2265)
+// ---------------------------------------------------------------------------
+
+/** A lock comment row as the `--jq` filter shapes it. */
+const lockRow = (
+  id: number,
+  workerId: string,
+  timestamp: number,
+  createdAt: string,
+) => ({
+  id,
+  body: buildLockComment(workerId, timestamp),
+  created_at: createdAt,
+  author: FLEET_AUTHOR,
+});
+
+/** What `gh api --paginate --jq '[…]'` prints: one JSON array per page. */
+const pages = (...pageRows: Array<ReturnType<typeof lockRow>[]>) =>
+  pageRows.map((rows) => JSON.stringify(rows)).join("\n");
+
+Deno.test("pr_branch_lock - parseLockCommentPages flattens one array per page", () => {
+  const rows = parseLockCommentPages(pages(
+    [lockRow(1, "worker-01", 1700000000, "2023-11-14T22:13:20Z")],
+    [lockRow(2, "worker-02", 1700000001, "2023-11-14T22:13:21Z")],
+  ));
+
+  assertEquals(rows.map((r) => r.id), [1, 2]);
+  assertEquals(rows[1]?.author, FLEET_AUTHOR);
+});
+
+Deno.test("pr_branch_lock - cleanStaleBranchUpdateLocks reads every page of a busy thread", async () => {
+  // Issue #2265: the unpaginated read returned only the 30 oldest comments,
+  // so on a thread that had outgrown one page no lock was ever seen again —
+  // 765 lock comments piled up on NEAT-AI-Lamarck#239 and no host could
+  // acquire the lock.
+  const deleted: number[] = [];
+  let readArgs: string[] = [];
+
+  const { ghCommandFn } = createMockGh((args) => {
+    if (args[0] === "api" && !args.includes("DELETE")) {
+      readArgs = args;
+      return pages(
+        [lockRow(1, "page-one-worker", 1699999000, "2023-11-14T21:56:40Z")],
+        [lockRow(2, "page-two-worker", 1699999100, "2023-11-14T21:58:20Z")],
+      );
+    }
+    if (args.includes("DELETE")) {
+      const idMatch = args.join(" ").match(/comments\/(\d+)/);
+      if (idMatch) deleted.push(Number(idMatch[1]));
+    }
+    return "";
+  });
+
+  await cleanStaleBranchUpdateLocks({
+    repo: "org/repo",
+    prNumber: 42,
+    ghCommandFn,
+    nowFn: () => 1700000300,
+    lockTtlSeconds: 300,
+    log: () => {},
+  });
+
+  // The stale lock that only exists on page two is deleted too.
+  assertEquals(deleted, [1, 2]);
+  assertEquals(
+    readArgs.includes("--paginate"),
+    true,
+    "a single page hides every lock on a thread longer than 30 comments",
+  );
+  const endpoint = readArgs.find((a) => a.includes("/comments")) ?? "";
+  assertStringIncludes(endpoint, "per_page=100");
+});
+
+Deno.test("pr_branch_lock - cleanStaleBranchUpdateLocks caps deletions per pass", async () => {
+  const deleted: number[] = [];
+  const logs: string[] = [];
+  const backlog = Array.from(
+    { length: DEFAULT_MAX_STALE_LOCK_DELETIONS + 50 },
+    (_unused, i) =>
+      lockRow(i + 1, "crashed-worker", 1699999000, "2023-11-14T21:56:40Z"),
+  );
+
+  const { ghCommandFn } = createMockGh((args) => {
+    if (args[0] === "api" && !args.includes("DELETE")) {
+      return JSON.stringify(backlog);
+    }
+    if (args.includes("DELETE")) {
+      const idMatch = args.join(" ").match(/comments\/(\d+)/);
+      if (idMatch) deleted.push(Number(idMatch[1]));
+    }
+    return "";
+  });
+
+  await cleanStaleBranchUpdateLocks({
+    repo: "org/repo",
+    prNumber: 42,
+    ghCommandFn,
+    nowFn: () => 1700000300,
+    lockTtlSeconds: 300,
+    log: (message) => logs.push(message),
+  });
+
+  // A three-day backlog must not turn one cycle into 800 DELETE calls.
+  assertEquals(deleted.length, DEFAULT_MAX_STALE_LOCK_DELETIONS);
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0]!, "50");
+});
+
+Deno.test("pr_branch_lock - cleanStaleBranchUpdateLocks reports a delete it could not make", async () => {
+  const logs: string[] = [];
+  const { ghCommandFn } = createMockGh((args) => {
+    if (args[0] === "api" && !args.includes("DELETE")) {
+      return JSON.stringify([
+        lockRow(50, "crashed-worker", 1699999000, "2023-11-14T21:56:40Z"),
+      ]);
+    }
+    return new Error("403 Forbidden");
+  });
+
+  await cleanStaleBranchUpdateLocks({
+    repo: "org/repo",
+    prNumber: 42,
+    ghCommandFn,
+    nowFn: () => 1700000300,
+    lockTtlSeconds: 300,
+    log: (message) => logs.push(message),
+  });
+
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0]!, "50");
+  assertStringIncludes(logs[0]!, "403 Forbidden");
+});
+
+Deno.test("pr_branch_lock - cleanStaleBranchUpdateLocks reports an unreadable thread", async () => {
+  const logs: string[] = [];
+  const { ghCommandFn } = createMockGh(() => new Error("API error"));
+
+  await cleanStaleBranchUpdateLocks({
+    repo: "org/repo",
+    prNumber: 42,
+    ghCommandFn,
+    nowFn: () => 1700000300,
+    log: (message) => logs.push(message),
+  });
+
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0]!, "API error");
+});
+
+Deno.test("pr_branch_lock - a lock the re-read cannot see is deleted, not left behind", async () => {
+  // Issue #2265: every not-acquired return after the post left the comment
+  // on the PR for ever. One per cycle, per host, is the 765-comment mess.
+  const deleted: number[] = [];
+  const { ghCommandFn } = createMockGh((args) => {
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(100);
+    }
+    if (args.includes("DELETE")) {
+      const idMatch = args.join(" ").match(/comments\/(\d+)/);
+      if (idMatch) deleted.push(Number(idMatch[1]));
+      return "";
+    }
+    return "[]";
+  });
+
+  const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    repo: "org/repo",
+    prNumber: 42,
+    workerId: "worker-01",
+    sleepFn: noSleep,
+    ghCommandFn,
+    nowFn: () => 1700000000,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.acquired, false);
+  assertEquals(deleted, [100]);
+});
+
+Deno.test("pr_branch_lock - a lock is deleted when the verification read fails", async () => {
+  const deleted: number[] = [];
+  let reads = 0;
+  const { ghCommandFn } = createMockGh((args) => {
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(100);
+    }
+    if (args.includes("DELETE")) {
+      const idMatch = args.join(" ").match(/comments\/(\d+)/);
+      if (idMatch) deleted.push(Number(idMatch[1]));
+      return "";
+    }
+    reads++;
+    // First read is the stale sweep; the verification read is the one that
+    // fails, after the lock comment is already on the PR.
+    if (reads === 1) return "[]";
+    return new Error("API error");
+  });
+
+  const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    repo: "org/repo",
+    prNumber: 42,
+    workerId: "worker-01",
+    sleepFn: noSleep,
+    ghCommandFn,
+    nowFn: () => 1700000000,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.acquired, false);
+  assertEquals(deleted, [100]);
+});
+
+Deno.test("pr_branch_lock - an expired lock nobody could delete does not stall the branch", async () => {
+  // The sweep is best-effort, so correctness may not rest on the delete
+  // having succeeded: an expired marker is ignored when the winner is
+  // chosen, however long it lingers on the PR.
+  const { ghCommandFn } = createMockGh((args) => {
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(101);
+    }
+    if (args.includes("DELETE")) {
+      return new Error("403 Forbidden");
+    }
+    return JSON.stringify([
+      // Three days old, and every delete of it is refused.
+      lockRow(100, "crashed-worker", 1699740000, "2023-11-11T22:00:00Z"),
+      lockRow(101, "worker-01", 1700000000, "2023-11-14T22:13:20Z"),
+    ]);
+  });
+
+  const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    repo: "org/repo",
+    prNumber: 42,
+    workerId: "worker-01",
+    sleepFn: noSleep,
+    ghCommandFn,
+    nowFn: () => 1700000000,
+    lockTtlSeconds: 300,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.acquired, true);
+    assertEquals(result.value.lockCommentId, 101);
+  }
 });

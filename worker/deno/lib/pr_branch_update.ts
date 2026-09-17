@@ -203,6 +203,7 @@ export interface PrBranchExecutionDeps {
     repo: string;
     prNumber: number;
     workerId: string;
+    note?: string;
     sleepFn?: (ms: number) => Promise<void>;
     ghCommandFn?: (args: string[]) => Promise<string>;
     nowFn?: () => number;
@@ -917,6 +918,11 @@ export async function executePrBranchUpdates(
         repo: action.repo,
         prNumber: action.prNumber,
         workerId: deps.workerId,
+        // A marker-only body renders as a blank PR comment (Issue #1659),
+        // and this path posted one on every cycle (Issue #2265).
+        note:
+          `⏫ Updating this PR's branch from \`${action.baseBranch}\` (worker ` +
+          `\`${deps.workerId}\`).`,
       });
 
       if (!lockResult.ok || !lockResult.value.acquired) {
