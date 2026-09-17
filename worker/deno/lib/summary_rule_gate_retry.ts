@@ -192,9 +192,12 @@ export async function recoverFromSummaryRuleBlock(
  *
  * HEAD is reconciled first: the observed failure left the summary untracked on
  * a **detached** checkout, where a commit would not reach the branch at all.
- * Best-effort by design — a commit that cannot be made leaves the file on disk
- * exactly as the recovery wrote it, which is the pre-existing behaviour, so it
- * is warned about loudly rather than failing a run over documentation.
+ *
+ * A commit that cannot be made leaves the file on disk exactly as the recovery
+ * wrote it — the pre-existing behaviour, and still enough for the PR body,
+ * which is read from disk. So it does not fail the run; it is logged at
+ * **error** with the consequence named, because a silent warning is how this
+ * exact loss went unnoticed in the first place.
  */
 async function commitRecoveredSummary(
   ctx: IssueContext,
@@ -208,9 +211,10 @@ async function commitRecoveredSummary(
     cwd: state.repoPath,
   });
   if (!reconcile.ok) {
-    logger.warn(
+    logger.error(
       `Could not put HEAD back on '${state.branchName}' to commit the ` +
-        `recovered summary — it stays uncommitted: ${reconcile.error.message}`,
+        `recovered PR summary — it stays UNTRACKED and the next attempt will ` +
+        `not see it: ${reconcile.error.message}`,
       { repo, issueNumber },
     );
     return;
@@ -225,9 +229,10 @@ async function commitRecoveredSummary(
     resolvePreFlightSpec(config.repoConfig, repo),
   );
   if (!commit.ok) {
-    logger.warn(
-      `Could not commit the recovered PR summary — it stays uncommitted on ` +
-        `'${state.branchName}': ${commit.error.message}`,
+    logger.error(
+      `Could not commit the recovered PR summary — it stays UNTRACKED on ` +
+        `'${state.branchName}', so a still-blocked run carries nothing ` +
+        `forward: ${commit.error.message}`,
       { repo, issueNumber },
     );
     return;

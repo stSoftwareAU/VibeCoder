@@ -164,6 +164,10 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * left out goes red one run in five, on somebody else's change.
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
+  // The closure-block render scans an agent-authored summary line by line for
+  // the two review headings; only a growth measurement separates that scan
+  // from the ambiguous `\s*:?\s*$` tail it deliberately does not copy (#2242).
+  "tests/closure_verdict_test.ts",
   // The grill-me stem strip walks a run of trailing punctuation an untrusted
   // commenter chooses the length of; only a growth measurement separates the
   // linear walk from the quadratic regex it replaced (#2183).

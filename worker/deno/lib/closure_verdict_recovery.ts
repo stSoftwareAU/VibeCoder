@@ -33,8 +33,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { extractAcceptanceCriteria } from "./acceptance_criteria_gate.ts";
-import { validateAcceptanceClosure } from "./acceptance_criteria_gate.ts";
+import {
+  extractAcceptanceCriteria,
+  validateAcceptanceClosure,
+} from "./acceptance_criteria_gate.ts";
 import { validateIndependentReview } from "./independent_review_gate.ts";
 import { loadPrSummary } from "./pr_summary_loader.ts";
 import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";

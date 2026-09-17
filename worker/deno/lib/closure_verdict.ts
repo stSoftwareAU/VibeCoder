@@ -135,6 +135,11 @@ const MAX_ENTRIES = 100;
  *     validators match on — the first match wins, so a criterion carrying its
  *     own `reviewer: missing` would override the verdict being rendered.
  *
+ * The keyword scrub deliberately consumes any letters **before** the keyword as
+ * well. The validators' own patterns are unanchored (`/evidence\s*[:\-—]/i`),
+ * so `Xevidence: trust me` reads to them as a filled `evidence:` field: a
+ * `\b`-anchored scrub would leave exactly the forgery it exists to remove.
+ *
  * @param raw - The model's text.
  * @returns The sanitised single line, empty when nothing survived.
  */
@@ -142,7 +147,7 @@ function sanitiseField(raw: string): string {
   return raw
     .replace(/[\r\n]+/g, " ")
     .replace(/<!--|-->/g, " ")
-    .replace(/\b(evidence|reason|reviewer)\b\s*[:\-—]+\s*/gi, " ")
+    .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
     .replace(/[`*_#|]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -168,13 +173,33 @@ function describeRejected(
   return `entry ${index + 1} ${problem}: ${shown}`;
 }
 
+/**
+ * Take at most {@link MAX_ENTRIES} entries, recording any truncation.
+ *
+ * The cap is a bound on a runaway reply, not a licence to lose entries
+ * quietly: what is cut is named in `dropped`, so the coverage check reports it
+ * and the re-ask asks for it.
+ */
+function capEntries(
+  raw: unknown[],
+  label: string,
+  dropped: string[],
+): unknown[] {
+  if (raw.length <= MAX_ENTRIES) return raw;
+  dropped.push(
+    `the verdict listed ${raw.length} ${label} entries; only the first ` +
+      `${MAX_ENTRIES} were read`,
+  );
+  return raw.slice(0, MAX_ENTRIES);
+}
+
 /** Parse the `criteria` array, collecting what had to be dropped. */
 function readCriteria(
   raw: unknown[],
   dropped: string[],
 ): CriterionVerdict[] {
   const entries: CriterionVerdict[] = [];
-  raw.slice(0, MAX_ENTRIES).forEach((item, index) => {
+  capEntries(raw, "criteria", dropped).forEach((item, index) => {
     if (typeof item !== "object" || item === null || Array.isArray(item)) {
       dropped.push(describeRejected(index, "is not an object", item));
       return;
@@ -217,7 +242,7 @@ function readStandards(
   dropped: string[],
 ): StandardsVerdict[] {
   const entries: StandardsVerdict[] = [];
-  raw.slice(0, MAX_ENTRIES).forEach((item, index) => {
+  capEntries(raw, "standards", dropped).forEach((item, index) => {
     if (typeof item !== "object" || item === null || Array.isArray(item)) {
       dropped.push(describeRejected(index, "is not an object", item));
       return;
@@ -358,11 +383,16 @@ export function assessVerdictCoverage(
   const assessments = verdict.criteria.filter((e) =>
     e.status !== "unrequested"
   );
-  if (assessments.length < criteria.length) {
+  // Counted by DISTINCT criterion text: five entries restating criterion one
+  // are one criterion judged five times, not five criteria covered.
+  const distinct = new Set(
+    assessments.map((e) => e.criterion.trim().toLowerCase()),
+  );
+  if (distinct.size < criteria.length) {
     shortfalls.push(
-      `only ${assessments.length} of ${criteria.length} stated acceptance ` +
-        `criteria carry a verdict — every criterion needs one, and a ` +
-        `criterion you did not touch is \`missing\`, not omitted`,
+      `only ${distinct.size} of ${criteria.length} stated acceptance ` +
+        `criteria carry a verdict — every criterion needs its own entry, and ` +
+        `a criterion you did not touch is \`missing\`, not omitted`,
     );
   }
   for (const entry of verdict.criteria) {
@@ -473,12 +503,30 @@ export function renderClosureBlocks(verdict: ClosureVerdict): string {
   ].join("\n");
 }
 
-/** A `## Acceptance Criteria` or `## Standards Review` heading, any level. */
+/**
+ * A `## Acceptance Criteria` or `## Standards Review` heading, any level,
+ * matched against an already-trimmed line with any trailing colon removed.
+ *
+ * Trimming first is what keeps this linear: the gates' own heading patterns
+ * end `\s*:?\s*$`, two adjacent unbounded whitespace quantifiers, and a line
+ * of 160k spaces after a matching heading takes seconds to fail. The summary
+ * this runs over is agent-authored and steered by an untrusted issue body, so
+ * the ambiguity is removed rather than assumed unreachable.
+ */
 const REVIEW_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+(?:acceptance\s+criteria|standards\s+review)\s*:?\s*$/i;
+  /^#{1,6}[ \t]+(?:acceptance[ \t]+criteria|standards[ \t]+review)$/i;
 
 /** Any markdown heading — the section boundary. */
-const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
+const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s/;
+
+/** Longest line this scans as a candidate heading. */
+const MAX_HEADING_CHARS = 200;
+
+/** Whether a summary line opens one of the two review sections. */
+function isReviewHeading(line: string): boolean {
+  if (line.length > MAX_HEADING_CHARS) return false;
+  return REVIEW_HEADING_RE.test(line.trim().replace(/:$/, "").trimEnd());
+}
 
 /**
  * Put the rendered blocks into a PR summary, replacing whatever stood there.
@@ -496,7 +544,7 @@ export function applyClosureBlocks(summary: string, blocks: string): string {
   const kept: string[] = [];
   let skipping = false;
   for (const line of summary.split(/\r?\n/)) {
-    if (REVIEW_HEADING_RE.test(line)) {
+    if (isReviewHeading(line)) {
       skipping = true;
       continue;
     }

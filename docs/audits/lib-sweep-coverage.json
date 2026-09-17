@@ -1724,6 +1724,19 @@
       "paths": [
         "worker/deno/lib/agent_marker_neutralisation.ts"
       ]
+    },
+    {
+      "issue": 2242,
+      "chunk": "top-up-2242",
+      "title": "top-up: the closure verdict render",
+      "ledger": "docs/audits/security-sweep-2242-closure-verdict.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: closure_verdict.ts, closure_verdict_recovery.ts (#2242)",
+      "status": "swept",
+      "sweptAt": "00f16e1779404398f5d891ac883dcd8280315789",
+      "paths": [
+        "worker/deno/lib/closure_verdict.ts",
+        "worker/deno/lib/closure_verdict_recovery.ts"
+      ]
     }
   ],
   "roots": [

@@ -103,6 +103,8 @@ interface Scenario {
   covered: number;
   /** The model answers the verdict question with prose instead. */
   refuseVerdict?: boolean;
+  /** The commit of the recovered summary fails (a pre-flight gate, a lock). */
+  commitFails?: boolean;
 }
 
 interface Outcome {
@@ -204,6 +206,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         }
         committedOn.push(branch);
         commitMessages.push(message);
+        if (scenario.commitFails) {
+          return Promise.resolve({
+            ok: false as const,
+            error: new Error("pre-flight gate blocked the commit"),
+          });
+        }
         return Promise.resolve({
           ok: true as const,
           value: {
@@ -345,6 +353,23 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
     assertStringIncludes(outcome.reason ?? "", "Acceptance criteria");
     assertEquals(outcome.committedOn.length, 1);
+    assertStringIncludes(outcome.summary, "## Acceptance Criteria");
+  },
+);
+
+Deno.test(
+  "closure render - a commit that fails is loud, and does not cost the PR",
+  async () => {
+    const outcome = await runCompletion({
+      covered: CRITERIA.length,
+      commitFails: true,
+    });
+
+    // The summary is on disk, so the PR body still carries the block and the
+    // run completes; the loss of the commit is reported, not swallowed.
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.committedOn.length, 1, "the commit was attempted");
     assertStringIncludes(outcome.summary, "## Acceptance Criteria");
   },
 );
