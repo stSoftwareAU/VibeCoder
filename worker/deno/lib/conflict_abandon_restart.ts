@@ -31,16 +31,15 @@
  *    ever, and outsider failure markers on the PR thread spent the budget
  *    that brings the rung here at all. A claim whose author cannot be
  *    established refuses the abandon rather than relaxing the bound;
- * 3. the issue has no *other* PR of its own; and
- * 4. the issue can be re-queued **by the worker** — it already carries the
- *    work label, or the worker is permitted to apply it
- *    (`worker_label_guard.ts` refuses `work-on` on an existing issue, and a
- *    discovery collector strips a worker-applied one). Where it may not, the
- *    abandon still runs (Issue #1773): the PR is closed, the issue reopened
- *    and labelled `needs-human`, and the restart comment names the label a
- *    trusted author must re-apply. Redoing the work is why the rung exists,
- *    and a named, reopened issue in a human's queue beats a stalled PR with
- *    nothing redone.
+ * 3. the issue has no *other* PR of its own.
+ *
+ * **The re-queue never costs the issue its place in the queue** (Issue #2277).
+ * A pickup label the issue already carries is kept exactly as it is — a
+ * `top-priority` issue restarted as `work-on` would be demoted by its own
+ * fix — and an issue carrying none gains `idle-task`, the one pickup label
+ * `worker_label_guard.ts` lets the worker apply. `needs-human` is never part
+ * of this route: #1773 sent an issue there because the worker may not apply
+ * `work-on`, but `idle-task` re-queues it without a human at all.
  *
  * The restart marker is recorded **on the issue**, not on the PR: the PR being
  * counted is closed moments later and a new one takes its place, so a PR-keyed
@@ -69,14 +68,11 @@ import {
   CONFLICT_FAILED_MARKER,
 } from "./merge_conflict_markers.ts";
 import { CONSULTED_ISSUES_HEADING } from "./conflict_intent_audit.ts";
-import { DEFAULT_WORK_LABEL } from "./escalate_as_work.ts";
+import { DISCOVERY_LABELS } from "./config_defaults.ts";
+import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { prTitleMatchesIssue } from "./pr_title_issue_ref.ts";
 import { sanitiseIssueText } from "./conflict_intent_context.ts";
-import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
-import { createGhEscalationClient } from "./gh_escalation_client.ts";
-import { createLogger } from "./logger.ts";
-import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
+import { addLabelToIssue } from "./label_operations.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
 
@@ -96,14 +92,6 @@ import { partitionConflictComments } from "./conflict_marker_trust.ts";
  * makes two hosts scanning the same exhausted PR produce one abandon.
  */
 export const CONFLICT_RESTART_MARKER = "<!-- vibe-merge-conflict-restart";
-
-/**
- * Default label put on an issue the worker abandoned but may not re-queue
- * itself (Issue #1773). Operators may rename it (`needs_human_label`), so
- * every caller that has the configured name passes it in — this is only the
- * fallback for a call site that has none.
- */
-export const DEFAULT_NEEDS_HUMAN_LABEL = "needs-human";
 
 /** The marker comment line for one abandoned PR. */
 export function conflictRestartMarker(repo: string, prNumber: number): string {
@@ -263,6 +251,55 @@ export function summariseFailedAttempts(
 }
 
 // ---------------------------------------------------------------------------
+// The re-queue label
+// ---------------------------------------------------------------------------
+
+/**
+ * The pickup labels, highest priority first (Issue #2277).
+ *
+ * The three hardwired discovery labels in their canonical order, then
+ * `idle-task` — the lowest pickup signal, and the only one of the four the
+ * worker may apply itself (`worker_label_guard.ts`).
+ */
+const PICKUP_LABELS: readonly string[] = [
+  ...DISCOVERY_LABELS,
+  IDLE_TASK_LABEL,
+];
+
+/** Which pickup label a re-queued issue ends up carrying (Issue #2277). */
+export type RequeueLabel =
+  /** It already carried this one, and the abandon left it alone. */
+  | { kept: string }
+  /** It carried none, so the worker applied `idle-task`. */
+  | { applied: typeof IDLE_TASK_LABEL };
+
+/**
+ * Decide the re-queue label from the issue's own labels.
+ *
+ * Keeping what is there is the point: an issue a human raised as
+ * `top-priority` must come back as `top-priority`, not be relabelled down to
+ * whatever the worker happens to be permitted to apply. Only an issue with no
+ * pickup label at all is labelled, and then with `idle-task`, so no route
+ * through this rung needs a human to re-queue the work.
+ *
+ * The kept name is the canonical pickup label rather than the repository's
+ * own spelling of it, so a label whose text is attacker-controlled cannot
+ * reach the public comments this decision feeds.
+ */
+export function planRequeueLabel(labels: readonly string[]): RequeueLabel {
+  const carried = new Set(labels.map((label) => label.toLowerCase()));
+  for (const pickup of PICKUP_LABELS) {
+    if (carried.has(pickup.toLowerCase())) return { kept: pickup };
+  }
+  return { applied: IDLE_TASK_LABEL };
+}
+
+/** The label a re-queued issue carries, for comment and log use. */
+function requeueLabelName(label: RequeueLabel): string {
+  return "kept" in label ? label.kept : label.applied;
+}
+
+// ---------------------------------------------------------------------------
 // Outcome taxonomy
 // ---------------------------------------------------------------------------
 
@@ -308,21 +345,12 @@ export type AbandonStep =
 
 /** What {@link abandonAndRestart} did. */
 export type AbandonRestartOutcome =
-  /** The PR was closed and its issue re-queued. */
-  | { outcome: "abandoned"; issueNumber: number }
   /**
-   * The PR was closed and its issue reopened, but the pickup label the fleet
-   * reads is one the worker may not apply (Issue #1773). The issue carries
-   * `needs-human` and a comment naming {@link workLabel}, so a trusted author
-   * re-queues it with one label. Counts against the one-restart bound exactly
-   * as a plain `abandoned` does — the marker is claimed before anything is
-   * closed either way.
+   * The PR was closed and its issue re-queued. {@link label} says how: the
+   * pickup label it already carried was kept, or `idle-task` was applied
+   * because it carried none (Issue #2277).
    */
-  | {
-    outcome: "abandoned-unlabelled";
-    issueNumber: number;
-    workLabel: string;
-  }
+  | { outcome: "abandoned"; issueNumber: number; label: RequeueLabel }
   /** A precondition refused the abandon; nothing was changed. */
   | { outcome: "declined"; reason: AbandonDeclineReason }
   /** A step failed; the caller must escalate naming {@link step}. */
@@ -361,10 +389,7 @@ export type ExhaustedEscalationRoute =
  * unexplained `needs-human`.
  */
 export function exhaustedEscalationRoute(
-  outcome: Exclude<
-    AbandonRestartOutcome,
-    { outcome: "abandoned" } | { outcome: "abandoned-unlabelled" }
-  >,
+  outcome: Exclude<AbandonRestartOutcome, { outcome: "abandoned" }>,
 ): ExhaustedEscalationRoute {
   if (outcome.outcome === "failed") {
     return {
@@ -518,39 +543,6 @@ export interface AbandonRestartDeps {
    */
   trustedAuthors: readonly string[];
   logger?: Logger;
-  /** Label that puts the restarted issue back in the queue. */
-  workLabel?: string;
-  /**
-   * The escalation label, as the operator configured it
-   * (`needs_human_label`). Defaults to {@link DEFAULT_NEEDS_HUMAN_LABEL} —
-   * pass the configured name so a renamed label is honoured (Issue #1773).
-   */
-  needsHumanLabel?: string;
-  /**
-   * Hands an abandoned issue the worker may not re-queue to a human
-   * (Issue #1773). Defaults to `escalateToHuman` — the one sanctioned path
-   * to `needs-human`, which ensures the label exists, applies it and posts
-   * the same-run explanation beside it (`needs_human_direct_label_check.ts`).
-   */
-  escalateNeedsHuman?: (
-    escalation: {
-      repo: string;
-      issueNumber: number;
-      needsHumanLabel: string;
-      workLabel: string;
-      prNumber: number;
-    },
-  ) => Promise<Result<{ labelAdded: boolean }>>;
-  /**
-   * Label creation for that escalation (test seam). Defaults to the
-   * production {@link ensureLabelExists}, driven through `gh`.
-   */
-  ensureLabelExists?: (
-    repo: string,
-    label: string,
-    colour?: string,
-    description?: string,
-  ) => Promise<Result<void>>;
   /** Originating-issue resolution — defaults to #1113's gatherer. */
   resolveContext?: (
     request: AbandonRestartRequest,
@@ -765,19 +757,15 @@ export function buildAbandonPrComment(args: {
   history: FailedAttemptHistory;
   context: ConflictIssueContext;
   issueNumber: number;
-  workLabel: string;
   /**
-   * The worker may not apply `workLabel`, so the issue is reopened and handed
-   * to a human instead of re-queued (Issue #1773). Said here because this
-   * comment is permanent: promising a re-queue that needs a label the worker
-   * cannot apply would be a fabricated fact.
+   * The pickup label the issue carries once it is re-queued (Issue #2277).
+   * Named here because this comment is permanent: a reader months later must
+   * be able to see which label the fleet will pick the work up by.
    */
-  requeueNeedsHuman?: boolean;
-  /** The escalation label, when it is not the default. */
-  needsHumanLabel?: string;
+  label: RequeueLabel;
 }): string {
-  const { request, history, context, issueNumber, workLabel } = args;
-  const needsHumanLabel = args.needsHumanLabel ?? DEFAULT_NEEDS_HUMAN_LABEL;
+  const { request, history, context, issueNumber } = args;
+  const labelName = requeueLabelName(args.label);
   // Every quoted string below came off GitHub — a failure comment the agent
   // wrote, a path, an issue title — and this comment is a public outbound
   // sink, so each goes through the same sanitiser the intent audit uses:
@@ -828,15 +816,12 @@ export function buildAbandonPrComment(args: {
     "",
     "**What happens now**",
     "",
-    args.requeueNeedsHuman
-      ? `This PR is being **closed** — not merged — and issue ` +
-        `#${issueNumber} reopened. The worker may not apply ` +
-        `\`${workLabel}\`, so that issue rests at \`${needsHumanLabel}\`: ` +
-        `remove \`${needsHumanLabel}\` and re-apply \`${workLabel}\` there, ` +
-        `and the fleet raises a fresh PR off \`${base}\`.`
-      : `This PR is being **closed** — not merged — and issue ` +
-        `#${issueNumber} is being re-queued (\`${workLabel}\`) so the fleet ` +
-        `raises a fresh PR off \`${base}\`.`,
+    `This PR is being **closed** — not merged — and issue ` +
+    `#${issueNumber} is being re-queued (${
+      "kept" in args.label
+        ? `\`${labelName}\`, the pickup label it already carries`
+        : `\`${labelName}\`, applied by the worker`
+    }) so the fleet raises a fresh PR off \`${base}\`.`,
     "",
     `The branch \`${branch}\` is **not** deleted and has **not** ` +
     "been force-pushed: every commit on it stays exactly as its author " +
@@ -854,44 +839,29 @@ export function buildAbandonPrComment(args: {
 export function buildRestartIssueComment(args: {
   request: AbandonRestartRequest;
   history: FailedAttemptHistory;
-  workLabel: string;
-  /**
-   * The worker may not apply `workLabel` (Issue #1773) — the comment then
-   * names the label a trusted author must re-apply instead of claiming a
-   * re-queue that is not happening.
-   */
-  requeueNeedsHuman?: boolean;
-  /** The escalation label, when it is not the default. */
-  needsHumanLabel?: string;
+  /** The pickup label this issue carries once it is re-queued (#2277). */
+  label: RequeueLabel;
 }): string {
-  const { request, history, workLabel } = args;
-  const needsHumanLabel = args.needsHumanLabel ?? DEFAULT_NEEDS_HUMAN_LABEL;
+  const { request, history } = args;
+  const labelName = requeueLabelName(args.label);
   const paths = conflictedPathLines(history);
-  // `needs-human` blocks discovery outright (`issue_filter.ts`), so naming
-  // only the pickup label would promise a re-queue that cannot happen: both
-  // halves — remove one, re-apply the other — are the instruction.
-  const whatHappensNow = args.requeueNeedsHuman
-    ? `That PR is being closed and this issue reopened, but \`${workLabel}\` ` +
-      "is a label the worker may not apply — so this issue rests at " +
-      `\`${needsHumanLabel}\` instead. **Remove \`${needsHumanLabel}\` and ` +
-      `re-apply \`${workLabel}\` to re-queue this issue**, and the work is ` +
-      "redone off the current base rather than reconciled against it. The " +
-      "abandoned branch is kept, not deleted, and was never force-pushed — " +
-      `read it at ${request.repo}#${request.prNumber} if the earlier work ` +
-      "is useful."
-    : `That PR is being closed and this issue re-queued (\`${workLabel}\`), ` +
-      "so the work is redone off the current base rather than reconciled " +
-      "against it. The abandoned branch is kept, not deleted, and was never " +
-      `force-pushed — read it at ${request.repo}#${request.prNumber} if the ` +
-      "earlier work is useful.";
+  // Which label, and why it is that one: an issue that already carried a
+  // pickup label keeps it, so a `top-priority` issue is not silently demoted
+  // by its own restart (Issue #2277).
+  const labelClause = "kept" in args.label
+    ? `it keeps the \`${labelName}\` label it already carries`
+    : `\`${labelName}\` is being applied to it, since it carried no pickup ` +
+      "label";
+  const whatHappensNow =
+    `That PR is being closed and this issue re-queued — ${labelClause} — so ` +
+    "the work is redone off the current base rather than reconciled against " +
+    "it. The abandoned branch is kept, not deleted, and was never " +
+    `force-pushed — read it at ${request.repo}#${request.prNumber} if the ` +
+    "earlier work is useful.";
 
   return [
     conflictRestartMarker(request.repo, request.prNumber),
-    // The heading is the whole comment at a glance in a notification list, so
-    // it must not say "re-queued" where only a human can re-queue this.
-    args.requeueNeedsHuman
-      ? "♻️ **Reopened: the PR for this issue conflicted irreconcilably**"
-      : "♻️ **Re-queued: the PR for this issue conflicted irreconcilably**",
+    "♻️ **Re-queued: the PR for this issue conflicted irreconcilably**",
     "",
     `${request.repo}#${request.prNumber} put this issue's work on ` +
     `\`${sanitiseIssueText(request.branchName)}\`, and that branch ` +
@@ -956,70 +926,6 @@ async function fetchIssueSnapshot(
 }
 
 /**
- * Hand an abandoned issue the worker may not re-queue to a human
- * (Issue #1773).
- *
- * Routed through `escalateToHuman` rather than a direct label add: that
- * helper is the repo's only sanctioned path to `needs-human`
- * (`needs_human_direct_label_check.ts`), and it is what ensures the label
- * exists in the repository before applying it — without that, an abandon on
- * a repo that has never used the label would fail *after* the PR was closed.
- */
-async function escalateAbandonedIssue(
-  escalation: {
-    repo: string;
-    issueNumber: number;
-    needsHumanLabel: string;
-    workLabel: string;
-    prNumber: number;
-  },
-  deps: {
-    gh: (args: string[]) => Promise<string>;
-    logger?: Logger;
-    ensureLabel?: (
-      repo: string,
-      label: string,
-      colour?: string,
-      description?: string,
-    ) => Promise<Result<void>>;
-  },
-): Promise<Result<{ labelAdded: boolean }>> {
-  const { repo, issueNumber, needsHumanLabel, workLabel, prNumber } =
-    escalation;
-  const ensureLabel = deps.ensureLabel ??
-    ((
-      labelRepo: string,
-      label: string,
-      colour?: string,
-      description?: string,
-    ) =>
-      ensureLabelExists(labelRepo, label, colour, description, {
-        ghCommandFn: deps.gh,
-      }));
-  const result = await escalateToHuman({
-    ghClient: createGhEscalationClient(deps.gh),
-    repo,
-    target: { kind: "issue", number: issueNumber },
-    needsHumanLabel,
-    heading: "This issue was restarted and needs re-queuing by a human",
-    reason: `${repo}#${prNumber} conflicted with its base irreconcilably, so ` +
-      "the fleet closed it and reopened this issue to redo the work off the " +
-      `current base. Re-queuing it needs \`${workLabel}\`, which the worker ` +
-      "is not permitted to apply (`worker_label_guard.ts`).",
-    nextStep: `Remove \`${needsHumanLabel}\` and re-apply \`${workLabel}\` ` +
-      "to this issue — the fleet then raises a fresh PR. Both halves are " +
-      `needed: \`${needsHumanLabel}\` blocks discovery on its own.`,
-    // No dedup key: the restart marker already bounds this to one escalation
-    // per issue, and a dedup read here would cost a comment page for nothing.
-    logger: deps.logger ?? createLogger(),
-    deps: { github: { ensureLabelExists: ensureLabel } },
-  });
-  return result.ok
-    ? { ok: true, value: { labelAdded: result.value.labelAdded } }
-    : result;
-}
-
-/**
  * Close the conflicting PR and re-queue its originating issue.
  *
  * Never throws: every failure is returned as `{ outcome: "failed", step }` so
@@ -1031,8 +937,6 @@ export async function abandonAndRestart(
 ): Promise<AbandonRestartOutcome> {
   const { repo, prNumber } = request;
   const gh = deps.gh;
-  const workLabel = deps.workLabel ?? DEFAULT_WORK_LABEL;
-  const needsHumanLabel = deps.needsHumanLabel ?? DEFAULT_NEEDS_HUMAN_LABEL;
   const logger = deps.logger;
 
   const failed = (
@@ -1153,20 +1057,17 @@ export async function abandonAndRestart(
     };
   }
 
-  // --- Precondition 4: who re-queues the issue — the worker, or a human? --
+  // --- The issue's own state: is it closed, and what does it carry? -------
   let snapshot: IssueSnapshot;
   try {
     snapshot = await fetchIssueSnapshot(repo, issueNumber, gh);
   } catch (error) {
     return failed("issue-state", error, issueNumber);
   }
-  const alreadyLabelled = snapshot.labels.includes(workLabel);
-  // Issue #1773: a pickup label the worker may not apply no longer refuses the
-  // abandon. The work is still redone — the PR is closed, the issue reopened
-  // and handed to a human with the label named — because a stalled PR with
-  // nothing redone helps nobody, and the issue is visible either way.
-  const requeueNeedsHuman = !alreadyLabelled &&
-    !isWorkerAppliableLabel(workLabel);
+  // Issue #2277: keep whatever pickup label the issue already carries, else
+  // apply `idle-task`. No route here hands the issue to a human — an issue
+  // waiting on a label a person must apply is not re-queued at all.
+  const requeueLabel = planRequeueLabel(snapshot.labels);
 
   let history: FailedAttemptHistory;
   try {
@@ -1198,13 +1099,7 @@ export async function abandonAndRestart(
       "--repo",
       repo,
       "--body",
-      buildRestartIssueComment({
-        request,
-        history,
-        workLabel,
-        requeueNeedsHuman,
-        needsHumanLabel,
-      }),
+      buildRestartIssueComment({ request, history, label: requeueLabel }),
     ]);
   } catch (error) {
     return failed("issue-comment", error, issueNumber);
@@ -1224,9 +1119,7 @@ export async function abandonAndRestart(
         history,
         context,
         issueNumber,
-        workLabel,
-        requeueNeedsHuman,
-        needsHumanLabel,
+        label: requeueLabel,
       }),
     ]);
   } catch (error) {
@@ -1251,49 +1144,14 @@ export async function abandonAndRestart(
     }
   }
 
-  // --- Step 5: …and label it. The work label where the worker may apply it;
-  // the escalation label where it may not, so the issue is in somebody's
-  // queue rather than open and unread (Issue #1773).
-  if (requeueNeedsHuman) {
-    try {
-      const escalate = deps.escalateNeedsHuman ??
-        ((escalation) =>
-          escalateAbandonedIssue(escalation, {
-            gh,
-            logger,
-            ensureLabel: deps.ensureLabelExists,
-          }));
-      const escalated = await escalate({
-        repo,
-        issueNumber,
-        needsHumanLabel,
-        workLabel,
-        prNumber,
-      });
-      if (!escalated.ok) {
-        return failed("issue-label", escalated.error, issueNumber);
-      }
-      // The label is the only thing that puts this issue in a human's queue,
-      // so a posted comment alone is not the outcome this claims to be.
-      if (!escalated.value.labelAdded) {
-        return failed(
-          "issue-label",
-          new Error(
-            `\`${needsHumanLabel}\` could not be applied to ` +
-              `${repo}#${issueNumber} — the abandoned issue is open but in ` +
-              "nobody's queue",
-          ),
-          issueNumber,
-        );
-      }
-    } catch (error) {
-      return failed("issue-label", error, issueNumber);
-    }
-  } else if (!alreadyLabelled) {
+  // --- Step 5: …and label it, but only where there is nothing to keep. A
+  // pickup label the issue already carries is left exactly as it is, so the
+  // restart cannot demote the work a human prioritised (Issue #2277).
+  if ("applied" in requeueLabel) {
     try {
       const labelled = deps.addLabel
-        ? await deps.addLabel(repo, issueNumber, workLabel)
-        : await addLabelToIssue(repo, issueNumber, workLabel, {
+        ? await deps.addLabel(repo, issueNumber, requeueLabel.applied)
+        : await addLabelToIssue(repo, issueNumber, requeueLabel.applied, {
           ghCommandFn: gh,
         });
       if (!labelled.ok) {
@@ -1304,20 +1162,17 @@ export async function abandonAndRestart(
     }
   }
 
-  if (requeueNeedsHuman) {
-    logger?.warn?.(
-      `PR #${prNumber} was abandoned and issue #${issueNumber} reopened — ` +
-        `the worker may not apply \`${workLabel}\`, so the issue carries ` +
-        `\`${needsHumanLabel}\` until a trusted author re-applies it`,
-      { repo, prNumber, issueNumber, workLabel, requeueNeedsHuman: true },
-    );
-    return { outcome: "abandoned-unlabelled", issueNumber, workLabel };
-  }
-
   logger?.warn?.(
-    `PR #${prNumber} was abandoned and issue #${issueNumber} re-queued — ` +
-      "two concluded merge attempts could not reconcile the branch",
-    { repo, prNumber, issueNumber, workLabel },
+    `PR #${prNumber} was abandoned and issue #${issueNumber} re-queued ` +
+      `(\`${requeueLabelName(requeueLabel)}\`) — two concluded merge ` +
+      "attempts could not reconcile the branch",
+    {
+      repo,
+      prNumber,
+      issueNumber,
+      label: requeueLabelName(requeueLabel),
+      labelApplied: "applied" in requeueLabel,
+    },
   );
-  return { outcome: "abandoned", issueNumber };
+  return { outcome: "abandoned", issueNumber, label: requeueLabel };
 }

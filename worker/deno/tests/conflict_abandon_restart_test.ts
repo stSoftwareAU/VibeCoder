@@ -40,7 +40,6 @@ import {
   restartMarkerPrNumbers,
   summariseFailedAttempts,
 } from "../lib/conflict_abandon_restart.ts";
-import type { Result } from "../types.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
@@ -235,6 +234,24 @@ function labelAddCalls(fake: FakeGh, issueNumber: number): string[][] {
   );
 }
 
+/**
+ * No `gh` call this abandon made mentions `needs-human` at all (Issue #2277).
+ *
+ * Every stubbed call is captured, argument by argument — the label add, the
+ * comment bodies and the label-creation calls alike — so an escalation
+ * reaching *any* of them fails here rather than in production.
+ */
+function assertNoNeedsHuman(fake: FakeGh): void {
+  const offending = fake.calls.find((args) =>
+    args.some((arg) => arg.includes("needs-human"))
+  );
+  assertEquals(
+    offending,
+    undefined,
+    `no abandon call may name needs-human: ${JSON.stringify(offending)}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Reading the PR's own record
 // ---------------------------------------------------------------------------
@@ -290,7 +307,11 @@ Deno.test("abandonAndRestart - closes the PR, re-queues the issue, keeps the bra
     trustedAuthors: FLEET_AUTHORS,
   });
 
-  assertEquals(outcome, { outcome: "abandoned", issueNumber: ISSUE_NUMBER });
+  assertEquals(outcome, {
+    outcome: "abandoned",
+    issueNumber: ISSUE_NUMBER,
+    label: { kept: "work-on" },
+  });
 
   // Closed, not merged — and the branch is neither deleted nor force-pushed.
   const closes = callsMatching(fake, "pr", "close");
@@ -334,21 +355,90 @@ Deno.test("abandonAndRestart - claims the restart on the issue before closing th
   assert(claim < close, "the issue claim must precede the close");
 });
 
-Deno.test("abandonAndRestart - reopens a closed issue and applies an appliable work label", async () => {
+Deno.test("abandonAndRestart - reopens a closed issue and applies idle-task", async () => {
   const fake = makeFake({ issueState: "CLOSED", issueLabels: [] });
 
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
     trustedAuthors: FLEET_AUTHORS,
-    // `idle-task` is the operational label the worker may self-apply.
-    workLabel: "idle-task",
   });
 
-  assertEquals(outcome, { outcome: "abandoned", issueNumber: ISSUE_NUMBER });
+  assertEquals(outcome, {
+    outcome: "abandoned",
+    issueNumber: ISSUE_NUMBER,
+    // `idle-task` is the one pickup label the worker may self-apply.
+    label: { applied: "idle-task" },
+  });
   assertEquals(callsMatching(fake, "issue", "reopen").length, 1);
   const labelAdds = labelAddCalls(fake, ISSUE_NUMBER);
   assertEquals(labelAdds.length, 1);
   assert((labelAdds[0] ?? []).includes("labels[]=idle-task"));
+});
+
+// ---------------------------------------------------------------------------
+// The re-queue label — keep what is there, else `idle-task` (Issue #2277)
+// ---------------------------------------------------------------------------
+
+Deno.test("abandonAndRestart - an issue carrying top-priority keeps it, and no label is added", async () => {
+  // The live case: NEAT-AI-Lamarck#234 carries `top-priority`. Replacing it —
+  // or handing the issue to `needs-human` because the worker may not apply
+  // `work-on` — would demote work a human deliberately raised.
+  const fake = makeFake({ issueLabels: ["bug", "top-priority"] });
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome, {
+    outcome: "abandoned",
+    issueNumber: ISSUE_NUMBER,
+    label: { kept: "top-priority" },
+  });
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+  assertEquals(labelAddCalls(fake, ISSUE_NUMBER).length, 0);
+  assertNoNeedsHuman(fake);
+
+  // The restart comment names the label the issue now carries.
+  assertStringIncludes(bodyOfCall(fake, "issue", "comment"), "`top-priority`");
+  assertStringIncludes(bodyOfCall(fake, "pr", "comment"), "`top-priority`");
+});
+
+Deno.test("abandonAndRestart - an issue with no pickup label gains idle-task, never needs-human", async () => {
+  const fake = makeFake({ issueLabels: ["bug"] });
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome, {
+    outcome: "abandoned",
+    issueNumber: ISSUE_NUMBER,
+    label: { applied: "idle-task" },
+  });
+  const labelAdds = labelAddCalls(fake, ISSUE_NUMBER);
+  assertEquals(labelAdds.length, 1);
+  assert((labelAdds[0] ?? []).includes("labels[]=idle-task"));
+  assertNoNeedsHuman(fake);
+  assertStringIncludes(bodyOfCall(fake, "issue", "comment"), "`idle-task`");
+});
+
+Deno.test("abandonAndRestart - an issue already carrying idle-task has nothing added", async () => {
+  const fake = makeFake({ issueLabels: ["idle-task"] });
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome, {
+    outcome: "abandoned",
+    issueNumber: ISSUE_NUMBER,
+    label: { kept: "idle-task" },
+  });
+  assertEquals(labelAddCalls(fake, ISSUE_NUMBER).length, 0);
+  assertNoNeedsHuman(fake);
 });
 
 // ---------------------------------------------------------------------------
@@ -412,143 +502,6 @@ Deno.test("abandonAndRestart - an issue with another open PR is left alone", asy
   assertEquals(callsMatching(fake, "pr", "close").length, 0);
 });
 
-Deno.test("abandonAndRestart - an issue the worker cannot re-label is still abandoned, and named (Issue #1773)", async () => {
-  // `work-on` on an existing issue is refused by the worker label guard and
-  // stripped by the discovery collectors. Before #1773 that refused the
-  // abandon and nothing was redone; now the PR is closed, the issue reopened
-  // and handed to a human with the label it needs named.
-  const fake = makeFake({ issueLabels: [], issueState: "CLOSED" });
-  const ensured: string[] = [];
-
-  const outcome = await abandonAndRestart(makeRequest(), {
-    gh: fake.gh,
-    trustedAuthors: FLEET_AUTHORS,
-    // The real `ensureLabelExists` keeps an on-disk label cache; the seam
-    // keeps this a hermetic unit test while still proving the rung ensures
-    // the label exists before applying it.
-    ensureLabelExists: (_repo, label) => {
-      ensured.push(label);
-      return Promise.resolve({ ok: true, value: undefined });
-    },
-  });
-
-  assertEquals(outcome, {
-    outcome: "abandoned-unlabelled",
-    issueNumber: ISSUE_NUMBER,
-    workLabel: "work-on",
-  });
-
-  // The work is redone-able: the PR is closed and the issue is back open.
-  assertEquals(callsMatching(fake, "pr", "close").length, 1);
-  assertEquals(callsMatching(fake, "issue", "reopen").length, 1);
-
-  // `needs-human` on the issue — and `work-on` is never applied by the worker.
-  const labelAdds = labelAddCalls(fake, ISSUE_NUMBER);
-  assertEquals(labelAdds.length, 1);
-  assert((labelAdds[0] ?? []).includes("labels[]=needs-human"));
-  // Routed through `escalateToHuman`, so the label is created if the repo
-  // has never used it — a failure here would land after the PR was closed.
-  assertEquals(ensured, ["needs-human"]);
-  assert(
-    !fake.calls.some((args) => args.includes("labels[]=work-on")),
-    "the worker must never apply a reserved pickup label",
-  );
-
-  // The issue comment names the label a trusted author must re-apply.
-  const issueBody = bodyOfCall(fake, "issue", "comment");
-  assertStringIncludes(issueBody, CONFLICT_RESTART_MARKER);
-  // Both halves: `needs-human` blocks discovery, so naming only the pickup
-  // label would promise a re-queue that cannot happen.
-  assertStringIncludes(
-    issueBody,
-    "Remove `needs-human` and re-apply `work-on` to re-queue this issue",
-  );
-  // The heading must not claim a re-queue only a human can make.
-  assertStringIncludes(issueBody, "**Reopened:");
-  // …and the PR comment does not promise a re-queue that is not happening.
-  const prBody = bodyOfCall(fake, "pr", "comment");
-  assertStringIncludes(prBody, "`needs-human`");
-  assertStringIncludes(prBody, "`work-on`");
-  assert(!prBody.includes("is being re-queued"));
-});
-
-Deno.test("abandonAndRestart - an unlabelled abandon is still bound to one restart (Issue #1773)", async () => {
-  const fake = makeFake({ issueLabels: [] });
-
-  const escalationDeps = {
-    gh: fake.gh,
-    trustedAuthors: FLEET_AUTHORS,
-    ensureLabelExists: () =>
-      Promise.resolve<Result<void>>({ ok: true, value: undefined }),
-  };
-
-  const first = await abandonAndRestart(makeRequest(), escalationDeps);
-  assertEquals(first.outcome, "abandoned-unlabelled");
-
-  const second = await abandonAndRestart(
-    makeRequest({ prNumber: 77, branchName: `issue-${ISSUE_NUMBER}-limits-2` }),
-    escalationDeps,
-  );
-
-  assertEquals(second, {
-    outcome: "declined",
-    reason: {
-      kind: "already-restarted",
-      issueNumber: ISSUE_NUMBER,
-      samePr: false,
-    },
-  });
-  assertEquals(callsMatching(fake, "pr", "close").length, 1);
-});
-
-Deno.test("abandonAndRestart - a needs-human that never landed is a named failure, not an abandon (Issue #1773)", async () => {
-  // The label is the only thing that puts the reopened issue in a human's
-  // queue: reporting `abandoned-unlabelled` when it did not land would leave
-  // the work invisible behind a green outcome.
-  const fake = makeFake({ issueLabels: [] });
-
-  const outcome = await abandonAndRestart(makeRequest(), {
-    gh: fake.gh,
-    trustedAuthors: FLEET_AUTHORS,
-    escalateNeedsHuman: () =>
-      Promise.resolve({ ok: true, value: { labelAdded: false } }),
-  });
-
-  assert(outcome.outcome === "failed");
-  assertEquals(outcome.step, "issue-label");
-  assertEquals(outcome.issueNumber, ISSUE_NUMBER);
-  assertStringIncludes(outcome.message, "nobody's queue");
-});
-
-Deno.test("abandonAndRestart - the escalation honours a renamed needs-human label (Issue #1773)", async () => {
-  const fake = makeFake({ issueLabels: [] });
-  const seen: Array<{ needsHumanLabel: string; workLabel: string }> = [];
-
-  const outcome = await abandonAndRestart(makeRequest(), {
-    gh: fake.gh,
-    trustedAuthors: FLEET_AUTHORS,
-    needsHumanLabel: "escalate-to-a-person",
-    escalateNeedsHuman: (escalation) => {
-      seen.push({
-        needsHumanLabel: escalation.needsHumanLabel,
-        workLabel: escalation.workLabel,
-      });
-      return Promise.resolve({ ok: true, value: { labelAdded: true } });
-    },
-  });
-
-  assertEquals(outcome.outcome, "abandoned-unlabelled");
-  assertEquals(seen, [{
-    needsHumanLabel: "escalate-to-a-person",
-    workLabel: "work-on",
-  }]);
-  // …and the comments name the configured label, not the default.
-  assertStringIncludes(
-    bodyOfCall(fake, "issue", "comment"),
-    "Remove `escalate-to-a-person` and re-apply `work-on`",
-  );
-});
-
 // ---------------------------------------------------------------------------
 // The bound — one restart per originating issue
 // ---------------------------------------------------------------------------
@@ -600,7 +553,11 @@ Deno.test("abandonAndRestart - an outsider's restart claim does not stall the ru
     trustedAuthors: FLEET_AUTHORS,
   });
 
-  assertEquals(outcome, { outcome: "abandoned", issueNumber: ISSUE_NUMBER });
+  assertEquals(outcome, {
+    outcome: "abandoned",
+    issueNumber: ISSUE_NUMBER,
+    label: { kept: "work-on" },
+  });
   assertEquals(callsMatching(fake, "pr", "close").length, 1);
 });
 
@@ -761,7 +718,6 @@ Deno.test("abandonAndRestart - a failed reopen leaves the step named, not a sile
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
     trustedAuthors: FLEET_AUTHORS,
-    workLabel: "idle-task",
   });
 
   assert(outcome.outcome === "failed");
@@ -778,7 +734,6 @@ Deno.test("abandonAndRestart - a failed label add names the label step", async (
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
     trustedAuthors: FLEET_AUTHORS,
-    workLabel: "idle-task",
     addLabel: () =>
       Promise.resolve({ ok: false, error: new Error("labels are down") }),
   });
@@ -811,7 +766,7 @@ Deno.test("buildAbandonPrComment - states the absence when nothing was recorded"
       warnings: [],
     },
     issueNumber: ISSUE_NUMBER,
-    workLabel: "work-on",
+    label: { applied: "idle-task" },
   });
 
   assertStringIncludes(body, "no failure comment survives");
