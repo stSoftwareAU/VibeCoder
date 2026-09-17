@@ -367,6 +367,57 @@ Deno.test("claim pr comment - an expired claim the sweep could not delete is ign
   assertEquals(logs.some((l) => l.includes("403 Forbidden")), true);
 });
 
+Deno.test("claim pr comment - a same-second tie is broken by comment id, not by whose claim it is", async () => {
+  // `created_at` has one-second granularity and two racing hosts land in the
+  // same second routinely. Both hosts must pick the same winner, so the
+  // lower comment id — the order GitHub assigned — wins for everyone.
+  const sameSecond = "2026-04-01T00:09:59Z";
+  const thread = JSON.stringify([
+    claimRow(300, "worker-alpha", "555", sameSecond),
+    claimRow(301, "worker-beta", "555", sameSecond),
+  ]);
+
+  const loser = await claimPrComment({
+    repo: "org/repo",
+    prNumber: 42,
+    commentId: "555",
+    workerId: "worker-beta",
+    sleepFn: noSleep,
+    ghCommandFn:
+      createMockGh({ ownCommentId: 301, readPayloads: ["[]", thread] })
+        .ghCommandFn,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    nowMsFn: () => NOW,
+  });
+
+  assertEquals(loser.ok, true);
+  if (loser.ok) {
+    assertEquals(loser.value.claimed, false);
+    assertEquals(loser.value.winnerId, "worker-alpha");
+  }
+
+  const winner = await claimPrComment({
+    repo: "org/repo",
+    prNumber: 42,
+    commentId: "555",
+    workerId: "worker-alpha",
+    sleepFn: noSleep,
+    ghCommandFn:
+      createMockGh({ ownCommentId: 300, readPayloads: ["[]", thread] })
+        .ghCommandFn,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    nowMsFn: () => NOW,
+  });
+
+  assertEquals(winner.ok, true);
+  if (winner.ok) {
+    assertEquals(winner.value.claimed, true);
+    assertEquals(winner.value.winnerId, "worker-alpha");
+  }
+});
+
 Deno.test("claim pr comment - a live claim posted seconds earlier still wins", async () => {
   // The expiry rule must not hand every race to the latest claimant: a
   // fleet claim posted a second before ours is live and wins.

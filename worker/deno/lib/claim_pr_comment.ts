@@ -553,8 +553,13 @@ export async function claimPrComment(
     return { ok: true, value: { claimed: false } };
   }
 
+  // `created_at` has one-second granularity, and two hosts racing land in the
+  // same second routinely — so the tie is broken by comment id, the order
+  // GitHub itself assigned. Every host then picks the same winner; ordering by
+  // position in the array would have each host prefer its own claim and both
+  // would claim.
   const earliest = [...contenders].sort((a, b) =>
-    a.createdAt.localeCompare(b.createdAt)
+    a.createdAt.localeCompare(b.createdAt) || a.id - b.id
   )[0]!;
 
   if (isOurs(earliest)) {
