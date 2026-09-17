@@ -155,6 +155,12 @@ export function carryEnvThroughSudo(
  * @param options.cwd - The checkout the command runs in.
  * @param options.repoCredentialEnv - What this repository declared.
  * @param options.trimRefused - The launch verdict; omitted in production.
+ * @param options.source - The environment the child is built from. It is the
+ *   same source both overlays read (Issue #2291): this command's environment
+ *   is BUILT, not inherited, so an explicit `CARGO_TARGET_DIR` that keeps its
+ *   placement is the one in **this** source — not whatever the worker's own
+ *   process happens to carry, which on a trim-refused host is the worker's
+ *   own ephemeral directory keyed to another account.
  */
 export function untrustedQualityCommandEnv(options: {
   spawnable: readonly string[];
@@ -167,6 +173,7 @@ export function untrustedQualityCommandEnv(options: {
 }): Record<string, string> {
   const buildCacheEnv = buildCacheEnvForCheckout(options.cwd, {
     ...(options.root === undefined ? {} : { root: options.root }),
+    ...(options.source === undefined ? {} : { source: options.source }),
     ...(untrustedAccountOf(options.spawnable) === undefined
       ? {}
       : { account: untrustedAccountOf(options.spawnable)! }),

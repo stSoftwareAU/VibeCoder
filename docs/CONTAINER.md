@@ -1363,7 +1363,13 @@ build artefacts.
   other created, so the account the command drops to is part of the key.
 - **Nothing changes where the trim is honoured.** No launcher reading, an
   older launcher that writes no flag, a runtime that trims, or an explicit
-  `CARGO_TARGET_DIR` — all leave the environment exactly as it was.
+  `CARGO_TARGET_DIR` — all leave the environment exactly as it was. The
+  explicit setting that counts is the one in the environment **that child**
+  would otherwise have had (Issue #2291): the repository's own command gets a
+  built environment, not an inherited one, so it is read from the allowlisted
+  source rather than from the worker's own process — which on a trim-refused
+  host always carries a `CARGO_TARGET_DIR` of its own, keyed to another
+  account.
 - **The registry caches stay durable.** `CARGO_HOME`
   (`${VIBE_STATE_DIR}/cargo`) and `DENO_DIR` (`~/auto-issue-work/.deno-cache`)
   stay on the volume where the entrypoint puts them. A download cache grows by
