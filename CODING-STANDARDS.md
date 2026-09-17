@@ -55,6 +55,27 @@ the fault immediately rather than swallowing it into a green result.
 - **Prefer loud, early failure** over continuing in a degraded or partial state
   that hides the problem downstream.
 
+## Log Levels Are a Promise About What the Reader Must Do
+
+A log level tells the person scanning a fleet log what to do next. Use them
+for that and nothing else:
+
+- **INFO** — the expected path, including an expected absence ("no transcript:
+  the run succeeded and transcripts are kept on failure only"). Nothing to do.
+- **WARNING** — something is degraded and the run **continues**, and someone
+  should act before it gets worse: "disk filling up, clean up", a refused trim,
+  a retry that is being taken. Read it soon.
+- **ERROR** — the run, handler or launch **cannot continue** from here: "we are
+  offline", the build failed, the phase is failed. Read it now.
+
+Neither WARNING nor ERROR ever means "everything is fine". A line that fires on
+the normal path at WARNING or ERROR trains every reader to ignore the level, and
+the real "disk filling up" or "we are offline" line is lost in it. A condition
+the code goes on to handle — a pool that drains and resumes, a transient API
+refusal the next tick retries — is a WARNING, not an ERROR; a line that reports
+the expected outcome of the common case is INFO. When in doubt, ask what the
+reader must do on seeing it, and pick the level that says so.
+
 ## Test-Driven Development (TDD)
 
 Follow TDD for all changes:

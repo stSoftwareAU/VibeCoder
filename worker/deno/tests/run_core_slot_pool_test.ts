@@ -1530,11 +1530,15 @@ Deno.test("slot pool - host disk drops low during slot A's run: no slot claims a
   let processed = 0;
   let now = 0;
   const errors: string[] = [];
+  const warnings: string[] = [];
   const config = createDefaultRunCoreConfig();
   const deps = createMockDeps({
     now: () => now,
     logError: (m) => {
       errors.push(m);
+    },
+    logWarn: (m) => {
+      warnings.push(m);
     },
     sleep: (ms?: number) => {
       now += ms ?? 30_000;
@@ -1567,7 +1571,7 @@ Deno.test("slot pool - host disk drops low during slot A's run: no slot claims a
     `processed ${processed} — a slot claimed with the host disk low`,
   );
   assertEquals(
-    errors.filter((m) => m.startsWith("[HOST_DISK_LOW]")).length,
+    warnings.filter((m) => m.startsWith("[HOST_DISK_LOW]")).length,
     1,
     "the low disk is reported once, not once per slot",
   );
@@ -1625,9 +1629,11 @@ Deno.test("host disk low - a reclaim that frees nothing still stops the cycle cl
   let now = 0;
   let processed = 0;
   const errors: string[] = [];
+  const warnings: string[] = [];
   const deps = createMockDeps({
     now: () => now,
     logError: (m) => errors.push(m),
+    logWarn: (m) => warnings.push(m),
     sleep: (ms?: number) => {
       now += ms ?? 30_000;
       return Promise.resolve();
@@ -1654,7 +1660,7 @@ Deno.test("host disk low - a reclaim that frees nothing still stops the cycle cl
 
   assertEquals(processed, 0, "a host still short must claim nothing");
   assertEquals(
-    errors.filter((m) => m.startsWith("[HOST_DISK_LOW]")).length,
+    warnings.filter((m) => m.startsWith("[HOST_DISK_LOW]")).length,
     1,
     "the low disk is reported once per cycle",
   );
