@@ -690,6 +690,8 @@ KEEP_IMAGES=""
 WATCHDOG_SECONDS=""
 ensure_dirs=()
 volume_names=()
+# The volumes a disk reset may destroy (Issue #2216) - role, not size.
+resettable_volume_names=()
 init_args=()
 volume_remove_args=()
 image_remove_args=()
@@ -716,6 +718,7 @@ while IFS= read -r -d '' token; do
     watchdog) WATCHDOG_SECONDS="${value}" ;;
     ensure) ensure_dirs+=("${value}") ;;
     volume) volume_names+=("${value}") ;;
+    volume-resettable) resettable_volume_names+=("${value}") ;;
     init) init_args+=("${value}") ;;
     volume-remove) volume_remove_args+=("${value}") ;;
     image-remove) image_remove_args+=("${value}") ;;
@@ -739,6 +742,7 @@ if [[ -z "${RUNTIME}" || -z "${IMAGE}" || -z "${KEEP_IMAGES}" ]] ||
   [[ ${#run_args[@]} -eq 0 ]] ||
   [[ ${#build_args[@]} -eq 0 ]] || [[ ${#exists_args[@]} -eq 0 ]] ||
   [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]] ||
+  [[ ${#resettable_volume_names[@]} -eq 0 ]] ||
   [[ ${#volume_remove_args[@]} -eq 0 ]] ||
   [[ ${#image_remove_args[@]} -eq 0 ]] ||
   [[ -z "${claim_floor_gb}" ]] || [[ -z "${claim_floor_percent}" ]]; then
@@ -1060,6 +1064,32 @@ claim_floor_detail() {
     "$((total_kb / 1024))" "${claim_floor_origin:-unknown}"
 }
 
+# True when the plan marks this volume as one a disk reset may destroy and
+# recreate (Issue #2216).
+#
+# The launcher used to decide that by size alone, and it can only measure a
+# volume whose store it can see: Docker and Podman keep theirs elsewhere, so
+# `volume_store_kb` fails there by construction. An unmeasurable
+# content-approval store therefore skipped the minimum-size guard
+# (Issue #2117) entirely and was recreated for disk - and a recreated
+# approval store reads as a genuine first encounter, so every tracked issue
+# is re-baselined against its body as it stands now and content edited after
+# approval verifies as unchanged. Role is a fact the plan knows; size is a
+# measurement that can be absent.
+#
+# Arguments: the volume name. Returns non-zero when the volume must be kept.
+volume_may_reset() {
+  local candidate
+  for candidate in ${resettable_volume_names[@]+"${resettable_volume_names[@]}"}; do
+    [[ "${candidate}" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+volume_not_resettable_detail() {
+  printf 'work-volume: leaving %s alone - the launch plan does not list it as a volume a disk reset may destroy; the content-approval store is the tamper baseline for every issue the worker may claim, and wiping it re-baselines them all against their current bodies (Issue #2216)' "$1"
+}
+
 # Kilobytes the runtime's store holds for a named volume; non-zero when the
 # store layout is one this launcher cannot measure.
 volume_store_kb() {
@@ -1122,6 +1152,12 @@ reset_work_volumes_before_build() {
   local min_kb need_kb
   min_kb="$(volume_reset_min_kb)"
   for volume in ${volume_names[@]+"${volume_names[@]}"}; do
+    # Role before size (Issue #2216): a volume the plan does not list is kept
+    # whatever it holds, and whether or not its store can be measured.
+    if ! volume_may_reset "${volume}"; then
+      log_run_core "$(volume_not_resettable_detail "${volume}")"
+      continue
+    fi
     kb="$(volume_store_kb "${volume}" || true)"
     [[ "${kb}" =~ ^[0-9]+$ ]] || continue
     need_kb="${floor_kb}"
@@ -1504,12 +1540,28 @@ heal_untrimmable_volumes() {
   fi
   log_run_core "host-disk: $((avail_kb / 1024)) MB free on ${disk_gate_path} is below the claiming ${floor_detail} (Issues #226, #732)"
 
+  # Role before size (Issue #2216): the volumes this heal is even allowed to
+  # destroy, named by the plan. Everything else is kept - a measurement it
+  # cannot make must never be what spares the content-approval store.
+  local resettable_refused=()
+  for volume in "${trim_refused_volumes[@]}"; do
+    if volume_may_reset "${volume}"; then
+      resettable_refused+=("${volume}")
+    else
+      log_run_core "$(volume_not_resettable_detail "${volume}")"
+    fi
+  done
+  if ((${#resettable_refused[@]} == 0)); then
+    report_unrecovered "the runtime refused to trim ${trim_refused_volumes[*]} and none of them may be destroyed to reclaim disk - the host's missing space is somewhere else"
+    return 0
+  fi
+
   # Measure before deciding (Issue #2077): what the volumes hold on the host
   # is the one fact that says whether a recreate can clear the floor. Only a
   # volume big enough to hold the missing space is worth destroying.
   local kb held_kb=0 measured=0 sum_min_kb
   sum_min_kb="$(volume_reset_min_kb)"
-  for volume in "${trim_refused_volumes[@]}"; do
+  for volume in "${resettable_refused[@]}"; do
     kb="$(volume_store_kb "${volume}" || true)"
     if [[ "${kb}" =~ ^[0-9]+$ ]]; then
       measured=1
@@ -1517,7 +1569,7 @@ heal_untrimmable_volumes() {
     fi
   done
   if ((measured)) && ((held_kb < sum_min_kb)); then
-    report_unrecovered "${trim_refused_volumes[*]} hold only $((held_kb / 1024)) MB in ${container_store} - the host's missing space is somewhere else, so recreating them would destroy the clones for nothing"
+    report_unrecovered "${resettable_refused[*]} hold only $((held_kb / 1024)) MB in ${container_store} - the host's missing space is somewhere else, so recreating them would destroy the clones for nothing"
     return 0
   fi
 
@@ -1531,12 +1583,12 @@ heal_untrimmable_volumes() {
   last="$(cat "${HEAL_STATE_FILE}" 2>/dev/null || echo 0)"
   [[ "${last}" =~ ^[0-9]+$ ]] || last=0
   if ((last > 0)); then
-    log_run_core "work-volume: ${trim_refused_volumes[*]} hold $((held_kb / 1024)) MB and the last reset was $(((now - last) / 60)) minutes ago - the host is below its floor again, so the volume is reset again; it is disposable and the host is not (Issue #2077)"
+    log_run_core "work-volume: ${resettable_refused[*]} hold $((held_kb / 1024)) MB and the last reset was $(((now - last) / 60)) minutes ago - the host is below its floor again, so the volume is reset again; it is disposable and the host is not (Issue #2077)"
   fi
 
   local reset_min_kb
   reset_min_kb="$(volume_reset_min_kb)"
-  for volume in "${trim_refused_volumes[@]}"; do
+  for volume in "${resettable_refused[@]}"; do
     # Each volume on its own size (Issue #2117): the sum above says the host
     # has something to gain; this says whether THIS volume is part of it.
     kb="$(volume_store_kb "${volume}" || true)"

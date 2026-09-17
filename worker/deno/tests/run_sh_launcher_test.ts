@@ -1801,11 +1801,10 @@ Deno.test("run.sh - a refused trim below the claiming floor recreates the volume
     const outcome = await runLauncher(harness);
     assertEquals(outcome.code, 0, outcome.stderr);
 
-    // Both untrimmable volumes were recreated — no operator incantation.
-    assertEquals(await removedVolumes(harness), [
-      WORK_VOLUME_NAME,
-      APPROVAL_STATE_VOLUME_NAME,
-    ]);
+    // The untrimmable work volume was recreated — no operator incantation.
+    // The approval store is untouched however unmeasurable it is: since
+    // Issue #2216 the plan, not `du`, says which volumes a reset may destroy.
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
     assert(
       await recorded(harness, "volume-create"),
       "a recreated volume must be created again",
@@ -1869,6 +1868,75 @@ Deno.test("run.sh - a refused trim below the floor resets only volumes big enoug
     const log = await runCoreLog(harness);
     assertStringIncludes(log, `leaving ${APPROVAL_STATE_VOLUME_NAME} alone`);
     assertStringIncludes(log, `recreating ${WORK_VOLUME_NAME}`);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a refused trim below the floor spares the approval store when its size cannot be measured (Issue #2216)", async () => {
+  // The size guard (Issue #2117) can only spare a volume it can measure, and
+  // no container store exists here — which is every Docker and Podman host,
+  // where the volumes live somewhere this launcher never looks. The tamper
+  // baseline must survive that, so the plan's role list decides, not `du`.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(
+      await removedVolumes(harness),
+      [WORK_VOLUME_NAME],
+      "an unmeasurable approval store must still be spared",
+    );
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, `leaving ${APPROVAL_STATE_VOLUME_NAME} alone`);
+    assertStringIncludes(log, "Issue #2216");
+    assertStringIncludes(log, `recreating ${WORK_VOLUME_NAME}`);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the pre-build reset spares the approval store however much it holds (Issue #2216)", async () => {
+  // The #2092 reset runs before the build and measured size alone decided
+  // it: an approval store above the minimum was recreated for disk exactly
+  // as the work volume was. Role decides here too.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: "Error: failed to build",
+    STUB_DF_AVAIL_KB: String(15 * 1024 * 1024 - 32 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    for (const name of [WORK_VOLUME_NAME, APPROVAL_STATE_VOLUME_NAME]) {
+      await Deno.mkdir(`${store}/volumes/${name}`, { recursive: true });
+      await Deno.writeFile(
+        `${store}/volumes/${name}/volume.img`,
+        new Uint8Array(64 * 1024 * 1024),
+      );
+    }
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "the stubbed build must still fail");
+
+    assertEquals(
+      await removedVolumes(harness),
+      [WORK_VOLUME_NAME],
+      "only the volumes the plan lists may be reset for disk",
+    );
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, `pre-build reset of ${WORK_VOLUME_NAME}`);
+    assertStringIncludes(log, `leaving ${APPROVAL_STATE_VOLUME_NAME} alone`);
   } finally {
     await harness.cleanup();
   }
@@ -2731,10 +2799,9 @@ Deno.test("run.sh - recreates a volume with the verb its runtime spells, never a
       );
     }
 
-    assertEquals(await removedVolumes(harness), [
-      WORK_VOLUME_NAME,
-      APPROVAL_STATE_VOLUME_NAME,
-    ]);
+    // The work volume alone: since Issue #2216 the approval store is not a
+    // volume a disk reset may destroy, whatever its store measures.
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
   } finally {
     await harness.cleanup();
   }

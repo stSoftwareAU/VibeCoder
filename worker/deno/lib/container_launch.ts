@@ -464,6 +464,23 @@ export interface ContainerLaunchPlan {
    */
   volumes: string[];
   /**
+   * The subset of {@link ContainerLaunchPlan.volumes} the launcher may
+   * destroy and recreate to reclaim host disk (Issue #2216).
+   *
+   * Role, not size, is what decides this. The launcher can only measure a
+   * volume's store, and a store it cannot measure — every non-Apple runtime
+   * keeps its volumes elsewhere — used to fall straight through the
+   * minimum-size guard (Issue #2117) and wipe the content-approval tamper
+   * baseline with it. A wiped baseline reads as a genuine first encounter,
+   * so every tracked issue is re-baselined against its body as it stands
+   * now and content edited after approval verifies as unchanged.
+   *
+   * So the plan states which volumes a disk reset may touch. The work volume
+   * and the agent-state volume are clones and caches — disposable by design.
+   * The approval-state volume is not on this list and never is.
+   */
+  resettableVolumes: string[];
+  /**
    * Arguments for the one-shot volume-ownership init run (Issue #4186): a
    * fresh named volume is root-owned, so root chowns the mount roots to the
    * image's worker account before the worker starts. Idempotent — the
@@ -1017,6 +1034,14 @@ export function buildContainerLaunchPlan(
   // side stays POSIX either way, so both launchers produce one environment.
   const style = pathStyleFor(hostPaths.baseDir);
   const base = normalise(hostPaths.baseDir, style);
+  // Named once (Issue #2216): the same spellings the mounts use are what the
+  // plan's resettable list names, so a test override can never mark one
+  // volume and reset another.
+  const workVolume = inputs.volumes?.work ?? WORK_VOLUME_NAME;
+  const approvalStateVolume = inputs.volumes?.approvalState ??
+    APPROVAL_STATE_VOLUME_NAME;
+  const agentStateVolume = inputs.volumes?.agentState ??
+    AGENT_STATE_VOLUME_NAME;
   const mounts: ContainerMount[] = [
     // The worker's own checkout: the driver it executes, and nothing else.
     // Read-only (Issue #514) — there is no reason the Vibe Coder should ever
@@ -1030,21 +1055,13 @@ export function buildContainerLaunchPlan(
     // (Issue #4186): guest-owned filesystems at native speed, durable
     // across containers and image upgrades, and no browsable copy of the
     // worker's repositories on the host.
+    { source: workVolume, target: targets.work, volume: true },
     {
-      source: inputs.volumes?.work ?? WORK_VOLUME_NAME,
-      target: targets.work,
-      volume: true,
-    },
-    {
-      source: inputs.volumes?.approvalState ?? APPROVAL_STATE_VOLUME_NAME,
+      source: approvalStateVolume,
       target: targets.approvalState,
       volume: true,
     },
-    {
-      source: inputs.volumes?.agentState ?? AGENT_STATE_VOLUME_NAME,
-      target: targets.agentState,
-      volume: true,
-    },
+    { source: agentStateVolume, target: targets.agentState, volume: true },
     { source: normalise(hostPaths.logDir, style), target: targets.logs },
     // The staged copy of the configuration, read-only, in its own directory
     // outside the checkout mount: the worker reads this copy via CONFIG_PATH,
@@ -1347,6 +1364,9 @@ export function buildContainerLaunchPlan(
       .filter((mount) => !mount.volume && !mount.readOnly)
       .map((mount) => mount.source),
     volumes: volumeMounts.map((mount) => mount.source),
+    // Clones and caches only (Issue #2216) — never the content-approval
+    // store, whatever its size says or fails to say.
+    resettableVolumes: [workVolume, agentStateVolume],
     initArgs,
     volumeRemoveArgs: [...dialect.volumeRemoveArgs],
     imageRemoveArgs: [...dialect.imageRemoveArgs],
@@ -1377,6 +1397,8 @@ export type ContainerLaunchPlanKey =
   | "watchdog"
   | "ensure"
   | "volume"
+  // Volumes a disk reset may destroy, by role (Issue #2216).
+  | "volume-resettable"
   | "init"
   | "exists"
   | "build"
@@ -1394,6 +1416,8 @@ export interface ParsedContainerLaunchPlan {
   watchdog: string;
   ensure: string[];
   volume: string[];
+  /** The volumes a disk reset may destroy and recreate (Issue #2216). */
+  volumeResettable: string[];
   init: string[];
   /** The runtime's own "remove one volume" verb (Issue #731). */
   volumeRemove: string[];
@@ -1430,6 +1454,7 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     `watchdog=${plan.watchdogSeconds}`,
     ...plan.ensureDirectories.map((dir) => `ensure=${dir}`),
     ...plan.volumes.map((name) => `volume=${name}`),
+    ...plan.resettableVolumes.map((name) => `volume-resettable=${name}`),
     ...plan.initArgs.map((arg) => `init=${arg}`),
     ...plan.volumeRemoveArgs.map((arg) => `volume-remove=${arg}`),
     ...plan.imageRemoveArgs.map((arg) => `image-remove=${arg}`),
@@ -1479,6 +1504,7 @@ export function parseContainerLaunchPlanText(
     watchdog: "",
     ensure: [],
     volume: [],
+    volumeResettable: [],
     init: [],
     volumeRemove: [],
     imageRemove: [],
@@ -1520,6 +1546,9 @@ export function parseContainerLaunchPlanText(
         break;
       case "volume":
         parsed.volume.push(value);
+        break;
+      case "volume-resettable":
+        parsed.volumeResettable.push(value);
         break;
       case "init":
         parsed.init.push(value);

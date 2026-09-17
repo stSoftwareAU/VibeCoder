@@ -191,6 +191,36 @@ Deno.test("buildContainerLaunchPlan - named volumes carry the work dir and appro
   ]);
 });
 
+Deno.test("buildContainerLaunchPlan - only the disposable volumes may be reset for disk (Issue #2216)", () => {
+  // The launcher's disk reset used to be decided by measured size alone, and
+  // a store it cannot measure — every non-Apple runtime — skipped the guard
+  // entirely and took the content-approval tamper baseline with it. The plan
+  // states the role instead: clones and caches yes, the approval store never.
+  const plan = buildContainerLaunchPlan(inputs());
+  assertEquals(plan.resettableVolumes, [
+    WORK_VOLUME_NAME,
+    AGENT_STATE_VOLUME_NAME,
+  ]);
+  assertEquals(
+    plan.resettableVolumes.includes(APPROVAL_STATE_VOLUME_NAME),
+    false,
+  );
+
+  // A test's throwaway volumes are marked by the same role, so an override
+  // can never mark one volume and leave the reset acting on another.
+  const overridden = buildContainerLaunchPlan(inputs({
+    volumes: {
+      work: "vibe-test-work-1234",
+      approvalState: "vibe-test-as-1234",
+      agentState: "vibe-test-agent-1234",
+    },
+  }));
+  assertEquals(overridden.resettableVolumes, [
+    "vibe-test-work-1234",
+    "vibe-test-agent-1234",
+  ]);
+});
+
 Deno.test("buildContainerLaunchPlan - volume-name overrides isolate tests, never smuggle a path", () => {
   // The containment integration tests use per-run throwaway volumes so they
   // never touch a production host's vibe-work state (Issue #4186).
@@ -926,6 +956,9 @@ Deno.test("renderContainerLaunchPlan - round-trips through the launcher's framin
   assertEquals(parsed.exists, plan.imageInspectArgs);
   assertEquals(parsed.ensure, plan.ensureDirectories);
   assertEquals(parsed.volume, plan.volumes);
+  // The role list survives the hand-off too (Issue #2216): a launcher that
+  // never received it could only fall back on size.
+  assertEquals(parsed.volumeResettable, plan.resettableVolumes);
   assertEquals(parsed.init, plan.initArgs);
 });
 
