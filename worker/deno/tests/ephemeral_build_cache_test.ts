@@ -240,6 +240,11 @@ Deno.test("buildCacheEnvForCheckout - a trim-refused launch moves the build off 
     const env = buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, {
       trimRefused: true,
       root,
+      // Stated, never inherited: on the trim-refused hosts this feature is
+      // for, the worker sets CARGO_TARGET_DIR on the agent that runs these
+      // tests, and an inherited one would read as an operator's own setting
+      // and turn the placement off (Issue #2291).
+      source: {},
     });
     assertEquals(
       env["CARGO_TARGET_DIR"],
@@ -265,11 +270,43 @@ Deno.test("buildCacheEnvForCheckout - the account the command drops to reaches t
         trimRefused: true,
         account: "agent",
         root,
+        source: {}, // Stated, not inherited — see above (Issue #2291).
       })["CARGO_TARGET_DIR"],
       cargoTargetDirForCheckout(`${WORK_ROOT}/GRQ-tax`, {
         account: "agent",
         root,
       }),
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("buildCacheEnvForCheckout - a stated environment decides the placement", async () => {
+  // The gate ran red on exactly the hosts the feature is for: the worker sets
+  // CARGO_TARGET_DIR on the agent, the agent runs `deno test`, and a test that
+  // inherited that value read it as an operator's own setting and asserted the
+  // opposite of what it meant to (Issue #2291). A stated source names what the
+  // child would have had, so the host's own environment never reaches it.
+  const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
+  try {
+    assertEquals(
+      buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, {
+        trimRefused: true,
+        root,
+        source: { PATH: "/usr/bin" },
+      })["CARGO_TARGET_DIR"],
+      cargoTargetDirForCheckout(`${WORK_ROOT}/GRQ-tax`, { root }),
+      "the stated environment names no setting, so the placement stands",
+    );
+    assertEquals(
+      buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, {
+        trimRefused: true,
+        root,
+        source: { CARGO_TARGET_DIR: "/operator/target" },
+      }),
+      {},
+      "the stated environment names one, so it is never overridden",
     );
   } finally {
     await Deno.remove(root, { recursive: true });

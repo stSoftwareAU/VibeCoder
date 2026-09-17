@@ -786,6 +786,46 @@ Deno.test("untrustedQualityCommandEnv - a runtime that trims the volume is uncha
   assertEquals(env["CARGO_TARGET_DIR"], undefined);
 });
 
+Deno.test("untrustedQualityCommandEnv - the stated environment decides the placement, both ways", async () => {
+  // This command's environment is BUILT from the stated source, so the
+  // explicit CARGO_TARGET_DIR that keeps its own placement is the one in that
+  // source. Reading a different environment for the decision than the one the
+  // child is built from is what left the placement off (Issue #2291).
+  const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
+  const spawnable = ["sudo", "-n", "-u", "agent", "--", "bash", "-c", "./q.sh"];
+  try {
+    assertEquals(
+      untrustedQualityCommandEnv({
+        spawnable,
+        cwd: "/home/vibe/auto-issue-work/GRQ-tax",
+        repoCredentialEnv: {},
+        trimRefused: true,
+        root,
+        source: { PATH: "/usr/bin" },
+      })["CARGO_TARGET_DIR"],
+      cargoTargetDirForCheckout("/home/vibe/auto-issue-work/GRQ-tax", {
+        account: "agent",
+        root,
+      }),
+      "no setting in the child's environment, so the placement stands",
+    );
+    assertEquals(
+      untrustedQualityCommandEnv({
+        spawnable,
+        cwd: "/home/vibe/auto-issue-work/GRQ-tax",
+        repoCredentialEnv: {},
+        trimRefused: true,
+        root,
+        source: { PATH: "/usr/bin", CARGO_TARGET_DIR: "/operator/target" },
+      })["CARGO_TARGET_DIR"],
+      "/operator/target",
+      "a setting the child would have had is never overridden",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("untrustedQualityCommandEnv - the repository's own declaration still wins", async () => {
   const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
   const env = untrustedQualityCommandEnv({
