@@ -150,6 +150,14 @@ export interface SyncStreakEntry {
   deferUntil?: string;
   /** Default-branch tip this branch was last synced against. */
   lastSyncedDefaultSha?: string;
+  /**
+   * The milestone branch's own tip at its last successful sync
+   * (Issue #2285). A child PR landing moves it; the cadence guard reads a
+   * moved milestone as a reason to sync again, so a sync PR that a child
+   * made stale or conflicting is refreshed on the next cycle rather than
+   * when the default branch happens to move.
+   */
+  lastSyncedMilestoneSha?: string;
   /** Lifetime count of conflict resolutions rolled back on this branch. */
   rollbacks?: number;
   /** Child PR numbers a roll-back has already reverted (Issue #1781). */
@@ -347,6 +355,7 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const openedAt = optionalText(entry.attemptOpenedAt);
   const deferUntil = optionalText(entry.deferUntil);
   const syncedSha = optionalText(entry.lastSyncedDefaultSha);
+  const syncedMilestoneSha = optionalText(entry.lastSyncedMilestoneSha);
   const lastAttempt = readLastAttempt(entry.lastAttempt);
   const revertedPrs = readPositiveInts(entry.revertedPrs);
   const revertedShas = readShaList(entry.revertedShas);
@@ -360,6 +369,9 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
     // and the next tip move clears it.
     ...(deferUntil ? { deferUntil } : {}),
     ...(syncedSha ? { lastSyncedDefaultSha: syncedSha } : {}),
+    ...(syncedMilestoneSha
+      ? { lastSyncedMilestoneSha: syncedMilestoneSha }
+      : {}),
     ...(rollbacks !== undefined ? { rollbacks } : {}),
     ...(revertedPrs !== undefined ? { revertedPrs } : {}),
     ...(revertedShas !== undefined ? { revertedShas } : {}),
