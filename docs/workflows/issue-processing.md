@@ -1143,7 +1143,7 @@ flowchart TD
     G -->|yes| PR["gh pr create"]
     G -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|no| R{"First summary-rule block<br/>of this run?"}
-    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, quality gate,<br/>completion again (Issue #2189)"]
+    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242)"]
     RT --> G
     R -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
@@ -1182,7 +1182,10 @@ now recover the way the security-fix gate does
    turn already concluded the work was finished — with the gate's own
    remediation comment replayed into the prompt, told to edit the summary file
    and commit, and nothing else;
-3. the quality gate runs again over the changed tree, then the completion gates.
+3. the worker renders the closure block itself when that summary still fails
+   either criteria gate (Issue #2242, below);
+4. whatever the recovery produced is committed on the issue branch;
+5. the quality gate runs again over the changed tree, then the completion gates.
 
 A run that satisfies the gate on the re-run raises its PR. A **second** block in
 the same run fails exactly as a block did before, with the comment already on
@@ -1201,6 +1204,57 @@ documentation shortfalls, so they still stop the run.
 and `reportSummaryRuleBlock` / `workOnIssueCompletion` in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
 (Issue #2189).
+
+### The worker renders the block, from a verdict given as data (Issue #2242)
+
+The recovery still asked the model for a **document**. On VibeCoder#2104 that
+invocation ran for eighteen minutes with the gate's comment — which quotes the
+exact template — as its brief, and produced 103 lines of prose with no
+`## Acceptance Criteria` block, no `## Standards Review` block and no
+`reviewer:` line anywhere, though the prose asserted "the independent standards
+review found…". The second block then failed the run, correctly, and the file
+was left **untracked** on a detached checkout, so the next attempt started from
+nothing. Two runs of an hour each, on a rule documented in the prompt and
+restated in the comment.
+
+The shape is fixed and machine-checked, so the worker owns it:
+
+1. when the recovery's own summary still fails the closure (#518) or
+   independent-review (#663) gate, the model is asked **one constrained
+   question** — the verdict as JSON inside a `<closure_verdict>` block: one
+   entry per stated criterion (`met` / `partial` / `missing` / `unrequested`,
+   with `evidence` and `reason`), plus the Standards half;
+2. `closure_verdict.ts` renders `## Acceptance Criteria` and
+   `## Standards Review` in the `REVIEW_BLOCK_TEMPLATE` shape both validators
+   accept, replacing whatever stood under those headings. Every field is
+   sanitised to one line with the label keywords stripped, so the model's own
+   text cannot forge a `reviewer:` verdict or open a third section;
+3. a verdict that does not cover every criterion — or names no evidence where
+   the gate requires it — is asked for **once** more with the shortfall named.
+   A second short verdict is rendered as it stands and the gate blocks on it:
+   the content stays the model's, so a genuine gap is reported, never papered
+   over;
+4. a reply carrying no readable verdict leaves the summary exactly as the agent
+   wrote it, and the block stands.
+
+The `reviewer:` field is the model's own status, so a rendered entry never
+departs from the reviewer's verdict. Nothing is invented at any step: an
+unanswerable question ends with the same block, the same comment and the same
+failure as before.
+
+**Committing what the recovery produced.** The summary the recovery wrote — or
+the block the worker rendered — is committed on the issue branch before
+completion re-runs, with HEAD reconciled to the branch first so a detached
+checkout cannot swallow it. A still-blocked run therefore carries the work
+forward instead of discarding it.
+
+**Implementation.**
+[`closure_verdict.ts`](../../worker/deno/lib/closure_verdict.ts) (pure: parse,
+coverage, render),
+[`closure_verdict_recovery.ts`](../../worker/deno/lib/closure_verdict_recovery.ts)
+(the constrained question and the single re-ask) and `commitRecoveredSummary` in
+[`summary_rule_gate_retry.ts`](../../worker/deno/lib/summary_rule_gate_retry.ts)
+(Issue #2242).
 
 ## ⏳ A PR the content-creation throttle refused — deferred, never failed
 

@@ -23,6 +23,13 @@
  * `<!-- vibe-spec-review -->` markers exactly, and neutralising them would
  * defeat the brief.
  *
+ * Issue #2242 stopped the recovery depending on that reproduction. When the
+ * summary it writes still fails a criteria gate, the worker asks for the
+ * verdict as data and renders the block itself
+ * (`closure_verdict_recovery.ts`), and whatever the recovery produced is
+ * committed on the issue branch before completion re-runs — the run that
+ * prompted #2242 left its 103-line summary untracked on a detached checkout.
+ *
  * Australian English throughout.
  */
 
@@ -34,6 +41,8 @@ import {
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { workOnIssueQualityGate } from "./phases/quality_gate_remediation_phase.ts";
+import { renderClosureBlocksFromVerdict } from "./closure_verdict_recovery.ts";
+import { resolvePreFlightSpec } from "./git_push.ts";
 
 /** One summary-rule gate verdict observed during a single run. */
 export interface SummaryRuleRunVerdict {
@@ -83,7 +92,7 @@ Do exactly this, and nothing else:
 1. Read \`${summaryPath}\` — the summary the gate just read — and \`git diff\` against the base branch, so the block you write describes the change that is actually on the branch.
 2. Fix ONLY what the notice above lists. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it.
 3. Where the notice asks for the \`## Acceptance Criteria\` or \`## Standards Review\` block, dispatch the two reviewer sub-agents first and write their verdicts down. Never invent a \`reviewer:\` verdict — a fabricated review is the over-claim those blocks exist to prevent.
-4. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work.
+4. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost — but a summary that still misses the block will be asked for as a structured verdict instead, which costs the run another turn.
 
 If the notice is wrong — the summary already carries what it asks for — say so plainly in your final message and commit nothing.`;
 }
@@ -155,10 +164,78 @@ export async function recoverFromSummaryRuleBlock(
   }
   recordClaudeRunStats(state, retryResult.value);
 
+  // The block whose shape is fixed and machine-checked is rendered by the
+  // worker when the agent's own summary still fails it (Issue #2242). A no-op
+  // when the agent wrote the block properly, which is still the happy path.
+  const rendered = await renderClosureBlocksFromVerdict(ctx, state, deps);
+  logger.info(
+    `Closure-block render after the summary-rule recovery: ${rendered.kind} — ${rendered.detail}`,
+    { repo, issueNumber, asks: rendered.asks },
+  );
+
+  // Whatever the recovery produced is committed on the issue branch before
+  // completion re-runs (Issue #2242). GRQ-23/s2 left a 103-line summary
+  // untracked on a detached checkout, so the next attempt started from
+  // nothing even though an hour had been spent writing it.
+  await commitRecoveredSummary(ctx, state, deps);
+
   // The retry changed the tree, so the quality gate runs again before the
   // completion gates — the same order the pipeline uses after any agent turn.
   const quality = await workOnIssueQualityGate(ctx, state, deps);
   if (quality.status !== "continue") return quality;
 
   return await rerunCompletion();
+}
+
+/**
+ * Commit what the recovery produced onto the issue branch (Issue #2242).
+ *
+ * HEAD is reconciled first: the observed failure left the summary untracked on
+ * a **detached** checkout, where a commit would not reach the branch at all.
+ * Best-effort by design — a commit that cannot be made leaves the file on disk
+ * exactly as the recovery wrote it, which is the pre-existing behaviour, so it
+ * is warned about loudly rather than failing a run over documentation.
+ */
+async function commitRecoveredSummary(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<void> {
+  const { repo, issueNumber, config } = ctx;
+  const logger = deps.logger;
+
+  const reconcile = await deps.git.reconcileHeadToBranch(state.branchName, {
+    cwd: state.repoPath,
+  });
+  if (!reconcile.ok) {
+    logger.warn(
+      `Could not put HEAD back on '${state.branchName}' to commit the ` +
+        `recovered summary — it stays uncommitted: ${reconcile.error.message}`,
+      { repo, issueNumber },
+    );
+    return;
+  }
+
+  const commit = await deps.git.commitAndPushPending(
+    state.branchName,
+    `docs: close out the PR summary for #${issueNumber}\n\n` +
+      `In-run PR-summary recovery (Issue #2242).`,
+    { cwd: state.repoPath },
+    false,
+    resolvePreFlightSpec(config.repoConfig, repo),
+  );
+  if (!commit.ok) {
+    logger.warn(
+      `Could not commit the recovered PR summary — it stays uncommitted on ` +
+        `'${state.branchName}': ${commit.error.message}`,
+      { repo, issueNumber },
+    );
+    return;
+  }
+  logger.info("Recovered PR summary committed before completion re-runs", {
+    repo,
+    issueNumber,
+    committedNewChanges: commit.value.committedNewChanges,
+    commitsPushed: commit.value.commitsPushed,
+  });
 }
