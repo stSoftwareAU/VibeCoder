@@ -34,3 +34,80 @@ export const CONFLICT_RESOLVED_MARKER =
  * attempt marker with no conclusion after it was disrupted, not judged.
  */
 export const CONFLICT_FAILED_MARKER = "<!-- vibe-coder:merge-conflict-failed";
+
+// ---------------------------------------------------------------------------
+// The stale-verdict ladder (Issues #2272, #2276)
+// ---------------------------------------------------------------------------
+
+/*
+ * The three markers below are the rungs the resolver climbs when GitHub's
+ * `CONFLICTING` verdict is stale — the loop NEAT-AI-Lamarck#239 sat in. They
+ * record which rung already ran at which head sha, which is what bounds each
+ * rung to one run per head.
+ *
+ * Canonical `vibe-*` grammar — a bare `vibe-` prefix and `key="value"`
+ * attributes (Issue #842). The frozen `vibe-coder:` shapes above are frozen
+ * only because live threads already carry them; these are new, so they are
+ * written the canonical way.
+ *
+ * No rung name contains an attempt-vocabulary literal, and none of the three
+ * contains another, so a rung marker is invisible to `parseConflictAttempts`
+ * and to its siblings: a rung neither spends nor resets the attempt budget.
+ */
+
+/** A 7-to-40 character lowercase git object name, as a marker may carry. */
+const HEAD_SHA_PATTERN = /^[0-9a-f]{7,40}$/;
+
+/** Marker posted by the nudge rung, naming the head it nudged. */
+export const CONFLICT_NUDGE_MARKER = "<!-- vibe-merge-conflict-nudge";
+
+/** Marker posted by the rebase rung, naming the head it replaced and the new one. */
+export const CONFLICT_REBASE_MARKER = "<!-- vibe-merge-conflict-rebase";
+
+/** Marker posted when a rung ran at a head sha and failed. */
+export const CONFLICT_RUNG_FAILED_MARKER =
+  "<!-- vibe-merge-conflict-rung-failed";
+
+/** The rungs whose failure is recorded by {@link CONFLICT_RUNG_FAILED_MARKER}. */
+export type ConflictLadderRung = "rebase" | "abandon";
+
+/**
+ * The sha as a marker attribute, or a throw.
+ *
+ * Fails loud rather than writing an attribute the reader will discard: a
+ * marker nobody can read back is a rung that runs again at the same head,
+ * which is the loop this ladder exists to break.
+ */
+function headAttribute(name: string, sha: string): string {
+  const trimmed = sha.trim().toLowerCase();
+  if (!HEAD_SHA_PATTERN.test(trimmed)) {
+    throw new Error(
+      `Refusing to write a merge-conflict rung marker with ${name}="${sha}" ` +
+        "— a head sha must be 7–40 hex characters",
+    );
+  }
+  return `${name}="${trimmed}"`;
+}
+
+/** The marker line for one nudged head. */
+export function conflictNudgeMarker(head: string): string {
+  return `${CONFLICT_NUDGE_MARKER} ${headAttribute("head", head)} -->`;
+}
+
+/** The marker line for one rebase, naming the head it replaced. */
+export function conflictRebaseMarker(
+  oldHead: string,
+  newHead: string,
+): string {
+  return `${CONFLICT_REBASE_MARKER} ${headAttribute("old", oldHead)} ` +
+    `${headAttribute("new", newHead)} -->`;
+}
+
+/** The marker line for one rung that ran at a head sha and failed. */
+export function conflictRungFailedMarker(
+  rung: ConflictLadderRung,
+  head: string,
+): string {
+  return `${CONFLICT_RUNG_FAILED_MARKER} rung="${rung}" ` +
+    `${headAttribute("head", head)} -->`;
+}

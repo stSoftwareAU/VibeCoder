@@ -1737,6 +1737,18 @@
         "worker/deno/lib/closure_verdict.ts",
         "worker/deno/lib/closure_verdict_recovery.ts"
       ]
+    },
+    {
+      "issue": 2276,
+      "chunk": "top-up-2276",
+      "title": "top-up: the stale-verdict ladder reader",
+      "ledger": "docs/audits/security-sweep-2276-conflict-verdict-ladder.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_verdict_ladder.ts (#2276)",
+      "status": "swept",
+      "sweptAt": "a5d48aa1bd1bbbc4f6b0f5940f6d859a8aaa7a7b",
+      "paths": [
+        "worker/deno/lib/conflict_verdict_ladder.ts"
+      ]
     }
   ],
   "roots": [
