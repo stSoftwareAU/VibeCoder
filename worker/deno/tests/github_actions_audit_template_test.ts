@@ -3419,3 +3419,57 @@ Deno.test(
     assertStringIncludes(result.summary, "HTTP 500");
   },
 );
+
+Deno.test(
+  "runTask - a deliberately skipped settings check is named in the summary and logged as a warning, not an error (Issue #2225)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+    });
+    const { logger, records } = makeLogger();
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      scanRepoSettingsFn: (_repo, _gh, options) => {
+        options.onCheckSkipped(
+          "secret scanning / push protection",
+          "private repository — needs paid GitHub Secret Protection",
+        );
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+    assertEquals(records.filter((r) => r.startsWith("error:")), []);
+    assert(
+      records.some((r) =>
+        r.startsWith("warn:") &&
+        r.includes("secret scanning / push protection") &&
+        r.includes("skipped")
+      ),
+      JSON.stringify(records),
+    );
+    assertStringIncludes(result.summary, "NOT covered by this audit");
+    assertStringIncludes(
+      result.summary,
+      "secret scanning / push protection (private repository — needs paid " +
+        "GitHub Secret Protection)",
+    );
+  },
+);
