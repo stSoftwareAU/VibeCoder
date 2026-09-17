@@ -19,6 +19,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildConflictEscalationReason,
+  buildNudgeComment,
+  buildNudgeCommitMessage,
   buildResolvedComment,
   buildRuleResolutionSection,
   describeDependencyDecision,
@@ -145,6 +147,8 @@ interface GitScript {
   emptyCommitCode?: number;
   /** Exit code for the nudge's `git push` (Issue #2278). */
   pushCode?: number;
+  /** Whether `git diff --cached --quiet` reports a dirty index (Issue #2278). */
+  indexDirty?: boolean;
 }
 
 function makeGitScript(overrides?: Partial<GitScript>): GitScript {
@@ -196,6 +200,17 @@ function makeGit(
         return Promise.resolve({
           ok: true,
           value: { code: 0, stdout: `${script.baseSha}\n`, stderr: "" },
+        });
+      }
+
+      if (args[0] === "diff" && args.includes("--cached")) {
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code: script.indexDirty ? 1 : 0,
+            stdout: "",
+            stderr: "",
+          },
         });
       }
 
@@ -366,10 +381,15 @@ function makeGithub(
    * author and all — a rung marker only counts when the fleet wrote it.
    */
   threadComments: readonly { body: string; author: string }[] = [],
+  /** Error `gh pr comment` rejects with, when the post must fail. */
+  commentPostError?: string,
 ): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
       if (args[0] === "pr" && args[1] === "comment") {
+        if (commentPostError !== undefined) {
+          return Promise.reject(new Error(commentPostError));
+        }
         const idx = args.indexOf("--body");
         if (idx >= 0) {
           captured.comments.push(String(args[idx + 1] ?? ""));
@@ -527,6 +547,8 @@ async function runProcessor(
     prHeadState?: { headRefOid: string; mergeable: string };
     /** The raw REST comment thread with its authors (Issue #2278). */
     threadComments?: { body: string; author: string }[];
+    /** Error `gh pr comment` rejects with (Issue #2278). */
+    commentPostError?: string;
   },
 ): Promise<{
   captured: Captured;
@@ -561,6 +583,7 @@ async function runProcessor(
       opts?.existingPrComments ?? [],
       opts?.prHeadState,
       opts?.threadComments ?? [],
+      opts?.commentPostError,
     ),
     claude: makeClaude(
       captured,
@@ -1991,10 +2014,14 @@ Deno.test("processMergeConflict - a nudge leaves the next real attempt's number 
   ];
   const withNudge = [
     ...withoutNudge,
+    // The body the rung really posts, not a hand-rolled stand-in.
     {
-      body: `${
-        conflictNudgeMarker("3333333333333333333333333333333333333333")
-      }\nnudged`,
+      body: buildNudgeComment(
+        "main",
+        "4444444444444444444444444444444444444444",
+        "1111111111111111111111111111111111111111",
+        "3333333333333333333333333333333333333333",
+      ),
     },
   ];
   assertEquals(
@@ -2037,5 +2064,197 @@ Deno.test("processMergeConflict - a merge that succeeds without moving HEAD fail
     captured.comments.filter((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
     [],
   );
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("buildNudgeCommitMessage - evidences the ancestry and stays attributable (Issue #2278)", () => {
+  const message = buildNudgeCommitMessage("main", "abc1234", "vibe-test-run");
+  assertStringIncludes(message, "Issue #2272");
+  assertStringIncludes(message, "`origin/main` (abc1234)");
+  assertStringIncludes(message, "empty");
+  assertStringIncludes(message, "Vibe-Coder-Run-Id: vibe-test-run");
+});
+
+Deno.test("buildNudgeComment - names the new head, the base and why the commit exists (Issue #2278)", () => {
+  const body = buildNudgeComment("main", "abc1234", "def5678", "0123abc");
+  assertStringIncludes(body, conflictNudgeMarker("0123abc"));
+  assertStringIncludes(body, "abc1234");
+  assertStringIncludes(body, "def5678");
+  assertStringIncludes(body, "ancestor");
+  assertStringIncludes(body, "empty commit");
+  // The rung must stay invisible to the attempt budget.
+  assertEquals(body.includes(CONFLICT_ATTEMPT_MARKER), false);
+  assertEquals(body.includes(CONFLICT_RESOLVED_MARKER), false);
+});
+
+Deno.test("processMergeConflict - a nudge commit that fails posts nothing (Issue #2278)", async () => {
+  const script = staleVerdictScript({ emptyCommitCode: 1 });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9007,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "nudge commit");
+  assertEquals(captured.pushes, [], "nothing is pushed when the commit failed");
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - a nudge push that fails posts no marker (Issue #2278)", async () => {
+  const script = staleVerdictScript({ pushCode: 1 });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9008,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "push the nudge commit");
+  assertEquals(
+    captured.comments,
+    [],
+    "a marker naming a head nobody can see is worse than none",
+  );
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - a nudge commit that does not move HEAD fails loud (Issue #2278)", async () => {
+  const script = staleVerdictScript({
+    headAfterNudge: "1111111111111111111111111111111111111111",
+  });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9009,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "did not move HEAD");
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - an unreadable head/verdict pair stops the stale route (Issue #2278)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    staleVerdictScript(),
+    { trustedAuthors: [FLEET_AUTHOR] },
+    { postedCommentId: 9010 },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "head sha and merge verdict");
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - no configured fleet identity runs no rung (Issues #1247, #2278)", async () => {
+  // With no trusted author every marker is unattributable, so the ladder could
+  // never see its own nudge and would re-nudge each new head for ever.
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [] },
+    {
+      postedCommentId: 9011,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.rung, undefined);
+  assertStringIncludes(result.value.summary, "trusted author");
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a clone that is not at the PR head refuses to nudge (Issue #2278)", async () => {
+  // The ancestry was checked against the clone's HEAD; claiming it for a head
+  // git never looked at would be evidence for the wrong commit.
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9012,
+      prHeadState: {
+        headRefOid: "9999999999999999999999999999999999999999",
+        mergeable: "CONFLICTING",
+      },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "the clone is at");
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a dirty index refuses the nudge rather than committing it (Issue #2278)", async () => {
+  const script = staleVerdictScript({ indexDirty: true });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9013,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "index is not clean");
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a nudge whose marker cannot be posted fails loud (Issue #2278)", async () => {
+  // The marker is the bound: an unrecorded nudge would be repeated at every
+  // new head instead of climbing, which is the loop this ladder replaces.
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+      commentPostError: "gh: 503 Service Unavailable",
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "could not post its marker");
+  assertStringIncludes(result.error.message, script.headAfterNudge);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
   assertEquals(captured.labelsRemoved, []);
 });

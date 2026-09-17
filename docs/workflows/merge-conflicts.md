@@ -362,11 +362,17 @@ flowchart TD
     V --> L{"decideLadderRung<br/>(thread markers, current head)"}
     L -- MERGEABLE --> C[Clear the label only]
     L -- "no marker at this head" --> N["Rung 1 — nudge:<br/>one empty commit, plain push"]
-    L -- "nudged at this head" --> R[Rung 2 — rebase]
-    L -- "rebased at this head" --> B[Rung 3 — abandon and restart]
+    L -- "nudged at this head" --> R["Rung 2 — rebase<br/>(not wired yet: logs and returns)"]
+    L -- "rebased at this head" --> B["Rung 3 — abandon and restart<br/>(not wired yet: logs and returns)"]
     L -- "verdict unknown / exhausted" --> W[Wait — run nothing]
     style N fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style R fill:#707070,stroke:,color:#fff
+    style B fill:#707070,stroke:,color:#fff
 ```
+
+**Only rung 1 is wired today.** Rungs 2 and 3 are decided by
+`decideLadderRung` but their branches currently log at warn and return
+`processed: false` — the rebase and abandon sub-issues of #2272 replace them.
 
 - **Rung 1 — nudge.** One `git commit --allow-empty` whose message names the
   base sha the ancestry check found, pushed **without** `--force` or a lease, so
@@ -380,7 +386,13 @@ flowchart TD
   from another is a rung run at the wrong head.
 - **Markers only count when the fleet wrote them** (Issue #1247): the thread is
   reduced by `partitionConflictComments` before the ladder reads it, so an
-  outsider's planted rung marker cannot skip a rung.
+  outsider's planted rung marker cannot skip a rung. With **no** fleet identity
+  configured no marker can be attributed at all, so no rung runs — a ladder
+  that cannot read its own memory would nudge each new head for ever instead of
+  climbing.
+- **A nudge that cannot be recorded is a failure, not a nudge.** The marker is
+  the bound, so if the comment cannot be posted after the push the pass fails
+  loud rather than reporting a rung the next scan cannot see.
 - **Nothing on this route spends or claims anything.** No resolved, attempt or
   failed marker is posted, no label is added, and the `merge-conflict` label
   stays on until GitHub itself reports the PR mergeable again. The rung markers

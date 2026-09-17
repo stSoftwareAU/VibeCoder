@@ -68,6 +68,7 @@ import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
 import {
   decideLadderRung,
+  type LadderDecision,
   parseLadderState,
 } from "./conflict_verdict_ladder.ts";
 import {
@@ -986,8 +987,21 @@ async function resolveConflict(
     return await runStaleVerdictLadder(input, processorDeps);
   }
 
-  // The head the merge starts from, for the invariant guard below.
+  // The head the merge starts from, for the invariant guard below. An
+  // unreadable HEAD would make that guard fail open — the resolved path would
+  // be reachable again for a merge that moved nothing — so refuse here, still
+  // before the attempt is opened, where refusing costs the PR nothing.
   const headBeforeMerge = await readHeadSha(run, workDir, logger, repo);
+  if (headBeforeMerge === null) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to merge into PR #${prNumber}: \`git rev-parse HEAD\` in ` +
+          `the clone reported no usable object name, so a merge that moves ` +
+          `nothing could not be told from one that lands (Issue #2278)`,
+      ),
+    };
+  }
 
   // Record the attempt before merging anything (Issue #84): the marker is
   // what a later scan reads to tell "this attempt was disrupted" from "no
@@ -1026,9 +1040,19 @@ async function resolveConflict(
   // "Already up to date" no-op the stale route exists to catch, arriving on a
   // route that has just ruled it out. Fail loud rather than posting a resolved
   // marker for a merge that pushed nothing.
-  if (merge.code === 0 && headBeforeMerge !== null) {
+  if (merge.code === 0) {
     const headAfterMerge = await readHeadSha(run, workDir, logger, repo);
     if (headAfterMerge === headBeforeMerge) {
+      // The attempt marker is open and this is the worker's fault, not the
+      // PR's — withdraw it so a broken invariant cannot spend the disruption
+      // budget and escalate somebody else's PR.
+      await deleteAttemptMarker(
+        deps,
+        repo,
+        attemptCommentId,
+        logger,
+        "the merge succeeded without moving HEAD (Issue #2278)",
+      );
       return {
         ok: false,
         error: new Error(
@@ -1414,6 +1438,34 @@ async function runStaleVerdictLadder(
   const { logger, deps } = processorDeps;
   const gh = deps.github.runGhCommand;
 
+  // The ladder's memory is the fleet's own marker comments, and with no fleet
+  // identity configured `partitionConflictComments` can attribute none of them
+  // (`conflict_marker_trust.ts`). Every rung would then read as un-run for
+  // ever, so the nudge would repeat at each new head instead of climbing —
+  // the very loop this route exists to break. Decline, as the abandon rung
+  // does, rather than proceed on a thread nobody can read.
+  const trustedAuthors = processorDeps.trustedAuthors ?? [];
+  if (trustedAuthors.length === 0) {
+    logger.warn(
+      `Stale merge verdict on PR #${prNumber} — no fleet identity is ` +
+        `configured, so the ladder's own markers cannot be attributed and no ` +
+        `rung may run`,
+      { repo, prNumber, branchName },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        merged: false,
+        escalated: false,
+        attemptCharged: false,
+        summary: `PR #${prNumber}: GitHub's merge verdict is stale, but no ` +
+          `trusted author is configured to read the ladder's markers — no ` +
+          `rung run, no attempt spent`,
+      },
+    };
+  }
+
   let currentHead: string;
   let mergeable: string;
   try {
@@ -1451,13 +1503,10 @@ async function runStaleVerdictLadder(
     };
   }
 
-  let decision;
+  let decision: LadderDecision;
   try {
     const thread = await fetchIssueCommentPages(repo, prNumber, gh);
-    const trust = partitionConflictComments(
-      thread,
-      processorDeps.trustedAuthors ?? [],
-    );
+    const trust = partitionConflictComments(thread, trustedAuthors);
     if (trust.unattributable > 0) {
       // Never silent: an unattributable rung marker is discarded, so a rung
       // that already ran can read as un-run and repeat. The nudge is
@@ -1563,9 +1612,12 @@ async function runStaleVerdictLadder(
             `'${decision.kind}' rung is not yet wired — no attempt spent`,
         },
       };
-  }
 
-  return assertNever(decision);
+    default:
+      // A `LadderDecision` variant added without a branch above is a compile
+      // error here, so a new rung can never fall through unhandled.
+      return assertNever(decision);
+  }
 }
 
 /**
@@ -1601,6 +1653,24 @@ async function runNudgeRung(
     };
   }
 
+  // The ancestry was checked against the clone's HEAD, but the ladder is keyed
+  // on the head GitHub reports. When the two differ the clone is not at the PR
+  // head — `preparePrBranch` fast-forwards best-effort — and the comment would
+  // then evidence a claim about a commit nobody checked. Refuse instead.
+  const localHead = await readHeadSha(run, workDir, logger, repo);
+  const ghHead = previousHead.trim().toLowerCase();
+  if (localHead === null || localHead !== ghHead) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to nudge PR #${prNumber}: the clone is at ` +
+          `${localHead ?? "an unreadable head"} but GitHub reports the PR ` +
+          `head as ${ghHead}, so the ancestry the nudge would claim was not ` +
+          `checked at that commit`,
+      ),
+    };
+  }
+
   const baseSha = await readSha(
     run,
     workDir,
@@ -1614,6 +1684,22 @@ async function runNudgeRung(
       error: new Error(
         `Cannot nudge PR #${prNumber}: 'origin/${baseBranch}' has no readable ` +
           `object name, so the ancestry the nudge claims cannot be evidenced`,
+      ),
+    };
+  }
+
+  // The commit message and the PR comment both promise an empty commit. A
+  // staged change left by an earlier step would ride into it and make both
+  // statements false, so check rather than assume: `git diff --cached
+  // --quiet` exits 0 only when the index matches HEAD.
+  const staged = await git(run, ["diff", "--cached", "--quiet"], workDir);
+  if (staged.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to nudge PR #${prNumber}: the index is not clean, so ` +
+          `\`git commit --allow-empty\` would not produce the empty commit ` +
+          `the nudge comment promises`,
       ),
     };
   }
@@ -1640,7 +1726,7 @@ async function runNudgeRung(
   }
 
   const newHead = await readHeadSha(run, workDir, logger, repo);
-  if (newHead === null || newHead === previousHead.trim().toLowerCase()) {
+  if (newHead === null || newHead === ghHead) {
     return {
       ok: false,
       error: new Error(
@@ -1674,18 +1760,25 @@ async function runNudgeRung(
       deps,
       repo,
       prNumber,
-      buildNudgeComment(baseBranch, baseSha, previousHead, newHead),
+      buildNudgeComment(baseBranch, baseSha, ghHead, newHead),
     );
   } catch (err) {
-    // The commit is pushed, so the head has moved; without the marker the next
-    // scan nudges this head again rather than climbing. Bounded and harmless,
-    // but never silent.
-    logger.error("Pushed the nudge commit but could not post its marker", {
-      repo,
-      prNumber,
-      newHead,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    // The marker IS the bound. The push has already moved the head, so an
+    // unrecorded nudge leaves the next scan looking at a new, unmarked head:
+    // it would nudge again, and again, never climbing to the rebase rung. That
+    // is the loop this ladder exists to break, so fail loud here rather than
+    // returning a nudge nobody can see (the stall watchdog, Issue #569, is the
+    // backstop for a PR that then stays CONFLICTING).
+    return {
+      ok: false,
+      error: new Error(
+        `Pushed the nudge commit for PR #${prNumber} (head is now ` +
+          `${newHead}) but could not post its marker, so the ladder has no ` +
+          `record of this rung: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      ),
+    };
   }
 
   logger.info("Nudged a stale merge verdict", {
@@ -1694,7 +1787,7 @@ async function runNudgeRung(
     branchName,
     baseBranch,
     baseSha,
-    previousHead,
+    previousHead: ghHead,
     newHead,
   });
 
