@@ -30,6 +30,17 @@
  * conflict git resolves; a branch no host may ever update is a PR that
  * never merges.
  *
+ * **A busy thread must not blind the lock (Issue #2265).** The comment read
+ * is paginated: the unpaginated call returned only the 30 oldest comments,
+ * so once a PR thread outgrew one page the sweep saw no locks to expire and
+ * the verification read could not see the comment this host had just posted.
+ * Every cycle then posted one more lock, acquired nothing, and left the
+ * comment behind — 765 of them on NEAT-AI-Lamarck#239, a branch no host
+ * could update, and a human asked to sort it out. Three rules keep that from
+ * recurring: the read is paginated, the posted comment is deleted on every
+ * not-acquired path, and an expired marker is ignored when the winner is
+ * chosen so a delete that never succeeded cannot wedge the PR.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -64,6 +75,17 @@ const DEFAULT_CONSISTENCY_DELAY_MS = 3000;
  * means two consecutive renewal failures still leave the lock live.
  */
 export const DEFAULT_LOCK_RENEWAL_INTERVAL_MS = 100_000;
+
+/**
+ * Stale lock comments deleted in one sweep (Issue #2265).
+ *
+ * A thread that accumulated a backlog while the read was blind holds
+ * hundreds of expired markers, and deleting them all would turn one cycle
+ * into hundreds of serial API calls before any branch update started. The
+ * backlog drains a pass at a time; nothing waits on it, because an expired
+ * marker is already ignored when the winner is chosen.
+ */
+export const DEFAULT_MAX_STALE_LOCK_DELETIONS = 100;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -165,6 +187,17 @@ export interface CleanStaleLockOptions {
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Injected time function (for testing). Returns current Unix timestamp in seconds. */
   nowFn?: () => number;
+  /**
+   * Deletions attempted in this pass (default:
+   * {@link DEFAULT_MAX_STALE_LOCK_DELETIONS}).
+   */
+  maxDeletions?: number;
+  /**
+   * Sink for sweep diagnostics (Issue #2265). The sweep stays best-effort,
+   * but a read it could not make and a delete it could not make are said out
+   * loud — silence is how 765 lock comments accumulated unnoticed.
+   */
+  log?: (message: string) => void;
 }
 
 /** Parsed lock comment from the GitHub API. */
@@ -264,37 +297,93 @@ export function parsePostedCommentId(ghOutput: string): number | null {
 }
 
 /**
- * Fetch all lock comments on a PR.
+ * Flatten what `gh api --paginate --jq '[…]'` prints (Issue #2265).
  *
- * Uses the GitHub API to retrieve comments matching the lock prefix.
+ * `--paginate` applies the filter to each page in turn, so the payload is
+ * one JSON array per line rather than a single array — and `--slurp`, which
+ * would merge them, is refused alongside `--jq`. A malformed line throws:
+ * an unreadable page is a failure the caller must handle, never an empty
+ * result standing in for "no locks".
+ *
+ * Exported for the regression test.
+ *
+ * @param payload - Raw stdout from the paginated comment read
+ * @returns Every lock comment across every page, in page order
+ */
+export function parseLockCommentPages(payload: string): LockComment[] {
+  const rows: LockComment[] = [];
+
+  for (const line of payload.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) continue;
+
+    for (const entry of parsed as Array<Record<string, unknown>>) {
+      if (
+        typeof entry.body !== "string" ||
+        !entry.body.includes(BRANCH_UPDATE_LOCK_PREFIX)
+      ) {
+        continue;
+      }
+      rows.push({
+        id: Number(entry.id),
+        body: entry.body,
+        createdAt: String(entry.created_at ?? ""),
+        author: typeof entry.author === "string" ? entry.author : null,
+      });
+    }
+  }
+
+  return rows;
+}
+
+/**
+ * Fetch all lock comments on a PR, across every page (Issue #2265).
+ *
+ * The read is paginated because a PR thread is unbounded: the default page
+ * of 30 comments hid every lock on a busy PR, which left the sweep with
+ * nothing to expire and stopped a host recognising its own lock comment.
  */
 async function fetchLockComments(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<LockComment[]> {
-  const commentsJson = await ghCommandFn([
+  const payload = await ghCommandFn([
     "api",
-    `repos/${repo}/issues/${prNumber}/comments`,
+    "--paginate",
+    `repos/${repo}/issues/${prNumber}/comments?per_page=100`,
     "--jq",
     `[.[] | select(.body | test("${BRANCH_UPDATE_LOCK_PREFIX}")) | ` +
     `{id: .id, body: .body, created_at: .created_at, author: .user.login}]`,
   ]);
 
-  const parsed: unknown = JSON.parse(commentsJson);
-  if (!Array.isArray(parsed)) return [];
+  return parseLockCommentPages(payload);
+}
 
-  return (parsed as Array<Record<string, unknown>>)
-    .filter((c) =>
-      typeof c.body === "string" &&
-      (c.body as string).includes(BRANCH_UPDATE_LOCK_PREFIX)
-    )
-    .map((c) => ({
-      id: Number(c.id),
-      body: String(c.body),
-      createdAt: String(c.created_at ?? ""),
-      author: typeof c.author === "string" ? c.author : null,
-    }));
+/**
+ * Delete one lock comment, reporting the failure rather than hiding it.
+ *
+ * @returns The error when the delete failed, or null when it succeeded
+ */
+async function deleteLockComment(
+  repo: string,
+  commentId: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<Error | null> {
+  try {
+    await ghCommandFn([
+      "api",
+      "-X",
+      "DELETE",
+      `repos/${repo}/issues/comments/${commentId}`,
+    ]);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -304,9 +393,11 @@ async function fetchLockComments(
 /**
  * Clean up stale branch update lock comments.
  *
- * Removes lock comments whose timestamp is older than the configured TTL.
- * This is best-effort — failures are silently handled to avoid blocking
- * the worker.
+ * Removes lock comments whose timestamp is older than the configured TTL,
+ * up to `maxDeletions` in one pass. Best-effort — the sweep never throws —
+ * but never silent: a read or a delete it could not make is logged, because
+ * a sweep that quietly did nothing is how a PR collects 765 lock comments
+ * (Issue #2265).
  *
  * @param options - Cleanup options
  */
@@ -319,34 +410,47 @@ export async function cleanStaleBranchUpdateLocks(
     lockTtlSeconds = DEFAULT_LOCK_TTL_SECONDS,
     ghCommandFn = runGhCommand,
     nowFn = defaultNow,
+    maxDeletions = DEFAULT_MAX_STALE_LOCK_DELETIONS,
+    log = (message: string) => console.warn(message),
   } = options;
+
+  const where = `[pr-branch-lock] ${repo}#${prNumber}:`;
 
   let lockComments: LockComment[];
   try {
     lockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
-  } catch {
+  } catch (err) {
+    log(
+      `${where} could not read the lock comments, so no stale lock was ` +
+        `expired this pass — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
     return; // Best-effort
   }
 
   const now = nowFn();
-
-  for (const comment of lockComments) {
+  const stale = lockComments.filter((comment) => {
     const lockData = parseLockComment(comment.body);
-    if (!lockData) continue;
+    return lockData !== null && now - lockData.timestamp >= lockTtlSeconds;
+  });
 
-    const age = now - lockData.timestamp;
-    if (age >= lockTtlSeconds) {
-      try {
-        await ghCommandFn([
-          "api",
-          "-X",
-          "DELETE",
-          `repos/${repo}/issues/comments/${comment.id}`,
-        ]);
-      } catch {
-        // Best-effort cleanup
-      }
+  for (const comment of stale.slice(0, maxDeletions)) {
+    const error = await deleteLockComment(repo, comment.id, ghCommandFn);
+    if (error) {
+      log(
+        `${where} could not delete stale lock comment ${comment.id} — ` +
+          `${error.message}`,
+      );
     }
+  }
+
+  if (stale.length > maxDeletions) {
+    log(
+      `${where} ${stale.length - maxDeletions} stale lock comment(s) remain ` +
+        `after this pass's ${maxDeletions}; the next pass clears more ` +
+        `(Issue #2265)`,
+    );
   }
 }
 
@@ -376,6 +480,8 @@ export async function acquireBranchUpdateLock(
     log = (message: string) => console.warn(message),
   } = options;
 
+  const where = `[pr-branch-lock] ${repo}#${prNumber}:`;
+
   // Step 1: Clean up stale locks from previous runs / crashed workers
   await cleanStaleBranchUpdateLocks({
     repo,
@@ -383,6 +489,7 @@ export async function acquireBranchUpdateLock(
     lockTtlSeconds,
     ghCommandFn,
     nowFn,
+    log,
   });
 
   // Step 2: Post our lock comment
@@ -409,6 +516,29 @@ export async function acquireBranchUpdateLock(
     return { ok: true, value: { acquired: false } };
   }
 
+  /**
+   * Take back the comment posted moments ago (Issue #2265).
+   *
+   * Every not-acquired return after the post used to leave it on the PR,
+   * so a host that could never acquire added one comment per cycle for
+   * ever. Nothing but the winner's own lock belongs on the thread.
+   */
+  const dropOwnLockComment = async (): Promise<void> => {
+    if (ownLockCommentId === null) return;
+    const error = await deleteLockComment(
+      repo,
+      ownLockCommentId,
+      ghCommandFn,
+    );
+    if (error) {
+      log(
+        `${where} could not delete this host's own lock comment ` +
+          `${ownLockCommentId} — the stale sweep clears it once the TTL ` +
+          `passes: ${error.message}`,
+      );
+    }
+  };
+
   // Step 3: Brief pause for GitHub's eventual consistency
   await sleepFn(DEFAULT_CONSISTENCY_DELAY_MS);
 
@@ -417,7 +547,8 @@ export async function acquireBranchUpdateLock(
   try {
     readLockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
   } catch {
-    // Cannot verify — back off to avoid conflicts
+    // Cannot verify — back off to avoid conflicts, taking our comment with us
+    await dropOwnLockComment();
     return { ok: true, value: { acquired: false } };
   }
 
@@ -439,16 +570,17 @@ export async function acquireBranchUpdateLock(
   // update is simply retried on the next scan.
   if (ownLockCommentId === null) {
     log(
-      `[pr-branch-lock] ${repo}#${prNumber}: gh returned no comment URL for ` +
+      `${where} gh returned no comment URL for ` +
         `the lock comment, so this worker cannot identify its own lock — ` +
-        `not acquiring; the branch update retries next cycle (Issue #1249).`,
+        `not acquiring; the stale sweep clears the comment once the TTL ` +
+        `passes and the branch update retries next cycle (Issue #1249).`,
     );
     return { ok: true, value: { acquired: false } };
   }
 
   const isOurs = (c: LockComment) => c.id === ownLockCommentId;
   const ourLocks = readLockComments.filter(isOurs);
-  const competingLocks = await selectFleetAuthoredComments(
+  const fleetLocks = await selectFleetAuthoredComments(
     readLockComments.filter((c) => !isOurs(c)),
     `branch update lock ${repo}#${prNumber}`,
     authorOptions,
@@ -456,11 +588,21 @@ export async function acquireBranchUpdateLock(
     "no competing lock is counted and the branch stays updatable — a lock " +
       "marker anyone can post must not stall a PR indefinitely",
   );
+
+  // An expired marker is not a competing lock, however long it lingers
+  // (Issue #2265). The sweep above is best-effort, so a delete that never
+  // succeeded would otherwise win every race for ever — it always sorts
+  // earliest — and no host could update the branch again.
+  const competingLocks = fleetLocks.filter((c) => {
+    const lockData = parseLockComment(c.body);
+    return lockData !== null && now - lockData.timestamp < lockTtlSeconds;
+  });
   const allLockComments = [...ourLocks, ...competingLocks];
 
   // Step 5: Determine the winner
   if (allLockComments.length === 0) {
     // Our comment vanished — something unexpected happened
+    await dropOwnLockComment();
     return { ok: true, value: { acquired: false } };
   }
 
@@ -475,6 +617,7 @@ export async function acquireBranchUpdateLock(
       };
     }
     // The sole lock is not ours — another worker snuck in
+    await dropOwnLockComment();
     return {
       ok: true,
       value: { acquired: false, winnerId: lockData?.workerId },
@@ -500,24 +643,10 @@ export async function acquireBranchUpdateLock(
     };
   }
 
-  // We lost — clean up our lock comment
-  const ourComment = allLockComments.find((c) => {
-    const data = parseLockComment(c.body);
-    return data?.workerId === workerId;
-  });
-
-  if (ourComment) {
-    try {
-      await ghCommandFn([
-        "api",
-        "-X",
-        "DELETE",
-        `repos/${repo}/issues/comments/${ourComment.id}`,
-      ]);
-    } catch {
-      // Best-effort cleanup
-    }
-  }
+  // We lost — clean up our lock comment. It is identified by the id GitHub
+  // returned when we posted it, not by the worker id inside a body anyone
+  // may copy (Issue #1249).
+  await dropOwnLockComment();
 
   return { ok: true, value: { acquired: false, winnerId } };
 }
