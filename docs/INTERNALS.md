@@ -1985,7 +1985,11 @@ verbatim, marker syntax in agent-authored text is neutralised at the
 `readPrResponseMessage` chokepoint
 ([agent_marker_neutralisation.ts](../worker/deno/lib/agent_marker_neutralisation.ts))
 before anything is posted — otherwise a forged attempt or deferral marker
-would be read back as the fleet's own record (Issue #2236).
+would be read back as the fleet's own record (Issue #2236). The failing
+check's name is the second untrusted value those bodies carry — a
+`pull_request` workflow derives the job name from the head ref, so a fork
+chooses it — and it is made inert by the same helper wherever the lane
+interpolates it into a body the fleet authors (Issue #2260).
 
 **Priority** — runs at priority 1.55 in the main loop, after spelling fixes
 (1.5) but before branch updates (1.6).

@@ -10,6 +10,7 @@
 
 import type { Logger, Result } from "../types.ts";
 import { resolveFailedStepName } from "./github_actions_log_fetcher.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 
 /** Information about a failed CI check. */
 export interface FailedCiCheck {
@@ -146,6 +147,11 @@ export async function getCiCheckRetryCount(
 /**
  * Build the comment body for max-retries notification (Issue #563).
  *
+ * Issue #2260: the check name is fork-chosen on a `pull_request`-triggered
+ * workflow and this body is posted by the fleet account, whose markers are the
+ * fleet-wide CI-fix record — so its HTML-comment delimiters are made inert by
+ * construction before it is interpolated.
+ *
  * @param checkName - Name of the failed CI check
  * @param checkId - The GitHub check run ID
  * @param maxRetries - Maximum retry count
@@ -156,7 +162,8 @@ export function buildMaxRetriesComment(
   checkId: string,
   maxRetries: number,
 ): string {
-  return `**Automated CI fix failed** — The worker attempted to fix the failing CI check **${checkName}** (ID: ${checkId}) ${maxRetries} times but was unable to resolve the issue.
+  const name = neutraliseAgentMarkers(checkName).text;
+  return `**Automated CI fix failed** — The worker attempted to fix the failing CI check **${name}** (ID: ${checkId}) ${maxRetries} times but was unable to resolve the issue.
 
 Manual intervention is required to fix this CI failure. The worker will skip this check on future runs.
 

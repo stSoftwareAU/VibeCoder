@@ -108,6 +108,7 @@ import {
   PR_ESCALATION_NEXT_STEP,
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
@@ -524,6 +525,44 @@ async function collectGraftForCiFix(
 // ---------------------------------------------------------------------------
 
 /**
+ * Text carrying the failing check's name, made safe to interpolate into a
+ * body the fleet account authors (Issue #2260).
+ *
+ * On a `pull_request`-triggered workflow the job name is derived from the head
+ * ref, so a fork chooses it. Every comment this module posts is authored by the
+ * fleet account, and the fleet-wide CI-fix record (Issue #1879) is gated on the
+ * *comment's* author rather than on where inside the body a marker came from —
+ * so a check name carrying `<!-- vibe-ci-fix-attempt … -->` would be read back
+ * as the fleet's own claim, exactly as a forged marker in the agent's message
+ * would have been before Issue #2236.
+ *
+ * Neutralised by construction, never by marker name: the shared
+ * {@link neutraliseAgentMarkers} helper defuses every HTML-comment delimiter,
+ * so a marker added years from now is covered too. The name stays visible in
+ * the comment — defused, not deleted — and the attempt is logged rather than
+ * swallowed.
+ *
+ * The check name the worker's own marker carries is **not** taken from here:
+ * `buildCiFixAttemptMarker` sanitises it for an attribute value itself.
+ *
+ * @param text - The raw name, or prose carrying it.
+ * @param logger - Logger the neutralisation is reported through.
+ * @returns The text with every comment delimiter made inert.
+ */
+function inertCheckName(text: string, logger: Logger): string {
+  const result = neutraliseAgentMarkers(text);
+  if (result.neutralised > 0) {
+    logger.security(
+      "CHECK_NAME_MARKER_NEUTRALISED",
+      `Neutralised ${result.neutralised} HTML-comment delimiter(s) carried by ` +
+        `the failing check's name, so it cannot forge a fleet marker in a ` +
+        `comment body (names seen: ${result.names.join(", ") || "none"})`,
+    );
+  }
+  return result.text;
+}
+
+/**
  * Process a CI check failure on a PR, holding the cross-host PR lock
  * (Issue #3754).
  *
@@ -594,9 +633,12 @@ export async function processCiFailure(
   }
 
   // Visible line under the hidden marker — a marker-only body renders as a
-  // blank PR comment (Issue #1659).
+  // blank PR comment (Issue #1659). The check name is fork-chosen, so it is
+  // defused before it reaches this fleet-authored body (Issue #2260).
   const lockNote =
-    `Locked PR #${prNumber} for a CI fix (\`${checkName}\`) by worker ` +
+    `Locked PR #${prNumber} for a CI fix (\`${
+      inertCheckName(checkName, logger)
+    }\`) by worker ` +
     `\`${workerId}\` — Issue #3754.`;
 
   const acquireLock = processorDeps.acquireLockFn ?? acquireBranchUpdateLock;
@@ -715,11 +757,13 @@ async function _processCiFailureLocked(
       maxRetries: maxCiRetries,
     });
 
-    // Post max-retries comment
+    // Post max-retries comment. The name is defused before it reaches that
+    // fleet-authored body, and the defusal is logged here rather than
+    // swallowed inside the pure builder (Issue #2260).
     await postCiFixMaxRetriesComment(
       repo,
       prNumber,
-      checkName,
+      inertCheckName(checkName, logger),
       checkRunId,
       maxCiRetries,
       ghFn,
@@ -800,6 +844,8 @@ async function _processCiFailureLocked(
   const heartbeatHandle: HeartbeatHandle = heartbeatStart.value;
 
   // Issue #3753: make the claim visible inside the heartbeat comment itself.
+  // `recordCiMilestone` defuses the fork-chosen check name this text carries
+  // before it reaches that fleet-authored comment (Issue #2260).
   await recordCiMilestone(
     processorDeps,
     input,
@@ -841,6 +887,12 @@ async function _processCiFailureLocked(
  * Best-effort by construction: the storage layer already swallows its own
  * failures, and a throw here is logged rather than allowed to abort the CI
  * fix it is merely describing.
+ *
+ * The progress log is rendered into the fleet-authored heartbeat comment, and
+ * every milestone this module records names the failing check — directly or
+ * through a run summary. Issue #2260: that name is fork-chosen, so the text is
+ * defused here, at the one chokepoint every milestone passes through, rather
+ * than at each caller.
  */
 async function recordCiMilestone(
   processorDeps: CiProcessorDeps,
@@ -854,7 +906,7 @@ async function recordCiMilestone(
       processorDeps.workRoot,
       input.repo,
       input.prNumber,
-      text,
+      inertCheckName(text, processorDeps.logger),
     );
   } catch (err) {
     processorDeps.logger.warn("Failed to record heartbeat milestone", {
@@ -925,6 +977,13 @@ async function _processCiWithHeartbeat(
     stateDir = resolveCiCheckStateDir(),
     codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
   } = processorDeps;
+
+  // Issue #2260: `checkName` stays raw for the lookups that must match what
+  // GitHub reported — the classifier, the failure signature, the base-branch
+  // check read and the marker builder's own sanitiser. Prose the fleet
+  // account posts uses this inert rendering instead, so a fork-chosen name
+  // can neither open nor close a marker in a body the fleet authors.
+  const safeCheckName = inertCheckName(checkName, logger);
 
   // Decode and format annotations
   const annotations = decodeAnnotations(encodedAnnotations);
@@ -1057,7 +1116,7 @@ async function _processCiWithHeartbeat(
       needsHumanLabel: "needs-human",
       heading: "CI log fetch blocked by credentials",
       reason:
-        `The CI log for **${checkName}** could not be fetched, so there is no build output to diagnose.\n\n${
+        `The CI log for **${safeCheckName}** could not be fetched, so there is no build output to diagnose.\n\n${
           formatCiLogAccessDiagnosis(diagnosis)
         }`,
       nextStep: diagnosis.remediation,
@@ -1178,7 +1237,10 @@ async function _processCiWithHeartbeat(
       needsHumanLabel: "needs-human",
       heading: "Automatic fix attempts exhausted",
       reason: buildAutoFixCapSummary({
-        checkName,
+        // Inert already, and inert again inside the builder: the defusal is
+        // reported once, here, rather than swallowed in a pure helper
+        // (Issue #2260).
+        checkName: safeCheckName,
         signature,
         maxAttempts: maxAutoFixAttempts,
         attempts: buildCapAttemptRows(priorAttempts),
@@ -1251,7 +1313,7 @@ async function _processCiWithHeartbeat(
   await recordCiMilestone(
     processorDeps,
     input,
-    `Diagnosing \`${checkName}\` (${failureClassification.category}) — ` +
+    `Diagnosing \`${safeCheckName}\` (${failureClassification.category}) — ` +
       `fix attempt ${attemptCount + 1} of ${maxAutoFixAttempts}`,
   );
 
@@ -1347,7 +1409,7 @@ async function _processCiWithHeartbeat(
 
   if (!claudeResult.ok) {
     const failureMessage =
-      `Failed to fix CI failure (${checkName}): Claude execution failed — ${claudeResult.error.message}`;
+      `Failed to fix CI failure (${safeCheckName}): Claude execution failed — ${claudeResult.error.message}`;
     await replyToComment(repo, prNumber, failureMessage, deps);
     return {
       ok: false,
@@ -1358,8 +1420,8 @@ async function _processCiWithHeartbeat(
   // Check for timeout (Issue #1825: distinguish silence watchdog from hard timeout)
   if (claudeResult.value.timedOut) {
     const failureMessage = claudeResult.value.timeoutReason === "no-output"
-      ? `Failed to fix CI failure (**${checkName}**): Claude produced no output for ${claudeNoOutputTimeout} seconds (silence watchdog fired)`
-      : `Failed to fix CI failure (**${checkName}**): Claude timed out after ${claudeTimeout} seconds`;
+      ? `Failed to fix CI failure (**${safeCheckName}**): Claude produced no output for ${claudeNoOutputTimeout} seconds (silence watchdog fired)`
+      : `Failed to fix CI failure (**${safeCheckName}**): Claude timed out after ${claudeTimeout} seconds`;
     await replyToComment(repo, prNumber, failureMessage, deps);
     return {
       ok: false,
@@ -1729,11 +1791,11 @@ async function _processCiWithHeartbeat(
   // Reply with outcome — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded) {
     const base = customMessage ??
-      `I've pushed a fix for the CI failure (**${checkName}**). Please review the changes.`;
+      `I've pushed a fix for the CI failure (**${safeCheckName}**). Please review the changes.`;
     // Issue #630: a force-push that silently rewrote the branch would be an
     // unpleasant surprise for anyone with it checked out. Say so, and say why.
     const rebuilt = historyRewritten
-      ? `${base}\n\n**The branch history was rebuilt.** \`${checkName}\` scans every commit ` +
+      ? `${base}\n\n**The branch history was rebuilt.** \`${safeCheckName}\` scans every commit ` +
         `in the branch, not the working tree, so correcting the content in a further commit ` +
         `would have left the finding in the earlier commit's diff and the check would have ` +
         `failed again. The branch is now a single commit and was force-pushed with a lease. ` +
@@ -1758,7 +1820,7 @@ async function _processCiWithHeartbeat(
     await replyToComment(
       repo,
       prNumber,
-      `I fixed the CI failure (**${checkName}**) locally but failed to push the changes. Please check the branch status.${detail}${markerSuffix}`,
+      `I fixed the CI failure (**${safeCheckName}**) locally but failed to push the changes. Please check the branch status.${detail}${markerSuffix}`,
       deps,
     );
   } else {
@@ -1773,7 +1835,7 @@ async function _processCiWithHeartbeat(
       })),
       claudeResult.value.output,
     );
-    const response = buildCiNoChangesResponse(checkName, classification);
+    const response = buildCiNoChangesResponse(safeCheckName, classification);
     // Issue #1876: the CI-fix prompt promises the agent's `.pr_response_message`
     // is posted verbatim, and on this path it was being discarded for the stock
     // text — a reviewer read "could not determine a fix" where the agent had
