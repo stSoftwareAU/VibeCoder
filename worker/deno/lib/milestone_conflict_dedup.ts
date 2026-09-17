@@ -33,6 +33,7 @@
 
 import {
   type AlertDedupAuthorOptions,
+  parseIssueViewCommentRows,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 
@@ -101,53 +102,6 @@ export function conflictEscalationMarkerPrefix(
 }
 
 // ---------------------------------------------------------------------------
-// Authorship
-// ---------------------------------------------------------------------------
-
-/** One comment as read from `gh issue view --json …,comments`. */
-export interface ConflictEscalationComment {
-  /** The commenter's login, or null when the payload carried none. */
-  author: string | null;
-  body: string;
-}
-
-/**
- * Project the `comments` array of `gh issue view --json …,comments` onto
- * `{ author, body }` rows (Issue #2231).
- *
- * `gh` renders a comment's author as a `{ login }` object; the worker's own
- * `GitHubComment` renders it as a bare login. Both are accepted, as
- * `planning_carrier.ts` accepts both, so the shape a caller's runner returns
- * cannot silently drop every author — and with it every comment.
- *
- * A comment with no readable author keeps `author: null`, which no fleet
- * login matches, so it is discarded by the author gate rather than trusted.
- *
- * @param value - The parsed `comments` field, of any shape.
- * @returns One row per comment carrying a string body.
- */
-export function conflictEscalationCommentRows(
-  value: unknown,
-): ConflictEscalationComment[] {
-  if (!Array.isArray(value)) return [];
-  const rows: ConflictEscalationComment[] = [];
-  for (const entry of value) {
-    if (entry === null || typeof entry !== "object") continue;
-    const record = entry as Record<string, unknown>;
-    if (typeof record.body !== "string") continue;
-    const author = record.author;
-    const login = typeof author === "string"
-      ? author
-      : author !== null && typeof author === "object" &&
-          typeof (author as Record<string, unknown>).login === "string"
-      ? (author as Record<string, unknown>).login as string
-      : null;
-    rows.push({ author: login, body: record.body });
-  }
-  return rows;
-}
-
-// ---------------------------------------------------------------------------
 // Cross-host check
 // ---------------------------------------------------------------------------
 
@@ -205,7 +159,7 @@ export async function hasConflictEscalationComment(
     if (!Array.isArray(parsed?.comments)) {
       throw new Error("gh issue view returned no `comments` array");
     }
-    const matches = conflictEscalationCommentRows(parsed.comments).filter(
+    const matches = parseIssueViewCommentRows(parsed.comments).filter(
       (comment) => comment.body.includes(marker),
     );
     const fleetMatches = await selectFleetAuthoredComments(

@@ -28,6 +28,7 @@ import { createMilestoneBranchName } from "./git_branch.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
 import {
   type AlertDedupAuthorOptions,
+  parseIssueViewCommentRows,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 import type { RepoLease } from "./maintenance_lane.ts";
@@ -52,7 +53,6 @@ import {
   isConflictEscalation,
 } from "./milestone_conflict_triage.ts";
 import {
-  conflictEscalationCommentRows,
   conflictEscalationKey,
   conflictEscalationMarker,
   conflictEscalationMarkerPrefix,
@@ -1796,8 +1796,14 @@ async function clearEarlierSyncEscalation(
       l?.name === "needs-human"
     );
     if (!labelled) return "";
+    // A payload with no `comments` array is an unread thread, not an empty
+    // one: it is thrown into the catch below and logged, never taken as
+    // "this pass did not escalate here".
+    if (!Array.isArray(parsed.comments)) {
+      throw new Error("gh issue view returned no `comments` array");
+    }
     const prefix = conflictEscalationMarkerPrefix(milestone.milestoneBranch);
-    const markers = conflictEscalationCommentRows(parsed.comments).filter((c) =>
+    const markers = parseIssueViewCommentRows(parsed.comments).filter((c) =>
       c.body.includes(prefix)
     );
     const fleetMarkers = await selectFleetAuthoredComments(

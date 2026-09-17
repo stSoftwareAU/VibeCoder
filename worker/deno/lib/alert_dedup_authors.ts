@@ -267,6 +267,46 @@ export function selectFleetAuthoredComments<T extends AlertDedupCommentRow>(
 }
 
 /**
+ * Project the `comments` array of `gh issue view --json …,comments` onto
+ * author-carrying rows (Issue #2231).
+ *
+ * `gh` renders a comment's author as a `{ login }` object; the worker's own
+ * `GitHubComment` renders it as a bare login. Both are accepted, so the shape
+ * a caller's runner returns cannot silently drop every author — and with it
+ * every comment. A comment with no readable author keeps `author: null`,
+ * which no fleet login matches, so the author gate discards it rather than
+ * trusting it.
+ *
+ * The sibling of {@link parseAuthoredCommentRows} for the `issue view` shape:
+ * that one parses a raw `gh api` payload, this one takes the already-parsed
+ * `comments` field, because its callers read other fields off the same
+ * payload.
+ *
+ * @param value - The parsed `comments` field, of any shape.
+ * @returns One row per comment carrying a string body.
+ */
+export function parseIssueViewCommentRows(
+  value: unknown,
+): Array<{ author: string | null; body: string }> {
+  if (!Array.isArray(value)) return [];
+  const rows: Array<{ author: string | null; body: string }> = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.body !== "string") continue;
+    const author = record.author;
+    const login = typeof author === "string"
+      ? author
+      : author !== null && typeof author === "object" &&
+          typeof (author as Record<string, unknown>).login === "string"
+      ? (author as Record<string, unknown>).login as string
+      : null;
+    rows.push({ author: login, body: record.body });
+  }
+  return rows;
+}
+
+/**
  * Parse a `gh api …/comments --jq` payload into author-carrying rows
  * (Issue #1249).
  *

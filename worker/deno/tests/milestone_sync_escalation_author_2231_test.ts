@@ -15,6 +15,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { parseIssueViewCommentRows } from "../lib/alert_dedup_authors.ts";
 import {
   type ActiveMilestone,
   escalateSyncConflict,
@@ -165,6 +166,71 @@ Deno.test("escalateSyncConflict - an unresolved fleet identity leaves the label 
     warnings.some((w) => w.includes("fleet author set unresolved")),
     `the condition is logged, not swallowed: ${warnings.join(" | ")}`,
   );
+});
+
+Deno.test("escalateSyncConflict - a thread whose comments cannot be read leaves the label alone and says so (Issue #2231)", async () => {
+  const warnings: string[] = [];
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push([...args]);
+    const key = args.join(" ");
+    if (key.startsWith("api repos/")) return Promise.resolve("abc1234 subject");
+    if (key.includes("--json state")) return Promise.resolve("OPEN");
+    if (key.includes("--json labels,comments")) {
+      // A payload `gh` should never return: labels present, comments not an
+      // array. An unread thread must not read as "this pass did not
+      // escalate here".
+      return Promise.resolve(
+        JSON.stringify({ labels: [{ name: "needs-human" }], comments: {} }),
+      );
+    }
+    return Promise.resolve("");
+  };
+
+  await escalateSyncConflict(
+    REPO,
+    MILESTONE,
+    AUTO_CONFLICT,
+    gh,
+    (message) => warnings.push(message),
+    { fleetAuthors: [FLEET] },
+  );
+
+  assertEquals(
+    calls.filter((c) => c.includes("--remove-label")),
+    [],
+    "an unreadable thread fails closed",
+  );
+  assert(
+    warnings.some((w) => w.includes("comments` array")),
+    `the unreadable answer is named, not swallowed: ${warnings.join(" | ")}`,
+  );
+});
+
+Deno.test("parseIssueViewCommentRows - keeps both author shapes and drops what cannot be read (Issue #2231)", () => {
+  assertEquals(
+    parseIssueViewCommentRows([
+      { author: { login: FLEET }, body: "object shape" },
+      { author: OUTSIDER, body: "bare login shape" },
+      { body: "no author at all" },
+      { author: { login: 7 }, body: "unreadable author" },
+      { author: { login: FLEET } },
+      null,
+      "not a comment",
+    ]),
+    [
+      { author: FLEET, body: "object shape" },
+      { author: OUTSIDER, body: "bare login shape" },
+      { author: null, body: "no author at all" },
+      { author: null, body: "unreadable author" },
+    ],
+  );
+});
+
+Deno.test("parseIssueViewCommentRows - a payload that is not an array yields no rows (Issue #2231)", () => {
+  assertEquals(parseIssueViewCommentRows(undefined), []);
+  assertEquals(parseIssueViewCommentRows({ body: "not an array" }), []);
+  assertEquals(parseIssueViewCommentRows("[]"), []);
 });
 
 Deno.test("hasConflictEscalationComment - a marker from outside the fleet is not an escalation already posted (Issue #2231)", async () => {
