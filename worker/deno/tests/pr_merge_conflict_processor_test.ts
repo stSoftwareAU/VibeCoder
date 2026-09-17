@@ -2617,17 +2617,29 @@ Deno.test("processMergeConflict - a rung-failed comment renders a marker-shaped 
 });
 
 Deno.test("processMergeConflict - a human-authored PR is never rebased (Issue #2279)", async () => {
+  // Behaviour change recorded in Issue #2280: this case asserted the unwired
+  // abandon placeholder (`rung: undefined`, nothing called). The rung is wired
+  // now, so what it asserts is the ladder going *straight* to the abandon —
+  // still without a single rebase command on a branch the fleet does not own.
   const script = staleVerdictScript();
+  const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
     makeInput(),
     script,
-    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: recordingAbandon(seen, {
+        outcome: "abandoned",
+        issueNumber: 234,
+        label: { kept: "top-priority" },
+      }),
+    },
     atRebaseRung(script.headSha, { author: "a-human", commentId: 9105 }),
   );
 
   assert(result.ok);
-  assertEquals(result.value.rung, undefined);
-  assertStringIncludes(result.value.summary, "abandon");
+  assertEquals(result.value.rung, "abandon");
+  assertEquals(seen.length, 1);
   assertEquals(
     captured.gitArgs.filter((args) => args[0] === "rebase"),
     [],
@@ -2641,15 +2653,24 @@ Deno.test("processMergeConflict - a human-authored PR is never rebased (Issue #2
 
 Deno.test("processMergeConflict - an unreadable PR author is never rebased (Issue #2279)", async () => {
   const script = staleVerdictScript();
+  const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
     makeInput(),
     script,
-    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: recordingAbandon(seen, {
+        outcome: "abandoned",
+        issueNumber: 234,
+        label: { kept: "top-priority" },
+      }),
+    },
     atRebaseRung(script.headSha, { author: null, commentId: 9106 }),
   );
 
   assert(result.ok);
-  assertEquals(result.value.rung, undefined);
+  assertEquals(result.value.rung, "abandon");
+  assertEquals(seen.length, 1, "the ladder climbs rather than stopping");
   assertEquals(
     captured.gitArgs.filter((args) => args[0] === "rebase"),
     [],
@@ -2709,5 +2730,329 @@ Deno.test("buildRungFailedComment - names the rung, the head and where the branc
   assertStringIncludes(body, "abc1234");
   assertEquals(body.includes(CONFLICT_ATTEMPT_MARKER), false);
   assertEquals(body.includes(CONFLICT_FAILED_MARKER), false);
+  assertEquals(body.includes(CONFLICT_RESOLVED_MARKER), false);
+});
+
+// ---------------------------------------------------------------------------
+// The abandon rung (Issue #2280)
+// ---------------------------------------------------------------------------
+
+/**
+ * Options that put the ladder on its last rung: the fleet's own rebase marker
+ * already names `head` as the head it produced, and GitHub still calls the PR
+ * `CONFLICTING` there.
+ */
+function atAbandonRung(
+  head: string,
+  overrides?: {
+    commentId?: number;
+    author?: string | null;
+    threadComments?: { body: string; author: string }[];
+  },
+) {
+  return {
+    postedCommentId: overrides?.commentId ?? 9200,
+    prHeadState: {
+      headRefOid: head,
+      mergeable: "CONFLICTING",
+      author: overrides?.author,
+    },
+    threadComments: overrides?.threadComments ?? [
+      { body: conflictNudgeMarker(head), author: FLEET_AUTHOR },
+      {
+        body: conflictRebaseMarker(
+          "1111111111111111111111111111111111111111",
+          head,
+        ),
+        author: FLEET_AUTHOR,
+      },
+    ],
+  };
+}
+
+/** An abandon rung that records what it was asked to abandon. */
+function recordingAbandon(
+  seen: AbandonRestartRequest[],
+  outcome: Awaited<
+    ReturnType<NonNullable<MergeConflictProcessorDeps["abandonRestartFn"]>>
+  >,
+): NonNullable<MergeConflictProcessorDeps["abandonRestartFn"]> {
+  return (request) => {
+    seen.push(request);
+    return Promise.resolve(outcome);
+  };
+}
+
+Deno.test("processMergeConflict - a rebased head GitHub still calls CONFLICTING is abandoned (Issue #2280)", async () => {
+  const script = staleVerdictScript();
+  const seen: AbandonRestartRequest[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: recordingAbandon(seen, {
+        outcome: "abandoned",
+        issueNumber: 234,
+        label: { kept: "top-priority" },
+      }),
+    },
+    atAbandonRung(script.headSha),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "abandon");
+  assertEquals(result.value.processed, true);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertStringIncludes(result.value.summary, "issue #234");
+  assertStringIncludes(result.value.summary, "`top-priority`");
+
+  // The rung is handed this PR, and fetches its own thread.
+  assertEquals(seen.length, 1);
+  assertEquals(seen[0]?.repo, "org/repo");
+  assertEquals(seen[0]?.prNumber, 48);
+  assertEquals(seen[0]?.branchName, "issue-16-fix");
+  assertEquals(seen[0]?.baseBranch, "main");
+  assertEquals(seen[0]?.prComments, undefined);
+
+  // Nothing is spent, nothing is labelled, nothing is pushed.
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(
+    captured.comments,
+    [],
+    "the rung posts its own comments; the processor adds none",
+  );
+});
+
+Deno.test("processMergeConflict - a rebase rung-failed marker at this head climbs to abandon (Issue #2280)", async () => {
+  const script = staleVerdictScript();
+  const seen: AbandonRestartRequest[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: recordingAbandon(seen, {
+        outcome: "abandoned",
+        issueNumber: 234,
+        label: { applied: "idle-task" },
+      }),
+    },
+    atAbandonRung(script.headSha, {
+      commentId: 9201,
+      threadComments: [
+        { body: conflictNudgeMarker(script.headSha), author: FLEET_AUTHOR },
+        {
+          body: buildRungFailedComment(
+            "rebase",
+            script.headSha,
+            "the leased push was refused",
+          ),
+          author: FLEET_AUTHOR,
+        },
+      ],
+    }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "abandon");
+  assertEquals(seen.length, 1, "a failed rebase at this head is not retried");
+  assertStringIncludes(result.value.summary, "`idle-task`");
+  assertEquals(
+    captured.gitArgs.filter((args) => args[0] === "rebase"),
+    [],
+    "the rebase rung already ran at this head",
+  );
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a declined abandon records the rung and adds no label (Issue #2280)", async () => {
+  const script = staleVerdictScript();
+  const seen: AbandonRestartRequest[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: recordingAbandon(seen, {
+        outcome: "declined",
+        reason: { kind: "already-restarted", issueNumber: 234, samePr: false },
+      }),
+    },
+    atAbandonRung(script.headSha, { commentId: 9202 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "abandon");
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.escalated, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(seen.length, 1);
+
+  // One comment, carrying the marker that exhausts the ladder at this head.
+  assertEquals(captured.comments.length, 1);
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
+  assertStringIncludes(comment, 'rung="abandon"');
+  assertStringIncludes(comment, `head="${script.headSha}"`);
+  assertStringIncludes(comment, "already been restarted once");
+
+  // No rung applies `needs-human`, on the PR or on the issue (Issue #2280).
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_ATTEMPT_MARKER)),
+    [],
+  );
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
+    [],
+  );
+
+  // The next scan at this same head reads that marker back and runs nothing.
+  const second = await runProcessor(
+    makeInput(),
+    staleVerdictScript(),
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: recordingAbandon(seen, {
+        outcome: "declined",
+        reason: { kind: "already-restarted", issueNumber: 234, samePr: false },
+      }),
+    },
+    atAbandonRung(script.headSha, {
+      commentId: 9203,
+      threadComments: [
+        { body: conflictNudgeMarker(script.headSha), author: FLEET_AUTHOR },
+        { body: comment, author: FLEET_AUTHOR },
+      ],
+    }),
+  );
+
+  assert(second.result.ok);
+  assertEquals(second.result.value.processed, false);
+  assertEquals(second.result.value.rung, undefined);
+  assertStringIncludes(second.result.value.summary, "ladder-exhausted");
+  assertEquals(seen.length, 1, "the abandon rung runs once per head");
+  assertEquals(second.captured.comments, []);
+  assertEquals(second.captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - an abandon that fails records the rung without a human (Issue #2280)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: () =>
+        Promise.resolve({
+          outcome: "failed",
+          step: "pr-close",
+          message: "gh refused",
+        }),
+    },
+    atAbandonRung(script.headSha, { commentId: 9204 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "abandon");
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.escalated, false);
+  assertEquals(captured.comments.length, 1);
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, 'rung="abandon"');
+  assertStringIncludes(comment, "`pr-close` step");
+  assertEquals(
+    captured.labelsAdded,
+    [],
+    "the stall watchdog is the backstop here, not `needs-human`",
+  );
+});
+
+Deno.test("processMergeConflict - a failure after the close never claims nothing was closed (Issue #2280)", async () => {
+  // `issue-label` runs *after* the PR is closed, so the comment must not say
+  // the PR is still open — it would be a permanent public claim about state
+  // nobody checked, and it would contradict the route's own paragraphs above
+  // it.
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: () =>
+        Promise.resolve({
+          outcome: "failed",
+          step: "issue-label",
+          message: "gh refused the label",
+          issueNumber: 234,
+        }),
+    },
+    atAbandonRung(script.headSha, { commentId: 9206 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "abandon");
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, "`issue-label` step");
+  assertEquals(
+    comment.includes("Nothing was closed"),
+    false,
+    "the close had already run by this step",
+  );
+  assertEquals(
+    result.value.summary.includes("still open"),
+    false,
+  );
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - an abandon whose marker cannot be posted fails loud (Issue #2280)", async () => {
+  // Without the marker the next scan re-decides `abandon` at this same head
+  // and calls a rung that has already declined — the loop the ladder replaces.
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: () =>
+        Promise.resolve({
+          outcome: "declined",
+          reason: { kind: "no-originating-issue", detail: "no-signal" },
+        }),
+    },
+    {
+      ...atAbandonRung(script.headSha, { commentId: 9205 }),
+      commentPostError: "gh: 503 Service Unavailable",
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "no record of it");
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("buildRungFailedComment - the abandon rung says the ladder waits rather than climbs (Issue #2280)", () => {
+  const body = buildRungFailedComment(
+    "abandon",
+    "abc1234",
+    "the restart was declined",
+  );
+  assertStringIncludes(body, conflictRungFailedMarker("abandon", "abc1234"));
+  assertStringIncludes(body, "waits");
+  assertEquals(
+    body.includes("climbs to the following rung"),
+    false,
+    "there is no rung above the abandon",
+  );
+  assertEquals(body.includes(CONFLICT_ATTEMPT_MARKER), false);
   assertEquals(body.includes(CONFLICT_RESOLVED_MARKER), false);
 });

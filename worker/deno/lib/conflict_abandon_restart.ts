@@ -299,6 +299,28 @@ export function requeueLabelName(label: RequeueLabel): string {
   return "kept" in label ? label.kept : label.applied;
 }
 
+/**
+ * What the thread actually records about concluded attempts (Issue #2280).
+ *
+ * The comments this rung posts are permanent and public, so the count they
+ * quote is read off the thread rather than assumed. The stale-verdict ladder
+ * reaches this rung with **no** attempt opened at all, and even the
+ * budget-spent caller can arrive one conclusion short when a failure comment
+ * could not be posted.
+ */
+export function describeConcludedAttempts(
+  history: FailedAttemptHistory,
+): string {
+  const count = history.attempts.length;
+  if (count === 0) {
+    return "No concluded merge-conflict resolution attempt is recorded on " +
+      "this PR, and it is still not mergeable";
+  }
+  return `${count} merge-conflict resolution attempt${
+    count === 1 ? "" : "s"
+  } on this PR concluded and failed`;
+}
+
 // ---------------------------------------------------------------------------
 // Outcome taxonomy
 // ---------------------------------------------------------------------------
@@ -366,12 +388,14 @@ export type AbandonRestartOutcome =
 // ---------------------------------------------------------------------------
 
 /**
- * Which route through the ladder ended at a human (Issue #1115).
+ * Which exit an abandon that did not happen took (Issue #1115).
  *
  * A spent budget no longer means one thing. Abandon-and-restart sits between
- * it and `needs-human`, so the escalation must say which of its exits produced
- * the hand-over — a human who cannot tell "the fleet could not find the issue"
- * from "the fleet already restarted this once" cannot act on either.
+ * it and `needs-human`, so the record must say which of the rung's exits
+ * produced the outcome — a reader who cannot tell "the fleet could not find
+ * the issue" from "the fleet already restarted this once" cannot act on
+ * either. The spent-budget caller turns this into a `needs-human` comment; the
+ * stale-verdict ladder records it on the PR and asks nobody (Issue #2280).
  */
 export type ExhaustedEscalationRoute =
   /** A precondition refused the abandon; nothing was closed. */
@@ -442,7 +466,11 @@ export function exhaustedEscalationRoute(
   );
 }
 
-/** The route, as the paragraphs a `needs-human` comment carries. */
+/**
+ * The route, as the paragraphs the comment recording it carries — a
+ * `needs-human` escalation from the spent-budget caller, or the ladder's own
+ * rung-failed comment (Issue #2280).
+ */
 export function describeExhaustedRoute(
   route: ExhaustedEscalationRoute,
 ): string[] {
@@ -794,9 +822,13 @@ export function buildAbandonPrComment(args: {
   return [
     "♻️ **Abandoning this PR and restarting the work**",
     "",
-    `Two merge-conflict resolution attempts on \`${branch}\` ` +
-    `concluded and failed, so \`${base}\` has moved too far ` +
-    "from this branch to reconcile. Redoing the work off the current base " +
+    // Counted from the thread, never assumed: the stale-verdict ladder reaches
+    // this rung having opened **no** attempt at all (Issue #2280), and a
+    // failure conclusion that could not be posted leaves one attempt short
+    // either way. "Two attempts failed" on a PR that recorded none is a
+    // fabricated fact on a permanent comment.
+    `${describeConcludedAttempts(history)}, so \`${base}\` cannot be ` +
+    `reconciled with \`${branch}\`. Redoing the work off the current base ` +
     "is cheaper than reconciling it, and needs no human.",
     "",
     "**What the attempts recorded**",
@@ -866,7 +898,8 @@ export function buildRestartIssueComment(args: {
     `${request.repo}#${request.prNumber} put this issue's work on ` +
     `\`${sanitiseIssueText(request.branchName)}\`, and that branch ` +
     `conflicts with \`${sanitiseIssueText(request.baseBranch)}\` in a way ` +
-    "two concluded merge attempts could not resolve.",
+    "the fleet could not resolve. " +
+    `${describeConcludedAttempts(history)}.`,
     "",
     "Conflicted paths:",
     "",
@@ -1164,8 +1197,8 @@ export async function abandonAndRestart(
 
   logger?.warn?.(
     `PR #${prNumber} was abandoned and issue #${issueNumber} re-queued ` +
-      `(\`${requeueLabelName(requeueLabel)}\`) — two concluded merge ` +
-      "attempts could not reconcile the branch",
+      `(\`${requeueLabelName(requeueLabel)}\`) — ` +
+      `${describeConcludedAttempts(history).toLowerCase()}`,
     {
       repo,
       prNumber,

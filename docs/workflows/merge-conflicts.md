@@ -363,23 +363,26 @@ flowchart TD
     L -- MERGEABLE --> C[Clear the label only]
     L -- "no marker at this head" --> N["Rung 1 — nudge:<br/>one empty commit, plain push"]
     L -- "nudged at this head" --> R["Rung 2 — rebase:<br/>replay, tree guard, leased push"]
-    L -- "rebased at this head" --> B["Rung 3 — abandon and restart<br/>(not wired yet: logs and returns)"]
+    L -- "rebased at this head,<br/>or the rebase failed here" --> B["Rung 3 — abandon and restart:<br/>close the PR, re-queue its issue"]
+    L -- "nudged at this head,<br/>human author" --> B
     L -- "verdict unknown / exhausted" --> W[Wait — run nothing]
     R -- "replay conflicts<br/>or the tree differs" --> S["Fallback: one commit<br/>carrying OLD's tree on the base"]
     R -- "tree identical to OLD" --> P["Push --force-with-lease=BRANCH:OLD"]
     S --> P
+    B -- "declined or failed" --> F["Record the rung as failed<br/>at this head — no label, no human"]
+    F --> W
     style N fill:#2d6a4f,stroke:#1b4332,color:#fff
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
     style S fill:#2d6a4f,stroke:#1b4332,color:#fff
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
-    style B fill:#707070,stroke:,color:#fff
+    style B fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-**Rungs 1 and 2 are wired.** Rung 3 is decided by `decideLadderRung` but its
-branch still logs at warn and returns `processed: false` — the abandon
-sub-issue of #2272 replaces it. A **human-authored** PR skips rung 2 and is
-decided as `abandon`: the leased push destroys nothing, but a person's commit
-graph is theirs to reshape.
+**All three rungs are wired** (Issues #2278, #2279, #2280). Each runs **at most
+once per head sha**: the rung's own marker names the head it left behind, so the
+next scan reads that marker back and climbs rather than repeating it. A
+**human-authored** PR skips rung 2 and goes straight to rung 3 — the leased push
+destroys nothing, but a person's commit graph is theirs to reshape.
 
 - **Rung 1 — nudge.** One `git commit --allow-empty` whose message names the
   base sha the ancestry check found, pushed **without** `--force` or a lease, so
@@ -426,6 +429,30 @@ graph is theirs to reshape.
   same head for ever. Post-release the audit is
   `git diff --stat <old> <new>` on the shas the rebase comment names — any
   output is a regression.
+- **Rung 3 — abandon and restart** (Issue #2280). Reached when GitHub still
+  says `CONFLICTING` at the head the rebase produced, when the rebase rung
+  failed at this head, or when a human-authored PR sits at the nudged head. It
+  is the same rung a spent attempt budget uses
+  ([below](#-abandon-and-restart-before-a-human-is-asked)), called with this PR
+  and no thread — it fetches its own. The PR is **closed**, never force-pushed,
+  and its originating issue is re-queued on the pickup label it already carried,
+  so the pipeline raises a fresh PR off the current base.
+- **No rung applies `needs-human`** — not to the PR, not to its issue. A
+  declined abandon (the issue was already restarted, or the PR names no
+  originating issue) or a failed one posts **one** comment carrying
+  `<!-- vibe-merge-conflict-rung-failed rung="abandon" head="<sha>" -->` and
+  stops there, adding no label anywhere. Nothing has been spent and nothing is
+  broken on this route — the verdict is merely stale — so parking the work at
+  `needs-human` would block it from discovery over a stale reading. The next
+  scan reads that marker back and waits at this head; the stall watchdog (Issue
+  #569) is the backstop, and a later head or base move restarts the ladder at a
+  real merge attempt. The budget-spent caller still escalates on a declined
+  abandon, unchanged: there the PR has failed real merges and has nowhere else
+  to go.
+- **One rung per head, and the abandon once per issue.** The ladder's own
+  markers bound each rung to one run at the head they name, and the abandon rung
+  is bounded a second time by the restart marker it leaves on the *issue* — so
+  work is closed and re-raised once, never in a loop.
 - **The head sha and the verdict are read together**, in one
   `gh pr view --json headRefOid,mergeable,author`. The scan's own projection
   carries neither, and a rung decided on a head from one moment and a verdict
@@ -438,8 +465,8 @@ graph is theirs to reshape.
   climbing.
 - **A rung that cannot be recorded is a failure, not a rung.** The marker is the
   bound, so if the comment cannot be posted after the nudge's or the rebase's
-  push the pass fails loud rather than reporting a rung the next scan cannot
-  see.
+  push — or after a declined or failed abandon — the pass fails loud rather than
+  reporting a rung the next scan cannot see.
 - **Nothing on this route spends or claims anything.** No resolved, attempt or
   failed marker is posted, no label is added, and the `merge-conflict` label
   stays on until GitHub itself reports the PR mergeable again. The rung markers
@@ -959,7 +986,10 @@ branch at the same time. A host that loses the race returns immediately.
 - `worker/deno/lib/conflict_abandon_restart.ts` — the abandon-and-restart rung:
   its four preconditions, the one-restart-per-issue marker, the comments it
   posts on the PR and the issue, and `exhaustedEscalationRoute`, which names
-  the route when the rung declines or fails and a human is asked instead.
+  the route when the rung declines or fails. Both callers use it: the spent
+  attempt budget, which escalates to a human on a decline, and the exhausted
+  stale-verdict ladder, which records the rung as failed and asks nobody
+  (Issue #2280).
 - `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
   a label with no concluded attempt behind it. It files work and applies
   `escalated`; it never applies `needs-human` and never retries.

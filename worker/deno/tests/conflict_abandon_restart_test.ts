@@ -33,6 +33,7 @@ import {
   buildAbandonPrComment,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
+  describeConcludedAttempts,
   describeExhaustedRoute,
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
@@ -810,6 +811,34 @@ Deno.test("buildAbandonPrComment - states the absence when nothing was recorded"
   assertStringIncludes(body, "no failure comment survives");
   assertStringIncludes(body, "no conflicted path was recorded");
   assertStringIncludes(body, "not** deleted");
+  // The count is read off the thread, never assumed: the stale-verdict ladder
+  // reaches this rung with no attempt opened at all (Issue #2280), and
+  // "two attempts failed" would be a fabricated fact on a permanent comment.
+  assertStringIncludes(body, "No concluded merge-conflict resolution attempt");
+});
+
+Deno.test("describeConcludedAttempts - counts what the thread records (Issue #2280)", () => {
+  const history = (count: number) => ({
+    attempts: Array.from({ length: count }, (_, index) => ({
+      attempt: index + 1,
+      detail: "conflicted",
+    })),
+    conflictedPaths: [],
+    consultedIssues: [],
+  });
+
+  assertStringIncludes(
+    describeConcludedAttempts(history(0)),
+    "No concluded merge-conflict resolution attempt",
+  );
+  assertStringIncludes(
+    describeConcludedAttempts(history(1)),
+    "1 merge-conflict resolution attempt on this PR concluded and failed",
+  );
+  assertStringIncludes(
+    describeConcludedAttempts(history(3)),
+    "3 merge-conflict resolution attempts on this PR concluded and failed",
+  );
 });
 
 // ---------------------------------------------------------------------------
