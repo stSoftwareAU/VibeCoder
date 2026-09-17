@@ -20,6 +20,7 @@
  */
 
 import type { RepoConfig } from "../types.ts";
+import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
   asUntrustedUser,
   buildUntrustedCommandEnv,
@@ -69,6 +70,22 @@ async function untrustedSpawn(cmd: readonly string[]): Promise<string[]> {
     }
   }
   return asUntrustedUser(cmd, { enabled: untrustedUserAvailable });
+}
+
+/**
+ * The account a spawnable command drops to, or undefined when it runs as the
+ * worker (Issue #2247).
+ *
+ * Read off the finished argv — `sudo -n -u <user> -- …` — rather than from
+ * the probe, so what the build is keyed to is what will actually run it.
+ */
+export function untrustedAccountOf(
+  spawnable: readonly string[],
+): string | undefined {
+  if (spawnable[0] !== "sudo") return undefined;
+  const flag = spawnable.indexOf("-u");
+  const user = flag === -1 ? undefined : spawnable[flag + 1];
+  return user && user !== "--" ? user : undefined;
 }
 
 // =============================================================================
@@ -211,12 +228,24 @@ export function createDefaultDeps(
         // image provides one, because an environment allowlist cannot stop a
         // process reading a credential file its own uid owns.
         const spawnable = await untrustedSpawn(cmd);
+        // Issue #2247: on a runtime that refuses the volume trim, this
+        // repository's `target/` is what ratchets the sparse image — 16 GB of
+        // one on GRQ-23 — so the build is pointed at the container's own
+        // ephemeral layer instead. Keyed by the checkout (cargo locks the
+        // target dir, so two slots must not share one) and by the account the
+        // command actually drops to, which cannot write the worker's.
+        const buildCacheEnv = buildCacheEnvForCheckout(
+          options?.cwd ?? Deno.cwd(),
+          { account: untrustedAccountOf(spawnable) },
+        );
         const proc = new Deno.Command(spawnable[0]!, {
           args: spawnable.slice(1),
           // The declared credentials are placed AFTER the allowlist, so a
           // repository's own declaration is the only way a credential reaches
           // its checks (Issues #572, #573).
-          env: buildUntrustedCommandEnv({ overrides: repoCredentialEnv }),
+          env: buildUntrustedCommandEnv({
+            overrides: { ...buildCacheEnv, ...repoCredentialEnv },
+          }),
           clearEnv: true,
           stdout: "piped",
           stderr: "piped",

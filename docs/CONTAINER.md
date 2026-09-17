@@ -1332,6 +1332,57 @@ flowchart TD
     style K fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
+## Build artefacts ride the ephemeral layer where the trim is refused (Issue #2247)
+
+The heal above returns the blocks; it does not stop them being written. On a
+trim-refused runtime every block a `cargo build` touches **inside the volume**
+is allocated to the sparse image for good, so GRQ-23 held 22 GB of image for
+6.4 GB of live data and grew 15–20 GB an hour through a Rust-heavy cycle — one
+`target/` in the shared clone the merge-conflict pass builds in reached 16 GB
+on its own. The recreate then fired every cycle: 20–30 idle minutes an hour
+and a cold cache at every launch.
+
+The container's **own** root filesystem is a separate sparse image, ephemeral
+per container — its host allocation (`containers/<id>`, 11–12 GB mid-cycle) is
+released at every relaunch. So when the launcher reports
+`workVolumeTrimRefused`, the worker points the build at that layer instead:
+`CARGO_TARGET_DIR=/var/tmp/vibe-cargo-target/<checkout key>` for every
+subprocess it runs against a checkout — the coding agent, the repository's own
+quality gate, the milestone merge gate and the milestone resolution gate
+(`worker/deno/lib/ephemeral_build_cache.ts`). The volume then keeps only
+clones, worktrees and state, and the `Work volume:` line below reports **0**
+build artefacts.
+
+- **One directory per checkout.** Cargo locks the target directory for the
+  whole build, so a single shared one would serialise two slots' Rust builds.
+  The key is derived from the checkout path, which covers a lane worktree
+  (`worktrees/<slot>/<repo>`) and the shared clone the maintenance passes use
+  alike.
+- **One directory per account.** The repository's own commands run as `agent`
+  and the worker's as `vibe` (Issue #571); neither can write a directory the
+  other created, so the account the command drops to is part of the key.
+- **Nothing changes where the trim is honoured.** No launcher reading, an
+  older launcher that writes no flag, a runtime that trims, or an explicit
+  `CARGO_TARGET_DIR` — all leave the environment exactly as it was.
+- **The registry caches stay durable.** `CARGO_HOME` and `DENO_DIR` are
+  bounded and are not the ratchet; moving them would buy a cold download every
+  launch for space the measurements say is not the problem.
+
+Incremental builds are lost at relaunch. They were lost at every recreate
+anyway — and a recreate now happens only when live data outgrows the floor,
+not every cycle.
+
+```mermaid
+flowchart TD
+    B["cargo build in a checkout"] --> Q{"launcher reported<br/>workVolumeTrimRefused?"}
+    Q -->|"no"| V["target/ inside the checkout<br/>on the vibe-work volume —<br/>fstrim returns the blocks"]
+    Q -->|"yes"| E["/var/tmp/vibe-cargo-target/&lt;checkout&gt;<br/>on the container's own layer"]
+    E --> R["released at the next relaunch —<br/>volume image stops ratcheting"]
+    V2["without this: every rebuild<br/>allocates fresh image blocks"] -.-> X["volume recreated every cycle"]
+    style R fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style X fill:#c9184a,stroke:#800f2f,color:#fff
+```
+
 ## Standing totals at cycle start and end of run (Issues #244, #345)
 
 Those lines say what was *removed*. Every disk problem on GRQ-23 was
