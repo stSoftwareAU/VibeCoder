@@ -47,6 +47,7 @@ import {
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
 import { standDownMilestoneHead } from "./gated_head_guard.ts";
+import { assertNever } from "./assert_never.ts";
 import { isRuleViolationPush } from "./milestone_sync_pr.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
 import {
@@ -60,7 +61,19 @@ import {
   releaseBranchUpdateLock,
   startBranchUpdateLockRenewal,
 } from "./pr_branch_lock.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
+import { assertPushTargetAllowed, resolvePreFlightSpec } from "./git_push.ts";
+import { buildPushArgs } from "./git_ref_args.ts";
+import { appendRunIdTrailer, getRunId } from "./run_id.ts";
+import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
+import { partitionConflictComments } from "./conflict_marker_trust.ts";
+import {
+  decideLadderRung,
+  parseLadderState,
+} from "./conflict_verdict_ladder.ts";
+import {
+  conflictNudgeMarker,
+  isConflictHeadSha,
+} from "./merge_conflict_markers.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
@@ -151,6 +164,15 @@ export interface MergeConflictResult {
    * about the run's remaining time, so the drain carries on to the next PR.
    */
   runEnded?: boolean;
+  /**
+   * The stale-verdict ladder rung this pass ran (Issues #2272, #2278).
+   *
+   * Set only when GitHub's `CONFLICTING` verdict turned out to be stale — the
+   * base was already an ancestor of the PR head — so no merge was attempted
+   * and no attempt was opened. `rebase` and `abandon` are named here for the
+   * sub-issues that wire those rungs; only `nudge` is reachable today.
+   */
+  rung?: "nudge" | "rebase" | "abandon";
 }
 
 /** Dependencies for {@link processMergeConflict}. */
@@ -306,6 +328,47 @@ async function hasConflictMarkers(
     ...paths,
   ], cwd);
   return result.code === 0 && result.stdout.trim().length > 0;
+}
+
+/**
+ * The sha `rev-parse` reports for a revision, or `null` when it reports none.
+ *
+ * A failure is logged at warn rather than thrown: every caller here uses the
+ * sha to *detect* a fault (a merge that moved nothing, a nudge that committed
+ * nothing), and an unreadable HEAD is not itself that fault. It is never
+ * silent — a caller that cannot compare says so and declines the check.
+ */
+async function readSha(
+  run: GitRunner,
+  cwd: string,
+  revision: string,
+  logger: Logger,
+  repo: string,
+): Promise<string | null> {
+  const result = await git(run, ["rev-parse", revision], cwd);
+  const sha = result.stdout.trim().toLowerCase();
+  if (result.code !== 0 || !isConflictHeadSha(sha)) {
+    logger.warn(
+      "Could not read a git object name for the merge-conflict pass",
+      {
+        repo,
+        revision,
+        detail: result.stderr.trim() || result.stdout.trim(),
+      },
+    );
+    return null;
+  }
+  return sha;
+}
+
+/** The sha `HEAD` points at, or `null` when it cannot be read. */
+function readHeadSha(
+  run: GitRunner,
+  cwd: string,
+  logger: Logger,
+  repo: string,
+): Promise<string | null> {
+  return readSha(run, cwd, "HEAD", logger, repo);
 }
 
 /** Abort an in-progress merge, leaving the branch exactly as its author had it. */
@@ -510,6 +573,64 @@ export function buildFailedComment(
     "",
     "The branch was left exactly as its author pushed it — the worker never " +
     "side-picks a conflict (Issue #4373), so no change has been lost.",
+  ].join("\n");
+}
+
+/**
+ * Message of the empty commit the nudge rung pushes (Issues #2272, #2278).
+ *
+ * It names the base sha the ancestry check found, so a reader can verify the
+ * claim from the commit alone, and carries the `Vibe-Coder-Run-Id` trailer the
+ * pre-commit gate requires of every worker-authored commit.
+ */
+export function buildNudgeCommitMessage(
+  baseBranch: string,
+  baseSha: string,
+  runId: string,
+): string {
+  return appendRunIdTrailer(
+    [
+      "chore: nudge GitHub to recompute this PR's merge status (Issue #2272)",
+      "",
+      `GitHub reports this PR as CONFLICTING, but \`origin/${baseBranch}\` ` +
+      `(${baseSha}) is already an ancestor of the PR head — the base's ` +
+      "changes are all present and there is nothing left to merge, so the " +
+      "verdict is stale.",
+      "",
+      "This commit is empty. It changes no file; it only moves the head so " +
+      "GitHub recomputes mergeability. Safe to ignore.",
+    ].join("\n"),
+    runId,
+  );
+}
+
+/**
+ * Body of the comment the nudge rung posts (Issues #2272, #2278).
+ *
+ * Carries {@link conflictNudgeMarker} for the **new** head, which is what
+ * bounds the rung to one nudge per head: the next scan reads that marker back
+ * and climbs to the rebase rung instead of nudging again.
+ */
+export function buildNudgeComment(
+  baseBranch: string,
+  baseSha: string,
+  previousHead: string,
+  newHead: string,
+): string {
+  return [
+    conflictNudgeMarker(newHead),
+    "🔁 **Stale merge verdict — nudged GitHub to recompute it**",
+    "",
+    `GitHub reports this PR as \`CONFLICTING\`, but \`origin/${baseBranch}\` ` +
+    `(\`${baseSha}\`) is **already an ancestor** of the head this PR was at ` +
+    `(\`${previousHead}\`). The base's changes are all present, so there is ` +
+    "nothing for the resolver to merge — the verdict is stale, not the branch.",
+    "",
+    "So instead of merging, the worker pushed one **empty commit** — no file " +
+    "changes, no `--force`, every existing commit intact — to move the head " +
+    `to \`${newHead}\`, which is what makes GitHub recompute the verdict.`,
+    "",
+    "No resolution attempt was opened or spent on this (Issue #2272).",
   ].join("\n");
 }
 
@@ -848,6 +969,26 @@ async function resolveConflict(
     );
   }
 
+  // Issue #2278: GitHub's `CONFLICTING` verdict can be stale. When the base is
+  // already an ancestor of the PR head there is nothing left to merge, and the
+  // merge below would exit 0 with "Already up to date", push nothing, and fall
+  // through to the resolved marker and the label clear — which resets the
+  // attempt budget and leaves GitHub's verdict exactly as it was. That loop ran
+  // for days on NEAT-AI-Lamarck#239. Ask git first, in the same slot as the
+  // deepen step above: **before** the attempt comment, so nothing is spent and
+  // no comment has to be withdrawn.
+  const staleVerdict = await git(
+    run,
+    ["merge-base", "--is-ancestor", `origin/${baseBranch}`, "HEAD"],
+    workDir,
+  );
+  if (staleVerdict.code === 0) {
+    return await runStaleVerdictLadder(input, processorDeps);
+  }
+
+  // The head the merge starts from, for the invariant guard below.
+  const headBeforeMerge = await readHeadSha(run, workDir, logger, repo);
+
   // Record the attempt before merging anything (Issue #84): the marker is
   // what a later scan reads to tell "this attempt was disrupted" from "no
   // attempt has run". It opens the attempt; only a conclusion posted below
@@ -878,6 +1019,28 @@ async function resolveConflict(
     ["merge", `origin/${baseBranch}`, "--no-edit"],
     workDir,
   );
+
+  // Issue #2278: the pre-check above established that the base is *not* an
+  // ancestor of HEAD, so a successful merge must move HEAD — by a merge commit
+  // or a fast-forward. A zero exit that leaves HEAD where it was is the
+  // "Already up to date" no-op the stale route exists to catch, arriving on a
+  // route that has just ruled it out. Fail loud rather than posting a resolved
+  // marker for a merge that pushed nothing.
+  if (merge.code === 0 && headBeforeMerge !== null) {
+    const headAfterMerge = await readHeadSha(run, workDir, logger, repo);
+    if (headAfterMerge === headBeforeMerge) {
+      return {
+        ok: false,
+        error: new Error(
+          `Invariant violated on PR #${prNumber}: 'origin/${baseBranch}' was ` +
+            `not an ancestor of '${branchName}' before the merge, yet ` +
+            `\`git merge\` succeeded without moving HEAD (still ` +
+            `${headBeforeMerge}). Nothing was merged, so nothing may be ` +
+            `reported as resolved (Issue #2278).`,
+        ),
+      };
+    }
+  }
 
   let conflictedFiles: string[] = [];
   /** What the deterministic rules resolved, named on the resolved comment. */
@@ -1225,6 +1388,327 @@ async function resolveConflict(
       summary: conflictedFiles.length === 0
         ? `Merged ${baseBranch} into PR #${prNumber} cleanly`
         : `Merged ${baseBranch} into PR #${prNumber}, resolving ${conflictedFiles.length} conflicted file(s)${ruleNote}`,
+    },
+  };
+}
+
+/**
+ * Run the stale-verdict ladder instead of a merge (Issues #2272, #2278).
+ *
+ * Reached only when `git merge-base --is-ancestor origin/BASE HEAD` exits 0
+ * while GitHub still calls the PR `CONFLICTING`: the base is already in, so
+ * there is no merge to attempt and no attempt has been opened. **No path here
+ * posts a resolved, attempt or failed marker, and none adds a label** — the
+ * conflict is unresolved until GitHub says otherwise, and claiming otherwise
+ * is the loop this route replaces.
+ *
+ * The head sha and the verdict are read together from one `gh pr view`: the
+ * scan's projection carries neither, and a rung decided on a head from one
+ * moment and a verdict from another is a rung run at the wrong head.
+ */
+async function runStaleVerdictLadder(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+): Promise<Result<MergeConflictResult>> {
+  const { repo, prNumber, branchName, baseBranch } = input;
+  const { logger, deps } = processorDeps;
+  const gh = deps.github.runGhCommand;
+
+  let currentHead: string;
+  let mergeable: string;
+  try {
+    // `author` rides along because it is the projection this subsystem's
+    // other PR reads use; `headRefOid` and `mergeable` are what decide here.
+    const raw = await gh([
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "headRefOid,mergeable,author",
+    ]);
+    const parsed = JSON.parse(raw.trim() || "{}") as {
+      headRefOid?: unknown;
+      mergeable?: unknown;
+    };
+    if (
+      typeof parsed.headRefOid !== "string" ||
+      typeof parsed.mergeable !== "string"
+    ) {
+      throw new Error("gh reported no headRefOid/mergeable pair");
+    }
+    currentHead = parsed.headRefOid;
+    mergeable = parsed.mergeable;
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to read the head sha and merge verdict for PR #${prNumber}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      ),
+    };
+  }
+
+  let decision;
+  try {
+    const thread = await fetchIssueCommentPages(repo, prNumber, gh);
+    const trust = partitionConflictComments(
+      thread,
+      processorDeps.trustedAuthors ?? [],
+    );
+    if (trust.unattributable > 0) {
+      // Never silent: an unattributable rung marker is discarded, so a rung
+      // that already ran can read as un-run and repeat. The nudge is
+      // non-destructive, so repeating it is the safe direction — but the
+      // reason a rung repeated must be visible.
+      logger.warn(
+        "Some merge-conflict comments could not be attributed — their ladder " +
+          "markers were discarded",
+        { repo, prNumber, unattributable: trust.unattributable },
+      );
+    }
+    decision = decideLadderRung({
+      state: parseLadderState(trust.trusted, { logger }),
+      currentHead,
+      mergeable,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to decide a stale-verdict ladder rung for PR #${prNumber}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      ),
+    };
+  }
+
+  logger.info("GitHub's merge verdict is stale — running the ladder", {
+    repo,
+    prNumber,
+    branchName,
+    baseBranch,
+    currentHead,
+    mergeable,
+    rung: decision.kind,
+  });
+
+  switch (decision.kind) {
+    case "not-conflicting": {
+      // GitHub has caught up on its own. Drop the label and leave the thread
+      // alone — nothing was merged here, so nothing may claim to have been.
+      try {
+        await clearMergeConflictLabel(repo, prNumber, gh);
+      } catch (err) {
+        return {
+          ok: false,
+          error: new Error(
+            `Failed to clear the merge-conflict label on PR #${prNumber} ` +
+              `after GitHub reported it mergeable again: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+          ),
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: false,
+          escalated: false,
+          attemptCharged: false,
+          summary: `PR #${prNumber} is mergeable again — cleared the ` +
+            `merge-conflict label, no attempt spent`,
+        },
+      };
+    }
+
+    case "nudge":
+      return await runNudgeRung(input, processorDeps, currentHead);
+
+    case "wait":
+      logger.warn(
+        `Stale merge verdict on PR #${prNumber} — no ladder rung run`,
+        { repo, prNumber, currentHead, mergeable, reason: decision.reason },
+      );
+      return {
+        ok: true,
+        value: {
+          processed: false,
+          merged: false,
+          escalated: false,
+          attemptCharged: false,
+          summary: `PR #${prNumber}: GitHub's merge verdict is stale but no ` +
+            `ladder rung can run (${decision.reason}) — no attempt spent`,
+        },
+      };
+
+    case "rebase":
+    case "abandon":
+      logger.warn(
+        `Stale merge verdict on PR #${prNumber} needs the ` +
+          `'${decision.kind}' rung, which is not wired yet`,
+        { repo, prNumber, currentHead, rung: decision.kind },
+      );
+      return {
+        ok: true,
+        value: {
+          processed: false,
+          merged: false,
+          escalated: false,
+          attemptCharged: false,
+          summary: `PR #${prNumber}: the stale-verdict ladder's ` +
+            `'${decision.kind}' rung is not yet wired — no attempt spent`,
+        },
+      };
+  }
+
+  return assertNever(decision);
+}
+
+/**
+ * Rung 1 — push one empty commit so GitHub recomputes mergeability.
+ *
+ * Non-destructive by construction: `--allow-empty` changes no file, and the
+ * push carries no lease and no force, so every commit the PR already had
+ * survives. The comment names the **new** head, which is what stops the next
+ * scan nudging the same head twice.
+ *
+ * Every step is checked and every failure is loud: a commit that did not move
+ * HEAD, or a push that did not land, must not be reported as a nudge — the
+ * marker would then name a sha nobody can see and the ladder would skip a rung.
+ */
+async function runNudgeRung(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  previousHead: string,
+): Promise<Result<MergeConflictResult>> {
+  const { repo, prNumber, branchName, baseBranch } = input;
+  const { logger, deps, workDir } = processorDeps;
+  const run = deps.git.runGitCommand;
+
+  // The default branch is read-only for the worker (Issue #2584), and a PR
+  // head that *is* the default branch would otherwise be pushed to here.
+  const guard = await assertPushTargetAllowed(branchName, { cwd: workDir });
+  if (!guard.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to nudge PR #${prNumber}: ${guard.error.message}`,
+      ),
+    };
+  }
+
+  const baseSha = await readSha(
+    run,
+    workDir,
+    `origin/${baseBranch}`,
+    logger,
+    repo,
+  );
+  if (baseSha === null) {
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot nudge PR #${prNumber}: 'origin/${baseBranch}' has no readable ` +
+          `object name, so the ancestry the nudge claims cannot be evidenced`,
+      ),
+    };
+  }
+
+  const commit = await git(
+    run,
+    [
+      "commit",
+      "--allow-empty",
+      "-m",
+      buildNudgeCommitMessage(baseBranch, baseSha, getRunId()),
+    ],
+    workDir,
+  );
+  if (commit.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to create the nudge commit on PR #${prNumber}: ${
+          commit.stderr.trim() || commit.stdout.trim()
+        }`,
+      ),
+    };
+  }
+
+  const newHead = await readHeadSha(run, workDir, logger, repo);
+  if (newHead === null || newHead === previousHead.trim().toLowerCase()) {
+    return {
+      ok: false,
+      error: new Error(
+        `The nudge commit on PR #${prNumber} did not move HEAD (still ` +
+          `${newHead ?? "unreadable"}) — nothing was pushed and no nudge ` +
+          `marker was posted`,
+      ),
+    };
+  }
+
+  // No lease, no force: the new head is a descendant of the old one, so a
+  // plain push fast-forwards the remote branch and loses nothing.
+  const push = await git(
+    run,
+    buildPushArgs("origin", branchName),
+    workDir,
+  );
+  if (push.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to push the nudge commit for PR #${prNumber}: ${
+          push.stderr.trim() || push.stdout.trim()
+        }`,
+      ),
+    };
+  }
+
+  try {
+    await postPrComment(
+      deps,
+      repo,
+      prNumber,
+      buildNudgeComment(baseBranch, baseSha, previousHead, newHead),
+    );
+  } catch (err) {
+    // The commit is pushed, so the head has moved; without the marker the next
+    // scan nudges this head again rather than climbing. Bounded and harmless,
+    // but never silent.
+    logger.error("Pushed the nudge commit but could not post its marker", {
+      repo,
+      prNumber,
+      newHead,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  logger.info("Nudged a stale merge verdict", {
+    repo,
+    prNumber,
+    branchName,
+    baseBranch,
+    baseSha,
+    previousHead,
+    newHead,
+  });
+
+  return {
+    ok: true,
+    value: {
+      processed: true,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      rung: "nudge",
+      summary: `PR #${prNumber}: 'origin/${baseBranch}' (${baseSha}) is ` +
+        `already an ancestor of the head — pushed an empty commit ` +
+        `(${newHead}) so GitHub recomputes the verdict, no attempt spent`,
     },
   };
 }
