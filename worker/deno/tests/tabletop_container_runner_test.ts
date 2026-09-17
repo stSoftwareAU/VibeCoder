@@ -37,6 +37,9 @@ function plan(): ContainerLaunchPlan {
     mounts: [],
     ensureDirectories: [],
     volumes: ["vibe-tabletop-work-1234"],
+    // The throwaway work volume is disposable, so a disk reset may take it
+    // (Issue #2216); the tabletop mounts no approval store.
+    resettableVolumes: ["vibe-tabletop-work-1234"],
     initArgs: ["run", "--rm", "vibe-coder:abc123"],
     imageInspectArgs: ["image", "inspect", "vibe-coder:abc123"],
     buildArgs: ["build"],

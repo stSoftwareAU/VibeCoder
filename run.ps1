@@ -536,6 +536,10 @@ $KeepImages = ""
 $WatchdogSeconds = ""
 $EnsureDirs = [System.Collections.Generic.List[string]]::new()
 $VolumeNames = [System.Collections.Generic.List[string]]::new()
+# The volumes a disk reset may destroy (Issue #2216). Windows has no
+# counterpart to the low-disk heal, so this is parsed and carried rather than
+# acted on here - exactly as the claiming floor below is.
+$ResettableVolumeNames = [System.Collections.Generic.List[string]]::new()
 $InitArgs = [System.Collections.Generic.List[string]]::new()
 $VolumeRemoveArgs = [System.Collections.Generic.List[string]]::new()
 # The runtime's own "remove one image" verb (Issue #1956), used on a container
@@ -606,6 +610,7 @@ try {
             "watchdog" { $WatchdogSeconds = $value }
             "ensure" { $EnsureDirs.Add($value) }
             "volume" { $VolumeNames.Add($value) }
+            "volume-resettable" { $ResettableVolumeNames.Add($value) }
             "init" { $InitArgs.Add($value) }
             "volume-remove" { $VolumeRemoveArgs.Add($value) }
             "image-remove" { $ImageRemoveArgs.Add($value) }

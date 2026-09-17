@@ -1269,19 +1269,28 @@ takes it:
    `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` (10 %), the same floor
    `worker/deno/lib/host_disk.ts` applies — the launcher deletes and recreates
    the volume, then runs the init again to re-own it. This happens **before
-   any container starts**, so no work is in flight: the clones re-clone and
-   the approval snapshots re-baseline. The removal verb comes from the launch
+   any container starts**, so no work is in flight: the clones re-clone. The
+   approval snapshots are never in that set (point 3). The removal verb comes
+   from the launch
    plan, because the runtimes disagree about it — Docker and Podman say
    `volume rm`, Apple `container` says `volume delete` — and a removal that
    leaves the volume in place is reported in the runtime's own words rather
    than followed by a `volume create` that is certain to fail with
    "already exists" (Issue #731).
-3. **The reset is never held back, and never silent.** What the volumes hold
-   in the store is measured first: volumes holding less than
+3. **Role decides what may be destroyed, before any size does
+   (Issue #2216).** The launch plan names the volumes a disk reset may
+   recreate — `vibe-work` and `vibe-agent-state`, clones and caches — and
+   `vibe-approval-state` is not among them. It is the tamper baseline for
+   every issue the worker may claim, and a recreated store reads as a genuine
+   first encounter, so every tracked issue re-baselines against its body as
+   it stands *now* and content edited after approval verifies as unchanged.
+   Size cannot carry that guard on its own: the launcher measures the Apple
+   container store, Docker and Podman keep their volumes elsewhere, and an
+   unmeasurable store used to fall straight through the minimum below.
+4. **The reset is never held back, and never silent.** What the resettable
+   volumes hold in the store is measured next: volumes holding less than
    `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) are never destroyed, each judged on
-   its own size (Issue #2117), because resetting them gains nothing — and
-   the content-approval store, at ~70 MB, is the tamper baseline for every
-   issue the worker may claim; wiping it for disk cost GRQ-23 a whole run.
+   its own size (Issue #2117), because resetting them gains nothing.
    Otherwise a host below the floor resets the volume on **every launch it is
    below it**, however recent the last reset: the volume is disposable and the
    host is not (Issue #2077 — a 24 h interval once left GRQ-23, re-ratcheted
@@ -1291,15 +1300,15 @@ takes it:
    ratcheting. Free space is **re-measured** after the recreate: a heal that
    did not clear the floor is reported as `[WORK_VOLUME_UNRECOVERED]` on
    stderr and in `run_core.log`, never as a fix.
-4. **The launch still proceeds.** Only the hard floor refuses a launch — a
+5. **The launch still proceeds.** Only the hard floor refuses a launch — a
    host that cannot claim must still run and report, or it vanishes from the
    fleet board (Issue #477).
-5. **A host that cannot build can still reset (Issue #2092).** The init above
+6. **A host that cannot build can still reset (Issue #2092).** The init above
    runs inside the image, so a host whose image build is failing would never
    reach it — GRQ-23 fell from 24 GB free to 11 GB in under an hour while
    `loop.sh` retried a broken builder (#2089). So before any build, a host
-   below its floor makes the same measurement and resets any volume holding
-   at least `VIBE_WORK_VOLUME_HEAL_MIN_GB`, logged as
+   below its floor makes the same measurement and resets any *resettable*
+   volume holding at least `VIBE_WORK_VOLUME_HEAL_MIN_GB`, logged as
    `work-volume: pre-build reset of vibe-work …`; the init after the build
    re-owns the fresh volume as it does after the heal.
 
@@ -1309,7 +1318,9 @@ flowchart TD
     I -->|"FITRIM refused"| R["VOLUME_TRIM_REFUSED &lt;target&gt;<br/>on stdout"]
     R --> G{"host below the<br/>claiming floor?"}
     G -->|"no"| N["recorded in run_core.log;<br/>nothing destroyed"]
-    G -->|"yes"| S{"volumes hold<br/>&lt; 1 GB?"}
+    G -->|"yes"| P{"plan lists the volume<br/>as resettable?"}
+    P -->|"no"| K["kept — approval store<br/>is never reset for disk"]
+    P -->|"yes"| S{"volumes hold<br/>&lt; 1 GB?"}
     S -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]"]
     S -->|"no"| D["delete + create volume,<br/>re-run the init<br/>(every launch below the floor)"]
     D --> M{"floor cleared?<br/>(re-measured)"}
@@ -1318,6 +1329,7 @@ flowchart TD
     style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
     style H fill:#2d6a4f,stroke:#1b4332,color:#fff
     style E fill:#c9184a,stroke:#800f2f,color:#fff
+    style K fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
 ## Standing totals at cycle start and end of run (Issues #244, #345)
