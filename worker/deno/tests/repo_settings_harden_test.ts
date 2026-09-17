@@ -16,6 +16,7 @@ import {
   buildAllowedActionPatterns,
   isSecretScanningSkipped,
   MILESTONE_REF_PATTERN,
+  needsPaidSecretProtection,
   planRepoSettingsHardening,
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
@@ -175,6 +176,21 @@ Deno.test("planRepoSettingsHardening - a public repository keeps the secret-scan
   assert(step, "public repositories still plan the step");
   assert(step.warning?.includes("Secret Protection"), step.warning);
   assertEquals(isSecretScanningSkipped(snapshot), false);
+});
+
+Deno.test("needsPaidSecretProtection - private and internal cost money, public does not, and an unknown visibility falls back to the private flag (Issue #2225)", () => {
+  assertEquals(needsPaidSecretProtection("private"), true);
+  assertEquals(needsPaidSecretProtection("internal"), true);
+  assertEquals(needsPaidSecretProtection("public"), false);
+  // GitHub returns lowercase, but the value is normalised rather than trusted.
+  assertEquals(needsPaidSecretProtection("Private"), true);
+  // An explicit visibility wins over a contradictory boolean flag.
+  assertEquals(needsPaidSecretProtection("public", true), false);
+  assertEquals(needsPaidSecretProtection(undefined, true), true);
+  assertEquals(needsPaidSecretProtection(undefined, false), false);
+  // Neither field readable: evaluated as today, never exempt.
+  assertEquals(needsPaidSecretProtection(), false);
+  assertEquals(needsPaidSecretProtection("something-new"), false);
 });
 
 Deno.test("isSecretScanningSkipped - no skip when the settings already hold, or when visibility is unknown (Issue #2225)", () => {
