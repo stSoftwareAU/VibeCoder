@@ -134,7 +134,12 @@ match wins and the loop restarts.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
    reply; commit and push.
 4. **Mark processed** — Add eyes reaction to comment and/or dismiss review so it
-   is not picked again.
+   is not picked again. The claim adds that reaction *before* it verifies the
+   claim, to narrow the race window, so it **takes the reaction back** whenever
+   the claim ends with no winner — a failed verification read, or a re-read
+   that cannot see this host's own claim (Issue #2269). A marker left on a
+   comment nobody claimed is feedback no host would ever rediscover; when the
+   claim is genuinely lost, the marker stands because the winner answers it.
 
 #### The final mile — did the push actually land?
 

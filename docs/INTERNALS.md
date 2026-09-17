@@ -3066,7 +3066,10 @@ claim the same issue:
 - **Claim race metrics** — diagnostic logging for claim race events.
 - **Atomic PR comment claiming** — prevents duplicate PR responses with
   reaction-based claiming in
-  [claim_pr_comment.ts](../worker/deno/lib/claim_pr_comment.ts).
+  [claim_pr_comment.ts](../worker/deno/lib/claim_pr_comment.ts). The eyes
+  reaction that stops rediscovery is added before the claim is verified and
+  **removed again on every no-winner path**, so a claim nobody won cannot
+  strand the feedback comment (Issue #2269).
 
 #### 🛡️ Trusted claim markers
 

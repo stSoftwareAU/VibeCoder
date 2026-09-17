@@ -43,6 +43,16 @@
  * and an **expired** claim is ignored when the winner is chosen, so a delete
  * that never succeeded cannot wedge the PR.
  *
+ * **The eyes reaction must not outlive a claim nobody won (Issue #2269).**
+ * Step 3 adds the processed marker *before* the claim is verified, and that
+ * ordering is kept — it is what narrows the window in which another host
+ * rediscovers the comment. The marker is instead **taken back** on the two
+ * paths that end with no winner: the verification read failed, or the re-read
+ * could not see this host's own claim. Left behind, the marker stops
+ * `findActionableComment` ever surfacing the comment again while no host has
+ * claimed it, so the feedback is answered by nobody. On the **lost** path the
+ * marker stands: the winner answers the comment.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -51,7 +61,11 @@ import { runGhCommand } from "./github.ts";
 // The `#issuecomment-<id>` fragment `gh` prints is parsed identically for a
 // lock comment and a claim comment, so the parser lives in one place.
 import { parsePostedCommentId } from "./pr_branch_lock.ts";
-import { type CommentType, markCommentProcessed } from "./pr_comments.ts";
+import {
+  type CommentType,
+  markCommentProcessed,
+  removeProcessedMark,
+} from "./pr_comments.ts";
 import {
   type AlertDedupAuthorOptions,
   selectFleetAuthoredComments,
@@ -422,6 +436,35 @@ export async function claimPrComment(
   }
 
   /**
+   * Take the eyes reaction back when the claim ends with **no winner**
+   * (Issue #2269).
+   *
+   * Step 3 adds the marker before the claim is verified — the wider race
+   * window is the trade-off this module accepts — so a verification read that
+   * fails, or a re-read that cannot see this host's own claim, leaves the
+   * marker on a feedback comment nobody claimed. The marker is what stops
+   * `findActionableComment` rediscovering it, so the feedback would be
+   * answered by nobody and nothing would say so. Not called on the **lost**
+   * path: there the winner answers the comment and its marker is correct.
+   */
+  const dropOwnProcessedMark = async () => {
+    const error = await removeProcessedMark(
+      repo,
+      commentType,
+      commentId,
+      ghCommandFn,
+      log,
+    );
+    if (error) {
+      log(
+        `${where} nobody claimed feedback comment ${commentId} and its eyes ` +
+          `reaction could not be taken back, so the scan will not ` +
+          `rediscover it — ${error.message}`,
+      );
+    }
+  };
+
+  /**
    * Take the posted claim comment back on every not-claimed path.
    *
    * Before Issue #2266 each of those paths left it on the thread, so a host
@@ -467,6 +510,7 @@ export async function claimPrComment(
         `claiming — ${err instanceof Error ? err.message : String(err)}`,
     );
     await dropOwnClaimComment();
+    await dropOwnProcessedMark();
     return { ok: true, value: { claimed: false } };
   }
 
@@ -522,8 +566,10 @@ export async function claimPrComment(
   const contenders = [...ourClaims, ...competingClaims];
   if (contenders.length === 0) {
     // Our own claim is not in the thread we just read — nothing establishes
-    // this host as the claimant, so back off and leave no comment behind.
+    // this host as the claimant, so back off and leave neither the comment
+    // nor the processed marker behind.
     await dropOwnClaimComment();
+    await dropOwnProcessedMark();
     return { ok: true, value: { claimed: false } };
   }
 

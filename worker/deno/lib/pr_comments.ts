@@ -51,6 +51,23 @@ async function defaultGhCommand(args: string[]): Promise<string> {
 }
 
 /**
+ * The reactions collection for a comment, by type.
+ *
+ * Review comments live under `pulls/comments`, everything else under
+ * `issues/comments`; one helper so the add, the read and the removal cannot
+ * disagree about which endpoint a comment type maps to.
+ */
+function reactionsPath(
+  repo: string,
+  commentType: CommentType,
+  commentId: string,
+): string {
+  return commentType === "review"
+    ? `repos/${repo}/pulls/comments/${commentId}/reactions`
+    : `repos/${repo}/issues/comments/${commentId}/reactions`;
+}
+
+/**
  * Mark a comment as processed by adding an eyes reaction (or dismissing a review).
  *
  * @param repo - Repository in "owner/repo" format
@@ -73,7 +90,7 @@ export async function markCommentProcessed(
         "api",
         "-X",
         "POST",
-        `repos/${repo}/pulls/comments/${commentId}/reactions`,
+        reactionsPath(repo, commentType, commentId),
         "-f",
         "content=eyes",
       ]);
@@ -93,7 +110,7 @@ export async function markCommentProcessed(
         "api",
         "-X",
         "POST",
-        `repos/${repo}/issues/comments/${commentId}/reactions`,
+        reactionsPath(repo, commentType, commentId),
         "-f",
         "content=eyes",
       ]);
@@ -106,6 +123,147 @@ export async function markCommentProcessed(
       error: new Error(`Failed to mark comment processed: ${msg}`),
     };
   }
+}
+
+/** One `eyes` reaction on a comment, with the account that left it. */
+interface OwnReaction {
+  id: number;
+  login: string;
+}
+
+/**
+ * Read the `eyes` reactions this account left on a comment (Issue #2269).
+ *
+ * The reaction **id** is what the delete endpoint takes, and GitHub only lets
+ * an account remove its own reaction, so the acting login — not the fleet set
+ * — is the filter: a sibling host's marker is not this run's to take back.
+ *
+ * Throws rather than returning an empty list: "no reaction" and "the list
+ * could not be read" lead to opposite actions, and the caller has to be able
+ * to say the marker may still stand.
+ */
+async function fetchOwnEyesReactions(
+  repo: string,
+  commentType: CommentType,
+  commentId: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<OwnReaction[]> {
+  const login = (await ghCommandFn(["api", "user", "--jq", ".login"])).trim()
+    .toLowerCase();
+  if (login.length === 0) {
+    throw new Error("gh reported no acting login");
+  }
+
+  const payload = await ghCommandFn([
+    "api",
+    // Paginated, and filtered to `eyes` by the API: a stranger's 30 other
+    // reactions must not bury the fleet's own marker on page one.
+    `${reactionsPath(repo, commentType, commentId)}?content=eyes&per_page=100`,
+    "--paginate",
+    "--jq",
+    "[.[] | {id: .id, login: .user.login}]",
+  ]);
+
+  const mine: OwnReaction[] = [];
+  for (const line of payload.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    // A page that cannot be parsed, or that is not the array the filter asks
+    // for, throws: an unreadable page must never pass as "this account left
+    // no marker".
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `unexpected reactions payload: ${trimmed.slice(0, 120)}`,
+      );
+    }
+    for (const entry of parsed as Array<Record<string, unknown>>) {
+      const reactor = String(entry.login ?? "").trim().toLowerCase();
+      if (reactor !== login) continue;
+      // An id that is not a number cannot address the delete endpoint, and
+      // `reactions/NaN` would only fail later as a puzzling 404.
+      const id = typeof entry.id === "number" ? entry.id : Number.NaN;
+      if (!Number.isInteger(id)) {
+        throw new Error(
+          `reactions payload carried an unusable reaction id: ` +
+            `${JSON.stringify(entry.id)}`,
+        );
+      }
+      mine.push({ id, login: reactor });
+    }
+  }
+  return mine;
+}
+
+/**
+ * Take back the processed marker this account added (Issue #2269).
+ *
+ * The 👀 marker is what stops `findActionableComment` rediscovering a PR
+ * feedback comment, so a marker left on a comment nobody went on to claim is
+ * feedback no host will ever answer. The claim path adds the marker before it
+ * verifies the claim — deliberately, to narrow the race window — and calls
+ * this on every path that ends with **no winner**.
+ *
+ * Never throws into the caller: the failure travels back as the returned
+ * error so the caller can name the consequence, and is never swallowed. The
+ * `Error | null` shape mirrors `deleteIssueComment`, the sibling delete
+ * helper the claim already reports failures through.
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param commentType - Type of comment ("review", "issue", or "pr_review")
+ * @param commentId - The comment ID
+ * @param ghCommandFn - Function to run gh commands (injectable for testing)
+ * @param log - Sink for the per-reaction diagnostics
+ * @returns null when the comment carries no marker from this account any
+ *   more, or the error explaining why the marker may still stand
+ */
+export async function removeProcessedMark(
+  repo: string,
+  commentType: CommentType,
+  commentId: string,
+  ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
+  log: (message: string) => void = (message) => console.warn(message),
+): Promise<Error | null> {
+  // A dismissed review is the `pr_review` marker, and GitHub offers no
+  // un-dismissal — so this is reported, not papered over.
+  if (commentType === "pr_review") {
+    return new Error(
+      `review ${commentId} on ${repo} was dismissed to mark it processed, ` +
+        `and a dismissal cannot be undone`,
+    );
+  }
+
+  let reactions: OwnReaction[];
+  try {
+    reactions = await fetchOwnEyesReactions(
+      repo,
+      commentType,
+      commentId,
+      ghCommandFn,
+    );
+  } catch (err) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
+
+  let failure: Error | null = null;
+  for (const reaction of reactions) {
+    try {
+      await ghCommandFn([
+        "api",
+        "-X",
+        "DELETE",
+        `${reactionsPath(repo, commentType, commentId)}/${reaction.id}`,
+      ]);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      log(
+        `[pr-comments] could not remove the eyes reaction ${reaction.id} ` +
+          `from ${repo} comment ${commentId}: ${error.message}`,
+      );
+      failure ??= error;
+    }
+  }
+  return failure;
 }
 
 /**
@@ -166,9 +324,7 @@ export async function fetchCommentReactors(
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
   log: (message: string) => void = (message) => console.warn(message),
 ): Promise<string[]> {
-  const apiPath = commentType === "review"
-    ? `repos/${repo}/pulls/comments/${commentId}/reactions`
-    : `repos/${repo}/issues/comments/${commentId}/reactions`;
+  const apiPath = reactionsPath(repo, commentType, commentId);
 
   let output: string;
   try {
@@ -282,9 +438,7 @@ export async function markPrCommentAsFailedOnce(
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
 ): Promise<void> {
   // Add confused reaction
-  const reactionPath = commentType === "review"
-    ? `repos/${repo}/pulls/comments/${commentId}/reactions`
-    : `repos/${repo}/issues/comments/${commentId}/reactions`;
+  const reactionPath = reactionsPath(repo, commentType, commentId);
 
   try {
     await ghCommandFn([
