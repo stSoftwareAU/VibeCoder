@@ -202,6 +202,30 @@ Deno.test("shouldSyncMilestone - an unreadable tip never reads as unchanged (Iss
   assertEquals(shouldSyncMilestone(entry, undefined), true);
 });
 
+Deno.test("shouldSyncMilestone - a moved milestone tip syncs even when the default tip is unchanged (Issue #2285)", () => {
+  // PR #2284: a child landed on the milestone four seconds after the sync PR
+  // was raised, and main did not move — the conflicting sync PR sat.
+  const entry = {
+    count: 0,
+    escalated: false,
+    lastSyncedDefaultSha: "sha-a",
+    lastSyncedMilestoneSha: "ms-1",
+  };
+  assertEquals(shouldSyncMilestone(entry, "sha-a", "ms-1"), false);
+  assertEquals(shouldSyncMilestone(entry, "sha-a", "ms-2"), true);
+  assertEquals(shouldSyncMilestone(entry, "sha-b", "ms-1"), true);
+});
+
+Deno.test("shouldSyncMilestone - an unknown milestone tip, on either side, leaves the default-tip rule in charge (Issue #2285)", () => {
+  // A ledger written before the milestone tip was recorded, or a caller that
+  // read none: the rule is exactly the Issue #1776 one until a success
+  // records the tip.
+  const entry = { count: 0, escalated: false, lastSyncedDefaultSha: "sha-a" };
+  assertEquals(shouldSyncMilestone(entry, "sha-a", undefined), false);
+  assertEquals(shouldSyncMilestone(entry, "sha-a", "ms-1"), false);
+  assertEquals(shouldSyncMilestone(entry, "sha-b", "ms-1"), true);
+});
+
 // ============================================================================
 // syncMilestoneBranches (orchestration)
 // ============================================================================

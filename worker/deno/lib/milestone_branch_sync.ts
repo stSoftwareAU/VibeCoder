@@ -875,16 +875,33 @@ export async function findActiveMilestoneBranches(
  * A tip git could not report is never read as "unchanged" — an unreadable
  * tip would otherwise silently park the branch for ever.
  *
+ * Issue #2285: the milestone's own tip is the second question. A child PR
+ * landing on the milestone moves it, and a sync PR raised before that
+ * landing is then stale or conflicting; with only the default tip asked,
+ * nothing refreshed it until the default branch happened to move. A moved
+ * milestone tip now syncs too. When the milestone tip is unknown on either
+ * side — the caller read none, or the ledger predates the tip being recorded
+ * — the default-tip rule stands alone, exactly as before; the next success
+ * records the tip and the milestone rule applies from then on.
+ *
  * @param entry - The branch's ledger entry, or undefined when it has none
  * @param defaultSha - The default branch's tip now, or undefined if unknown
+ * @param milestoneSha - The milestone branch's tip now, or undefined if unknown
  * @returns true if sync should proceed
  */
 export function shouldSyncMilestone(
   entry: SyncStreakEntry | undefined,
   defaultSha: string | undefined,
+  milestoneSha?: string,
 ): boolean {
   if (!defaultSha) return true;
-  return entry?.lastSyncedDefaultSha !== defaultSha;
+  if (entry?.lastSyncedDefaultSha !== defaultSha) return true;
+  if (
+    milestoneSha === undefined || entry?.lastSyncedMilestoneSha === undefined
+  ) {
+    return false;
+  }
+  return entry.lastSyncedMilestoneSha !== milestoneSha;
 }
 
 /**
@@ -939,6 +956,7 @@ export function recordSuccess(
   streakKey: string,
   defaultSha: string | undefined,
   reportedSha: string | undefined,
+  milestoneSha?: string,
 ): boolean {
   const existing = streaks[streakKey];
 
@@ -964,10 +982,12 @@ export function recordSuccess(
     ...(reportedSha ? { conflictEscalatedSha: reportedSha } : {}),
   };
   if (defaultSha) next = recordDefaultSha(next, defaultSha);
+  if (milestoneSha) next = { ...next, lastSyncedMilestoneSha: milestoneSha };
 
   // An entry holding nothing but a zeroed streak says nothing worth keeping.
   const worthKeeping = Boolean(
     next.conflictEscalatedSha || next.lastSyncedDefaultSha ||
+      next.lastSyncedMilestoneSha ||
       next.lastAttempt || next.rollbacks,
   );
   if (!worthKeeping) {
@@ -1140,14 +1160,29 @@ export async function syncMilestoneBranches(
       for (const milestone of milestonesResult.value) {
         const streakKey = syncStreakKey(repo, milestone.milestoneBranch);
 
-        // Cadence guard (Issue #1776): the branch already carries this tip,
-        // so there is nothing to merge down. Checked before the branch probe,
-        // so an idle cycle spends no per-milestone API call — only the one
-        // REST milestone listing the repo needed anyway.
-        if (!shouldSyncMilestone(streaks[streakKey], defaultSha)) {
+        // Verify the milestone branch exists on the remote. An EMPTY
+        // answer reads as missing too (Issue #4260): a runGh-style
+        // ghCommandFn returns "" on failure instead of throwing, and the
+        // deleted private-repo-21 milestone/69 branch was "synced" three
+        // cycles running because its empty probe passed this check.
+        // Issue #2285: the same probe reads the tip the cadence guard below
+        // compares — a child PR landing moves it, and that is a reason to
+        // sync again. It runs before the guard for that reason; it was after.
+        let milestoneSha: string | undefined;
+        try {
+          const probe = await ghCommandFn([
+            "api",
+            `repos/${repo}/branches/${milestone.milestoneBranch}`,
+            "--jq",
+            ".commit.sha",
+          ]);
+          if (!probe.trim()) {
+            throw new Error("empty branch-probe answer");
+          }
+          milestoneSha = probe.trim();
+        } catch {
           log(
-            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
-              `default tip unchanged (${defaultSha!.slice(0, 7)})`,
+            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — branch '${milestone.milestoneBranch}' does not exist on remote`,
           );
           skipped++;
           continue;
@@ -1171,24 +1206,17 @@ export async function syncMilestoneBranches(
           break;
         }
 
-        // Verify the milestone branch exists on the remote. An EMPTY
-        // answer reads as missing too (Issue #4260): a runGh-style
-        // ghCommandFn returns "" on failure instead of throwing, and the
-        // deleted private-repo-21 milestone/69 branch was "synced" three
-        // cycles running because its empty probe passed this check.
-        try {
-          const probe = await ghCommandFn([
-            "api",
-            `repos/${repo}/branches/${milestone.milestoneBranch}`,
-            "--jq",
-            ".name",
-          ]);
-          if (!probe.trim()) {
-            throw new Error("empty branch-probe answer");
-          }
-        } catch {
+        // Cadence guard (Issue #1776): the branch already carries this tip,
+        // so there is nothing to merge down. Checked before the branch probe,
+        // so an idle cycle spends no per-milestone API call — only the one
+        // REST milestone listing the repo needed anyway.
+        if (
+          !shouldSyncMilestone(streaks[streakKey], defaultSha, milestoneSha)
+        ) {
           log(
-            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — branch '${milestone.milestoneBranch}' does not exist on remote`,
+            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+              `default tip unchanged (${defaultSha!.slice(0, 7)}) and ` +
+              `milestone tip unchanged (${milestoneSha!.slice(0, 7)})`,
           );
           skipped++;
           continue;
@@ -1400,13 +1428,25 @@ export async function syncMilestoneBranches(
             }
             if (
               streakPath &&
-              recordSuccess(streaks, streakKey, defaultSha, reportedSha)
+              recordSuccess(
+                streaks,
+                streakKey,
+                defaultSha,
+                reportedSha,
+                milestoneSha,
+              )
             ) {
               streaksDirty = true;
             }
           } else if (
             streakPath &&
-            recordSuccess(streaks, streakKey, defaultSha, undefined)
+            recordSuccess(
+              streaks,
+              streakKey,
+              defaultSha,
+              undefined,
+              milestoneSha,
+            )
           ) {
             // A clean success ends the failure streak (Issue #4260) and
             // records the tip the branch now carries (Issue #1776).
