@@ -19,6 +19,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildConflictEscalationReason,
+  buildNudgeComment,
+  buildNudgeCommitMessage,
   buildResolvedComment,
   buildRuleResolutionSection,
   describeDependencyDecision,
@@ -33,7 +35,12 @@ import {
   CONFLICT_RESOLVED_MARKER,
   DEFAULT_MAX_CONFLICT_ATTEMPTS,
   MERGE_CONFLICT_LABEL,
+  parseConflictAttempts,
 } from "../lib/pr_merge_conflict_scan.ts";
+import {
+  CONFLICT_NUDGE_MARKER,
+  conflictNudgeMarker,
+} from "../lib/merge_conflict_markers.ts";
 import type { AbandonRestartRequest } from "../lib/conflict_abandon_restart.ts";
 import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -84,6 +91,10 @@ interface Captured {
   lockRenewals: number[];
   /** Comment ids withdrawn with `DELETE` (Issues #1458, #1693). */
   commentsDeleted: number[];
+  /** `git commit --allow-empty` invocations (Issue #2278). */
+  emptyCommits: string[][];
+  /** Real `git push` invocations — the dry run is excluded (Issue #2278). */
+  pushes: string[][];
 }
 
 interface GitScript {
@@ -118,6 +129,26 @@ interface GitScript {
   finalUnpushedCount?: number;
   /** What `git push --dry-run` reports on stderr (Issue #1772). */
   pushDryRunStderr?: string;
+  /**
+   * What `git merge-base --is-ancestor origin/<base> HEAD` answers **before**
+   * the merge (Issue #2278). `true` is GitHub's stale-verdict case: the base is
+   * already in, so the resolver runs the ladder instead of opening an attempt.
+   */
+  baseIsAncestorBeforeMerge: boolean;
+  /** `git rev-parse HEAD` before anything moves it. */
+  headSha: string;
+  /** `git rev-parse HEAD` once the merge has run. */
+  headAfterMerge: string;
+  /** `git rev-parse HEAD` once the nudge's empty commit has run. */
+  headAfterNudge: string;
+  /** `git rev-parse origin/<base>`. */
+  baseSha: string;
+  /** Exit code for the nudge's `git commit --allow-empty` (Issue #2278). */
+  emptyCommitCode?: number;
+  /** Exit code for the nudge's `git push` (Issue #2278). */
+  pushCode?: number;
+  /** Whether `git diff --cached --quiet` reports a dirty index (Issue #2278). */
+  indexDirty?: boolean;
 }
 
 function makeGitScript(overrides?: Partial<GitScript>): GitScript {
@@ -130,6 +161,11 @@ function makeGitScript(overrides?: Partial<GitScript>): GitScript {
     shallow: false,
     mergeBaseBeforeMerge: true,
     mergeBaseAfterDeepen: true,
+    baseIsAncestorBeforeMerge: false,
+    headSha: "1111111111111111111111111111111111111111",
+    headAfterMerge: "2222222222222222222222222222222222222222",
+    headAfterNudge: "3333333333333333333333333333333333333333",
+    baseSha: "4444444444444444444444444444444444444444",
     ...overrides,
   };
 }
@@ -141,11 +177,67 @@ function makeGit(
   let unmergedQueries = 0;
   let mergeDone = false;
   let deepened = false;
+  let nudged = false;
 
   return {
     runGitCommand: ((args: string[]) => {
       captured.gitArgs.push(args);
       captured.events.push(`git:${args.slice(0, 2).join(" ")}`);
+
+      if (args[0] === "rev-parse" && args[1] === "HEAD") {
+        const sha = nudged
+          ? script.headAfterNudge
+          : mergeDone
+          ? script.headAfterMerge
+          : script.headSha;
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: `${sha}\n`, stderr: "" },
+        });
+      }
+
+      if (args[0] === "rev-parse" && args[1]?.startsWith("origin/")) {
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: `${script.baseSha}\n`, stderr: "" },
+        });
+      }
+
+      if (args[0] === "diff" && args.includes("--cached")) {
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code: script.indexDirty ? 1 : 0,
+            stdout: "",
+            stderr: "",
+          },
+        });
+      }
+
+      if (args[0] === "commit" && args.includes("--allow-empty")) {
+        const code = script.emptyCommitCode ?? 0;
+        if (code === 0) nudged = true;
+        captured.emptyCommits.push(args);
+        captured.events.push("git:commit-empty");
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code,
+            stdout: "",
+            stderr: code === 0 ? "" : "commit failed",
+          },
+        });
+      }
+
+      if (args[0] === "push" && !args.includes("--dry-run")) {
+        const code = script.pushCode ?? 0;
+        captured.pushes.push(args);
+        captured.events.push("git:push");
+        return Promise.resolve({
+          ok: true,
+          value: { code, stdout: "", stderr: code === 0 ? "" : "push failed" },
+        });
+      }
 
       if (args[0] === "rev-parse" && args.includes("--is-shallow-repository")) {
         return Promise.resolve({
@@ -212,13 +304,16 @@ function makeGit(
       }
 
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        // Before the merge this is the stale-verdict pre-check (Issue #2278);
+        // after it, the "did the base's changes really land" guard.
+        const code = mergeDone
+          ? script.ancestorCode
+          : script.baseIsAncestorBeforeMerge
+          ? 0
+          : 1;
         return Promise.resolve({
           ok: true,
-          value: {
-            code: mergeDone ? script.ancestorCode : 1,
-            stdout: "",
-            stderr: "",
-          },
+          value: { code, stdout: "", stderr: "" },
         });
       }
 
@@ -276,10 +371,25 @@ function makeGithub(
   postedCommentId?: number,
   /** Comment bodies already on the PR, as `gh pr view` would report them. */
   existingPrComments: readonly string[] = [],
+  /**
+   * What `gh pr view --json headRefOid,mergeable,author` reports (Issue
+   * #2278) — the head and the verdict the stale-verdict ladder decides on.
+   */
+  prHeadState?: { headRefOid: string; mergeable: string },
+  /**
+   * The raw REST comment thread `fetchIssueCommentPages` reads (Issue #2278),
+   * author and all — a rung marker only counts when the fleet wrote it.
+   */
+  threadComments: readonly { body: string; author: string }[] = [],
+  /** Error `gh pr comment` rejects with, when the post must fail. */
+  commentPostError?: string,
 ): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
       if (args[0] === "pr" && args[1] === "comment") {
+        if (commentPostError !== undefined) {
+          return Promise.reject(new Error(commentPostError));
+        }
         const idx = args.indexOf("--body");
         if (idx >= 0) {
           captured.comments.push(String(args[idx + 1] ?? ""));
@@ -329,12 +439,41 @@ function makeGithub(
         }
       }
       if (args[0] === "pr" && args[1] === "view") {
+        if (args.some((a) => a.includes("headRefOid"))) {
+          // The stale-verdict ladder reads the head and the verdict together
+          // (Issue #2278).
+          return Promise.resolve(
+            JSON.stringify(
+              prHeadState === undefined
+                ? {}
+                : { ...prHeadState, author: { login: "vibe-coder" } },
+            ),
+          );
+        }
         // The stand-down guard reads the thread before it comments, and an
         // unreadable thread posts nothing (Issue #1772).
         return Promise.resolve(
           JSON.stringify({
             comments: existingPrComments.map((body) => ({ body })),
           }),
+        );
+      }
+      if (
+        args[0] === "api" && !args.includes("-X") &&
+        String(args[1] ?? "").includes("/comments?")
+      ) {
+        // `fetchIssueCommentPages` walks explicit pages; page 2 onwards is
+        // empty, which is what ends the walk (Issue #2278).
+        const page = /[?&]page=(\d+)/.exec(String(args[1]))?.[1] ?? "1";
+        return Promise.resolve(
+          JSON.stringify(
+            page === "1"
+              ? threadComments.map(({ body, author }) => ({
+                body,
+                user: { login: author },
+              }))
+              : [],
+          ),
         );
       }
       if (args[0] === "label" && args[1] === "list") {
@@ -404,6 +543,12 @@ async function runProcessor(
     postedCommentId?: number;
     /** Comment bodies already on the PR (Issue #1772). */
     existingPrComments?: string[];
+    /** Head sha and verdict `gh pr view` reports (Issue #2278). */
+    prHeadState?: { headRefOid: string; mergeable: string };
+    /** The raw REST comment thread with its authors (Issue #2278). */
+    threadComments?: { body: string; author: string }[];
+    /** Error `gh pr comment` rejects with (Issue #2278). */
+    commentPostError?: string;
   },
 ): Promise<{
   captured: Captured;
@@ -426,6 +571,8 @@ async function runProcessor(
     agentPrompts: [],
     lockRenewals: [],
     commentsDeleted: [],
+    emptyCommits: [],
+    pushes: [],
   };
 
   const deps = createMockDeps({
@@ -434,6 +581,9 @@ async function runProcessor(
       captured,
       opts?.postedCommentId,
       opts?.existingPrComments ?? [],
+      opts?.prHeadState,
+      opts?.threadComments ?? [],
+      opts?.commentPostError,
     ),
     claude: makeClaude(
       captured,
@@ -1674,4 +1824,437 @@ Deno.test("processMergeConflict - a non-milestone head is worked as before (Issu
   assertEquals(captured.commitAndPushCalls, 1);
   assertEquals(captured.commentsDeleted, []);
   assert(captured.comments.some((c) => c.includes(CONFLICT_ATTEMPT_MARKER)));
+});
+
+// ---------------------------------------------------------------------------
+// The stale-verdict ladder (Issues #2272, #2278)
+// ---------------------------------------------------------------------------
+
+/** A `GitScript` whose pre-merge ancestry check says the verdict is stale. */
+function staleVerdictScript(overrides?: Partial<GitScript>): GitScript {
+  return makeGitScript({ baseIsAncestorBeforeMerge: true, ...overrides });
+}
+
+/** The fleet login whose marker comments the ladder trusts in these tests. */
+const FLEET_AUTHOR = "vibe-coder";
+
+Deno.test("processMergeConflict - a stale CONFLICTING verdict nudges instead of opening an attempt (Issue #2278)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9001,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "nudge");
+  assertEquals(result.value.processed, true);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, false);
+  assertEquals(result.value.attemptCharged, false);
+
+  // Nothing was spent and nothing claimed to be resolved.
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_ATTEMPT_MARKER)),
+    [],
+    "no attempt is opened on the stale route",
+  );
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
+    [],
+    "a no-op merge must never post a resolved marker",
+  );
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_FAILED_MARKER)),
+    [],
+  );
+  assertEquals(
+    captured.labelsRemoved,
+    [],
+    "the label stays until GitHub agrees",
+  );
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.commitAndPushCalls, 0, "no merge was committed");
+
+  // Exactly one empty commit and one plain push.
+  assertEquals(captured.emptyCommits.length, 1);
+  assertEquals(captured.pushes.length, 1);
+  const pushArgs = captured.pushes[0] ?? [];
+  assertEquals(
+    pushArgs.filter((a) => a.startsWith("--force")),
+    [],
+    "the nudge never forces",
+  );
+  assert(pushArgs.includes("origin") && pushArgs.includes("issue-16-fix"));
+
+  // The commit message evidences the ancestry and is attributable.
+  const commitMessage = captured.emptyCommits[0]?.at(-1) ?? "";
+  assertStringIncludes(commitMessage, "Issue #2272");
+  assertStringIncludes(commitMessage, script.baseSha);
+  assertStringIncludes(commitMessage, "Vibe-Coder-Run-Id:");
+
+  // Exactly one comment, carrying the marker for the NEW head.
+  assertEquals(captured.comments.length, 1);
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, CONFLICT_NUDGE_MARKER);
+  assertStringIncludes(comment, `head="${script.headAfterNudge}"`);
+  assertStringIncludes(comment, script.baseSha);
+  assertStringIncludes(comment, script.headSha);
+  assertStringIncludes(comment, "ancestor");
+});
+
+Deno.test("processMergeConflict - an unknown verdict on the stale route runs nothing (Issue #2278)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9002,
+      prHeadState: { headRefOid: script.headSha, mergeable: "UNKNOWN" },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.rung, undefined);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - a MERGEABLE verdict on the stale route only clears the label (Issue #2278)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9003,
+      prHeadState: { headRefOid: script.headSha, mergeable: "MERGEABLE" },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(captured.labelsRemoved, [MERGE_CONFLICT_LABEL]);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(
+    captured.comments,
+    [],
+    "no marker is posted when GitHub catches up",
+  );
+});
+
+Deno.test("processMergeConflict - a nudge marker naming the current head is not nudged again (Issue #2278)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9004,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+      threadComments: [{
+        body: conflictNudgeMarker(script.headSha),
+        author: FLEET_AUTHOR,
+      }],
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertStringIncludes(result.value.summary, "rebase");
+  assertEquals(captured.emptyCommits, [], "one nudge per head, not two");
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - an outsider's nudge marker does not advance the ladder (Issue #1247)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9005,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+      threadComments: [{
+        body: conflictNudgeMarker(script.headSha),
+        author: "drive-by-account",
+      }],
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "nudge");
+  assertEquals(captured.emptyCommits.length, 1);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a nudge leaves the next real attempt's number unchanged (Issue #2278)", async () => {
+  // The rung markers share no literal with the attempt vocabulary, so a
+  // scripted thread counts the same with the nudge comment in it.
+  const withoutNudge = [
+    { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->` },
+    { body: `${CONFLICT_FAILED_MARKER} n="1" -->` },
+  ];
+  const withNudge = [
+    ...withoutNudge,
+    // The body the rung really posts, not a hand-rolled stand-in.
+    {
+      body: buildNudgeComment(
+        "main",
+        "4444444444444444444444444444444444444444",
+        "1111111111111111111111111111111111111111",
+        "3333333333333333333333333333333333333333",
+      ),
+    },
+  ];
+  assertEquals(
+    parseConflictAttempts(withNudge).count,
+    parseConflictAttempts(withoutNudge).count,
+  );
+  assertEquals(parseConflictAttempts(withNudge).count, 1);
+
+  // And the attempt comment the resolver posts next says "attempt 2 of 3".
+  const { captured } = await runProcessor(
+    makeInput({ attemptCount: parseConflictAttempts(withNudge).count }),
+    makeGitScript(),
+    { trustedAuthors: [FLEET_AUTHOR] },
+  );
+  const attempt =
+    captured.comments.find((c) => c.includes(CONFLICT_ATTEMPT_MARKER)) ?? "";
+  assertStringIncludes(
+    attempt,
+    `attempt 2 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+  );
+});
+
+Deno.test("processMergeConflict - a merge that succeeds without moving HEAD fails loud (Issue #2278)", async () => {
+  // The pre-check ruled out "the base is already in", so a zero-exit merge
+  // that leaves HEAD where it was cannot be reported as resolved.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      mergeCode: 0,
+      unmergedAfterMerge: [],
+      headAfterMerge: "1111111111111111111111111111111111111111",
+    }),
+    undefined,
+    { postedCommentId: 9006 },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "Invariant violated");
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
+    [],
+  );
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("buildNudgeCommitMessage - evidences the ancestry and stays attributable (Issue #2278)", () => {
+  const message = buildNudgeCommitMessage("main", "abc1234", "vibe-test-run");
+  assertStringIncludes(message, "Issue #2272");
+  assertStringIncludes(message, "`origin/main` (abc1234)");
+  assertStringIncludes(message, "empty");
+  assertStringIncludes(message, "Vibe-Coder-Run-Id: vibe-test-run");
+});
+
+Deno.test("buildNudgeComment - names the new head, the base and why the commit exists (Issue #2278)", () => {
+  const body = buildNudgeComment("main", "abc1234", "def5678", "0123abc");
+  assertStringIncludes(body, conflictNudgeMarker("0123abc"));
+  assertStringIncludes(body, "abc1234");
+  assertStringIncludes(body, "def5678");
+  assertStringIncludes(body, "ancestor");
+  assertStringIncludes(body, "empty commit");
+  // The rung must stay invisible to the attempt budget.
+  assertEquals(body.includes(CONFLICT_ATTEMPT_MARKER), false);
+  assertEquals(body.includes(CONFLICT_RESOLVED_MARKER), false);
+});
+
+Deno.test("processMergeConflict - a nudge commit that fails posts nothing (Issue #2278)", async () => {
+  const script = staleVerdictScript({ emptyCommitCode: 1 });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9007,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "nudge commit");
+  assertEquals(captured.pushes, [], "nothing is pushed when the commit failed");
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - a nudge push that fails posts no marker (Issue #2278)", async () => {
+  const script = staleVerdictScript({ pushCode: 1 });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9008,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "push the nudge commit");
+  assertEquals(
+    captured.comments,
+    [],
+    "a marker naming a head nobody can see is worse than none",
+  );
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - a nudge commit that does not move HEAD fails loud (Issue #2278)", async () => {
+  const script = staleVerdictScript({
+    headAfterNudge: "1111111111111111111111111111111111111111",
+  });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9009,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "did not move HEAD");
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - an unreadable head/verdict pair stops the stale route (Issue #2278)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    staleVerdictScript(),
+    { trustedAuthors: [FLEET_AUTHOR] },
+    { postedCommentId: 9010 },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "head sha and merge verdict");
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - no configured fleet identity runs no rung (Issues #1247, #2278)", async () => {
+  // With no trusted author every marker is unattributable, so the ladder could
+  // never see its own nudge and would re-nudge each new head for ever.
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [] },
+    {
+      postedCommentId: 9011,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.rung, undefined);
+  assertStringIncludes(result.value.summary, "trusted author");
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a clone that is not at the PR head refuses to nudge (Issue #2278)", async () => {
+  // The ancestry was checked against the clone's HEAD; claiming it for a head
+  // git never looked at would be evidence for the wrong commit.
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9012,
+      prHeadState: {
+        headRefOid: "9999999999999999999999999999999999999999",
+        mergeable: "CONFLICTING",
+      },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "the clone is at");
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a dirty index refuses the nudge rather than committing it (Issue #2278)", async () => {
+  const script = staleVerdictScript({ indexDirty: true });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      postedCommentId: 9013,
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "index is not clean");
+  assertEquals(captured.emptyCommits, []);
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a nudge whose marker cannot be posted fails loud (Issue #2278)", async () => {
+  // The marker is the bound: an unrecorded nudge would be repeated at every
+  // new head instead of climbing, which is the loop this ladder replaces.
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
+      commentPostError: "gh: 503 Service Unavailable",
+    },
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "could not post its marker");
+  assertStringIncludes(result.error.message, script.headAfterNudge);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
 });

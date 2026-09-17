@@ -339,6 +339,72 @@ settle still reaches no agent and now consults no issue either.
   budget is a quiet skip only once the PR is visibly a human's — or visibly
   restarted.
 
+### 🔁 Stale verdict — the base is already in
+
+GitHub's `CONFLICTING` verdict can be **stale**. NEAT-AI-Lamarck#239 carried it
+for days at a head whose base was already an ancestor, and the resolver looped:
+merge, "Already up to date", nothing to push, resolved marker, label cleared,
+attempt budget reset — and GitHub's verdict never changed, so the next scan
+picked the same PR up again.
+
+So in the same slot as the deepen step — after the history is deep enough and
+**before** the attempt comment is posted — the resolver asks git directly
+(`git merge-base --is-ancestor origin/BASE HEAD`, Issue #2278). Exit 0 means
+there is nothing left to merge, and the stale-verdict ladder runs instead of an
+attempt. Because the check runs before the attempt is opened, nothing is spent
+and no comment has to be withdrawn.
+
+```mermaid
+flowchart TD
+    D[History deep enough] --> A{"merge-base --is-ancestor<br/>origin/BASE HEAD"}
+    A -- "exit 1 — a real conflict" --> M[Open the attempt, merge, conclude]
+    A -- "exit 0 — verdict is stale" --> V["gh pr view<br/>headRefOid + mergeable"]
+    V --> L{"decideLadderRung<br/>(thread markers, current head)"}
+    L -- MERGEABLE --> C[Clear the label only]
+    L -- "no marker at this head" --> N["Rung 1 — nudge:<br/>one empty commit, plain push"]
+    L -- "nudged at this head" --> R["Rung 2 — rebase<br/>(not wired yet: logs and returns)"]
+    L -- "rebased at this head" --> B["Rung 3 — abandon and restart<br/>(not wired yet: logs and returns)"]
+    L -- "verdict unknown / exhausted" --> W[Wait — run nothing]
+    style N fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style R fill:#707070,stroke:,color:#fff
+    style B fill:#707070,stroke:,color:#fff
+```
+
+**Only rung 1 is wired today.** Rungs 2 and 3 are decided by
+`decideLadderRung` but their branches currently log at warn and return
+`processed: false` — the rebase and abandon sub-issues of #2272 replace them.
+
+- **Rung 1 — nudge.** One `git commit --allow-empty` whose message names the
+  base sha the ancestry check found, pushed **without** `--force` or a lease, so
+  every commit the PR already had survives. Moving the head is what makes GitHub
+  recompute. One comment records it, carrying
+  `<!-- vibe-merge-conflict-nudge head="<new sha>" -->` — the **new** head, so
+  the next scan reads the marker back and climbs rather than nudging twice.
+- **The head sha and the verdict are read together**, in one
+  `gh pr view --json headRefOid,mergeable,author`. The scan's own projection
+  carries neither, and a rung decided on a head from one moment and a verdict
+  from another is a rung run at the wrong head.
+- **Markers only count when the fleet wrote them** (Issue #1247): the thread is
+  reduced by `partitionConflictComments` before the ladder reads it, so an
+  outsider's planted rung marker cannot skip a rung. With **no** fleet identity
+  configured no marker can be attributed at all, so no rung runs — a ladder
+  that cannot read its own memory would nudge each new head for ever instead of
+  climbing.
+- **A nudge that cannot be recorded is a failure, not a nudge.** The marker is
+  the bound, so if the comment cannot be posted after the push the pass fails
+  loud rather than reporting a rung the next scan cannot see.
+- **Nothing on this route spends or claims anything.** No resolved, attempt or
+  failed marker is posted, no label is added, and the `merge-conflict` label
+  stays on until GitHub itself reports the PR mergeable again. The rung markers
+  share no literal with the attempt vocabulary, so the "attempt N of M" number
+  on the next real merge is unchanged by a nudge.
+- **The no-op merge is now an invariant violation.** Past the ancestry check
+  the base is known *not* to be an ancestor, so a `git merge` that exits 0
+  without moving `HEAD` is impossible. If it happens the pass fails loud naming
+  it, rather than falling through to the resolved marker as it used to.
+- The stall watchdog (`merge_conflict_stall_watchdog.ts`, Issue #569) remains
+  the backstop for a PR that stays `CONFLICTING` through the whole ladder.
+
 ### ♻️ Abandon and restart, before a human is asked
 
 A branch that has defeated two real merges is usually cheaper to **redo** than
