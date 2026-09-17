@@ -85,10 +85,10 @@ import {
   abandonAndRestart,
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
-  DEFAULT_NEEDS_HUMAN_LABEL,
   describeExhaustedRoute,
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
+  requeueLabelName,
 } from "./conflict_abandon_restart.ts";
 import {
   clearMergeConflictLabel,
@@ -1583,9 +1583,6 @@ async function failAttempt(
         gh: deps.github.runGhCommand,
         logger,
         trustedAuthors: processorDeps.trustedAuthors ?? [],
-        // Same configured label the escalation below would use.
-        needsHumanLabel: processorDeps.needsHumanLabel ??
-          DEFAULT_NEEDS_HUMAN_LABEL,
       })))({
       repo,
       prNumber,
@@ -1597,10 +1594,13 @@ async function failAttempt(
     });
 
   if (abandon.outcome === "abandoned") {
+    // Issue #2277: the issue keeps the pickup label it already carried, or
+    // gains `idle-task`. Either way it is re-queued without a human.
+    const label = requeueLabelName(abandon.label);
     logger.warn(
       `Merge-conflict attempts exhausted on PR #${prNumber} — closed it and ` +
-        `re-queued issue #${abandon.issueNumber}`,
-      { repo, prNumber, issueNumber: abandon.issueNumber, maxAttempts },
+        `re-queued issue #${abandon.issueNumber} (\`${label}\`)`,
+      { repo, prNumber, issueNumber: abandon.issueNumber, label, maxAttempts },
     );
     return {
       ok: true,
@@ -1610,38 +1610,7 @@ async function failAttempt(
         escalated: false,
         summary:
           `Merge-conflict attempts exhausted on PR #${prNumber} — abandoned ` +
-          `it and re-queued issue #${abandon.issueNumber}`,
-      },
-    };
-  }
-
-  // Issue #1773: the pickup label the fleet reads can be one the worker may
-  // not apply. The rung still abandons — PR closed, issue reopened — and
-  // hands the issue to a human naming that label. `needs-human` belongs on
-  // the issue that must be re-queued, not on the PR that is already closed.
-  if (abandon.outcome === "abandoned-unlabelled") {
-    logger.warn(
-      `Merge-conflict attempts exhausted on PR #${prNumber} — closed it and ` +
-        `reopened issue #${abandon.issueNumber}, which needs ` +
-        `\`${abandon.workLabel}\` re-applied by a trusted author`,
-      {
-        repo,
-        prNumber,
-        issueNumber: abandon.issueNumber,
-        workLabel: abandon.workLabel,
-        maxAttempts,
-      },
-    );
-    return {
-      ok: true,
-      value: {
-        processed: true,
-        merged: false,
-        escalated: false,
-        summary:
-          `Merge-conflict attempts exhausted on PR #${prNumber} — abandoned ` +
-          `it and reopened issue #${abandon.issueNumber} for a human to ` +
-          `re-apply \`${abandon.workLabel}\``,
+          `it and re-queued issue #${abandon.issueNumber} (\`${label}\`)`,
       },
     };
   }

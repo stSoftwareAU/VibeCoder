@@ -25,10 +25,9 @@ sides before calling anything a contradiction; a second one at least four
 hours later; then **abandon-and-restart** — the conflicting PR is closed, never
 force-pushed, and its originating issue re-queued so the fleet redoes the work
 off the current base; and only when that is declined or fails does the worker
-escalate with `needs-human` and a conflict summary. Where the issue's pickup
-label is one only a human may apply, the PR is still closed and the issue still
-reopened — it rests at `needs-human` naming the label to re-apply, rather than
-re-queued (Issue #1773). One restart per originating issue: if the fresh PR
+escalate with `needs-human` and a conflict summary. The re-queued issue keeps
+whatever pickup label it already carries, and gains `idle-task` when it carries
+none (Issue #2277). One restart per originating issue: if the fresh PR
 conflicts irreconcilably too, that is a human's call rather than another lap. A
 PR whose originating issue cannot be found never reaches the third rung at
 all — closing what the fleet cannot re-raise would lose the work — so it falls
@@ -80,8 +79,7 @@ flowchart TD
     Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(originating issue known,<br/>not already restarted,<br/>no other PR)"}
     Abandon -->|"No originating issue,<br/>or already restarted once"| Human["Label needs-human + summary<br/>naming the route"]
     Abandon -->|"A step failed"| Human
-    Abandon -->|"Yes, and the worker<br/>may apply the pickup label"| Restart["Close the PR (never force-push),<br/>re-queue its issue"]
-    Abandon -->|"Yes, but the pickup label<br/>is a human's to apply"| Unlabelled["Close the PR, reopen the issue,<br/>label it needs-human naming<br/>the label to re-apply"]
+    Abandon -->|"Yes"| Restart["Close the PR (never force-push),<br/>re-queue its issue — keeping any<br/>pickup label, else adding idle-task"]
     style Scan fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Conflicting fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Label fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
@@ -104,7 +102,6 @@ flowchart TD
     style Abort fill:#707070,stroke:,color:#fff
     style Abandon fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Restart fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style Unlabelled fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
     style Human fill:#c96868,stroke:#7a2020,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
@@ -358,20 +355,20 @@ originating issue, and the pipeline raises a fresh PR off the current base.
 - **Three preconditions run before anything is destroyed**, in this order: the
   PR's originating issue is known; that issue has not already been restarted;
   and it has no *other* open PR of its own. A failed lookup is never read as
-  an absence. A fourth check decides *who* re-queues the issue, not whether
-  the abandon happens.
-- **A pickup label the worker may not apply no longer stops the rung**
-  (Issue #1773). `work-on` on an existing issue is refused by
-  `worker_label_guard.ts` and stripped by the discovery collectors, so the
-  worker cannot re-queue that issue itself — but the abandon still runs: the
-  PR is closed, the issue is reopened, and it is handed to a human through
-  `escalateToHuman` (the one sanctioned path to `needs-human`, which creates
-  the label if the repo has never used it). Both comments then say **remove
-  `needs-human` and re-apply `<label>`** — both halves, because `needs-human`
-  blocks discovery on its own, so naming only the pickup label would promise a
-  re-queue that cannot happen. The outcome is `abandoned-unlabelled`, which
-  spends the one restart exactly as a plain abandon does, and no `needs-human`
-  goes on the closed PR. Before #1773 this declined, and nothing was redone.
+  an absence. The issue's own labels are then read to decide which pickup label
+  the re-queue leaves it on — never whether the abandon happens.
+- **The re-queue keeps the label the issue already carries, and never asks a
+  human for one** (Issue #2277). A pickup label already on the issue —
+  `top-priority`, `work-on`, `low-priority` or `idle-task` — is left exactly as
+  it is, so a restart cannot demote work a human prioritised; NEAT-AI-Lamarck#234
+  carries `top-priority` and must come back as `top-priority`. An issue carrying
+  none gains `idle-task`, the one pickup label `worker_label_guard.ts` lets the
+  worker apply. The outcome is always `abandoned`, carrying `label` as either
+  `{ kept }` or `{ applied: "idle-task" }`, and both comments name it.
+  `needs-human` is no part of this route: #1773 sent the issue there because the
+  worker may not apply `work-on`, but `idle-task` re-queues it with nobody
+  waiting — an issue parked at `needs-human` is blocked from discovery, which is
+  the opposite of restarted.
 - **No originating issue, no abandon.** Closing a PR the fleet cannot re-raise
   loses the work outright, so that PR is left open and goes to a human instead
   — the fall-through the flowchart above shows.
@@ -604,7 +601,7 @@ each carries the operands that make the decision checkable afterwards:
 | `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
 | `needs-human` | `label` | A human already owns the conflict. |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed — the PR is now a human's. |
-| `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `awaitingLabel`? | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. `awaitingLabel` is present when the worker may not apply that pickup label (Issue #1773): the issue was reopened with `needs-human` and names the label a trusted author must re-apply. |
+| `abandoned-restarted` | `issueNumber`, `attemptsSpent` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. |
 | `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |

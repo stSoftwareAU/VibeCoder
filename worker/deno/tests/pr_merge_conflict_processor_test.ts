@@ -794,7 +794,11 @@ Deno.test("processMergeConflict - the final failure abandons and restarts rather
     {
       abandonRestartFn: (request) => {
         seen.push(request);
-        return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+        return Promise.resolve({
+          outcome: "abandoned",
+          issueNumber: 16,
+          label: { kept: "work-on" },
+        });
       },
     },
   );
@@ -825,7 +829,11 @@ Deno.test("processMergeConflict - the third attempt is the one that abandons (Is
     {
       abandonRestartFn: (request) => {
         seen.push(request);
-        return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+        return Promise.resolve({
+          outcome: "abandoned",
+          issueNumber: 16,
+          label: { kept: "work-on" },
+        });
       },
     },
   );
@@ -847,7 +855,11 @@ Deno.test("processMergeConflict - the second failure neither escalates nor aband
     {
       abandonRestartFn: (request) => {
         seen.push(request);
-        return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+        return Promise.resolve({
+          outcome: "abandoned",
+          issueNumber: 16,
+          label: { kept: "work-on" },
+        });
       },
     },
   );
@@ -862,19 +874,18 @@ Deno.test("processMergeConflict - the second failure neither escalates nor aband
   );
 });
 
-Deno.test("processMergeConflict - an abandon the worker cannot re-label names the issue and label (Issue #1773)", async () => {
-  // The rung closed the PR and reopened the issue; the label a trusted author
-  // must re-apply is the operator-facing fact, and `needs-human` belongs on
-  // that issue rather than on the PR the rung has already closed.
+Deno.test("processMergeConflict - an abandon names the label the issue was re-queued with (Issue #2277)", async () => {
+  // The rung closed the PR and re-queued the issue with `idle-task`, since it
+  // carried no pickup label. Nobody is waiting on a human to re-apply one.
   const { captured, result } = await runProcessor(
     makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: () =>
         Promise.resolve({
-          outcome: "abandoned-unlabelled",
+          outcome: "abandoned",
           issueNumber: 16,
-          workLabel: "work-on",
+          label: { applied: "idle-task" },
         }),
     },
   );
@@ -882,8 +893,8 @@ Deno.test("processMergeConflict - an abandon the worker cannot re-label names th
   assert(result.ok);
   assertEquals(result.value.escalated, false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
-  assertStringIncludes(result.value.summary, "reopened issue #16");
-  assertStringIncludes(result.value.summary, "`work-on`");
+  assertStringIncludes(result.value.summary, "re-queued issue #16");
+  assertStringIncludes(result.value.summary, "`idle-task`");
 });
 
 Deno.test("processMergeConflict - an abandon that fails escalates naming the step", async () => {
