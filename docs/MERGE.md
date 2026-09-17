@@ -853,11 +853,10 @@ the first attempt and two retries against a base that has moved on since
 only then does a human hear about it.
 
 That rung closes the PR — never force-pushes it — and re-queues its originating
-issue. Where the issue's pickup label is one only a human may apply (`work-on`
-and the rest of `worker_label_guard.ts`'s reserved set), it still closes the PR
-and reopens the issue, but hands it to a human — `needs-human` plus a comment
-saying to remove that label and re-apply the pickup one — rather than
-re-queuing it itself (Issue #1773). Its preconditions,
+issue. A pickup label the issue already carries is kept as it is, so a restart
+never demotes a `top-priority` issue; an issue carrying none gains `idle-task`,
+the one pickup label the worker may apply, and no route through the rung parks
+the issue at `needs-human` (Issue #2277). Its preconditions,
 its one-restart-per-issue bound and its exits are in
 [the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
 

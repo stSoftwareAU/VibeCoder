@@ -54,6 +54,7 @@ import {
   exhaustedEscalationDedupKey,
   type ExhaustedEscalationRoute,
   exhaustedEscalationRoute,
+  requeueLabelName,
 } from "./conflict_abandon_restart.ts";
 import { orderByPreference, preferredRepos } from "./conflict_queue_order.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
@@ -215,12 +216,6 @@ export type ConflictSkipReason =
     kind: "abandoned-restarted";
     issueNumber: number;
     attemptsSpent: number;
-    /**
-     * Present when the worker may not apply the pickup label (Issue #1773):
-     * the PR was closed and the issue reopened with `needs-human`, and this
-     * is the label a trusted author must re-apply to re-queue it.
-     */
-    awaitingLabel?: string;
   }
   /**
    * Still inside the post-attempt cooldown. `msUntilDue` is null when the
@@ -393,9 +388,6 @@ export function conflictReasonOperands(
       return {
         issueNumber: reason.issueNumber,
         attemptsSpent: reason.attemptsSpent,
-        ...(reason.awaitingLabel !== undefined
-          ? { awaitingLabel: reason.awaitingLabel }
-          : {}),
       };
     case "cooldown":
       return {
@@ -1109,9 +1101,6 @@ export async function findConflictingPr(
         gh: ghCommandFn,
         logger,
         trustedAuthors,
-        // The rung hands an issue it may not re-queue to a human, so it
-        // needs the configured escalation label, not a second literal.
-        needsHumanLabel,
       }));
 
   /**
@@ -1275,31 +1264,21 @@ export async function findConflictingPr(
         prComments,
       });
 
-      if (
-        abandon.outcome === "abandoned" ||
-        abandon.outcome === "abandoned-unlabelled"
-      ) {
-        // Issue #1773: where the pickup label is one the worker may not
-        // apply, the PR is still closed and the issue still reopened — it
-        // rests at `needs-human` naming the label instead of re-queued.
-        const awaitingLabel = abandon.outcome === "abandoned-unlabelled"
-          ? abandon.workLabel
-          : undefined;
+      if (abandon.outcome === "abandoned") {
+        // Issue #2277: the issue keeps whatever pickup label it carried, or
+        // gains `idle-task` — either way it is re-queued without a human.
+        const label = requeueLabelName(abandon.label);
         logger.warn(
           `PR #${pr.number} spent its ${maxAttempts} merge-conflict ` +
-            (awaitingLabel === undefined
-              ? `attempts — closed it and re-queued issue ` +
-                `#${abandon.issueNumber}`
-              : `attempts — closed it and reopened issue ` +
-                `#${abandon.issueNumber}, which needs \`${awaitingLabel}\` ` +
-                "re-applied by a trusted author"),
+            `attempts — closed it and re-queued issue ` +
+            `#${abandon.issueNumber} (\`${label}\`)`,
           {
             repo,
             prNumber: pr.number,
             issueNumber: abandon.issueNumber,
             attempts: history.count,
             maxAttempts,
-            ...(awaitingLabel !== undefined ? { awaitingLabel } : {}),
+            label,
           },
         );
         return {
@@ -1308,7 +1287,6 @@ export async function findConflictingPr(
             kind: "abandoned-restarted",
             issueNumber: abandon.issueNumber,
             attemptsSpent: history.count,
-            ...(awaitingLabel !== undefined ? { awaitingLabel } : {}),
           },
         };
       }

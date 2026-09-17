@@ -1400,7 +1400,11 @@ Deno.test("findConflictingPr - the abandon seam receives the PR's failure thread
   await scanWith(fake, {
     abandonRestart: (request) => {
       seen.push(request);
-      return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+      return Promise.resolve({
+        outcome: "abandoned",
+        issueNumber: 16,
+        label: { kept: "work-on" },
+      });
     },
   });
 
@@ -1473,7 +1477,11 @@ Deno.test("findConflictingPr - planted failure markers cannot close a PR", async
   const { result, log } = await scanWith(fake, {
     abandonRestart: (request) => {
       abandons.push(request);
-      return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+      return Promise.resolve({
+        outcome: "abandoned",
+        issueNumber: 16,
+        label: { kept: "work-on" },
+      });
     },
   });
 
@@ -1486,26 +1494,23 @@ Deno.test("findConflictingPr - planted failure markers cannot close a PR", async
   assertEquals(result.value.selected?.attemptCount, 0);
 });
 
-Deno.test("findConflictingPr - an abandon a human must re-queue names the label it awaits (Issue #1773)", async () => {
-  // The PR is closed either way; the operator-facing difference is that this
-  // issue is reopened at `needs-human` and needs one label re-applied, so the
-  // decision record has to carry that label rather than read as re-queued.
+Deno.test("findConflictingPr - an abandon that applied idle-task reads as re-queued (Issue #2277)", async () => {
+  // The issue carried no pickup label, so the rung applied `idle-task` — the
+  // decision record still reads as re-queued, and no human is waiting on it.
   const fake = makeFakeGh(exhaustedState());
 
   const { result, log } = await scanWith(fake, {
     abandonRestart: () =>
       Promise.resolve({
-        outcome: "abandoned-unlabelled",
+        outcome: "abandoned",
         issueNumber: 16,
-        workLabel: "work-on",
+        label: { applied: "idle-task" },
       }),
   });
 
   assertEquals(result.value.selected, null);
   assertEquals(reasonFor(log, 48), "abandoned-restarted");
   assertEquals(recordFor(log, 48).context?.issueNumber, 16);
-  assertEquals(recordFor(log, 48).context?.awaitingLabel, "work-on");
-  // The rung owns the escalation on the issue; the PR is not labelled here.
   assertEquals(escalatedToHuman(fake, 48), false);
 });
 
@@ -1536,7 +1541,11 @@ Deno.test("findConflictingPr - the abandon seam is handed the fleet's comments o
   await scanWith(fake, {
     abandonRestart: (request) => {
       seen.push(request);
-      return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+      return Promise.resolve({
+        outcome: "abandoned",
+        issueNumber: 16,
+        label: { kept: "work-on" },
+      });
     },
   });
 

@@ -25,10 +25,9 @@ sides before calling anything a contradiction; a second one at least four
 hours later; then **abandon-and-restart** — the conflicting PR is closed, never
 force-pushed, and its originating issue re-queued so the fleet redoes the work
 off the current base; and only when that is declined or fails does the worker
-escalate with `needs-human` and a conflict summary. Where the issue's pickup
-label is one only a human may apply, the PR is still closed and the issue still
-reopened — it rests at `needs-human` naming the label to re-apply, rather than
-re-queued (Issue #1773). One restart per originating issue: if the fresh PR
+escalate with `needs-human` and a conflict summary. The re-queued issue keeps
+whatever pickup label it already carries, and gains `idle-task` when it carries
+none (Issue #2277). One restart per originating issue: if the fresh PR
 conflicts irreconcilably too, that is a human's call rather than another lap. A
 PR whose originating issue cannot be found never reaches the third rung at
 all — closing what the fleet cannot re-raise would lose the work — so it falls
@@ -80,8 +79,7 @@ flowchart TD
     Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(originating issue known,<br/>not already restarted,<br/>no other PR)"}
     Abandon -->|"No originating issue,<br/>or already restarted once"| Human["Label needs-human + summary<br/>naming the route"]
     Abandon -->|"A step failed"| Human
-    Abandon -->|"Yes, and the worker<br/>may apply the pickup label"| Restart["Close the PR (never force-push),<br/>re-queue its issue"]
-    Abandon -->|"Yes, but the pickup label<br/>is a human's to apply"| Unlabelled["Close the PR, reopen the issue,<br/>label it needs-human naming<br/>the label to re-apply"]
+    Abandon -->|"Yes"| Restart["Close the PR (never force-push),<br/>re-queue its issue — keeping any<br/>pickup label, else adding idle-task"]
     style Scan fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Conflicting fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Label fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
@@ -104,7 +102,6 @@ flowchart TD
     style Abort fill:#707070,stroke:,color:#fff
     style Abandon fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Restart fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style Unlabelled fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
     style Human fill:#c96868,stroke:#7a2020,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
@@ -342,6 +339,146 @@ settle still reaches no agent and now consults no issue either.
   budget is a quiet skip only once the PR is visibly a human's — or visibly
   restarted.
 
+### 🔁 Stale verdict — the base is already in
+
+GitHub's `CONFLICTING` verdict can be **stale**. NEAT-AI-Lamarck#239 carried it
+for days at a head whose base was already an ancestor, and the resolver looped:
+merge, "Already up to date", nothing to push, resolved marker, label cleared,
+attempt budget reset — and GitHub's verdict never changed, so the next scan
+picked the same PR up again.
+
+So in the same slot as the deepen step — after the history is deep enough and
+**before** the attempt comment is posted — the resolver asks git directly
+(`git merge-base --is-ancestor origin/BASE HEAD`, Issue #2278). Exit 0 means
+there is nothing left to merge, and the stale-verdict ladder runs instead of an
+attempt. Because the check runs before the attempt is opened, nothing is spent
+and no comment has to be withdrawn.
+
+```mermaid
+flowchart TD
+    D[History deep enough] --> A{"merge-base --is-ancestor<br/>origin/BASE HEAD"}
+    A -- "exit 1 — a real conflict" --> M[Open the attempt, merge, conclude]
+    A -- "exit 0 — verdict is stale" --> V["gh pr view<br/>headRefOid + mergeable"]
+    V --> L{"decideLadderRung<br/>(thread markers, current head)"}
+    L -- MERGEABLE --> C[Clear the label only]
+    L -- "no marker at this head" --> N["Rung 1 — nudge:<br/>one empty commit, plain push"]
+    L -- "nudged at this head" --> R["Rung 2 — rebase:<br/>replay, tree guard, leased push"]
+    L -- "rebased at this head,<br/>or the rebase failed here" --> B["Rung 3 — abandon and restart:<br/>close the PR, re-queue its issue"]
+    L -- "nudged at this head,<br/>human author" --> B
+    L -- "verdict unknown / exhausted" --> W[Wait — run nothing]
+    R -- "replay conflicts<br/>or the tree differs" --> S["Fallback: one commit<br/>carrying OLD's tree on the base"]
+    R -- "tree identical to OLD" --> P["Push --force-with-lease=BRANCH:OLD"]
+    S --> P
+    B -- "declined or failed" --> F["Record the rung as failed<br/>at this head — no label, no human"]
+    F --> W
+    style N fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style R fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style B fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+**All three rungs are wired** (Issues #2278, #2279, #2280). Each runs **at most
+once per head sha**: the rung's own marker names the head it left behind, so the
+next scan reads that marker back and climbs rather than repeating it. A
+**human-authored** PR skips rung 2 and goes straight to rung 3 — the leased push
+destroys nothing, but a person's commit graph is theirs to reshape.
+
+- **Rung 1 — nudge.** One `git commit --allow-empty` whose message names the
+  base sha the ancestry check found, pushed **without** `--force` or a lease, so
+  every commit the PR already had survives. Moving the head is what makes GitHub
+  recompute. One comment records it, carrying
+  `<!-- vibe-merge-conflict-nudge head="<new sha>" -->` — the **new** head, so
+  the next scan reads the marker back and climbs rather than nudging twice.
+- **Rung 2 — rebase** (`conflict_rebase_rung.ts`, Issue #2279). The PR's
+  non-merge commits are replayed onto `origin/BASE`
+  (`git rebase --no-rebase-merges`) so the branch has a linear history off the
+  current base rather than a head that merged the base in — the shape GitHub is
+  stuck on. The rung runs only at the head GitHub judged: a clone that has moved
+  reports `head-moved` and touches nothing.
+- **The tree-identity guard is what makes the force-push admissible.** The
+  resolver's contract forbids a destructive force-push (Issues #1076, #4373)
+  because a rebase once destroyed a PR's own changes. Nothing is pushed until
+  `git diff --quiet OLD NEW` exits 0 — the new head's tree is **byte-identical**
+  to the head GitHub judged — so the push replaces a commit graph and no file
+  content at all. The lease is pinned (`--force-with-lease=BRANCH:OLD`), never a
+  bare `--force`, so a branch that moved on the remote refuses the push instead
+  of being overwritten. Both halves have to hold: the guard makes the push
+  non-destructive, the lease makes it non-racing.
+- **A replay that conflicts, or lands on a different tree, falls back to one
+  squash commit of the old tree** — `git commit-tree OLD^{tree} -p origin/BASE`.
+  It cannot conflict and cannot lose the base's changes: the ladder runs only
+  once `origin/BASE` is already an ancestor of `OLD`, so `OLD`'s tree already
+  contains everything the base carries. The identity therefore holds by
+  construction, and is asserted anyway before the push — "by construction" is a
+  claim about code, and the push is irreversible. There is no agent run on this
+  path: under the guard the only admissible resolution is a tree equal to `OLD`,
+  which the fallback produces outright.
+- **A replay that moves nothing takes the fallback too.** A branch already
+  linear off the base rebases to the same head; pushing it back would give
+  GitHub nothing new to judge while the comment claimed a linearisation that
+  never happened. The fallback always produces a new commit carrying the same
+  tree, so it is what moves the head in that case.
+- **Every rebase-rung outcome leaves the branch at `OLD` or at a head whose tree
+  equals `OLD`'s**, error paths included. A failure restores `OLD` and then
+  fails loud rather than leaving a half-replayed branch behind — including when
+  `git rebase --abort` itself fails, where the fallback is *not* built, because
+  a clone that may still be mid-rebase is not one to commit on. Every ending
+  short of a push posts the rung-failed marker, a worker fault included, so the
+  next scan climbs to the abandon rung instead of re-deciding `rebase` at the
+  same head for ever. Post-release the audit is
+  `git diff --stat <old> <new>` on the shas the rebase comment names — any
+  output is a regression.
+- **Rung 3 — abandon and restart** (Issue #2280). Reached when GitHub still
+  says `CONFLICTING` at the head the rebase produced, when the rebase rung
+  failed at this head, or when a human-authored PR sits at the nudged head. It
+  is the same rung a spent attempt budget uses
+  ([below](#-abandon-and-restart-before-a-human-is-asked)), called with this PR
+  and no thread — it fetches its own. The PR is **closed**, never force-pushed,
+  and its originating issue is re-queued on the pickup label it already carried,
+  so the pipeline raises a fresh PR off the current base.
+- **No rung applies `needs-human`** — not to the PR, not to its issue. A
+  declined abandon (the issue was already restarted, or the PR names no
+  originating issue) or a failed one posts **one** comment carrying
+  `<!-- vibe-merge-conflict-rung-failed rung="abandon" head="<sha>" -->` and
+  stops there, adding no label anywhere. Nothing has been spent and nothing is
+  broken on this route — the verdict is merely stale — so parking the work at
+  `needs-human` would block it from discovery over a stale reading. The next
+  scan reads that marker back and waits at this head; the stall watchdog (Issue
+  #569) is the backstop, and a later head or base move restarts the ladder at a
+  real merge attempt. The budget-spent caller still escalates on a declined
+  abandon, unchanged: there the PR has failed real merges and has nowhere else
+  to go.
+- **One rung per head, and the abandon once per issue.** The ladder's own
+  markers bound each rung to one run at the head they name, and the abandon rung
+  is bounded a second time by the restart marker it leaves on the *issue* — so
+  work is closed and re-raised once, never in a loop.
+- **The head sha and the verdict are read together**, in one
+  `gh pr view --json headRefOid,mergeable,author`. The scan's own projection
+  carries neither, and a rung decided on a head from one moment and a verdict
+  from another is a rung run at the wrong head.
+- **Markers only count when the fleet wrote them** (Issue #1247): the thread is
+  reduced by `partitionConflictComments` before the ladder reads it, so an
+  outsider's planted rung marker cannot skip a rung. With **no** fleet identity
+  configured no marker can be attributed at all, so no rung runs — a ladder
+  that cannot read its own memory would nudge each new head for ever instead of
+  climbing.
+- **A rung that cannot be recorded is a failure, not a rung.** The marker is the
+  bound, so if the comment cannot be posted after the nudge's or the rebase's
+  push — or after a declined or failed abandon — the pass fails loud rather than
+  reporting a rung the next scan cannot see.
+- **Nothing on this route spends or claims anything.** No resolved, attempt or
+  failed marker is posted, no label is added, and the `merge-conflict` label
+  stays on until GitHub itself reports the PR mergeable again. The rung markers
+  share no literal with the attempt vocabulary, so the "attempt N of M" number
+  on the next real merge is unchanged by any number of nudges or rebases.
+- **The no-op merge is now an invariant violation.** Past the ancestry check
+  the base is known *not* to be an ancestor, so a `git merge` that exits 0
+  without moving `HEAD` is impossible. If it happens the pass fails loud naming
+  it, rather than falling through to the resolved marker as it used to.
+- The stall watchdog (`merge_conflict_stall_watchdog.ts`, Issue #569) remains
+  the backstop for a PR that stays `CONFLICTING` through the whole ladder.
+
 ### ♻️ Abandon and restart, before a human is asked
 
 A branch that has defeated two real merges is usually cheaper to **redo** than
@@ -358,20 +495,20 @@ originating issue, and the pipeline raises a fresh PR off the current base.
 - **Three preconditions run before anything is destroyed**, in this order: the
   PR's originating issue is known; that issue has not already been restarted;
   and it has no *other* open PR of its own. A failed lookup is never read as
-  an absence. A fourth check decides *who* re-queues the issue, not whether
-  the abandon happens.
-- **A pickup label the worker may not apply no longer stops the rung**
-  (Issue #1773). `work-on` on an existing issue is refused by
-  `worker_label_guard.ts` and stripped by the discovery collectors, so the
-  worker cannot re-queue that issue itself — but the abandon still runs: the
-  PR is closed, the issue is reopened, and it is handed to a human through
-  `escalateToHuman` (the one sanctioned path to `needs-human`, which creates
-  the label if the repo has never used it). Both comments then say **remove
-  `needs-human` and re-apply `<label>`** — both halves, because `needs-human`
-  blocks discovery on its own, so naming only the pickup label would promise a
-  re-queue that cannot happen. The outcome is `abandoned-unlabelled`, which
-  spends the one restart exactly as a plain abandon does, and no `needs-human`
-  goes on the closed PR. Before #1773 this declined, and nothing was redone.
+  an absence. The issue's own labels are then read to decide which pickup label
+  the re-queue leaves it on — never whether the abandon happens.
+- **The re-queue keeps the label the issue already carries, and never asks a
+  human for one** (Issue #2277). A pickup label already on the issue —
+  `top-priority`, `work-on`, `low-priority` or `idle-task` — is left exactly as
+  it is, so a restart cannot demote work a human prioritised; NEAT-AI-Lamarck#234
+  carries `top-priority` and must come back as `top-priority`. An issue carrying
+  none gains `idle-task`, the one pickup label `worker_label_guard.ts` lets the
+  worker apply. The outcome is always `abandoned`, carrying `label` as either
+  `{ kept }` or `{ applied: "idle-task" }`, and both comments name it.
+  `needs-human` is no part of this route: #1773 sent the issue there because the
+  worker may not apply `work-on`, but `idle-task` re-queues it with nobody
+  waiting — an issue parked at `needs-human` is blocked from discovery, which is
+  the opposite of restarted.
 - **No originating issue, no abandon.** Closing a PR the fleet cannot re-raise
   loses the work outright, so that PR is left open and goes to a human instead
   — the fall-through the flowchart above shows.
@@ -604,7 +741,7 @@ each carries the operands that make the decision checkable afterwards:
 | `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
 | `needs-human` | `label` | A human already owns the conflict. |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed — the PR is now a human's. |
-| `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `awaitingLabel`? | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. `awaitingLabel` is present when the worker may not apply that pickup label (Issue #1773): the issue was reopened with `needs-human` and names the label a trusted author must re-apply. |
+| `abandoned-restarted` | `issueNumber`, `attemptsSpent` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. |
 | `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
@@ -842,10 +979,17 @@ branch at the same time. A host that loses the race returns immediately.
   "Issues consulted" block on the attempt, the override block on the
   resolution, and `findUncorroboratedOverrides`, which is what makes an
   unevidenced claim decidable without trusting the model.
+- `worker/deno/lib/conflict_rebase_rung.ts` — the stale-verdict ladder's rebase
+  rung: the replay onto the base, the tree-identity guard that licenses the
+  leased force-push, and the squash-of-the-old-tree fallback. Every outcome
+  leaves the branch at `OLD` or at a head whose tree equals `OLD`'s.
 - `worker/deno/lib/conflict_abandon_restart.ts` — the abandon-and-restart rung:
   its four preconditions, the one-restart-per-issue marker, the comments it
   posts on the PR and the issue, and `exhaustedEscalationRoute`, which names
-  the route when the rung declines or fails and a human is asked instead.
+  the route when the rung declines or fails. Both callers use it: the spent
+  attempt budget, which escalates to a human on a decline, and the exhausted
+  stale-verdict ladder, which records the rung as failed and asks nobody
+  (Issue #2280).
 - `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
   a label with no concluded attempt behind it. It files work and applies
   `escalated`; it never applies `needs-human` and never retries.

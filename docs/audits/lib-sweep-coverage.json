@@ -1749,6 +1749,30 @@
       "paths": [
         "worker/deno/lib/ephemeral_build_cache.ts"
       ]
+    },
+    {
+      "issue": 2276,
+      "chunk": "top-up-2276",
+      "title": "top-up: the stale-verdict ladder reader",
+      "ledger": "docs/audits/security-sweep-2276-conflict-verdict-ladder.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_verdict_ladder.ts (#2276)",
+      "status": "swept",
+      "sweptAt": "a5d48aa1bd1bbbc4f6b0f5940f6d859a8aaa7a7b",
+      "paths": [
+        "worker/deno/lib/conflict_verdict_ladder.ts"
+      ]
+    },
+    {
+      "issue": 2279,
+      "chunk": "top-up-2279",
+      "title": "top-up: the stale-verdict ladder's rebase rung",
+      "ledger": "docs/audits/security-sweep-2279-conflict-rebase-rung.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_rebase_rung.ts (#2279)",
+      "status": "swept",
+      "sweptAt": "58ce828f78de9e8034f9a4d6afb14a9f2bb82a26",
+      "paths": [
+        "worker/deno/lib/conflict_rebase_rung.ts"
+      ]
     }
   ],
   "roots": [
