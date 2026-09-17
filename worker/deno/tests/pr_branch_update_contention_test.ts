@@ -250,6 +250,27 @@ Deno.test("executePrBranchUpdates - a real merge conflict is still a conflict, n
   assertEquals(result.value.details[0]!.status, "conflict");
 });
 
+Deno.test("executePrBranchUpdates - the lock comment carries a readable line", async () => {
+  // Issue #2265: this path posted a marker-only body, which GitHub renders
+  // as a blank comment (Issue #1659) — 765 of them on one PR.
+  let note = "";
+  const result = await executePrBranchUpdates(
+    [makeAction()],
+    makeExecDeps({
+      workerId: "worker-a",
+      acquireLock: async (options: { note?: string }) => {
+        note = options.note ?? "";
+        return { ok: true, value: { acquired: true, lockCommentId: 77 } };
+      },
+      releaseLock: async () => ({ ok: true, value: undefined }),
+    }),
+  );
+
+  assertEquals(result.ok, true);
+  assertStringIncludes(note, "milestone/358-model-agnostic");
+  assertStringIncludes(note, "worker-a");
+});
+
 Deno.test("executePrBranchUpdates - the distributed lock is released when the clone is contended", async () => {
   const released: number[] = [];
   const result = await executePrBranchUpdates(
