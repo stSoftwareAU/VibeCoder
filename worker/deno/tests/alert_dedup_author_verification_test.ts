@@ -34,6 +34,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   ALERT_DEDUP_JSON_FIELDS,
+  parseIssueViewCommentRows,
   resolveAlertDedupAuthors,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
@@ -590,4 +591,35 @@ Deno.test("idle starvation - a forged and a genuine match dedup on the genuine o
   assertEquals(r.action, "already-open");
   assertEquals(r.issueNumber, 901, "the fleet's issue, not the forged one");
   assertEquals(r.creates, 0);
+});
+
+// ---------------------------------------------------------------------------
+// parseIssueViewCommentRows (Issue #2231)
+// ---------------------------------------------------------------------------
+
+Deno.test("parseIssueViewCommentRows - keeps both author shapes and drops what cannot be read", () => {
+  assertEquals(
+    parseIssueViewCommentRows([
+      { author: { login: "vibe-coder-bot" }, body: "object shape" },
+      { author: "sibling-host", body: "bare login shape" },
+      { body: "no author at all" },
+      { author: { login: 7 }, body: "unreadable author" },
+      { author: { login: "vibe-coder-bot" } },
+      null,
+      "not a comment",
+    ]),
+    [
+      { author: "vibe-coder-bot", body: "object shape" },
+      { author: "sibling-host", body: "bare login shape" },
+      { author: null, body: "no author at all" },
+      { author: null, body: "unreadable author" },
+    ],
+    "an unreadable author is null, which no fleet login matches",
+  );
+});
+
+Deno.test("parseIssueViewCommentRows - a payload that is not an array yields no rows", () => {
+  assertEquals(parseIssueViewCommentRows(undefined), []);
+  assertEquals(parseIssueViewCommentRows({ body: "not an array" }), []);
+  assertEquals(parseIssueViewCommentRows("[]"), []);
 });

@@ -15,7 +15,6 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { parseIssueViewCommentRows } from "../lib/alert_dedup_authors.ts";
 import {
   type ActiveMilestone,
   escalateSyncConflict,
@@ -205,32 +204,6 @@ Deno.test("escalateSyncConflict - a thread whose comments cannot be read leaves 
     warnings.some((w) => w.includes("comments` array")),
     `the unreadable answer is named, not swallowed: ${warnings.join(" | ")}`,
   );
-});
-
-Deno.test("parseIssueViewCommentRows - keeps both author shapes and drops what cannot be read (Issue #2231)", () => {
-  assertEquals(
-    parseIssueViewCommentRows([
-      { author: { login: FLEET }, body: "object shape" },
-      { author: OUTSIDER, body: "bare login shape" },
-      { body: "no author at all" },
-      { author: { login: 7 }, body: "unreadable author" },
-      { author: { login: FLEET } },
-      null,
-      "not a comment",
-    ]),
-    [
-      { author: FLEET, body: "object shape" },
-      { author: OUTSIDER, body: "bare login shape" },
-      { author: null, body: "no author at all" },
-      { author: null, body: "unreadable author" },
-    ],
-  );
-});
-
-Deno.test("parseIssueViewCommentRows - a payload that is not an array yields no rows (Issue #2231)", () => {
-  assertEquals(parseIssueViewCommentRows(undefined), []);
-  assertEquals(parseIssueViewCommentRows({ body: "not an array" }), []);
-  assertEquals(parseIssueViewCommentRows("[]"), []);
 });
 
 Deno.test("hasConflictEscalationComment - a marker from outside the fleet is not an escalation already posted (Issue #2231)", async () => {
