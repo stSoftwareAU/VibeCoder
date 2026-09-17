@@ -314,7 +314,7 @@ export function describeConcludedAttempts(
   const count = history.attempts.length;
   if (count === 0) {
     return "No concluded merge-conflict resolution attempt is recorded on " +
-      "this PR, and it is still not mergeable";
+      "this PR";
   }
   return `${count} merge-conflict resolution attempt${
     count === 1 ? "" : "s"
@@ -500,8 +500,8 @@ export function describeExhaustedRoute(
         : [
           `**This work has already been restarted once** — issue ` +
           `#${route.issueNumber} was re-queued after an earlier PR ` +
-          "conflicted irreconcilably, and the PR that replaced it has now " +
-          "spent its budget too. The fleet restarts once and then stops.",
+          "conflicted irreconcilably, and the PR that replaced it has reached " +
+          "the end of the ladder too. The fleet restarts once and then stops.",
         ];
   }
   const unhandled: never = route;
@@ -827,8 +827,8 @@ export function buildAbandonPrComment(args: {
     // failure conclusion that could not be posted leaves one attempt short
     // either way. "Two attempts failed" on a PR that recorded none is a
     // fabricated fact on a permanent comment.
-    `${describeConcludedAttempts(history)}, so \`${base}\` cannot be ` +
-    `reconciled with \`${branch}\`. Redoing the work off the current base ` +
+    `${describeConcludedAttempts(history)}, and GitHub still will not merge ` +
+    `\`${branch}\` into \`${base}\`. Redoing the work off the current base ` +
     "is cheaper than reconciling it, and needs no human.",
     "",
     "**What the attempts recorded**",
@@ -896,9 +896,8 @@ export function buildRestartIssueComment(args: {
     "♻️ **Re-queued: the PR for this issue conflicted irreconcilably**",
     "",
     `${request.repo}#${request.prNumber} put this issue's work on ` +
-    `\`${sanitiseIssueText(request.branchName)}\`, and that branch ` +
-    `conflicts with \`${sanitiseIssueText(request.baseBranch)}\` in a way ` +
-    "the fleet could not resolve. " +
+    `\`${sanitiseIssueText(request.branchName)}\`, and GitHub will not merge ` +
+    `that branch into \`${sanitiseIssueText(request.baseBranch)}\`. ` +
     `${describeConcludedAttempts(history)}.`,
     "",
     "Conflicted paths:",
@@ -1198,7 +1197,7 @@ export async function abandonAndRestart(
   logger?.warn?.(
     `PR #${prNumber} was abandoned and issue #${issueNumber} re-queued ` +
       `(\`${requeueLabelName(requeueLabel)}\`) — ` +
-      `${describeConcludedAttempts(history).toLowerCase()}`,
+      `${describeConcludedAttempts(history)}`,
     {
       repo,
       prNumber,

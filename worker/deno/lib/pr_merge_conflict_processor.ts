@@ -2129,9 +2129,9 @@ async function runPrRebaseRung(
  * The ladder's last rung, reached when GitHub still says `CONFLICTING` at the
  * head the rebase produced, when the rebase rung failed at this head, or when
  * a human-authored PR sits at the nudged head. The rung itself is
- * `conflict_abandon_restart.ts`, unchanged: it closes the PR — never
- * force-pushes it — and re-queues the issue on the pickup label it already
- * carried (Issue #2277).
+ * `conflict_abandon_restart.ts`: it closes the PR — never force-pushes it —
+ * and re-queues the issue on the pickup label it already carried
+ * (Issue #2277).
  *
  * **No route here applies `needs-human`**, to the PR or to its issue. The
  * budget-spent caller still escalates on a declined abandon, because there the

@@ -335,7 +335,11 @@ Deno.test("abandonAndRestart - closes the PR, re-queues the issue, keeps the bra
   const issueBody = fake.state.issueComments[0]?.body ?? "";
   assertStringIncludes(issueBody, CONFLICT_RESTART_MARKER);
   assertStringIncludes(issueBody, `${REPO}#${PR_NUMBER}`);
-  assertStringIncludes(issueBody, "conflicts with `main`");
+  // Reworded in Issue #2280: the sentence now states what GitHub reports and
+  // counts the attempts the thread actually recorded, because the ladder's own
+  // abandon rung reaches this comment with none opened at all.
+  assertStringIncludes(issueBody, "will not merge that branch into `main`");
+  assertStringIncludes(issueBody, "2 merge-conflict resolution attempts");
 
   // The issue already carried the human-applied work label, so it is not
   // re-applied — and it was open, so it is not reopened.
