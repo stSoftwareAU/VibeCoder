@@ -240,15 +240,33 @@ export function buildPushCreateBranchArgs(
   ];
 }
 
+/** Options for {@link buildRebaseArgs}. */
+export interface RebaseArgsOptions {
+  /**
+   * Add `--no-rebase-merges` so merge commits are dropped and the replayed
+   * history is linear (Issue #2279). The stale-verdict ladder's rebase rung
+   * needs it: a PR head that is itself a merge of the base is exactly the
+   * shape that ladder exists for, and re-creating that merge would replay the
+   * head rather than flatten it.
+   */
+  noRebaseMerges?: boolean;
+}
+
 /**
- * Build the argv for `git rebase <upstream>`.
+ * Build the argv for `git rebase [--no-rebase-merges] <upstream>`.
  *
  * @param upstream - The branch to rebase onto (untrusted positional).
+ * @param options - Rebase flags; see {@link RebaseArgsOptions}.
  * @returns e.g. `["rebase", "--end-of-options", "Develop"]`.
  */
-export function buildRebaseArgs(upstream: string): string[] {
+export function buildRebaseArgs(
+  upstream: string,
+  options: RebaseArgsOptions = {},
+): string[] {
   assertSafeGitRef(upstream, "rebase upstream");
-  return ["rebase", "--end-of-options", upstream];
+  const flags: string[] = [];
+  if (options.noRebaseMerges) flags.push("--no-rebase-merges");
+  return ["rebase", ...flags, "--end-of-options", upstream];
 }
 
 /**

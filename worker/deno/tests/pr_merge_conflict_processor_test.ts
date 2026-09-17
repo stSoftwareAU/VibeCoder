@@ -21,8 +21,10 @@ import {
   buildConflictEscalationReason,
   buildNudgeComment,
   buildNudgeCommitMessage,
+  buildRebaseComment,
   buildResolvedComment,
   buildRuleResolutionSection,
+  buildRungFailedComment,
   describeDependencyDecision,
   type MergeConflictInput,
   type MergeConflictProcessorDeps,
@@ -39,7 +41,11 @@ import {
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
   CONFLICT_NUDGE_MARKER,
+  CONFLICT_REBASE_MARKER,
+  CONFLICT_RUNG_FAILED_MARKER,
   conflictNudgeMarker,
+  conflictRebaseMarker,
+  conflictRungFailedMarker,
 } from "../lib/merge_conflict_markers.ts";
 import type { AbandonRestartRequest } from "../lib/conflict_abandon_restart.ts";
 import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
@@ -95,6 +101,10 @@ interface Captured {
   emptyCommits: string[][];
   /** Real `git push` invocations — the dry run is excluded (Issue #2278). */
   pushes: string[][];
+  /** Revisions `git reset --hard` was pointed at (Issue #2279). */
+  resets: string[];
+  /** `git commit-tree` invocations — the squash fallback (Issue #2279). */
+  commitTrees: string[][];
 }
 
 interface GitScript {
@@ -149,6 +159,18 @@ interface GitScript {
   pushCode?: number;
   /** Whether `git diff --cached --quiet` reports a dirty index (Issue #2278). */
   indexDirty?: boolean;
+  /** Exit code for the rebase rung's `git rebase` (Issue #2279). */
+  rebaseCode?: number;
+  /** Paths reported unmerged while that rebase is stopped (Issue #2279). */
+  rebaseUnmerged?: string[];
+  /** `git rev-parse HEAD` once the replay has run (Issue #2279). */
+  headAfterRebase?: string;
+  /** Whether `git diff --quiet OLD HEAD` after the replay exits 0. */
+  rebaseTreeIdentical?: boolean;
+  /** The sha `git commit-tree` prints for the squash fallback (Issue #2279). */
+  squashSha?: string;
+  /** Whether `git diff --quiet OLD NEW` on the fallback exits 0. */
+  squashTreeIdentical?: boolean;
 }
 
 function makeGitScript(overrides?: Partial<GitScript>): GitScript {
@@ -166,6 +188,8 @@ function makeGitScript(overrides?: Partial<GitScript>): GitScript {
     headAfterMerge: "2222222222222222222222222222222222222222",
     headAfterNudge: "3333333333333333333333333333333333333333",
     baseSha: "4444444444444444444444444444444444444444",
+    headAfterRebase: "5555555555555555555555555555555555555555",
+    squashSha: "6666666666666666666666666666666666666666",
     ...overrides,
   };
 }
@@ -178,6 +202,10 @@ function makeGit(
   let mergeDone = false;
   let deepened = false;
   let nudged = false;
+  // The rebase rung's clone state (Issue #2279): where `HEAD` has been moved
+  // to, and whether a stopped rebase is still in progress.
+  let headOverride: string | null = null;
+  let rebaseStopped = false;
 
   return {
     runGitCommand: ((args: string[]) => {
@@ -185,14 +213,73 @@ function makeGit(
       captured.events.push(`git:${args.slice(0, 2).join(" ")}`);
 
       if (args[0] === "rev-parse" && args[1] === "HEAD") {
-        const sha = nudged
-          ? script.headAfterNudge
-          : mergeDone
-          ? script.headAfterMerge
-          : script.headSha;
+        const sha = headOverride ??
+          (nudged
+            ? script.headAfterNudge
+            : mergeDone
+            ? script.headAfterMerge
+            : script.headSha);
         return Promise.resolve({
           ok: true,
           value: { code: 0, stdout: `${sha}\n`, stderr: "" },
+        });
+      }
+
+      if (args[0] === "rebase" && args.includes("--abort")) {
+        rebaseStopped = false;
+        captured.events.push("git:rebase-abort");
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }
+
+      if (args[0] === "rebase") {
+        const code = script.rebaseCode ?? 0;
+        if (code === 0) headOverride = script.headAfterRebase ?? null;
+        else rebaseStopped = true;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code,
+            stdout: "",
+            stderr: code === 0 ? "" : "CONFLICT (content): SECURITY.md",
+          },
+        });
+      }
+
+      if (args[0] === "commit-tree") {
+        captured.commitTrees.push(args);
+        captured.events.push("git:commit-tree");
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: `${script.squashSha}\n`, stderr: "" },
+        });
+      }
+
+      if (args[0] === "reset" && args[1] === "--hard") {
+        const revision = args[2] ?? "";
+        captured.resets.push(revision);
+        captured.events.push("git:reset-hard");
+        headOverride = revision;
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }
+
+      if (
+        args[0] === "diff" && args.includes("--quiet") &&
+        !args.includes("--cached")
+      ) {
+        // `[.., "--quiet", OLD, "HEAD"]` is the replay's identity guard;
+        // `[.., "--quiet", OLD, NEW]` is the fallback's own assertion.
+        const identical = args[3] === "HEAD"
+          ? script.rebaseTreeIdentical ?? true
+          : script.squashTreeIdentical ?? true;
+        return Promise.resolve({
+          ok: true,
+          value: { code: identical ? 0 : 1, stdout: "", stderr: "" },
         });
       }
 
@@ -276,6 +363,19 @@ function makeGit(
       }
 
       if (args[0] === "diff" && args.includes("--diff-filter=U")) {
+        if (rebaseStopped) {
+          // The rebase rung reads the unmerged paths while the replay is
+          // still stopped (Issue #2279) — it is a different question from the
+          // merge's own, so it is answered from its own script field.
+          return Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: (script.rebaseUnmerged ?? ["SECURITY.md"]).join("\n"),
+              stderr: "",
+            },
+          });
+        }
         const paths = unmergedQueries === 0
           ? script.unmergedAfterMerge
           : script.unmergedAfterAgent;
@@ -373,9 +473,16 @@ function makeGithub(
   existingPrComments: readonly string[] = [],
   /**
    * What `gh pr view --json headRefOid,mergeable,author` reports (Issue
-   * #2278) — the head and the verdict the stale-verdict ladder decides on.
+   * #2278) — the head and the verdict the stale-verdict ladder decides on,
+   * plus the author the rebase rung is gated on (Issue #2279). `author`
+   * defaults to the fleet login; `null` is a PR whose author `gh` did not
+   * report.
    */
-  prHeadState?: { headRefOid: string; mergeable: string },
+  prHeadState?: {
+    headRefOid: string;
+    mergeable: string;
+    author?: string | null;
+  },
   /**
    * The raw REST comment thread `fetchIssueCommentPages` reads (Issue #2278),
    * author and all — a rung marker only counts when the fleet wrote it.
@@ -442,11 +549,13 @@ function makeGithub(
         if (args.some((a) => a.includes("headRefOid"))) {
           // The stale-verdict ladder reads the head and the verdict together
           // (Issue #2278).
+          if (prHeadState === undefined) return Promise.resolve("{}");
+          const { author, ...head } = prHeadState;
           return Promise.resolve(
             JSON.stringify(
-              prHeadState === undefined
-                ? {}
-                : { ...prHeadState, author: { login: "vibe-coder" } },
+              author === null
+                ? head
+                : { ...head, author: { login: author ?? "vibe-coder" } },
             ),
           );
         }
@@ -543,8 +652,12 @@ async function runProcessor(
     postedCommentId?: number;
     /** Comment bodies already on the PR (Issue #1772). */
     existingPrComments?: string[];
-    /** Head sha and verdict `gh pr view` reports (Issue #2278). */
-    prHeadState?: { headRefOid: string; mergeable: string };
+    /** Head sha, verdict and author `gh pr view` reports (Issues #2278, #2279). */
+    prHeadState?: {
+      headRefOid: string;
+      mergeable: string;
+      author?: string | null;
+    };
     /** The raw REST comment thread with its authors (Issue #2278). */
     threadComments?: { body: string; author: string }[];
     /** Error `gh pr comment` rejects with (Issue #2278). */
@@ -573,6 +686,8 @@ async function runProcessor(
     commentsDeleted: [],
     emptyCommits: [],
     pushes: [],
+    resets: [],
+    commitTrees: [],
   };
 
   const deps = createMockDeps({
@@ -1956,7 +2071,11 @@ Deno.test("processMergeConflict - a MERGEABLE verdict on the stale route only cl
   );
 });
 
-Deno.test("processMergeConflict - a nudge marker naming the current head is not nudged again (Issue #2278)", async () => {
+Deno.test("processMergeConflict - a nudge marker naming the current head climbs to the rebase rung (Issues #2278, #2279)", async () => {
+  // Behaviour change recorded in Issue #2279: this case asserted the unwired
+  // rebase placeholder (nothing pushed, `processed: false`). The rung is wired
+  // now, so what it asserts is the ladder *climbing* — no second nudge at this
+  // head, and the rebase rung taking over.
   const script = staleVerdictScript();
   const { captured, result } = await runProcessor(
     makeInput(),
@@ -1973,12 +2092,9 @@ Deno.test("processMergeConflict - a nudge marker naming the current head is not 
   );
 
   assert(result.ok);
-  assertEquals(result.value.processed, false);
+  assertEquals(result.value.rung, "rebase");
   assertEquals(result.value.attemptCharged, false);
-  assertStringIncludes(result.value.summary, "rebase");
   assertEquals(captured.emptyCommits, [], "one nudge per head, not two");
-  assertEquals(captured.pushes, []);
-  assertEquals(captured.comments, []);
   assertEquals(captured.labelsAdded, []);
   assertEquals(captured.labelsRemoved, []);
 });
@@ -2257,4 +2373,341 @@ Deno.test("processMergeConflict - a nudge whose marker cannot be posted fails lo
   assertEquals(captured.comments, []);
   assertEquals(captured.labelsAdded, []);
   assertEquals(captured.labelsRemoved, []);
+});
+
+// ---------------------------------------------------------------------------
+// The rebase rung (Issue #2279)
+// ---------------------------------------------------------------------------
+
+/**
+ * Options that put the ladder on the rebase rung: GitHub still says
+ * `CONFLICTING` at `head`, and the fleet's own nudge marker already names it.
+ */
+function atRebaseRung(
+  head: string,
+  overrides?: { author?: string | null; commentId?: number },
+) {
+  return {
+    postedCommentId: overrides?.commentId ?? 9100,
+    prHeadState: {
+      headRefOid: head,
+      mergeable: "CONFLICTING",
+      author: overrides?.author,
+    },
+    threadComments: [{
+      body: conflictNudgeMarker(head),
+      author: FLEET_AUTHOR,
+    }],
+  };
+}
+
+/** The leased force-push the rung must use, pinned to the judged head. */
+function leaseFor(head: string): string {
+  return `--force-with-lease=issue-16-fix:${head}`;
+}
+
+Deno.test("processMergeConflict - an identical tree pushes the replay once, with the pinned lease (Issue #2279)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(script.headSha),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "rebase");
+  assertEquals(result.value.processed, true);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, false);
+  assertEquals(result.value.attemptCharged, false);
+
+  assertEquals(captured.pushes.length, 1, "exactly one push");
+  const push = captured.pushes[0] ?? [];
+  assert(push.includes(leaseFor(script.headSha)), `got ${push.join(" ")}`);
+  assertEquals(push.filter((a) => a === "--force" || a === "-f"), []);
+  assertEquals(captured.commitTrees, [], "no fallback when the tree matches");
+
+  // One comment, carrying both shas and the route it took.
+  assertEquals(captured.comments.length, 1);
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, CONFLICT_REBASE_MARKER);
+  assertStringIncludes(comment, `old="${script.headSha}"`);
+  assertStringIncludes(comment, `new="${script.headAfterRebase}"`);
+  assertStringIncludes(comment, "route: `rebase`");
+  assertStringIncludes(comment, "tree is identical to the previous head");
+
+  // Nothing is spent and nothing claims a resolution.
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_ATTEMPT_MARKER)),
+    [],
+  );
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
+    [],
+  );
+  assertEquals(captured.labelsAdded, []);
+  assertEquals(captured.labelsRemoved, []);
+});
+
+Deno.test("processMergeConflict - a replayed tree that differs is reset to OLD and the old tree squashed (Issue #2279)", async () => {
+  const script = staleVerdictScript({ rebaseTreeIdentical: false });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(script.headSha, { commentId: 9101 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "rebase");
+  assertEquals(
+    captured.resets[0],
+    script.headSha,
+    "the differing replay is thrown away before anything else",
+  );
+
+  // The fallback carries OLD's tree onto the base.
+  assertEquals(captured.commitTrees.length, 1);
+  const commitTree = captured.commitTrees[0] ?? [];
+  assertEquals(commitTree[1], `${script.headSha}^{tree}`);
+  assertEquals(commitTree[3], "origin/main");
+
+  assertEquals(captured.pushes.length, 1);
+  assert((captured.pushes[0] ?? []).includes(leaseFor(script.headSha)));
+
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, `new="${script.squashSha}"`);
+  assertStringIncludes(comment, "route: `squash`");
+});
+
+Deno.test("processMergeConflict - a replay conflict aborts and pushes the squash of OLD's tree (Issue #2279)", async () => {
+  const script = staleVerdictScript({
+    rebaseCode: 1,
+    rebaseUnmerged: ["SECURITY.md"],
+  });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(script.headSha, { commentId: 9102 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "rebase");
+  assert(
+    captured.events.includes("git:rebase-abort"),
+    `the replay must be aborted; got ${captured.events.join(",")}`,
+  );
+
+  assertEquals(captured.commitTrees.length, 1);
+  assertEquals(
+    (captured.commitTrees[0] ?? [])[1],
+    `${script.headSha}^{tree}`,
+  );
+
+  assertEquals(captured.pushes.length, 1);
+  const push = captured.pushes[0] ?? [];
+  assert(push.includes(leaseFor(script.headSha)));
+  assertEquals(
+    push.filter((a) => a === "--force" || a === "-f"),
+    [],
+    "a bare force would breach the no-destructive-push contract",
+  );
+
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, "route: `squash`");
+  assertStringIncludes(comment, `new="${script.squashSha}"`);
+});
+
+Deno.test("processMergeConflict - a clone that is not at the judged head pushes nothing and reports the rung failed (Issue #2279)", async () => {
+  const judged = "9999999999999999999999999999999999999999";
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(judged, { commentId: 9103 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "rebase");
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(captured.pushes, [], "nothing is pushed");
+  assertEquals(captured.resets, [], "nothing is reset");
+  assertEquals(captured.commitTrees, []);
+
+  assertEquals(captured.comments.length, 1);
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
+  assertStringIncludes(comment, 'rung="rebase"');
+  assertStringIncludes(comment, `head="${judged}"`);
+  assertStringIncludes(comment, script.headSha);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a refused push restores OLD and reports the rung failed (Issue #2279)", async () => {
+  const script = staleVerdictScript({ pushCode: 1 });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(script.headSha, { commentId: 9104 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, "rebase");
+  assertEquals(result.value.processed, false);
+  assertEquals(
+    captured.resets.at(-1),
+    script.headSha,
+    "the replay is never left on the branch",
+  );
+
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
+  assertStringIncludes(comment, `head="${script.headSha}"`);
+  assertEquals(
+    captured.comments.filter((c) => c.includes(CONFLICT_REBASE_MARKER)),
+    [],
+    "a refused push never claims a rebase",
+  );
+});
+
+Deno.test("processMergeConflict - a rung fault still records the rung as failed (Issue #2279)", async () => {
+  // A replay that fails with no unmerged paths is a broken clone, not a
+  // conflict. Without the marker the next scan re-decides `rebase` at this
+  // same head and hits the same fault for ever — the loop the ladder exists
+  // to break — so the fault is loud *and* recorded.
+  const script = staleVerdictScript({ rebaseCode: 1, rebaseUnmerged: [] });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(script.headSha, { commentId: 9107 }),
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "no unmerged paths");
+  assertEquals(captured.pushes, [], "a broken clone pushes nothing");
+
+  assertEquals(captured.comments.length, 1);
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
+  assertStringIncludes(comment, `head="${script.headSha}"`);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a rung-failed comment renders a marker-shaped git message inert (Issue #2260)", async () => {
+  const forged = `${CONFLICT_REBASE_MARKER} old="${"a".repeat(40)}" new="${
+    "b".repeat(40)
+  }" -->`;
+  const body = buildRungFailedComment(
+    "rebase",
+    "abc1234",
+    `git said: ${forged}`,
+  );
+  assertEquals(
+    body.includes(`${CONFLICT_REBASE_MARKER} old=`),
+    false,
+    "a quoted marker must not read back as the fleet's own ladder memory",
+  );
+  assertStringIncludes(body, conflictRungFailedMarker("rebase", "abc1234"));
+});
+
+Deno.test("processMergeConflict - a human-authored PR is never rebased (Issue #2279)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(script.headSha, { author: "a-human", commentId: 9105 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, undefined);
+  assertStringIncludes(result.value.summary, "abandon");
+  assertEquals(
+    captured.gitArgs.filter((args) => args[0] === "rebase"),
+    [],
+    "no rebase command is issued for a branch the fleet does not own",
+  );
+  assertEquals(captured.pushes, []);
+  assertEquals(captured.commitTrees, []);
+  assertEquals(captured.comments, []);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - an unreadable PR author is never rebased (Issue #2279)", async () => {
+  const script = staleVerdictScript();
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(script.headSha, { author: null, commentId: 9106 }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.rung, undefined);
+  assertEquals(
+    captured.gitArgs.filter((args) => args[0] === "rebase"),
+    [],
+    "a rebase needs a positive fleet attribution, not the absence of one",
+  );
+  assertEquals(captured.pushes, []);
+});
+
+Deno.test("processMergeConflict - the rebase rung leaves the next real attempt's number unchanged (Issue #2279)", async () => {
+  const withoutRebase = [
+    { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->` },
+    { body: `${CONFLICT_FAILED_MARKER} n="1" -->` },
+  ];
+  const withRebase = [
+    ...withoutRebase,
+    // The bodies the rung really posts, not hand-rolled stand-ins.
+    {
+      body: buildRebaseComment(
+        "main",
+        "1111111111111111111111111111111111111111",
+        "5555555555555555555555555555555555555555",
+        "squash",
+      ),
+    },
+    {
+      body: buildRungFailedComment(
+        "rebase",
+        "1111111111111111111111111111111111111111",
+        "the push was refused",
+      ),
+    },
+  ];
+  assertEquals(
+    parseConflictAttempts(withRebase).count,
+    parseConflictAttempts(withoutRebase).count,
+  );
+  assertEquals(parseConflictAttempts(withRebase).count, 1);
+});
+
+Deno.test("buildRebaseComment - names both shas, the route and the identity the push rests on (Issue #2279)", () => {
+  const body = buildRebaseComment("Develop", "abc1234", "def5678", "rebase");
+  assertStringIncludes(body, conflictRebaseMarker("abc1234", "def5678"));
+  assertStringIncludes(body, "abc1234");
+  assertStringIncludes(body, "def5678");
+  assertStringIncludes(body, "route: `rebase`");
+  assertStringIncludes(body, "tree is identical to the previous head");
+  assertStringIncludes(body, "--force-with-lease");
+  // The rung must stay invisible to the attempt budget.
+  assertEquals(body.includes(CONFLICT_ATTEMPT_MARKER), false);
+  assertEquals(body.includes(CONFLICT_RESOLVED_MARKER), false);
+});
+
+Deno.test("buildRungFailedComment - names the rung, the head and where the branch is (Issue #2279)", () => {
+  const body = buildRungFailedComment("rebase", "abc1234", "the push bounced");
+  assertStringIncludes(body, conflictRungFailedMarker("rebase", "abc1234"));
+  assertStringIncludes(body, "the push bounced");
+  assertStringIncludes(body, "abc1234");
+  assertEquals(body.includes(CONFLICT_ATTEMPT_MARKER), false);
+  assertEquals(body.includes(CONFLICT_FAILED_MARKER), false);
+  assertEquals(body.includes(CONFLICT_RESOLVED_MARKER), false);
 });

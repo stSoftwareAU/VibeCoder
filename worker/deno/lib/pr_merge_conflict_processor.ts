@@ -72,9 +72,15 @@ import {
   parseLadderState,
 } from "./conflict_verdict_ladder.ts";
 import {
+  type ConflictLadderRung,
   conflictNudgeMarker,
+  conflictRebaseMarker,
+  conflictRungFailedMarker,
   isConflictHeadSha,
 } from "./merge_conflict_markers.ts";
+import { type RebaseRungRoute, runRebaseRung } from "./conflict_rebase_rung.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
@@ -166,12 +172,12 @@ export interface MergeConflictResult {
    */
   runEnded?: boolean;
   /**
-   * The stale-verdict ladder rung this pass ran (Issues #2272, #2278).
+   * The stale-verdict ladder rung this pass ran (Issues #2272, #2278, #2279).
    *
    * Set only when GitHub's `CONFLICTING` verdict turned out to be stale — the
    * base was already an ancestor of the PR head — so no merge was attempted
-   * and no attempt was opened. `rebase` and `abandon` are named here for the
-   * sub-issues that wire those rungs; only `nudge` is reachable today.
+   * and no attempt was opened. `nudge` and `rebase` are reachable; `abandon`
+   * is named here for the sub-issue that wires that rung.
    */
   rung?: "nudge" | "rebase" | "abandon";
 }
@@ -630,6 +636,84 @@ export function buildNudgeComment(
     "So instead of merging, the worker pushed one **empty commit** — no file " +
     "changes, no `--force`, every existing commit intact — to move the head " +
     `to \`${newHead}\`, which is what makes GitHub recompute the verdict.`,
+    "",
+    "No resolution attempt was opened or spent on this (Issue #2272).",
+  ].join("\n");
+}
+
+/**
+ * Body of the comment the rebase rung posts when it pushes (Issue #2279).
+ *
+ * Carries {@link conflictRebaseMarker} for both shas, which is what bounds the
+ * rung to one run per head: the next scan reads the **new** head back and
+ * climbs to the abandon rung rather than rebasing again. It also states the
+ * identity the force-push rests on, so a reader can audit the claim with
+ * `git diff --stat <old> <new>` rather than trusting the comment.
+ */
+export function buildRebaseComment(
+  baseBranch: string,
+  oldHead: string,
+  newHead: string,
+  via: RebaseRungRoute,
+): string {
+  const how = via === "rebase"
+    ? `The PR's non-merge commits were replayed onto \`origin/${baseBranch}\` ` +
+      "(route: `rebase`), so its history is now linear off the current base."
+    : "Replaying the commits individually did not reproduce that tree, so " +
+      `this branch's contents were carried over whole as **one commit** on ` +
+      `top of \`origin/${baseBranch}\` (route: \`squash\`).`;
+
+  return [
+    conflictRebaseMarker(oldHead, newHead),
+    "🔁 **Stale merge verdict — replayed this branch onto " +
+    `\`${baseBranch}\`**`,
+    "",
+    `GitHub reports this PR as \`CONFLICTING\` at \`${oldHead}\`, but ` +
+    `\`origin/${baseBranch}\` is already an ancestor of that head — the ` +
+    "verdict is stale, not the branch. The nudge did not shift it, so the " +
+    "branch was given a shape GitHub can re-judge.",
+    "",
+    how,
+    "",
+    `\`${oldHead}\` → \`${newHead}\`. **The new head's tree is identical to ` +
+    "the previous head's** — `git diff --stat " + `${oldHead} ${newHead}\` ` +
+    "prints nothing — which is the whole licence for the push: it replaced " +
+    "the commit graph and no file content at all. The push carried " +
+    `\`--force-with-lease\` pinned to \`${oldHead}\`, so it could not have ` +
+    "overwritten anything pushed since (Issues #1076, #4373).",
+    "",
+    "No resolution attempt was opened or spent on this (Issue #2272).",
+  ].join("\n");
+}
+
+/**
+ * Body of the comment posted when a ladder rung ran at a head and did not
+ * finish (Issue #2279).
+ *
+ * Carries {@link conflictRungFailedMarker} for the head it failed at, which is
+ * what lets the next scan climb past the rung rather than retry it for ever.
+ */
+export function buildRungFailedComment(
+  rung: ConflictLadderRung,
+  head: string,
+  reason: string,
+  branchNote?: string,
+): string {
+  const where = branchNote ??
+    `The branch is at \`${head}\` — the head GitHub judged — so nothing on ` +
+      "it has been changed or lost.";
+  return [
+    conflictRungFailedMarker(rung, head),
+    `⚠️ **Stale merge verdict — the \`${rung}\` rung did not complete**`,
+    "",
+    // The reason quotes git's own output, and a fork chooses its branch name
+    // — so a marker-shaped string can reach this body. Render it inert
+    // (Issue #2260): a forged rung marker here would be read back as the
+    // fleet's own ladder memory.
+    neutraliseAgentMarkers(reason).text,
+    "",
+    `${where} The next scan climbs to the following rung rather than ` +
+    "repeating this one.",
     "",
     "No resolution attempt was opened or spent on this (Issue #2272).",
   ].join("\n");
@@ -1468,9 +1552,11 @@ async function runStaleVerdictLadder(
 
   let currentHead: string;
   let mergeable: string;
+  let author: string | undefined;
   try {
-    // `author` rides along because it is the projection this subsystem's
-    // other PR reads use; `headRefOid` and `mergeable` are what decide here.
+    // `headRefOid` and `mergeable` decide the rung; `author` decides whether
+    // the rebase rung may run at all (Issue #2279) — only a fleet-authored
+    // branch is ever force-pushed, leased and tree-identical though it is.
     const raw = await gh([
       "pr",
       "view",
@@ -1483,6 +1569,7 @@ async function runStaleVerdictLadder(
     const parsed = JSON.parse(raw.trim() || "{}") as {
       headRefOid?: unknown;
       mergeable?: unknown;
+      author?: { login?: unknown };
     };
     if (
       typeof parsed.headRefOid !== "string" ||
@@ -1492,6 +1579,12 @@ async function runStaleVerdictLadder(
     }
     currentHead = parsed.headRefOid;
     mergeable = parsed.mergeable;
+    // An unreadable author is not a fleet author: the rebase rung is gated on
+    // a *positive* fleet attribution, so a missing login declines it rather
+    // than force-pushing a branch nobody could attribute.
+    author = typeof parsed.author?.login === "string"
+      ? parsed.author.login
+      : undefined;
   } catch (err) {
     return {
       ok: false,
@@ -1594,24 +1687,28 @@ async function runStaleVerdictLadder(
         },
       };
 
-    case "rebase":
+    case "rebase": {
+      // Only a fleet-authored branch is replayed (Issue #2279). The push is
+      // leased and tree-identical, so it destroys nothing — but a human's
+      // branch is a human's to reshape, and a rebase of it would still rewrite
+      // the commit graph they pushed. A human-authored PR goes to the abandon
+      // rung instead, which closes rather than rewrites.
+      if (!isFleetAuthor(author, [...trustedAuthors])) {
+        logger.info(
+          `Stale merge verdict on PR #${prNumber} — the rebase rung is for ` +
+            `fleet-authored branches only, so the ladder goes to 'abandon'`,
+          { repo, prNumber, currentHead, author: author ?? "(unreadable)" },
+        );
+        return unwiredRung(prNumber, "abandon", logger, {
+          repo,
+          currentHead,
+        });
+      }
+      return await runPrRebaseRung(input, processorDeps, currentHead);
+    }
+
     case "abandon":
-      logger.warn(
-        `Stale merge verdict on PR #${prNumber} needs the ` +
-          `'${decision.kind}' rung, which is not wired yet`,
-        { repo, prNumber, currentHead, rung: decision.kind },
-      );
-      return {
-        ok: true,
-        value: {
-          processed: false,
-          merged: false,
-          escalated: false,
-          attemptCharged: false,
-          summary: `PR #${prNumber}: the stale-verdict ladder's ` +
-            `'${decision.kind}' rung is not yet wired — no attempt spent`,
-        },
-      };
+      return unwiredRung(prNumber, "abandon", logger, { repo, currentHead });
 
     default:
       // A `LadderDecision` variant added without a branch above is a compile
@@ -1802,6 +1899,222 @@ async function runNudgeRung(
       summary: `PR #${prNumber}: 'origin/${baseBranch}' (${baseSha}) is ` +
         `already an ancestor of the head — pushed an empty commit ` +
         `(${newHead}) so GitHub recomputes the verdict, no attempt spent`,
+    },
+  };
+}
+
+/**
+ * The result for a ladder rung that is decided but not yet wired.
+ *
+ * Nothing is pushed, nothing is spent, and the reason is logged rather than
+ * posted: a comment claiming a rung ran would be read back by the ladder as
+ * that rung having run.
+ */
+function unwiredRung(
+  prNumber: number,
+  rung: ConflictLadderRung,
+  logger: Logger,
+  context: { repo: string; currentHead: string },
+): Result<MergeConflictResult> {
+  logger.warn(
+    `Stale merge verdict on PR #${prNumber} needs the '${rung}' rung, which ` +
+      `is not wired yet`,
+    { ...context, prNumber, rung },
+  );
+  return {
+    ok: true,
+    value: {
+      processed: false,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      summary: `PR #${prNumber}: the stale-verdict ladder's '${rung}' rung ` +
+        `is not yet wired — no attempt spent`,
+    },
+  };
+}
+
+/**
+ * Rung 2 — replay the PR's commits onto the base, tree-identity guarded
+ * (Issue #2279).
+ *
+ * The rung itself lives in `conflict_rebase_rung.ts`, which owns the git work
+ * and the guarantee that every outcome leaves the branch at `oldHead` or at a
+ * head whose tree equals it. This wrapper owns what the PR sees: exactly one
+ * comment per outcome, carrying the marker that bounds the rung to one run per
+ * head, and never an attempt, resolved or failed marker.
+ */
+async function runPrRebaseRung(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  oldHead: string,
+): Promise<Result<MergeConflictResult>> {
+  const { repo, prNumber, branchName, baseBranch } = input;
+  const { logger, deps, workDir } = processorDeps;
+
+  // The default branch is read-only for the worker (Issue #2584), and this
+  // rung force-pushes — leased, but still a force.
+  const guard = await assertPushTargetAllowed(branchName, { cwd: workDir });
+  if (!guard.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to rebase PR #${prNumber}: ${guard.error.message}`,
+      ),
+    };
+  }
+
+  let outcome: Awaited<ReturnType<typeof runRebaseRung>>;
+  try {
+    outcome = await runRebaseRung({
+      branchName,
+      baseBranch,
+      oldHead,
+      cwd: workDir,
+      git: deps.git.runGitCommand,
+      runId: getRunId(),
+      logger,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // Record the rung as failed even though this is a worker fault, not an
+    // outcome the rung reports. Without the marker the next scan re-decides
+    // `rebase` at this same head and hits the same fault, for ever — the loop
+    // this ladder exists to break. The note is deliberately weaker than the
+    // one the reported outcomes carry: the rung restores `OLD` on every path
+    // it controls, but a fault by definition left one of those paths early.
+    let recorded = true;
+    try {
+      await postPrComment(
+        deps,
+        repo,
+        prNumber,
+        buildRungFailedComment(
+          "rebase",
+          oldHead,
+          `The rebase rung failed: ${detail}`,
+          `The rung restores \`${oldHead}\` on every path it controls and ` +
+            "pushed nothing here, but this failure was not one of its own " +
+            "outcomes — check the branch before relying on it.",
+        ),
+      );
+    } catch {
+      recorded = false;
+    }
+    return {
+      ok: false,
+      error: new Error(
+        `The rebase rung failed on PR #${prNumber}: ${detail}${
+          recorded ? "" : " (and its rung-failed marker could not be posted)"
+        }`,
+      ),
+    };
+  }
+
+  if (outcome.kind === "pushed") {
+    try {
+      await postPrComment(
+        deps,
+        repo,
+        prNumber,
+        buildRebaseComment(
+          baseBranch,
+          outcome.oldHead,
+          outcome.newHead,
+          outcome.via,
+        ),
+      );
+    } catch (err) {
+      // The marker IS the bound, exactly as it is for the nudge: the head has
+      // already moved, so an unrecorded rebase leaves the next scan at a new
+      // unmarked head, which restarts the ladder at the nudge instead of
+      // climbing to the abandon rung.
+      return {
+        ok: false,
+        error: new Error(
+          `Rebased PR #${prNumber} onto '${baseBranch}' (head is now ` +
+            `${outcome.newHead}) but could not post its marker, so the ladder ` +
+            `has no record of this rung: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+        ),
+      };
+    }
+
+    logger.info("Replayed a stale-verdict PR onto its base", {
+      repo,
+      prNumber,
+      branchName,
+      baseBranch,
+      oldHead: outcome.oldHead,
+      newHead: outcome.newHead,
+      via: outcome.via,
+    });
+
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        attemptCharged: false,
+        rung: "rebase",
+        summary: `PR #${prNumber}: replayed ${outcome.oldHead} onto ` +
+          `'origin/${baseBranch}' as ${outcome.newHead} (via ${outcome.via}, ` +
+          `tree identical to the previous head) — no attempt spent`,
+      },
+    };
+  }
+
+  // Neither failure touched the branch: it is at `oldHead`, restored or never
+  // moved. One comment records the rung as failed at that head so the next
+  // scan climbs rather than retrying this one.
+  const reason = outcome.kind === "head-moved"
+    ? `The clone is at \`${outcome.localHead}\`, not the head GitHub judged ` +
+      `(\`${oldHead}\`), so nothing was replayed — a rebase of some other ` +
+      "head would push a tree that was never compared with the judged one."
+    : `The leased push was refused: ${outcome.detail}. The lease was pinned ` +
+      `to \`${oldHead}\`, so the refusal means the branch moved on the ` +
+      "remote — nothing was overwritten.";
+
+  try {
+    await postPrComment(
+      deps,
+      repo,
+      prNumber,
+      buildRungFailedComment("rebase", oldHead, reason),
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `The rebase rung on PR #${prNumber} did not complete ` +
+          `(${outcome.kind}) and its marker could not be posted, so the ` +
+          `ladder has no record of it: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      ),
+    };
+  }
+
+  logger.warn(`The rebase rung on PR #${prNumber} did not complete`, {
+    repo,
+    prNumber,
+    branchName,
+    oldHead,
+    outcome: outcome.kind,
+  });
+
+  return {
+    ok: true,
+    value: {
+      processed: false,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      rung: "rebase",
+      summary: `PR #${prNumber}: the rebase rung did not complete ` +
+        `(${outcome.kind}) — the branch is at ${oldHead}, no attempt spent`,
     },
   };
 }
