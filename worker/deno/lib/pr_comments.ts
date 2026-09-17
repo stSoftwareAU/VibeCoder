@@ -168,14 +168,28 @@ async function fetchOwnEyesReactions(
   for (const line of payload.split("\n")) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
-    // A page that cannot be parsed throws: an unreadable page must never
-    // pass as "this account left no marker".
+    // A page that cannot be parsed, or that is not the array the filter asks
+    // for, throws: an unreadable page must never pass as "this account left
+    // no marker".
     const parsed: unknown = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) continue;
+    if (!Array.isArray(parsed)) {
+      throw new Error(
+        `unexpected reactions payload: ${trimmed.slice(0, 120)}`,
+      );
+    }
     for (const entry of parsed as Array<Record<string, unknown>>) {
       const reactor = String(entry.login ?? "").trim().toLowerCase();
       if (reactor !== login) continue;
-      mine.push({ id: Number(entry.id), login: reactor });
+      // An id that is not a number cannot address the delete endpoint, and
+      // `reactions/NaN` would only fail later as a puzzling 404.
+      const id = typeof entry.id === "number" ? entry.id : Number.NaN;
+      if (!Number.isInteger(id)) {
+        throw new Error(
+          `reactions payload carried an unusable reaction id: ` +
+            `${JSON.stringify(entry.id)}`,
+        );
+      }
+      mine.push({ id, login: reactor });
     }
   }
   return mine;
@@ -191,7 +205,9 @@ async function fetchOwnEyesReactions(
  * this on every path that ends with **no winner**.
  *
  * Never throws into the caller: the failure travels back as the returned
- * error so the caller can name the consequence, and is never swallowed.
+ * error so the caller can name the consequence, and is never swallowed. The
+ * `Error | null` shape mirrors `deleteIssueComment`, the sibling delete
+ * helper the claim already reports failures through.
  *
  * @param repo - Repository in "owner/repo" format
  * @param commentType - Type of comment ("review", "issue", or "pr_review")
