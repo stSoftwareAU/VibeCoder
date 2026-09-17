@@ -321,7 +321,15 @@ Deno.test(
     const outcome = await runCompletion({ summary: SUMMARY_WITHOUT_BLOCK });
 
     assertEquals(outcome.status, "failure");
-    assertEquals(outcome.claudeCalls, 1, "the recovery is not repeated");
+    // One recovery invocation, then the two bounded closure-verdict questions
+    // the worker asks when the recovery's own summary still fails the gate
+    // (Issue #2242). The recovery itself is still entered exactly once.
+    assertEquals(
+      outcome.claudePrompts.filter((p) => p.includes("RETRY NOTICE")).length,
+      1,
+      "the recovery is not repeated",
+    );
+    assertEquals(outcome.claudeCalls, 3, "recovery plus two verdict questions");
     assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
     assertStringIncludes(outcome.reason ?? "", "Acceptance criteria");
     assertEquals(
