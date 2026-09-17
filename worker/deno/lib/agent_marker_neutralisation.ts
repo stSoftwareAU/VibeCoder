@@ -25,9 +25,15 @@
  *   not a formatting quirk. {@link neutraliseAgentMarkers} reports what it
  *   defused so the caller can log it rather than swallow it.
  *
- * The neutralisation runs on the agent's text alone. The worker's own marker
+ * The neutralisation runs on the untrusted text alone. The worker's own marker
  * is concatenated afterwards and is untouched, so #1879's fleet-wide tally
  * still parses exactly as before.
+ *
+ * The agent's message is not the only untrusted value those bodies carry: the
+ * failing check's name is fork-chosen on a `pull_request`-triggered workflow
+ * (the job name comes from the head ref), and the CI-fix replies interpolate
+ * it into the same fleet-authored prose. It runs through this same helper
+ * (Issue #2260) — the properties above are why one helper serves both.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */

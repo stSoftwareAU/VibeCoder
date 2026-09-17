@@ -35,6 +35,7 @@
 
 import type { WorkerConfig } from "../types.ts";
 import type { CiFailureCategory } from "./ci_failure_classifier.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 
 /** Default attempt budget per failure signature. */
 export const DEFAULT_MAX_AUTO_FIX_ATTEMPTS = 3;
@@ -249,6 +250,13 @@ export interface AutoFixCapSummaryInput {
  *
  * One comment covering every attempt — deliberately not a fourth
  * "I tried again" note.
+ *
+ * Issue #2260: the fleet account posts this body, and its markers are the
+ * fleet-wide CI-fix record. Two of the values rendered here are outside the
+ * worker's control — the check name (fork-chosen on a `pull_request`-triggered
+ * workflow) and each attempt's `diagnosis`, lifted from a comment body — so the
+ * finished summary is made inert as a whole by construction. It carries no
+ * marker of the worker's own; the escalation's marker is added afterwards.
  */
 export function buildAutoFixCapSummary(
   input: AutoFixCapSummaryInput,
@@ -265,7 +273,7 @@ export function buildAutoFixCapSummary(
     lines.push(
       "No attempt detail was recorded — see the worker log for the attempt history.",
     );
-    return lines.join("\n");
+    return neutraliseAgentMarkers(lines.join("\n")).text;
   }
 
   lines.push("| Attempt | Outcome | Diagnosed |");
@@ -277,7 +285,7 @@ export function buildAutoFixCapSummary(
       } |`,
     );
   }
-  return lines.join("\n");
+  return neutraliseAgentMarkers(lines.join("\n")).text;
 }
 
 /** Escape a value for safe inclusion in a Markdown table cell. */
