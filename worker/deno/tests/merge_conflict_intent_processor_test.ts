@@ -120,6 +120,20 @@ function makeGit(script: Script, captured: Captured): Partial<GitDeps> {
   let mergeDone = false;
   return {
     runGitCommand: ((args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "HEAD") {
+        // Issue #2278: the resolver compares HEAD across the merge to catch a
+        // zero-exit merge that moved nothing, so the two reads must differ.
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: mergeDone
+              ? "2222222222222222222222222222222222222222\n"
+              : "1111111111111111111111111111111111111111\n",
+            stderr: "",
+          },
+        });
+      }
       if (args[0] === "merge" && args[1]?.startsWith("origin/")) {
         mergeDone = true;
         return Promise.resolve({

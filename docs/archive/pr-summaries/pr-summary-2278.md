@@ -198,12 +198,19 @@ the bounds each rung rests on.
   functions and assert on results, with no sleeps, no `Deno.env` mutation and
   no source-grepping.
 - **clean (pre-existing red, not this diff)** — the full gate's `deno tests`
-  stage is red on `worker/deno/tests/ephemeral_build_cache_test.ts`
-  (`buildCacheEnvForCheckout` ×2). Verified pre-existing: the same two tests
-  fail with this branch's files checked out from
-  `origin/milestone/2272-worker-deno-lib-stale-verdict-ladder-worker`. They
-  concern the host's ephemeral build-cache volume and import nothing this diff
-  touches.
+  stage is red on three host-environment tests:
+  `worker/deno/tests/ephemeral_build_cache_test.ts::buildCacheEnvForCheckout`
+  (×2) and
+  `worker/deno/tests/quality_gate_phase_test.ts::untrustedQualityCommandEnv - a trim-refused launch builds off the work volume`.
+  All three read the launcher's work-volume trim flag from the host and fail
+  identically on the unmodified
+  `origin/milestone/2272-worker-deno-lib-stale-verdict-ladder-worker` tree;
+  none imports anything this diff touches.
+- **clean** — `worker/deno/tests/merge_conflict_intent_processor_test.ts` gains
+  a `rev-parse HEAD` answer to its git stub. The new invariant guard reads HEAD
+  across the merge, and that stub previously answered every unmatched command
+  with empty stdout — a harness gap, not a behaviour change: the 13 tests in
+  that file assert exactly what they did before.
 
 ## Test Plan
 
