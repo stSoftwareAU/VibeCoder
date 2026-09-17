@@ -172,12 +172,12 @@ export interface MergeConflictResult {
    */
   runEnded?: boolean;
   /**
-   * The stale-verdict ladder rung this pass ran (Issues #2272, #2278, #2279).
+   * The stale-verdict ladder rung this pass ran (Issues #2272, #2278, #2279,
+   * #2280).
    *
    * Set only when GitHub's `CONFLICTING` verdict turned out to be stale — the
    * base was already an ancestor of the PR head — so no merge was attempted
-   * and no attempt was opened. `nudge` and `rebase` are reachable; `abandon`
-   * is named here for the sub-issue that wires that rung.
+   * and no attempt was opened. All three rungs are reachable.
    */
   rung?: "nudge" | "rebase" | "abandon";
 }
@@ -688,7 +688,7 @@ export function buildRebaseComment(
 
 /**
  * Body of the comment posted when a ladder rung ran at a head and did not
- * finish (Issue #2279).
+ * finish (Issues #2279, #2280).
  *
  * Carries {@link conflictRungFailedMarker} for the head it failed at, which is
  * what lets the next scan climb past the rung rather than retry it for ever.
@@ -702,6 +702,15 @@ export function buildRungFailedComment(
   const where = branchNote ??
     `The branch is at \`${head}\` — the head GitHub judged — so nothing on ` +
       "it has been changed or lost.";
+  // `abandon` is the ladder's last rung, so there is nothing above it to climb
+  // to: the next scan waits at this head until the head or the base moves,
+  // which restarts the ladder at a real merge attempt (Issue #2280).
+  const next = rung === "abandon"
+    ? `The ladder has no rung above this one, so the next scan waits at ` +
+      `\`${head}\` rather than repeating it — a later push, or a base that ` +
+      "moves, starts the ladder again at a real merge attempt."
+    : "The next scan climbs to the following rung rather than repeating this " +
+      "one.";
   return [
     conflictRungFailedMarker(rung, head),
     `⚠️ **Stale merge verdict — the \`${rung}\` rung did not complete**`,
@@ -712,8 +721,7 @@ export function buildRungFailedComment(
     // fleet's own ladder memory.
     neutraliseAgentMarkers(reason).text,
     "",
-    `${where} The next scan climbs to the following rung rather than ` +
-    "repeating this one.",
+    `${where} ${next}`,
     "",
     "No resolution attempt was opened or spent on this (Issue #2272).",
   ].join("\n");
@@ -1699,16 +1707,13 @@ async function runStaleVerdictLadder(
             `fleet-authored branches only, so the ladder goes to 'abandon'`,
           { repo, prNumber, currentHead, author: author ?? "(unreadable)" },
         );
-        return unwiredRung(prNumber, "abandon", logger, {
-          repo,
-          currentHead,
-        });
+        return await runAbandonRung(input, processorDeps, currentHead);
       }
       return await runPrRebaseRung(input, processorDeps, currentHead);
     }
 
     case "abandon":
-      return unwiredRung(prNumber, "abandon", logger, { repo, currentHead });
+      return await runAbandonRung(input, processorDeps, currentHead);
 
     default:
       // A `LadderDecision` variant added without a branch above is a compile
@@ -1904,34 +1909,33 @@ async function runNudgeRung(
 }
 
 /**
- * The result for a ladder rung that is decided but not yet wired.
+ * Run the abandon-and-restart rung, through its injected seam or for real.
  *
- * Nothing is pushed, nothing is spent, and the reason is logged rather than
- * posted: a comment claiming a rung ran would be read back by the ladder as
- * that rung having run.
+ * One call site's shape for both callers of it — the spent attempt budget
+ * (Issue #1115) and the exhausted stale-verdict ladder (Issue #2280) — so the
+ * two can never drift into asking the rung for different things.
+ *
+ * No thread is passed: the rung fetches its own, and fails loud if it cannot.
+ * "No failure comment survives" must never be published because a read failed.
  */
-function unwiredRung(
-  prNumber: number,
-  rung: ConflictLadderRung,
-  logger: Logger,
-  context: { repo: string; currentHead: string },
-): Result<MergeConflictResult> {
-  logger.warn(
-    `Stale merge verdict on PR #${prNumber} needs the '${rung}' rung, which ` +
-      `is not wired yet`,
-    { ...context, prNumber, rung },
-  );
-  return {
-    ok: true,
-    value: {
-      processed: false,
-      merged: false,
-      escalated: false,
-      attemptCharged: false,
-      summary: `PR #${prNumber}: the stale-verdict ladder's '${rung}' rung ` +
-        `is not yet wired — no attempt spent`,
-    },
-  };
+function runAbandonRestart(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+): Promise<AbandonRestartOutcome> {
+  const { logger, deps } = processorDeps;
+  const rung = processorDeps.abandonRestartFn ??
+    ((request: AbandonRestartRequest) =>
+      abandonAndRestart(request, {
+        gh: deps.github.runGhCommand,
+        logger,
+        trustedAuthors: processorDeps.trustedAuthors ?? [],
+      }));
+  return rung({
+    repo: input.repo,
+    prNumber: input.prNumber,
+    branchName: input.branchName,
+    baseBranch: input.baseBranch,
+  });
 }
 
 /**
@@ -2115,6 +2119,120 @@ async function runPrRebaseRung(
       rung: "rebase",
       summary: `PR #${prNumber}: the rebase rung did not complete ` +
         `(${outcome.kind}) — the branch is at ${oldHead}, no attempt spent`,
+    },
+  };
+}
+
+/**
+ * Rung 3 — abandon the PR and re-queue its originating issue (Issue #2280).
+ *
+ * The ladder's last rung, reached when GitHub still says `CONFLICTING` at the
+ * head the rebase produced, when the rebase rung failed at this head, or when
+ * a human-authored PR sits at the nudged head. The rung itself is
+ * `conflict_abandon_restart.ts`: it closes the PR — never force-pushes it —
+ * and re-queues the issue on the pickup label it already carried
+ * (Issue #2277).
+ *
+ * **No route here applies `needs-human`**, to the PR or to its issue. The
+ * budget-spent caller still escalates on a declined abandon, because there the
+ * PR has failed two real merges and has nowhere left to go. Here nothing has
+ * been spent and nothing is broken — the verdict is merely stale — so a
+ * declined or failed rung records itself and stops at this head. The stall
+ * watchdog (`merge_conflict_stall_watchdog.ts`, Issue #569) is the backstop,
+ * and a later head or base move restarts the ladder at a real merge attempt.
+ */
+async function runAbandonRung(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  currentHead: string,
+): Promise<Result<MergeConflictResult>> {
+  const { repo, prNumber, branchName } = input;
+  const { logger, deps } = processorDeps;
+
+  const abandon = await runAbandonRestart(input, processorDeps);
+
+  if (abandon.outcome === "abandoned") {
+    const label = requeueLabelName(abandon.label);
+    logger.warn(
+      `GitHub's merge verdict stayed stale through the whole ladder on ` +
+        `PR #${prNumber} — closed it and re-queued issue ` +
+        `#${abandon.issueNumber} (\`${label}\`)`,
+      {
+        repo,
+        prNumber,
+        branchName,
+        currentHead,
+        issueNumber: abandon.issueNumber,
+        label,
+      },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        attemptCharged: false,
+        rung: "abandon",
+        summary: `PR #${prNumber}: GitHub's merge verdict stayed stale ` +
+          `through the whole ladder — abandoned the PR and re-queued issue ` +
+          `#${abandon.issueNumber} (\`${label}\`), no attempt spent`,
+      },
+    };
+  }
+
+  // Declined or failed. The marker IS the bound, exactly as it is for the
+  // rungs below: without it the next scan re-decides `abandon` at this head
+  // and asks a rung that has already declined, for ever.
+  const route = exhaustedEscalationRoute(abandon);
+  const reason = describeExhaustedRoute(route).join("\n\n");
+  // What the note may claim depends on how far the rung got. A decline changed
+  // nothing by construction; a *failure* may have closed the PR already and
+  // stopped at a later step, so claiming "nothing was closed" there would
+  // publish a state nobody checked — and contradict the reason above it.
+  const branchNote = route.kind === "abandon-failed"
+    ? `The restart stopped at the \`${route.step}\` step, so part of it may ` +
+      "already have happened — check this PR and its issue before relying on " +
+      "either."
+    : `Nothing was closed and nothing on the branch was changed — the PR is ` +
+      `still open at \`${currentHead}\`.`;
+  try {
+    await postPrComment(
+      deps,
+      repo,
+      prNumber,
+      buildRungFailedComment("abandon", currentHead, reason, branchNote),
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `The abandon rung on PR #${prNumber} did not complete ` +
+          `(${route.kind}) and its marker could not be posted, so the ladder ` +
+          `has no record of it: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      ),
+    };
+  }
+
+  logger.warn(
+    `The abandon rung on PR #${prNumber} did not complete — the ` +
+      `stale-verdict ladder rests at this head`,
+    { repo, prNumber, branchName, currentHead, route: route.kind },
+  );
+
+  return {
+    ok: true,
+    value: {
+      processed: false,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      rung: "abandon",
+      summary: `PR #${prNumber}: the abandon rung did not complete ` +
+        `(${route.kind}) at ${currentHead} — recorded on the PR, no attempt ` +
+        `spent and no label added`,
     },
   };
 }
@@ -2467,21 +2585,7 @@ async function failAttempt(
   // so the branch has defeated two real merges — usually cheaper to redo than
   // to reconcile, and redoing it needs nobody. Only when that is declined or
   // fails does the escalation below run, and it then says which route it took.
-  const abandon = await (processorDeps.abandonRestartFn ??
-    ((request: AbandonRestartRequest) =>
-      abandonAndRestart(request, {
-        gh: deps.github.runGhCommand,
-        logger,
-        trustedAuthors: processorDeps.trustedAuthors ?? [],
-      })))({
-      repo,
-      prNumber,
-      branchName: input.branchName,
-      baseBranch: input.baseBranch,
-      // No thread passed: the rung fetches it, and fails loud if it cannot —
-      // "no failure comment survives" must never be published because a read
-      // failed.
-    });
+  const abandon = await runAbandonRestart(input, processorDeps);
 
   if (abandon.outcome === "abandoned") {
     // Issue #2277: the issue keeps the pickup label it already carried, or
