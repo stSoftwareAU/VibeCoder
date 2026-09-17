@@ -80,6 +80,7 @@ import {
 } from "./merge_conflict_markers.ts";
 import { type RebaseRungRoute, runRebaseRung } from "./conflict_rebase_rung.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
@@ -696,16 +697,23 @@ export function buildRungFailedComment(
   rung: ConflictLadderRung,
   head: string,
   reason: string,
+  branchNote?: string,
 ): string {
+  const where = branchNote ??
+    `The branch is at \`${head}\` — the head GitHub judged — so nothing on ` +
+      "it has been changed or lost.";
   return [
     conflictRungFailedMarker(rung, head),
     `⚠️ **Stale merge verdict — the \`${rung}\` rung did not complete**`,
     "",
-    reason,
+    // The reason quotes git's own output, and a fork chooses its branch name
+    // — so a marker-shaped string can reach this body. Render it inert
+    // (Issue #2260): a forged rung marker here would be read back as the
+    // fleet's own ladder memory.
+    neutraliseAgentMarkers(reason).text,
     "",
-    `The branch is at \`${head}\` — the head GitHub judged — so nothing on ` +
-    "it has been changed or lost. The next scan climbs to the following rung " +
-    "rather than repeating this one.",
+    `${where} The next scan climbs to the following rung rather than ` +
+    "repeating this one.",
     "",
     "No resolution attempt was opened or spent on this (Issue #2272).",
   ].join("\n");
@@ -1968,11 +1976,36 @@ async function runPrRebaseRung(
       logger,
     });
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    // Record the rung as failed even though this is a worker fault, not an
+    // outcome the rung reports. Without the marker the next scan re-decides
+    // `rebase` at this same head and hits the same fault, for ever — the loop
+    // this ladder exists to break. The note is deliberately weaker than the
+    // one the reported outcomes carry: the rung restores `OLD` on every path
+    // it controls, but a fault by definition left one of those paths early.
+    let recorded = true;
+    try {
+      await postPrComment(
+        deps,
+        repo,
+        prNumber,
+        buildRungFailedComment(
+          "rebase",
+          oldHead,
+          `The rebase rung failed: ${detail}`,
+          `The rung restores \`${oldHead}\` on every path it controls and ` +
+            "pushed nothing here, but this failure was not one of its own " +
+            "outcomes — check the branch before relying on it.",
+        ),
+      );
+    } catch {
+      recorded = false;
+    }
     return {
       ok: false,
       error: new Error(
-        `The rebase rung failed on PR #${prNumber}: ${
-          err instanceof Error ? err.message : String(err)
+        `The rebase rung failed on PR #${prNumber}: ${detail}${
+          recorded ? "" : " (and its rung-failed marker could not be posted)"
         }`,
       ),
     };

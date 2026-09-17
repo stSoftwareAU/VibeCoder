@@ -76,6 +76,19 @@ interface Captured {
   pushes: string[][];
   /** Revisions `git reset --hard` was pointed at. */
   resets: string[];
+  /** The `git commit-tree` invocations, derived from {@link Captured.argv}. */
+  commitTrees: () => string[][];
+}
+
+function makeCaptured(): Captured {
+  const captured: Captured = {
+    argv: [],
+    pushes: [],
+    resets: [],
+    commitTrees: () =>
+      captured.argv.filter((args) => args[0] === "commit-tree"),
+  };
+  return captured;
 }
 
 function ok(value: RebaseGitOutcome): Result<RebaseGitOutcome> {
@@ -174,7 +187,7 @@ async function runRung(
   script: GitScript,
   overrides?: { oldHead?: string },
 ): Promise<{ captured: Captured; outcome: RebaseRungOutcome }> {
-  const captured: Captured = { argv: [], pushes: [], resets: [] };
+  const captured = makeCaptured();
   const outcome = await runRebaseRung({
     branchName: "issue-16-fix",
     baseBranch: "Develop",
@@ -204,7 +217,7 @@ async function expectThrow(script: GitScript): Promise<{
   captured: Captured;
   error: Error;
 }> {
-  const captured: Captured = { argv: [], pushes: [], resets: [] };
+  const captured = makeCaptured();
   try {
     await runRebaseRung({
       branchName: "issue-16-fix",
@@ -398,6 +411,41 @@ Deno.test("runRebaseRung - a fallback whose tree differs from OLD fails loud and
   assertEquals(finalHead(captured, script), OLD);
 });
 
+Deno.test("runRebaseRung - a replay that moves nothing takes the fallback rather than pushing OLD back", async () => {
+  // The branch was already linear off the base, so the replay is a no-op.
+  // Pushing OLD back gives GitHub nothing new to judge, and the comment would
+  // claim a linearisation that never happened.
+  const script = makeScript({ headAfterRebase: OLD });
+  const { captured, outcome } = await runRung(script);
+
+  assertEquals(outcome, {
+    kind: "pushed",
+    oldHead: OLD,
+    newHead: SQUASHED,
+    via: "squash",
+  });
+  assertEquals(captured.commitTrees().length, 1);
+  assertEquals(finalHead(captured, script), SQUASHED);
+});
+
+Deno.test("runRebaseRung - an abort that fails stops rather than building on a mid-rebase clone", async () => {
+  const script = makeScript({
+    rebaseCode: 1,
+    unmergedPaths: ["SECURITY.md"],
+    abortCode: 1,
+  });
+  const { captured, error } = await expectThrow(script);
+
+  assertStringIncludes(error.message, "--abort");
+  assertEquals(captured.pushes, [], "nothing is pushed");
+  assertEquals(
+    captured.commitTrees().length,
+    0,
+    "the fallback is never built on a clone that may still be mid-rebase",
+  );
+  assertEquals(captured.resets.at(-1), OLD);
+});
+
 Deno.test("runRebaseRung - a commit-tree failure pushes nothing", async () => {
   const script = makeScript({
     rebasedTreeIdentical: false,
@@ -410,7 +458,7 @@ Deno.test("runRebaseRung - a commit-tree failure pushes nothing", async () => {
 });
 
 Deno.test("runRebaseRung - an unreadable HEAD refuses rather than claiming the head moved", async () => {
-  const captured: Captured = { argv: [], pushes: [], resets: [] };
+  const captured = makeCaptured();
   let threw: Error | undefined;
   try {
     await runRebaseRung({
@@ -434,7 +482,7 @@ Deno.test("runRebaseRung - an unreadable HEAD refuses rather than claiming the h
 });
 
 Deno.test("runRebaseRung - an unusable old head is refused before any git runs", async () => {
-  const captured: Captured = { argv: [], pushes: [], resets: [] };
+  const captured = makeCaptured();
   let threw: Error | undefined;
   try {
     await runRebaseRung({

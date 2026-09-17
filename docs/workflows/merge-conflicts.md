@@ -411,11 +411,19 @@ graph is theirs to reshape.
   claim about code, and the push is irreversible. There is no agent run on this
   path: under the guard the only admissible resolution is a tree equal to `OLD`,
   which the fallback produces outright.
+- **A replay that moves nothing takes the fallback too.** A branch already
+  linear off the base rebases to the same head; pushing it back would give
+  GitHub nothing new to judge while the comment claimed a linearisation that
+  never happened. The fallback always produces a new commit carrying the same
+  tree, so it is what moves the head in that case.
 - **Every rebase-rung outcome leaves the branch at `OLD` or at a head whose tree
   equals `OLD`'s**, error paths included. A failure restores `OLD` and then
-  fails loud rather than leaving a half-replayed branch behind, and a refused
-  push posts the rung-failed marker so the next scan climbs to the abandon rung
-  rather than retrying this one. Post-release the audit is
+  fails loud rather than leaving a half-replayed branch behind — including when
+  `git rebase --abort` itself fails, where the fallback is *not* built, because
+  a clone that may still be mid-rebase is not one to commit on. Every ending
+  short of a push posts the rung-failed marker, a worker fault included, so the
+  next scan climbs to the abandon rung instead of re-deciding `rebase` at the
+  same head for ever. Post-release the audit is
   `git diff --stat <old> <new>` on the shas the rebase comment names — any
   output is a regression.
 - **The head sha and the verdict are read together**, in one

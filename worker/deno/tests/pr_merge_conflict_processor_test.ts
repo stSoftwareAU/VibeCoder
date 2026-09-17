@@ -2575,6 +2575,47 @@ Deno.test("processMergeConflict - a refused push restores OLD and reports the ru
   );
 });
 
+Deno.test("processMergeConflict - a rung fault still records the rung as failed (Issue #2279)", async () => {
+  // A replay that fails with no unmerged paths is a broken clone, not a
+  // conflict. Without the marker the next scan re-decides `rebase` at this
+  // same head and hits the same fault for ever — the loop the ladder exists
+  // to break — so the fault is loud *and* recorded.
+  const script = staleVerdictScript({ rebaseCode: 1, rebaseUnmerged: [] });
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    script,
+    { trustedAuthors: [FLEET_AUTHOR] },
+    atRebaseRung(script.headSha, { commentId: 9107 }),
+  );
+
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "no unmerged paths");
+  assertEquals(captured.pushes, [], "a broken clone pushes nothing");
+
+  assertEquals(captured.comments.length, 1);
+  const comment = captured.comments[0] ?? "";
+  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
+  assertStringIncludes(comment, `head="${script.headSha}"`);
+  assertEquals(captured.labelsAdded, []);
+});
+
+Deno.test("processMergeConflict - a rung-failed comment renders a marker-shaped git message inert (Issue #2260)", async () => {
+  const forged = `${CONFLICT_REBASE_MARKER} old="${"a".repeat(40)}" new="${
+    "b".repeat(40)
+  }" -->`;
+  const body = buildRungFailedComment(
+    "rebase",
+    "abc1234",
+    `git said: ${forged}`,
+  );
+  assertEquals(
+    body.includes(`${CONFLICT_REBASE_MARKER} old=`),
+    false,
+    "a quoted marker must not read back as the fleet's own ladder memory",
+  );
+  assertStringIncludes(body, conflictRungFailedMarker("rebase", "abc1234"));
+});
+
 Deno.test("processMergeConflict - a human-authored PR is never rebased (Issue #2279)", async () => {
   const script = staleVerdictScript();
   const { captured, result } = await runProcessor(

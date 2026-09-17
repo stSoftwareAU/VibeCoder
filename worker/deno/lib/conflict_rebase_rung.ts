@@ -287,13 +287,22 @@ export async function runRebaseRung(
     const conflicted = unmerged.code === 0 && unmerged.stdout.trim().length > 0;
     const abort = await git(run, ["rebase", "--abort"], cwd);
 
+    if (abort.code !== 0) {
+      // A clone that may still be mid-rebase is not one to build a commit on:
+      // the fallback's `reset --hard` would land on a half-replayed state the
+      // header promises never to leave behind. Restore and stop.
+      await resetHard(run, cwd, oldHead, "after `git rebase --abort` failed");
+      throw new Error(
+        `\`git rebase --abort\` failed after the replay onto ` +
+          `'origin/${baseBranch}' stopped: ${detailOf(abort)} — the branch ` +
+          `was reset to ${oldHead} and nothing was pushed`,
+      );
+    }
+
     if (!conflicted) {
       // Not a conflict at all — a dirty tree, a missing upstream, a broken
-      // clone. Restore and fail loud rather than papering over it with the
-      // fallback, which would hide a broken clone behind a green push.
-      if (abort.code !== 0) {
-        await resetHard(run, cwd, oldHead, "after a failed rebase");
-      }
+      // clone. Fail loud rather than papering over it with the fallback,
+      // which would hide a broken clone behind a green push.
       throw new Error(
         `\`git rebase\` onto 'origin/${baseBranch}' failed with no unmerged ` +
           `paths, so the failure is not a replay conflict: ${detailOf(rebase)}`,
@@ -313,19 +322,27 @@ export async function runRebaseRung(
     //    trees are identical, which is the whole licence for the force-push
     //    below.
     const guard = await git(run, ["diff", "--quiet", oldHead, "HEAD"], cwd);
-    if (guard.code === 0) {
-      newHead = await readHead(run, cwd);
+    const replayed = await readHead(run, cwd);
+    if (guard.code === 0 && replayed !== oldHead) {
+      newHead = replayed;
       via = "rebase";
     } else {
-      // The replay produced a different tree — a legitimate rebase outcome
-      // (dropped merges change what the commits apply to), but not one this
-      // rung may push. Throw it away and take the fallback.
+      // Two cases, one answer. Either the replay produced a **different
+      // tree** — a legitimate rebase outcome, dropped merges change what the
+      // commits apply to, but not one this rung may push — or it was a
+      // **no-op**: the branch was already linear off the base, so `HEAD` did
+      // not move and pushing it back would give GitHub nothing new to judge
+      // while the comment claimed a linearisation that never happened. Throw
+      // the replay away and take the fallback, which always produces a new
+      // commit carrying the same tree.
       logger?.info?.(
-        "Rebase rung: the replayed tree differs from the judged head — " +
-          "squashing instead",
+        replayed === oldHead
+          ? "Rebase rung: the replay moved nothing — squashing instead"
+          : "Rebase rung: the replayed tree differs from the judged head — " +
+            "squashing instead",
         { branchName, baseBranch, oldHead },
       );
-      await resetHard(run, cwd, oldHead, "after the replayed tree differed");
+      await resetHard(run, cwd, oldHead, "after the replay was rejected");
       newHead = await replaceWithSquashOfOldTree(request, oldHead, runId);
       via = "squash";
     }
