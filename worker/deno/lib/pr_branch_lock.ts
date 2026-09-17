@@ -51,6 +51,11 @@ import {
   type AlertDedupCommentRow,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
+import {
+  deleteIssueComment,
+  fetchMarkerComments,
+  parseMarkerCommentPages,
+} from "./marker_comment_pages.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -299,44 +304,14 @@ export function parsePostedCommentId(ghOutput: string): number | null {
 /**
  * Flatten what `gh api --paginate --jq '[…]'` prints (Issue #2265).
  *
- * `--paginate` applies the filter to each page in turn, so the payload is
- * one JSON array per line rather than a single array — and `--slurp`, which
- * would merge them, is refused alongside `--jq`. A malformed line throws:
- * an unreadable page is a failure the caller must handle, never an empty
- * result standing in for "no locks".
- *
- * Exported for the regression test.
+ * The lock's view of {@link parseMarkerCommentPages}, which the PR-comment
+ * claim reads the same way (Issue #2266). Exported for the regression test.
  *
  * @param payload - Raw stdout from the paginated comment read
  * @returns Every lock comment across every page, in page order
  */
 export function parseLockCommentPages(payload: string): LockComment[] {
-  const rows: LockComment[] = [];
-
-  for (const line of payload.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-
-    const parsed: unknown = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) continue;
-
-    for (const entry of parsed as Array<Record<string, unknown>>) {
-      if (
-        typeof entry.body !== "string" ||
-        !entry.body.includes(BRANCH_UPDATE_LOCK_PREFIX)
-      ) {
-        continue;
-      }
-      rows.push({
-        id: Number(entry.id),
-        body: entry.body,
-        createdAt: String(entry.created_at ?? ""),
-        author: typeof entry.author === "string" ? entry.author : null,
-      });
-    }
-  }
-
-  return rows;
+  return parseMarkerCommentPages(payload, BRANCH_UPDATE_LOCK_PREFIX);
 }
 
 /**
@@ -346,21 +321,17 @@ export function parseLockCommentPages(payload: string): LockComment[] {
  * of 30 comments hid every lock on a busy PR, which left the sweep with
  * nothing to expire and stopped a host recognising its own lock comment.
  */
-async function fetchLockComments(
+function fetchLockComments(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<LockComment[]> {
-  const payload = await ghCommandFn([
-    "api",
-    "--paginate",
-    `repos/${repo}/issues/${prNumber}/comments?per_page=100`,
-    "--jq",
-    `[.[] | select(.body | test("${BRANCH_UPDATE_LOCK_PREFIX}")) | ` +
-    `{id: .id, body: .body, created_at: .created_at, author: .user.login}]`,
-  ]);
-
-  return parseLockCommentPages(payload);
+  return fetchMarkerComments(
+    repo,
+    prNumber,
+    BRANCH_UPDATE_LOCK_PREFIX,
+    ghCommandFn,
+  );
 }
 
 /**
@@ -368,22 +339,12 @@ async function fetchLockComments(
  *
  * @returns The error when the delete failed, or null when it succeeded
  */
-async function deleteLockComment(
+function deleteLockComment(
   repo: string,
   commentId: number,
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<Error | null> {
-  try {
-    await ghCommandFn([
-      "api",
-      "-X",
-      "DELETE",
-      `repos/${repo}/issues/comments/${commentId}`,
-    ]);
-    return null;
-  } catch (err) {
-    return err instanceof Error ? err : new Error(String(err));
-  }
+  return deleteIssueComment(repo, commentId, ghCommandFn);
 }
 
 // ---------------------------------------------------------------------------

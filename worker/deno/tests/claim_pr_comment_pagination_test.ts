@@ -13,9 +13,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   claimPrComment,
+  MAX_STALE_CLAIM_DELETIONS,
   parseClaimCommentPages,
 } from "../lib/claim_pr_comment.ts";
 
@@ -73,6 +74,11 @@ const deletedId = (args: string[]): number | null => {
 /**
  * A `gh` stub that records every call and scripts the comment reads.
  *
+ * The stub behaves like `gh api` does: **without** `--paginate` it answers
+ * with the first page only, exactly as GitHub returns the 30 oldest comments.
+ * A fake that served every page regardless would let the page-two tests pass
+ * against the unpaginated read they exist to catch.
+ *
  * @param readPayloads - Payload per comment read, in call order; the last
  *   entry is reused once the list is exhausted
  * @param ownCommentId - The id `gh pr comment` reports for the posted claim
@@ -94,7 +100,9 @@ function createMockGh(options: {
       const payload = options.readPayloads[reads] ??
         options.readPayloads[options.readPayloads.length - 1] ?? "[]";
       reads++;
-      return Promise.resolve(payload);
+      return Promise.resolve(
+        args.includes("--paginate") ? payload : payload.split("\n")[0] ?? "[]",
+      );
     }
 
     const target = deletedId(args);
@@ -135,18 +143,9 @@ Deno.test("claim pr comment - parseClaimCommentPages flattens one array per page
 });
 
 Deno.test("claim pr comment - parseClaimCommentPages throws on an unreadable page", () => {
-  let threw = false;
-  try {
-    parseClaimCommentPages("[]\nnot json\n");
-  } catch {
-    threw = true;
-  }
-  assertEquals(
-    threw,
-    true,
-    "an unreadable page is a failure the caller handles, never an empty " +
-      "result standing in for 'no claims'",
-  );
+  // An unreadable page is a failure the caller handles, never an empty
+  // result standing in for "no claims".
+  assertThrows(() => parseClaimCommentPages("[]\nnot json\n"));
 });
 
 // ---------------------------------------------------------------------------
@@ -280,6 +279,75 @@ Deno.test("claim pr comment - deletes the posted comment when the re-read comes 
     [402],
     "a claim comment nobody can see must not be left on the thread",
   );
+});
+
+Deno.test("claim pr comment - with no comment URL back, the newest fleet-authored match is deleted", async () => {
+  // `gh` printed no URL, so the only evidence left is the marker. A
+  // previous run's leftover carries the same marker: deleting that one would
+  // leave this run's comment on the PR, which is the litter being fixed. A
+  // stranger's copy must not be deleted at all — a marker anyone can quote
+  // must not drive a destructive write.
+  const thread = pages(
+    [claimRow(100, "worker-beta", "555", "2026-04-01T00:00:00Z")], // leftover
+    [
+      claimRow(900, "worker-beta", "555", "2026-04-01T00:05:00Z", "outsider"),
+      claimRow(301, "worker-beta", "555", "2026-04-01T00:09:59Z"), // this run
+      claimRow(300, "worker-alpha", "555", "2026-04-01T00:09:58Z"),
+    ],
+  );
+  const mock = createMockGh({ readPayloads: ["[]", thread, thread] });
+
+  const result = await claimPrComment({
+    repo: "org/repo",
+    prNumber: 42,
+    commentId: "555",
+    workerId: "worker-beta",
+    sleepFn: noSleep,
+    ghCommandFn: mock.ghCommandFn,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    nowMsFn: () => NOW,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.claimed, false);
+    assertEquals(result.value.winnerId, "worker-alpha");
+  }
+  assertEquals(mock.deletes, [301]);
+});
+
+Deno.test("claim pr comment - the stale sweep caps its deletions per pass", async () => {
+  const backlog = Array.from(
+    { length: MAX_STALE_CLAIM_DELETIONS + 50 },
+    (_unused, i) =>
+      claimRow(i + 1, "crashed-worker", "555", "2026-04-01T00:00:00Z"),
+  );
+  const mock = createMockGh({
+    ownCommentId: 999,
+    readPayloads: [
+      JSON.stringify(backlog),
+      pages([claimRow(999, "worker-beta", "555", "2026-04-01T00:09:59Z")]),
+    ],
+  });
+  const logs: string[] = [];
+
+  await claimPrComment({
+    repo: "org/repo",
+    prNumber: 42,
+    commentId: "555",
+    workerId: "worker-beta",
+    sleepFn: noSleep,
+    ghCommandFn: mock.ghCommandFn,
+    authorOptions: FLEET_OPTIONS,
+    log: (message) => logs.push(message),
+    nowMsFn: () => NOW,
+  });
+
+  // A backlog from the blind days must not turn one claim into 150 deletes.
+  assertEquals(mock.deletes.length, MAX_STALE_CLAIM_DELETIONS);
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0]!, "50");
 });
 
 Deno.test("claim pr comment - deletes its own comment by id, not by matching the body", async () => {

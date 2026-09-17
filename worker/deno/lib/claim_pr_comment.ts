@@ -38,9 +38,10 @@
  * `BRANCH_UPDATE_LOCK` comments on NEAT-AI-Lamarck#239 before Issue #2265
  * fixed the same defect in `pr_branch_lock.ts`. The same three rules apply
  * here: the reads are paginated, the posted comment is deleted on **every**
- * not-claimed path — by the comment id `gh` returned when posting it, not by
- * matching a body anyone may copy — and an **expired** claim is ignored when
- * the winner is chosen, so a delete that never succeeded cannot wedge the PR.
+ * not-claimed path — by the comment id `gh` returned when posting it, with a
+ * fleet-authored body match only as a fallback when `gh` printed no URL —
+ * and an **expired** claim is ignored when the winner is chosen, so a delete
+ * that never succeeded cannot wedge the PR.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -53,9 +54,14 @@ import { parsePostedCommentId } from "./pr_branch_lock.ts";
 import { type CommentType, markCommentProcessed } from "./pr_comments.ts";
 import {
   type AlertDedupAuthorOptions,
-  type AlertDedupCommentRow,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
+import {
+  deleteIssueComment,
+  fetchMarkerComments,
+  type MarkerComment,
+  parseMarkerCommentPages,
+} from "./marker_comment_pages.ts";
 
 /** The claim marker prefix used in PR comments for tie-breaking. */
 export const PR_COMMENT_CLAIM_PREFIX = "<!-- PR_COMMENT_CLAIM:";
@@ -97,7 +103,7 @@ export interface ClaimPrCommentOptions {
 export const STALE_CLAIM_MIN_AGE_MS = 60_000;
 
 /**
- * Stale claim comments deleted in one sweep (Issue #2266).
+ * Stale claim comments deleted in one sweep, at most (Issue #2266).
  *
  * The sweep now reads every page, so a thread that accumulated a backlog
  * while the read was blind can hold hundreds of aged claims — deleting them
@@ -106,7 +112,7 @@ export const STALE_CLAIM_MIN_AGE_MS = 60_000;
  * waits on it, because an expired claim is already ignored when the winner
  * is chosen.
  */
-export const DEFAULT_MAX_STALE_CLAIM_DELETIONS = 100;
+export const MAX_STALE_CLAIM_DELETIONS = 100;
 
 /** Result data from a successful claim operation. */
 export interface ClaimPrCommentResult {
@@ -115,11 +121,7 @@ export interface ClaimPrCommentResult {
 }
 
 /** Claim comment parsed from the GitHub API. */
-interface ClaimComment extends AlertDedupCommentRow {
-  id: number;
-  body: string;
-  createdAt: string;
-}
+type ClaimComment = MarkerComment;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -148,93 +150,34 @@ export function extractClaimInfo(
 /**
  * Flatten what `gh api --paginate --jq '[…]'` prints (Issue #2266).
  *
- * `--paginate` applies the filter to each page in turn, so the payload is
- * one JSON array per line rather than a single array — and `--slurp`, which
- * would merge them, is refused alongside `--jq`. A malformed line throws: an
- * unreadable page is a failure the caller must handle, never an empty result
- * standing in for "no claims".
- *
- * Exported for the regression test.
+ * The claim's view of {@link parseMarkerCommentPages}, which the branch
+ * update lock reads the same way (Issue #2265). Exported for the regression
+ * test.
  *
  * @param payload - Raw stdout from the paginated comment read
  * @returns Every claim comment across every page, in page order
  */
 export function parseClaimCommentPages(payload: string): ClaimComment[] {
-  const rows: ClaimComment[] = [];
-
-  for (const line of payload.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-
-    const parsed: unknown = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) continue;
-
-    for (const entry of parsed as Array<Record<string, unknown>>) {
-      if (
-        typeof entry.body !== "string" ||
-        !entry.body.includes(PR_COMMENT_CLAIM_PREFIX)
-      ) {
-        continue;
-      }
-      rows.push({
-        id: Number(entry.id),
-        body: entry.body,
-        createdAt: String(entry.created_at ?? ""),
-        author: typeof entry.author === "string" ? entry.author : null,
-      });
-    }
-  }
-
-  return rows;
+  return parseMarkerCommentPages(payload, PR_COMMENT_CLAIM_PREFIX);
 }
 
 /**
  * Fetch every claim comment on a PR, across every page (Issue #2266).
  *
- * The endpoint stays the first argument — `gh` accepts its flags after it —
- * so the call reads as the endpoint it queries rather than as a flag.
- *
  * Throws when the read or a page fails: a blind read must never pass as an
  * empty thread, which is precisely how the claim leaked.
  */
-async function fetchClaimComments(
+function fetchClaimComments(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<ClaimComment[]> {
-  const payload = await ghCommandFn([
-    "api",
-    `repos/${repo}/issues/${prNumber}/comments?per_page=100`,
-    "--paginate",
-    "--jq",
-    `[.[] | select(.body | test("${PR_COMMENT_CLAIM_PREFIX}")) | ` +
-    `{id: .id, body: .body, created_at: .created_at, author: .user.login}]`,
-  ]);
-
-  return parseClaimCommentPages(payload);
-}
-
-/**
- * Delete one claim comment, reporting the failure rather than hiding it.
- *
- * @returns The error when the delete failed, or null when it succeeded
- */
-async function deleteClaimComment(
-  repo: string,
-  commentId: number,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<Error | null> {
-  try {
-    await ghCommandFn([
-      "api",
-      "-X",
-      "DELETE",
-      `repos/${repo}/issues/comments/${commentId}`,
-    ]);
-    return null;
-  } catch (err) {
-    return err instanceof Error ? err : new Error(String(err));
-  }
+  return fetchMarkerComments(
+    repo,
+    prNumber,
+    PR_COMMENT_CLAIM_PREFIX,
+    ghCommandFn,
+  );
 }
 
 /**
@@ -297,8 +240,8 @@ async function cleanupStaleClaimComments(
       "a destructive write",
   );
 
-  for (const { id } of deletable.slice(0, DEFAULT_MAX_STALE_CLAIM_DELETIONS)) {
-    const error = await deleteClaimComment(repo, id, ghCommandFn);
+  for (const { id } of deletable.slice(0, MAX_STALE_CLAIM_DELETIONS)) {
+    const error = await deleteIssueComment(repo, id, ghCommandFn);
     if (error) {
       log(
         `${where} could not delete stale claim comment ${id} — ` +
@@ -307,12 +250,12 @@ async function cleanupStaleClaimComments(
     }
   }
 
-  if (deletable.length > DEFAULT_MAX_STALE_CLAIM_DELETIONS) {
+  if (deletable.length > MAX_STALE_CLAIM_DELETIONS) {
     log(
       `${where} ${
-        deletable.length - DEFAULT_MAX_STALE_CLAIM_DELETIONS
+        deletable.length - MAX_STALE_CLAIM_DELETIONS
       } stale claim comment(s) remain after this pass's ` +
-        `${DEFAULT_MAX_STALE_CLAIM_DELETIONS}; the next pass clears more ` +
+        `${MAX_STALE_CLAIM_DELETIONS}; the next pass clears more ` +
         `(Issue #2266)`,
     );
   }
@@ -328,10 +271,13 @@ async function cleanupStaleClaimComments(
  * stayed on the PR for ever.
  *
  * `postedId` is null when `gh` printed no comment URL. The paginated
- * body-match lookup is then the only way back to the comment: it is weaker
- * evidence (a marker anyone may copy), so it is a fallback, never the
- * primary path, and it deletes only a comment carrying this host's own
- * worker id and target comment id.
+ * body-match lookup is then the only way back to the comment, and it is
+ * weaker evidence — a marker anyone may copy — so the fallback is bounded
+ * two ways: the comment must be **fleet-authored**, because a delete is a
+ * destructive write an unauthenticated marker must not drive (Issue #1249,
+ * finding 7), and the **newest** match is taken, because an older one is a
+ * previous run's leftover and deleting that would leave this run's comment
+ * on the PR — the very litter this fixes.
  *
  * Best-effort — it never throws into a claim attempt — but never silent: a
  * comment left behind is said out loud, because silence is how 765 claim
@@ -344,6 +290,7 @@ async function removeOwnClaimComment(
   workerId: string,
   commentId: string,
   ghCommandFn: (args: string[]) => Promise<string>,
+  authorOptions: AlertDedupAuthorOptions,
   log: (message: string) => void,
 ): Promise<void> {
   const where = `[claim-pr-comment] ${repo}#${prNumber}:`;
@@ -353,7 +300,15 @@ async function removeOwnClaimComment(
     try {
       const marker = `PR_COMMENT_CLAIM:${workerId}:${commentId}`;
       const claims = await fetchClaimComments(repo, prNumber, ghCommandFn);
-      targetId = claims.find((c) => c.body.includes(marker))?.id ?? null;
+      const mine = await selectFleetAuthoredComments(
+        claims.filter((c) => c.body.includes(marker)),
+        `own PR comment claim ${repo}#${prNumber}`,
+        authorOptions,
+        log,
+        "this host's own claim comment is left on the PR for the stale " +
+          "sweep — a marker anyone can quote must not drive a delete",
+      );
+      targetId = mine.length > 0 ? mine[mine.length - 1]!.id : null;
     } catch (err) {
       log(
         `${where} gh returned no comment URL for this host's claim comment ` +
@@ -374,7 +329,7 @@ async function removeOwnClaimComment(
     return;
   }
 
-  const error = await deleteClaimComment(repo, targetId, ghCommandFn);
+  const error = await deleteIssueComment(repo, targetId, ghCommandFn);
   if (error) {
     log(
       `${where} could not delete this host's own claim comment ${targetId} — ` +
@@ -416,6 +371,7 @@ export async function claimPrComment(
   } = options;
 
   const nowMs = (options.nowMsFn ?? (() => Date.now()))();
+  const where = `[claim-pr-comment] ${repo}#${prNumber}:`;
 
   // Step 1: Remove stale claim comments from previous runs
   await cleanupStaleClaimComments(
@@ -453,8 +409,15 @@ export async function claimPrComment(
       claimBody,
     ]);
     ownClaimCommentId = parsePostedCommentId(posted);
-  } catch {
-    // Failed to post claim comment — back off
+  } catch (err) {
+    // Failed to post claim comment — back off, saying why rather than
+    // reporting an unclaimed comment as an ordinary lost race.
+    log(
+      `${where} could not post the claim comment, so the feedback comment ` +
+        `is not claimed this cycle — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
     return { ok: true, value: { claimed: false } };
   }
 
@@ -472,6 +435,7 @@ export async function claimPrComment(
       workerId,
       commentId,
       ghCommandFn,
+      authorOptions,
       log,
     );
 
@@ -495,8 +459,13 @@ export async function claimPrComment(
   let allClaimComments: ClaimComment[];
   try {
     allClaimComments = await fetchClaimComments(repo, prNumber, ghCommandFn);
-  } catch {
-    // Failed to read comments — back off, clean up
+  } catch (err) {
+    // Failed to read comments — back off, clean up, and say why: a claim
+    // that can never be verified must not look like a quiet loss.
+    log(
+      `${where} could not re-read the claim comments, so this host is not ` +
+        `claiming — ${err instanceof Error ? err.message : String(err)}`,
+    );
     await dropOwnClaimComment();
     return { ok: true, value: { claimed: false } };
   }
@@ -511,12 +480,17 @@ export async function claimPrComment(
     return info !== null && info.commentId === commentId;
   });
 
+  // Exactly one comment in the thread is ours. With an id from `gh` it is
+  // that one; without it, the **newest** comment carrying this host's marker
+  // is the one posted moments ago — an older copy is a previous run's
+  // leftover (a worker id is `name@hostname`, so it recurs), and counting it
+  // as ours would sort earliest and win a race this host should lose.
   const ownMarker = `PR_COMMENT_CLAIM:${workerId}:${commentId}`;
-  const isOurs = (c: ClaimComment) =>
-    ownClaimCommentId !== null
-      ? c.id === ownClaimCommentId
-      : c.body.includes(ownMarker);
-  const ourClaims = relevantClaims.filter(isOurs);
+  const ownClaim = ownClaimCommentId !== null
+    ? relevantClaims.find((c) => c.id === ownClaimCommentId) ?? null
+    : relevantClaims.filter((c) => c.body.includes(ownMarker)).at(-1) ?? null;
+  const isOurs = (c: ClaimComment) => ownClaim !== null && c.id === ownClaim.id;
+  const ourClaims = ownClaim === null ? [] : [ownClaim];
 
   const fleetClaims = await selectFleetAuthoredComments(
     relevantClaims.filter((c) => !isOurs(c)),
