@@ -37,6 +37,8 @@ import {
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
   findOtherPrsForIssue,
+  planRequeueLabel,
+  requeueLabelName,
   restartMarkerPrNumbers,
   summariseFailedAttempts,
 } from "../lib/conflict_abandon_restart.ts";
@@ -378,6 +380,40 @@ Deno.test("abandonAndRestart - reopens a closed issue and applies idle-task", as
 // ---------------------------------------------------------------------------
 // The re-queue label — keep what is there, else `idle-task` (Issue #2277)
 // ---------------------------------------------------------------------------
+
+Deno.test("planRequeueLabel - keeps the highest-priority pickup label present", () => {
+  // The fleet's own order: top-priority > work-on > low-priority > idle-task.
+  // Keeping the lower of two would demote the issue as surely as replacing it.
+  assertEquals(planRequeueLabel(["work-on", "top-priority"]), {
+    kept: "top-priority",
+  });
+  assertEquals(planRequeueLabel(["idle-task", "low-priority"]), {
+    kept: "low-priority",
+  });
+  assertEquals(planRequeueLabel(["bug", "idle-task"]), { kept: "idle-task" });
+});
+
+Deno.test("planRequeueLabel - an issue with no pickup label gains idle-task", () => {
+  assertEquals(planRequeueLabel([]), { applied: "idle-task" });
+  assertEquals(planRequeueLabel(["bug", "documentation"]), {
+    applied: "idle-task",
+  });
+  // A label that merely contains a pickup name is not one of them.
+  assertEquals(planRequeueLabel(["work-on-later"]), { applied: "idle-task" });
+});
+
+Deno.test("planRequeueLabel - a differently-cased label still counts, and is canonicalised", () => {
+  // GitHub label names are case-insensitive to create, so `Top-Priority` is
+  // the same pickup signal — and the canonical spelling is what the public
+  // comments name, never the repository's own text.
+  assertEquals(planRequeueLabel(["Top-Priority"]), { kept: "top-priority" });
+  assertEquals(requeueLabelName(planRequeueLabel(["IDLE-TASK"])), "idle-task");
+});
+
+Deno.test("requeueLabelName - names either shape", () => {
+  assertEquals(requeueLabelName({ kept: "work-on" }), "work-on");
+  assertEquals(requeueLabelName({ applied: "idle-task" }), "idle-task");
+});
 
 Deno.test("abandonAndRestart - an issue carrying top-priority keeps it, and no label is added", async () => {
   // The live case: NEAT-AI-Lamarck#234 carries `top-priority`. Replacing it —

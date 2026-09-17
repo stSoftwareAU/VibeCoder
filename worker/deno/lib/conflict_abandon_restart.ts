@@ -295,7 +295,7 @@ export function planRequeueLabel(labels: readonly string[]): RequeueLabel {
 }
 
 /** The label a re-queued issue carries, for comment and log use. */
-function requeueLabelName(label: RequeueLabel): string {
+export function requeueLabelName(label: RequeueLabel): string {
   return "kept" in label ? label.kept : label.applied;
 }
 

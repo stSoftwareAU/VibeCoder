@@ -88,6 +88,7 @@ import {
   describeExhaustedRoute,
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
+  requeueLabelName,
 } from "./conflict_abandon_restart.ts";
 import {
   clearMergeConflictLabel,
@@ -1595,9 +1596,7 @@ async function failAttempt(
   if (abandon.outcome === "abandoned") {
     // Issue #2277: the issue keeps the pickup label it already carried, or
     // gains `idle-task`. Either way it is re-queued without a human.
-    const label = "kept" in abandon.label
-      ? abandon.label.kept
-      : abandon.label.applied;
+    const label = requeueLabelName(abandon.label);
     logger.warn(
       `Merge-conflict attempts exhausted on PR #${prNumber} — closed it and ` +
         `re-queued issue #${abandon.issueNumber} (\`${label}\`)`,

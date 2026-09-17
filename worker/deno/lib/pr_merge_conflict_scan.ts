@@ -54,6 +54,7 @@ import {
   exhaustedEscalationDedupKey,
   type ExhaustedEscalationRoute,
   exhaustedEscalationRoute,
+  requeueLabelName,
 } from "./conflict_abandon_restart.ts";
 import { orderByPreference, preferredRepos } from "./conflict_queue_order.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
@@ -1266,9 +1267,7 @@ export async function findConflictingPr(
       if (abandon.outcome === "abandoned") {
         // Issue #2277: the issue keeps whatever pickup label it carried, or
         // gains `idle-task` — either way it is re-queued without a human.
-        const label = "kept" in abandon.label
-          ? abandon.label.kept
-          : abandon.label.applied;
+        const label = requeueLabelName(abandon.label);
         logger.warn(
           `PR #${pr.number} spent its ${maxAttempts} merge-conflict ` +
             `attempts — closed it and re-queued issue ` +

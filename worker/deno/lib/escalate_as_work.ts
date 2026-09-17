@@ -48,8 +48,10 @@
  * PR, so who causes it to run is not a trusted decision — an ordinary
  * contributor whose PR goes red, conflicts or sits in review long enough is
  * enough. Queue-priority labels are the operator's to apply, and the fleet
- * asks `worker_label_guard.ts` before applying any label to a filed issue,
- * exactly as `conflict_abandon_restart.ts` asks before re-queuing. When the
+ * asks `worker_label_guard.ts` before applying any label to a filed issue.
+ * (Abandon-and-restart no longer needs that question at all: it keeps the
+ * pickup label the issue already carries, else applies `idle-task` —
+ * Issue #2277.) When the
  * answer is no the escalation is still filed — unqueued and saying so —
  * because the fail direction is towards filing.
  *
