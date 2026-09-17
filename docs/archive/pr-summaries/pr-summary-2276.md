@@ -47,6 +47,10 @@ ok | 20 passed | 0 failed (33ms)
 
 `deno lint` (2692 files), `deno fmt --check` (2704 files), `deno task check`
 and `deno task check:manifests` (656 tests) all pass from `worker/deno`.
+`tests/pr_merge_conflict_scan_test.ts` and `tests/conflict_abandon_restart_test.ts`
+were re-run beside the new file (114 passed).
+
+<!-- vibe-quality-gate-skipped reason="budget" detail="./quality.sh runs sequentially in this container and was still running at the 900s bound with ~13 minutes of run budget left; lint, fmt --check, deno check, check:manifests, markdownlint on the new audit doc and the three merge-conflict test files were run individually and pass. CI runs the same checks on this PR." -->
 
 ## Reproduction
 
