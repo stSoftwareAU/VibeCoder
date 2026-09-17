@@ -282,29 +282,33 @@ Deno.test("buildCacheEnvForCheckout - the account the command drops to reaches t
   }
 });
 
-Deno.test("buildCacheEnvForCheckout - a stated environment decides, not the host's own", async () => {
+Deno.test("buildCacheEnvForCheckout - a stated environment decides the placement", async () => {
   // The gate ran red on exactly the hosts the feature is for: the worker sets
   // CARGO_TARGET_DIR on the agent, the agent runs `deno test`, and a test that
-  // inherited that value asserted the opposite of what it meant to (#2291).
+  // inherited that value read it as an operator's own setting and asserted the
+  // opposite of what it meant to (Issue #2291). A stated source names what the
+  // child would have had, so the host's own environment never reaches it.
   const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
-  const inherited = Deno.env.get("CARGO_TARGET_DIR");
-  Deno.env.set("CARGO_TARGET_DIR", "/var/tmp/vibe-cargo-target/inherited");
   try {
     assertEquals(
       buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, {
         trimRefused: true,
         root,
-        source: {},
+        source: { PATH: "/usr/bin" },
       })["CARGO_TARGET_DIR"],
       cargoTargetDirForCheckout(`${WORK_ROOT}/GRQ-tax`, { root }),
       "the stated environment names no setting, so the placement stands",
     );
+    assertEquals(
+      buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, {
+        trimRefused: true,
+        root,
+        source: { CARGO_TARGET_DIR: "/operator/target" },
+      }),
+      {},
+      "the stated environment names one, so it is never overridden",
+    );
   } finally {
-    if (inherited === undefined) {
-      Deno.env.delete("CARGO_TARGET_DIR");
-    } else {
-      Deno.env.set("CARGO_TARGET_DIR", inherited);
-    }
     await Deno.remove(root, { recursive: true });
   }
 });

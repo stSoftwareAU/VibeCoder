@@ -155,12 +155,13 @@ export function carryEnvThroughSudo(
  * @param options.cwd - The checkout the command runs in.
  * @param options.repoCredentialEnv - What this repository declared.
  * @param options.trimRefused - The launch verdict; omitted in production.
- * @param options.source - The environment the child is built from. It is the
- *   same source both overlays read (Issue #2291): this command's environment
- *   is BUILT, not inherited, so an explicit `CARGO_TARGET_DIR` that keeps its
- *   placement is the one in **this** source — not whatever the worker's own
- *   process happens to carry, which on a trim-refused host is the worker's
- *   own ephemeral directory keyed to another account.
+ * @param options.source - The environment the child is built from; production
+ *   omits it and gets the worker's own. Both overlays read this one source
+ *   (Issue #2291): the command's environment is BUILT from it, so the
+ *   explicit `CARGO_TARGET_DIR` that keeps its own placement is the one the
+ *   child would actually have had. Deciding from a *different* environment
+ *   than the child is built from is a seam that silently disagrees with
+ *   itself — and it is what the three red tests of Issue #2291 caught.
  */
 export function untrustedQualityCommandEnv(options: {
   spawnable: readonly string[];
