@@ -21,6 +21,7 @@ import {
   ensureAgentMcpConfig,
 } from "./agent_mcp_config.ts";
 import type { EnvLookup } from "./env_lookup.ts";
+import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
 import {
@@ -1146,6 +1147,14 @@ export async function runClaudeWithTimeout(
     // prompt injection with the argv check as its only backstop. Overlaid
     // onto the SANITISED environment, never rebuilt from the worker's own.
     const baseEnv = await withRunScopedGhToken(sanitisedEnv);
+    // Keep the agent's build artefacts off the persistent work volume
+    // (Issue #2247). Where the runtime refuses to trim that volume, every
+    // block a `cargo build` writes inside it is allocated on the host for
+    // good — 20 GB an hour through a Rust-heavy cycle — so the target
+    // directory is pointed at the container's own ephemeral layer, keyed by
+    // the checkout this run works in. On a runtime that honours the trim, and
+    // on a developer host, this adds nothing.
+    Object.assign(baseEnv, buildCacheEnvForCheckout(cwd, { source: baseEnv }));
     // Interpose the `gh` guard on the child's PATH (Issue #3643): the agent
     // holds GH_TOKEN and runs unrestricted bash, so without this its own `gh`
     // writes bypass the write-repo allowlist and the reserved-label guard the

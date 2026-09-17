@@ -20,6 +20,7 @@
  */
 
 import { runWithTimeout } from "./subprocess_timeout.ts";
+import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import { stripJsonc } from "./jsonc.ts";
 
 /** How long the merged-tree type check may run before it is killed. */
@@ -276,6 +277,10 @@ const spawnTypeCheck: TypeCheckRunner = async (project) => {
   const result = await runWithTimeout(executable, project.args, {
     cwd: project.dir,
     timeoutMs: MERGE_GATE_TIMEOUT_MS,
+    // Where the runtime refuses to trim the work volume, `cargo check` writes
+    // its artefacts to the container's ephemeral layer instead of ratcheting
+    // the volume's sparse image (Issue #2247). Empty everywhere else.
+    env: buildCacheEnvForCheckout(project.dir),
   });
   if (!result.ok) return { code: 1, output: result.error.message };
   const { code, stdout, stderr, timedOut } = result.value;

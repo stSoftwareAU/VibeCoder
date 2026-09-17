@@ -19,6 +19,7 @@ import {
   isCredentialVariableName,
   UNTRUSTED_USER,
 } from "../lib/untrusted_command_env.ts";
+import { untrustedQualityCommandEnv } from "../lib/quality_gate_phase.ts";
 
 /** The environment a worker actually carries, credentials included. */
 const WORKER_ENV: Record<string, string> = {
@@ -152,11 +153,28 @@ Deno.test("quality_gate_phase - spawns with a built environment, never an inheri
     new URL("../lib/quality_gate_phase.ts", import.meta.url),
   );
   // Built from the allowlist, with only the credentials this repository
-  // declared layered on top (Issues #573, #574) — never inherited.
+  // declared layered on top (Issues #573, #574) — never inherited. Issue
+  // #2247 moved the composition into `untrustedQualityCommandEnv`, so the
+  // overrides are now spelled through that function's own parameter; the
+  // guarantee is unchanged and is asserted for real below.
   assertStringIncludes(source, "buildUntrustedCommandEnv({");
-  assertStringIncludes(source, "overrides: repoCredentialEnv");
+  assertStringIncludes(source, "...options.repoCredentialEnv");
   // `clearEnv` is what makes the allowlist real: without it Deno merges the
   // built env over the inherited one and every credential is still there.
   assertStringIncludes(source, "clearEnv: true");
   assertStringIncludes(source, "untrustedSpawn(cmd)");
+
+  // The behaviour itself, not just its spelling: a credential in the source
+  // environment does not reach the repository's own command, and what it
+  // declared does.
+  const env = untrustedQualityCommandEnv({
+    spawnable: ["bash", "-c", "./quality.sh"],
+    cwd: "/home/vibe/auto-issue-work/GRQ-tax",
+    repoCredentialEnv: { DECLARED_TOKEN: "declared" },
+    trimRefused: false,
+    source: { PATH: "/usr/bin", CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+  });
+  assertEquals(env["CLAUDE_CODE_OAUTH_TOKEN"], undefined);
+  assertEquals(env["DECLARED_TOKEN"], "declared");
+  assertEquals(env["PATH"], "/usr/bin");
 });
