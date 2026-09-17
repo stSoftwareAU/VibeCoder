@@ -435,10 +435,26 @@ export interface EnsureAutoMergeOptions {
  * All external operations are injected, enabling testing without
  * real file I/O, network calls, or process management.
  */
+/** The dispatcher's warning sink, with the `log` fallback for harnesses that state none. */
+function warnOf(
+  deps: { log: (m: string) => void; logWarn?: (m: string) => void },
+): (message: string) => void {
+  return deps.logWarn ?? ((message) => deps.log(`WARNING: ${message}`));
+}
+
 export interface RunCoreDeps {
   // Logging
   log: (message: string) => void;
   logError: (message: string) => void;
+  /**
+   * A condition that is degraded but continuing, and that someone should
+   * act on before it gets worse — the host disk below the floor while the
+   * pool drains. Optional so every existing test harness still compiles;
+   * absent, it falls back to `log` with a `WARNING:` prefix. ERROR is kept
+   * for what cannot continue (CODING-STANDARDS.md, "Log Levels Are a
+   * Promise About What the Reader Must Do").
+   */
+  logWarn?: (message: string) => void;
   logTiming: (operation: string, durationSeconds: number) => void;
   logWorkerSummary: (issuesProcessed: number, durationSeconds: number) => void;
 
@@ -3985,7 +4001,9 @@ async function slotPreClaimGuardTripped(
       const disk = await deps.checkHostDisk();
       if (disk.level === "low") {
         if (!pool.hostDiskLow) {
-          deps.logError(
+          // A WARNING, not an ERROR: the pool drains and the run continues;
+          // what the reader must do is make room on the host.
+          warnOf(deps)(
             `[HOST_DISK_LOW] ${disk.detail} — draining the issue pool before claiming further work (Issue #226).`,
           );
         }
@@ -5380,7 +5398,9 @@ export async function runCoreLoop(
                 skipScanForHostDisk = true;
                 if (!hostDiskLowReported) {
                   hostDiskLowReported = true;
-                  deps.logError(
+                  // Degraded and continuing — maintenance still runs and the
+                  // next launch reclaims the disk — so a WARNING.
+                  warnOf(deps)(
                     `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues this cycle; maintenance continues (Issue #226).`,
                   );
                 }

@@ -304,6 +304,7 @@ Every path written inside the container, and the class it was assigned:
 | the agent's session transcripts (Issue #4170) | — | `…/auto-issue-work/.claude-config` via `CLAUDE_CONFIG_DIR` | persistent — already on the volume |
 | the crash-notification rate limit | `${HOME}/.vibe-coder` — the root-owned parent of the credential mounts, so already refused | `…/auto-issue-work/.crash-state` | persistent — it must outlive the restart it throttles |
 | repository clones, build artefacts, worker state | `…/auto-issue-work` | unchanged | persistent — the `vibe-work` volume |
+| cargo's build artefacts on a trim-refused runtime (Issue #2247) | `<checkout>/target` — on the volume, where the blocks never come back | `/var/tmp/vibe-cargo-target/<checkout key>` via `CARGO_TARGET_DIR` | ephemeral — the container's own layer, released at every relaunch |
 | worker logs | `${HOME}/logs` | unchanged | persistent — the log mount |
 | the driver's PID file (Issue #514) | `/workspace/.run.pid` — the checkout, now read-only | `${HOME}/logs/.run.pid` | persistent — the log mount, so the guard still bounds one driver per host |
 | the startup orphaned-branch sweep (Issue #514) | `git fetch --prune` and `git branch -d` in the process working directory, which the entrypoint sets to the checkout | not relocated — the sweep probes the git directory first and skips with a named reason | host-side work: the host updates the checkout before each launch (Issue #512) |
