@@ -331,6 +331,9 @@ export async function runRebaseRung(
     }
   }
 
+  // (Step 5 — building the fallback commit and asserting its tree — lives in
+  // `replaceWithSquashOfOldTree`, which both branches above call.)
+  //
   // 6. The lease pins the remote to the head GitHub judged, so a push races
   //    nothing: if anybody moved the branch since, the push is refused rather
   //    than overwriting them.

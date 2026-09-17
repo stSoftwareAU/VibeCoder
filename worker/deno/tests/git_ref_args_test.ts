@@ -122,6 +122,35 @@ Deno.test("buildRebaseArgs - rejects a dash-leading upstream", () => {
   assertThrows(() => buildRebaseArgs("--autostash"), Error, "must not begin");
 });
 
+Deno.test("buildRebaseArgs - --no-rebase-merges precedes the separator (Issue #2279)", () => {
+  // A flag after `--end-of-options` reaches git as a second upstream, not a
+  // flag, so where it sits is the whole point of the option.
+  assertEquals(buildRebaseArgs("Develop", { noRebaseMerges: true }), [
+    "rebase",
+    "--no-rebase-merges",
+    "--end-of-options",
+    "Develop",
+  ]);
+});
+
+Deno.test("buildRebaseArgs - the flag is opt-in, and the upstream is still validated (Issue #2279)", () => {
+  assertEquals(buildRebaseArgs("Develop", {}), [
+    "rebase",
+    "--end-of-options",
+    "Develop",
+  ]);
+  assertEquals(buildRebaseArgs("Develop", { noRebaseMerges: false }), [
+    "rebase",
+    "--end-of-options",
+    "Develop",
+  ]);
+  assertThrows(
+    () => buildRebaseArgs("--exec=rm -rf /", { noRebaseMerges: true }),
+    Error,
+    "must not begin",
+  );
+});
+
 Deno.test("buildPullArgs - plain pull keeps remote and ref after the separator", () => {
   assertEquals(buildPullArgs("origin", "milestone/v1"), [
     "pull",
