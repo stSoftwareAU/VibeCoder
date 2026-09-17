@@ -17,7 +17,7 @@
  * — the host-disk gate was, and it logged so one line earlier:
  *
  * ```
- * ERROR: [HOST_DISK_LOW] ... below the floor — claiming no new issues this
+ * WARNING: [HOST_DISK_LOW] ... below the floor — claiming no new issues this
  *        cycle; maintenance continues (Issue #226).
  * ```
  *
