@@ -1364,9 +1364,20 @@ build artefacts.
 - **Nothing changes where the trim is honoured.** No launcher reading, an
   older launcher that writes no flag, a runtime that trims, or an explicit
   `CARGO_TARGET_DIR` — all leave the environment exactly as it was.
-- **The registry caches stay durable.** `CARGO_HOME` and `DENO_DIR` are
-  bounded and are not the ratchet; moving them would buy a cold download every
-  launch for space the measurements say is not the problem.
+- **The registry caches stay durable.** `CARGO_HOME`
+  (`${VIBE_STATE_DIR}/cargo`) and `DENO_DIR` (`~/auto-issue-work/.deno-cache`)
+  stay on the volume where the entrypoint puts them. A download cache grows by
+  what it fetched and is read back next launch; a `target/` is *rewritten*
+  every build, and that rewrite is what allocates fresh image blocks. Moving
+  them would buy a cold download at every launch for space the measurements do
+  not attribute the growth to.
+- **The placement travels in argv for the untrusted account.** The image's
+  sudo rule carries no `SETENV` tag, so `env_reset` strips a variable handed to
+  `sudo` in the child environment; the quality gate's spawn therefore becomes
+  `sudo -n -u agent -- env CARGO_TARGET_DIR=… bash -c './quality.sh'`.
+- **An unusable root is a reported fallback, not a broken build.** If
+  `/var/tmp/vibe-cargo-target` cannot be created `1777`, the launch says so and
+  the build stays on the volume.
 
 Incremental builds are lost at relaunch. They were lost at every recreate
 anyway — and a recreate now happens only when live data outgrows the floor,

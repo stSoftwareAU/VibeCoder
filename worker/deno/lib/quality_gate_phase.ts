@@ -88,6 +88,98 @@ export function untrustedAccountOf(
   return user && user !== "--" ? user : undefined;
 }
 
+/** A variable name that may be carried through `sudo` in argv. */
+const CARRIED_ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+
+/** A value that may be carried through `sudo` in argv — a plain path. */
+const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/]+$/;
+
+/**
+ * Carry an environment entry through `sudo`'s `env_reset` (Issue #2247).
+ *
+ * The image grants `vibe ALL=(agent) NOPASSWD: ALL` with no `SETENV` tag, and
+ * Debian's `Defaults env_reset` then strips the child environment `sudo` was
+ * handed — so a variable placed in `Deno.Command`'s `env` never reaches the
+ * repository's own command. `--preserve-env` needs the tag the rule does not
+ * grant. The value therefore travels in **argv** instead:
+ * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
+ *
+ * Refuses a name or value it cannot vouch for rather than building an argv
+ * element out of one: everything carried here is worker-derived, so an
+ * unexpected shape is a fault, not an input to accommodate.
+ *
+ * @param spawnable - The finished argv, `sudo`-wrapped or not.
+ * @param env - The entries to carry.
+ * @returns The argv to spawn; unchanged when nothing is carried or the
+ *   command already runs as the worker (where `Deno.Command`'s `env` works).
+ * @throws When a name or value is not a plain identifier/path.
+ */
+export function carryEnvThroughSudo(
+  spawnable: readonly string[],
+  env: Record<string, string>,
+): string[] {
+  const entries = Object.entries(env);
+  if (entries.length === 0 || spawnable[0] !== "sudo") return [...spawnable];
+  for (const [name, value] of entries) {
+    if (!CARRIED_ENV_NAME.test(name) || !CARRIED_ENV_VALUE.test(value)) {
+      throw new Error(
+        `refusing to carry ${name} through sudo: only a plain NAME=path may ` +
+          `become an argv element (Issue #2247)`,
+      );
+    }
+  }
+  const separator = spawnable.indexOf("--");
+  const at = separator === -1 ? spawnable.length : separator + 1;
+  return [
+    ...spawnable.slice(0, at),
+    "env",
+    ...entries.map(([name, value]) => `${name}=${value}`),
+    ...spawnable.slice(at),
+  ];
+}
+
+/**
+ * The environment the repository's own command runs with.
+ *
+ * The allowlist of Issue #572 — no credential in scope for a postinstall
+ * script — plus two overlays, in this order:
+ *
+ * 1. the ephemeral build-cache placement (Issue #2247), keyed by the checkout
+ *    and by the account the command actually drops to;
+ * 2. the credentials **this** repository declared (Issues #573, #574), which
+ *    are placed last so a repository's own declaration is the only thing that
+ *    can override either.
+ *
+ * @param options.spawnable - The finished argv, so the account is read from
+ *   what will run rather than from a probe.
+ * @param options.cwd - The checkout the command runs in.
+ * @param options.repoCredentialEnv - What this repository declared.
+ * @param options.trimRefused - The launch verdict; omitted in production.
+ */
+export function untrustedQualityCommandEnv(options: {
+  spawnable: readonly string[];
+  cwd: string;
+  repoCredentialEnv: Record<string, string>;
+  trimRefused?: boolean;
+  source?: Record<string, string>;
+  /** Where the ephemeral target dirs live; production takes the default. */
+  root?: string;
+}): Record<string, string> {
+  const buildCacheEnv = buildCacheEnvForCheckout(options.cwd, {
+    ...(options.root === undefined ? {} : { root: options.root }),
+    ...(untrustedAccountOf(options.spawnable) === undefined
+      ? {}
+      : { account: untrustedAccountOf(options.spawnable)! }),
+    ...(options.trimRefused === undefined
+      ? {}
+      : { trimRefused: options.trimRefused }),
+  });
+  return buildUntrustedCommandEnv({
+    overrides: { ...buildCacheEnv, ...options.repoCredentialEnv },
+    ...(options.source === undefined ? {} : { source: options.source }),
+  });
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -227,25 +319,29 @@ export function createDefaultDeps(
         // to echo. And the command runs as a DIFFERENT account where the
         // image provides one, because an environment allowlist cannot stop a
         // process reading a credential file its own uid owns.
-        const spawnable = await untrustedSpawn(cmd);
-        // Issue #2247: on a runtime that refuses the volume trim, this
-        // repository's `target/` is what ratchets the sparse image — 16 GB of
-        // one on GRQ-23 — so the build is pointed at the container's own
-        // ephemeral layer instead. Keyed by the checkout (cargo locks the
-        // target dir, so two slots must not share one) and by the account the
-        // command actually drops to, which cannot write the worker's.
-        const buildCacheEnv = buildCacheEnvForCheckout(
-          options?.cwd ?? Deno.cwd(),
-          { account: untrustedAccountOf(spawnable) },
+        const dropped = await untrustedSpawn(cmd);
+        const env = untrustedQualityCommandEnv({
+          spawnable: dropped,
+          cwd: options?.cwd ?? Deno.cwd(),
+          repoCredentialEnv,
+        });
+        // `sudo`'s env_reset would strip the build-cache placement, so it
+        // travels in argv instead (Issue #2247).
+        const target = env["CARGO_TARGET_DIR"];
+        const spawnable = carryEnvThroughSudo(
+          dropped,
+          target === undefined ? {} : { CARGO_TARGET_DIR: target },
         );
         const proc = new Deno.Command(spawnable[0]!, {
           args: spawnable.slice(1),
           // The declared credentials are placed AFTER the allowlist, so a
           // repository's own declaration is the only way a credential reaches
-          // its checks (Issues #572, #573).
-          env: buildUntrustedCommandEnv({
-            overrides: { ...buildCacheEnv, ...repoCredentialEnv },
-          }),
+          // its checks (Issues #572, #573). The build-cache placement of
+          // Issue #2247 rides the same overlay — see
+          // {@link untrustedQualityCommandEnv}. `./quality.sh` is resolved
+          // against the process cwd, so that is the checkout when the caller
+          // names none.
+          env,
           clearEnv: true,
           stdout: "piped",
           stderr: "piped",

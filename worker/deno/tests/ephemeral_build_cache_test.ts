@@ -15,14 +15,12 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildCacheEnvForCheckout,
   cargoTargetDirForCheckout,
+  ensureEphemeralCargoRoot,
   EPHEMERAL_CARGO_TARGET_ROOT,
   ephemeralBuildCacheEnv,
   hostDiskRefreshPath,
   readWorkVolumeTrimRefused,
-  resetWorkVolumeTrimRefusedForLaunch,
-  workVolumeTrimRefusedForLaunch,
 } from "../lib/ephemeral_build_cache.ts";
-import { untrustedAccountOf } from "../lib/quality_gate_phase.ts";
 import { scanWorkVolumeUsage } from "../lib/work_volume_usage.ts";
 
 const WORK_ROOT = "/home/vibe/auto-issue-work";
@@ -118,7 +116,10 @@ Deno.test("ephemeralBuildCacheEnv - a runtime that honours the trim is unchanged
 
 Deno.test("ephemeralBuildCacheEnv - no checkout means no per-checkout target dir", () => {
   assertEquals(ephemeralBuildCacheEnv({ trimRefused: true }), {});
-  assertEquals(ephemeralBuildCacheEnv({ checkoutPath: "", trimRefused: true }), {});
+  assertEquals(
+    ephemeralBuildCacheEnv({ checkoutPath: "", trimRefused: true }),
+    {},
+  );
 });
 
 Deno.test("ephemeralBuildCacheEnv - an operator's own CARGO_TARGET_DIR wins", () => {
@@ -230,93 +231,78 @@ Deno.test("hostDiskRefreshPath - the guest reads the launcher's file under HOME"
 });
 
 // ---------------------------------------------------------------------------
-// The launch verdict, read the way production reads it
+// The verdict as a parameter — no process-wide state, no host inheritance
 // ---------------------------------------------------------------------------
-
-/** Run `body` with HOME pointing at a work root holding the given reading. */
-async function withLauncherReading(
-  refresh: Record<string, unknown> | null,
-  body: (home: string) => Promise<void> | void,
-): Promise<void> {
-  const home = await Deno.makeTempDir({ prefix: "vibe-trim-" });
-  const previousHome = Deno.env.get("HOME");
-  try {
-    if (refresh !== null) {
-      await Deno.mkdir(`${home}/logs`, { recursive: true });
-      await Deno.writeTextFile(
-        `${home}/logs/host-disk.json`,
-        JSON.stringify(refresh),
-      );
-    }
-    Deno.env.set("HOME", home);
-    resetWorkVolumeTrimRefusedForLaunch();
-    await body(home);
-  } finally {
-    if (previousHome === undefined) Deno.env.delete("HOME");
-    else Deno.env.set("HOME", previousHome);
-    resetWorkVolumeTrimRefusedForLaunch();
-    await Deno.remove(home, { recursive: true });
-  }
-}
-
-const READING = {
-  availableBytes: 43_900_000_000,
-  totalBytes: 494_000_000_000,
-  measuredAt: 1_758_000_000,
-};
 
 Deno.test("buildCacheEnvForCheckout - a trim-refused launch moves the build off the volume", async () => {
-  await withLauncherReading(
-    { ...READING, workVolumeTrimRefused: true },
-    () => {
-      assertEquals(workVolumeTrimRefusedForLaunch(), true);
-      const env = buildCacheEnvForCheckout("/home/vibe/auto-issue-work/GRQ-tax");
-      assertEquals(
-        env["CARGO_TARGET_DIR"],
-        cargoTargetDirForCheckout("/home/vibe/auto-issue-work/GRQ-tax"),
-      );
-    },
-  );
-});
-
-Deno.test("buildCacheEnvForCheckout - a launch that trimmed the volume is left alone", async () => {
-  await withLauncherReading(
-    { ...READING, workVolumeTrimRefused: false },
-    () => {
-      assertEquals(workVolumeTrimRefusedForLaunch(), false);
-      assertEquals(
-        buildCacheEnvForCheckout("/home/vibe/auto-issue-work/GRQ-tax"),
-        {},
-      );
-    },
-  );
-});
-
-Deno.test("buildCacheEnvForCheckout - no launcher reading at all changes nothing", async () => {
-  await withLauncherReading(null, () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
+  try {
+    const env = buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, {
+      trimRefused: true,
+      root,
+    });
     assertEquals(
-      buildCacheEnvForCheckout("/home/vibe/auto-issue-work/GRQ-tax"),
-      {},
-      "a host with no launcher reading keeps building where it always did",
+      env["CARGO_TARGET_DIR"],
+      cargoTargetDirForCheckout(`${WORK_ROOT}/GRQ-tax`, { root }),
     );
-  });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
-// ---------------------------------------------------------------------------
-// The account the repository's own command drops to
-// ---------------------------------------------------------------------------
-
-Deno.test("untrustedAccountOf - names the account a dropped command runs as", () => {
+Deno.test("buildCacheEnvForCheckout - a launch that trimmed the volume is left alone", () => {
   assertEquals(
-    untrustedAccountOf(["sudo", "-n", "-u", "agent", "--", "bash", "-c", "x"]),
-    "agent",
+    buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, { trimRefused: false }),
+    {},
   );
 });
 
-Deno.test("untrustedAccountOf - a command the worker runs itself has no account", () => {
-  assertEquals(untrustedAccountOf(["bash", "-c", "./quality.sh"]), undefined);
-  assertEquals(untrustedAccountOf([]), undefined);
-  assertEquals(untrustedAccountOf(["sudo", "-n", "--", "true"]), undefined);
+Deno.test("buildCacheEnvForCheckout - the account the command drops to reaches the key", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
+  try {
+    assertEquals(
+      buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, {
+        trimRefused: true,
+        account: "agent",
+        root,
+      })["CARGO_TARGET_DIR"],
+      cargoTargetDirForCheckout(`${WORK_ROOT}/GRQ-tax`, {
+        account: "agent",
+        root,
+      }),
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("ensureEphemeralCargoRoot - the shared root is writable by both accounts", async () => {
+  const parent = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
+  try {
+    const root = `${parent}/nested/vibe-cargo-target`;
+    ensureEphemeralCargoRoot(root);
+    const mode = (await Deno.stat(root)).mode ?? 0;
+    assertEquals(
+      mode % 0o10000,
+      0o1777,
+      "sticky and group/other writable, so neither account locks the other out",
+    );
+  } finally {
+    await Deno.remove(parent, { recursive: true });
+  }
+});
+
+Deno.test("ensureEphemeralCargoRoot - a root it cannot create is reported, not swallowed", () => {
+  const warnings: string[] = [];
+  // A path under a regular file can never be a directory.
+  const file = Deno.makeTempFileSync({ prefix: "vibe-ephemeral-" });
+  try {
+    ensureEphemeralCargoRoot(`${file}/impossible`, (m) => warnings.push(m));
+    assertEquals(warnings.length, 1, "the failure is named");
+    assertStringIncludes(warnings[0] ?? "", "impossible");
+  } finally {
+    Deno.removeSync(file);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -349,5 +335,22 @@ Deno.test("scanWorkVolumeUsage - a build sent to the ephemeral layer leaves 0 bu
   } finally {
     await Deno.remove(workDir, { recursive: true });
     await Deno.remove(ephemeral, { recursive: true });
+  }
+});
+
+Deno.test("buildCacheEnvForCheckout - an unusable root falls back to today's behaviour", () => {
+  // A path under a regular file can never be a directory, so the root cannot
+  // be provisioned: the build stays on the volume rather than failing.
+  const file = Deno.makeTempFileSync({ prefix: "vibe-ephemeral-" });
+  try {
+    assertEquals(
+      buildCacheEnvForCheckout(`${WORK_ROOT}/GRQ-tax`, {
+        trimRefused: true,
+        root: `${file}/impossible`,
+      }),
+      {},
+    );
+  } finally {
+    Deno.removeSync(file);
   }
 });

@@ -32,13 +32,17 @@
  * gate. The persistent volume then keeps only clones, worktrees and state,
  * and the `Work volume:` telemetry's "build artefacts" figure reads 0.
  *
- * Two properties matter and are pinned by tests:
+ * Three properties matter and are pinned by tests:
  *
  * - **One directory per checkout.** Cargo takes a file lock on the target
  *   directory for the whole build, so a single shared directory would
  *   serialise two slots' Rust builds. The key is derived from the checkout
  *   path, which covers a lane worktree (`worktrees/<slot>/<repo>`) and the
  *   shared clone (`<work root>/<repo>`) the maintenance passes use alike.
+ * - **One directory per account.** The repository's own commands run as
+ *   `agent` and the worker's as `vibe` (Issue #571); neither can write a
+ *   directory the other created, so the account is part of the key and the
+ *   shared root is created `1777` like `/tmp`.
  * - **Nothing changes where the trim is honoured.** On a runtime that returns
  *   the blocks, the env is untouched and builds stay incremental across
  *   cycles exactly as before.
@@ -48,9 +52,13 @@
  * the floor, not every cycle.
  *
  * The cargo *registry* cache (`CARGO_HOME`) and the Deno cache (`DENO_DIR`)
- * are deliberately left where the entrypoint puts them: they are bounded,
- * they were measured off the volume on the affected host, and moving them
- * would buy a cold download every launch for space that is not the ratchet.
+ * are deliberately left where `container/entrypoint.sh` puts them — on the
+ * volume, at `${VIBE_STATE_DIR}/cargo` and `~/auto-issue-work/.deno-cache`.
+ * They are not the ratchet: a download cache grows by what it fetched and is
+ * read back on the next launch, where a `target/` is rewritten every build,
+ * which is what allocates fresh image blocks on a runtime that returns none.
+ * Moving them would buy a cold registry and dependency download at every
+ * launch to reclaim space the measurements do not attribute the growth to.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -243,44 +251,119 @@ let launchTrimRefused: boolean | undefined;
  */
 export function workVolumeTrimRefusedForLaunch(): boolean {
   if (launchTrimRefused === undefined) {
+    // No catch around the environment read: a process without `--allow-env`
+    // must fail loudly rather than quietly report a trimming runtime and
+    // leave the ratchet in place. Every worker entry point grants it.
     launchTrimRefused = readWorkVolumeTrimRefused({
-      path: hostDiskRefreshPath((name) => {
-        try {
-          return Deno.env.get(name);
-        } catch {
-          return undefined;
-        }
-      }),
+      path: hostDiskRefreshPath((name) => Deno.env.get(name)),
       readTextFile: (path) => Deno.readTextFileSync(path),
     });
   }
   return launchTrimRefused;
 }
 
-/** Forget the memoised verdict — for tests that vary it. */
-export function resetWorkVolumeTrimRefusedForLaunch(): void {
-  launchTrimRefused = undefined;
+/** Roots this process has already provisioned, and whether they are usable. */
+const provisionedRoots = new Map<string, boolean>();
+
+/**
+ * Make the shared root usable by **both** accounts (Issue #571).
+ *
+ * The worker runs as `vibe` and the repository's own commands as `agent`;
+ * whichever builds first would otherwise create the root with a `022` umask
+ * and lock the other out of creating its own directory beside it. The mode is
+ * `1777` — the same shape as `/tmp`, and the same reasoning as the work
+ * root's sticky bit (Issue #1442): either account may create its own
+ * directory, neither may remove the other's.
+ *
+ * A root that already carries the mode is left alone, so the second account
+ * does not try to chmod a directory it does not own. A root that cannot be
+ * provisioned is **reported** and the placement is abandoned: the build then
+ * runs exactly as it does today, on the volume, rather than a disk problem
+ * being turned into a hard build failure.
+ *
+ * Memoised per root, so the answer is one `stat` per process.
+ *
+ * @param root - The shared root to provision.
+ * @param warn - Where the failure is reported.
+ * @returns Whether the root is usable.
+ */
+export function ensureEphemeralCargoRoot(
+  root: string,
+  warn: (message: string) => void = (message) => console.error(message),
+): boolean {
+  const remembered = provisionedRoots.get(root);
+  if (remembered !== undefined) return remembered;
+  const usable = provisionRoot(root, warn);
+  provisionedRoots.set(root, usable);
+  return usable;
+}
+
+/** The one-off work behind {@link ensureEphemeralCargoRoot}. */
+function provisionRoot(
+  root: string,
+  warn: (message: string) => void,
+): boolean {
+  try {
+    if ((Deno.statSync(root).mode ?? 0) % 0o10000 === 0o1777) return true;
+  } catch {
+    // Absent, or unreadable — the mkdir below is the honest next step.
+  }
+  try {
+    Deno.mkdirSync(root, { recursive: true });
+    Deno.chmodSync(root, 0o1777);
+    return true;
+  } catch (err) {
+    warn(
+      `[WARN] could not provision ${root} for both accounts ` +
+        `(${
+          err instanceof Error ? err.message : err
+        }) — build artefacts stay ` +
+        `on the work volume this launch, so the image keeps ratchetting ` +
+        `(Issue #2247)`,
+    );
+    return false;
+  }
 }
 
 /**
  * The environment entries for a subprocess about to run in `checkoutPath`,
  * using this launch's trim verdict.
  *
- * The one-line call every spawn site makes.
+ * The one-line call every spawn site makes. Provisions the shared root the
+ * first time this process places a build there.
  *
  * @param checkoutPath - The working tree the subprocess runs in.
- * @param options.source - The environment the child would otherwise inherit,
+ * @param options.source - The environment an explicit `CARGO_TARGET_DIR`
+ *   would come from; defaults to the worker's own, so an operator's setting
+ *   is honoured at every spawn site rather than only where one is passed,
  *   so an explicit `CARGO_TARGET_DIR` is never overridden.
  * @param options.account - The account the command drops to, where it does.
+ * @param options.trimRefused - The launch verdict. Taken as a parameter so a
+ *   caller — and every test — can state it rather than inherit it from the
+ *   host; production leaves it out and gets this launch's own.
  */
 export function buildCacheEnvForCheckout(
   checkoutPath: string | undefined,
-  options: { source?: Record<string, string>; account?: string } = {},
+  options: {
+    source?: Record<string, string>;
+    account?: string;
+    trimRefused?: boolean;
+    /** Where the per-checkout directories live; production takes the default. */
+    root?: string;
+  } = {},
 ): Record<string, string> {
-  return ephemeralBuildCacheEnv({
+  const env = ephemeralBuildCacheEnv({
     ...(checkoutPath === undefined ? {} : { checkoutPath }),
-    trimRefused: workVolumeTrimRefusedForLaunch(),
-    ...(options.source === undefined ? {} : { source: options.source }),
+    trimRefused: options.trimRefused ?? workVolumeTrimRefusedForLaunch(),
+    source: options.source ?? Deno.env.toObject(),
     ...(options.account === undefined ? {} : { account: options.account }),
+    ...(options.root === undefined ? {} : { root: options.root }),
   });
+  const target = env["CARGO_TARGET_DIR"];
+  if (target === undefined) return env;
+  // A root that cannot be made usable by both accounts means today's
+  // behaviour, loudly, rather than a build that cannot write anywhere.
+  return ensureEphemeralCargoRoot(target.slice(0, target.lastIndexOf("/")))
+    ? env
+    : {};
 }
