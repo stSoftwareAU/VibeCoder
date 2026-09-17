@@ -362,17 +362,24 @@ flowchart TD
     V --> L{"decideLadderRung<br/>(thread markers, current head)"}
     L -- MERGEABLE --> C[Clear the label only]
     L -- "no marker at this head" --> N["Rung 1 — nudge:<br/>one empty commit, plain push"]
-    L -- "nudged at this head" --> R["Rung 2 — rebase<br/>(not wired yet: logs and returns)"]
+    L -- "nudged at this head" --> R["Rung 2 — rebase:<br/>replay, tree guard, leased push"]
     L -- "rebased at this head" --> B["Rung 3 — abandon and restart<br/>(not wired yet: logs and returns)"]
     L -- "verdict unknown / exhausted" --> W[Wait — run nothing]
+    R -- "replay conflicts<br/>or the tree differs" --> S["Fallback: one commit<br/>carrying OLD's tree on the base"]
+    R -- "tree identical to OLD" --> P["Push --force-with-lease=BRANCH:OLD"]
+    S --> P
     style N fill:#2d6a4f,stroke:#1b4332,color:#fff
-    style R fill:#707070,stroke:,color:#fff
+    style R fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
     style B fill:#707070,stroke:,color:#fff
 ```
 
-**Only rung 1 is wired today.** Rungs 2 and 3 are decided by
-`decideLadderRung` but their branches currently log at warn and return
-`processed: false` — the rebase and abandon sub-issues of #2272 replace them.
+**Rungs 1 and 2 are wired.** Rung 3 is decided by `decideLadderRung` but its
+branch still logs at warn and returns `processed: false` — the abandon
+sub-issue of #2272 replaces it. A **human-authored** PR skips rung 2 and is
+decided as `abandon`: the leased push destroys nothing, but a person's commit
+graph is theirs to reshape.
 
 - **Rung 1 — nudge.** One `git commit --allow-empty` whose message names the
   base sha the ancestry check found, pushed **without** `--force` or a lease, so
@@ -380,6 +387,37 @@ flowchart TD
   recompute. One comment records it, carrying
   `<!-- vibe-merge-conflict-nudge head="<new sha>" -->` — the **new** head, so
   the next scan reads the marker back and climbs rather than nudging twice.
+- **Rung 2 — rebase** (`conflict_rebase_rung.ts`, Issue #2279). The PR's
+  non-merge commits are replayed onto `origin/BASE`
+  (`git rebase --no-rebase-merges`) so the branch has a linear history off the
+  current base rather than a head that merged the base in — the shape GitHub is
+  stuck on. The rung runs only at the head GitHub judged: a clone that has moved
+  reports `head-moved` and touches nothing.
+- **The tree-identity guard is what makes the force-push admissible.** The
+  resolver's contract forbids a destructive force-push (Issues #1076, #4373)
+  because a rebase once destroyed a PR's own changes. Nothing is pushed until
+  `git diff --quiet OLD NEW` exits 0 — the new head's tree is **byte-identical**
+  to the head GitHub judged — so the push replaces a commit graph and no file
+  content at all. The lease is pinned (`--force-with-lease=BRANCH:OLD`), never a
+  bare `--force`, so a branch that moved on the remote refuses the push instead
+  of being overwritten. Both halves have to hold: the guard makes the push
+  non-destructive, the lease makes it non-racing.
+- **A replay that conflicts, or lands on a different tree, falls back to one
+  squash commit of the old tree** — `git commit-tree OLD^{tree} -p origin/BASE`.
+  It cannot conflict and cannot lose the base's changes: the ladder runs only
+  once `origin/BASE` is already an ancestor of `OLD`, so `OLD`'s tree already
+  contains everything the base carries. The identity therefore holds by
+  construction, and is asserted anyway before the push — "by construction" is a
+  claim about code, and the push is irreversible. There is no agent run on this
+  path: under the guard the only admissible resolution is a tree equal to `OLD`,
+  which the fallback produces outright.
+- **Every rebase-rung outcome leaves the branch at `OLD` or at a head whose tree
+  equals `OLD`'s**, error paths included. A failure restores `OLD` and then
+  fails loud rather than leaving a half-replayed branch behind, and a refused
+  push posts the rung-failed marker so the next scan climbs to the abandon rung
+  rather than retrying this one. Post-release the audit is
+  `git diff --stat <old> <new>` on the shas the rebase comment names — any
+  output is a regression.
 - **The head sha and the verdict are read together**, in one
   `gh pr view --json headRefOid,mergeable,author`. The scan's own projection
   carries neither, and a rung decided on a head from one moment and a verdict
@@ -390,14 +428,15 @@ flowchart TD
   configured no marker can be attributed at all, so no rung runs — a ladder
   that cannot read its own memory would nudge each new head for ever instead of
   climbing.
-- **A nudge that cannot be recorded is a failure, not a nudge.** The marker is
-  the bound, so if the comment cannot be posted after the push the pass fails
-  loud rather than reporting a rung the next scan cannot see.
+- **A rung that cannot be recorded is a failure, not a rung.** The marker is the
+  bound, so if the comment cannot be posted after the nudge's or the rebase's
+  push the pass fails loud rather than reporting a rung the next scan cannot
+  see.
 - **Nothing on this route spends or claims anything.** No resolved, attempt or
   failed marker is posted, no label is added, and the `merge-conflict` label
   stays on until GitHub itself reports the PR mergeable again. The rung markers
   share no literal with the attempt vocabulary, so the "attempt N of M" number
-  on the next real merge is unchanged by a nudge.
+  on the next real merge is unchanged by any number of nudges or rebases.
 - **The no-op merge is now an invariant violation.** Past the ancestry check
   the base is known *not* to be an ancestor, so a `git merge` that exits 0
   without moving `HEAD` is impossible. If it happens the pass fails loud naming
@@ -905,6 +944,10 @@ branch at the same time. A host that loses the race returns immediately.
   "Issues consulted" block on the attempt, the override block on the
   resolution, and `findUncorroboratedOverrides`, which is what makes an
   unevidenced claim decidable without trusting the model.
+- `worker/deno/lib/conflict_rebase_rung.ts` — the stale-verdict ladder's rebase
+  rung: the replay onto the base, the tree-identity guard that licenses the
+  leased force-push, and the squash-of-the-old-tree fallback. Every outcome
+  leaves the branch at `OLD` or at a head whose tree equals `OLD`'s.
 - `worker/deno/lib/conflict_abandon_restart.ts` — the abandon-and-restart rung:
   its four preconditions, the one-restart-per-issue marker, the comments it
   posts on the PR and the issue, and `exhaustedEscalationRoute`, which names
