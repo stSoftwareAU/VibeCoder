@@ -251,7 +251,8 @@ Deno.test("decideLadderRung - the ladder climbs one rung per head sha", () => {
     });
 
   assertEquals(decide(), { kind: "nudge" });
-  // The nudge pushed nothing new — GitHub is still stale at the same head.
+  // The nudge records the head it produced — here the scan is reading that
+  // same head back, because GitHub's verdict is still stale at it.
   thread.push(comment(conflictNudgeMarker(OLD_HEAD)));
   assertEquals(decide(), { kind: "rebase" });
   assertEquals(decide(), { kind: "rebase" }, "a re-scan is not a second rung");
@@ -293,28 +294,35 @@ Deno.test("decideLadderRung - a failed abandon rung ends the ladder at that head
   );
 });
 
-Deno.test("decideLadderRung - an abbreviated recorded sha still names the head", () => {
-  // A rung that recorded `git rev-parse --short` output must not read as "a
-  // head no rung pushed", which would nudge the same head for ever.
+Deno.test("decideLadderRung - a sha that is not the head restarts the ladder", () => {
+  // Heads are compared exactly, so an abbreviation is not a match. The ladder
+  // then repeats the harmless rung rather than skipping to the destructive
+  // one — the safe direction for a marker written from `--short` output.
   assertEquals(
     decideLadderRung({
-      state: { nudgedHead: OLD_HEAD.slice(0, 7) },
+      state: { rebasedHead: OLD_HEAD.slice(0, 7) },
       currentHead: OLD_HEAD,
       mergeable: "CONFLICTING",
     }),
-    { kind: "rebase" },
+    { kind: "nudge" },
   );
 });
 
-Deno.test("decideLadderRung - an unusable current head never drives a rung", () => {
-  assertEquals(
-    decideLadderRung({
-      state: { nudgedHead: OLD_HEAD },
-      currentHead: "",
-      mergeable: "CONFLICTING",
-    }),
-    { kind: "wait", reason: "verdict-unknown" },
-  );
+Deno.test("decideLadderRung - an unusable current head fails loud", () => {
+  // A broken head lookup must not be returned as "GitHub is still computing",
+  // which would hold the PR for ever on a caller fault.
+  for (const currentHead of ["", "  ", "not-a-sha", "094a66"]) {
+    assertThrows(
+      () =>
+        decideLadderRung({
+          state: { nudgedHead: OLD_HEAD },
+          currentHead,
+          mergeable: "CONFLICTING",
+        }),
+      Error,
+      "must be 7–40 hex characters",
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

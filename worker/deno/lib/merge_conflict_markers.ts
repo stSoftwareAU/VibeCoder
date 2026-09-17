@@ -58,7 +58,25 @@ export const CONFLICT_FAILED_MARKER = "<!-- vibe-coder:merge-conflict-failed";
 /** A 7-to-40 character lowercase git object name, as a marker may carry. */
 const HEAD_SHA_PATTERN = /^[0-9a-f]{7,40}$/;
 
-/** Marker posted by the nudge rung, naming the head it nudged. */
+/**
+ * Whether a value is a head sha these markers may carry.
+ *
+ * Exported so the writer and the reader agree on what a usable sha is: two
+ * copies of the pattern would let a marker be written that the ladder then
+ * discards, which is a rung that runs again at the same head.
+ */
+export function isConflictHeadSha(value: string): boolean {
+  return HEAD_SHA_PATTERN.test(value);
+}
+
+/**
+ * Marker posted by the nudge rung.
+ *
+ * `head` is the sha the nudge **produced** — the head GitHub reports next —
+ * not the head it started from. The ladder is keyed on the current head, so a
+ * marker naming the pre-nudge head would leave the new head unnamed and nudge
+ * it again on the following scan, which is the loop this ladder ends.
+ */
 export const CONFLICT_NUDGE_MARKER = "<!-- vibe-merge-conflict-nudge";
 
 /** Marker posted by the rebase rung, naming the head it replaced and the new one. */
@@ -80,7 +98,7 @@ export type ConflictLadderRung = "rebase" | "abandon";
  */
 function headAttribute(name: string, sha: string): string {
   const trimmed = sha.trim().toLowerCase();
-  if (!HEAD_SHA_PATTERN.test(trimmed)) {
+  if (!isConflictHeadSha(trimmed)) {
     throw new Error(
       `Refusing to write a merge-conflict rung marker with ${name}="${sha}" ` +
         "— a head sha must be 7–40 hex characters",

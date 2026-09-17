@@ -40,10 +40,8 @@ import {
   CONFLICT_RESOLVED_MARKER,
   CONFLICT_RUNG_FAILED_MARKER,
   type ConflictLadderRung,
+  isConflictHeadSha,
 } from "./merge_conflict_markers.ts";
-
-/** A 7-to-40 character lowercase git object name. */
-const HEAD_SHA_PATTERN = /^[0-9a-f]{7,40}$/;
 
 /** Attribute readers. Literal patterns only — no interpolated `RegExp`. */
 const HEAD_ATTRIBUTE = /head="([^"]*)"/;
@@ -90,22 +88,7 @@ function markerSegment(body: string, marker: string): string | undefined {
 /** The sha an attribute carries, or `undefined` when it is not usable. */
 function readSha(segment: string, pattern: RegExp): string | undefined {
   const raw = pattern.exec(segment)?.[1]?.trim().toLowerCase();
-  return raw !== undefined && HEAD_SHA_PATTERN.test(raw) ? raw : undefined;
-}
-
-/**
- * Whether two recorded shas name the same commit.
- *
- * Prefix-tolerant in one direction only — a marker written from
- * `git rev-parse --short` carries an abbreviation of the same commit GitHub
- * names in full, and reading that as "a head no rung pushed" would nudge the
- * same head for ever. Both sides must still be usable shas, so an empty or
- * malformed head matches nothing.
- */
-function sameHead(a: string | undefined, b: string | undefined): boolean {
-  if (a === undefined || b === undefined) return false;
-  if (!HEAD_SHA_PATTERN.test(a) || !HEAD_SHA_PATTERN.test(b)) return false;
-  return a.startsWith(b) || b.startsWith(a);
+  return raw !== undefined && isConflictHeadSha(raw) ? raw : undefined;
 }
 
 /**
@@ -200,33 +183,42 @@ export interface LadderRungInput {
  *
  * A verdict that is neither `CONFLICTING` nor `MERGEABLE` waits whatever the
  * state says: GitHub is still computing, and a rung judged on a verdict that
- * has not landed is the loop this ladder replaces. An unusable head sha waits
- * for the same reason — nothing may be judged against a head that cannot be
- * compared.
+ * has not landed is the loop this ladder replaces.
+ *
+ * Heads are compared exactly. A recorded sha that is not the current head —
+ * an abbreviation of it included — restarts the ladder at the nudge, which
+ * repeats a harmless rung rather than skipping to the destructive one.
+ *
+ * @throws when `currentHead` is not a usable sha. That is a caller fault, not
+ *   a ladder state: returning `wait` for it would disguise a broken head
+ *   lookup as "GitHub is still computing" and hold the PR for ever.
  */
 export function decideLadderRung(input: LadderRungInput): LadderDecision {
+  const head = input.currentHead.trim().toLowerCase();
+  if (!isConflictHeadSha(head)) {
+    throw new Error(
+      `Cannot decide a merge-conflict ladder rung for head ` +
+        `"${input.currentHead}" — a head sha must be 7–40 hex characters`,
+    );
+  }
+
   const verdict = input.mergeable.trim().toUpperCase();
   if (verdict !== "CONFLICTING" && verdict !== "MERGEABLE") {
     return { kind: "wait", reason: "verdict-unknown" };
   }
   if (verdict === "MERGEABLE") return { kind: "not-conflicting" };
 
-  const head = input.currentHead.trim().toLowerCase();
-  if (!HEAD_SHA_PATTERN.test(head)) {
-    return { kind: "wait", reason: "verdict-unknown" };
-  }
-
   const { state } = input;
   const failed = state.rungFailedAtHead;
-  if (failed !== undefined && sameHead(failed.head, head)) {
+  if (failed !== undefined && failed.head === head) {
     // The last rung there is to climb already ran here and failed.
     if (failed.rung === "abandon") {
       return { kind: "wait", reason: "ladder-exhausted" };
     }
     return { kind: "abandon" };
   }
-  if (sameHead(state.rebasedHead, head)) return { kind: "abandon" };
-  if (sameHead(state.nudgedHead, head)) return { kind: "rebase" };
+  if (state.rebasedHead === head) return { kind: "abandon" };
+  if (state.nudgedHead === head) return { kind: "rebase" };
   // No marker names this head: either the ladder has not started, or somebody
   // pushed since it did — both start it over.
   return { kind: "nudge" };
