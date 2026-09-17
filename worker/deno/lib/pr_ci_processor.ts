@@ -757,11 +757,13 @@ async function _processCiFailureLocked(
       maxRetries: maxCiRetries,
     });
 
-    // Post max-retries comment
+    // Post max-retries comment. The name is defused before it reaches that
+    // fleet-authored body, and the defusal is logged here rather than
+    // swallowed inside the pure builder (Issue #2260).
     await postCiFixMaxRetriesComment(
       repo,
       prNumber,
-      checkName,
+      inertCheckName(checkName, logger),
       checkRunId,
       maxCiRetries,
       ghFn,
@@ -1235,7 +1237,10 @@ async function _processCiWithHeartbeat(
       needsHumanLabel: "needs-human",
       heading: "Automatic fix attempts exhausted",
       reason: buildAutoFixCapSummary({
-        checkName,
+        // Inert already, and inert again inside the builder: the defusal is
+        // reported once, here, rather than swallowed in a pure helper
+        // (Issue #2260).
+        checkName: safeCheckName,
         signature,
         maxAttempts: maxAutoFixAttempts,
         attempts: buildCapAttemptRows(priorAttempts),
@@ -1830,7 +1835,7 @@ async function _processCiWithHeartbeat(
       })),
       claudeResult.value.output,
     );
-    const response = buildCiNoChangesResponse(checkName, classification);
+    const response = buildCiNoChangesResponse(safeCheckName, classification);
     // Issue #1876: the CI-fix prompt promises the agent's `.pr_response_message`
     // is posted verbatim, and on this path it was being discarded for the stock
     // text — a reviewer read "could not determine a fix" where the agent had

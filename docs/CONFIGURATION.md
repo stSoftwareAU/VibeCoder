@@ -4105,11 +4105,14 @@ Two properties follow from reading the record off the pull request:
   marker is appended afterwards and still counts (Issue #2236).
 - **Nor can the failing check's name.** On a `pull_request`-triggered workflow
   the job name comes from the head ref, so a fork chooses it — and the CI-fix
-  replies interpolate it into the same fleet-authored bodies. The name is made
-  inert by the same helper before it reaches any of them (the no-changes
-  reply, the pushed / push-failed replies, the lock and max-retries comments
-  and the heartbeat milestones), and the defusal is logged as
-  `CHECK_NAME_MARKER_NEUTRALISED` (Issue #2260).
+  replies interpolate it into the same fleet-authored bodies. The same helper
+  makes it inert on the way into each of them: the no-changes reply and its
+  classifier trailer (which quotes the name back as `check:<name>`), the
+  pushed / push-failed replies, the log-access and timeout replies, the lock,
+  max-retries and auto-fix-cap comments, and the heartbeat milestones. The
+  defusal is reported once per run by the processor as
+  `CHECK_NAME_MARKER_NEUTRALISED`; the pure body builders neutralise again by
+  construction, so a future caller cannot reopen the hole (Issue #2260).
 
 **One comment per failure signature.** The same failure diagnosed again on the
 **same head** posts nothing at all and runs no agent: nothing has changed

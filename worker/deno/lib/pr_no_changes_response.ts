@@ -67,6 +67,12 @@ function formatSignals(signals: ReadonlyArray<string>): string {
  * posts the agent's own `.pr_response_message` instead of the stock text —
  * shares one rendering with the stock bodies built below.
  *
+ * Issue #2260: the classifier's own reason and signals quote the failing
+ * check's name (`check:<name>`, "no recognised pattern in check '<name>'"),
+ * and a fork chooses that name on a `pull_request`-triggered workflow. The
+ * rendered trailer is therefore made inert as a whole — it carries no marker
+ * of the worker's own, and the worker's marker is concatenated after it.
+ *
  * @param classification - Output of {@link classifyCiFailure}.
  * @returns The trailer, including its leading blank line.
  */
@@ -74,9 +80,11 @@ export function formatClassifierTrailer(
   classification: CiFailureClassification,
 ): string {
   const { reason, signals } = classification;
-  return `\n\n**Classifier reason:** ${reason}\n**Signals:**\n${
-    formatSignals(signals)
-  }`;
+  return neutraliseAgentMarkers(
+    `\n\n**Classifier reason:** ${reason}\n**Signals:**\n${
+      formatSignals(signals)
+    }`,
+  ).text;
 }
 
 /**
