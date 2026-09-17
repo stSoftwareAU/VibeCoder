@@ -340,6 +340,7 @@ Deno.test("abandonAndRestart - closes the PR, re-queues the issue, keeps the bra
   // re-applied — and it was open, so it is not reopened.
   assertEquals(callsMatching(fake, "issue", "reopen").length, 0);
   assertEquals(labelAddCalls(fake, ISSUE_NUMBER).length, 0);
+  assertNoNeedsHuman(fake);
 });
 
 Deno.test("abandonAndRestart - claims the restart on the issue before closing the PR", async () => {
@@ -375,6 +376,7 @@ Deno.test("abandonAndRestart - reopens a closed issue and applies idle-task", as
   const labelAdds = labelAddCalls(fake, ISSUE_NUMBER);
   assertEquals(labelAdds.length, 1);
   assert((labelAdds[0] ?? []).includes("labels[]=idle-task"));
+  assertNoNeedsHuman(fake);
 });
 
 // ---------------------------------------------------------------------------
