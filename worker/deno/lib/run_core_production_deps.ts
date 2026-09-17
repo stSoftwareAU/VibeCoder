@@ -4376,6 +4376,9 @@ export async function createProductionRunCoreDeps(
           ...(hostLogDir === null ? {} : { hostLogDir }),
           log: (message) => logger.info(message),
           logError: (message) => logger.error(message),
+          // A streak copy that could not be read or written degrades the
+          // record without stopping the run — a warning, not a fault.
+          logWarn: (message) => logger.warn(message),
         },
       );
     },
@@ -5154,8 +5157,11 @@ export async function createProductionRunCoreDeps(
           const hookFields = formatHookFailureFields(
             callbackFailureStreakCounts(
               await readCallbackFailureSnapshot({
-                workDir,
+                // `config.workDir`, the directory `runIssueCallbacks` writes
+                // the streak to — the two must name the same file.
+                workDir: config.workDir,
                 ...(hostLogDir === null ? {} : { hostLogDir }),
+                warn: (message: string) => logger.warn(message),
               }),
             ),
           );

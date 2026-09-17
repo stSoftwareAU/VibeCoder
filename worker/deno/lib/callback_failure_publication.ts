@@ -92,15 +92,20 @@ export function callbackFailureStreakPath(directory: string): string {
 
 /**
  * The host's log directory as the container sees it — `${HOME}/logs`, the
- * read-write mount `worker.log` and `host-disk.json` already land in.
+ * read-write mount `worker.log` and `host-disk.json` already land in (see the
+ * mount table in `container_launch.ts`, and the same shape in
+ * `agent_transcript.ts` and `ephemeral_build_cache.ts`).
+ *
+ * `HOME` then `USERPROFILE`, the order `agent_transcript.ts` resolves it in
+ * (Issue #967).
  *
  * @param env - Environment reader
- * @returns The directory, or null when `HOME` names nowhere to publish to
+ * @returns The directory, or null when neither variable names one
  */
 export function hostLogDirectory(
   env: (name: string) => string | undefined,
 ): string | null {
-  const home = env("HOME")?.trim();
+  const home = (env("HOME") ?? env("USERPROFILE"))?.trim();
   if (!home) return null;
   return `${home}/logs`;
 }
@@ -208,17 +213,38 @@ export function serialiseCallbackFailureSnapshot(
   return `${JSON.stringify(snapshot, null, 2)}\n`;
 }
 
-/** Read one copy; missing, unreadable or malformed all read as null. */
+/**
+ * Read one copy. A copy that is not there yet reads as null in silence — that
+ * is the first run on a host. A copy that exists and cannot be read or parsed
+ * reads as null **and says so**: losing the count that way restarts the streak
+ * and re-records a fault that never went away, which is the fault this module
+ * exists to remove.
+ */
 async function readCopy(
   directory: string,
+  warn: (message: string) => void,
 ): Promise<CallbackFailureStreakSnapshot | null> {
+  const path = callbackFailureStreakPath(directory);
+  let body: string;
   try {
-    return parseCallbackFailureSnapshot(
-      await Deno.readTextFile(callbackFailureStreakPath(directory)),
-    );
-  } catch {
+    body = await Deno.readTextFile(path);
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) {
+      warn(
+        `Could not read ${path} — the callback-failure streak held there is ` +
+          `not counted: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     return null;
   }
+  const snapshot = parseCallbackFailureSnapshot(body);
+  if (!snapshot) {
+    warn(
+      `${path} is not a readable callback-failure streak — ignoring that ` +
+        "copy, so the streak it held is not counted",
+    );
+  }
+  return snapshot;
 }
 
 /** Where the streak is read from and written to. */
@@ -227,6 +253,8 @@ export interface CallbackFailureStreakLocations {
   workDir: string;
   /** The host log directory, when one is mounted. Survives a volume reset. */
   hostLogDir?: string;
+  /** Where a copy that exists but cannot be read is reported. */
+  warn?: (message: string) => void;
 }
 
 /**
@@ -244,10 +272,11 @@ export interface CallbackFailureStreakLocations {
 export async function readCallbackFailureSnapshot(
   where: CallbackFailureStreakLocations,
 ): Promise<CallbackFailureStreakSnapshot> {
-  const fromWork = await readCopy(where.workDir);
+  const warn = where.warn ?? (() => {});
+  const fromWork = await readCopy(where.workDir, warn);
   if (fromWork) return fromWork;
   if (where.hostLogDir) {
-    const fromHost = await readCopy(where.hostLogDir);
+    const fromHost = await readCopy(where.hostLogDir, warn);
     if (fromHost) return fromHost;
   }
   return emptyCallbackFailureSnapshot();
@@ -265,14 +294,12 @@ async function writeCopy(
 /** Inputs to {@link publishCallbackFailureSnapshot}. */
 export interface PublishCallbackFailureOptions
   extends CallbackFailureStreakLocations {
-  /** The streak to publish. */
-  snapshot: CallbackFailureStreakSnapshot;
   /**
-   * Where a copy that could not be written is reported. A publish failure is
-   * never swallowed: the host copy is what host-side health reporting reads,
-   * so losing it silently is the fault this issue exists to remove.
+   * The streak to publish. A copy that could not be written is reported
+   * through the inherited `warn` sink — never swallowed, because the host copy
+   * is what host-side health reporting reads.
    */
-  warn?: (message: string) => void;
+  snapshot: CallbackFailureStreakSnapshot;
 }
 
 /**

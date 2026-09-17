@@ -144,6 +144,13 @@ export interface CallbackFailureStreakDeps {
   log?: (message: string) => void;
   /** Fault sink — where the threshold record is written. */
   logError?: (message: string) => void;
+  /**
+   * Degraded-but-continuing sink: a streak copy that could not be read or
+   * written. The run carries on regardless, so this is a warning rather than a
+   * fault — it defaults to {@link CallbackFailureStreakDeps.logError} so a
+   * caller that wires only a fault sink still hears about it.
+   */
+  logWarn?: (message: string) => void;
 }
 
 /**
@@ -206,11 +213,13 @@ export async function recordCallbackOutcomes(
   const log = deps.log ?? (() => {});
   const logError = deps.logError ?? (() => {});
   const now = deps.now ?? Date.now;
+  const logWarn = deps.logWarn ?? logError;
   const readStreaks = deps.readStreaks ??
     ((dir: string, hostLogDir?: string) =>
       readCallbackFailureSnapshot({
         workDir: dir,
         ...(hostLogDir === undefined ? {} : { hostLogDir }),
+        warn: logWarn,
       }));
   const writeStreaks = deps.writeStreaks ??
     ((
@@ -222,7 +231,7 @@ export async function recordCallbackOutcomes(
         workDir: dir,
         ...(hostLogDir === undefined ? {} : { hostLogDir }),
         snapshot,
-        warn: logError,
+        warn: logWarn,
       }));
 
   let snapshot: CallbackFailureStreakSnapshot;

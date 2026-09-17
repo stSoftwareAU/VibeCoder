@@ -181,6 +181,53 @@ Deno.test(
 );
 
 Deno.test(
+  "#2297 - a run that never invoked the failing hook still carries its streak across the reset",
+  async () => {
+    const { workDir, hostLogDir, cleanup } = await dirs();
+    try {
+      const errors: string[] = [];
+      const deps = {
+        hostLogDir,
+        now: clock("2026-09-16T08:58:00Z"),
+        logError: (message: string) => errors.push(message),
+      };
+      for (let i = 0; i < CALLBACK_FAILURE_ESCALATION_THRESHOLD; i++) {
+        await recordCallbackOutcomes(workDir, [invocation()], RUN, deps);
+      }
+      await Deno.remove(callbackFailureStreakPath(workDir));
+
+      // The next run failed, so only `failure` and `always` fired — `success`
+      // is not in this run's invocations at all. The rebuilt work-volume copy
+      // must still carry the `success` streak it inherited from the host copy,
+      // or the run after it restarts the count at one.
+      await recordCallbackOutcomes(
+        workDir,
+        [invocation({ event: "failure" }), invocation({ event: "always" })],
+        RUN,
+        deps,
+      );
+      const rebuilt = parseCallbackFailureSnapshot(
+        await Deno.readTextFile(callbackFailureStreakPath(workDir)),
+      );
+      assertEquals(rebuilt?.events.success?.streak, 3);
+
+      await recordCallbackOutcomes(workDir, [invocation()], RUN, deps);
+      const snapshot = await readCallbackFailureSnapshot({
+        workDir,
+        hostLogDir,
+      });
+      assertEquals(snapshot.events.success?.streak, 4);
+      assertEquals(
+        snapshot.events.success?.firstFailureAt,
+        "2026-09-16T08:58:00.000Z",
+      );
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+Deno.test(
   "#2297 - the work-volume copy is preferred while it exists",
   async () => {
     const { workDir, hostLogDir, cleanup } = await dirs();
@@ -225,17 +272,42 @@ Deno.test(
 );
 
 Deno.test(
-  "#2297 - a malformed or missing copy reads as no streak rather than throwing",
+  "#2297 - a malformed copy reads as no streak, and says so rather than throwing",
   async () => {
     const { workDir, hostLogDir, cleanup } = await dirs();
     try {
       await Deno.writeTextFile(callbackFailureStreakPath(workDir), "{oops");
+      const warnings: string[] = [];
       const snapshot = await readCallbackFailureSnapshot({
         workDir,
         hostLogDir,
+        warn: (message) => warnings.push(message),
       });
       assertEquals(callbackFailureStreakCounts(snapshot), {});
       assertEquals(parseCallbackFailureSnapshot("{oops"), null);
+      // A count silently lost restarts the streak and re-records a fault that
+      // never went away — the file that could not be read is named.
+      assertEquals(warnings.length, 1, JSON.stringify(warnings));
+      assertStringIncludes(warnings[0]!, callbackFailureStreakPath(workDir));
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "#2297 - a copy that is simply not there yet is silent — that is the first run",
+  async () => {
+    const { workDir, hostLogDir, cleanup } = await dirs();
+    try {
+      const warnings: string[] = [];
+      const snapshot = await readCallbackFailureSnapshot({
+        workDir,
+        hostLogDir,
+        warn: (message) => warnings.push(message),
+      });
+      assertEquals(callbackFailureStreakCounts(snapshot), {});
+      assertEquals(warnings, []);
     } finally {
       await cleanup();
     }
@@ -251,16 +323,35 @@ Deno.test(
       const hostLogDir = `${root}/not-a-directory`;
       await Deno.writeTextFile(hostLogDir, "");
       const errors: string[] = [];
+      const warnings: string[] = [];
       await recordCallbackOutcomes(workDir, [invocation()], RUN, {
         hostLogDir,
         logError: (message: string) => errors.push(message),
+        logWarn: (message: string) => warnings.push(message),
       });
-      assertEquals(errors.length, 1, JSON.stringify(errors));
-      assertStringIncludes(errors[0]!, CALLBACK_FAILURE_STREAK_FILE);
-      assertStringIncludes(errors[0]!, hostLogDir);
-      // The work-volume copy still landed: one sink failing loses neither.
+      // The run continues, so it is a warning — but it is said out loud, and
+      // the unreadable copy is named as well as the unwritable one.
+      assertEquals(errors, [], JSON.stringify(errors));
+      const failedWrite = warnings.find((w) => w.includes("Could not write"));
+      assert(failedWrite, JSON.stringify(warnings));
+      assertStringIncludes(failedWrite, CALLBACK_FAILURE_STREAK_FILE);
+      assertStringIncludes(failedWrite, hostLogDir);
+      assert(
+        warnings.some((w) => w.includes("Could not read")),
+        JSON.stringify(warnings),
+      );
+
+      // A caller that wires only a fault sink still hears about it.
+      const faultsOnly: string[] = [];
+      await recordCallbackOutcomes(workDir, [invocation()], RUN, {
+        hostLogDir,
+        logError: (message: string) => faultsOnly.push(message),
+      });
+      assertEquals(faultsOnly.length, 1, JSON.stringify(faultsOnly));
+      // The work-volume copy still landed on both runs: one unwritable
+      // directory never costs the other copy.
       const snapshot = await readCallbackFailureSnapshot({ workDir });
-      assertEquals(snapshot.events.success?.streak, 1);
+      assertEquals(snapshot.events.success?.streak, 2);
     } finally {
       await cleanup();
     }
@@ -279,7 +370,15 @@ Deno.test("#2297 - the liveness line names every run hook's streak", () => {
 });
 
 Deno.test("#2297 - the host log directory is the HOME/logs mount", () => {
-  assertEquals(hostLogDirectory(() => "/home/vibe"), "/home/vibe/logs");
+  assertEquals(
+    hostLogDirectory((name) => name === "HOME" ? "/home/vibe" : undefined),
+    "/home/vibe/logs",
+  );
+  // HOME then USERPROFILE, the order `agent_transcript.ts` resolves it in.
+  assertEquals(
+    hostLogDirectory((name) => name === "USERPROFILE" ? "C:/vibe" : undefined),
+    "C:/vibe/logs",
+  );
   assertEquals(hostLogDirectory(() => "  "), null);
   assertEquals(hostLogDirectory(() => undefined), null);
 });
@@ -293,6 +392,12 @@ Deno.test(
       assertStringIncludes(formatFleetSummary(1_000), "hook_failures=0");
       recordHookFailure();
       recordHookFailure(2);
+      assertStringIncludes(formatFleetSummary(1_000), "hook_failures=3");
+      // Nothing to record is not a record: zero, a negative and a non-number
+      // leave the count where it was rather than corrupting it.
+      recordHookFailure(0);
+      recordHookFailure(-2);
+      recordHookFailure(Number.NaN);
       assertStringIncludes(formatFleetSummary(1_000), "hook_failures=3");
     } finally {
       resetFleetTelemetry();

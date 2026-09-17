@@ -343,10 +343,11 @@ counts the streak and writes one record the operator of the host can act on.
   threshold crossing, none is closed on recovery, and no `host_failure` hook is
   invoked from inside the container. The log record and the count file are the
   host's own record, and nothing about either alters the run's own result.
-- **A copy that cannot be written is said out loud.** Each directory is
-  attempted independently and a failure names the directory and the reason, so
-  a host whose log mount is read-only learns it instead of quietly publishing
-  nothing.
+- **A copy that cannot be read or written is said out loud**, at `WARNING` —
+  the run carries on, and someone should fix the mount. Each directory is
+  attempted independently and the line names the file and the reason, so a host
+  whose log mount is read-only learns it instead of quietly publishing nothing.
+  A copy that is simply not there yet is silent: that is the first run.
 
 ### What the host can read (Issue #2297)
 
