@@ -20,6 +20,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildFinalFailureMessage,
   buildRetryPrompt,
+  carryEnvThroughSudo,
   isDockerInfraFailure,
   isMissingCommandFailure,
   type QualityGateDeps,
@@ -27,7 +28,10 @@ import {
   runDockerQualityCheck,
   runNativeQualityCheck,
   runQualityGateCheck,
+  untrustedAccountOf,
+  untrustedQualityCommandEnv,
 } from "../lib/quality_gate_phase.ts";
+import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
 
 // =============================================================================
 // Test helpers
@@ -718,4 +722,138 @@ Deno.test("runQualityGateCheck - a repository that declared nothing runs nothing
   }));
 
   assertEquals(result.action, "skipped");
+});
+
+// =============================================================================
+// The environment the repository's own command runs with (Issue #2247)
+// =============================================================================
+
+Deno.test("untrustedAccountOf - names the account a dropped command runs as", () => {
+  assertEquals(
+    untrustedAccountOf(["sudo", "-n", "-u", "agent", "--", "bash", "-c", "x"]),
+    "agent",
+  );
+});
+
+Deno.test("untrustedAccountOf - a command the worker runs itself has no account", () => {
+  assertEquals(untrustedAccountOf(["bash", "-c", "./quality.sh"]), undefined);
+  assertEquals(untrustedAccountOf([]), undefined);
+  assertEquals(untrustedAccountOf(["sudo", "-n", "--", "true"]), undefined);
+});
+
+Deno.test("untrustedQualityCommandEnv - a trim-refused launch builds off the work volume", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
+  try {
+    const env = untrustedQualityCommandEnv({
+      spawnable: [
+        "sudo",
+        "-n",
+        "-u",
+        "agent",
+        "--",
+        "bash",
+        "-c",
+        "./quality.sh",
+      ],
+      cwd: "/home/vibe/auto-issue-work/GRQ-tax",
+      repoCredentialEnv: {},
+      trimRefused: true,
+      root,
+      source: { PATH: "/usr/bin", HOME: "/home/vibe" },
+    });
+    assertEquals(
+      env["CARGO_TARGET_DIR"],
+      cargoTargetDirForCheckout("/home/vibe/auto-issue-work/GRQ-tax", {
+        account: "agent",
+        root,
+      }),
+      "keyed by the account that will actually run the build",
+    );
+    assertEquals(env["PATH"], "/usr/bin", "the allowlist still applies");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("untrustedQualityCommandEnv - a runtime that trims the volume is unchanged", () => {
+  const env = untrustedQualityCommandEnv({
+    spawnable: ["bash", "-c", "./quality.sh"],
+    cwd: "/home/vibe/auto-issue-work/GRQ-tax",
+    repoCredentialEnv: {},
+    trimRefused: false,
+    source: { PATH: "/usr/bin" },
+  });
+  assertEquals(env["CARGO_TARGET_DIR"], undefined);
+});
+
+Deno.test("untrustedQualityCommandEnv - the repository's own declaration still wins", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
+  const env = untrustedQualityCommandEnv({
+    spawnable: ["bash", "-c", "./quality.sh"],
+    cwd: "/home/vibe/auto-issue-work/GRQ-tax",
+    repoCredentialEnv: { CARGO_TARGET_DIR: "/declared/target", API_KEY: "k" },
+    trimRefused: true,
+    root,
+    source: { PATH: "/usr/bin" },
+  });
+  assertEquals(env["CARGO_TARGET_DIR"], "/declared/target");
+  assertEquals(env["API_KEY"], "k");
+  await Deno.remove(root, { recursive: true });
+});
+
+Deno.test("untrustedQualityCommandEnv - no credential leaks past the allowlist", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-ephemeral-" });
+  const env = untrustedQualityCommandEnv({
+    spawnable: ["bash", "-c", "./quality.sh"],
+    cwd: "/home/vibe/auto-issue-work/GRQ-tax",
+    repoCredentialEnv: {},
+    trimRefused: true,
+    root,
+    source: { PATH: "/usr/bin", GH_TOKEN: "ghs_secret" },
+  });
+  assertEquals(env["GH_TOKEN"], undefined);
+  await Deno.remove(root, { recursive: true });
+});
+
+Deno.test("carryEnvThroughSudo - the placement travels in argv, past sudo's env_reset", () => {
+  assertEquals(
+    carryEnvThroughSudo(
+      ["sudo", "-n", "-u", "agent", "--", "bash", "-c", "./quality.sh"],
+      { CARGO_TARGET_DIR: "/var/tmp/vibe-cargo-target/GRQ-tax-1a2b3c4d-agent" },
+    ),
+    [
+      "sudo",
+      "-n",
+      "-u",
+      "agent",
+      "--",
+      "env",
+      "CARGO_TARGET_DIR=/var/tmp/vibe-cargo-target/GRQ-tax-1a2b3c4d-agent",
+      "bash",
+      "-c",
+      "./quality.sh",
+    ],
+  );
+});
+
+Deno.test("carryEnvThroughSudo - a command that runs as the worker is untouched", () => {
+  const cmd = ["bash", "-c", "./quality.sh"];
+  assertEquals(carryEnvThroughSudo(cmd, { CARGO_TARGET_DIR: "/x" }), cmd);
+  assertEquals(
+    carryEnvThroughSudo(["sudo", "-n", "-u", "agent", "--", "true"], {}),
+    ["sudo", "-n", "-u", "agent", "--", "true"],
+  );
+});
+
+Deno.test("carryEnvThroughSudo - a value it cannot vouch for is refused, not quoted", () => {
+  let threw = false;
+  try {
+    carryEnvThroughSudo(["sudo", "-n", "-u", "agent", "--", "true"], {
+      CARGO_TARGET_DIR: "/tmp/x; rm -rf /",
+    });
+  } catch (err) {
+    threw = true;
+    assertStringIncludes(String(err), "refusing to carry");
+  }
+  assertEquals(threw, true);
 });
