@@ -33,8 +33,14 @@ so it needed no change.
 ## Evidence
 
 Backend-only change — no web interface to screenshot. The evidence is the test
-suite: `deno test worker/deno/tests/pr_merge_conflict_processor_test.ts` runs
-85 tests green, and the full quality gate (`./quality.sh`) passed with exit 0.
+suite: the merge-conflict suites run 225/225 green, and the full quality gate
+(`./quality.sh`) passes every stage — lint, type check, fmt, mermaid,
+markdownlint, semgrep and the chokepoint checks — with 22,511 tests passing.
+
+The gate's three remaining failures are **pre-existing and unrelated**:
+`ephemeral_build_cache_test.ts` (×2) and `quality_gate_phase_test.ts` (×1) fail
+identically in a clean worktree of the unmodified milestone branch, so they are
+not this diff's. Filed as stSoftwareAU/VibeCoder#2291.
 
 ```mermaid
 flowchart TD
