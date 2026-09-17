@@ -8,8 +8,10 @@
  *   mod.ts repo-settings-harden --repo owner/name --apply --require-reviews
  *
  * The safe subset: read-only default token, no approve-PRs, SHA-pin
- * enforcement, an allow-list of the actions the workflows use, secret
- * scanning + push protection (refused without Secret Protection — reported).
+ * enforcement, an allow-list of the actions the workflows use, and — on a
+ * public repository only — secret scanning + push protection; a private or
+ * internal repository needs the paid GitHub Secret Protection add-on, so
+ * that step is skipped and the skip printed (Issue #2225).
  * `--require-code-owner-review` (Issue #4397) makes PRs that touch a path in
  * `.github/CODEOWNERS` — the workflows, actions and scripts — wait for an
  * owner's approval while every other PR merges as before; the approval count
@@ -30,10 +32,12 @@ import {
   applyRepoSettingsPlan,
   buildAllowedActionPatterns,
   type HardenResult,
+  isSecretScanningSkipped,
   isValidActionCoordinate,
   planRepoSettingsHardening,
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
+  SECRET_PROTECTION_SKIP_NOTE,
 } from "../lib/repo_settings_harden.ts";
 import { readWorkflowFiles } from "../lib/workflow_scan_common.ts";
 import { extractUsesValue } from "../lib/action_pin_scanner.ts";
@@ -162,15 +166,22 @@ export const repoSettingsHardenCommand: Command = {
         message: `default branch unknown: ${defaultBranch.error.message}`,
       };
     }
+    // One read of the repository serves both the security settings and the
+    // visibility that decides whether hardening them is free (Issue #2225).
+    const repoInfo = await readJson<{
+      security_and_analysis?: RepoSettingsSnapshot["security"];
+      visibility?: string;
+      private?: boolean;
+    }>(gh, `repos/${repo}`);
     const snapshot: RepoSettingsSnapshot = {
       workflow: await readJson(
         gh,
         `repos/${repo}/actions/permissions/workflow`,
       ),
       actions: await readJson(gh, `repos/${repo}/actions/permissions`),
-      security: (await readJson<
-        { security_and_analysis?: RepoSettingsSnapshot["security"] }
-      >(gh, `repos/${repo}`))?.security_and_analysis,
+      security: repoInfo?.security_and_analysis,
+      visibility: repoInfo?.visibility,
+      private: repoInfo?.private,
       rules: await readJson(
         gh,
         `repos/${repo}/rules/branches/${
@@ -235,22 +246,27 @@ export const repoSettingsHardenCommand: Command = {
       (r.step.warning ? ` — ⚠ ${r.step.warning}` : "") +
       (r.detail ? ` — ${r.detail}` : "")
     );
-    const message = plan.length === 0
-      ? `${repo}: nothing to harden — every checked setting already holds.`
-      : `${repo}: ${
-        apply ? "applied" : "planned (dry run; add --apply)"
-      } ${plan.length} step(s):\n${lines.join("\n")}` +
-        (coordinates.length > 0
-          ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${references.length} workflow reference(s) in ${workDir}` +
-            (extraCoordinates.length > 0
-              ? ` plus --allow-action ${extraCoordinates.join(", ")}`
-              : "")
-          : "") +
-        (transitive.unreadable.length > 0
-          ? `\n⚠ Could not read the manifest of ${transitive.unreadable.length} action(s) — the allow-list may be incomplete: ${
-            transitive.unreadable.join("; ")
-          }`
-          : "");
+    // The exempted step is stated in the output, never silently absent.
+    const skipNote = isSecretScanningSkipped(snapshot)
+      ? `\n${SECRET_PROTECTION_SKIP_NOTE}`
+      : "";
+    const message =
+      (plan.length === 0
+        ? `${repo}: nothing to harden — every checked setting already holds.`
+        : `${repo}: ${
+          apply ? "applied" : "planned (dry run; add --apply)"
+        } ${plan.length} step(s):\n${lines.join("\n")}` +
+          (coordinates.length > 0
+            ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${references.length} workflow reference(s) in ${workDir}` +
+              (extraCoordinates.length > 0
+                ? ` plus --allow-action ${extraCoordinates.join(", ")}`
+                : "")
+            : "") +
+          (transitive.unreadable.length > 0
+            ? `\n⚠ Could not read the manifest of ${transitive.unreadable.length} action(s) — the allow-list may be incomplete: ${
+              transitive.unreadable.join("; ")
+            }`
+            : "")) + skipNote;
     const failed = results.some((r) => r.status === "failed");
     return {
       success: !failed,

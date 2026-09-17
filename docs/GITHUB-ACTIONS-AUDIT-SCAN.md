@@ -1024,6 +1024,24 @@ endpoint is logged and yields nothing. Wording avoids the literal
 `secret_scanning*: value` and `id-token: write` pairs the outbound secret
 masker rewrites.
 
+**Secret scanning is exempt on a private repository (Issue #2225).**
+Secret scanning and push protection are free on a public repository, but
+on a private or internal one they need the paid GitHub Secret Protection
+add-on. A finding there asks a repository admin to spend money, so it was
+closed by hand on every run. The scanner reads the repository's
+`visibility` — from the same `repos/{owner}/{repo}` response it already
+fetches for the security settings, falling back to the boolean `private`
+flag — and files neither `BP-REPO-SECRET-SCANNING-OFF` nor
+`BP-REPO-PUSH-PROTECTION-OFF` when it is `private` or `internal`. The
+exemption is decided by visibility alone: no licence lookup is made, so a
+private repository that does hold the licence gets no finding either. A
+visibility that cannot be read is never treated as exempt. The skip is
+recorded, not silent: it is named in the audit's own summary as `secret
+scanning / push protection (private repository — needs paid GitHub Secret
+Protection)` and logged once at `WARNING`, never `ERROR`, because nothing
+failed. Findings already open on private repositories stay open for a
+human to close; the audit never closes them.
+
 **A check that could not run says so (Issue #1094).** An HTTP 403 on these
 endpoints is a static limit of the token's scopes, not a fault: it says the
 same thing on every run of every affected repository, and logging it at
@@ -1096,7 +1114,11 @@ the chain; a manifest it cannot read is reported as a warning, and
 `--allow-action owner/repo[,owner/repo]` adds anything the operator vouches
 for). An already-"selected" list that misses a pattern is extended, keeping
 what it has; secret scanning and push protection
-(a private repository needs Secret Protection — a refused write is reported).
+on a **public** repository only — on a private or internal one the step is
+not planned at all and the plan carries one line, `secret scanning / push
+protection: skipped — private repository needs paid GitHub Secret
+Protection`, so `--apply` sends no `security_and_analysis` write
+(Issue #2225).
 `--require-code-owner-review` turns `require_code_owner_review`
 on for the default branch's pull-request rule and leaves the approval count
 alone: a PR that touches a path named in `.github/CODEOWNERS` — the workflows,

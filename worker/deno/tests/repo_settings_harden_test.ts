@@ -14,7 +14,9 @@ import {
   allowListCovers,
   applyRepoSettingsPlan,
   buildAllowedActionPatterns,
+  isSecretScanningSkipped,
   MILESTONE_REF_PATTERN,
+  needsPaidSecretProtection,
   planRepoSettingsHardening,
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
@@ -130,6 +132,78 @@ Deno.test("planRepoSettingsHardening - a hardened repository plans nothing (Issu
     }),
     [],
   );
+});
+
+// =============================================================================
+// Issue #2225 — secret scanning / push protection need paid GitHub Secret
+// Protection on a private repository, so the step is not planned there
+// =============================================================================
+
+Deno.test("planRepoSettingsHardening - a private repository plans no secret-scanning step and reports the skip (Issue #2225)", () => {
+  for (const visibility of ["private", "internal"]) {
+    const snapshot: RepoSettingsSnapshot = {
+      ...OPEN,
+      visibility,
+      private: true,
+    };
+    const plan = planRepoSettingsHardening(snapshot, {
+      thirdPartyPatterns: [],
+      requireReviews: false,
+      defaultBranch: "Develop",
+    });
+    assert(
+      !plan.some((s) => s.kind === "secret-scanning"),
+      `${visibility}: no secret-scanning step`,
+    );
+    // The rest of the plan is unaffected.
+    assert(plan.some((s) => s.kind === "workflow-token"), visibility);
+    assert(isSecretScanningSkipped(snapshot), visibility);
+  }
+});
+
+Deno.test("planRepoSettingsHardening - a public repository keeps the secret-scanning step and its warning (Issue #2225)", () => {
+  const snapshot: RepoSettingsSnapshot = {
+    ...OPEN,
+    visibility: "public",
+    private: false,
+  };
+  const plan = planRepoSettingsHardening(snapshot, {
+    thirdPartyPatterns: [],
+    requireReviews: false,
+    defaultBranch: "Develop",
+  });
+  const step = plan.find((s) => s.kind === "secret-scanning");
+  assert(step, "public repositories still plan the step");
+  assert(step.warning?.includes("Secret Protection"), step.warning);
+  assertEquals(isSecretScanningSkipped(snapshot), false);
+});
+
+Deno.test("needsPaidSecretProtection - private and internal cost money, public does not, and an unknown visibility falls back to the private flag (Issue #2225)", () => {
+  assertEquals(needsPaidSecretProtection("private"), true);
+  assertEquals(needsPaidSecretProtection("internal"), true);
+  assertEquals(needsPaidSecretProtection("public"), false);
+  // GitHub returns lowercase, but the value is normalised rather than trusted.
+  assertEquals(needsPaidSecretProtection("Private"), true);
+  // An explicit visibility wins over a contradictory boolean flag.
+  assertEquals(needsPaidSecretProtection("public", true), false);
+  assertEquals(needsPaidSecretProtection(undefined, true), true);
+  assertEquals(needsPaidSecretProtection(undefined, false), false);
+  // Neither field readable: evaluated as today, never exempt.
+  assertEquals(needsPaidSecretProtection(), false);
+  assertEquals(needsPaidSecretProtection("something-new"), false);
+});
+
+Deno.test("isSecretScanningSkipped - no skip when the settings already hold, or when visibility is unknown (Issue #2225)", () => {
+  assertEquals(
+    isSecretScanningSkipped({ ...HARDENED, visibility: "private" }),
+    false,
+  );
+  // Unknown visibility is evaluated exactly as today — never silently skipped.
+  assertEquals(isSecretScanningSkipped(OPEN), false);
+  // No security surface read at all: nothing was planned, nothing skipped.
+  assertEquals(isSecretScanningSkipped({ visibility: "private" }), false);
+  // The boolean `private` flag alone is enough when `visibility` is absent.
+  assertEquals(isSecretScanningSkipped({ ...OPEN, private: true }), true);
 });
 
 Deno.test("applyRepoSettingsPlan - dry run touches nothing; apply issues each write once and reports per step; a failed write is reported, not thrown (Issue #4398)", async () => {

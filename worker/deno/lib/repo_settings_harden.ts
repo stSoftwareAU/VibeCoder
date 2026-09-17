@@ -13,9 +13,10 @@
  *  - `allowed_actions: selected` with GitHub-owned actions implicit and one
  *    `<owner>/<repo>@*` pattern per third-party action the workflows use
  *    (GHA-PERM-003 / GHA-HYGIENE-004)
- *  - secret scanning + push protection (GHA-MONITOR-004) — a private repo
- *    needs GitHub Secret Protection; the write may be refused, which is
- *    reported, never hidden
+ *  - secret scanning + push protection (GHA-MONITOR-004) — public
+ *    repositories only: a private or internal repo needs the paid GitHub
+ *    Secret Protection add-on, so the step is not planned there and the
+ *    skip is printed rather than a write attempted and refused (Issue #2225)
  *  - the default branch's review requirement (GHA-PERM-004) — **opt-in
  *    only** (`requireReviews`): with one required approval and code-owner
  *    review, the fleet's autonomous merges stop until a human approves,
@@ -62,6 +63,15 @@ export interface RepoSettingsSnapshot {
    */
   selectedActions?: SelectedActionsSnapshot;
   security?: Record<string, { status?: string } | undefined>;
+  /**
+   * The repository's visibility (`public`, `private`, `internal`) — read from
+   * the same `repos/{repo}` response as `security` (Issue #2225). Secret
+   * scanning and push protection are free only on a public repository, so the
+   * step is not planned anywhere else.
+   */
+  visibility?: string;
+  /** The boolean `private` flag, used when `visibility` is absent. */
+  private?: boolean;
   rules?: Array<{ type?: string; parameters?: Record<string, unknown> }>;
   /**
    * The repo's branch rulesets, each already expanded to its full object
@@ -328,6 +338,49 @@ async function readActionManifest(
   return lastReason ? { kind: "none" } : { kind: "none" };
 }
 
+/**
+ * The operator-facing note printed when the secret-scanning step is exempt
+ * (Issue #2225) — the skip is stated, never left silent.
+ */
+export const SECRET_PROTECTION_SKIP_NOTE =
+  "secret scanning / push protection: skipped — private repository needs " +
+  "paid GitHub Secret Protection";
+
+/**
+ * True when secret scanning and push protection cost money on this
+ * repository (Issue #2225): they are free on a public repository, and need
+ * the paid GitHub Secret Protection add-on on a private or internal one.
+ *
+ * Decided by visibility alone — no licence lookup. An unreadable visibility
+ * is never treated as exempt, so the check degrades to today's behaviour
+ * rather than silently passing.
+ */
+export function needsPaidSecretProtection(
+  visibility?: string,
+  isPrivate?: boolean,
+): boolean {
+  const known = visibility?.toLowerCase();
+  if (known === "private" || known === "internal") return true;
+  if (known === "public") return false;
+  return isPrivate === true;
+}
+
+/**
+ * True when a secret-scanning step would have been planned but is exempt
+ * because the repository is private or internal (Issue #2225). Shared by the
+ * planner and the command so the plan and its note cannot disagree.
+ */
+export function isSecretScanningSkipped(
+  snapshot: RepoSettingsSnapshot,
+): boolean {
+  const sec = snapshot.security;
+  if (!sec) return false;
+  const scanning = sec["secret_scanning"]?.status;
+  const push = sec["secret_scanning_push_protection"]?.status;
+  if (scanning === "enabled" && push === "enabled") return false;
+  return needsPaidSecretProtection(snapshot.visibility, snapshot.private);
+}
+
 /** Plan the writes that close each open setting; empty when hardened. */
 export function planRepoSettingsHardening(
   snapshot: RepoSettingsSnapshot,
@@ -424,7 +477,7 @@ export function planRepoSettingsHardening(
     });
   }
   const sec = snapshot.security;
-  if (sec) {
+  if (sec && !isSecretScanningSkipped(snapshot)) {
     const scanning = sec["secret_scanning"]?.status;
     const push = sec["secret_scanning_push_protection"]?.status;
     if (scanning !== "enabled" || push !== "enabled") {

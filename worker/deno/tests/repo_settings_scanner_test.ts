@@ -174,6 +174,136 @@ Deno.test("scanRepoSettings - a failed lookup is reported and skipped, never rea
 });
 
 // =============================================================================
+// Issue #2225 — secret scanning / push protection cost money on a private
+// repository, so neither finding is filed there
+// =============================================================================
+
+/** `OPEN` with both secret settings off and the given visibility fields. */
+function openWithVisibility(
+  repoFields: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...OPEN,
+    "repos/org/repo": {
+      ...OPEN["repos/org/repo"],
+      ...repoFields,
+    },
+  };
+}
+
+Deno.test("scanRepoSettings - a private repository files neither secret-scanning finding and records one skip (Issue #2225)", async () => {
+  const skips: string[] = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor(openWithVisibility({ visibility: "private", private: true })),
+    {
+      defaultBranch: "Develop",
+      hasCodeowners: true,
+      onCheckSkipped: (what, reason) => skips.push(`${what}: ${reason}`),
+      onLookupFailure: () => {
+        throw new Error("a skip must not be reported as a lookup failure");
+      },
+    },
+  );
+  const ids = findings.map((f) => f.findingId);
+  assert(!ids.includes("BP-REPO-SECRET-SCANNING-OFF"), ids.join(", "));
+  assert(!ids.includes("BP-REPO-PUSH-PROTECTION-OFF"), ids.join(", "));
+  // Every other open setting is still reported.
+  assert(ids.includes("BP-REPO-DEFAULT-TOKEN-WRITE"), ids.join(", "));
+  assertEquals(skips.length, 1, JSON.stringify(skips));
+  assertEquals(
+    skips[0],
+    "secret scanning / push protection: private repository — needs paid " +
+      "GitHub Secret Protection",
+  );
+});
+
+Deno.test("scanRepoSettings - an internal repository is exempt like a private one (Issue #2225)", async () => {
+  const skips: string[] = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor(openWithVisibility({ visibility: "internal", private: true })),
+    {
+      defaultBranch: "Develop",
+      hasCodeowners: true,
+      onCheckSkipped: (what) => skips.push(what),
+    },
+  );
+  const ids = findings.map((f) => f.findingId);
+  assert(!ids.includes("BP-REPO-SECRET-SCANNING-OFF"), ids.join(", "));
+  assert(!ids.includes("BP-REPO-PUSH-PROTECTION-OFF"), ids.join(", "));
+  assertEquals(skips.length, 1);
+});
+
+Deno.test("scanRepoSettings - a private repository with both settings already on records no skip (Issue #2225)", async () => {
+  const skips: string[] = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor({
+      ...HARDENED,
+      "repos/org/repo": {
+        ...HARDENED["repos/org/repo"],
+        visibility: "private",
+        private: true,
+      },
+    }),
+    {
+      defaultBranch: "Develop",
+      hasCodeowners: true,
+      onCheckSkipped: (what) => skips.push(what),
+    },
+  );
+  assertEquals(findings, []);
+  assertEquals(skips, []);
+});
+
+Deno.test("scanRepoSettings - a public repository still files both findings (Issue #2225)", async () => {
+  const skips: string[] = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor(openWithVisibility({ visibility: "public", private: false })),
+    {
+      defaultBranch: "Develop",
+      hasCodeowners: true,
+      onCheckSkipped: (what) => skips.push(what),
+    },
+  );
+  const ids = findings.map((f) => f.findingId);
+  assert(ids.includes("BP-REPO-SECRET-SCANNING-OFF"), ids.join(", "));
+  assert(ids.includes("BP-REPO-PUSH-PROTECTION-OFF"), ids.join(", "));
+  assertEquals(skips, []);
+});
+
+Deno.test("scanRepoSettings - an unreadable visibility is evaluated exactly as today (Issue #2225)", async () => {
+  const skips: string[] = [];
+  const findings = await scanRepoSettings("org/repo", ghFor(OPEN), {
+    defaultBranch: "Develop",
+    hasCodeowners: true,
+    onCheckSkipped: (what) => skips.push(what),
+  });
+  const ids = findings.map((f) => f.findingId);
+  assert(ids.includes("BP-REPO-SECRET-SCANNING-OFF"), ids.join(", "));
+  assert(ids.includes("BP-REPO-PUSH-PROTECTION-OFF"), ids.join(", "));
+  assertEquals(skips, []);
+});
+
+Deno.test("scanRepoSettings - the boolean private flag alone exempts the repository (Issue #2225)", async () => {
+  const skips: string[] = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor(openWithVisibility({ private: true })),
+    {
+      defaultBranch: "Develop",
+      hasCodeowners: true,
+      onCheckSkipped: (what) => skips.push(what),
+    },
+  );
+  const ids = findings.map((f) => f.findingId);
+  assert(!ids.includes("BP-REPO-SECRET-SCANNING-OFF"), ids.join(", "));
+  assertEquals(skips.length, 1);
+});
+
+// =============================================================================
 // Issue #4424 — a "selected" allow-list that omits an action the workflows
 // (or their composite steps) need
 // =============================================================================

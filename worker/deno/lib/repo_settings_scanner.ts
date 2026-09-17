@@ -16,6 +16,13 @@
  * `onLookupFailure` and yields no finding for that endpoint — never a
  * silent "hardened".
  *
+ * Exemption: secret scanning and push protection need the paid GitHub
+ * Secret Protection add-on on a private or internal repository, so neither
+ * finding is filed there (Issue #2225) — a finding that only asks an admin
+ * to spend money is closed by hand every run. The skip travels through
+ * `onCheckSkipped`, not `onLookupFailure`, because nothing failed, and the
+ * audit names it in its own summary rather than passing it as clean.
+ *
  * Wording note: the outbound secret masker rewrites `secret_scanning*`
  * key/value pairs and `id-token: write` to `***REDACTED***` in issue bodies
  * (documented in the #4377 gap analysis), so the finding text names those
@@ -24,7 +31,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { allowListCovers } from "./repo_settings_harden.ts";
+import {
+  allowListCovers,
+  needsPaidSecretProtection,
+} from "./repo_settings_harden.ts";
 import type {
   GhCommandFn,
   WorkflowFindingSeverity,
@@ -52,6 +62,13 @@ export interface ScanRepoSettingsOptions {
   knownOpenFindingIds?: Iterable<string>;
   onLookupFailure?: (what: string, reason: string) => void;
   /**
+   * A check this run deliberately did not make (Issue #2225) — not a
+   * failure, so it is reported separately from `onLookupFailure`, which
+   * logs a fault. The audit records it as a skipped check so the summary
+   * names what it did not cover.
+   */
+  onCheckSkipped?: (what: string, reason: string) => void;
+  /**
    * `<owner>/<repo>@*` patterns the workflows need — including the actions
    * their composite steps pull in (Issue #4424). When given and the
    * repository runs a "selected" allow-list, any pattern the list omits is a
@@ -61,6 +78,11 @@ export interface ScanRepoSettingsOptions {
 }
 
 const FILE = "repository settings";
+/** How the exempted check is named in the audit's skipped-checks list. */
+export const SECRET_PROTECTION_SKIP_CHECK = "secret scanning / push protection";
+/** Why it was skipped — rendered straight into the audit summary. */
+export const SECRET_PROTECTION_SKIP_REASON =
+  "private repository — needs paid GitHub Secret Protection";
 const ADMIN =
   "Repository admin action — the worker cannot change repository settings.";
 
@@ -282,6 +304,8 @@ export async function scanRepoSettings(
   // 4. Secret scanning and push protection (GHA-MONITOR-004).
   const repoInfo = await readJson<{
     security_and_analysis?: Record<string, { status?: string } | undefined>;
+    visibility?: string;
+    private?: boolean;
   }>(
     ghCommandFn,
     `repos/${repo}`,
@@ -292,7 +316,20 @@ export async function scanRepoSettings(
     const sa = repoInfo.security_and_analysis;
     const scanning = sa["secret_scanning"]?.status;
     const push = sa["secret_scanning_push_protection"]?.status;
-    if (scanning !== undefined && scanning !== "enabled") {
+    const scanningOff = scanning !== undefined && scanning !== "enabled";
+    const pushOff = push !== undefined && push !== "enabled";
+    // Both settings need the paid GitHub Secret Protection add-on on a
+    // private or internal repository, so a finding there only asks the admin
+    // to spend money (Issue #2225). The skip is recorded, never silent.
+    const exempt = (scanningOff || pushOff) &&
+      needsPaidSecretProtection(repoInfo.visibility, repoInfo.private);
+    if (exempt) {
+      options.onCheckSkipped?.(
+        SECRET_PROTECTION_SKIP_CHECK,
+        SECRET_PROTECTION_SKIP_REASON,
+      );
+    }
+    if (!exempt && scanningOff) {
       add({
         findingId: "BP-REPO-SECRET-SCANNING-OFF",
         severity: "medium",
@@ -308,7 +345,7 @@ export async function scanRepoSettings(
         evidence: `secret scanning status: ${scanning}`,
       });
     }
-    if (push !== undefined && push !== "enabled") {
+    if (!exempt && pushOff) {
       add({
         findingId: "BP-REPO-PUSH-PROTECTION-OFF",
         severity: "medium",

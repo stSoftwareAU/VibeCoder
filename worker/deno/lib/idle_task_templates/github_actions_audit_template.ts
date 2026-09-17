@@ -371,6 +371,7 @@ export interface GitHubActionsAuditTemplateDeps {
       hasCodeowners: boolean;
       knownOpenFindingIds: Iterable<string>;
       onLookupFailure: (what: string, reason: string) => void;
+      onCheckSkipped: (what: string, reason: string) => void;
       requiredActionPatterns?: readonly string[];
     },
   ) => Promise<RepoSettingsFinding[]>;
@@ -1471,6 +1472,21 @@ export function createGitHubActionsAuditTemplate(
               hasCodeowners,
               knownOpenFindingIds: seenIds,
               requiredActionPatterns,
+              // Issue #2225: a check the scanner deliberately did not make
+              // (secret scanning on a private repo, where it needs a paid
+              // licence) is not a fault — WARNING, and named as skipped so
+              // the audit never reads as having covered it.
+              onCheckSkipped: (what, reason) => {
+                skippedChecks.push({
+                  check: what,
+                  reason,
+                  notPermitted: false,
+                });
+                logger.warn(
+                  `github-actions-audit: repository settings check '${what}' skipped (${reason})`,
+                  { repo: opts.repo, template: NAME, runId },
+                );
+              },
               onLookupFailure: (what, reason) => {
                 // Issue #1094: a 403 here is a static limit of the token's
                 // scopes, not a fault — WARNING, once, naming the scope it
