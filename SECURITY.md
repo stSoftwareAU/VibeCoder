@@ -1405,6 +1405,8 @@ helper serves every site. The directions are pinned by test in
 | [`escalate_as_work.ts`](worker/deno/lib/escalate_as_work.ts) | Posting the escalation body onto the matched issue | **File a fresh escalation.** Scoped by the work label *and* the author — applying a label needs triage permission. |
 | [`setup/collaborator_precheck.ts`](worker/deno/setup/collaborator_precheck.ts) | Posting the follow-up, which carries `gh api …/collaborators` invite commands | **File a fresh issue.** |
 | [`setup/best_practices_relabel.ts`](worker/deno/setup/best_practices_relabel.ts) | Writing derived labels onto the matched issue | **Write no labels.** |
+| [`milestone_branch_sync.ts`](worker/deno/lib/milestone_branch_sync.ts) (`clearEarlierSyncEscalation`) | Removing `needs-human` from a milestone's tracking issue | **Leave the label alone.** The marker prefix is fixed text and the milestone branch it names is public on every milestone PR, so an unauthored match let any commenter strip a human-attention label (Issue #2231). Pinned by `worker/deno/tests/milestone_sync_escalation_author_2231_test.ts`. |
+| [`milestone_conflict_dedup.ts`](worker/deno/lib/milestone_conflict_dedup.ts) (`hasConflictEscalationComment`) | Suppressing the sync-conflict analysis a human must settle | **Report the conflict again.** A duplicate analysis is noise a reader skips; a suppressed one leaves the conflict unreported (Issue #2231). |
 
 - **Label scope where it holds, and only there.** Where a label is reliably
   present on the fleet's own issues it is applied alongside the author check

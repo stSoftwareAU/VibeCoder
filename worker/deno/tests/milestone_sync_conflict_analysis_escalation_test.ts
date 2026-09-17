@@ -30,6 +30,13 @@ import {
 } from "../lib/milestone_sync_streak.ts";
 
 const MILESTONE_TITLE = "#1559 Rival designs";
+/**
+ * The fleet account whose markers are trusted (Issue #2231): the cross-host
+ * marker only counts as an escalation already posted when a fleet account
+ * wrote it, so the stubs below name their commenter and the deps state the
+ * fleet instead of writing a config file.
+ */
+const FLEET = "vibe-coder-bot";
 /** The branch the sync derives from {@link MILESTONE_TITLE}. */
 const MILESTONE_BRANCH = createMilestoneBranchName(MILESTONE_TITLE);
 const DEFAULT_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -132,6 +139,7 @@ function deps(
       Promise.resolve({ ok: true as const, value: options.defaultSha }),
     log: () => undefined,
     streakPath: options.streakPath,
+    dedupAuthors: { fleetAuthors: [FLEET] },
   };
 }
 
@@ -284,7 +292,11 @@ Deno.test(
       hostB.ghCommandFn = (args: string[]): Promise<string> => {
         if (args[0] === "issue" && args[1] === "view") {
           calls.push(args);
-          return Promise.resolve(JSON.stringify({ comments: [{ body }] }));
+          return Promise.resolve(
+            JSON.stringify({
+              comments: [{ author: { login: FLEET }, body }],
+            }),
+          );
         }
         return inner(args);
       };
@@ -336,9 +348,9 @@ Deno.test(
         if (args[0] === "issue" && args[1] === "view") {
           calls.push(args);
           return Promise.resolve(
-            args.includes("state")
-              ? "CLOSED"
-              : JSON.stringify({ comments: [{ body }] }),
+            args.includes("state") ? "CLOSED" : JSON.stringify({
+              comments: [{ author: { login: FLEET }, body }],
+            }),
           );
         }
         return inner(args);

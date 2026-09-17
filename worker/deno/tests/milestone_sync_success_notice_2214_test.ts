@@ -42,10 +42,20 @@ function conflict(
   };
 }
 
+/**
+ * The fleet account whose markers are trusted (Issue #2231): a sync-conflict
+ * marker only clears a label when a fleet account wrote it, so every thread
+ * here names its commenters and every call states the fleet.
+ */
+const FLEET = "vibe-coder-bot";
+
+/** Fleet identity every call in this file states, instead of a config file. */
+const DEDUP_AUTHORS = { fleetAuthors: [FLEET] };
+
 interface Thread {
   state: "OPEN" | "CLOSED";
   labels: string[];
-  comments: string[];
+  comments: { author: string; body: string }[];
 }
 
 /** A gh stub over one planning-issue thread, recording every call. */
@@ -59,13 +69,19 @@ function ghStub(thread: Thread) {
     if (key.includes("--json labels,comments")) {
       return Promise.resolve(JSON.stringify({
         labels: thread.labels.map((name) => ({ name })),
-        comments: thread.comments.map((body) => ({ body })),
+        comments: thread.comments.map(({ author, body }) => ({
+          author: { login: author },
+          body,
+        })),
       }));
     }
     if (key.includes("--json comments")) {
-      return Promise.resolve(
-        JSON.stringify({ comments: thread.comments.map((body) => ({ body })) }),
-      );
+      return Promise.resolve(JSON.stringify({
+        comments: thread.comments.map(({ author, body }) => ({
+          author: { login: author },
+          body,
+        })),
+      }));
     }
     return Promise.resolve("");
   };
@@ -95,6 +111,7 @@ Deno.test("escalateSyncConflict - a resolved conflict on a closed planning issue
     conflict("auto"),
     stub.gh,
     () => {},
+    DEDUP_AUTHORS,
   );
 
   assertEquals(posted, true);
@@ -119,7 +136,11 @@ Deno.test("escalateSyncConflict - a resolved conflict clears the needs-human an 
     state: "OPEN",
     labels: ["needs-human", "top-priority"],
     comments: [
-      `${earlier}\n## Milestone sync conflict needs a human — both sides prepared`,
+      {
+        author: FLEET,
+        body:
+          `${earlier}\n## Milestone sync conflict needs a human — both sides prepared`,
+      },
     ],
   });
   const posted = await escalateSyncConflict(
@@ -128,6 +149,7 @@ Deno.test("escalateSyncConflict - a resolved conflict clears the needs-human an 
     conflict("auto"),
     stub.gh,
     () => {},
+    DEDUP_AUTHORS,
   );
 
   assertEquals(posted, true);
@@ -140,7 +162,7 @@ Deno.test("escalateSyncConflict - a needs-human that no sync escalation put ther
   const stub = ghStub({
     state: "OPEN",
     labels: ["needs-human"],
-    comments: ["A person asked for a decision here."],
+    comments: [{ author: FLEET, body: "A person asked for a decision here." }],
   });
   await escalateSyncConflict(
     REPO,
@@ -148,6 +170,7 @@ Deno.test("escalateSyncConflict - a needs-human that no sync escalation put ther
     conflict("auto"),
     stub.gh,
     () => {},
+    DEDUP_AUTHORS,
   );
 
   assertEquals(
@@ -166,6 +189,7 @@ Deno.test("escalateSyncConflict - a resolution nobody chose posts its record on 
     conflict("theirs"),
     stub.gh,
     () => {},
+    DEDUP_AUTHORS,
   );
 
   assertEquals(posted, true);

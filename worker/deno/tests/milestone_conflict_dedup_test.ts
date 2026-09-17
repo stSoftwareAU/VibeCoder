@@ -123,6 +123,9 @@ Deno.test("conflictEscalationMarker - is a single-line HTML comment carrying the
 // hasConflictEscalationComment
 // ---------------------------------------------------------------------------
 
+// The marker is only evidence when a fleet account wrote it (Issue #2231), so
+// these cases state the fleet and give the comment an author. The behaviour
+// each one asserts is unchanged.
 Deno.test("hasConflictEscalationComment - true when another host already posted the marker", async () => {
   const marker = conflictEscalationMarker("k1");
   const found = await hasConflictEscalationComment({
@@ -131,8 +134,14 @@ Deno.test("hasConflictEscalationComment - true when another host already posted 
     marker,
     ghCommandFn: () =>
       Promise.resolve(
-        JSON.stringify({ comments: [{ body: `${marker}\nanalysis` }] }),
+        JSON.stringify({
+          comments: [{
+            author: { login: "vibe-coder-bot" },
+            body: `${marker}\nanalysis`,
+          }],
+        }),
       ),
+    dedupAuthors: { fleetAuthors: ["vibe-coder-bot"] },
     log: () => undefined,
   });
   assertEquals(found, true);
