@@ -1739,6 +1739,18 @@
       ]
     },
     {
+      "issue": 2247,
+      "chunk": "top-up-2247",
+      "title": "top-up: the ephemeral build-cache placement",
+      "ledger": "docs/audits/security-sweep-2247-ephemeral-build-cache.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: ephemeral_build_cache.ts (#2247)",
+      "status": "swept",
+      "sweptAt": "80afce437c76721a1d343b78755d33e6311834b2",
+      "paths": [
+        "worker/deno/lib/ephemeral_build_cache.ts"
+      ]
+    },
+    {
       "issue": 2276,
       "chunk": "top-up-2276",
       "title": "top-up: the stale-verdict ladder reader",

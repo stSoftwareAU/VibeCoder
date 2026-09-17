@@ -21,6 +21,7 @@
 import type { Result } from "../types.ts";
 import { TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
+import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 
 /**
  * Default per-command timeout in seconds (Issue #3577).
@@ -170,7 +171,15 @@ async function defaultPreFlightRunner(
       // `./pre-flight.sh` otherwise ran with every credential the worker
       // holds, which is the whole exploit. Caller-supplied values are layered
       // on top, so an explicit need is still met.
-      env: buildUntrustedCommandEnv({ overrides: options.env ?? {} }),
+      // Issue #2247: where the runtime refuses to trim the work volume, a
+      // pre-flight that builds writes its artefacts to the container's own
+      // ephemeral layer rather than ratchetting the volume's sparse image.
+      env: buildUntrustedCommandEnv({
+        overrides: {
+          ...buildCacheEnvForCheckout(options.cwd),
+          ...(options.env ?? {}),
+        },
+      }),
       clearEnv: true,
       stdout: "piped",
       stderr: "piped",

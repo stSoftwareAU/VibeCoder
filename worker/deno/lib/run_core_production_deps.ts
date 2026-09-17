@@ -1401,6 +1401,7 @@ export async function createProductionRunCoreDeps(
     // -- Logging --
     log: (msg) => logger.info(msg),
     logError: (msg) => logger.error(msg),
+    logWarn: (msg) => logger.warn(msg),
     logTiming: (op, dur) => logger.timing(op, dur),
     logWorkerSummary: (processed, dur) => logger.workerSummary(processed, dur),
 

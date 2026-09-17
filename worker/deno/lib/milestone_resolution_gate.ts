@@ -27,6 +27,7 @@ import {
   readManifestTasks,
 } from "./milestone_merge_gate.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
+import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 
 /**
  * How long the whole verification may run before it is given up on.
@@ -130,7 +131,13 @@ const spawnTask: ResolutionTaskRunner = async (task) => {
   const result = await runWithTimeout(
     task.kind === "cargo" ? "cargo" : Deno.execPath(),
     task.args,
-    { cwd: task.dir, timeoutMs: task.timeoutMs },
+    {
+      cwd: task.dir,
+      timeoutMs: task.timeoutMs,
+      // Build artefacts off the persistent volume where the runtime refuses
+      // to trim it (Issue #2247); empty on every other runtime.
+      env: buildCacheEnvForCheckout(task.dir),
+    },
   );
   if (!result.ok) return { code: 1, output: result.error.message };
   const { code, stdout, stderr, timedOut } = result.value;

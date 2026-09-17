@@ -62,6 +62,10 @@ export const ALLOWED_ENV_NAMES: readonly string[] = [
   "DENO_DIR",
   "DENO_INSTALL_ROOT",
   "CARGO_HOME",
+  // Where cargo writes its build output. On a runtime that refuses to trim
+  // the work volume the worker points this at the container's own ephemeral
+  // layer (Issue #2247); an operator who sets it keeps it.
+  "CARGO_TARGET_DIR",
   "RUSTUP_HOME",
   "GOPATH",
   "GOCACHE",
