@@ -47,9 +47,16 @@ suite below, run against this branch:
 
 ```text
 deno test tests/ephemeral_build_cache_test.ts tests/quality_gate_phase_test.ts \
-  tests/untrusted_command_env_test.ts tests/pre_flight_gate_test.ts
-ok | 91 passed | 0 failed
+  tests/untrusted_command_env_test.ts tests/untrusted_spawn_env_test.ts
+ok | 85 passed | 0 failed
 ```
+
+The untrusted-spawn guard (`untrusted_spawn_env_test.ts`) spawns a real
+repo-supplied command and reads its environment back; it caught the placement
+arriving as a name the allowlist had not granted — on this very host, which
+*is* trim-refused — so `CARGO_TARGET_DIR` joined `ALLOWED_ENV_NAMES` beside
+`CARGO_HOME` and `DENO_DIR` rather than becoming an exception to the
+allowlist.
 
 `scanWorkVolumeUsage - a build sent to the ephemeral layer leaves 0 build
 artefacts on the volume` is the telemetry half of the issue's test list: it
