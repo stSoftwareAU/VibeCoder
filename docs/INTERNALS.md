@@ -889,7 +889,7 @@ at exit:
 fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
   busy=52920s usage_blocked=0s usage_blocked_waits=0 rate_limited=0s
   rate_limit_waits=0 claims=32 successes=17 failures=13 skips=2
-  success_rate=0.57
+  hook_failures=0 success_rate=0.57
   idle_by_reason=nothing_claimable_backlog=32000s,host_disk_low=7600s
   failures_by_class=execute=9,timeout=3,setup=1 utilisation=serial=0.57
 ```
@@ -925,6 +925,15 @@ flowchart LR
   while unblocked priority work was open (`nothing_claimable_backlog`) is
   reported separately from idle with nothing to claim
   (`nothing_claimable_empty`) — the first is a fault, the second is not.
+- **`hook_failures`** counts the post-run callback invocations that did not
+  exit 0 this run (Issue #2297). It is a fact about the host's hook
+  deployment, not about the work the fleet did, so it sits beside the run
+  outcomes rather than inside the wall-clock partition and is not accumulated
+  into the durable sidecar. `claims=3 successes=2 failures=0` read as a
+  healthy run on GRQ-25 while every heartbeat the host published was lost; the
+  streak behind the number, and where it is published for host-side health
+  reporting to read, is in
+  [docs/CALLBACKS.md](CALLBACKS.md#what-the-host-can-read-issue-2297).
 - **A block inside a run** — the agent's own retry ladder sleeps in-process —
   counts towards `usage_blocked_seconds` but not towards `idle_by_reason`: the
   fleet was holding a claim, not idle. This is the one deliberate overlap, and

@@ -33,6 +33,15 @@
  * operational detail in a public tracker, and closing it again was a second
  * GitHub write on the recovery path — both are gone (Issue #2111).
  *
+ * **Local is not the same as unreadable** (Issue #2297). A record only the
+ * worker log holds is a record nobody reads until the board has been red for a
+ * day — which is exactly what GRQ-25 did on 2026-09-16, when the `success`
+ * hook (a health heartbeat) failed on every terminal run for two days. So the
+ * same count is published as JSON to the host log directory as well as
+ * `WORK_DIR`, and read back from there when the work volume has been reset.
+ * See `callback_failure_publication.ts`; nothing about the boundary above
+ * changes — it is still a file and a log line on the host that owns the hook.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -41,6 +50,18 @@ import {
   CALLBACK_SCHEMA_VERSION,
   type CallbackInvocation,
 } from "./run_callbacks.ts";
+import {
+  CALLBACK_FAILURE_STREAK_FILE,
+  CALLBACK_FAILURE_STREAK_SCHEMA_VERSION,
+  callbackFailureStreakCounts,
+  type CallbackFailureStreakEntry,
+  type CallbackFailureStreaks,
+  type CallbackFailureStreakSnapshot,
+  emptyCallbackFailureSnapshot,
+  publishCallbackFailureSnapshot,
+  PUBLISHED_STDERR_HEAD_CHARS,
+  readCallbackFailureSnapshot,
+} from "./callback_failure_publication.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /**
@@ -53,11 +74,12 @@ import { redactSecrets } from "./secret_redaction.ts";
  */
 export const CALLBACK_FAILURE_ESCALATION_THRESHOLD = 3;
 
-/** File in `WORK_DIR` holding the per-event consecutive-failure counts. */
-export const CALLBACK_FAILURE_STREAK_FILE = "callback-failure-streaks.json";
-
-/** Consecutive failures per callback event. */
-export type CallbackFailureStreaks = Partial<Record<CallbackEvent, number>>;
+export {
+  /** File holding the per-event consecutive-failure counts. */
+  CALLBACK_FAILURE_STREAK_FILE,
+  /** Consecutive failures per callback event. */
+  type CallbackFailureStreaks,
+};
 
 /** One callback condition worth telling the host's operator about. */
 export interface CallbackFailureReport {
@@ -67,6 +89,8 @@ export interface CallbackFailureReport {
   path: string;
   /** Consecutive issues the hook has failed on. */
   streak: number;
+  /** ISO-8601 timestamp of the first failure of this streak. */
+  firstFailureAt: string;
   /** `owner/repo` of the run that tipped it over. */
   repository: string;
   /** Issue number of the run that tipped it over. */
@@ -97,56 +121,29 @@ export interface CallbackRecoveryReport {
 
 /** Injectable seams so the streak is testable without touching `WORK_DIR`. */
 export interface CallbackFailureStreakDeps {
-  /** Reads the persisted streaks. Defaults to the `WORK_DIR` file. */
-  readStreaks?: (workDir: string) => Promise<CallbackFailureStreaks>;
-  /** Persists the streaks. Defaults to the `WORK_DIR` file. */
+  /**
+   * The host log directory the streak is published to beside `WORK_DIR`
+   * (Issue #2297). Absent, only the work-volume copy is kept — which is what
+   * a host with no mounted log directory had before.
+   */
+  hostLogDir?: string;
+  /** Reads the persisted streak. Defaults to the two on-disk copies. */
+  readStreaks?: (
+    workDir: string,
+    hostLogDir?: string,
+  ) => Promise<CallbackFailureStreakSnapshot>;
+  /** Persists the streak. Defaults to writing both copies. */
   writeStreaks?: (
     workDir: string,
-    streaks: CallbackFailureStreaks,
+    snapshot: CallbackFailureStreakSnapshot,
+    hostLogDir?: string,
   ) => Promise<void>;
+  /** Clock behind the streak's timestamps. Defaults to `Date.now`. */
+  now?: () => number;
   /** Informational sink. Defaults to a no-op. */
   log?: (message: string) => void;
   /** Fault sink — where the threshold record is written. */
   logError?: (message: string) => void;
-}
-
-function streakFilePath(workDir: string): string {
-  return `${workDir}/${CALLBACK_FAILURE_STREAK_FILE}`;
-}
-
-/** Read the persisted streaks; absent or unreadable reads as none. */
-async function defaultReadStreaks(
-  workDir: string,
-): Promise<CallbackFailureStreaks> {
-  try {
-    const text = await Deno.readTextFile(streakFilePath(workDir));
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    const streaks: CallbackFailureStreaks = {};
-    for (const event of ["success", "failure", "always"] as const) {
-      const value = parsed[event];
-      if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-        streaks[event] = Math.floor(value);
-      }
-    }
-    return streaks;
-  } catch {
-    return {};
-  }
-}
-
-/** Persist the streaks. Best-effort — a write failure only loses the count. */
-async function defaultWriteStreaks(
-  workDir: string,
-  streaks: CallbackFailureStreaks,
-): Promise<void> {
-  try {
-    await Deno.writeTextFile(
-      streakFilePath(workDir),
-      `${JSON.stringify(streaks, null, 2)}\n`,
-    );
-  } catch {
-    // The count is an optimisation over the log, never the record itself.
-  }
 }
 
 /**
@@ -164,6 +161,7 @@ function failureRecord(report: CallbackFailureReport): string {
     "terminal issue run, so the cost is paid on every issue this host works; " +
     "the run's own result is unaffected.",
     `  hook: ${report.path}`,
+    `  failing since ${report.firstFailureAt}`,
     `  last run: ${report.repository}#${report.issueNumber}`,
     `  outcome: ${report.status}, exit ${report.exitCode}, ` +
     `${report.durationSeconds.toFixed(1)}s`,
@@ -186,10 +184,10 @@ function failureRecord(report: CallbackFailureReport): string {
  * a streak long enough to have been recorded writes one line saying so; a
  * success that ends a shorter streak has nothing to say.
  *
- * A fault in the count file never alters the run's own outcome — the read and
- * the write are both best-effort, because the log is the record and the count
- * only an optimisation over it. That boundary is the one the whole callback
- * layer holds.
+ * A fault in the count file never alters the run's own outcome — the read is
+ * best-effort and a copy that cannot be written is reported rather than
+ * thrown, because the log is the record and the count an aid to reading it.
+ * That boundary is the one the whole callback layer holds.
  *
  * @param workDir - The worker's work directory, where the streaks live
  * @param invocations - What {@link CallbackInvocation}s this run produced
@@ -205,23 +203,45 @@ export async function recordCallbackOutcomes(
 ): Promise<CallbackFailureStreaks> {
   if (invocations.length === 0) return {};
 
-  const readStreaks = deps.readStreaks ?? defaultReadStreaks;
-  const writeStreaks = deps.writeStreaks ?? defaultWriteStreaks;
   const log = deps.log ?? (() => {});
   const logError = deps.logError ?? (() => {});
+  const now = deps.now ?? Date.now;
+  const readStreaks = deps.readStreaks ??
+    ((dir: string, hostLogDir?: string) =>
+      readCallbackFailureSnapshot({
+        workDir: dir,
+        ...(hostLogDir === undefined ? {} : { hostLogDir }),
+      }));
+  const writeStreaks = deps.writeStreaks ??
+    ((
+      dir: string,
+      snapshot: CallbackFailureStreakSnapshot,
+      hostLogDir?: string,
+    ) =>
+      publishCallbackFailureSnapshot({
+        workDir: dir,
+        ...(hostLogDir === undefined ? {} : { hostLogDir }),
+        snapshot,
+        warn: logError,
+      }));
 
-  let streaks: CallbackFailureStreaks;
+  let snapshot: CallbackFailureStreakSnapshot;
   try {
-    streaks = await readStreaks(workDir);
+    snapshot = await readStreaks(workDir, deps.hostLogDir);
   } catch {
-    streaks = {};
+    snapshot = emptyCallbackFailureSnapshot();
   }
+  const events = { ...snapshot.events };
+  // One reading of the clock for the whole record, so every timestamp this
+  // call writes agrees with the others.
+  const at = new Date(now()).toISOString();
 
   const due: CallbackFailureReport[] = [];
   const recovered: CallbackRecoveryReport[] = [];
   for (const invocation of invocations) {
+    const prior = events[invocation.event];
     if (invocation.status === "ok") {
-      const ended = streaks[invocation.event] ?? 0;
+      const ended = prior?.streak ?? 0;
       if (ended >= CALLBACK_FAILURE_ESCALATION_THRESHOLD) {
         recovered.push({
           event: invocation.event,
@@ -231,16 +251,42 @@ export async function recordCallbackOutcomes(
           issueNumber: run.issueNumber,
         });
       }
-      streaks[invocation.event] = 0;
+      // The event stays in the file at zero: "this hook ran and is healthy"
+      // is what a host-side reader needs, and absence cannot say it.
+      events[invocation.event] = {
+        event: invocation.event,
+        path: invocation.path,
+        streak: 0,
+      };
       continue;
     }
-    const streak = (streaks[invocation.event] ?? 0) + 1;
-    streaks[invocation.event] = streak;
+    const streak = (prior?.streak ?? 0) + 1;
+    // The streak began when its first failure did — a count carried over from
+    // the host copy keeps the timestamp that came with it (Issue #2297).
+    const firstFailureAt = (prior && prior.streak > 0 && prior.firstFailureAt)
+      ? prior.firstFailureAt
+      : at;
+    const entry: CallbackFailureStreakEntry = {
+      event: invocation.event,
+      path: invocation.path,
+      streak,
+      firstFailureAt,
+      lastFailureAt: at,
+      status: invocation.status,
+      exitCode: invocation.exitCode,
+      durationSeconds: invocation.durationMs / 1000,
+      stderr: redactSecrets(invocation.stderr).slice(
+        0,
+        PUBLISHED_STDERR_HEAD_CHARS,
+      ),
+    };
+    events[invocation.event] = entry;
     if (streak !== CALLBACK_FAILURE_ESCALATION_THRESHOLD) continue;
     due.push({
       event: invocation.event,
       path: invocation.path,
       streak,
+      firstFailureAt,
       repository: run.repository,
       issueNumber: run.issueNumber,
       status: invocation.status,
@@ -250,7 +296,12 @@ export async function recordCallbackOutcomes(
     });
   }
 
-  await writeStreaks(workDir, streaks);
+  snapshot = {
+    version: CALLBACK_FAILURE_STREAK_SCHEMA_VERSION,
+    updatedAt: at,
+    events,
+  };
+  await writeStreaks(workDir, snapshot, deps.hostLogDir);
 
   for (const report of due) logError(failureRecord(report));
 
@@ -263,5 +314,5 @@ export async function recordCallbackOutcomes(
     );
   }
 
-  return streaks;
+  return callbackFailureStreakCounts(snapshot);
 }
