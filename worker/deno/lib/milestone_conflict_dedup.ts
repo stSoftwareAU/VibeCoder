@@ -21,8 +21,20 @@
  * worker host, which keeps its own streak file, can see that the escalation
  * has already gone out rather than posting it again.
  *
+ * **A marker is only evidence when a fleet account wrote it (Issue #2231).**
+ * The marker text is fixed and the milestone branch it names is public on
+ * every milestone PR, so anyone who can comment on a public repository can
+ * plant one. Every marker match is therefore filtered through
+ * `alert_dedup_authors.ts` before it decides anything — the same control
+ * `milestone_branch_self_heal.ts` already applies to its own marker searches.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
+
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Key
@@ -89,6 +101,53 @@ export function conflictEscalationMarkerPrefix(
 }
 
 // ---------------------------------------------------------------------------
+// Authorship
+// ---------------------------------------------------------------------------
+
+/** One comment as read from `gh issue view --json …,comments`. */
+export interface ConflictEscalationComment {
+  /** The commenter's login, or null when the payload carried none. */
+  author: string | null;
+  body: string;
+}
+
+/**
+ * Project the `comments` array of `gh issue view --json …,comments` onto
+ * `{ author, body }` rows (Issue #2231).
+ *
+ * `gh` renders a comment's author as a `{ login }` object; the worker's own
+ * `GitHubComment` renders it as a bare login. Both are accepted, as
+ * `planning_carrier.ts` accepts both, so the shape a caller's runner returns
+ * cannot silently drop every author — and with it every comment.
+ *
+ * A comment with no readable author keeps `author: null`, which no fleet
+ * login matches, so it is discarded by the author gate rather than trusted.
+ *
+ * @param value - The parsed `comments` field, of any shape.
+ * @returns One row per comment carrying a string body.
+ */
+export function conflictEscalationCommentRows(
+  value: unknown,
+): ConflictEscalationComment[] {
+  if (!Array.isArray(value)) return [];
+  const rows: ConflictEscalationComment[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.body !== "string") continue;
+    const author = record.author;
+    const login = typeof author === "string"
+      ? author
+      : author !== null && typeof author === "object" &&
+          typeof (author as Record<string, unknown>).login === "string"
+      ? (author as Record<string, unknown>).login as string
+      : null;
+    rows.push({ author: login, body: record.body });
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
 // Cross-host check
 // ---------------------------------------------------------------------------
 
@@ -99,17 +158,34 @@ export interface ConflictEscalationCommentQuery {
   /** The marker produced by {@link conflictEscalationMarker}. */
   marker: string;
   ghCommandFn: (args: string[]) => Promise<string>;
+  /**
+   * Fleet identity for the marker's author check (Issue #2231). Omitted
+   * (production) means "read the configured fleet identity"; a test states
+   * the fleet instead of writing a config file.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   log: (message: string) => void;
 }
+
+/** What an unattributable marker costs here, in this site's own words. */
+const UNVERIFIED_ESCALATION_OUTCOME =
+  "no comment counts as an escalation already posted and the analysis is " +
+  "reported again. A duplicate report is noise a reader skips; a suppressed " +
+  "one leaves a conflict only a human can settle unreported";
 
 /**
  * Whether the tracking issue already carries this conflict's escalation.
  *
- * Fails **open**: a thread that cannot be read or parsed answers `false`, so
- * the escalation still goes out. Losing a "only a human can settle this"
- * report to a transient API fault would be worse than a duplicate comment,
- * which is what the caller did on every cycle before this existed. The
- * failure is never swallowed — it is named in the log.
+ * Only a **fleet-authored** marker counts (Issue #2231): the marker is fixed
+ * text anybody who can comment may write, and a match suppresses the report,
+ * so an unattributed one would let an outsider silence an escalation.
+ *
+ * Fails **open**: a thread that cannot be read or parsed, or a marker whose
+ * author cannot be attributed, answers `false`, so the escalation still goes
+ * out. Losing a "only a human can settle this" report to a transient API
+ * fault would be worse than a duplicate comment, which is what the caller did
+ * on every cycle before this existed. The failure is never swallowed — it is
+ * named in the log.
  */
 export async function hasConflictEscalationComment(
   query: ConflictEscalationCommentQuery,
@@ -125,13 +201,21 @@ export async function hasConflictEscalationComment(
       "--json",
       "comments",
     ]);
-    const parsed = JSON.parse(raw) as { comments?: { body?: unknown }[] };
+    const parsed = JSON.parse(raw) as { comments?: unknown };
     if (!Array.isArray(parsed?.comments)) {
       throw new Error("gh issue view returned no `comments` array");
     }
-    return parsed.comments.some((comment) =>
-      typeof comment?.body === "string" && comment.body.includes(marker)
+    const matches = conflictEscalationCommentRows(parsed.comments).filter(
+      (comment) => comment.body.includes(marker),
     );
+    const fleetMatches = await selectFleetAuthoredComments(
+      matches,
+      `milestone-sync-conflict ${repo}#${issueNumber}`,
+      query.dedupAuthors ?? {},
+      log,
+      UNVERIFIED_ESCALATION_OUTCOME,
+    );
+    return fleetMatches.length > 0;
   } catch (err) {
     log(
       `WARNING: Could not tell whether the milestone sync conflict for ` +

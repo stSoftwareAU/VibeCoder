@@ -26,7 +26,10 @@
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
-import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 import type { RepoLease } from "./maintenance_lane.ts";
 import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
@@ -49,6 +52,7 @@ import {
   isConflictEscalation,
 } from "./milestone_conflict_triage.ts";
 import {
+  conflictEscalationCommentRows,
   conflictEscalationKey,
   conflictEscalationMarker,
   conflictEscalationMarkerPrefix,
@@ -1388,6 +1392,7 @@ export async function syncMilestoneBranches(
                 conflict,
                 ghCommandFn,
                 log,
+                deps.dedupAuthors ?? {},
               );
               // Only a report that went out is remembered: an escalation
               // that failed must be retried next cycle, not marked done.
@@ -1537,6 +1542,7 @@ export async function syncMilestoneBranches(
                 gateKey,
                 ghCommandFn,
                 log,
+                deps.dedupAuthors ?? {},
               );
               if (escalated) entry.analysisEscalatedSha = gateKey;
             }
@@ -1652,6 +1658,10 @@ export async function syncMilestoneBranches(
  * Exported so a child run's pre-cut sync reports a conflicted merge through
  * this very function (Issue #1780): a resolution that favoured the default
  * branch must be reported once, whichever pass made it.
+ *
+ * @param dedupAuthors - Fleet identity for the marker author checks
+ *   (Issue #2231). Omitted (production) means "read the configured fleet
+ *   identity"; a test states the fleet instead of writing a config file.
  */
 export async function escalateSyncConflict(
   repo: string,
@@ -1659,6 +1669,7 @@ export async function escalateSyncConflict(
   conflict: MilestoneSyncConflict,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
+  dedupAuthors: AlertDedupAuthorOptions = {},
 ): Promise<boolean> {
   const tips = await resolveBranchTips(
     repo,
@@ -1715,7 +1726,14 @@ export async function escalateSyncConflict(
       undefined,
       {
         addendum: (issue) =>
-          clearEarlierSyncEscalation(repo, issue, milestone, ghCommandFn, log),
+          clearEarlierSyncEscalation(
+            repo,
+            issue,
+            milestone,
+            ghCommandFn,
+            log,
+            dedupAuthors,
+          ),
       },
     );
   }
@@ -1729,15 +1747,25 @@ export async function escalateSyncConflict(
   );
 }
 
+/** What an unattributable sync-conflict marker costs, in this site's words. */
+const UNVERIFIED_CLEAR_OUTCOME =
+  "no comment counts as this pass's own escalation and the `needs-human` is " +
+  "left alone. A label left standing is read by the next human; one removed " +
+  "on evidence anybody can write is a human-attention signal erased";
+
 /**
  * Clear the `needs-human` an earlier sync escalation of this branch applied
  * (Issue #2214), once the branch has synced.
  *
  * Only a label this pass itself put there is touched: the issue must carry
- * `needs-human` AND a sync-conflict marker for this milestone branch. A
- * `needs-human` a person applied, or another pass, is left alone. Nothing is
- * closed — a reopen is reverted by the reader, who can see from the notice
- * that the sync has cleared. Best-effort: a failure is logged, and the
+ * `needs-human` AND a sync-conflict marker for this milestone branch written
+ * by a **fleet account** (Issue #2231). The marker is fixed, guessable text
+ * and the branch it names is public on every milestone PR, so an unauthored
+ * match let anyone who could comment strip a `needs-human` a person applied.
+ * A `needs-human` a person applied, or another pass, is left alone. Nothing
+ * is closed — a reopen is reverted by the reader, who can see from the notice
+ * that the sync has cleared. Best-effort and fails **closed**: an unreadable
+ * thread or an unresolved fleet identity leaves the label alone, and the
  * notice still goes out.
  *
  * @returns A line for the notice when the label was removed, else "".
@@ -1748,6 +1776,7 @@ async function clearEarlierSyncEscalation(
   milestone: ActiveMilestone,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
+  dedupAuthors: AlertDedupAuthorOptions = {},
 ): Promise<string> {
   try {
     const raw = await ghCommandFn([
@@ -1761,17 +1790,24 @@ async function clearEarlierSyncEscalation(
     ]);
     const parsed = JSON.parse(raw) as {
       labels?: { name?: unknown }[];
-      comments?: { body?: unknown }[];
+      comments?: unknown;
     };
     const labelled = (parsed.labels ?? []).some((l) =>
       l?.name === "needs-human"
     );
     if (!labelled) return "";
     const prefix = conflictEscalationMarkerPrefix(milestone.milestoneBranch);
-    const escalatedHere = (parsed.comments ?? []).some((c) =>
-      typeof c?.body === "string" && c.body.includes(prefix)
+    const markers = conflictEscalationCommentRows(parsed.comments).filter((c) =>
+      c.body.includes(prefix)
     );
-    if (!escalatedHere) return "";
+    const fleetMarkers = await selectFleetAuthoredComments(
+      markers,
+      `milestone-sync-escalation-clear ${repo}#${issueNumber}`,
+      dedupAuthors,
+      log,
+      UNVERIFIED_CLEAR_OUTCOME,
+    );
+    if (fleetMarkers.length === 0) return "";
     await ghCommandFn([
       "issue",
       "edit",
@@ -1829,6 +1865,7 @@ async function escalateConflictAnalysis(
   conflictKey: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
+  dedupAuthors: AlertDedupAuthorOptions = {},
 ): Promise<boolean> {
   const tips = await resolveBranchTips(
     repo,
@@ -1867,6 +1904,7 @@ async function escalateConflictAnalysis(
     ghCommandFn,
     log,
     marker,
+    { dedupAuthors },
   );
 }
 
@@ -1951,6 +1989,8 @@ async function escalateToExistingIssue(
   dedupMarker?: string,
   options: {
     addendum?: (issue: number) => Promise<string>;
+    /** Fleet identity for the marker author check (Issue #2231). */
+    dedupAuthors?: AlertDedupAuthorOptions;
   } = {},
 ): Promise<boolean> {
   const target: MilestoneEscalationTarget =
@@ -1970,6 +2010,7 @@ async function escalateToExistingIssue(
               issueNumber,
               marker: dedupMarker,
               ghCommandFn,
+              dedupAuthors: options.dedupAuthors ?? {},
               log,
             }),
         }
