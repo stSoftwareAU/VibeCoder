@@ -109,6 +109,15 @@ out):
   the launch still proceeding) is unchanged.
 - `worker/deno/tests/container_launch_test.ts` — the render/parse round trip
   now also asserts the role list survives the hand-off.
+- `worker/deno/tests/run_sh_launcher_test.ts::run.sh - recreates a volume with the verb its runtime spells, never a hardcoded one (Issue #731)`
+  — the test is about the removal *verb*; its trailing volume-list assertion
+  is narrowed to `[vibe-work]` for the same reason.
+- `worker/deno/tests/tabletop_container_runner_test.ts` — its literal launch
+  plan gains the new required `resettableVolumes` field (its throwaway work
+  volume; the tabletop mounts no approval store).
+
+`./quality.sh` passes in full (all stages PASSED; `config integration`
+SKIPPED as it is on this host).
 
 Docs: `docs/CONTAINER.md` gains the role gate as its own numbered point in
 the untrimmable-volume heal section, with the decision flowchart updated.
