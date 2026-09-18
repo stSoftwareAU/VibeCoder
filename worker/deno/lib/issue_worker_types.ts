@@ -15,7 +15,7 @@ import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
 import type { SessionResumeState } from "./session_resume.ts";
 import type { FailedCheck, GenericFinding } from "./baseline_gate.ts";
-import type { QualityGateAttemptOutcome } from "./quality_gate_attempt.ts";
+import type { QualityGateAttemptOutcome } from "./issue_run_stats_comment.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { GraftContextResult } from "./graft_context.ts";

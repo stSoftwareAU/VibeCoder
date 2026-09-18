@@ -23,7 +23,7 @@ import {
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
-import type { QualityGateAttemptOutcome } from "../lib/quality_gate_attempt.ts";
+import type { QualityGateAttemptOutcome } from "../lib/issue_run_stats_comment.ts";
 import {
   type CodegraphContextResult,
   prepareCodegraphContext,

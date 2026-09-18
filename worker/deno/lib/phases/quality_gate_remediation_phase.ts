@@ -480,9 +480,9 @@ async function runQualityGateBody(
           decision.preExisting,
           { logger },
         );
-        // The run proceeds exactly as it would after a green gate, so the
-        // report says so: passed on this attempt (Issue #2345).
-        state.qualityGateOutcome = { status: "passed", attempt };
+        // The run proceeds, but the gate never went green: the outcome stays
+        // `failed` (Issue #2345). Reporting a bypass as a pass would inflate
+        // the very first-attempt pass rate the line exists to measure.
         return { phaseResult: { status: "continue" } };
       }
       lastDiffCarryover = decision.preExisting.length;

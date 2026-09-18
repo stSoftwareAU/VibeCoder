@@ -17,6 +17,7 @@ import { workOnIssueQualityGate } from "../lib/phases/quality_gate_remediation_p
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { mermaidFinding } from "../lib/baseline_gate.ts";
 import type { CheckResult } from "../lib/quality_helpers.ts";
 
 function makeContext(): IssueContext {
@@ -128,6 +129,40 @@ Deno.test("quality gate - a gate still red after remediation records failed", as
   );
 
   assertEquals(result.status, "failure");
+  assertEquals(state.qualityGateOutcome, { status: "failed" });
+});
+
+Deno.test("quality gate - a bypassed pre-existing failure is never reported as a pass", async () => {
+  // Issue #2604's bypass lets the run continue, but `./quality.sh` was red:
+  // reporting it as passed would inflate the first-attempt pass rate #2320
+  // reads off this line.
+  const preExisting = mermaidFinding({
+    file: "docs/x.md",
+    startLine: 3,
+    type: "sequenceDiagram",
+    error: "participant Loop",
+  });
+  const state = makeState({ baselineGateFindings: [preExisting] });
+  const deps = createMockDeps({
+    quality: {
+      runQualityGate: () =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            checks: [{ name: "mermaid", status: "FAILED" }] as CheckResult[],
+            summary: { text: "failed", passed: false },
+            passed: false,
+            output: "mermaid failed",
+          },
+        }),
+      collectDiffableGateFindings: () => Promise.resolve([preExisting]),
+      fileBaselineCarryoverTracker: (() => Promise.resolve()) as never,
+    },
+  });
+
+  const result = await workOnIssueQualityGate(makeContext(), state, deps);
+
+  assertEquals(result.status, "continue");
   assertEquals(state.qualityGateOutcome, { status: "failed" });
 });
 

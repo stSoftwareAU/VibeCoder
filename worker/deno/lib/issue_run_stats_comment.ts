@@ -54,8 +54,22 @@ import {
 } from "./phase_run_stats.ts";
 import { formatUsd } from "./cost_estimate.ts";
 import type { GraftContextResult } from "./graft_context.ts";
-import type { QualityGateAttemptOutcome } from "./quality_gate_attempt.ts";
 import { getRunId } from "./run_id.ts";
+
+/**
+ * What the implementation run's quality gate did (Issue #2345, part of #2320).
+ *
+ * The gate is bounded to two attempts — the initial `./quality.sh` run plus one
+ * `quality_fix` remediation and re-run — so `attempt` is its own loop counter:
+ * `1` for a gate that passed outright, `2` for one that passed after
+ * remediation. A gate that never went green carries no attempt; `failed` is the
+ * whole report, which covers a gate bypassed as pre-existing breakage and one
+ * that only passed once the bump audit reverted the dependency bump. Recorded
+ * by `workOnIssueQualityGate` on the phase state and rendered here.
+ */
+export type QualityGateAttemptOutcome =
+  | { readonly status: "passed"; readonly attempt: number }
+  | { readonly status: "failed" };
 
 /**
  * Hidden HTML marker prefix every run-stats comment carries.
@@ -294,11 +308,7 @@ export function buildQualityGateStatsLine(
   if (outcome.status === "failed") {
     return `${QUALITY_GATE_STATS_PREFIX} failed`;
   }
-  // The attempt is the gate's own loop counter, so it is already a small
-  // positive integer; truncated and floored purely so a malformed value can
-  // never render a fraction into a line something greps.
-  const attempt = Math.max(1, Math.trunc(outcome.attempt));
-  return `${QUALITY_GATE_STATS_PREFIX} passed on attempt ${attempt}`;
+  return `${QUALITY_GATE_STATS_PREFIX} passed on attempt ${outcome.attempt}`;
 }
 
 /**
