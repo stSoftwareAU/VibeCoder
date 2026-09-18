@@ -8,10 +8,10 @@
  *    the work permanently, with no undo and no human in the loop. The
  *    precondition is asserted as an *ordering* property, not just an outcome:
  *    no `pr close` may be issued at all.
- * 2. **One restart per issue.** Without the bound this closes a PR, raises
- *    another, closes that one, forever. The marker lives on the **issue**
- *    because the PR identity changes each time round — a PR-keyed marker
- *    passes a single-cycle test and loops in production.
+ * 2. **Two restarts per issue** (Issue #2312). Without the bound this closes a
+ *    PR, raises another, closes that one, forever. The marker lives on the
+ *    **issue** because the PR identity changes each time round — a PR-keyed
+ *    marker passes a single-cycle test and loops in production.
  * 3. **Partial abandon.** Every step is failed in turn and the resting state
  *    must name the step that stopped it. "PR closed, issue not re-queued" is
  *    the state this exists to keep out of production.
@@ -32,6 +32,7 @@ import {
   type AbandonRestartRequest,
   buildAbandonPrComment,
   buildNoIssueAbandonPrComment,
+  buildRestartIssueComment,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
   describeConcludedAttempts,
@@ -39,6 +40,7 @@ import {
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
   findOtherPrsForIssue,
+  MAX_RESTARTS_PER_ISSUE,
   mergeFallbackRunsFromHistory,
   planRequeueLabel,
   requeueLabelName,
@@ -246,6 +248,21 @@ function makeFake(overrides: Partial<FakeState> = {}): FakeGh {
 
     if (args[0] === "issue" && args[1] === "reopen") {
       state.issueState = "OPEN";
+      return Promise.resolve("");
+    }
+
+    // A closed PR leaves the open listing, which is what lets a second round
+    // reach the restart bound rather than the other-open-PR precondition
+    // (Issue #2312).
+    if (args[0] === "pr" && args[1] === "close") {
+      const number = Number(args[2]);
+      state.prsByState.open = (state.prsByState.open ?? []).filter(
+        (pr) => pr.number !== number,
+      );
+      (state.prsByState.closed ??= []).push({
+        number,
+        title: `Fix the limits (#${ISSUE_NUMBER})`,
+      });
       return Promise.resolve("");
     }
 
@@ -859,12 +876,13 @@ Deno.test("abandonAndRestart - an issue with another open PR is left alone", asy
 });
 
 // ---------------------------------------------------------------------------
-// The bound — one restart per originating issue
+// The bound — two restarts per originating issue (Issue #2312)
 // ---------------------------------------------------------------------------
 
-Deno.test("abandonAndRestart - a restarted issue is never abandoned twice", async () => {
-  // The fresh PR is a different PR, so the marker has to be keyed to the
-  // issue: a PR-keyed marker would let this loop forever.
+Deno.test("abandonAndRestart - a restarted issue is restarted a second time", async () => {
+  // Issue #2312 raised the bound from one restart to two. The fresh PR is a
+  // different PR, so the first round's marker must not decline the second —
+  // the regression this asserts against is the one-restart rule.
   const fake = makeFake();
   const first = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
@@ -878,15 +896,72 @@ Deno.test("abandonAndRestart - a restarted issue is never abandoned twice", asyn
   );
 
   assertEquals(second, {
+    outcome: "abandoned",
+    issueNumber: ISSUE_NUMBER,
+    label: { kept: "work-on" },
+  });
+  // Both PRs were closed, and both events are recorded on the same issue.
+  assertEquals(callsMatching(fake, "pr", "close").length, 2);
+  assertEquals(
+    restartMarkerPrNumbers(fake.state.issueComments),
+    [PR_NUMBER, 77],
+  );
+});
+
+Deno.test("abandonAndRestart - the third exhaustion is declined, not restarted", async () => {
+  // The bound itself (Issue #2312). Two restarts, then the caller parks the
+  // PR: a third close-and-re-raise of the same work is not a new experiment.
+  const fake = makeFake();
+  await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+  await abandonAndRestart(
+    makeRequest({ prNumber: 77, branchName: `issue-${ISSUE_NUMBER}-limits-2` }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  const third = await abandonAndRestart(
+    makeRequest({ prNumber: 88, branchName: `issue-${ISSUE_NUMBER}-limits-3` }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  assertEquals(third, {
     outcome: "declined",
     reason: {
       kind: "already-restarted",
       issueNumber: ISSUE_NUMBER,
       samePr: false,
+      restartCount: MAX_RESTARTS_PER_ISSUE,
     },
   });
-  // One close across both rounds — the second PR is left open for a human.
-  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+  // Two closes across the three rounds — the third PR is left open.
+  assertEquals(callsMatching(fake, "pr", "close").length, 2);
+});
+
+Deno.test("buildRestartIssueComment - the last restart says what follows it", () => {
+  // The comment is permanent, so "this is your last restart" has to be true
+  // when it says so, and the first one must not promise a park (Issue #2312).
+  const first = buildRestartIssueComment({
+    request: makeRequest(),
+    history: summariseFailedAttempts(failedComments()),
+    label: { kept: "work-on" },
+    restartNumber: 1,
+  });
+  assertStringIncludes(first, `restart **1 of ${MAX_RESTARTS_PER_ISSUE}**`);
+  assertStringIncludes(first, "redone once more");
+
+  const last = buildRestartIssueComment({
+    request: makeRequest(),
+    history: summariseFailedAttempts(failedComments()),
+    label: { kept: "work-on" },
+    restartNumber: MAX_RESTARTS_PER_ISSUE,
+  });
+  assertStringIncludes(
+    last,
+    `restart **${MAX_RESTARTS_PER_ISSUE} of ${MAX_RESTARTS_PER_ISSUE}**`,
+  );
+  assertStringIncludes(last, "re-attempted only when its base branch moves");
 });
 
 // ---------------------------------------------------------------------------
@@ -935,6 +1010,7 @@ Deno.test("abandonAndRestart - the fleet's own restart claim still bounds the ru
       kind: "already-restarted",
       issueNumber: ISSUE_NUMBER,
       samePr: true,
+      restartCount: 1,
     },
   });
   assertEquals(callsMatching(fake, "pr", "close").length, 0);
@@ -1226,16 +1302,22 @@ Deno.test("exhaustedEscalationRoute - each non-abandoning outcome maps to its ro
     }).kind,
     "abandon-declined",
   );
-  assertEquals(
-    exhaustedEscalationRoute({
-      outcome: "declined",
-      reason: {
-        kind: "already-restarted",
-        issueNumber: ISSUE_NUMBER,
-        samePr: false,
-      },
-    }),
-    { kind: "restart-exhausted", issueNumber: ISSUE_NUMBER, samePr: false },
+  // Issue #2312: `restart-exhausted` is gone — no caller escalates a spent
+  // restart budget any more, so it maps to the ordinary declined route and the
+  // scan parks the PR off the decline reason itself.
+  const spent = exhaustedEscalationRoute({
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: ISSUE_NUMBER,
+      samePr: false,
+      restartCount: MAX_RESTARTS_PER_ISSUE,
+    },
+  });
+  assertEquals(spent.kind, "abandon-declined");
+  assertStringIncludes(
+    spent.kind === "abandon-declined" ? spent.detail : "",
+    `spent its ${MAX_RESTARTS_PER_ISSUE} restarts`,
   );
   assertEquals(
     exhaustedEscalationRoute({
@@ -1247,23 +1329,38 @@ Deno.test("exhaustedEscalationRoute - each non-abandoning outcome maps to its ro
   );
 });
 
-Deno.test("describeExhaustedRoute - a burnt claim on this PR is not a failed replacement", () => {
+Deno.test("exhaustedEscalationRoute - a burnt claim on this PR is not a failed replacement", () => {
   // The marker is posted before the close, so a mid-abandon failure leaves a
-  // claim with nothing abandoned. Telling a human "the replacement PR spent
-  // its budget too" would be false.
-  const samePr = describeExhaustedRoute({
-    kind: "restart-exhausted",
-    issueNumber: ISSUE_NUMBER,
-    samePr: true,
-  }).join("\n");
-  assertStringIncludes(samePr, "did not finish");
+  // claim with nothing abandoned. Saying "the replacement PR spent its budget
+  // too" would be false, so the two declines read differently (Issue #2312
+  // kept the distinction when it removed the escalation route).
+  const samePr = exhaustedEscalationRoute({
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: ISSUE_NUMBER,
+      samePr: true,
+      restartCount: 1,
+    },
+  });
+  assertStringIncludes(
+    samePr.kind === "abandon-declined" ? samePr.detail : "",
+    "did not finish",
+  );
 
-  const replaced = describeExhaustedRoute({
-    kind: "restart-exhausted",
-    issueNumber: ISSUE_NUMBER,
-    samePr: false,
-  }).join("\n");
-  assertStringIncludes(replaced, "already been restarted once");
+  const replaced = exhaustedEscalationRoute({
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: ISSUE_NUMBER,
+      samePr: false,
+      restartCount: MAX_RESTARTS_PER_ISSUE,
+    },
+  });
+  assertStringIncludes(
+    replaced.kind === "abandon-declined" ? replaced.detail : "",
+    "left open on `merge-conflict`",
+  );
 });
 
 Deno.test("exhaustedEscalationDedupKey - a failed abandon gets its own key", () => {

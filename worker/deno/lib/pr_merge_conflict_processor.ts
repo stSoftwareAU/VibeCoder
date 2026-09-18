@@ -2685,6 +2685,44 @@ async function failAttempt(
     };
   }
 
+  // Issue #2312: a spent *restart* budget is not a human's problem either. The
+  // issue has had its restarts, so this PR is parked on `merge-conflict` — and
+  // the scan owns that parking, because it is the pass that reads the base tip
+  // and offers the PR again when it moves. Escalating here would put
+  // `needs-human` on a PR the scan is still working, and that label is a
+  // cross-subsystem veto: it would remove the PR from the very lane that
+  // clears it.
+  if (
+    abandon.outcome === "declined" &&
+    abandon.reason.kind === "already-restarted"
+  ) {
+    logger.warn(
+      `Merge-conflict attempts exhausted on PR #${prNumber} and issue ` +
+        `#${abandon.reason.issueNumber} has spent its restarts — left open ` +
+        "for the scan to park, no human asked",
+      {
+        repo,
+        prNumber,
+        issueNumber: abandon.reason.issueNumber,
+        restartCount: abandon.reason.restartCount,
+        samePr: abandon.reason.samePr,
+        maxAttempts,
+      },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        summary: `Merge-conflict attempts exhausted on PR #${prNumber} — ` +
+          `issue #${abandon.reason.issueNumber} has spent its restarts, so ` +
+          "the PR is left open to be parked on `merge-conflict` until its " +
+          "base moves",
+      },
+    };
+  }
+
   const route = exhaustedEscalationRoute(abandon);
   const escalation = await escalateToHuman({
     ghClient: createGhEscalationClient(deps.github.runGhCommand),

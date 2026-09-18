@@ -1164,6 +1164,35 @@ Deno.test("processMergeConflict - an abandon names the label the issue was re-qu
   assertStringIncludes(result.value.summary, "`idle-task`");
 });
 
+Deno.test("processMergeConflict - a spent restart budget asks no human (Issue #2312)", async () => {
+  // The one route out of the spent-budget branch that used to end at a
+  // person. It no longer does: the scan parks the PR on `merge-conflict` and
+  // re-attempts it when the base tip moves, and `needs-human` would take the
+  // PR out of the very lane that clears it.
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeGitScript({ markersAfterAgent: true }),
+    {
+      abandonRestartFn: () =>
+        Promise.resolve({
+          outcome: "declined",
+          reason: {
+            kind: "already-restarted",
+            issueNumber: 16,
+            samePr: false,
+            restartCount: 2,
+          },
+        }),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.escalated, false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertStringIncludes(result.value.summary, "spent its restarts");
+  assertStringIncludes(result.value.summary, "parked");
+});
+
 Deno.test("processMergeConflict - an abandon that fails escalates naming the step", async () => {
   const { captured, result } = await runProcessor(
     makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
@@ -2945,7 +2974,12 @@ Deno.test("processMergeConflict - a declined abandon records the rung and adds n
       trustedAuthors: [FLEET_AUTHOR],
       abandonRestartFn: recordingAbandon(seen, {
         outcome: "declined",
-        reason: { kind: "already-restarted", issueNumber: 234, samePr: false },
+        reason: {
+          kind: "already-restarted",
+          issueNumber: 234,
+          samePr: false,
+          restartCount: 2,
+        },
       }),
     },
     atAbandonRung(script.headSha, { commentId: 9202 }),
@@ -2964,7 +2998,9 @@ Deno.test("processMergeConflict - a declined abandon records the rung and adds n
   assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
   assertStringIncludes(comment, 'rung="abandon"');
   assertStringIncludes(comment, `head="${script.headSha}"`);
-  assertStringIncludes(comment, "already been restarted once");
+  // Issue #2312: the spent-restart decline reads as an ordinary decline now,
+  // and says the PR is left on the queue label rather than handed anywhere.
+  assertStringIncludes(comment, "spent its 2 restarts");
 
   // No rung applies `needs-human`, on the PR or on the issue (Issue #2280).
   assertEquals(captured.labelsAdded, []);
@@ -2986,7 +3022,12 @@ Deno.test("processMergeConflict - a declined abandon records the rung and adds n
       trustedAuthors: [FLEET_AUTHOR],
       abandonRestartFn: recordingAbandon(seen, {
         outcome: "declined",
-        reason: { kind: "already-restarted", issueNumber: 234, samePr: false },
+        reason: {
+          kind: "already-restarted",
+          issueNumber: 234,
+          samePr: false,
+          restartCount: 2,
+        },
       }),
     },
     atAbandonRung(script.headSha, {

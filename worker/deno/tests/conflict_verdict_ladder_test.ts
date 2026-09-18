@@ -17,8 +17,10 @@ import {
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
   conflictNudgeMarker,
+  conflictParkedMarker,
   conflictRebaseMarker,
   conflictRungFailedMarker,
+  readParkedBase,
 } from "../lib/merge_conflict_markers.ts";
 import {
   decideLadderRung,
@@ -77,6 +79,50 @@ Deno.test("marker builders refuse a sha they cannot write back", () => {
   assertThrows(() => conflictNudgeMarker(""));
   assertThrows(() => conflictRebaseMarker(OLD_HEAD, "zzzzzzz"));
   assertThrows(() => conflictRungFailedMarker("abandon", "094a66"));
+  // The park marker keys on the base rather than the head, and is held to the
+  // same rule: a sha the reader would discard is a park that never ends
+  // (Issue #2312).
+  assertThrows(() => conflictParkedMarker("not-a-sha"));
+});
+
+// ---------------------------------------------------------------------------
+// The park marker (Issue #2312)
+// ---------------------------------------------------------------------------
+
+Deno.test("conflictParkedMarker - names the base tip the PR waits on", () => {
+  assertEquals(
+    conflictParkedMarker(OLD_HEAD),
+    `<!-- vibe-merge-conflict-parked base="${OLD_HEAD}" -->`,
+  );
+});
+
+Deno.test("readParkedBase - reads the newest park and where it sits", () => {
+  const record = readParkedBase([
+    comment("chatter"),
+    comment(`${conflictParkedMarker(OLD_HEAD)}\nparked`),
+    comment(`${CONFLICT_FAILED_MARKER} n="1" -->`),
+    comment(`${conflictParkedMarker(NEW_HEAD)}\nparked again`),
+  ]);
+  assertEquals(record, { base: NEW_HEAD, index: 3 });
+});
+
+Deno.test("readParkedBase - a thread with no park, or an unreadable one, records none", () => {
+  assertEquals(readParkedBase([comment("chatter"), null, 7]), null);
+  // A marker whose base cannot be read is no park at all: honouring it would
+  // wait on a sha nothing can ever match.
+  assertEquals(
+    readParkedBase([comment('<!-- vibe-merge-conflict-parked base="" -->')]),
+    null,
+  );
+});
+
+Deno.test("readParkedBase - a park marker is read case-insensitively", () => {
+  const record = readParkedBase([
+    comment(
+      `<!-- vibe-merge-conflict-parked base="${OLD_HEAD.toUpperCase()}" -->`,
+    ),
+  ]);
+  assertEquals(record?.base, OLD_HEAD);
 });
 
 // ---------------------------------------------------------------------------

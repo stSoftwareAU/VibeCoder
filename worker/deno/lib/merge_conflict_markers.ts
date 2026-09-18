@@ -140,3 +140,80 @@ export function conflictRungFailedMarker(
   return `${CONFLICT_RUNG_FAILED_MARKER} rung="${rung}" ` +
     `${headAttribute("head", head)} -->`;
 }
+
+// ---------------------------------------------------------------------------
+// Parking (Issue #2312)
+// ---------------------------------------------------------------------------
+
+/**
+ * Marker posted when a PR is **parked** on `merge-conflict` (Issue #2312).
+ *
+ * The fleet restarts an issue's work twice. After the second restart the fresh
+ * PR's spent budget has nowhere left to go that is worth spending an agent run
+ * on: the same two branches conflict, and a third judged merge of the same two
+ * sides has never been what settled one. So the PR is left open carrying the
+ * queue label, and this marker is what follows the label — the record that the
+ * fleet decided to wait rather than that it went silent.
+ *
+ * **Keyed on the `base` sha, not the head**, which is what makes the wait end.
+ * Every other marker in this vocabulary keys on the head, because every other
+ * rung acts on the head. Here nothing acts at all until the *base* tip moves:
+ * a base that has not moved cannot merge any better than it did an hour ago,
+ * and a base that has moved is a genuinely different merge, worth a fresh
+ * two-run budget.
+ */
+export const CONFLICT_PARKED_MARKER = "<!-- vibe-merge-conflict-parked";
+
+/** The marker line for one parked PR, naming the base tip it is waiting on. */
+export function conflictParkedMarker(base: string): string {
+  // `headAttribute` validates a git object name, whichever end it names: a
+  // marker the reader would discard is a park that never ends.
+  return `${CONFLICT_PARKED_MARKER} ${headAttribute("base", base)} -->`;
+}
+
+/** Where a park marker sits in a thread, and which base tip it named. */
+export interface ConflictParkRecord {
+  /** The base sha the PR was parked at, lowercased. */
+  base: string;
+  /** Index of the park comment in the thread it was read from. */
+  index: number;
+}
+
+/**
+ * The most recent park marker in a comment thread, or `null`.
+ *
+ * **Only safe on a thread already reduced to the fleet's own comments**
+ * (`conflict_marker_trust.ts`): a park marker suppresses every later attempt,
+ * so one anybody could post would be a way to silence a PR's queue for ever.
+ *
+ * A marker whose `base` cannot be read is treated as no park at all. That is
+ * the self-healing direction — the PR is offered again, its spent budget
+ * declines the abandon, and the park is re-recorded with a base a reader can
+ * compare — where honouring it would park the PR on a sha nothing can ever
+ * match.
+ *
+ * @param comments - Raw REST comment objects, oldest first, fleet-authored.
+ * @returns The newest readable park record, with its index in `comments`.
+ */
+export function readParkedBase(
+  comments: readonly unknown[],
+): ConflictParkRecord | null {
+  let found: ConflictParkRecord | null = null;
+  for (let index = 0; index < comments.length; index++) {
+    const raw = comments[index];
+    if (typeof raw !== "object" || raw === null) continue;
+    const body = (raw as { body?: unknown }).body;
+    if (typeof body !== "string") continue;
+    const at = body.indexOf(CONFLICT_PARKED_MARKER);
+    if (at < 0) continue;
+    const written = /base="([^"]*)"/.exec(body.slice(at))?.[1];
+    if (written === undefined) continue;
+    // One rule, checked by the same predicate the writer validates through:
+    // a reader laxer than the writer accepts markers nothing else agrees are
+    // markers.
+    const base = written.trim().toLowerCase();
+    if (!isConflictHeadSha(base)) continue;
+    found = { base, index };
+  }
+  return found;
+}
