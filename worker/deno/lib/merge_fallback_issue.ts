@@ -224,9 +224,13 @@ function renderAnalysis(analysis: string | undefined): string[] {
   const text = analysis === undefined ? "" : sanitiseIssueText(analysis).trim();
   if (text.length === 0) return [`- **Analysis**: ${NOT_RECORDED}`];
 
-  const capped = text.length > MAX_ANALYSIS_CHARS
+  let capped = text.length > MAX_ANALYSIS_CHARS
     ? text.slice(0, MAX_ANALYSIS_CHARS)
     : text;
+  // Never cut through a surrogate pair: half an emoji renders as U+FFFD and
+  // makes the truncation look like corruption rather than a bound.
+  const lastUnit = capped.charCodeAt(capped.length - 1);
+  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) capped = capped.slice(0, -1);
   const dropped = text.length - capped.length;
   return [
     "- **Analysis**:",
@@ -416,20 +420,23 @@ export async function fileMergeFallbackIssue(
       ),
     ]);
     const url = created.trim();
-    const issueNumber = Number(url.split("/").pop());
+    const parsed = Number(url.split("/").pop());
+    const issueNumber = Number.isInteger(parsed) ? parsed : 0;
+    if (issueNumber === 0) {
+      // The issue exists — `gh` did not fail — but nothing can link to it.
+      // A `0` handed back silently would read as a filed, findable flag.
+      log(
+        `[merge-fallback] filed the flag in ${repo} but could not read its ` +
+          `number from \`gh issue create\` output (${url || "empty"}). The ` +
+          "issue exists; the caller has no number to link it by.",
+      );
+    }
     deps.logger?.info?.("Filed a conflict fallback as a merge-fallback issue", {
       repo,
       issueNumber,
       idleTask: filing.requestIdleTask === true,
     });
-    return {
-      ok: true,
-      value: {
-        issueNumber: Number.isInteger(issueNumber) ? issueNumber : 0,
-        url,
-        appended: false,
-      },
-    };
+    return { ok: true, value: { issueNumber, url, appended: false } };
   } catch (error) {
     return {
       ok: false,
@@ -458,8 +465,10 @@ async function findOpenFlagIssue(
     repo,
     "--state",
     "open",
-    "--label",
-    MERGE_FALLBACK_LABEL,
+    // Deliberately not filtered by `--label`: a human who takes the label off
+    // a flag issue would otherwise make it invisible here, and the next
+    // fallback would file a second flag for the same target. The exact title,
+    // the open state and the fleet author are the match.
     "--search",
     `in:title "${title}"`,
     "--json",
@@ -469,8 +478,17 @@ async function findOpenFlagIssue(
   let rows: FlagIssueRow[];
   try {
     rows = JSON.parse(listed || "[]") as FlagIssueRow[];
-    if (!Array.isArray(rows)) return undefined;
-  } catch {
+    if (!Array.isArray(rows)) throw new Error("the listing is not an array");
+  } catch (error) {
+    // Said out loud, never swallowed: dedup is off for this event, so the
+    // flag is filed again rather than lost.
+    log(
+      `[merge-fallback] could not read the dedup listing for ${repo} ` +
+        `"${title}": ${
+          error instanceof Error ? error.message : String(error)
+        }. Filing a fresh flag — a duplicate is recoverable, a lost ` +
+        "fallback record is not.",
+    );
     return undefined;
   }
 

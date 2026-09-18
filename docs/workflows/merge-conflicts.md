@@ -527,9 +527,10 @@ A fallback undoes work — the PR path closes the PR, the milestone path reverts
 merged children — and until Issue #2304 it undid that work **silently**. The
 conflict that caused it was in a run log nobody reads, so the next attempt
 started from the same blank page and could walk into the same conflict again.
-Every fallback now leaves one issue behind, carrying the `merge-fallback`
-content label. `worker/deno/lib/merge_fallback_issue.ts` builds and files it
-for both paths, so neither invents its own format.
+Every fallback leaves one issue behind, carrying the `merge-fallback` content
+label. `worker/deno/lib/merge_fallback_issue.ts` is the shared builder and
+filer both paths use, so neither invents its own format; it knows nothing
+about either caller, and each fallback path passes it what that path observed.
 
 - **Nothing is omitted.** The flag names the target (the PR with its head and
   base branch, or the milestone branch with the default branch), the conflicted
@@ -548,14 +549,20 @@ for both paths, so neither invents its own format.
   against the fleet identity (`alert_dedup_authors.ts`), exactly as the work
   escalation checks its own. A closed flag is never reused — a human has
   finished with that target, and a fresh fallback deserves its own record.
-- **The fail direction is towards filing.** An unparseable listing, an
-  unresolvable fleet identity or a label that could not be created all still end
-  in a filed issue, said out loud in the log. A duplicate flag is noise a human
-  closes in a moment; a suppressed one is a fallback nobody hears about.
+- **The fail direction is towards filing.** An unparseable listing and an
+  unresolvable fleet identity both still end in a filed issue, said out loud in
+  the log: a duplicate flag is noise a human closes in a moment, a suppressed
+  one is a fallback nobody hears about. A label that could not be created is
+  logged and the filing goes ahead anyway — the label usually exists already —
+  but a label that genuinely is not there fails `gh issue create`, and that
+  failure is returned rather than reported as a filed flag.
 - **`idle-task` only when the caller asks.** A conflicting PR whose originating
   issue cannot be found cannot be re-queued, so its flag becomes the re-do work
   item and gains `idle-task` — the one pickup label `worker_label_guard.ts`
   lets the worker apply. Every other fallback files the flag unqueued.
+
+The builder and filer land with Issue #2304; the PR fallback and the milestone
+roll-back are wired to it by their own sub-issues under #2298.
 
 ### 💥 When the attempt itself is disrupted
 

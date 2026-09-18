@@ -18,9 +18,11 @@ import {
   fileMergeFallbackIssue,
   MERGE_FALLBACK_LABEL,
   type MergeFallbackFiling,
+  mergeFallbackMarker,
   mergeFallbackTitle,
 } from "../lib/merge_fallback_issue.ts";
 import { isWorkerAppliableLabel } from "../lib/worker_label_guard.ts";
+import type { Logger } from "../types.ts";
 
 /** The fleet login every fixture issue is authored by. */
 const FLEET_AUTHOR = "vibe-coder-bot";
@@ -100,6 +102,24 @@ function listing(
     author: { login: FLEET_AUTHOR },
     ...overrides,
   }]);
+}
+
+/** A logger that keeps every warning, so a swallowed one fails the test. */
+function capturingLogger(warnings: string[]): Logger {
+  const noop = () => {};
+  return {
+    info: noop,
+    warn: (message: string) => {
+      warnings.push(message);
+    },
+    error: noop,
+    debug: noop,
+    security: noop,
+    skipReason: noop,
+    timing: noop,
+    scanSummary: noop,
+    workerSummary: noop,
+  };
 }
 
 /** Deps with label creation stubbed — no unit test may reach a real `gh`. */
@@ -225,6 +245,20 @@ Deno.test("buildMergeFallbackBody - an oversized analysis is truncated loudly", 
   });
   assertStringIncludes(body, "characters truncated");
   assert(body.length < 40_000, "the body must not carry the whole analysis");
+});
+
+Deno.test("buildMergeFallbackBody - truncation never splits a surrogate pair", () => {
+  // The cap lands exactly between the two halves of the trailing emoji.
+  const analysis = "z".repeat(19_999) + "😀".repeat(10);
+  const body = buildMergeFallbackBody({
+    target: { kind: "pr", repo: "org/repo", prNumber: 4 },
+    runs: [{ run: 1, analysis }],
+  });
+  assert(
+    !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(body),
+    "no unpaired surrogate may reach the body",
+  );
+  assertStringIncludes(body, "characters truncated");
 });
 
 Deno.test("buildMergeFallbackBody - agent text cannot forge a marker", () => {
@@ -384,11 +418,36 @@ Deno.test("fileMergeFallbackIssue - a failed comment is returned too", async () 
 
 Deno.test("fileMergeFallbackIssue - an unparseable listing files rather than stays silent", async () => {
   const { gh, calls } = fakeGh("not json");
-  const result = await fileMergeFallbackIssue(PR_FILING, stubDeps(gh));
+  const warnings: string[] = [];
+  const result = await fileMergeFallbackIssue(PR_FILING, {
+    ...stubDeps(gh),
+    logger: capturingLogger(warnings),
+  });
 
   assert(result.ok);
   assertEquals(result.value.appended, false);
   assert(calls.some((c) => c[0] === "issue" && c[1] === "create"));
+  assert(
+    warnings.some((w) => w.includes("could not read the dedup listing")),
+    "an unreadable listing must be logged, not swallowed",
+  );
+});
+
+Deno.test("fileMergeFallbackIssue - an unreadable issue number is said out loud", async () => {
+  const warnings: string[] = [];
+  const result = await fileMergeFallbackIssue(PR_FILING, {
+    ...stubDeps((args) =>
+      Promise.resolve(args[1] === "create" ? "created, somewhere\n" : "[]")
+    ),
+    logger: capturingLogger(warnings),
+  });
+
+  assert(result.ok);
+  assertEquals(result.value.issueNumber, 0);
+  assert(
+    warnings.some((w) => w.includes("could not read its number")),
+    "a flag nothing can link to must not read as a filed, findable one",
+  );
 });
 
 Deno.test("fileMergeFallbackIssue - a label that cannot be created is said out loud", async () => {
@@ -399,9 +458,7 @@ Deno.test("fileMergeFallbackIssue - a label that cannot be created is said out l
     fleetAuthors: [FLEET_AUTHOR],
     ensureLabelExists: () =>
       Promise.resolve({ ok: false, error: new Error("labels API refused") }),
-    logger: {
-      warn: (message: string) => warnings.push(message),
-    } as never,
+    logger: capturingLogger(warnings),
   });
 
   // The filing still goes ahead — the fail direction is towards flagging.
@@ -411,6 +468,20 @@ Deno.test("fileMergeFallbackIssue - a label that cannot be created is said out l
     warnings.some((w) => w.includes("labels API refused")),
     "a refused label creation must be logged, not swallowed",
   );
+});
+
+Deno.test("mergeFallbackMarker - a quote in a branch cannot close an attribute", () => {
+  const marker = mergeFallbackMarker({
+    kind: "milestone",
+    repo: "org/repo",
+    milestoneBranch: 'milestone/4" pr="99',
+  });
+
+  assertEquals(
+    marker,
+    '<!-- vibe-merge-fallback repo="org/repo" branch="milestone/4 pr=99" -->',
+  );
+  assertEquals(marker.split('"').length - 1, 4, "four quotes, two attributes");
 });
 
 Deno.test("MERGE_FALLBACK_LABEL - the worker is permitted to apply it", () => {
