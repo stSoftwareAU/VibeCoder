@@ -504,7 +504,11 @@ Deno.test("processMergeConflict - a base still not an ancestor fails an intent-j
   );
 });
 
-Deno.test("processMergeConflict - an override with no evidence is refused, not reported", async () => {
+// Issue #2306 changed this outcome deliberately: an unqualified override no
+// longer aborts the merge. It is reported on the conclusion comment as an
+// unverified judgement, which is what a reviewer needs and what an aborted
+// merge never gave them.
+Deno.test("processMergeConflict - an override with no evidence is reported, not refused", async () => {
   const { captured, merged } = await runProcessor({
     // Only the PR side's issue is known, so no path qualifies.
     issueContext: makeIssueContext({
@@ -521,10 +525,12 @@ Deno.test("processMergeConflict - an override with no evidence is refused, not r
       "#900 looks newer so it probably wins",
   });
 
-  assertEquals(merged, false);
-  assertEquals(captured.commitAndPushCalls, 0);
-  assertStringIncludes(audit(captured), "on issue intent, but both sides'");
-  assertStringIncludes(audit(captured), "`SECURITY.md`");
+  assertEquals(merged, true);
+  assertEquals(captured.commitAndPushCalls, 1);
+  const resolved = captured.comments.at(-1) ?? "";
+  assertStringIncludes(resolved, CONFLICT_RESOLVED_MARKER);
+  assertStringIncludes(resolved, "unverified judgement");
+  assertStringIncludes(resolved, "`SECURITY.md`");
 });
 
 Deno.test("processMergeConflict - an evidenced override still lands", async () => {

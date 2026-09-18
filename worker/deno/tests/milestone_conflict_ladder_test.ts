@@ -211,6 +211,81 @@ Deno.test(
 );
 
 Deno.test(
+  "climbConflictLadder - the agent's judgement lines travel with the outcome (Issue #2306)",
+  async () => {
+    const fx = await conflictedClone();
+    try {
+      const reply = `Judgement: ${PATH} — kept both designs behind a flag; ` +
+        "dropped neither; because each side has a live caller";
+      const outcome = await climbConflictLadder({
+        escalations: undecided,
+        options: { cwd: fx.dir },
+        milestoneBranch: "milestone/1777",
+        defaultBranch: "main",
+        applyRulesFn: rulesDeferEverything,
+        agentFn: async (request) => {
+          await Deno.writeTextFile(
+            `${request.workDir}/${PATH}`,
+            "const impl = 'both';\n",
+          );
+          await git(["add", "--", PATH], request.workDir);
+          await Deno.writeTextFile(
+            `${request.workDir}/.pr_response_message`,
+            `${reply}\n`,
+          );
+          return { ok: true, value: { terminated: false } };
+        },
+      });
+
+      assertEquals(outcome.escalations, []);
+      assertEquals(outcome.agentReply, reply);
+      // The reply file is consumed, so a later run cannot reuse it, and it
+      // is not left staged in the merge commit.
+      assertEquals(
+        await Deno.stat(`${fx.dir}/.pr_response_message`).then(
+          () => true,
+          () => false,
+        ),
+        false,
+      );
+      const staged = await git(["diff", "--cached", "--name-only"], fx.dir);
+      assertEquals(staged.includes(".pr_response_message"), false);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "climbConflictLadder - an agent that wrote no reply reports none (Issue #2306)",
+  async () => {
+    const fx = await conflictedClone();
+    try {
+      const outcome = await climbConflictLadder({
+        escalations: undecided,
+        options: { cwd: fx.dir },
+        milestoneBranch: "milestone/1777",
+        defaultBranch: "main",
+        applyRulesFn: rulesDeferEverything,
+        agentFn: async (request) => {
+          await Deno.writeTextFile(
+            `${request.workDir}/${PATH}`,
+            "const impl = 'both';\n",
+          );
+          await git(["add", "--", PATH], request.workDir);
+          return { ok: true, value: { terminated: false } };
+        },
+      });
+
+      assertEquals(outcome.escalations, []);
+      assertEquals(outcome.agentReply, undefined);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
   "climbConflictLadder - an agent that touches nothing leaves the path unmerged and is refused",
   async () => {
     const fx = await conflictedClone();

@@ -98,7 +98,6 @@ import {
 import {
   buildConsultedIssuesSection,
   buildIntentOverrideSection,
-  findUncorroboratedOverrides,
   parseIntentOverrides,
 } from "./conflict_intent_audit.ts";
 import {
@@ -200,8 +199,6 @@ export interface MergeConflictProcessorDeps {
    * `dirname` names the lane, not the root.
    */
   workRoot: string;
-  /** Quality instructions for the prompt. */
-  qualityInstructions?: string;
   /** Custom repo-specific instructions. */
   customInstructions?: string;
   /** Claude hard timeout in seconds. */
@@ -406,7 +403,9 @@ export function buildAttemptComment(
     "",
     `This PR conflicts with \`${baseBranch}\`, so no CI can run on it. The ` +
     "worker is merging the base branch in for real — both sides' changes " +
-    "must survive — and will run the repository's quality gate on the result.",
+    "survive wherever both can stand, and each judgement call is named file " +
+    "by file in the conclusion comment. CI on the pushed merge is the gate " +
+    "on the result (Issue #2306).",
   ];
 
   if (disruptedCount > 0) {
@@ -1270,7 +1269,6 @@ async function resolveConflict(
         issueContext,
         workDir,
         promptsDir: processorDeps.promptsDir,
-        qualityInstructions: processorDeps.qualityInstructions,
         customInstructions: processorDeps.customInstructions,
         timeouts: {
           claudeTimeout: processorDeps.claudeTimeout,
@@ -1343,26 +1341,13 @@ async function resolveConflict(
     }
 
     // An override claimed where both sides' originating issues were *not*
-    // known is a side-pick with a justification attached (Issue #1114). The
-    // eligibility is the worker's own, so this is decidable here rather than
-    // trusted to the model — refuse it before anything is pushed.
-    const uncorroborated = findUncorroboratedOverrides(
-      parseIntentOverrides(await agentReply()),
-      issueContext,
-    );
-    if (uncorroborated.length > 0) {
-      await abortMerge(run, workDir);
-      return await failAttempt(
-        input,
-        processorDeps,
-        conflictedFiles,
-        `the resolution settled ${
-          uncorroborated.map((o) => `\`${o.path}\``).join(", ")
-        } on issue intent, but both sides' originating issues were not known ` +
-          "for those paths — the both-sides-survive contract applied there",
-        attemptNumber,
-      );
-    }
+    // known is no longer a refusal (Issue #2306). The agent resolves every
+    // conflicted file by judgement now, so a claim the worker cannot
+    // corroborate is an unverified judgement rather than a side-pick with a
+    // justification attached: it is flagged on the conclusion comment by
+    // `buildIntentOverrideSection`, where a reviewer can audit it, and the
+    // merge lands. Aborting instead cost the attempt and left the PR
+    // conflicting, which helped nobody.
   }
 
   // Commit whatever the agent left staged and push. No force: the merge

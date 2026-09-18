@@ -35,6 +35,7 @@ import type {
   MergeConflictRepairContext,
 } from "./merge_conflict_agent.ts";
 import { unstageWorkerStateFiles } from "./git_push.ts";
+import { readPrResponseMessage } from "./pr_branch_preparation.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { describeGitFailure } from "./milestone_merge_state.ts";
 
@@ -110,6 +111,15 @@ export interface ConflictLadderOutcome {
   resolved: FileDecision[];
   /** Still for a human, each reason naming the rung that could not decide. */
   escalations: FileDecision[];
+  /**
+   * What the agent rung wrote into `.pr_response_message` (Issue #2306).
+   *
+   * The agent names every judgement call file by file there, and on this
+   * path there is no PR comment to carry them — so the reply travels with
+   * the outcome and lands on the sync report instead. Absent when no agent
+   * ran, or when it wrote nothing.
+   */
+  agentReply?: string;
 }
 
 /** Bind a {@link ConflictGitRunner} to the clone the merge is in. */
@@ -445,5 +455,13 @@ export async function climbConflictLadder(
       reason: "resolved by the merge-conflict agent",
     });
   }
-  return { resolved, escalations: [] };
+  // Read after staging, so consuming the reply file cannot change what the
+  // commit carries: `stageAgentResolution` has already taken the worker's
+  // own state files back out of the index (Issue #1654).
+  const agentReply = await readPrResponseMessage(options.cwd, logger);
+  return {
+    resolved,
+    escalations: [],
+    ...(agentReply ? { agentReply } : {}),
+  };
 }

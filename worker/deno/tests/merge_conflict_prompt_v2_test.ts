@@ -6,8 +6,14 @@
  * dependency-version conflicts in known manifest files before the agent is
  * asked anything, regenerates lock files rather than merging them, and lists
  * only the deferred paths in `{{CONFLICTED_FILES}}`. The carve-out is limited
- * to dependency-version hunks — the contradictory-constant worked example
- * still instructs abort-and-escalate.
+ * to dependency-version hunks — the contradictory-constant worked example is
+ * resolved by judgement and named on its own line (Issue #2306).
+ *
+ * Issue #2306 also removed two things these tests now assert are gone: the
+ * "stop and `git merge --abort`" rule, because an unresolved merge helps
+ * nobody, and the quality-instructions block, because CI on the pushed merge
+ * is the gate on a PR and the worker's type-check gate is the gate on a
+ * milestone branch.
  *
  * Australian English is used throughout (behaviour, colour, organisation).
  */
@@ -17,6 +23,11 @@ import { buildMergeConflictPrompt } from "../lib/prompt_builder.ts";
 import { loadPrompt, validatePromptTemplate } from "../lib/prompt_manager.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+
+/** Template prose is hard-wrapped by `deno fmt`, so match on flattened text. */
+function flatten(text: string): string {
+  return text.replace(/\s+/g, " ");
+}
 
 async function loadMergeConflict(): Promise<string> {
   const result = await loadPrompt("merge_conflict", PROMPTS_DIR);
@@ -46,7 +57,6 @@ Deno.test("merge_conflict - carries every required placeholder plus verbosity", 
       // template carries `TARGET_DESCRIPTION` where it once carried a bare
       // `PR_NUMBER`.
       "TARGET_DESCRIPTION",
-      "QUALITY_INSTRUCTIONS",
       "BASE_BRANCH",
       "CONFLICTED_FILES",
       "VERBOSITY_INSTRUCTIONS",
@@ -62,7 +72,6 @@ Deno.test("merge_conflict - builds with every placeholder substituted", async ()
     target: { kind: "pr", prNumber: 4321 },
     baseBranch: "main",
     conflictedFiles: ["worker/deno/lib/foo.ts"],
-    qualityInstructions: "Run ./quality.sh",
     promptsDir: PROMPTS_DIR,
   });
   assertEquals(built.ok, true);
@@ -84,7 +93,72 @@ Deno.test("merge_conflict - builds with every placeholder substituted", async ()
   // the previous inline `main` splice.
   assertStringIncludes(prompt, "```\nmain\n```");
   assertStringIncludes(prompt, "```\nworker/deno/lib/foo.ts\n```");
-  assertStringIncludes(prompt, "Run ./quality.sh");
+});
+
+// --- The in-run quality gate is gone (Issue #2306) ---
+
+Deno.test("merge_conflict - the template carries no quality-instructions placeholder", async () => {
+  const body = await loadMergeConflict();
+  assertEquals(
+    body.includes("{{QUALITY_INSTRUCTIONS}}"),
+    false,
+    "the agent no longer runs the repository's quality gate in the run",
+  );
+});
+
+Deno.test("merge_conflict - the rendered prompt tells the agent not to run the gate", async () => {
+  const built = await buildMergeConflictPrompt({
+    repo: "stSoftwareAU/VibeCoder",
+    target: { kind: "pr", prNumber: 4321 },
+    baseBranch: "main",
+    conflictedFiles: ["worker/deno/lib/foo.ts"],
+    promptsDir: PROMPTS_DIR,
+  });
+  assertEquals(built.ok, true);
+  if (!built.ok) return;
+  const flat = flatten(built.value.prompt);
+  assertStringIncludes(flat, "Do not run the repository's quality gate");
+  // The gate that does apply is named on each path, so "do not run it" is
+  // not read as "nothing checks this merge".
+  assertStringIncludes(flat, "CI on the pushed merge");
+  assertStringIncludes(flat, "type-check gate");
+});
+
+Deno.test("merge_conflict - the rendered prompt never tells the agent to abort the merge", async () => {
+  const built = await buildMergeConflictPrompt({
+    repo: "stSoftwareAU/VibeCoder",
+    target: { kind: "pr", prNumber: 4321 },
+    baseBranch: "main",
+    conflictedFiles: ["worker/deno/lib/foo.ts"],
+    promptsDir: PROMPTS_DIR,
+  });
+  assertEquals(built.ok, true);
+  if (!built.ok) return;
+  assertEquals(
+    built.value.prompt.includes("merge --abort"),
+    false,
+    "abort-on-contradiction was removed: the agent judges every file",
+  );
+});
+
+// --- Judgement on every conflicted file (Issue #2306) ---
+
+Deno.test("merge_conflict - asks for one judgement line per conflicted file", async () => {
+  const body = flatten(await loadMergeConflict());
+  assertStringIncludes(
+    body,
+    "Judgement: <path> — <kept …; dropped …; because …>",
+  );
+  assertStringIncludes(body, "one line per conflicted file");
+  assertStringIncludes(body, ".pr_response_message");
+});
+
+Deno.test("merge_conflict - a genuine contradiction is decided, not handed back", async () => {
+  const body = flatten(await loadMergeConflict());
+  assertStringIncludes(body, "both intents are best served by");
+  assertStringIncludes(body, "Originating Issues");
+  // The mechanical side-pick stays forbidden — only the abort rule went.
+  assertStringIncludes(body, "Never side-pick");
 });
 
 // --- The never-side-pick contract survives ---
@@ -97,15 +171,24 @@ Deno.test("merge_conflict - keeps the never-side-pick contract", async () => {
   assertStringIncludes(body, "duplicate");
 });
 
-Deno.test("merge_conflict - the contradictory timeout example still aborts and escalates", async () => {
+// Issue #2306 changed this example's outcome deliberately: the agent no
+// longer aborts on a contradiction, it decides and names the call. The
+// assertion is updated rather than deleted, so the example still has to say
+// what to do with a contradictory constant.
+Deno.test("merge_conflict - the contradictory timeout example is decided by judgement", async () => {
   const body = await loadMergeConflict();
   const start = body.indexOf("30s to 60s");
   assert(start >= 0, "the timeout worked example is missing");
   const end = body.indexOf("</example>", start);
   assert(end > start, "the timeout worked example is unterminated");
-  const example = body.slice(start, end);
-  assertStringIncludes(example, "git merge --abort");
-  assertStringIncludes(example, "human");
+  const example = flatten(body.slice(start, end));
+  assertEquals(
+    example.includes("merge --abort"),
+    false,
+    "the abort worked example was removed by Issue #2306",
+  );
+  assertStringIncludes(example, "Judgement:");
+  assertStringIncludes(example, "read");
 });
 
 // --- The bounded dependency carve-out ---
@@ -169,11 +252,6 @@ Deno.test("merge_conflict - gives the total-order rationale so the carve-out is 
 
 // --- The narrowed issue-intent carve-out (Issue #1114) ---
 
-/** Template prose is hard-wrapped by `deno fmt`, so match on flattened text. */
-function flatten(text: string): string {
-  return text.replace(/\s+/g, " ");
-}
-
 /** The intent carve-out section of the template, flattened. */
 async function intentSection(): Promise<string> {
   const body = await loadMergeConflict();
@@ -208,16 +286,24 @@ Deno.test("merge_conflict - an override needs both issues and a quotable sentenc
   assertStringIncludes(section, "One side's issue alone is not evidence");
   assertStringIncludes(section, "Intent override:");
   // Absent the evidence, the unchanged contract still applies.
-  assertStringIncludes(section, "Absent that evidence, nothing changes");
-  assertStringIncludes(section, "git merge --abort");
+  assertStringIncludes(
+    section,
+    "Absent that evidence, an override is just a judgement",
+  );
+});
+
+Deno.test("merge_conflict - an unevidenced override is flagged, not refused", async () => {
+  const section = await intentSection();
+  assertStringIncludes(section, "unverified judgement");
+  assertStringIncludes(section, "The merge still lands");
 });
 
 Deno.test("merge_conflict - an intent-justified resolution still meets the guards", async () => {
   const section = await intentSection();
   assertStringIncludes(
     section,
-    "an intent-justified resolution still has to leave no unmerged path and " +
-      "no conflict marker behind",
+    "your resolution still has to leave no unmerged path and no conflict " +
+      "marker behind",
   );
   assertStringIncludes(section, "the worker still refuses the push");
 });

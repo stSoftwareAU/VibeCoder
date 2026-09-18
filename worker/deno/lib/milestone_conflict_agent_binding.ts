@@ -24,10 +24,7 @@ import {
   MIN_GATE_REPAIR_SECONDS,
 } from "./milestone_gate_repair.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
-import {
-  buildQualityInstructions,
-  getCustomInstructions,
-} from "./repo_config.ts";
+import { getCustomInstructions } from "./repo_config.ts";
 
 /** What the binding needs to know about the run offering the rung. */
 export interface MilestoneConflictAgentBinding {
@@ -100,7 +97,6 @@ export function bindMilestoneConflictAgent(
       // It runs in the very clone the merge conflicted in.
       workDir: request.workDir,
       ...(binding.promptsDir ? { promptsDir: binding.promptsDir } : {}),
-      qualityInstructions: buildQualityInstructions(config.repoConfig, repo),
       customInstructions: getCustomInstructions(config.repoConfig, repo),
       timeouts: {
         // The grant sized to the budget actually left (Issue #1693), not the

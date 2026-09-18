@@ -127,8 +127,9 @@ export function buildConsultedIssuesSection(
     lines.push(
       "No originating issues were found for either side of this conflict — " +
         "no issue context was available for this attempt. The " +
-        "both-sides-survive contract applies unchanged: the resolver may not " +
-        "let one side win on intent.",
+        "both-sides-survive contract applies unchanged: no side wins on " +
+        "issue intent here, and any call the resolver makes is its own " +
+        "judgement, named file by file.",
     );
     return lines;
   }
@@ -172,8 +173,9 @@ export function buildConsultedIssuesSection(
     "",
     eligible.length === 0
       ? "Both sides' issues are known for **no** conflicted path, so no " +
-        "intent override is permitted on this attempt — both sides survive, " +
-        "or the resolution stops."
+        "evidenced intent override is available on this attempt — both " +
+        "sides survive where both can stand, and every other call is the " +
+        "resolver's own judgement, named file by file."
       : `Both sides' issues are known for ${
         eligible.map((p) => `\`${sanitiseIssueText(p)}\``).join(", ")
       }. Only there may an issue that explicitly supersedes the other settle the conflict.`,
@@ -212,13 +214,13 @@ function eligiblePathSet(
 /**
  * Overrides claimed where the evidence an override requires was absent.
  *
- * This is the deterministic half of the carve-out, and the worker refuses a
- * resolution that trips it: a well-formed override on a path where both sides'
- * originating issues were *not* known is a side-pick with a justification
- * attached, which is precisely the silent-work-destruction shape the
- * never-side-pick contract exists to prevent. Malformed claims are deliberately
- * not included — a line the parser could not read is reported on the PR rather
- * than treated as a confession.
+ * This is the deterministic half of the carve-out. It no longer refuses the
+ * resolution (Issue #2306): the agent now resolves every conflicted file by
+ * judgement, so a claim the worker cannot corroborate is an **unverified
+ * judgement** — reported on the conclusion comment for a reviewer to audit,
+ * not a reason to abort a merge that is otherwise sound. Malformed claims are
+ * deliberately not included — a line the parser could not read is reported on
+ * the PR rather than treated as a confession.
  */
 export function findUncorroboratedOverrides(
   report: IntentOverrideReport,
@@ -237,10 +239,10 @@ export function findUncorroboratedOverrides(
  * ordinary way produces exactly the comment it produced before this change.
  *
  * A claim on a path where both sides' issues were **not** known is rendered as
- * a warning rather than dropped. {@link findUncorroboratedOverrides} means the
- * processor has already refused such a resolution, so this is defence in depth
- * — if one ever reaches a comment, it says so rather than reading as an
- * evidenced pick.
+ * an unverified judgement rather than dropped (Issue #2306). Such a claim no
+ * longer fails the attempt, so this record is the whole of its visibility: it
+ * must read as a judgement a reviewer should check, never as an evidenced
+ * pick.
  */
 export function buildIntentOverrideSection(
   report: IntentOverrideReport,
@@ -248,7 +250,11 @@ export function buildIntentOverrideSection(
 ): string[] {
   if (report.overrides.length === 0 && report.malformed.length === 0) return [];
 
-  const eligiblePaths = eligiblePathSet(context);
+  const unverified = new Set(
+    findUncorroboratedOverrides(report, context).map((override) =>
+      normaliseConflictPath(override.path)
+    ),
+  );
 
   const lines = [
     "",
@@ -259,11 +265,12 @@ export function buildIntentOverrideSection(
     lines.push(
       `- \`${override.path}\` — kept #${override.kept}, superseded #${override.superseded}: ${override.note}`,
     );
-    if (!eligiblePaths.has(normaliseConflictPath(override.path))) {
+    if (unverified.has(normaliseConflictPath(override.path))) {
       lines.push(
-        `  - ⚠️ both sides' originating issues were **not** known for this ` +
-          "path, so this justification is uncorroborated — review the file " +
-          "in the diff.",
+        `  - ⚠️ **unverified judgement** — both sides' originating issues ` +
+          "were not known for this path, so nothing corroborates the " +
+          "supersession claimed above. The merge still landed; review the " +
+          "file in the diff.",
       );
     }
   }
@@ -276,8 +283,9 @@ export function buildIntentOverrideSection(
   }
   lines.push(
     "",
-    "An override is permitted only where both sides' originating issues are " +
-      "known and one explicitly supersedes the other. Audit the picks above " +
+    "An override is **evidenced** only where both sides' originating issues " +
+      "are known and one explicitly supersedes the other; anything flagged " +
+      "above is the agent's own judgement instead. Audit the picks above " +
       "against those issues rather than in the diff.",
   );
   return lines;

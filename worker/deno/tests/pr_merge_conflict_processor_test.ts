@@ -18,6 +18,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildAttemptComment,
   buildConflictEscalationReason,
   buildNudgeComment,
   buildNudgeCommitMessage,
@@ -1525,6 +1526,36 @@ Deno.test("processMergeConflict - an unmerged path left by the rules fails the a
 // ---------------------------------------------------------------------------
 // Comment rendering (Issue #466)
 // ---------------------------------------------------------------------------
+
+Deno.test("buildAttemptComment - promises no in-run quality gate (Issue #2306)", () => {
+  const body = buildAttemptComment(1, 3, "main");
+  assertEquals(
+    /quality gate/i.test(body),
+    false,
+    "the agent no longer runs the repository's quality gate in the run",
+  );
+  // What does gate the result is named instead, so removing the promise does
+  // not read as "nothing checks this merge".
+  assertStringIncludes(body, "CI on the pushed merge");
+  assertStringIncludes(body, "judgement call is named file by file");
+});
+
+Deno.test("buildResolvedComment - carries the agent's judgement lines verbatim (Issue #2306)", () => {
+  const reply = "Merged `main` in.\n" +
+    "Judgement: worker/deno/lib/a.ts — kept both guards; dropped nothing; " +
+    "because the two sides guard different inputs\n" +
+    "Judgement: worker/deno/lib/b.ts — kept the 10s timeout; dropped the 60s " +
+    "default; because only the interactive path reads it";
+  const body = buildResolvedComment("main", "issue-16-fix", reply);
+  assertStringIncludes(
+    body,
+    "Judgement: worker/deno/lib/a.ts — kept both guards",
+  );
+  assertStringIncludes(
+    body,
+    "Judgement: worker/deno/lib/b.ts — kept the 10s timeout",
+  );
+});
 
 Deno.test("buildResolvedComment - says nothing extra when the rules resolved nothing", () => {
   assertEquals(
