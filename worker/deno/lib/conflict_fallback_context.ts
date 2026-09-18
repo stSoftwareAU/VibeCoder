@@ -30,7 +30,6 @@ import type {
   MergeFallbackDiffFile,
   MergeFallbackStageTiming,
 } from "./merge_fallback_issue.ts";
-import type { TimelineCache } from "./timeline_cache.ts";
 
 /**
  * Paths one flag issue lists for an abandoned PR.
@@ -130,8 +129,6 @@ export interface ReadPrDivergenceOptions {
   queueLabel: string;
   gh: (args: string[]) => Promise<string>;
   logger?: Logger;
-  /** Shared timeline cache, when the caller keeps one. */
-  timelineCache?: TimelineCache;
 }
 
 /**
@@ -191,7 +188,6 @@ export async function readPrDivergence(
       prNumber,
       options.queueLabel,
       gh,
-      options.timelineCache,
     );
     if (lastAdd !== null) {
       divergence.behindSince = new Date(lastAdd.addedAt * 1000).toISOString();

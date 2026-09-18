@@ -138,7 +138,10 @@ export interface MergeFallbackEvent {
    * What the abandoned PR changed (Issue #2310). This is what makes the flag a
    * re-do item for a conflicting PR whose originating issue cannot be found:
    * the PR is closed, so the summary is the only statement of what the work
-   * touched. Rendered for a PR target only — a milestone branch has no PR diff.
+   * touched. Absent means the fallback did not read one — a milestone branch has
+   * no PR diff, and the route that re-queues an originating issue does not need
+   * one — and the section is then not rendered at all, rather than claiming a
+   * read that was never attempted.
    */
   diffSummary?: readonly MergeFallbackDiffFile[];
   /** Paths beyond the caller's cap, counted rather than dropped in silence. */
@@ -308,22 +311,26 @@ function renderTarget(target: MergeFallbackTarget): string[] {
 }
 
 /**
- * What the abandoned PR changed, for a PR target (Issue #2310).
+ * What the abandoned PR changed, when the fallback read it (Issue #2310).
  *
- * Rendered only for a PR: a milestone branch has no PR diff, and a
- * `not recorded` section there would say nothing a reader could act on. For a
- * PR it always renders, because "the fleet could not read the diff" and "the
- * PR changed nothing" must not look the same.
+ * The section renders only when {@link MergeFallbackEvent.diffSummary} is
+ * present, because absent means nobody asked: a milestone branch has no PR diff
+ * at all, and the PR route that re-queues an originating issue needs none — the
+ * issue is the re-do item there. Printing `not recorded` for a read nobody
+ * attempted would claim a measurement failure that never happened.
+ *
+ * A summary that **was** read and came back empty says so in words, so "GitHub
+ * reported no changed file" is never mistaken for "the diff was not read".
  */
 function renderDiffSummary(event: MergeFallbackEvent): string[] {
-  if (event.target.kind !== "pr") return [];
-  const files = event.diffSummary ?? [];
+  const files = event.diffSummary;
+  if (files === undefined) return [];
   const omitted = event.diffSummaryOmitted ?? 0;
   return [
     "### What the PR changed",
     "",
     ...(files.length === 0
-      ? [NOT_RECORDED]
+      ? ["GitHub reported no changed file for this PR."]
       : files.map((file) =>
         `- \`${sanitiseIssueText(file.path)}\` ` +
         `(+${file.additions}/-${file.deletions})`
@@ -498,6 +505,41 @@ export async function fileMergeFallbackIssue(
       error: error instanceof Error ? error : new Error(String(error)),
     };
   }
+}
+
+/**
+ * The filer both PR-path fallback routes use, bound to one `gh` (Issue #2310).
+ *
+ * One definition of the wiring rather than two: the label creation has to be
+ * routed through the caller's own `gh` — the default reaches the real CLI — and
+ * a second copy of that closure is a second thing to get wrong.
+ *
+ * @param deps - The caller's `gh`, its logger, and the fleet identity the
+ *   dedup match is verified against
+ * @returns A filer taking only the filing, for use as an injected seam
+ */
+export function createFallbackFlagFiler(deps: {
+  gh: (args: string[]) => Promise<string>;
+  logger?: Logger;
+  fleetAuthors?: readonly string[];
+}): (filing: MergeFallbackFiling) => Promise<Result<MergeFallbackOutcome>> {
+  return (filing: MergeFallbackFiling) =>
+    fileMergeFallbackIssue(filing, {
+      gh: deps.gh,
+      ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+      ...(deps.fleetAuthors !== undefined
+        ? { fleetAuthors: deps.fleetAuthors }
+        : {}),
+      ensureLabelExists: (
+        repo: string,
+        labelName: string,
+        colour?: string,
+        description?: string,
+      ) =>
+        defaultEnsureLabelExists(repo, labelName, colour, description, {
+          ghCommandFn: deps.gh,
+        }),
+    });
 }
 
 /**

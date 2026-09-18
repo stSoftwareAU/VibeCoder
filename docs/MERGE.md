@@ -850,8 +850,9 @@ bounded by **two concluded attempts, with no wait between them** —
 ([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
 the first attempt and one retry against whatever the base has become since
 (Issue #2305). The second judged failure runs the abandon-and-restart rung, and
-no conflict outcome on that route asks a person at all (Issue #2310). A PR one
-concluded failure in is due
+no outcome of the *scan's* spent-budget route asks a person at all (Issue #2310);
+the resolution processor's own last escalation goes with the next sub-issue under
+ #2298. A PR one concluded failure in is due
 again on the very next pass: the four-hour cooldown that used to sit between
 the attempts bought nothing a moved base does not, and two hosts are kept off
 one PR by the cross-host lock rather than by a wait.

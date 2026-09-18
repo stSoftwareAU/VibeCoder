@@ -261,20 +261,24 @@ automatic ladder is the whole answer:
    back** the PRs that introduced the conflict and reopen their issues for the
    fleet to redo (Issue #1781). A run the worker itself cuts short is not one
    of the two: only a run that judged the conflict is charged.
-5. **Every fallback files one `merge-fallback` issue** (Issues #2304, #2310), so
-   the conflict that undid the work is written down where the next attempt can
-   read it — both runs' analyses, their stage timings and hosts, the conflicted
-   files, how far behind the base the branch was and since when, and what was
-   closed. A conflicting PR whose originating issue cannot be found is closed
+5. **A fallback files one `merge-fallback` issue** (Issues #2304, #2310 — wired
+   on the PR-scan path, with the resolution processor and the milestone
+   roll-back following under #2298), so the conflict that undid the work is
+   written down where the next attempt can read it — both runs' analyses, their
+   stage timings and hosts, the conflicted files, how far behind the base the
+   branch was and since when, and what was closed. A conflicting PR whose originating issue cannot be found is closed
    too, and its flag carries `idle-task` and the PR's diff summary so it *is*
    the re-do item.
 
 Every comment the sync or the conflict processor posts is a **record** of what
 the ladder did and will do next, on the thread as it stands. It never reopens a
-planning issue, never applies `needs-human`, and never asks a person to merge
-(Issues #2214, #2226, #2310) — a hand-applied `needs-human` is still honoured as
-a veto, because a human who labels a PR owns it. A path that does is a bug to fix
-the same day, not a design choice. The canonical operator manual is
+planning issue and never asks a person to merge (Issues #2214, #2226). No
+outcome of the merge-conflict **scan** applies `needs-human` either
+(Issue #2310) — a hand-applied one is still honoured as a veto, because a human
+who labels a PR owns it — and the resolution processor's own last escalation is
+being removed by the remaining sub-issue under #2298. A path that hands a
+conflict to a person is a bug to fix the same day, not a design choice. The
+canonical operator manual is
 [docs/INTERNALS.md § Milestone and dependency handling](docs/INTERNALS.md).
 
 ### Milestone independence

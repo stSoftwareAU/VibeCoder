@@ -30,7 +30,8 @@
  *    be filed leaves the PR open naming the `fallback-flag` step;
  * 2. the issue has not already been restarted once — **one abandon per
  *    originating issue**, so a restarted issue whose fresh PR also exhausts
- *    its budget goes to `needs-human` rather than round the loop again. The
+ *    its budget is declined rather than sent round the loop again, and the
+ *    caller leaves that PR open (Issue #2310). The
  *    claim counts only when a **fleet account** wrote it (Issue #1247): a
  *    comment body is text any GitHub account may write, and both directions
  *    were exploitable — an outsider's restart marker stalled the rung for
@@ -54,9 +55,9 @@
  * the merge — it is the claim two hosts race for, and the loser must lose
  * before anything is closed.
  *
- * Every step that fails returns the step's name. The caller's resting state is
- * then `needs-human` naming that step: a partial abandon — worst of all "PR
- * closed, issue not re-queued" — must never be where this stops.
+ * Every step that fails returns the step's name, and the caller records it: a
+ * partial abandon — worst of all "PR closed, issue not re-queued" — must be
+ * visible rather than where this quietly stops.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -75,12 +76,13 @@ import {
   MERGE_CONFLICT_LABEL,
 } from "./merge_conflict_markers.ts";
 import {
+  type ParsedStageTimings,
   parseStageTimingsLine,
   readPrDiffSummary,
   readPrDivergence,
 } from "./conflict_fallback_context.ts";
 import {
-  fileMergeFallbackIssue,
+  createFallbackFlagFiler,
   type MergeFallbackFiling,
   type MergeFallbackOutcome,
   type MergeFallbackRun,
@@ -90,7 +92,7 @@ import { DISCOVERY_LABELS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { prTitleMatchesIssue } from "./pr_title_issue_ref.ts";
 import { sanitiseIssueText } from "./conflict_intent_context.ts";
-import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
+import { addLabelToIssue } from "./label_operations.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
 
@@ -173,6 +175,13 @@ export interface FailedAttemptSummary {
   attempt: number | null;
   /** The recorded reason, bounded for comment use. */
   detail: string;
+  /**
+   * The stage timings and host the same comment carried (Issue #2308), when it
+   * carried them. Read here rather than in a second pass over the thread: two
+   * passes paired by index attribute one run's minutes to another the moment
+   * either filter changes, and nothing fails when they do.
+   */
+  timings?: ParsedStageTimings;
 }
 
 /** What the attempts on a PR recorded. */
@@ -258,7 +267,12 @@ export function summariseFailedAttempts(
       .join("\n")
       .trim()
       .slice(0, MAX_ATTEMPT_DETAIL_CHARS);
-    attempts.push({ attempt: attemptNumberFrom(body), detail });
+    const timings = parseStageTimingsLine(body);
+    attempts.push({
+      attempt: attemptNumberFrom(body),
+      detail,
+      ...(timings !== undefined ? { timings } : {}),
+    });
   }
 
   return {
@@ -268,47 +282,32 @@ export function summariseFailedAttempts(
   };
 }
 
-/** The bodies of the failure conclusions, in thread order. */
-function failedCommentBodies(comments: readonly unknown[]): string[] {
-  const bodies: string[] = [];
-  for (const raw of comments) {
-    if (typeof raw !== "object" || raw === null) continue;
-    const body = (raw as { body?: unknown }).body;
-    if (typeof body !== "string") continue;
-    if (body.includes(CONFLICT_FAILED_MARKER)) bodies.push(body);
-  }
-  return bodies;
-}
-
 /**
  * Both runs as the `merge-fallback` flag issue records them (Issue #2310).
  *
- * The analysis is what {@link summariseFailedAttempts} read off the failure
- * conclusion — the agent's own words — and the timings and host come from the
- * timings line the same comment carries (Issue #2308). The run that measured
+ * Every field comes off one {@link FailedAttemptSummary} — the agent's own
+ * words, and the stage timings and host the same comment carried — so a run's
+ * minutes can never be attributed to a different run. The run that measured
  * them is long gone by the time a fallback runs, so the thread is the only
  * surviving source for either.
  *
- * @param comments - The PR's thread, already reduced to the fleet's own
- *   comments by `conflict_marker_trust.ts`
+ * @param history - What {@link summariseFailedAttempts} read off the PR's
+ *   thread, which the callers have already reduced to the fleet's own comments
  * @returns One run per concluded failure, in the order the thread records them
  */
-export function mergeFallbackRunsFromComments(
-  comments: readonly unknown[],
+export function mergeFallbackRunsFromHistory(
+  history: FailedAttemptHistory,
 ): MergeFallbackRun[] {
-  const history = summariseFailedAttempts(comments);
-  const bodies = failedCommentBodies(comments);
-  return history.attempts.map((attempt, index) => {
-    const parsed = parseStageTimingsLine(bodies[index] ?? "");
-    return {
-      run: attempt.attempt ?? index + 1,
-      ...(attempt.detail.length > 0 ? { analysis: attempt.detail } : {}),
-      ...(parsed !== undefined && parsed.timings.length > 0
-        ? { timings: parsed.timings }
-        : {}),
-      ...(parsed?.host !== undefined ? { host: parsed.host } : {}),
-    };
-  });
+  return history.attempts.map((attempt, index) => ({
+    run: attempt.attempt ?? index + 1,
+    ...(attempt.detail.length > 0 ? { analysis: attempt.detail } : {}),
+    ...(attempt.timings !== undefined && attempt.timings.timings.length > 0
+      ? { timings: attempt.timings.timings }
+      : {}),
+    ...(attempt.timings?.host !== undefined
+      ? { host: attempt.timings.host }
+      : {}),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1167,7 +1166,7 @@ async function abandonWithoutOriginatingIssue(
       baseBranch: request.baseBranch,
     },
     conflictedFiles: history.conflictedPaths,
-    runs: mergeFallbackRunsFromComments(comments),
+    runs: mergeFallbackRunsFromHistory(history),
     ...divergence,
     ...(diff !== undefined
       ? { diffSummary: diff.files, diffSummaryOmitted: diff.omitted }
@@ -1178,22 +1177,11 @@ async function abandonWithoutOriginatingIssue(
     requestIdleTask: true,
   };
 
-  const filer = deps.fileFallbackFlag ??
-    ((toFile: MergeFallbackFiling) =>
-      fileMergeFallbackIssue(toFile, {
-        gh,
-        ...(logger !== undefined ? { logger } : {}),
-        fleetAuthors: deps.trustedAuthors,
-        ensureLabelExists: (
-          labelRepo: string,
-          labelName: string,
-          colour?: string,
-          description?: string,
-        ) =>
-          ensureLabelExists(labelRepo, labelName, colour, description, {
-            ghCommandFn: gh,
-          }),
-      }));
+  const filer = deps.fileFallbackFlag ?? createFallbackFlagFiler({
+    gh,
+    ...(logger !== undefined ? { logger } : {}),
+    fleetAuthors: deps.trustedAuthors,
+  });
 
   const filed = await filer(filing);
   if (!filed.ok) return failed("fallback-flag", filed.error);
@@ -1207,6 +1195,24 @@ async function abandonWithoutOriginatingIssue(
           "rather than closed against a record nobody can find",
       ),
     );
+  }
+
+  // An appended event lands as a comment on an existing flag, and the filer
+  // labels only the issues it creates — so the pickup label has to be applied
+  // here or a second fallback on the same PR would close it against a flag
+  // nobody picks up. Failing to apply it leaves the PR open: an unqueued re-do
+  // item is the work lost, which is the whole point of filing first.
+  if (filed.value.appended) {
+    try {
+      const labelled = deps.addLabel
+        ? await deps.addLabel(repo, flagIssueNumber, IDLE_TASK_LABEL)
+        : await addLabelToIssue(repo, flagIssueNumber, IDLE_TASK_LABEL, {
+          ghCommandFn: gh,
+        });
+      if (!labelled.ok) return failed("fallback-flag", labelled.error);
+    } catch (error) {
+      return failed("fallback-flag", error, flagIssueNumber);
+    }
   }
 
   try {
@@ -1291,7 +1297,10 @@ export async function abandonAndRestart(
     };
   };
 
-  // --- Precondition 1: the originating issue. No issue, no abandon. --------
+  // --- Precondition 1: the originating issue. No issue, no *re-queue* — the
+  // PR is still closed, against a flag issue filed as the re-do item in its
+  // place (Issue #2310).
+
   let context: ConflictIssueContext;
   try {
     context = deps.resolveContext

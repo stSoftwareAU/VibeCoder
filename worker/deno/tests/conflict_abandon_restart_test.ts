@@ -31,6 +31,7 @@ import {
   abandonAndRestart,
   type AbandonRestartRequest,
   buildAbandonPrComment,
+  buildNoIssueAbandonPrComment,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
   describeConcludedAttempts,
@@ -38,7 +39,7 @@ import {
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
   findOtherPrsForIssue,
-  mergeFallbackRunsFromComments,
+  mergeFallbackRunsFromHistory,
   planRequeueLabel,
   requeueLabelName,
   restartMarkerPrNumbers,
@@ -324,7 +325,7 @@ Deno.test("summariseFailedAttempts - a thread with no conclusions yields nothing
   assertEquals(history.conflictedPaths, []);
 });
 
-Deno.test("mergeFallbackRunsFromComments - each run's analysis, timings and host (Issue #2310)", () => {
+Deno.test("mergeFallbackRunsFromHistory - each run's analysis, timings and host (Issue #2310)", () => {
   // The run that measured the timings is long gone by the time a fallback
   // runs, so the conclusion comment is the only surviving source for them.
   const comments = failedComments().map((raw, index) => ({
@@ -340,7 +341,7 @@ Deno.test("mergeFallbackRunsFromComments - each run's analysis, timings and host
     }`,
   }));
 
-  const runs = mergeFallbackRunsFromComments(comments);
+  const runs = mergeFallbackRunsFromHistory(summariseFailedAttempts(comments));
 
   assertEquals(runs.length, 2);
   assertEquals(runs[0]?.run, 1);
@@ -356,8 +357,10 @@ Deno.test("mergeFallbackRunsFromComments - each run's analysis, timings and host
   assertEquals(runs[1]?.host, "host-2");
 });
 
-Deno.test("mergeFallbackRunsFromComments - a run with no timings line still records its analysis", () => {
-  const runs = mergeFallbackRunsFromComments(failedComments());
+Deno.test("mergeFallbackRunsFromHistory - a run with no timings line still records its analysis", () => {
+  const runs = mergeFallbackRunsFromHistory(
+    summariseFailedAttempts(failedComments()),
+  );
   assertEquals(runs.length, 2);
   assertEquals(runs[0]?.timings, undefined);
   assertEquals(runs[0]?.host, undefined);
@@ -720,6 +723,94 @@ Deno.test("abandonAndRestart - no originating issue: an unreadable flag number l
   assertEquals(callsMatching(fake, "pr", "close").length, 0);
 });
 
+Deno.test("abandonAndRestart - no originating issue: an appended flag is labelled idle-task (Issue #2310)", async () => {
+  // A second fallback on the same PR appends to the open flag, and the filer
+  // labels only the issues it creates — so without this the PR would be closed
+  // against a flag nobody picks up, and the work would be lost.
+  const fake = makeFake();
+  const labelled: Array<{ issueNumber: number; label: string }> = [];
+
+  const outcome = await abandonAndRestart(
+    makeRequest({ branchName: "hotfix/no-issue" }),
+    {
+      gh: fake.gh,
+      trustedAuthors: FLEET_AUTHORS,
+      resolveContext: noIssueContext(),
+      addLabel: (_repo, issueNumber, label) => {
+        labelled.push({ issueNumber, label });
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      fileFallbackFlag: () =>
+        Promise.resolve({
+          ok: true,
+          value: { issueNumber: 800, url: "", appended: true },
+        }),
+    },
+  );
+
+  assertEquals(outcome, {
+    outcome: "abandoned",
+    issueNumber: 800,
+    label: { applied: "idle-task" },
+    flagIssueNumber: 800,
+  });
+  assertEquals(labelled, [{ issueNumber: 800, label: "idle-task" }]);
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+});
+
+Deno.test("abandonAndRestart - no originating issue: an unlabelled appended flag leaves the PR open (Issue #2310)", async () => {
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({ branchName: "hotfix/no-issue" }),
+    {
+      gh: fake.gh,
+      trustedAuthors: FLEET_AUTHORS,
+      resolveContext: noIssueContext(),
+      addLabel: () =>
+        Promise.resolve({ ok: false, error: new Error("label add refused") }),
+      fileFallbackFlag: () =>
+        Promise.resolve({
+          ok: true,
+          value: { issueNumber: 800, url: "", appended: true },
+        }),
+    },
+  );
+
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "fallback-flag");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("buildNoIssueAbandonPrComment - names the flag issue, the reason and the branch", () => {
+  const body = buildNoIssueAbandonPrComment({
+    request: makeRequest({ branchName: "hotfix/no-issue" }),
+    history: summariseFailedAttempts(failedComments()),
+    reason: "no-signal",
+    flagIssueNumber: 900,
+  });
+
+  assertStringIncludes(body, "#900");
+  assertStringIncludes(body, "no-signal");
+  assertStringIncludes(body, "hotfix/no-issue");
+  assertStringIncludes(body, "idle-task");
+  assertStringIncludes(body, "worker/deno/lib/limits.ts");
+  // Closed, not force-pushed: the abandoned commits stay readable.
+  assertStringIncludes(body, "not** deleted");
+});
+
+Deno.test("buildNoIssueAbandonPrComment - a thread with no conclusion states the absence", () => {
+  const body = buildNoIssueAbandonPrComment({
+    request: makeRequest({ prComments: [] }),
+    history: summariseFailedAttempts([]),
+    reason: "no-signal",
+    flagIssueNumber: 900,
+  });
+
+  assertStringIncludes(body, "No concluded merge-conflict resolution attempt");
+  assertStringIncludes(body, "no conflicted path was recorded");
+});
+
 Deno.test("abandonAndRestart - no originating issue: the flag is filed before the close", async () => {
   // Ordering, not just outcome — the property the old decline protected.
   const fake = makeFake();
@@ -734,10 +825,14 @@ Deno.test("abandonAndRestart - no originating issue: the flag is filed before th
     gh,
     trustedAuthors: FLEET_AUTHORS,
     resolveContext: noIssueContext(),
-    fileFallbackFlag: recordingFiler({
-      ok: true,
-      value: { issueNumber: 901, url: "", appended: false },
-    }, filings, order),
+    fileFallbackFlag: recordingFiler(
+      {
+        ok: true,
+        value: { issueNumber: 901, url: "", appended: false },
+      },
+      filings,
+      order,
+    ),
   });
 
   assertEquals(order, ["flag-filed", "pr-close"]);

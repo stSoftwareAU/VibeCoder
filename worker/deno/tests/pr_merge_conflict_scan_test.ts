@@ -11,6 +11,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildFallbackFlagLinkComment,
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
@@ -1405,6 +1406,45 @@ Deno.test("findConflictingPr - an abandoned PR leaves one merge-fallback flag be
   );
   assert(link, "the closed PR does not link its flag issue");
   assertNoNeedsHumanWrites(fake);
+});
+
+Deno.test("buildFallbackFlagLinkComment - names the flag and asks nobody (Issue #2310)", () => {
+  const filed = buildFallbackFlagLinkComment(900, false);
+  assertStringIncludes(filed, "#900");
+  assertStringIncludes(filed, "Nobody is being asked to do anything");
+  assertStringIncludes(filed, "timings");
+
+  // A second fallback on the same PR appends rather than filing again, and the
+  // comment has to say which happened or the reader cannot tell.
+  const appended = buildFallbackFlagLinkComment(900, true);
+  assertStringIncludes(appended, "already open");
+  assertStringIncludes(appended, "one issue per PR");
+
+  // `gh` reported no number: the comment must not claim a link it cannot make.
+  const unknown = buildFallbackFlagLinkComment(0, false);
+  assertStringIncludes(unknown, "number could not be read");
+  assertEquals(unknown.includes("#0"), false);
+});
+
+Deno.test("findConflictingPr - a flag filed with no readable number is said out loud (Issue #2310)", async () => {
+  // The record exists and nothing can link to it. Omitting `flagIssueNumber`
+  // silently would read exactly like a filing that never happened.
+  const fake = makeFakeGh(exhaustedState());
+
+  const { log } = await scanWith(fake, {
+    fileFallbackFlag: () =>
+      Promise.resolve({
+        ok: true,
+        value: { issueNumber: 0, url: "", appended: false },
+      }),
+  });
+
+  assertEquals(reasonFor(log, 48), "abandoned-restarted");
+  assertEquals(recordFor(log, 48).context?.flagIssueNumber, undefined);
+  const warned = log.entries.find((entry) =>
+    entry.level === "warn" && entry.message.includes("no issue number")
+  );
+  assert(warned, "an unreadable flag number was not warned about");
 });
 
 Deno.test("findConflictingPr - a flag that cannot be filed warns and leaves the abandon standing (Issue #2310)", async () => {

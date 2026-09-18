@@ -53,13 +53,13 @@ import {
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
   exhaustedEscalationRoute,
-  mergeFallbackRunsFromComments,
+  mergeFallbackRunsFromHistory,
   requeueLabelName,
   summariseFailedAttempts,
 } from "./conflict_abandon_restart.ts";
 import { readPrDivergence } from "./conflict_fallback_context.ts";
 import {
-  fileMergeFallbackIssue,
+  createFallbackFlagFiler,
   MERGE_FALLBACK_LABEL,
   type MergeFallbackFiling,
   type MergeFallbackOutcome,
@@ -1013,22 +1013,11 @@ async function recordConflictFallbackFlag(args: {
     logger,
   });
 
-  const filer = args.fileFallbackFlag ??
-    ((filing: MergeFallbackFiling) =>
-      fileMergeFallbackIssue(filing, {
-        gh: ghCommandFn,
-        logger,
-        fleetAuthors: args.trustedAuthors,
-        ensureLabelExists: (
-          labelRepo: string,
-          labelName: string,
-          colour?: string,
-          description?: string,
-        ) =>
-          ensureLabelExists(labelRepo, labelName, colour, description, {
-            ghCommandFn,
-          }),
-      }));
+  const filer = args.fileFallbackFlag ?? createFallbackFlagFiler({
+    gh: ghCommandFn,
+    logger,
+    fleetAuthors: args.trustedAuthors,
+  });
 
   const filed = await filer({
     target: {
@@ -1039,7 +1028,7 @@ async function recordConflictFallbackFlag(args: {
       baseBranch: args.baseBranch,
     },
     conflictedFiles: history.conflictedPaths,
-    runs: mergeFallbackRunsFromComments(args.prComments),
+    runs: mergeFallbackRunsFromHistory(history),
     ...divergence,
     fallbackAction: args.fallbackAction,
   });
@@ -1054,6 +1043,17 @@ async function recordConflictFallbackFlag(args: {
   }
 
   const flagIssueNumber = filed.value.issueNumber;
+  if (flagIssueNumber <= 0) {
+    // The issue exists — the filer did not fail — but nothing can link to it,
+    // and an omitted `flagIssueNumber` would otherwise read exactly like a
+    // filing that never happened. Said out loud rather than inferred.
+    logger.warn(
+      `PR #${prNumber}: its \`${MERGE_FALLBACK_LABEL}\` flag was filed but ` +
+        "`gh` reported no issue number, so the record exists and nothing can " +
+        "link to it",
+      { repo, prNumber, url: filed.value.url },
+    );
+  }
   try {
     await ghCommandFn([
       "pr",
@@ -1349,16 +1349,16 @@ export async function findConflictingPr(
       };
     }
 
-    // A spent budget is only a quiet skip once the PR is visibly a human's
-    // (Issue #395). Reaching here means it is not: the label check above
-    // already let it through, so the processor's final escalation never
-    // landed and the PR would stall unowned for ever.
+    // A spent budget reaching here means the conclusion the processor should
+    // have drawn never landed (Issue #395): the label check above let the PR
+    // through, so nobody owns it and it would stall unowned for ever.
     if (hasExhaustedConflictAttempts(history.count, maxAttempts)) {
-      // Issue #1115: a human is not the next rung any more. A branch that has
-      // defeated two concluded merges is usually cheaper to redo than to
-      // reconcile, so the PR is closed and its issue re-queued for a fresh PR
-      // off the current base. `needs-human` is what happens when that is
-      // declined, fails, or was already used for this issue.
+      // Issue #1115: a human is not the next rung. A branch that has defeated
+      // two concluded merges is usually cheaper to redo than to reconcile, so
+      // the PR is closed, its issue re-queued for a fresh PR off the current
+      // base, and the fallback flagged (Issue #2310). Where the rung declines
+      // or fails, the PR keeps its place and the reason is recorded — nobody
+      // is asked either way.
       const abandon = await abandonRestart({
         repo,
         prNumber: pr.number,

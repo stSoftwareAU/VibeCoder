@@ -31,7 +31,9 @@ its originating issue re-queued so the fleet redoes the work off the current
 base. The re-queued issue keeps whatever pickup label it already carries, and
 gains `idle-task` when it carries none (Issue #2277). Every fallback leaves one
 `merge-fallback` issue behind recording what happened, linked from the closed PR
-(Issues #2304, #2310). A PR whose originating issue **cannot** be found is closed
+(Issues #2304, #2310 — the scan's fallback; the resolution processor's own copy
+of this rung is wired to the flag by the next sub-issue under #2298). A PR whose
+originating issue **cannot** be found is closed
 as well, and its flag issue carries `idle-task` and the PR's diff summary, so the
 flag is the re-do item. One restart per originating issue: if the fresh PR
 conflicts irreconcilably too, the bound declines the second restart and the PR is
@@ -361,10 +363,12 @@ settle still reaches no agent and now consults no issue either.
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
   that conflicts again months later starts from a full budget.
-- The final *concluded* failure runs **abandon-and-restart** first, and applies
-  `needs-human` only when that rung declines or fails. The `needs-human`
-  summary names the conflicted files, why the merge failed, and which route
-  through the ladder ended at a person.
+- The final *concluded* failure runs **abandon-and-restart** first. In the
+  resolution processor that rung is still followed by a `needs-human`
+  escalation when it declines or fails, naming the conflicted files, why the
+  merge failed and which route ended at a person — the **scan's** copy of that
+  escalation is gone (Issue #2310), and the processor's is the next sub-issue
+  under #2298.
 - **Nothing stalls unowned.** If the processor's own conclusion never landed —
   the run ended between the failure comment and it — the next scan finds a PR
   that is out of budget and carries no `needs-human` and runs the same abandon
@@ -519,10 +523,10 @@ A branch that has defeated two real merges is usually cheaper to **redo** than
 to reconcile, and redoing it needs nobody (Issue #1115,
 `worker/deno/lib/conflict_abandon_restart.ts`). So the rung a spent budget
 reaches closes the conflicting PR and re-queues its originating issue, and the
-pipeline raises a fresh PR off the current base. **Nothing on this route ends at
-a person** (Issue #2310): the spent-budget branch applies no `needs-human` label
-and posts no escalation comment, and every outcome it produces is recorded in
-the pass's own log instead.
+pipeline raises a fresh PR off the current base. **No outcome of the scan's
+spent-budget branch ends at a person** (Issue #2310): it applies no
+`needs-human` label and posts no escalation comment, and every outcome it
+produces is recorded in the pass's own log instead.
 
 - **"Start again" never means force-push.** The PR is *closed*, not merged; the
   branch is neither deleted nor rewritten, so every commit on it stays readable
@@ -1058,12 +1062,14 @@ blockages are now filed as issues the fleet can claim
 `escalated` marker instead. `needs-human` is reserved for what genuinely needs
 a person: a policy call, a credential, confirming intent.
 
-**The conflict outcome never applies it** (Issue #2310). A spent budget used to
-end here — `needs-human` plus a summary naming the route — which is how a
-mechanical stall acquired a label that means "a human must decide". It does not
-any more: the budget-spent branch closes and re-queues, files the
-`merge-fallback` flag, and records everything else in the pass log. Two things
-are deliberately unchanged:
+**The merge-conflict scan applies it for no conflict outcome** (Issue #2310). A
+spent budget used to end here — `needs-human` plus a summary naming the route —
+which is how a mechanical stall acquired a label that means "a human must
+decide". It does not any more: the budget-spent branch closes and re-queues,
+files the `merge-fallback` flag, and records everything else in the pass log.
+The resolution processor's own final escalation is the last one left on this
+path and goes with the next sub-issue under #2298. Two things are deliberately
+unchanged:
 
 - **A hand-applied `needs-human` is still a veto.** A human who labels a PR owns
   it, so the scan keeps skipping it and never overrides the label.
