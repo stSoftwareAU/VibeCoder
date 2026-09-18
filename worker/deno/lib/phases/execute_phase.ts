@@ -43,6 +43,8 @@ import { ensureHistoryDepth } from "../git_history.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { saveResumeState } from "../resume_state_store.ts";
 import { handOnStreamSession } from "../stream_session.ts";
+import { recordStreamHolderForRun } from "../stream_holder.ts";
+import { resolveFleetAuthors } from "../fleet_authors.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -1418,6 +1420,22 @@ async function executeClaudeBody(
         : {}),
       logger,
       logFields: { repo, issueNumber },
+    });
+    // Record this host as the holder of the stream's conversation (Issue
+    // #2336). The transcript the hand-on just wrote lives on this machine's
+    // disk, so this machine should get the stream's next issue first. A blank
+    // stream, a milestone with no tracking issue, or a `gh` failure records
+    // nothing and is logged — affinity is an optimisation, never a lock.
+    await recordStreamHolderForRun({
+      joined: state.streamSession,
+      ghCommandFn: deps.github.runGhCommand,
+      trustedAuthors: resolveFleetAuthors(
+        ctx.githubUser,
+        config.allowedAuthors,
+        config.fleetPrAuthors ?? [],
+      ),
+      log: (message) => logger.warn(message, { repo, issueNumber }),
+      logInfo: (message) => logger.info(message, { repo, issueNumber }),
     });
   }
 

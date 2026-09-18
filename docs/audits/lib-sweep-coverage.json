@@ -1834,6 +1834,18 @@
       "paths": [
         "worker/deno/lib/stream_session.ts"
       ]
+    },
+    {
+      "issue": 2336,
+      "chunk": "top-up-2336",
+      "title": "top-up: the stream affinity head start",
+      "ledger": "docs/audits/security-sweep-2336-stream-holder.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_holder.ts (#2336)",
+      "status": "swept",
+      "sweptAt": "484e2bda901621b9baa3bb760a93238f213dd91b",
+      "paths": [
+        "worker/deno/lib/stream_holder.ts"
+      ]
     }
   ],
   "roots": [
