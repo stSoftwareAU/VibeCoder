@@ -12,11 +12,12 @@
  * visible with a {@link MERGE_CONFLICT_LABEL} label, and returns one
  * candidate for the conflict-resolution processor to merge for real.
  *
- * The pass is deliberately bounded — one attempt per PR per
- * {@link DEFAULT_CONFLICT_COOLDOWN_HOURS} hours, and at most
- * {@link DEFAULT_MAX_CONFLICT_ATTEMPTS} attempts before the processor
- * escalates with `needs-human` — so a genuinely unresolvable conflict
- * cannot loop forever.
+ * The pass is bounded by its budget alone (Issue #2305): at most
+ * {@link DEFAULT_MAX_CONFLICT_ATTEMPTS} concluded attempts before the ladder
+ * stops retrying, and no waiting between them. A conflict a judged attempt
+ * could not settle is not settled any better four hours later, and the wait
+ * only held a mergeable PR out of the queue for half a day; two hosts are
+ * kept off one PR by the cross-host lock, not by a cooldown.
  *
  * Only an attempt that reached a **conclusion** spends that budget (Issue
  * #395). An attempt marker with no conclusion means the run was disrupted —
@@ -97,20 +98,21 @@ export {
   CONFLICT_RESOLVED_MARKER,
 } from "./merge_conflict_markers.ts";
 
-/** Hours a PR waits after a failed attempt before another is made. */
-export const DEFAULT_CONFLICT_COOLDOWN_HOURS = 4;
-
 /**
  * Attempts allowed before the processor stops retrying and escalates.
  *
- * Three (Issue #1766): the first attempt, and two retries against a base that
- * has moved on since. Two was one retry short — a conflict whose first
- * attempt raced a base-branch push had a single judged retry, and the
- * milestone ladder charges against this same constant, so the two ladders
+ * Two (Issue #2305): the first attempt, and one retry against whatever the
+ * base has become since. A third judged attempt on the same conflict has
+ * never been what settled it — the retries that succeed are the ones whose
+ * base moved — so the third run bought little and cost a whole agent run.
+ * The milestone ladder charges against this same constant, so the two ladders
  * cannot drift apart. Only a **concluded** attempt spends it; a disrupted one
  * is counted separately by {@link countDisruptedAttempts}.
+ *
+ * There is no wait between the two: a PR with one concluded failure is due on
+ * the very next pass.
  */
-export const DEFAULT_MAX_CONFLICT_ATTEMPTS = 3;
+export const DEFAULT_MAX_CONFLICT_ATTEMPTS = 2;
 
 /**
  * Disrupted attempts allowed before the PR is escalated (Issue #395).
@@ -176,12 +178,12 @@ export interface ConflictAttemptHistory {
  * The taxonomy is **closed**: every exit out of {@link findConflictingPr},
  * `drainConflictingPrs` and the resolution processor's lock gate maps to
  * exactly one member, and each member carries the operands that make the
- * decision checkable afterwards — the milliseconds a cooldown still has to
- * run, the attempts a spent budget burned, the host holding the lock.
+ * decision checkable afterwards — the attempts a spent budget burned, the
+ * disruptions that never concluded, the host holding the lock.
  *
  * Issue #1076's symptom was "the label went on and then silence": a skipped
  * PR produced either nothing or an unstructured log line, so a stalled fleet
- * and a fleet correctly waiting out a cooldown looked identical. A decision
+ * and a fleet correctly holding a PR back looked identical. A decision
  * is a **required return value** here rather than an optional field, so an
  * exit added without one does not compile, and {@link conflictReasonOperands}
  * switches exhaustively so a new member with no case does not compile either.
@@ -217,12 +219,6 @@ export type ConflictSkipReason =
     issueNumber: number;
     attemptsSpent: number;
   }
-  /**
-   * Still inside the post-attempt cooldown. `msUntilDue` is null when the
-   * recorded attempt timestamp does not parse — the conservative case
-   * {@link isConflictAttemptDue} holds back rather than guesses.
-   */
-  | { kind: "cooldown"; msUntilDue: number | null; lastAttemptAt?: string }
   /** Attempts keep being disrupted before they conclude (Issue #395). */
   | {
     kind: "disrupted-bound";
@@ -280,7 +276,6 @@ const CONFLICT_SKIP_REASON_KIND_SET: Record<ConflictSkipReasonKind, true> = {
   "needs-human": true,
   "budget-spent": true,
   "abandoned-restarted": true,
-  "cooldown": true,
   "disrupted-bound": true,
   "lock-held": true,
   "pr-not-open": true,
@@ -344,7 +339,6 @@ export function isQueuedConflictReason(kind: ConflictSkipReasonKind): boolean {
     case "needs-human":
     case "budget-spent":
     case "abandoned-restarted":
-    case "cooldown":
     case "disrupted-bound":
     case "lock-held":
     case "pr-not-open":
@@ -388,13 +382,6 @@ export function conflictReasonOperands(
       return {
         issueNumber: reason.issueNumber,
         attemptsSpent: reason.attemptsSpent,
-      };
-    case "cooldown":
-      return {
-        msUntilDue: reason.msUntilDue,
-        ...(reason.lastAttemptAt !== undefined
-          ? { lastAttemptAt: reason.lastAttemptAt }
-          : {}),
       };
     case "disrupted-bound":
       return {
@@ -530,8 +517,6 @@ export interface FindConflictingPrOptions {
   cache?: IssueCache;
   /** Optional repo shuffler so no repo is starved. */
   shuffleRepos?: (repos: string[]) => string[];
-  /** Hours between attempts on the same PR. */
-  cooldownHours?: number;
   /** Attempts allowed before the PR is left to a human. */
   maxAttempts?: number;
   /** Disrupted attempts allowed before the PR is escalated (Issue #395). */
@@ -555,8 +540,6 @@ export interface FindConflictingPrOptions {
   abandonRestart?: (
     request: AbandonRestartRequest,
   ) => Promise<AbandonRestartOutcome>;
-  /** Clock override (epoch milliseconds). */
-  nowMs?: () => number;
   /**
    * PRs this cycle has already taken or deferred, as `owner/repo#number`
    * (Issue #561).
@@ -676,9 +659,10 @@ export function parseConflictAttempts(
  * Disrupted attempts on this PR, counting a still-open attempt as disrupted
  * (Issue #395).
  *
- * Only meaningful once the cooldown has elapsed: before that, an open attempt
- * is more likely in flight on another host than disrupted, which is exactly
- * what the cooldown gate is for.
+ * An open attempt is read as disrupted straight away (Issue #2305): the
+ * processor deletes its own marker on every run it cuts short, so a marker
+ * that outlives its run is one nobody concluded. What keeps a second host off
+ * an attempt genuinely in flight is the cross-host PR lock, not a wait.
  */
 export function countDisruptedAttempts(
   history: ConflictAttemptHistory,
@@ -760,45 +744,20 @@ export const EXHAUSTED_CONFLICT_NEXT_STEP =
   "attempt budget only resets once the conflict is resolved.";
 
 /**
- * Whether another attempt on this PR is due.
+ * Whether another attempt on this PR is due — that is, whether no attempt is
+ * open on it (Issue #2305).
  *
- * False while the cooldown since the last recorded attempt has not
- * elapsed, so a PR cannot be re-attempted every pass. An unparseable
- * timestamp is treated as "cooldown not elapsed" — the conservative
- * direction, because guessing the other way re-attempts every pass.
+ * There is no wait to sit out any more, so the only thing a pass can see that
+ * says "not now" is an attempt marker with no conclusion under it. That is a
+ * *disrupted* attempt rather than a reason to stop: the scan re-attempts it
+ * and {@link DEFAULT_MAX_DISRUPTED_ATTEMPTS} bounds how often.
  *
  * @param history - Attempt history from {@link parseConflictAttempts}.
- * @param nowMs - Current time in epoch milliseconds.
- * @param cooldownHours - Hours that must pass between attempts.
  */
 export function isConflictAttemptDue(
   history: ConflictAttemptHistory,
-  nowMs: number,
-  cooldownHours: number = DEFAULT_CONFLICT_COOLDOWN_HOURS,
 ): boolean {
-  if (history.lastAttemptAt === undefined) return true;
-  const lastMs = Date.parse(history.lastAttemptAt);
-  if (Number.isNaN(lastMs)) return false;
-  return nowMs - lastMs >= cooldownHours * 3600_000;
-}
-
-/**
- * How long this PR's cooldown still has to run, in milliseconds (Issue #1109).
- *
- * `0` when an attempt is due now, and `null` when the recorded timestamp does
- * not parse — the case {@link isConflictAttemptDue} holds the PR back on
- * rather than guessing, so the record says "unknown" instead of inventing a
- * number.
- */
-export function conflictCooldownMsRemaining(
-  history: ConflictAttemptHistory,
-  nowMs: number,
-  cooldownHours: number = DEFAULT_CONFLICT_COOLDOWN_HOURS,
-): number | null {
-  if (history.lastAttemptAt === undefined) return 0;
-  const lastMs = Date.parse(history.lastAttemptAt);
-  if (Number.isNaN(lastMs)) return null;
-  return Math.max(0, lastMs + cooldownHours * 3600_000 - nowMs);
+  return !history.pendingAttempt;
 }
 
 /**
@@ -1041,8 +1000,8 @@ function prAuthorLogin(pr: PrEntry): string | undefined {
  *
  * Every conflicting PR encountered is labelled {@link MERGE_CONFLICT_LABEL}
  * whether or not it is selected, so the queue is visible immediately. A PR
- * already carrying `needs-human`, already at its attempt cap, or still
- * inside its cooldown is labelled but not returned.
+ * already carrying `needs-human` or already at its attempt cap is labelled
+ * but not returned.
  *
  * A PR whose attempts keep being disrupted before they conclude is escalated
  * here rather than handed on (Issue #395) — the processor may be exactly what
@@ -1073,11 +1032,9 @@ export async function findConflictingPr(
     ghCommandFn,
     cache,
     shuffleRepos,
-    cooldownHours = DEFAULT_CONFLICT_COOLDOWN_HOURS,
     maxAttempts = DEFAULT_MAX_CONFLICT_ATTEMPTS,
     maxDisruptedAttempts = DEFAULT_MAX_DISRUPTED_ATTEMPTS,
     needsHumanLabel = NEEDS_HUMAN_LABEL,
-    nowMs = () => Date.now(),
     exclude,
     prefer,
   } = options;
@@ -1329,24 +1286,12 @@ export async function findConflictingPr(
       };
     }
 
-    const now = nowMs();
-    if (!isConflictAttemptDue(history, now, cooldownHours)) {
-      return {
-        outcome: "skipped",
-        reason: {
-          kind: "cooldown",
-          msUntilDue: conflictCooldownMsRemaining(history, now, cooldownHours),
-          ...(history.lastAttemptAt !== undefined
-            ? { lastAttemptAt: history.lastAttemptAt }
-            : {}),
-        },
-      };
-    }
-
-    // Past the cooldown, an attempt that never concluded is a disrupted
-    // attempt, not one in flight (Issue #395). It does not spend the merge
-    // budget — but repeated disruption is its own failure, and it is
-    // escalated rather than retried silently forever.
+    // An attempt that never concluded is a disrupted attempt, not one in
+    // flight (Issue #395) — there is no cooldown left to wait out before
+    // saying so (Issue #2305), and the cross-host PR lock is what keeps two
+    // hosts off one PR. It does not spend the merge budget, but repeated
+    // disruption is its own failure and is escalated rather than retried
+    // silently forever.
     const disruptedCount = countDisruptedAttempts(history);
     if (hasExhaustedDisruptedAttempts(disruptedCount, maxDisruptedAttempts)) {
       logger.warn(
@@ -1378,12 +1323,16 @@ export async function findConflictingPr(
     if (disruptedCount > 0) {
       logger.warn(
         `PR #${pr.number} has ${disruptedCount} disrupted merge-conflict ` +
-          "attempt(s) with no conclusion — re-attempting",
+          "attempt(s) with no conclusion — re-attempting" +
+          (isConflictAttemptDue(history)
+            ? ""
+            : ", including one whose marker is still open"),
         {
           repo,
           prNumber: pr.number,
           disruptedCount,
           maxDisruptedAttempts,
+          attemptOpen: !isConflictAttemptDue(history),
         },
       );
     }

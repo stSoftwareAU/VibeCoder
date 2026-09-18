@@ -255,9 +255,12 @@ automatic ladder is the whole answer:
 3. **The resolution agent** on the residue, bounded by the cycle's budget
    (Issue #1778), and its merged tree verified with the repository's own check
    before anything is pushed — a red tree is rolled back, never pushed.
-4. **Retry across cycles** within a bounded attempt budget, and when the budget
-   is spent, **roll back** the PRs that introduced the conflict and reopen
-   their issues for the fleet to redo (Issue #1781).
+4. **Retry on the next cycle** within a bounded attempt budget — **two**
+   judged runs per conflict, PR branch and milestone branch alike, with no
+   wait between them (Issue #2305) — and when the budget is spent, **roll
+   back** the PRs that introduced the conflict and reopen their issues for the
+   fleet to redo (Issue #1781). A run the worker itself cuts short is not one
+   of the two: only a run that judged the conflict is charged.
 
 Every comment the sync or the conflict processor posts is a **record** of what
 the ladder did and will do next, on the thread as it stands. It never reopens a

@@ -17,10 +17,10 @@
  *
  * When the branch cannot be brought level the run **defers**: it exits before
  * any implementation agent is spent, leaves the issue open with its pickup
- * label untouched, and says why on the release comment. The charged failure
- * writes `deferUntil`, which is what stops every other slot re-claiming the
- * same milestone 30 seconds later (the selector reads it — see
- * {@link milestonePacedUntil}).
+ * label untouched, and says why on the release comment. What stops every
+ * other slot re-claiming the same milestone 30 seconds later is the ledger
+ * itself — an attempt open on this host, or a budget already spent (the
+ * selector reads both — see {@link milestonePacedUntil}).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -141,38 +141,49 @@ export interface MilestonePresyncDeps {
 }
 
 /**
- * How long a milestone's branch ledger paces it, or undefined when it does not
- * (Issue #1780).
+ * Why a milestone's branch ledger paces it, or undefined when it does not
+ * (Issues #1780, #2305).
  *
  * Read by the issue selector so a paced milestone's issues are skipped before
- * a claim is made: a charged conflict failure means the branch cannot take the
- * default branch down yet, and claiming its children only to defer each one
- * would comment on an issue every 30 seconds. A local file read — no API call.
+ * a claim is made: claiming a child only to defer it would comment on an issue
+ * every 30 seconds. A local file read — no API call.
+ *
+ * Two states pace the children, and nothing else does:
+ *
+ * - **An attempt is open on this host.** The merge is in progress in the
+ *   shared clone; a child claimed now would queue behind it and defer.
+ * - **The conflict budget is spent.** The branch belongs to the roll-back
+ *   rather than to another merge, so no child can be cut from it until the
+ *   roll-back — or a landed sync — resets the ledger.
+ *
+ * The cooldown that used to pace it is gone (Issue #2305), so a branch with
+ * one charged failure and budget left releases its children at once: the next
+ * cycle's sync is what tries again, and until then a child run's own pre-cut
+ * sync will do it.
  *
  * @param streaks - The loaded ledger
  * @param repo - Repository in `owner/repo` form
  * @param milestoneTitle - The issue's milestone title, as GitHub reports it
- * @param nowMs - Current time in epoch milliseconds
- * @returns The `deferUntil` still in the future, or undefined
+ * @returns A short reason the milestone is paced, or undefined when it is not
  */
 export function milestonePacedUntil(
   streaks: SyncStreaks,
   repo: string,
   milestoneTitle: string,
-  nowMs: number,
 ): string | undefined {
   if (!milestoneTitle) return undefined;
   const branch = createMilestoneBranchName(milestoneTitle);
   const entry = streaks[syncStreakKey(repo, branch)];
-  const deferUntil = entry?.deferUntil;
-  if (deferUntil === undefined) return undefined;
-  const until = Date.parse(deferUntil);
-  // An unparseable deferral paces the branch rather than releasing it — the
-  // same direction `isConflictAttemptDue` takes, for the same reason: reading
-  // corruption as "no cooldown applies" is the permissive direction on a
-  // safety bound.
-  if (Number.isNaN(until)) return deferUntil;
-  return nowMs >= until ? undefined : deferUntil;
+  if (!entry) return undefined;
+  if (entry.attemptOpenedAt !== undefined) {
+    return `a conflict attempt opened at ${entry.attemptOpenedAt} is still ` +
+      `open on this host`;
+  }
+  if (isConflictBudgetExhausted(entry)) {
+    return `the conflict budget is spent (${entry.conflictAttempts ?? 0} of ` +
+      `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} concluded failures)`;
+  }
+  return undefined;
 }
 
 /** `deferred: …` with the reason appended, so every deferral reads the same. */
@@ -305,10 +316,11 @@ export async function presyncMilestoneBranch(
     );
   }
 
-  if (!conflictAttemptDue(entry, defaultSha, nowMs)) {
-    await persist("the live deferral");
+  if (!conflictAttemptDue(entry)) {
+    await persist("the open attempt");
     return deferral(
-      `conflict attempt not due until ${entry.deferUntil}`,
+      `a conflict attempt opened at ${entry.attemptOpenedAt} is still open ` +
+        `on this host`,
       behindBy,
     );
   }

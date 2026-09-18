@@ -15,7 +15,10 @@ import { findOldestIssue } from "../lib/find_oldest_issue.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { milestonePacedUntil } from "../lib/milestone_presync.ts";
-import type { SyncStreaks } from "../lib/milestone_sync_streak.ts";
+import {
+  MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+  type SyncStreaks,
+} from "../lib/milestone_sync_streak.ts";
 import type { WorkerConfig } from "../types.ts";
 
 const ALICE = { login: "alice" };
@@ -97,14 +100,18 @@ function mockGh(): (args: string[]) => Promise<string> {
   };
 }
 
-/** The ledger a charged conflict failure leaves behind. */
-function pacedLedger(deferUntil: string): SyncStreaks {
+/**
+ * The ledger of a branch whose children are paced (Issue #2305): either an
+ * attempt is open on this host, or the conflict budget is spent.
+ */
+function pacedLedger(
+  state: { attemptOpenedAt?: string; conflictAttempts?: number },
+): SyncStreaks {
   return {
     "owner/repo-a|milestone/1730-resolve-merge-conflicts": {
       count: 1,
       escalated: false,
-      conflictAttempts: 1,
-      deferUntil,
+      ...state,
       lastAttempt: {
         at: new Date(NOW - 60_000).toISOString(),
         outcome: "failed",
@@ -118,8 +125,9 @@ function pacedLedger(deferUntil: string): SyncStreaks {
 Deno.test(
   "findOldestIssue - a paced milestone's issue is skipped and the unpaced one selected (Issue #1780)",
   async () => {
-    const deferUntil = new Date(NOW + 3600_000).toISOString();
-    const ledger = pacedLedger(deferUntil);
+    const ledger = pacedLedger({
+      conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    });
     const asked: string[] = [];
 
     try {
@@ -129,7 +137,7 @@ Deno.test(
         cache: createTestCache(),
         milestonePacedUntil: (repo, milestone) => {
           asked.push(`${repo}|${milestone}`);
-          return milestonePacedUntil(ledger, repo, milestone, NOW);
+          return milestonePacedUntil(ledger, repo, milestone);
         },
       });
 
@@ -157,9 +165,11 @@ Deno.test(
 );
 
 Deno.test(
-  "findOldestIssue - a deferral that has passed leaves the milestone claimable (Issue #1780)",
+  "findOldestIssue - a branch with budget left leaves the milestone claimable (Issue #2305)",
   async () => {
-    const ledger = pacedLedger(new Date(NOW - 1000).toISOString());
+    // One charged failure, one attempt still in hand: the old ledger paced
+    // these children for four hours, and nothing paces them now.
+    const ledger = pacedLedger({ conflictAttempts: 1 });
 
     try {
       const result = await findOldestIssue(makeConfig(), {
@@ -167,7 +177,7 @@ Deno.test(
         ghCommandFn: mockGh(),
         cache: createTestCache(),
         milestonePacedUntil: (repo, milestone) =>
-          milestonePacedUntil(ledger, repo, milestone, NOW),
+          milestonePacedUntil(ledger, repo, milestone),
         // Pin the selection pool so the oldest candidate wins deterministically.
         selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
       });

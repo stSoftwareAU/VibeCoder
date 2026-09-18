@@ -3368,22 +3368,17 @@ export async function createProductionRunCoreDeps(
         // refuses a stream a sibling holds, this one refuses a stream whose
         // branch is behind the default branch and paced by the ledger.
         milestonePacedUntil: (repo, milestone) => {
-          const until = milestonePacedUntil(
-            pacingLedger,
-            repo,
-            milestone,
-            Date.now(),
-          );
-          if (until === undefined) return undefined;
+          const paced = milestonePacedUntil(pacingLedger, repo, milestone);
+          if (paced === undefined) return undefined;
           const key = `${repo}|${milestone}`;
           if (!pacingLogged.has(key)) {
             pacingLogged.add(key);
             logger.info(
-              `skipped: ${MILESTONE_BEHIND} (paced until ${until}) — ` +
+              `skipped: ${MILESTONE_BEHIND} (${paced}) — ` +
                 `${repo} milestone '${milestone}'`,
             );
           }
-          return until;
+          return paced;
         },
         // Repositories the maintenance lane has leased wholesale (Issues
         // #4176, #213, narrowed by #1091), unioned with the ones backed off

@@ -22,6 +22,7 @@ import type { RollbackOutcome } from "../lib/milestone_rollback.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import { conflictEscalationKey } from "../lib/milestone_conflict_dedup.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
+import { AGENT_RUN_ENDED_BY_WORKER } from "../lib/milestone_conflict_ladder.ts";
 import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
 import { stuckSyncDiagnosticTitle } from "../lib/milestone_sync_diagnostic_closeout.ts";
 import {
@@ -1120,6 +1121,10 @@ const MOVED_SHA = "b".repeat(40);
 /** How the injected sync ends, for the ledger tests. */
 type LedgerFailure =
   | "conflict"
+  /** The agent ran out its own ceiling — a judged attempt (Issue #2305). */
+  | "agent-timeout"
+  /** The worker killed the run at the cycle deadline (Issues #1693, #2305). */
+  | "agent-killed"
   | "gate"
   | "resolution-gate"
   | "ruleset"
@@ -1155,6 +1160,29 @@ function ledgerOutcome(
         error: new MilestoneConflictEscalation(
           "every rung left it undecided",
           [analysis],
+          [],
+          LEDGER_SHA,
+        ),
+      };
+    case "agent-timeout":
+      return {
+        ok: false,
+        error: new MilestoneConflictEscalation(
+          "every rung left it undecided",
+          [{ ...analysis, reason: "agent: agent timed out after 1800s" }],
+          [],
+          LEDGER_SHA,
+        ),
+      };
+    case "agent-killed":
+      return {
+        ok: false,
+        error: new MilestoneConflictEscalation(
+          "every rung left it undecided",
+          [{
+            ...analysis,
+            reason: `agent: ${AGENT_RUN_ENDED_BY_WORKER} (Issue #1693)`,
+          }],
           [],
           LEDGER_SHA,
         ),
@@ -1311,20 +1339,9 @@ Deno.test("syncMilestoneBranches - a conflict failure charges one attempt and po
   const dir = await Deno.makeTempDir({ prefix: "issue-1778-charge-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
-    // One prior concluded failure, its cooldown already passed.
+    // A branch with its whole budget still in hand.
     await saveSyncStreaks(streakPath, {
-      [`owner/repo|${LEDGER_BRANCH}`]: {
-        count: 1,
-        escalated: false,
-        conflictAttempts: 1,
-        lastAttempt: {
-          at: new Date(1_000).toISOString(),
-          outcome: "failed",
-          reason: "conflict unresolved at rung agent",
-          defaultSha: LEDGER_SHA,
-        },
-        deferUntil: new Date(2_000).toISOString(),
-      },
+      [`owner/repo|${LEDGER_BRANCH}`]: { count: 1, escalated: false },
     });
 
     const calls: string[][] = [];
@@ -1342,8 +1359,12 @@ Deno.test("syncMilestoneBranches - a conflict failure charges one attempt and po
 
     assertEquals(result.ok, true);
     const entry = await readLedger(streakPath);
-    assertEquals(entry?.conflictAttempts, 2);
-    assert(entry?.deferUntil !== undefined, "a failure must pace the next try");
+    assertEquals(entry?.conflictAttempts, 1);
+    assertEquals(
+      (entry as unknown as Record<string, unknown> | undefined)?.deferUntil,
+      undefined,
+      "a failure paces nothing any more (Issue #2305)",
+    );
     assertEquals(entry?.lastAttempt?.outcome, "failed");
     assertEquals(entry?.attemptOpenedAt, undefined);
     // Nothing reaches a human while an automatic attempt remains.
@@ -1355,7 +1376,7 @@ Deno.test("syncMilestoneBranches - a conflict failure charges one attempt and po
     assert(
       logs.some((l) =>
         l.includes(
-          `conflict attempt 2 of ${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed at rung agent`,
+          `conflict attempt 1 of ${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed at rung agent`,
         )
       ),
       `no per-attempt line in: ${JSON.stringify(logs)}`,
@@ -1365,8 +1386,8 @@ Deno.test("syncMilestoneBranches - a conflict failure charges one attempt and po
   }
 });
 
-Deno.test("syncMilestoneBranches - the same tip waits out the cooldown and a moved tip does not (Issue #1778)", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "issue-1778-pace-" });
+Deno.test("syncMilestoneBranches - the same tip is tried again on the very next cycle (Issue #2305)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2305-no-cooldown-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
     const milestones: LedgerMilestone[] = [{
@@ -1375,8 +1396,7 @@ Deno.test("syncMilestoneBranches - the same tip waits out the cooldown and a mov
       failure: "conflict",
     }];
 
-    // Cycle 1: the first conflict failure, which sets the cooldown.
-    const logs: string[] = [];
+    // Cycle 1: the first conflict failure charges one of the two attempts.
     await syncMilestoneBranches(ledgerDeps([], {
       milestones,
       streakPath,
@@ -1384,45 +1404,48 @@ Deno.test("syncMilestoneBranches - the same tip waits out the cooldown and a mov
     }));
     assertEquals((await readLedger(streakPath))?.conflictAttempts, 1);
 
-    // Cycle 2: same tip, still inside the cooldown — no merge is attempted.
+    // Cycle 2, ten seconds later, same tip: the old ledger paced this for
+    // four hours. The second attempt runs now, and spends the budget.
     let attempts = 0;
+    const rollbacks: string[] = [];
     const deps = ledgerDeps([], {
       milestones,
       streakPath,
       nowMs: 20_000,
-      log: (m) => logs.push(m),
+      rollbacks,
     });
     const inner = deps.syncBranchFn;
     deps.syncBranchFn = (repo, branch, base, opts) => {
       attempts++;
       return inner(repo, branch, base, opts);
     };
-    const paced = await syncMilestoneBranches(deps);
-    assertEquals(attempts, 0);
-    assertEquals(paced.ok && paced.value.skipped, 1);
-    assertEquals((await readLedger(streakPath))?.conflictAttempts, 1);
-    assert(
-      logs.some((l) => l.includes("skipped: conflict attempt not due until")),
-      `no pacing line in: ${JSON.stringify(logs)}`,
+    await syncMilestoneBranches(deps);
+    assertEquals(attempts, 1, "no wait between the two attempts");
+    assertEquals(
+      (await readLedger(streakPath))?.conflictAttempts,
+      MILESTONE_CONFLICT_ATTEMPT_BUDGET,
     );
+    assertEquals(rollbacks, [
+      `owner/repo|${LEDGER_BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
+    ]);
 
-    // Cycle 3: the default tip has moved, so the conflict in front of the
-    // branch is a different one and it is attempted at once.
-    let movedAttempts = 0;
-    const movedDeps = ledgerDeps([], {
+    // Cycle 3: the budget is spent, so the branch belongs to the roll-back
+    // and no third merge is attempted however far the tip has moved.
+    let thirdAttempts = 0;
+    const spentDeps = ledgerDeps([], {
       milestones,
       streakPath,
       defaultSha: MOVED_SHA,
       nowMs: 30_000,
     });
-    const movedInner = movedDeps.syncBranchFn;
-    movedDeps.syncBranchFn = (repo, branch, base, opts) => {
-      movedAttempts++;
-      return movedInner(repo, branch, base, opts);
+    const spentInner = spentDeps.syncBranchFn;
+    spentDeps.syncBranchFn = (repo, branch, base, opts) => {
+      thirdAttempts++;
+      return spentInner(repo, branch, base, opts);
     };
-    await syncMilestoneBranches(movedDeps);
-    assertEquals(movedAttempts, 1);
-    assertEquals((await readLedger(streakPath))?.conflictAttempts, 2);
+    const spent = await syncMilestoneBranches(spentDeps);
+    assertEquals(thirdAttempts, 0, "two runs per conflict, and no more");
+    assertEquals(spent.ok && spent.value.skipped, 1);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -1469,16 +1492,16 @@ Deno.test("syncMilestoneBranches - an attempt a kill left open reads as disrupte
   }
 });
 
-Deno.test("syncMilestoneBranches - a killed attempt persists as disrupted and the cooldown still stands (Issue #1778)", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "issue-1778-disrupt-rec-" });
+Deno.test("syncMilestoneBranches - a killed attempt is concluded disrupted and the branch retried at once (Issue #2305)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2305-disrupt-rec-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
-    // Killed mid-merge inside a live cooldown, against the tip that set it.
+    // Killed mid-merge against the tip the last failure saw. The old ledger
+    // held this branch for the rest of its four-hour deferral.
     await saveSyncStreaks(streakPath, {
       [`owner/repo|${LEDGER_BRANCH}`]: {
         count: 1,
         escalated: false,
-        conflictAttempts: 1,
         attemptOpenedAt: new Date(5_000).toISOString(),
         lastAttempt: {
           at: new Date(1_000).toISOString(),
@@ -1486,11 +1509,11 @@ Deno.test("syncMilestoneBranches - a killed attempt persists as disrupted and th
           reason: "conflict unresolved at rung agent",
           defaultSha: LEDGER_SHA,
         },
-        deferUntil: new Date(100_000).toISOString(),
       },
     });
 
     let attempts = 0;
+    const logs: string[] = [];
     const deps = ledgerDeps([], {
       milestones: [{
         title: LEDGER_TITLE,
@@ -1499,6 +1522,7 @@ Deno.test("syncMilestoneBranches - a killed attempt persists as disrupted and th
       }],
       streakPath,
       nowMs: 10_000,
+      log: (m) => logs.push(m),
     });
     const inner = deps.syncBranchFn;
     deps.syncBranchFn = (repo, branch, base, opts) => {
@@ -1507,15 +1531,58 @@ Deno.test("syncMilestoneBranches - a killed attempt persists as disrupted and th
     };
     await syncMilestoneBranches(deps);
 
-    // The open marker is concluded first, then the still-live cooldown holds
-    // the branch back — so the disrupted conclusion is what is on disk.
-    assertEquals(attempts, 0, "the cooldown had not passed");
+    assert(
+      logs.some((l) => l.includes("recorded as disrupted and not charged")),
+      `the open marker was not concluded: ${JSON.stringify(logs)}`,
+    );
+    assertEquals(attempts, 1, "and the branch is handed straight back");
     const entry = await readLedger(streakPath);
-    assertEquals(entry?.lastAttempt?.outcome, "disrupted");
-    assertEquals(entry?.conflictAttempts, 1, "a kill charges nothing");
+    assertEquals(entry?.conflictAttempts, 1, "the kill itself charged nothing");
+    assertEquals(entry?.lastAttempt?.outcome, "failed");
     assertEquals(entry?.attemptOpenedAt, undefined);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - an agent timeout is charged, a deadline kill is not (Issue #2305)", async () => {
+  const charged = await Deno.makeTempDir({ prefix: "issue-2305-timeout-" });
+  const uncharged = await Deno.makeTempDir({ prefix: "issue-2305-killed-" });
+  try {
+    // The agent ran out its own 30-minute ceiling: the rung was climbed and
+    // the conflict beat it, so the attempt is a judged failure.
+    const timeoutPath = milestoneSyncStreakPath(charged);
+    await syncMilestoneBranches(ledgerDeps([], {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "agent-timeout",
+      }],
+      streakPath: timeoutPath,
+      nowMs: 10_000,
+    }));
+    const timedOut = await readLedger(timeoutPath);
+    assertEquals(timedOut?.conflictAttempts, 1, "a timed-out run is charged");
+    assertEquals(timedOut?.lastAttempt?.outcome, "failed");
+
+    // The worker killed the run at the cycle deadline: nothing about the
+    // conflict was decided, so the branch keeps its budget.
+    const killedPath = milestoneSyncStreakPath(uncharged);
+    await syncMilestoneBranches(ledgerDeps([], {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "agent-killed",
+      }],
+      streakPath: killedPath,
+      nowMs: 10_000,
+    }));
+    const killed = await readLedger(killedPath);
+    assertEquals(killed?.conflictAttempts, 0, "a deadline kill is free");
+    assertEquals(killed?.lastAttempt?.outcome, "disrupted");
+  } finally {
+    await Deno.remove(charged, { recursive: true });
+    await Deno.remove(uncharged, { recursive: true });
   }
 });
 
@@ -1612,7 +1679,7 @@ Deno.test("syncMilestoneBranches - too little of the cycle left denies the agent
   }
 });
 
-Deno.test("syncMilestoneBranches - the third concluded failure hands off to the roll-back exactly once (Issue #1778)", async () => {
+Deno.test("syncMilestoneBranches - the last concluded failure hands off to the roll-back exactly once (Issue #1778)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "issue-1778-exhausted-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
@@ -1698,6 +1765,10 @@ Deno.test("grantAgentRun - an unbounded pass allows the rung and shrinks nothing
 Deno.test("grantAgentRun - the drain's floor decides whether a rung starts (Issue #1778)", () => {
   const need = DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT +
     DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS;
+  // Twenty-four minutes: twenty for the agent, four for everything the
+  // resolution does around it. Cutting the budget to two runs (Issue #2305)
+  // did not move it.
+  assertEquals(need, 24 * 60 * 1000);
   assertEquals(
     grantAgentRun({ nowMs: 0, deadlineEpochMs: need }).agentAllowed,
     true,
@@ -1742,24 +1813,28 @@ Deno.test("grantAgentRun - the grant never exceeds the budget that is left (Issu
   );
 });
 
-Deno.test("conflictAttemptDue - an unreadable tip is never read as a moved one (Issue #1778)", () => {
-  const entry: SyncStreakEntry = {
+Deno.test("conflictAttemptDue - only an open attempt holds the branch back (Issue #2305)", () => {
+  const concluded: SyncStreakEntry = {
     count: 1,
     escalated: false,
+    conflictAttempts: 1,
     lastAttempt: {
       at: new Date(1_000).toISOString(),
       outcome: "failed",
       reason: "conflict unresolved at rung agent",
       defaultSha: LEDGER_SHA,
     },
-    deferUntil: new Date(100_000).toISOString(),
   };
-  // A tip git could not read must not hand the branch straight back.
-  assertEquals(conflictAttemptDue(entry, undefined, 10_000), false);
-  assertEquals(conflictAttemptDue(entry, LEDGER_SHA, 10_000), false);
-  assertEquals(conflictAttemptDue(entry, MOVED_SHA, 10_000), true);
-  assertEquals(conflictAttemptDue(entry, LEDGER_SHA, 200_000), true);
-  assertEquals(conflictAttemptDue(undefined, LEDGER_SHA, 0), true);
+  // A failure a second old is due again: there is no wait left to serve.
+  assertEquals(conflictAttemptDue(concluded), true);
+  assertEquals(
+    conflictAttemptDue({
+      ...concluded,
+      attemptOpenedAt: new Date(2_000).toISOString(),
+    }),
+    false,
+  );
+  assertEquals(conflictAttemptDue(undefined), true);
 });
 
 Deno.test("failedConflictRung - names the rung the escalation reports (Issue #1778)", () => {
@@ -1834,6 +1909,41 @@ Deno.test("judgeSyncFailure - only an unresolved conflict is charged (Issue #177
   );
   assertEquals(plain.outcome, "not-charged");
   assertStringIncludes(plain.reason, "unrelated histories");
+});
+
+Deno.test("judgeSyncFailure - an agent timeout is charged, a worker kill is disrupted (Issue #2305)", () => {
+  const escalation = (reason: string) =>
+    new MilestoneConflictEscalation(
+      "undecided",
+      [{
+        path: "a.ts",
+        reason,
+        oursExports: [],
+        theirsExports: [],
+        oursTests: [],
+        theirsTests: [],
+        onlyOursTests: [],
+        onlyTheirsTests: [],
+      }],
+      [],
+      LEDGER_SHA,
+    );
+
+  // Its own ceiling: the rung was climbed and the conflict beat it.
+  const timedOut = judgeSyncFailure(
+    escalation("agent: agent timed out after 1800s"),
+    true,
+  );
+  assertEquals(timedOut.outcome, "failed");
+  assertEquals(timedOut.rung, "agent");
+
+  // The handler deadline: nothing was judged, so nothing is charged.
+  const killed = judgeSyncFailure(
+    escalation(`agent: ${AGENT_RUN_ENDED_BY_WORKER} (Issue #1693)`),
+    true,
+  );
+  assertEquals(killed.outcome, "disrupted");
+  assertStringIncludes(killed.reason, "ended by the worker");
 });
 
 Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged and still reports both halves (Issue #1778)", async () => {

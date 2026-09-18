@@ -14,10 +14,10 @@ import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
-  conflictCooldownMsRemaining,
+  CONFLICT_SKIP_REASON_KINDS,
   conflictPrKey,
+  type ConflictSkipReasonKind,
   countDisruptedAttempts,
-  DEFAULT_CONFLICT_COOLDOWN_HOURS,
   DEFAULT_MAX_CONFLICT_ATTEMPTS,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
   findConflictingPr,
@@ -287,7 +287,6 @@ function makeOptions(
     logger: makeSilentLogger(),
     isRepoAllowed: () => true,
     ghCommandFn: fake.ghCommandFn,
-    nowMs: () => Date.parse("2026-08-20T12:00:00Z"),
     ...overrides,
   };
 }
@@ -426,71 +425,53 @@ Deno.test("parseConflictAttempts - ignores malformed comment entries", () => {
 
 Deno.test("isConflictAttemptDue - no history is always due", () => {
   assertEquals(
-    isConflictAttemptDue(
-      { count: 0, disruptedCount: 0, pendingAttempt: false },
-      Date.now(),
-    ),
+    isConflictAttemptDue({
+      count: 0,
+      disruptedCount: 0,
+      pendingAttempt: false,
+    }),
     true,
   );
 });
 
-Deno.test("isConflictAttemptDue - honours the cooldown window", () => {
-  const now = Date.parse("2026-08-20T12:00:00Z");
-  const oneHourAgo = new Date(now - 3600_000).toISOString();
-  const sixHoursAgo = new Date(now - 6 * 3600_000).toISOString();
-  const history = (lastAttemptAt: string) => ({
-    count: 1,
-    disruptedCount: 0,
-    pendingAttempt: false,
-    lastAttemptAt,
-  });
-
-  assertEquals(isConflictAttemptDue(history(oneHourAgo), now), false);
-  assertEquals(isConflictAttemptDue(history(sixHoursAgo), now), true);
-  assertEquals(isConflictAttemptDue(history(oneHourAgo), now, 0.5), true);
-});
-
-Deno.test("isConflictAttemptDue - an unparseable timestamp holds the PR back", () => {
+Deno.test("isConflictAttemptDue - a concluded attempt is due again at once (Issue #2305)", () => {
+  // The cooldown is gone: a failure concluded one second ago is due on the
+  // very next pass, which is what this asserts against the old four-hour wait.
+  const justNow = new Date().toISOString();
   assertEquals(
     isConflictAttemptDue({
       count: 1,
       disruptedCount: 0,
       pendingAttempt: false,
-      lastAttemptAt: "not-a-date",
-    }, Date.now()),
+      lastAttemptAt: justNow,
+    }),
+    true,
+  );
+});
+
+Deno.test("isConflictAttemptDue - an attempt still open is not due (Issue #2305)", () => {
+  assertEquals(
+    isConflictAttemptDue({
+      count: 0,
+      disruptedCount: 0,
+      pendingAttempt: true,
+      lastAttemptAt: new Date().toISOString(),
+    }),
     false,
   );
 });
 
-Deno.test("conflictCooldownMsRemaining - reports what the cooldown has left", () => {
-  const now = Date.parse("2026-08-20T12:00:00Z");
-  const history = (lastAttemptAt?: string) => ({
-    count: 1,
-    disruptedCount: 0,
-    pendingAttempt: false,
-    ...(lastAttemptAt !== undefined ? { lastAttemptAt } : {}),
-  });
+Deno.test("DEFAULT_MAX_CONFLICT_ATTEMPTS - two runs per conflict (Issue #2305)", () => {
+  assertEquals(DEFAULT_MAX_CONFLICT_ATTEMPTS, 2);
+});
 
-  // No history at all: due now.
-  assertEquals(conflictCooldownMsRemaining(history(), now), 0);
-  // One hour into a four-hour cooldown.
+Deno.test("CONFLICT_SKIP_REASON_KINDS - no cooldown kind survives (Issue #2305)", () => {
   assertEquals(
-    conflictCooldownMsRemaining(
-      history(new Date(now - 3600_000).toISOString()),
-      now,
+    CONFLICT_SKIP_REASON_KINDS.includes(
+      "cooldown" as ConflictSkipReasonKind,
     ),
-    3 * 3600_000,
+    false,
   );
-  // Elapsed cooldowns clamp at zero rather than going negative.
-  assertEquals(
-    conflictCooldownMsRemaining(
-      history(new Date(now - 9 * 3600_000).toISOString()),
-      now,
-    ),
-    0,
-  );
-  // Unparseable: unknown, never a guessed number (Issue #1109).
-  assertEquals(conflictCooldownMsRemaining(history("not-a-date"), now), null);
 });
 
 Deno.test("hasExhaustedConflictAttempts - binds at the configured budget", () => {
@@ -581,14 +562,18 @@ Deno.test("findConflictingPr - skips a PR a human already owns, but still labels
   }]);
 });
 
-Deno.test("findConflictingPr - holds a PR back inside its cooldown", async () => {
+Deno.test("findConflictingPr - a minute-old failure is due on the very next pass (Issue #2305)", async () => {
+  // The cooldown is gone: one concluded failure a minute ago left one attempt
+  // in the budget, and the PR is handed straight back rather than held for
+  // four hours.
   const now = Date.parse("2026-08-20T12:00:00Z");
+  const recent = new Date(now - 60_000).toISOString();
   const state = makeState({
     comments: {
-      48: [{
-        body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-        created_at: new Date(now - 3600_000).toISOString(),
-      }],
+      48: [
+        { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`, created_at: recent },
+        { body: `${CONFLICT_FAILED_MARKER} n="1" -->`, created_at: recent },
+      ],
     },
   });
   const fake = makeFakeGh(state);
@@ -596,16 +581,15 @@ Deno.test("findConflictingPr - holds a PR back inside its cooldown", async () =>
   const result = await findConflictingPr(makeOptions(fake));
 
   assert(result.ok);
-  assertEquals(result.value.selected, null);
+  assertEquals(result.value.selected?.prNumber, 48);
+  assertEquals(result.value.selected?.attemptCount, 1);
 });
 
-Deno.test("findConflictingPr - returns a PR whose cooldown has elapsed, carrying its attempt count", async () => {
+Deno.test("findConflictingPr - returns a PR with budget left, carrying its attempt count", async () => {
   const now = Date.parse("2026-08-20T12:00:00Z");
   // Issue #395: the attempt only counts once it concluded, so the fixture
   // carries the failure conclusion the processor now posts.
-  const elapsed = new Date(
-    now - (DEFAULT_CONFLICT_COOLDOWN_HOURS + 1) * 3600_000,
-  ).toISOString();
+  const elapsed = new Date(now - 5 * 3600_000).toISOString();
   const state = makeState({
     comments: {
       48: [
@@ -643,9 +627,9 @@ Deno.test("findConflictingPr - refuses a PR that has spent its attempt budget", 
   assertEquals(fake.commentsPosted.length, 0);
 });
 
-Deno.test("findConflictingPr - two concluded failures still buy a third attempt (Issue #1766)", async () => {
-  // The budget went from two to three, so the PR the old ladder had already
-  // given up on is handed back for one more judged attempt.
+Deno.test("findConflictingPr - one concluded failure still buys the second attempt (Issue #2305)", async () => {
+  // The budget is two, so a PR one judged failure in is handed back for the
+  // retry — and only that one.
   const now = Date.parse("2026-08-20T12:00:00Z");
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
@@ -1020,25 +1004,24 @@ Deno.test("findConflictingPr - a PR a human owns records needs-human", async () 
   assertEquals(recordFor(log, 48).context?.label, "needs-human");
 });
 
-Deno.test("findConflictingPr - the cooldown record carries the milliseconds still to run", async () => {
+Deno.test("findConflictingPr - an attempt open a minute ago is re-attempted, not paced (Issue #2305)", async () => {
+  // The old rule recorded `cooldown` here and waited four hours. The marker is
+  // read as one disrupted attempt instead, and the PR is attempted at once.
   const now = Date.parse("2026-08-20T12:00:00Z");
   const fake = makeFakeGh(makeState({
     comments: {
       48: [{
         body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-        created_at: new Date(now - 3600_000).toISOString(),
+        created_at: new Date(now - 60_000).toISOString(),
       }],
     },
   }));
 
-  const { log } = await scanWith(fake);
+  const { result, log } = await scanWith(fake);
 
-  assertEquals(reasonFor(log, 48), "cooldown");
-  // One hour into a four-hour cooldown: three hours left, to the millisecond.
-  assertEquals(
-    recordFor(log, 48).context?.msUntilDue,
-    (DEFAULT_CONFLICT_COOLDOWN_HOURS - 1) * 3600_000,
-  );
+  assertEquals(result.value.selected?.prNumber, 48);
+  assertEquals(result.value.selected?.disruptedCount, 1);
+  assertEquals(reasonFor(log, 48), "attempted");
 });
 
 Deno.test("findConflictingPr - the budget-spent record carries the attempts and the cap", async () => {
@@ -1097,10 +1080,13 @@ Deno.test("findConflictingPr - every labelled PR gets a record, plus one summary
     labels: { 10: ["needs-human"], 11: [], 12: ["needs-human"] },
     comments: {
       10: [],
-      11: [{
-        body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-        created_at: "2026-08-20T11:00:00Z",
-      }],
+      // Issue #2305: a spent budget, not a cooldown — the wait is gone, so
+      // the only thing that holds a PR with an unconcluded marker back is
+      // the budget itself.
+      11: concludedFailures(
+        DEFAULT_MAX_CONFLICT_ATTEMPTS,
+        "2026-08-20T11:00:00Z",
+      ),
       12: [],
     },
   }));
@@ -1110,13 +1096,16 @@ Deno.test("findConflictingPr - every labelled PR gets a record, plus one summary
   assertEquals(result.value.selected, null);
   assertEquals(result.value.decisions.length, 3);
   assertEquals(reasonFor(log, 10), "needs-human");
-  assertEquals(reasonFor(log, 11), "cooldown");
+  assertEquals(reasonFor(log, 11), "budget-spent");
   assertEquals(reasonFor(log, 12), "needs-human");
 
   const summary = summaryOf(log);
   assertEquals(summary.context?.labelled, 3);
   assertEquals(summary.context?.attempted, 0);
-  assertEquals(summary.context?.byReason, { "needs-human": 2, cooldown: 1 });
+  assertEquals(summary.context?.byReason, {
+    "needs-human": 2,
+    "budget-spent": 1,
+  });
   assertEquals(summary.context?.reposScanned, 1);
 });
 

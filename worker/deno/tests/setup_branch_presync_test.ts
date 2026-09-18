@@ -19,6 +19,7 @@ import { stopHeartbeat } from "../lib/heartbeat.ts";
 import { MILESTONE_BEHIND_DEFER_REASON } from "../lib/milestone_presync.ts";
 import {
   loadSyncStreaks,
+  MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   milestoneSyncStreakPath,
   saveSyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
@@ -231,13 +232,17 @@ Deno.test("#1780 - a failed sync defers the run, charges the ledger once and cut
       [],
     );
 
-    // The branch's ledger carries exactly one charged attempt, and a deferral.
+    // The branch's ledger carries exactly one charged attempt — and no
+    // deferral, since Issue #2305 removed the wait between the two.
     const entry = (await loadSyncStreaks(milestoneSyncStreakPath(workDir)))[
       LEDGER_KEY
     ];
     assert(entry, "the failure is recorded against the branch");
     assertEquals(entry.conflictAttempts, 1);
-    assert(entry.deferUntil, "a charged failure paces the branch");
+    assertEquals(
+      (entry as unknown as Record<string, unknown>).deferUntil,
+      undefined,
+    );
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {
@@ -245,16 +250,14 @@ Deno.test("#1780 - a failed sync defers the run, charges the ledger once and cut
   }
 });
 
-Deno.test("#1780 - a paced milestone branch defers without attempting a merge", async () => {
-  const workDir = await Deno.makeTempDir({ prefix: "issue1780-setup-" });
+Deno.test("#2305 - a milestone branch whose budget is spent defers without attempting a merge", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue2305-setup-" });
   try {
-    const deferUntil = new Date(Date.now() + 3600_000).toISOString();
     await saveSyncStreaks(milestoneSyncStreakPath(workDir), {
       [LEDGER_KEY]: {
-        count: 1,
+        count: 2,
         escalated: false,
-        conflictAttempts: 1,
-        deferUntil,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
         lastAttempt: {
           at: new Date(Date.now() - 60_000).toISOString(),
           outcome: "failed",
@@ -276,14 +279,16 @@ Deno.test("#1780 - a paced milestone branch defers without attempting a merge", 
 
     assert(result.status === "early_exit");
     assertEquals(result.reason, MILESTONE_BEHIND_DEFER_REASON);
-    assertEquals(syncCalls, [], "a paced branch is not merged into again");
+    assertEquals(syncCalls, [], "a spent branch is not merged into again");
     assertEquals(freshBranches, []);
-    // The deferral is untouched — no second charge for waiting.
+    // No second charge for being asked again.
     const entry = (await loadSyncStreaks(milestoneSyncStreakPath(workDir)))[
       LEDGER_KEY
     ];
-    assertEquals(entry?.conflictAttempts, 1);
-    assertEquals(entry?.deferUntil, deferUntil);
+    assertEquals(
+      entry?.conflictAttempts,
+      MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    );
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {

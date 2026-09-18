@@ -62,6 +62,7 @@ import {
   DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
   DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
 } from "./merge_conflict_drain.ts";
+import { AGENT_RUN_ENDED_BY_WORKER } from "./milestone_conflict_ladder.ts";
 import { isRuleViolationPush } from "./milestone_sync_pr.ts";
 import {
   type MilestoneEscalationTarget,
@@ -454,26 +455,18 @@ export function grantAgentRun(opts: {
  * Whether another conflict-resolution attempt is due for this branch
  * (Issue #1778).
  *
- * The ledger's own rule ({@link isConflictAttemptDue}) with one guard around
- * it: a tip git could not read is never allowed to look like a *moved* tip.
- * Reading an unknown tip as "the conflict is a different one now" would hand
- * the branch straight back every cycle and spend the whole budget inside one
- * cooldown, so with no tip to compare only the deferral decides.
+ * The ledger's own rule ({@link isConflictAttemptDue}): due unless an attempt
+ * is open on this host. A branch with no ledger entry has nothing open, so it
+ * is due. There is no deferral to wait out since Issue #2305 — a charged
+ * failure spends one of the branch's two attempts and the next is due at
+ * once.
  *
  * @param entry - The branch's ledger entry, or undefined when it has none
- * @param defaultSha - The default branch's tip now, or undefined if unknown
- * @param nowMs - Current time in epoch milliseconds
  */
 export function conflictAttemptDue(
   entry: SyncStreakEntry | undefined,
-  defaultSha: string | undefined,
-  nowMs: number,
 ): boolean {
-  if (!entry) return true;
-  // Falling back to the branch's own last tip says "it has not moved", which
-  // is the conservative reading of a tip nobody could read.
-  const tip = defaultSha ?? entry.lastAttempt?.defaultSha ?? "";
-  return isConflictAttemptDue(entry, tip, nowMs);
+  return entry === undefined || isConflictAttemptDue(entry);
 }
 
 /**
@@ -511,6 +504,15 @@ export function failedConflictRung(
  * agent this cycle: charging it would spend an attempt on a rung it never
  * climbed.
  *
+ * Two endings of an agent run are told apart (Issue #2305):
+ *
+ * - The agent ran out **its own** ceiling. That is a judged attempt — the
+ *   rung was climbed and the conflict beat it — so it is charged `failed`
+ *   like any other agent failure.
+ * - The **worker** ended the run at the cycle deadline
+ *   ({@link AGENT_RUN_ENDED_BY_WORKER}). Nothing about the conflict was
+ *   decided, so it concludes `disrupted` and the branch keeps its budget.
+ *
  * @param error - The failure the sync returned
  * @param agentAllowed - Whether this attempt was offered the agent rung
  */
@@ -525,7 +527,15 @@ export function judgeSyncFailure(
         reason: "the merge gate refused the resolution",
       };
     }
-    const rung = failedConflictRung(error.analyses.map((a) => a.reason));
+    const reasons = error.analyses.map((a) => a.reason);
+    if (reasons.some((reason) => reason.includes(AGENT_RUN_ENDED_BY_WORKER))) {
+      return {
+        outcome: "disrupted",
+        reason: "the run was ended by the worker before the agent finished",
+        rung: "agent",
+      };
+    }
+    const rung = failedConflictRung(reasons);
     return agentAllowed
       ? {
         outcome: "failed",
@@ -1266,10 +1276,11 @@ export async function syncMilestoneBranches(
             continue;
           }
 
-          if (!conflictAttemptDue(entry, defaultSha, now())) {
+          if (!conflictAttemptDue(entry)) {
             log(
               `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
-                `skipped: conflict attempt not due until ${entry.deferUntil}`,
+                `skipped: a conflict attempt opened at ` +
+                `${entry.attemptOpenedAt} is still open on this host`,
             );
             skipped++;
             continue;

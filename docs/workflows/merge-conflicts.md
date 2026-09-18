@@ -21,8 +21,8 @@ first, and the AI is only asked about what those rules could not decide.
 
 **The ladder has four rungs and only the last one is a person.** An
 **intent-aware** attempt, which reads the originating issues behind *both*
-sides before calling anything a contradiction; a second one at least four
-hours later; then **abandon-and-restart** — the conflicting PR is closed, never
+sides before calling anything a contradiction; a second one on the very next
+pass, with no wait between them (Issue #2305); then **abandon-and-restart** — the conflicting PR is closed, never
 force-pushed, and its originating issue re-queued so the fleet redoes the work
 off the current base; and only when that is declined or fails does the worker
 escalate with `needs-human` and a conflict summary. The re-queued issue keeps
@@ -52,13 +52,11 @@ flowchart TD
     Conflicting -->|Yes| Label["Apply merge-conflict label"]
     Label --> Spent{"Concluded budget spent?"}
     Spent -->|Yes — and no needs-human| Abandon
-    Spent -->|No| Budget{"Attempt due?"}
-    Budget -->|No — inside cooldown| Sleep
-    Budget -->|Yes| Disrupted{"3+ attempts disrupted<br/>with no conclusion?"}
+    Spent -->|No| Disrupted{"3+ attempts disrupted<br/>with no conclusion?"}
     Disrupted -->|Yes| Human
     Disrupted -->|No| Lock{"PR lock acquired?"}
     Lock -->|No — another host holds it| Sleep
-    Lock -->|Yes| Record["Comment: attempt N of 3<br/>(names any disruption)"]
+    Lock -->|Yes| Record["Comment: attempt N of 2<br/>(names any disruption)"]
     Record --> Merge["git merge origin/base"]
     Merge --> Clean{"Clean merge?"}
     Clean -->|Yes| Push["Commit and push"]
@@ -316,14 +314,20 @@ settle still reaches no agent and now consults no issue either.
   escalated to a human as its own outcome — a re-initialised or rewritten
   branch, not a conflict the agent failed to resolve — and spends **no**
   attempt.
-- **One attempt per PR per 4 hours**, at most **3 concluded attempts**
-  (Issue #1766 — the first attempt and two retries against a base that has
-  moved on since; milestone branches spend the same budget).
+- **At most 2 concluded attempts, and no wait between them** (Issue #2305 —
+  the first attempt and one retry against whatever the base has become since;
+  milestone branches spend the same budget). A PR with one concluded failure
+  is due again on the very next pass: a conflict a judged attempt could not
+  settle is no easier four hours later, and the wait it replaced held a
+  mergeable PR out of the queue for half a day. Two hosts are kept off one PR
+  by the cross-host PR lock, not by a cooldown.
 - The attempt is recorded as a marker comment on the PR **before** the merge
   starts. That marker *opens* the attempt; it does not spend it.
 - Every attempt posts a **conclusion**: a resolved marker when the merge lands,
   or a failure comment naming the conflicted files and what went wrong. Only a
-  conclusion spends one of the three attempts.
+  conclusion spends one of the two attempts. An agent that runs out **its own**
+  timeout has been judged and is charged; a run the **worker** kills at the
+  cycle deadline is withdrawn and charged nothing (Issue #2305).
 - History lives on the PR, not in host-local state, so the bounds hold across
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
@@ -573,8 +577,11 @@ must not spend the budget: PRs like GRQ#4408 and GRQ#4409 sat at "attempt 1 of
 2" with no conclusion and were then held back for a budget they had never
 actually used.
 
-- A disrupted attempt is detected on the next scan (past the cooldown, an open
-  attempt is disrupted rather than in flight) and **re-attempted**.
+- A disrupted attempt is detected on the next scan — an open marker is a
+  disrupted attempt, not one in flight, because the resolution deletes its own
+  marker on every run it cuts short and the cross-host lock is what keeps a
+  second host off a live one — and it is **re-attempted** at once (Issue
+  #2305).
 - The next attempt comment says so on the PR — how many attempts were
   disrupted, and that a disruption does not spend the budget.
 - Disruption has its own bound: **3 disrupted attempts** on one PR and the scan
@@ -606,7 +613,7 @@ attempt record exists*. It keys on the **age of the label**, read from the PR's
 flowchart TD
     A[PR carries merge-conflict] --> S{"Still CONFLICTING<br/>on the live state?"}
     S -->|"No — stale label"| Q[Nothing to say]
-    S -->|Yes| B{"Label older than 8 h?<br/>(2× the cooldown)"}
+    S -->|Yes| B{"Label older than 8 h?"}
     B -->|No| Q
     B -->|Yes| C{"needs-human, closed,<br/>or already escalated?"}
     C -->|Yes| Q
@@ -733,7 +740,7 @@ that gap, and reading the queue means reading both:
 
 - **The skip reasons** ([below](#-every-decision-leaves-a-reason-behind)). Every
   labelled PR the pass decides on emits one structured record naming exactly
-  why it was left where it is — `cooldown`, `repo-leased`, `budget-spent`,
+  why it was left where it is — `repo-leased`, `budget-spent`,
   `abandoned-restarted` and the rest — plus one summary per pass (Issue #1109).
   Silence is now itself a finding: every pass closes with a summary line, so no
   summary means no pass ran, which is a different problem from a pass that ran
@@ -752,7 +759,7 @@ that gap, and reading the queue means reading both:
   its escalation says the ladder owns the PR rather than offering "or close it",
   and a live escalation is withdrawn when the PR enters the lane (Issue #1213).
   NEAT-AI-Ockham#119 was closed by hand thirteen minutes after that comment
-  appeared, inside the cooldown and before rung 1 ran; see
+  appeared, before rung 1 ran; see
   [Blocking-PR stall watchdog](../CONFIGURATION.md#-blocking-pr-stall-watchdog).
 
 ## 🧾 Every decision leaves a reason behind
@@ -767,9 +774,9 @@ one summary.
 A record is one line, greppable by prefix:
 
 ```text
-merge_conflict_decision=cooldown repo=org/repo pr=48
-    repo=org/repo prNumber=48 decision=skipped reason=cooldown msUntilDue=10800000
-merge_conflict_pass=scan labelled=3 attempted=0 considered=3 cooldown=1 needs-human=2
+merge_conflict_decision=budget-spent repo=org/repo pr=48
+    repo=org/repo prNumber=48 decision=skipped reason=budget-spent attemptsSpent=2 maxAttempts=2
+merge_conflict_pass=scan labelled=3 attempted=0 considered=3 budget-spent=1 needs-human=2
 ```
 
 The reasons are a **closed taxonomy** — every exit maps to exactly one, and
@@ -785,7 +792,6 @@ each carries the operands that make the decision checkable afterwards:
 | `needs-human` | `label` | A human already owns the conflict. |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed — the PR is now a human's. |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. |
-| `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
 | `pr-not-open` | `state` | The live `gh pr view` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
@@ -840,9 +846,9 @@ Three bounds keep the drain from becoming a monopoly:
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
-The per-PR budgets are unchanged: the 4-hour cooldown, the three concluded
-attempts, and the abandon rung with `needs-human` behind it are the scan's, and
-the drain only decides how many of the PRs already due get taken now.
+The per-PR budget is unchanged by the drain: the two concluded attempts and
+the abandon rung with `needs-human` behind it are the scan's, and the drain
+only decides how many of the PRs already due get taken now.
 
 ### ⏱️ A resolution is never started on time the cycle does not have
 
@@ -853,8 +859,8 @@ because that was all the cycle had left, a 3600-second agent timeout granted out
 of it, and at 11m13s and 83 tool calls the watchdog SIGTERMed an agent that was
 still editing. The pass then read the half-merged tree as *the agent's* verdict
 — `attempt 1 of 2`, "the agent left 6 path(s) unmerged" — and spent one of the
-PR's attempts on a budget it never had. (The budget was two at the time; it is
-three now, Issue #1766.)
+PR's attempts on a budget it never had. (The budget went to three for Issue
+#1766 and back to two for Issue #2305.)
 Two halves now hold, both in `worker/deno/lib/merge_conflict_drain.ts`:
 
 - **The floor is sized for an AI-fallback resolution**, not for a token
@@ -929,7 +935,7 @@ flowchart TD
     C --> D[findConflictingPr — cursor leads,<br/>every gate still runs]
     D -->|attempted| E[Streak cleared]
     D -->|lease / deadline / cap| F[Streak + 1]
-    F --> G{3 passes and<br/>over one cooldown window?}
+    F --> G{3 passes and<br/>over one 4-hour window?}
     G -->|no| H[Write the cursor back]
     G -->|yes| I{Notice marker<br/>already on the PR?}
     I -->|yes — another host posted it| H
@@ -941,16 +947,16 @@ flowchart TD
   offset and for the same reason: runs get as few as one lane cycle each, so a
   run-local counter would never survive to have an effect. It is an ordering
   hint only — a preferred PR still has to pass every gate, so the cursor can
-  never re-open a cooldown or a spent budget.
+  never re-open a spent budget.
 - **The notice** is one comment on the PR, carrying the
   `<!-- vibe-merge-conflict-deferred` marker, after three consecutive deferrals
-  spanning at least one cooldown window. Deduplicated by reading the PR's own
+  spanning at least four hours. Deduplicated by reading the PR's own
   thread — and checking the **author**, because a body is text anybody may post
   — rather than host-local state, so a restart or a second host cannot post it
   twice. Any attempt or conclusion ends the streak the marker belongs to.
 
 **A deferral is not an attempt.** Nothing was started, so it spends neither the
-three concluded attempts nor the three disrupted ones — reusing the disruption
+two concluded attempts nor the three disrupted ones — reusing the disruption
 counter would escalate a PR to a human for a bound it never hit, the opposite
 of what this is for. The `scope=drain` summary carries `maxDeferralStreak`,
 `leftBehind` and `deferralNotices`, so "deferred once, fine" and "deferred nine

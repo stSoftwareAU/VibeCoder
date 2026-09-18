@@ -1652,6 +1652,38 @@ Deno.test("processMergeConflict - a watchdog SIGTERM withdraws the attempt inste
   );
 });
 
+Deno.test("processMergeConflict - an agent that runs out its own timeout spends its attempt (Issue #2305)", async () => {
+  // The other ending of an agent run: the agent's own 30-minute ceiling, not
+  // the handler deadline. The rung was climbed and the conflict beat it, so
+  // this is a judged failure — a failed marker on the PR, and the attempt
+  // marker left standing rather than withdrawn.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({}),
+    undefined,
+    {
+      claudeResult: { timedOut: true, timeoutReason: "hard-timeout" },
+      postedCommentId: 9003,
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, undefined);
+  assertEquals(
+    result.value.runEnded,
+    undefined,
+    "an agent timeout does not end the drain — only a worker kill does",
+  );
+  assertEquals(captured.commentsDeleted, [], "the marker is not withdrawn");
+
+  const failed = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER)
+  );
+  assertEquals(failed.length, 1);
+  assertStringIncludes(failed[0] ?? "", "timed out");
+  assertEquals(captured.commitAndPushCalls, 0);
+});
+
 Deno.test("processMergeConflict - an agent that finishes still spends its attempt", async () => {
   // The other side of the same guard: only a terminated run is withdrawn. An
   // agent that ran to a conclusion and left the tree unmerged is judged.

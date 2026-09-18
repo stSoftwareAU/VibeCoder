@@ -55,7 +55,6 @@ import {
   conflictPrKey,
   conflictReasonOperands,
   type ConflictSkipReason,
-  DEFAULT_CONFLICT_COOLDOWN_HOURS,
   MERGE_CONFLICT_LABEL,
 } from "./pr_merge_conflict_scan.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
@@ -68,12 +67,12 @@ import type { TimelineCache } from "./timeline_cache.ts";
  * Hours a PR may carry `merge-conflict` with nothing concluding before the
  * queue is called stalled.
  *
- * Twice the post-attempt cooldown: one whole cooldown window can pass with no
- * attempt for entirely ordinary reasons (a busy lane, a held lease), so the
+ * Eight hours is this watchdog's own window (Issue #2305 removed the
+ * post-attempt cooldown it used to be derived from). Hours can pass with no
+ * attempt for entirely ordinary reasons — a busy lane, a held lease — so the
  * bound is the window a healthy queue cannot plausibly exceed.
  */
-export const DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS = 2 *
-  DEFAULT_CONFLICT_COOLDOWN_HOURS;
+export const DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS = 8;
 
 /**
  * Noun phrase for the escalation issue's title.
