@@ -270,6 +270,7 @@
         "worker/deno/lib/merge_fallback_issue.ts",
         "worker/deno/lib/merge_landing.ts",
         "worker/deno/lib/merged_sweep_watermark.ts",
+        "worker/deno/lib/milestone_behind_count.ts",
         "worker/deno/lib/milestone_branch_self_heal.ts",
         "worker/deno/lib/milestone_branch_sync.ts",
         "worker/deno/lib/milestone_children_gate.ts",

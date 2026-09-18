@@ -1775,6 +1775,69 @@ Deno.test("syncMilestoneBranches - a repository's branches are synced longest be
   }
 });
 
+Deno.test("syncMilestoneBranches - a measurement that fails or throws still syncs both branches (Issue #2309)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2309-unmeasured-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const order: string[] = [];
+    const lines: string[] = [];
+    const deps = ledgerDeps([], {
+      milestones: [
+        // Both measurable on paper, so the harness wires a measurement in;
+        // the override below is what actually answers.
+        {
+          title: LEDGER_TITLE,
+          branch: LEDGER_BRANCH,
+          failure: "success",
+          behindBy: 1,
+        },
+        {
+          title: SECOND_TITLE,
+          branch: SECOND_BRANCH,
+          failure: "success",
+          behindBy: 5,
+        },
+      ],
+      streakPath,
+      nowMs: 10_000,
+      order,
+      log: (message) => lines.push(message),
+    });
+    // One branch's count comes back as a failed Result, the other's throws —
+    // the two ways a production measurement can refuse to answer.
+    deps.behindCountFn = (_repo, milestoneBranch) => {
+      if (milestoneBranch === LEDGER_BRANCH) {
+        return Promise.resolve({
+          ok: false as const,
+          error: new Error("no remote-tracking ref"),
+        });
+      }
+      throw new Error("unsafe ref refused");
+    };
+
+    await syncMilestoneBranches(deps);
+
+    // Ordering must never be the reason a branch is not synced.
+    assertEquals(order.length, 2);
+    assertEquals(order.includes(LEDGER_BRANCH), true);
+    assertEquals(order.includes(SECOND_BRANCH), true);
+    const warnings = lines.filter((line) =>
+      line.startsWith("WARNING: Could not measure how far")
+    );
+    assertEquals(warnings.length, 2);
+    assertEquals(
+      warnings.some((line) => line.includes("no remote-tracking ref")),
+      true,
+    );
+    assertEquals(
+      warnings.some((line) => line.includes("unsafe ref refused")),
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("orderMilestonesByBehind - sorts by behind count and keeps the listing order otherwise (Issue #2309)", () => {
   const milestone = (branch: string) => ({
     milestoneTitle: branch,

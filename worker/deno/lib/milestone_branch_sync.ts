@@ -483,8 +483,9 @@ export function orderMilestonesByBehind(
  * a repository with one milestone is handed straight back unmeasured, as is
  * a caller that injected no measurement.
  *
- * A count that cannot be read is said out loud and the branch keeps its
- * place; ordering must never be the reason a branch is not synced.
+ * A count that cannot be read is said out loud and the branch sorts as level,
+ * so it is still visited — ordering must never be the reason a branch is not
+ * synced.
  */
 async function orderRepoMilestones(
   repo: string,
@@ -502,7 +503,8 @@ async function orderRepoMilestones(
       log(
         `WARNING: Could not measure how far '${milestone.milestoneBranch}' ` +
           `in ${repo} is behind '${milestone.defaultBranch}': ${reason} — it ` +
-          `keeps its place in this cycle's order (Issue #2309)`,
+          `sorts as level in this cycle's order and is still synced ` +
+          `(Issue #2309)`,
       );
     try {
       const count = await behindCountFn(

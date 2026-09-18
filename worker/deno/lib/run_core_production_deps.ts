@@ -177,7 +177,6 @@ import {
   assertSafeGitRef,
   buildCheckoutArgs,
   buildFetchArgs,
-  buildFetchTrackingRefArgs,
   buildPullArgs,
 } from "./git_ref_args.ts";
 import { getWorkerUniqueId } from "./worker_identity.ts";
@@ -5348,39 +5347,19 @@ async function syncMilestoneBranchesFn(
       );
     },
     localCloneExistsFn,
-    // Issue #2309: longest-behind first within each repository. One fetch of
-    // the branch's own ref (the pass is about to need it anyway) and one
-    // `git rev-list --count` against the default tip the repository pass
-    // already made current — the same measurement `milestone_presync.ts`
-    // makes. A count that cannot be read is returned as the failure git gave,
-    // and the branch keeps its place.
+    // Issue #2309: longest-behind first within each repository. The
+    // measurement itself lives in `milestone_behind_count.ts`, where both its
+    // failure paths are reachable from a test; a count that cannot be read is
+    // returned as the failure git gave, never as a zero.
     behindCountFn: async (repo, milestoneBranch, defaultBranch) => {
-      const { countCommitsAhead } = await import("./git_issue_branches.ts");
-      const cwd = `${workDir}/${repo.split("/")[1]}`;
-      // Into the remote-tracking ref explicitly (Issue #211): a narrowed
-      // clone never creates `origin/<milestone>` from a bare branch fetch,
-      // and the count below reads exactly that ref.
-      const fetched = await runGitCommand(
-        buildFetchTrackingRefArgs("origin", milestoneBranch),
-        { cwd },
+      const { measureMilestoneBehindCount } = await import(
+        "./milestone_behind_count.ts"
       );
-      if (!fetched.ok) return { ok: false, error: fetched.error };
-      if (fetched.value.code !== 0) {
-        return {
-          ok: false,
-          error: new Error(
-            `git fetch origin ${milestoneBranch} exited ` +
-              `${fetched.value.code}: ${
-                fetched.value.stderr.trim() || "(no output)"
-              }`,
-          ),
-        };
-      }
-      return await countCommitsAhead(
-        `origin/${milestoneBranch}`,
-        `origin/${defaultBranch}`,
-        { cwd },
-      );
+      return await measureMilestoneBehindCount({
+        milestoneBranch,
+        defaultBranch,
+        cwd: `${workDir}/${repo.split("/")[1]}`,
+      });
     },
     // Issue #2030: lane lease per repository, and a cross-host claim per
     // branch so two hosts never resolve the same sync at once.
