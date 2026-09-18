@@ -289,6 +289,49 @@ export async function saveStreamSession(
 }
 
 /**
+ * What a stream record holds for one provider (Issue #2333).
+ *
+ * `loadStreamSession` collapses "this stream has no session of mine yet" and
+ * "the session it names is one my CLI would refuse" into a single null, and
+ * those two call for opposite things: the first starts the provider's session
+ * beside its siblings, the second resets a stream that is recorded but dead.
+ */
+export type StreamSessionLookup =
+  /** No record, or none naming this provider — the provider starts the stream. */
+  | { status: "none" }
+  /** A session this provider may resume. */
+  | { status: "usable"; session: PersistedStreamSession }
+  /** A session recorded for this provider that its CLI would refuse (#204). */
+  | { status: "unusable"; sessionId: string; reason: string };
+
+/**
+ * Look up one provider's session on a stream, saying which of the three
+ * states above the record is in. Throws when `stream.repo` is malformed.
+ *
+ * There is deliberately no clock parameter: a stream session never expires.
+ */
+export async function lookupStreamSession(
+  workDir: string,
+  stream: StreamId,
+  providerId: string,
+): Promise<StreamSessionLookup> {
+  const sessions = await readStreamSessions(
+    streamSessionPath(workDir, stream),
+  );
+  const session = sessions?.[providerId];
+  if (session === undefined) return { status: "none" };
+  if (!isPersistableSessionId(session.sessionId, providerId)) {
+    return {
+      status: "unusable",
+      sessionId: session.sessionId,
+      reason:
+        `the recorded session id is not one the ${providerId} CLI would accept`,
+    };
+  }
+  return { status: "usable", session };
+}
+
+/**
  * Load one provider's session for a stream. Returns null when the record is
  * missing, unreadable, unparseable, holds no session for that provider, or
  * holds an id the provider's CLI would refuse (#204). Throws when
@@ -301,12 +344,8 @@ export async function loadStreamSession(
   stream: StreamId,
   providerId: string,
 ): Promise<PersistedStreamSession | null> {
-  const sessions = await readStreamSessions(
-    streamSessionPath(workDir, stream),
-  );
-  const session = sessions?.[providerId];
-  if (session === undefined) return null;
-  return isPersistableSessionId(session.sessionId, providerId) ? session : null;
+  const lookup = await lookupStreamSession(workDir, stream, providerId);
+  return lookup.status === "usable" ? lookup.session : null;
 }
 
 /**

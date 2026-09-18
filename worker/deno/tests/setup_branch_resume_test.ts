@@ -15,7 +15,11 @@ import { workOnIssueSetupBranch } from "../lib/phases/setup_branch_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { saveResumeState } from "../lib/resume_state_store.ts";
+import {
+  saveResumeState,
+  saveStreamSession,
+} from "../lib/resume_state_store.ts";
+import { resolveStreamId } from "../lib/stream_identity.ts";
 import { stopHeartbeat } from "../lib/heartbeat.ts";
 
 /**
@@ -23,6 +27,9 @@ import { stopHeartbeat } from "../lib/heartbeat.ts";
  * `isValidSessionId` (Issue #204), so the fixture must not use one.
  */
 const SESSION_ID = "0199fd1e-2a4b-4c3d-8e5f-6a7b8c9d0e1f";
+
+/** The session the stream's earlier issues have been conversing on (#2333). */
+const STREAM_SESSION_ID = "0199fd1e-2a4b-4c3d-8e5f-000000002333";
 
 /** The branch the previous claim pushed WIP to, under the previous title. */
 const WIP_BRANCH =
@@ -45,6 +52,7 @@ function buildState(): PhaseState {
 function buildContext(
   workDir: string,
   enableSessionResume: boolean,
+  overrides: Partial<IssueContext> = {},
 ): IssueContext {
   return {
     repo: "stSoftwareAU/VibeCoder",
@@ -60,6 +68,7 @@ function buildContext(
       workDir,
       enableSessionResume,
     },
+    ...overrides,
   };
 }
 
@@ -256,6 +265,149 @@ Deno.test("#220 - a failed remote lookup starts clean rather than reporting no w
       ),
       true,
     );
+
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("#2333 - the setup phase joins the issue's stream conversation", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue2333-setup-" });
+  try {
+    const milestoneTitle = "#2319 session resume on by default";
+    const ctx = buildContext(workDir, true, { milestoneTitle });
+    const stream = resolveStreamId(ctx.repo, milestoneTitle);
+    // A sibling issue of the same milestone already opened the conversation.
+    await saveStreamSession(workDir, stream, {
+      providerId: "claude",
+      sessionId: STREAM_SESSION_ID,
+      holderHost: "test-host",
+    });
+    const state = buildState();
+    const lines: string[] = [];
+    const deps = depsWithPushedWip();
+    const baseInfo = deps.logger.info.bind(deps.logger);
+    deps.logger.info = (message: string, fields?: Record<string, unknown>) => {
+      lines.push(message);
+      baseInfo(message, fields);
+    };
+
+    const result = await workOnIssueSetupBranch(ctx, state, deps);
+
+    assertEquals(result.status, "continue");
+    // This issue continues the stream's conversation...
+    assertEquals(state.sessionResumeState?.sessionId, STREAM_SESSION_ID);
+    assertEquals(state.streamSession?.providerId, "claude");
+    assertEquals(state.streamSession?.stream.milestoneTitle, milestoneTitle);
+    // ...and says so, once, in the documented shape.
+    assertEquals(
+      lines.filter((line) =>
+        line === `stream ${ctx.repo}${milestoneTitle} session ` +
+            `${STREAM_SESSION_ID} (resumed)`
+      ).length,
+      1,
+    );
+
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("#2333 - an idle-task run keeps its per-issue session and reads no stream", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue2333-idle-" });
+  try {
+    const milestoneTitle = "#2319 session resume on by default";
+    const ctx = buildContext(workDir, true, {
+      milestoneTitle,
+      issueLabels: ["idle-task"],
+    });
+    const stream = resolveStreamId(ctx.repo, milestoneTitle);
+    await saveStreamSession(workDir, stream, {
+      providerId: "claude",
+      sessionId: STREAM_SESSION_ID,
+    });
+    const state = buildState();
+
+    const result = await workOnIssueSetupBranch(
+      ctx,
+      state,
+      depsWithPushedWip(),
+    );
+
+    assertEquals(result.status, "continue");
+    // No stream was joined, so the execute phase opens a per-issue session.
+    assertEquals(state.streamSession, undefined);
+    assertNotEquals(state.sessionResumeState?.sessionId, STREAM_SESSION_ID);
+
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("#2333 - the issue's own checkpoint wins over the stream's session", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue2333-checkpoint-" });
+  try {
+    const milestoneTitle = "#2319 session resume on by default";
+    const ctx = buildContext(workDir, true, { milestoneTitle });
+    await saveStreamSession(
+      workDir,
+      resolveStreamId(ctx.repo, milestoneTitle),
+      {
+        providerId: "claude",
+        sessionId: STREAM_SESSION_ID,
+      },
+    );
+    // The interrupted run on this very branch is closer to the work.
+    await saveResumeState(workDir, ctx.repo, 211, {
+      sessionId: SESSION_ID,
+      phaseCount: 2,
+      branch: WIP_BRANCH,
+    });
+    const state = buildState();
+
+    const result = await workOnIssueSetupBranch(
+      ctx,
+      state,
+      depsWithPushedWip(),
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(state.sessionResumeState?.sessionId, SESSION_ID);
+    assertEquals(state.streamSession, undefined);
+
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("#2333 - the stream is not joined with enable_session_resume off", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue2333-off-" });
+  try {
+    const milestoneTitle = "#2319 session resume on by default";
+    const ctx = buildContext(workDir, false, { milestoneTitle });
+    await saveStreamSession(
+      workDir,
+      resolveStreamId(ctx.repo, milestoneTitle),
+      {
+        providerId: "claude",
+        sessionId: STREAM_SESSION_ID,
+      },
+    );
+    const state = buildState();
+
+    const result = await workOnIssueSetupBranch(
+      ctx,
+      state,
+      depsWithPushedWip(),
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(state.sessionResumeState, undefined);
+    assertEquals(state.streamSession, undefined);
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {

@@ -45,6 +45,11 @@ import {
   resumeIssueBranch,
 } from "../issue_branch_resume.ts";
 import {
+  anticipatedProviderId,
+  primeStreamSession,
+  resolveStreamRunKind,
+} from "../stream_session.ts";
+import {
   claimRepoLevelRejectionReport,
   describeRepoLevelRejection,
   isRepoLevelBranchRejection,
@@ -628,6 +633,38 @@ export async function workOnIssueSetupBranch(
       logger.info("Priming CLI session resume from persisted state", {
         branch: state.branchName,
       });
+    }
+  }
+
+  // Join the issue's stream conversation (Issue #2333). The per-issue
+  // checkpoint above wins where it primed a session: it names the very
+  // conversation this branch's interrupted run was having, which is closer to
+  // the work than the stream's. Otherwise an implementation run continues the
+  // conversation its stream — this repository's milestone, or its blank stream
+  // — has been having, instead of starting empty.
+  //
+  // An idle-task sweep keeps its per-issue session and reads no stream record;
+  // `primeStreamSession` returns undefined for it, and for any fault.
+  if (config.enableSessionResume && !state.sessionResumeState) {
+    const providerId = anticipatedProviderId({
+      ...(config.repoConfig?.[repo]
+        ? { repoConfig: config.repoConfig[repo] }
+        : {}),
+      logger,
+    });
+    const adoption = await primeStreamSession({
+      workDir: config.workDir,
+      repo,
+      ...(ctx.milestoneTitle !== undefined
+        ? { milestoneTitle: ctx.milestoneTitle }
+        : {}),
+      providerId,
+      runKind: resolveStreamRunKind(ctx.issueLabels),
+      logger,
+    });
+    if (adoption) {
+      state.sessionResumeState = adoption.state;
+      state.streamSession = { stream: adoption.stream, providerId };
     }
   }
 

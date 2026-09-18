@@ -38,6 +38,7 @@ import type {
   TreeProgressState,
 } from "../lib/progress_extension.ts";
 import type { CallStormPolicy } from "../lib/call_storm.ts";
+import type { AgentActivitySnapshot } from "../lib/agent_progress.ts";
 import type { Logger } from "../types.ts";
 
 /** One poll of a background job — the shape of the loop under test. */
@@ -55,8 +56,10 @@ function pollLine(marker: string): string {
 }
 
 /**
- * One burst of polls as a single `printf`, so the whole burst reaches the
- * tracker as one chunk and the test never guesses how the pipe split it.
+ * One burst of polls as a single `printf`.
+ *
+ * How the pipe splits that write is not the test's business: the rendezvous
+ * below counts the tool calls the tracker has parsed, not stdout chunks.
  */
 function burst(count: number, from = 0): string {
   const lines = Array.from(
@@ -185,16 +188,37 @@ const CALL_STORM: CallStormPolicy = {
   callThreshold: 3,
 };
 
-/** Resolves when the nth stdout chunk has reached the progress tracker. */
-function chunkRendezvous() {
-  const chunks: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+/**
+ * Resolves once the tracker has parsed at least `n` tool calls.
+ *
+ * Counting stdout *chunks* was the flake (PR #2359 CI): one `printf` is one
+ * write, but a pipe may still deliver it in several reads, and a test that
+ * advanced the clock after the first chunk could check a window holding
+ * fewer calls than the storm threshold. The guard then had nothing to warn
+ * about and the log line the test waited on was never written, so the test
+ * hung until the CI job was cancelled. The tool-call count is the signal the
+ * guard itself reads, so waiting on it cannot race the split.
+ */
+function callRendezvous() {
+  const waiters: { calls: number; resolve: () => void }[] = [];
   let seen = 0;
-  const at = (
-    index: number,
-  ) => (chunks[index] ??= Promise.withResolvers<void>());
   return {
-    onActivity: () => at(seen++).resolve(),
-    chunk: (n: number) => at(n - 1).promise,
+    onActivity: (snapshot: AgentActivitySnapshot) => {
+      seen = snapshot.toolCalls;
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        const waiter = waiters[i];
+        if (waiter && seen >= waiter.calls) {
+          waiters.splice(i, 1);
+          waiter.resolve();
+        }
+      }
+    },
+    calls: (n: number): Promise<void> => {
+      if (seen >= n) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        waiters.push({ calls: n, resolve });
+      });
+    },
   };
 }
 
@@ -208,7 +232,7 @@ Deno.test({
     const { logger, lines, waitFor } = recordingLogger();
     const clock = fakeClock();
     const { calls, probe } = steadyProbe("unchanged", clock);
-    const meet = chunkRendezvous();
+    const meet = callRendezvous();
     try {
       const run = runClaudeWithTimeout({
         clock,
@@ -227,7 +251,7 @@ Deno.test({
         },
       });
 
-      await meet.chunk(1);
+      await meet.calls(4);
       // One check interval, which is also one call-storm window. The first
       // storm window only warns — the run must still be alive.
       const warned = waitFor("check 1 of 2");
@@ -239,7 +263,7 @@ Deno.test({
       );
       // The loop keeps polling, so the next window has its own calls.
       await releaseAgentStub(stub, "second");
-      await meet.chunk(2);
+      await meet.calls(8);
       // The second consecutive storm window is the stop.
       const stopped = waitFor("[call-storm] stopping the agent");
       await clock.advance(1_000);
@@ -304,7 +328,7 @@ Deno.test({
     const { logger, lines } = recordingLogger();
     const clock = fakeClock();
     const { calls, probe, called } = steadyProbe("advanced", clock);
-    const meet = chunkRendezvous();
+    const meet = callRendezvous();
     try {
       const run = runClaudeWithTimeout({
         clock,
@@ -321,7 +345,7 @@ Deno.test({
         },
       });
 
-      await meet.chunk(1);
+      await meet.calls(10);
       // Two whole windows of checks: the calls are there, but so is the work.
       await clock.advance(1_000);
       await called(1);
@@ -360,7 +384,7 @@ Deno.test({
     const { logger, lines } = recordingLogger();
     const clock = fakeClock();
     const { calls, probe, called } = steadyProbe("unchanged", clock);
-    const meet = chunkRendezvous();
+    const meet = callRendezvous();
     try {
       const run = runClaudeWithTimeout({
         clock,
@@ -374,7 +398,7 @@ Deno.test({
         progressExtension: { policy: POLICY, treeProbe: probe },
       });
 
-      await meet.chunk(1);
+      await meet.calls(50);
       await clock.advance(1_000);
       await called(1);
       await clock.advance(1_000);
@@ -411,7 +435,7 @@ Deno.test({
     const { logger, lines, waitFor } = recordingLogger();
     const clock = fakeClock();
     const { calls, probe } = scriptedProbe(["unchanged", "advanced"], clock);
-    const meet = chunkRendezvous();
+    const meet = callRendezvous();
     try {
       const run = runClaudeWithTimeout({
         clock,
@@ -428,14 +452,14 @@ Deno.test({
         },
       });
 
-      await meet.chunk(1);
+      await meet.calls(4);
       const warned = waitFor("check 1 of 2");
       await clock.advance(1_000);
       await warned;
       // The agent commits something, so the next check is not a storm and
       // the streak is spent.
       await releaseAgentStub(stub, "second");
-      await meet.chunk(2);
+      await meet.calls(8);
       await clock.advance(1_000);
       await releaseAgentStub(stub);
       const result = await run;

@@ -42,6 +42,7 @@ import {
 import { ensureHistoryDepth } from "../git_history.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { saveResumeState } from "../resume_state_store.ts";
+import { handOnStreamSession } from "../stream_session.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -616,7 +617,12 @@ async function executeClaudeBody(
     });
   }
 
-  // Initialise session resume state if enabled (Issue #1324)
+  // Initialise session resume state if enabled (Issue #1324).
+  //
+  // Normally already set: the setup phase primed it from the issue's
+  // checkpoint, or joined the issue's stream conversation (Issue #2333). This
+  // is what is left — a run whose stream could not be resolved, or a run kind
+  // that keeps a per-issue session — and it starts one, as it always did.
   if (config.enableSessionResume && !state.sessionResumeState) {
     state.sessionResumeState = createSessionResumeState();
     logger.info("Session resume enabled", {
@@ -1399,6 +1405,19 @@ async function executeClaudeBody(
       ...(state.sessionResumeState.credentialScope
         ? { credentialScope: state.sessionResumeState.credentialScope }
         : {}),
+    });
+    // Hand the conversation on to the stream's next issue (Issue #2333). A
+    // no-op unless setup joined a stream, so an excluded run kind — or one
+    // resuming its own checkpoint — writes no stream record.
+    await handOnStreamSession({
+      workDir: config.workDir,
+      joined: state.streamSession,
+      state: state.sessionResumeState,
+      ...(claudeResult.value.provider
+        ? { runProviderId: claudeResult.value.provider }
+        : {}),
+      logger,
+      logFields: { repo, issueNumber },
     });
   }
 
