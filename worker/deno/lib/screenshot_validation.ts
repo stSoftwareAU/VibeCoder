@@ -69,6 +69,11 @@ export interface ScreenshotValidationOptions {
   repo: string;
   issueNumber: number;
   skipScreenshotCheck?: boolean;
+  /**
+   * Changed files whose patch is nothing but version stamps (Issue #2300);
+   * they do not make the change a UI change.
+   */
+  versionBumpOnlyFiles?: string[];
 }
 
 export interface ScreenshotValidationResult {
@@ -115,6 +120,48 @@ export function formatBranchEvidenceSection(images: string[]): string {
   return `## Evidence\n\n${lines.join("\n\n")}\n\n`;
 }
 
+/** Whether a path's extension marks it as a file that can carry a UI. */
+export function isUiSourceFile(path: string): boolean {
+  return UI_FILE_EXTENSIONS.test(path);
+}
+
+/**
+ * A version as release tooling stamps it into a page: `1.1.28`, `v1.1.28`,
+ * `?v=1.1.28`, `-v1.1.28`, with an optional pre-release or build suffix.
+ */
+const VERSION_TOKEN = /\bv?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?\b/g;
+
+/**
+ * Whether a file's patch changes nothing but version stamps (Issue #2300).
+ *
+ * GRQ-health's `update_version.sh` rewrites `index.html`, `sw.js` and
+ * `dashboard.js` on every change — `?v=1.1.28` → `?v=1.1.30` — and the
+ * repository's own quality check demands it, so every PR there touched
+ * three UI files and the gate demanded a screenshot of a backend change
+ * (GRQ-health#211, a 44-minute run failed at completion).
+ *
+ * Each removed line is paired with the added line in the same position; the
+ * patch is a bump when every pair carries a version token and reads
+ * identically once every token is masked. An added line with no partner, a
+ * reworded line, a changed selector — anything else — is a real change, and
+ * the file counts as it always has.
+ */
+export function isVersionBumpOnly(patch: string): boolean {
+  const removed: string[] = [];
+  const added: string[] = [];
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("---") || line.startsWith("+++")) continue;
+    if (line.startsWith("-")) removed.push(line.slice(1));
+    else if (line.startsWith("+")) added.push(line.slice(1));
+  }
+  if (added.length === 0 || added.length !== removed.length) return false;
+  const masked = (s: string) => s.replace(VERSION_TOKEN, "{version}");
+  return added.every((after, i) => {
+    const maskedAfter = masked(after);
+    return maskedAfter !== after && maskedAfter === masked(removed[i] ?? "");
+  });
+}
+
 /**
  * Detect whether a set of changes is UI-related.
  *
@@ -122,13 +169,21 @@ export function formatBranchEvidenceSection(images: string[]): string {
  * 1. Changed file extensions (CSS, HTML, JSX, TSX, Vue, Svelte, etc.)
  * 2. Issue labels containing UI-related keywords
  * 3. PR summary content containing UI-specific terms
+ *
+ * A changed file named in `versionBumpOnlyFiles` — one whose patch
+ * {@link isVersionBumpOnly} accepted — is set aside from the first and
+ * third signals (Issue #2300): it changed, but not in any way a screenshot
+ * could show.
  */
 export function detectUiChanges(
   prSummaryContent: string,
   issueLabels: string,
   changedFiles: string[],
+  versionBumpOnlyFiles: ReadonlySet<string> = new Set(),
 ): boolean {
-  if (changedFiles.some((f) => UI_FILE_EXTENSIONS.test(f))) {
+  const substantive = changedFiles.filter((f) => !versionBumpOnlyFiles.has(f));
+
+  if (substantive.some((f) => UI_FILE_EXTENSIONS.test(f))) {
     return true;
   }
 
@@ -136,10 +191,14 @@ export function detectUiChanges(
     return true;
   }
 
+  // Issue #2300: a change that is nothing but version stamps has no UI to
+  // show, whatever the summary says about the release.
+  if (changedFiles.length > 0 && substantive.length === 0) return false;
+
   // Issue #1909: the keyword fallback only means something when a changed
   // file could carry a UI. A Rust/Go/Python/docs-only change is not one,
   // whatever its summary says.
-  if (!keywordFallbackApplies(changedFiles)) return false;
+  if (!keywordFallbackApplies(substantive)) return false;
 
   // Require at least 2 distinct UI keyword matches in PR summary content
   // to reduce false positives from common words in non-UI contexts (Issue #1296).
@@ -182,6 +241,7 @@ export function validateScreenshotEvidence(
     issueLabels,
     changedFiles,
     skipScreenshotCheck,
+    versionBumpOnlyFiles,
   } = options;
 
   if (skipScreenshotCheck) {
@@ -192,6 +252,7 @@ export function validateScreenshotEvidence(
     prSummaryContent,
     issueLabels,
     changedFiles,
+    new Set(versionBumpOnlyFiles ?? []),
   );
 
   if (!isUiChange) {

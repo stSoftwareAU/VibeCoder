@@ -8,6 +8,8 @@
 import { assertEquals } from "@std/assert";
 import {
   detectUiChanges,
+  isUiSourceFile,
+  isVersionBumpOnly,
   keywordFallbackApplies,
   validateScreenshotEvidence,
 } from "../lib/screenshot_validation.ts";
@@ -286,4 +288,160 @@ Deno.test("screenshot_validation #1909 - keywordFallbackApplies", () => {
     keywordFallbackApplies(["scripts/run.sh", "config.yaml"]),
     false,
   );
+});
+
+// --- Issue #2300: a version bump in a UI file is not a UI change ---
+//
+// GRQ-health's update_version.sh stamps index.html, sw.js and dashboard.js
+// on every change, so a backend PR there touched three UI files and the gate
+// demanded a screenshot of run.sh (GRQ-health#211). These patches are the
+// ones that run carried, verbatim.
+
+const INDEX_HTML_BUMP = `diff --git a/docs/index.html b/docs/index.html
+--- a/docs/index.html
++++ b/docs/index.html
+@@ -40 +40 @@
+-    <link href="./styles.css?v=1.1.28" rel="stylesheet">
++    <link href="./styles.css?v=1.1.30" rel="stylesheet">
+@@ -146 +146 @@
+-    <script src="./dashboard.js?v=1.1.28"></script>
++    <script src="./dashboard.js?v=1.1.30"></script>
+@@ -153 +153 @@
+-                navigator.serviceWorker.register('./sw.js?v=1.1.28')
++                navigator.serviceWorker.register('./sw.js?v=1.1.30')
+`;
+
+const SW_JS_BUMP = `--- a/docs/sw.js
++++ b/docs/sw.js
+@@ -2 +2 @@
+-// Version: 1.1.28
++// Version: 1.1.30
+@@ -4,2 +4,2 @@
+-const CACHE_NAME = 'grq-health-v1.1.28';
+-const STATIC_CACHE_NAME = 'grq-health-static-v1.1.28';
++const CACHE_NAME = 'grq-health-v1.1.30';
++const STATIC_CACHE_NAME = 'grq-health-static-v1.1.30';
+@@ -14 +14 @@
+-  './dashboard.js?v=1.1.28',
++  './dashboard.js?v=1.1.30',
+`;
+
+Deno.test("screenshot_validation #2300 - isVersionBumpOnly accepts a cache-busting bump", () => {
+  assertEquals(isVersionBumpOnly(INDEX_HTML_BUMP), true);
+  assertEquals(isVersionBumpOnly(SW_JS_BUMP), true);
+  assertEquals(
+    isVersionBumpOnly(
+      '-const VERSION = "1.1.28";\n+const VERSION = "1.1.30";\n',
+    ),
+    true,
+  );
+  assertEquals(
+    isVersionBumpOnly("-  version: 2.0.0-rc.1\n+  version: 2.0.0\n"),
+    true,
+  );
+});
+
+Deno.test("screenshot_validation #2300 - isVersionBumpOnly refuses anything that is not a bump", () => {
+  // A reworded line beside the bump.
+  assertEquals(
+    isVersionBumpOnly(
+      '-    <link href="./styles.css?v=1.1.28" rel="stylesheet">\n' +
+        '+    <link href="./dark.css?v=1.1.30" rel="stylesheet">\n',
+    ),
+    false,
+  );
+  // An added line with no partner.
+  assertEquals(
+    isVersionBumpOnly(
+      '-const VERSION = "1.1.28";\n+const VERSION = "1.1.30";\n+const THEME = "dark";\n',
+    ),
+    false,
+  );
+  // A change with no version in it at all.
+  assertEquals(
+    isVersionBumpOnly("-  color: red;\n+  color: blue;\n"),
+    false,
+  );
+  // Nothing changed.
+  assertEquals(isVersionBumpOnly(""), false);
+  // A version moved but the line changed too.
+  assertEquals(
+    isVersionBumpOnly("-  <h1>v1.1.28</h1>\n+  <h2>v1.1.30</h2>\n"),
+    false,
+  );
+});
+
+Deno.test("screenshot_validation #2300 - a backend change carrying a version bump is not a UI change", () => {
+  const changed = [
+    "run.sh",
+    "helpers/compact-history.sh",
+    "docs/index.html",
+    "docs/sw.js",
+    "docs/dashboard.js",
+    "README.md",
+  ];
+  const bumpOnly = new Set([
+    "docs/index.html",
+    "docs/sw.js",
+    "docs/dashboard.js",
+  ]);
+  const summary =
+    "Backend/CLI change — there is no new web interface to screenshot. " +
+    "Only a bounded log tail is published; html pages are cache-busted.";
+  assertEquals(detectUiChanges(summary, "work-on", changed, bumpOnly), false);
+  // Without the set the same change reads as UI, which is what failed the run.
+  assertEquals(detectUiChanges(summary, "work-on", changed), true);
+
+  const result = validateScreenshotEvidence({
+    prSummaryContent: summary,
+    issueLabels: "work-on",
+    changedFiles: changed,
+    repo: "stSoftwareAU/GRQ-health",
+    issueNumber: 211,
+    versionBumpOnlyFiles: [...bumpOnly],
+  });
+  assertEquals(result.valid, true);
+  assertEquals(result.isUiChange, false);
+});
+
+Deno.test("screenshot_validation #2300 - a real UI edit beside a bump is still a UI change", () => {
+  const changed = ["docs/index.html", "docs/styles.css"];
+  const bumpOnly = new Set(["docs/index.html"]);
+  assertEquals(
+    detectUiChanges("Restyled the header.", "", changed, bumpOnly),
+    true,
+  );
+  const result = validateScreenshotEvidence({
+    prSummaryContent: "Restyled the header.",
+    issueLabels: "",
+    changedFiles: changed,
+    repo: "owner/repo",
+    issueNumber: 1,
+    versionBumpOnlyFiles: ["docs/index.html"],
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.isUiChange, true);
+});
+
+Deno.test("screenshot_validation #2300 - a bump-only change is not made a UI change by its summary or by a label", () => {
+  const changed = ["docs/index.html", "docs/sw.js"];
+  const bumpOnly = new Set(changed);
+  assertEquals(
+    detectUiChanges(
+      "Release 1.1.30: refreshed the html chart colour and font.",
+      "release",
+      changed,
+      bumpOnly,
+    ),
+    false,
+  );
+  // An explicit UI label still wins: the label is the operator's word.
+  assertEquals(detectUiChanges("Release", "ui", changed, bumpOnly), true);
+});
+
+Deno.test("screenshot_validation #2300 - isUiSourceFile", () => {
+  assertEquals(isUiSourceFile("docs/index.html"), true);
+  assertEquals(isUiSourceFile("src/App.tsx"), true);
+  assertEquals(isUiSourceFile("docs/sw.js"), false);
+  assertEquals(isUiSourceFile("run.sh"), false);
 });

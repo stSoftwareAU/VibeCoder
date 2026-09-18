@@ -2144,7 +2144,13 @@ creation:
 - **Screenshot processing** — `process_screenshot_evidence()` converts local
   screenshot paths to accessible URLs (via imgbb upload or GitHub raw URLs).
 - **Evidence validation** — `validate_pr_evidence()` blocks UI-related PRs
-  without screenshots and adds the `needs-screenshot` label.
+  without screenshots and adds the `needs-screenshot` label. A changed UI file
+  whose patch is nothing but version stamps (`?v=1.1.28` → `?v=1.1.30`, the
+  cache-busting bump a release script writes into every page) is not a UI
+  change (Issue #2300): each changed UI file's own patch is read against the
+  branch's resolved base, and a bump-only file is set aside from the gate's
+  extension trigger and keyword fallback. Any other edit to the file counts
+  as before, and an explicit UI label still wins.
 - **Issue linking** — `ensure_pr_references_issue()` appends `Closes #N` if the
   PR body lacks a closing keyword, preventing issues from staying open after
   merge.
