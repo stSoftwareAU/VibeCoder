@@ -168,6 +168,36 @@ Deno.test("issue prompt - the independent reviewers are unchanged by the split",
   );
 });
 
+Deno.test("issue prompt - an operator template without the placeholder warns on a split run", async () => {
+  // `substitute` tolerates an unused key, so a custom template silently drops
+  // the block. On a split run that leaves the advisor holding executors it
+  // was never told to use — named, not reached in silence.
+  const dir = await Deno.makeTempDir();
+  const custom = `${dir}/custom-issue.md`;
+  await Deno.writeTextFile(
+    custom,
+    "Work issue #{{ISSUE_NUMBER}}.\n\n{{QUALITY_INSTRUCTIONS}}\n",
+  );
+
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => void warnings.push(args.join(" "));
+  try {
+    await issuePrompt({ customPromptPath: custom, issueExecutorSplit: true });
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0]!, "{{EXECUTOR_SPLIT_INSTRUCTIONS}}");
+    assertStringIncludes(warnings[0]!, custom);
+
+    // The same template on a key-off run is not a fault, so it stays quiet.
+    warnings.length = 0;
+    await issuePrompt({ customPromptPath: custom, issueExecutorSplit: false });
+    assertEquals(warnings, []);
+  } finally {
+    console.warn = originalWarn;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // The delegation cap is lifted only where the block is
 // ---------------------------------------------------------------------------

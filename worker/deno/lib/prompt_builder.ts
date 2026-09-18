@@ -673,6 +673,25 @@ export async function buildIssuePrompt(
   if (!issueSubstitution.ok) return issueSubstitution;
   let issueTemplate = issueSubstitution.value;
 
+  // A template with no `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` placeholder — an
+  // operator's custom prompt, or a `work-on` override — drops the block, and
+  // `substitute` tolerates the unused key by design. On a split run that
+  // leaves the advisor holding executors it was never told to use, which is
+  // the degraded state this block exists to remove, so it is warned about
+  // rather than reached in silence (mirrors the DeepSeek `--agents` strip).
+  if (
+    issueExecutorSplit &&
+    !templateResult.value.content.includes("{{EXECUTOR_SPLIT_INSTRUCTIONS}}")
+  ) {
+    console.warn(
+      `[issue-executor-split] the issue template ` +
+        `${templateResult.value.source} carries no ` +
+        `{{EXECUTOR_SPLIT_INSTRUCTIONS}} placeholder, so this split run's ` +
+        `prompt has no advisor/executor instructions. Add the placeholder to ` +
+        `that template, or turn issue_executor_split off for this repository.`,
+    );
+  }
+
   // Strip screenshot sections for non-UI repos (Issue #377)
   if (skipScreenshotCheck) {
     issueTemplate = stripScreenshotInstructions(issueTemplate);

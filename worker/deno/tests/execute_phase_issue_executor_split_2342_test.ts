@@ -119,3 +119,63 @@ Deno.test("execute_phase - a per-repo true beats a host-wide off (Issue #2342)",
   assert(executor, "the repository's own opt-in stands on its own");
   assertEquals(executor.model, "sonnet");
 });
+
+/**
+ * The same key reaches the prompt build (Issue #2343).
+ *
+ * The argv and the prompt are resolved from one boolean, so a run cannot be
+ * handed executors without the advisor/executor block that tells it to use
+ * them. Recorded here beside the argv cases because the two must agree.
+ */
+async function promptSplitFlag(
+  hostEnabled: boolean,
+): Promise<unknown> {
+  const config = buildDefaultWorkerConfig();
+  config.issueExecutorSplit = hostEnabled;
+  const ctx: IssueContext = {
+    repo: "org/repo",
+    issueNumber: 2343,
+    issueTitle: "Advisor/executor instructions",
+    issueBody: "Do the thing.",
+    issueLabels: ["enhancement"],
+    issueComments: "",
+    githubUser: "testbot",
+    config,
+  };
+  const state: PhaseState = {
+    branchName: "issue-2343-advisor-executor",
+    baseBranch: "main",
+    defaultBranch: "main",
+    repoPath: "/tmp/issue-executor-split-2343-repo",
+    clarityStatus: "assessed_clear",
+    claudeOutput: "",
+    executeStartTime: Date.now(),
+    baselineQualityPassed: true,
+    baselineQualityOutput: "",
+  };
+  let promptOptions: Record<string, unknown> | undefined;
+
+  const deps = createMockDeps({
+    infrastructure: {
+      buildPrompt: ((options: Record<string, unknown>) => {
+        promptOptions = options;
+        return Promise.resolve({
+          ok: true,
+          value: { systemPrompt: "sys", prompt: "user" },
+        });
+      }) as never,
+    },
+    pr: {
+      findExistingPrForIssue: (() =>
+        Promise.resolve({ ok: true, value: null })) as never,
+    },
+  });
+
+  await workOnIssueExecuteClaude(ctx, state, deps);
+  return promptOptions?.issueExecutorSplit;
+}
+
+Deno.test("execute_phase - the key reaches the prompt build as well as the argv (Issue #2343)", async () => {
+  assertEquals(await promptSplitFlag(true), true);
+  assertEquals(await promptSplitFlag(false), false);
+});

@@ -254,7 +254,15 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
  * still valid.
  */
 export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
-  issue: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],
+  // Issue #2343: `EXECUTOR_SPLIT_INSTRUCTIONS` carries the advisor/executor
+  // block on a run with `issue_executor_split` on, and the empty string on
+  // every other run — an operator's template is free to omit it, and the
+  // builder warns when a split run reads one that does.
+  issue: [
+    "VERBOSITY_INSTRUCTIONS",
+    "CODING_GUIDELINES",
+    "EXECUTOR_SPLIT_INSTRUCTIONS",
+  ],
   pr_feedback: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],
   spelling_fix: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],
   planning: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],

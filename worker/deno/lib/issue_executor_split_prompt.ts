@@ -35,10 +35,11 @@ This section governs delegation for this run. Where it and the
 **Delegate sparingly** bullet below differ, this section wins — that bullet
 still governs every sub-agent this section does not describe.
 
-- **Make no \`Edit\` or \`Write\` call yourself.** Every edit to every file is
-  made by an executor sub-agent — \`Agent\` with
-  \`subagent_type: "${ISSUE_EXECUTOR_AGENT_NAME}"\`. Reading, searching, planning and
-  verifying stay yours.
+- **Make no \`Edit\` or \`Write\` call yourself.** Every edit the change is made
+  of — code, tests, documentation — is made by an executor sub-agent:
+  \`Agent\` with \`subagent_type: "${ISSUE_EXECUTOR_AGENT_NAME}"\`. Reading, searching,
+  planning and verifying stay yours, as does the run's own record — the PR
+  summary file and anything else this prompt tells you to write yourself.
 - **One executor per independent group of files.** A group is independent when
   no other executor in the same run edits any file in it — two executors must
   never hold the same file. There is no cap on how many run concurrently:
