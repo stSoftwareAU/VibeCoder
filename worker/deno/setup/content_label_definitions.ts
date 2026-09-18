@@ -254,6 +254,13 @@ const OUTCOME_LABELS: readonly LabelDefinition[] = [
     category: "content",
   },
   {
+    name: "merge-fallback",
+    colour: "d93f0b",
+    description:
+      "A merge conflict fell back to the last known good state — what was closed or reverted, and why",
+    category: "content",
+  },
+  {
     name: "escalated",
     colour: "d4c5f9",
     description:
