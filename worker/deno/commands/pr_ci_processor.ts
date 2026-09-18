@@ -38,10 +38,7 @@ import {
 import { getWorkerUniqueId } from "../lib/worker_identity.ts";
 import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
-import {
-  graftDeepConfig,
-  isGraftContextEnabled,
-} from "../lib/graft_context_config.ts";
+import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
 
 // Re-export library functions for external use
 export { formatCiAnnotations };
@@ -204,9 +201,6 @@ export const prCiProcessorCommand: Command = {
           }),
           // Issue #2103: the host switch for the Graft repo-context bundle.
           graftContextEnabled: isGraftContextEnabled(config),
-          ...(graftDeepConfig(config)
-            ? { graftContextDeep: graftDeepConfig(config) }
-            : {}),
         };
 
         const result = await processCiFailure(input, processorDeps);

@@ -34,8 +34,6 @@
 #  - secret_redaction_markdown_1727_test.ts (Issue #1727): a fake
 #    generic credential and a fake 40-hex ImgBB key asserting a Markdown
 #    fence cannot smuggle a secret past the assignment rule.
-#  - graft_context_test.ts (Issue #2315): a fake GRAFT_API_KEY value handed
-#    to the Graft summary pass.
 #  - secret_redaction_json_structure_test.ts: a fake passphrase and a
 #    fake TOKEN= value inside stream-json lines asserting the assignment
 #    rule masks them without breaking the line's JSON.
@@ -129,10 +127,4 @@ paths = [
   # the literals in one piece, and the range scan covers it, so only a path
   # allowlist clears it.
   '''worker/deno/tests/secret_redaction_json_structure_test\.ts''',
-  # Fake GRAFT_API_KEY value (assembled from parts at run time) handed to the
-  # Graft summary pass to prove the key reaches that one subprocess and no log
-  # line (Issue #2315). The commit that introduced the fixture carries the
-  # literal in one piece, and the range scan covers it, so only a path
-  # allowlist clears it.
-  '''worker/deno/tests/graft_context_test\.ts''',
 ]
