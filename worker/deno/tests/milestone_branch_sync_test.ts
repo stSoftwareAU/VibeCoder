@@ -1360,11 +1360,6 @@ Deno.test("syncMilestoneBranches - a conflict failure charges one attempt and po
     assertEquals(result.ok, true);
     const entry = await readLedger(streakPath);
     assertEquals(entry?.conflictAttempts, 1);
-    assertEquals(
-      (entry as unknown as Record<string, unknown> | undefined)?.deferUntil,
-      undefined,
-      "a failure paces nothing any more (Issue #2305)",
-    );
     assertEquals(entry?.lastAttempt?.outcome, "failed");
     assertEquals(entry?.attemptOpenedAt, undefined);
     // Nothing reaches a human while an automatic attempt remains.

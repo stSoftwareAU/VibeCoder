@@ -3325,7 +3325,7 @@ side is taken from.
 Only a file **every** rung leaves undecided aborts the merge; since
 Issue #1778 that abortion reaches nobody while the branch's conflict budget
 still has an attempt in it — it is charged to the ledger, named in one log line
-`conflict attempt n of 3 failed at rung <rung>`, and the exhausted budget is
+`conflict attempt n of 2 failed at rung <rung>`, and the exhausted budget is
 what reaches for the roll-back. An
 agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
 or leaves a conflict marker behind is a failed rung: the merge is aborted and
@@ -3697,11 +3697,11 @@ stateDiagram-v2
 
 [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts) spends
 those helpers around every merge it makes (Issue #1778). Before the merge it
-concludes any attempt a previous run left open as `disrupted`, skips the branch
-outright when `isConflictAttemptDue` is false — `skipped: a conflict attempt
-opened at <attemptOpenedAt> is still open on this host` — and otherwise opens
-an attempt and **persists it before the merge starts**, so a run killed
-mid-merge leaves the marker the next cycle reads.
+concludes any attempt a previous run left open as `disrupted` — that open
+marker is exactly what `conflictAttemptDue` reads, so concluding it is what
+makes the branch due again — and then opens an attempt and **persists it
+before the merge starts**, so a run killed mid-merge leaves the marker the
+next cycle reads.
 
 The conclusion is decided by `judgeSyncFailure`, and only one shape of failure
 is the branch's to answer for:

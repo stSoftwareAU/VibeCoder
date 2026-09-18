@@ -287,10 +287,11 @@ export async function presyncMilestoneBranch(
     }
   };
 
-  // An attempt still open judged nothing — the run died before the conflict
-  // was decided. It concludes `disrupted`, charged nothing, exactly as the
-  // sweep concludes one (Issues #395, #1693, #1778).
-  if (entry.attemptOpenedAt) {
+  // An attempt still open — the one thing `conflictAttemptDue` reads since
+  // Issue #2305 — judged nothing: the run died before the conflict was
+  // decided. It concludes `disrupted`, charged nothing, exactly as the sweep
+  // concludes one (Issues #395, #1693, #1778), and the branch is then due.
+  if (!conflictAttemptDue(entry)) {
     entry = concludeConflictAttempt(
       entry,
       "disrupted",
@@ -312,15 +313,6 @@ export async function presyncMilestoneBranch(
         `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} concluded failures), so ` +
         `'${milestoneBranch}' belongs to the roll-back rather than to another ` +
         `merge`,
-      behindBy,
-    );
-  }
-
-  if (!conflictAttemptDue(entry)) {
-    await persist("the open attempt");
-    return deferral(
-      `a conflict attempt opened at ${entry.attemptOpenedAt} is still open ` +
-        `on this host`,
       behindBy,
     );
   }

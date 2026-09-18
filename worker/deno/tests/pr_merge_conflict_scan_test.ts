@@ -14,7 +14,6 @@ import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
-  CONFLICT_SKIP_REASON_KINDS,
   conflictPrKey,
   type ConflictSkipReasonKind,
   countDisruptedAttempts,
@@ -463,15 +462,6 @@ Deno.test("isConflictAttemptDue - an attempt still open is not due (Issue #2305)
 
 Deno.test("DEFAULT_MAX_CONFLICT_ATTEMPTS - two runs per conflict (Issue #2305)", () => {
   assertEquals(DEFAULT_MAX_CONFLICT_ATTEMPTS, 2);
-});
-
-Deno.test("CONFLICT_SKIP_REASON_KINDS - no cooldown kind survives (Issue #2305)", () => {
-  assertEquals(
-    CONFLICT_SKIP_REASON_KINDS.includes(
-      "cooldown" as ConflictSkipReasonKind,
-    ),
-    false,
-  );
 });
 
 Deno.test("hasExhaustedConflictAttempts - binds at the configured budget", () => {

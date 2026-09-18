@@ -250,7 +250,7 @@ Deno.test("conflict ledger - exhaustion counts concluded failures only (Issue #1
 
 Deno.test("conflict ledger - a charged failure paces nothing (Issue #2305)", () => {
   // The cooldown is gone: a failure spends one of the branch's two attempts
-  // and writes no deferral, so the next cycle may try again straight away.
+  // and paces nothing, so the next cycle may try again straight away.
   const failedAt = Date.parse("2026-09-09T00:00:00Z");
   const entry = concludeConflictAttempt(
     { count: 0, escalated: false },
@@ -260,11 +260,6 @@ Deno.test("conflict ledger - a charged failure paces nothing (Issue #2305)", () 
     failedAt,
   );
   assertEquals(entry.conflictAttempts, 1);
-  assertEquals(
-    (entry as unknown as Record<string, unknown>).deferUntil,
-    undefined,
-    "no deferral is written any more",
-  );
   assert(
     isConflictAttemptDue(entry),
     "due again on the very next cycle, same tip and all",

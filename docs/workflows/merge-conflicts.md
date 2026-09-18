@@ -859,8 +859,9 @@ because that was all the cycle had left, a 3600-second agent timeout granted out
 of it, and at 11m13s and 83 tool calls the watchdog SIGTERMed an agent that was
 still editing. The pass then read the half-merged tree as *the agent's* verdict
 — `attempt 1 of 2`, "the agent left 6 path(s) unmerged" — and spent one of the
-PR's attempts on a budget it never had. (The budget went to three for Issue
-#1766 and back to two for Issue #2305.)
+PR's attempts on a budget it never had. (The budget went to three for
+Issue #1766 and back to two for Issue #2305.)
+
 Two halves now hold, both in `worker/deno/lib/merge_conflict_drain.ts`:
 
 - **The floor is sized for an AI-fallback resolution**, not for a token

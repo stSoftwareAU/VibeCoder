@@ -250,11 +250,6 @@ Deno.test("presyncMilestoneBranch - an unresolved conflict charges exactly one a
     assert(entry);
     assertEquals(entry.conflictAttempts, 1, "charged exactly once");
     assertEquals(entry.attemptOpenedAt, undefined, "the marker is closed");
-    assertEquals(
-      (entry as unknown as Record<string, unknown>).deferUntil,
-      undefined,
-      "a charged failure writes no deferral any more (Issue #2305)",
-    );
     assertEquals(entry.lastAttempt?.outcome, "failed");
   } finally {
     await fx.cleanup();

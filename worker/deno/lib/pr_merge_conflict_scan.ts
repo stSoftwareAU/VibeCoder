@@ -1320,19 +1320,21 @@ export async function findConflictingPr(
       };
     }
 
+    // An open marker is the one thing that makes a PR "not due" now
+    // (Issue #2305), and it is re-attempted rather than waited out — so the
+    // record says which of the disruptions is that one.
+    const attemptOpen = !isConflictAttemptDue(history);
     if (disruptedCount > 0) {
       logger.warn(
         `PR #${pr.number} has ${disruptedCount} disrupted merge-conflict ` +
           "attempt(s) with no conclusion — re-attempting" +
-          (isConflictAttemptDue(history)
-            ? ""
-            : ", including one whose marker is still open"),
+          (attemptOpen ? ", including one whose marker is still open" : ""),
         {
           repo,
           prNumber: pr.number,
           disruptedCount,
           maxDisruptedAttempts,
-          attemptOpen: !isConflictAttemptDue(history),
+          attemptOpen,
         },
       );
     }

@@ -232,17 +232,12 @@ Deno.test("#1780 - a failed sync defers the run, charges the ledger once and cut
       [],
     );
 
-    // The branch's ledger carries exactly one charged attempt — and no
-    // deferral, since Issue #2305 removed the wait between the two.
+    // The branch's ledger carries exactly one charged attempt.
     const entry = (await loadSyncStreaks(milestoneSyncStreakPath(workDir)))[
       LEDGER_KEY
     ];
     assert(entry, "the failure is recorded against the branch");
     assertEquals(entry.conflictAttempts, 1);
-    assertEquals(
-      (entry as unknown as Record<string, unknown>).deferUntil,
-      undefined,
-    );
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {

@@ -1239,11 +1239,12 @@ export async function syncMilestoneBranches(
         if (streakPath) {
           let entry = streaks[streakKey] ?? { count: 0, escalated: false };
 
-          // An attempt still open judged nothing: the run died before the
-          // conflict was decided. It concludes `disrupted` and is charged
-          // nothing, exactly as an unconcluded PR attempt marker is
-          // (Issues #395 and #1693).
-          if (entry.attemptOpenedAt) {
+          // An attempt still open — the one thing `conflictAttemptDue`
+          // reads since Issue #2305 — judged nothing: the run died before
+          // the conflict was decided. It concludes `disrupted` and is
+          // charged nothing, exactly as an unconcluded PR attempt marker is
+          // (Issues #395 and #1693), and the branch is then due again.
+          if (!conflictAttemptDue(entry)) {
             entry = concludeConflictAttempt(
               entry,
               "disrupted",
@@ -1261,8 +1262,8 @@ export async function syncMilestoneBranches(
           }
 
           // A branch past its budget belongs to the roll-back, not to another
-          // merge: without this guard it keeps conflicting every cooldown,
-          // charging attempt 4, 5, 6… and re-entering the hand-off each time.
+          // merge: without this guard it keeps conflicting every cycle,
+          // charging attempt 3, 4, 5… and re-entering the hand-off each time.
           if (isConflictBudgetExhausted(entry)) {
             log(
               `WARNING: Skipping sync for '${milestone.milestoneTitle}' in ` +
@@ -1271,16 +1272,6 @@ export async function syncMilestoneBranches(
                 `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} concluded failures), ` +
                 `so '${milestone.milestoneBranch}' is the roll-back's now and ` +
                 `no further attempt is made (Issue #1778)`,
-            );
-            skipped++;
-            continue;
-          }
-
-          if (!conflictAttemptDue(entry)) {
-            log(
-              `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
-                `skipped: a conflict attempt opened at ` +
-                `${entry.attemptOpenedAt} is still open on this host`,
             );
             skipped++;
             continue;
@@ -1603,7 +1594,7 @@ export async function syncMilestoneBranches(
             // still behind, and the budget — not a human — decides when the
             // automatic attempts are over. The per-conflicting-commit
             // analysis escalation keyed on `analysisEscalatedSha` is gone:
-            // it fired before any of the three automatic attempts had been
+            // it fired before any of the automatic attempts had been
             // spent, which is exactly the "needs-human while a rung remains"
             // this budget removes.
           } else if (isMergeGateFailure(syncResult.error)) {
