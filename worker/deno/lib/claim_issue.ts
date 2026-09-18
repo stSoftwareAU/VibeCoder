@@ -531,7 +531,11 @@ async function preClaimFreshnessCheck(
   ghCommandFn: (args: string[]) => Promise<string>,
   allowedAuthors: string[] = [],
   nowSeconds: number = Math.floor(Date.now() / 1000),
-  streamLock?: { milestoneTitle?: string; affinityHost?: string },
+  streamLock?: {
+    milestoneTitle?: string;
+    affinityHost?: string;
+    workDir?: string;
+  },
 ): Promise<
   {
     shouldBailOut: boolean;
@@ -667,12 +671,11 @@ async function preClaimFreshnessCheck(
       ...(streamLock.milestoneTitle
         ? { milestoneTitle: streamLock.milestoneTitle }
         : {}),
+      ...(streamLock.workDir ? { workDir: streamLock.workDir } : {}),
     });
+    // The countdown is logged by `checkStreamAffinity` itself, once per issue
+    // — repeating it here would double every deferral in the fleet log.
     if (affinity.defer && affinity.detail) {
-      console.info(
-        `[claim_issue] repo=${repo} issue=#${issueNumber} ` +
-          `${affinity.detail} — retried on a later scan (Issue #2336)`,
-      );
       return {
         shouldBailOut: true,
         reason: "stream_affinity",
@@ -1292,6 +1295,7 @@ export async function claimIssue(
       ? {
         affinityHost: markerOptions?.machineId ?? claimingHost,
         ...(milestoneTitle ? { milestoneTitle } : {}),
+        ...(markerOptions?.workDir ? { workDir: markerOptions.workDir } : {}),
       }
       : undefined,
   );

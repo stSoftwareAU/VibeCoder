@@ -18,6 +18,7 @@ import {
   formatStreamHolderMarker,
   parseStreamHolderMarker,
   readStreamHolder,
+  recordStreamHolderForRun,
   resetStreamAffinityState,
   STREAM_AFFINITY_GRACE_SECONDS,
   streamTrackingIssue,
@@ -25,6 +26,10 @@ import {
 } from "../lib/stream_holder.ts";
 import { resolveStreamId, streamKey } from "../lib/stream_identity.ts";
 import { claimIssue } from "../lib/claim_issue.ts";
+import {
+  loadStreamSession,
+  saveStreamSession,
+} from "../lib/resume_state_store.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const MILESTONE = "#2319 session resume on by default";
@@ -216,7 +221,7 @@ Deno.test("writeStreamHolder - an unresolvable tracking issue is logged, not rai
     host: HOLDER,
     ghCommandFn,
     nowSeconds: NOW,
-    log,
+    logInfo: log,
   });
 
   assertEquals(written, false);
@@ -375,7 +380,7 @@ Deno.test("checkStreamAffinity - a non-holder defers and logs the countdown once
     ghCommandFn,
     trustedAuthors: FLEET,
     nowSeconds: NOW,
-    log,
+    logInfo: log,
   });
 
   assertEquals(first.defer, true);
@@ -393,7 +398,7 @@ Deno.test("checkStreamAffinity - a non-holder defers and logs the countdown once
     ghCommandFn,
     trustedAuthors: FLEET,
     nowSeconds: NOW + 30,
-    log,
+    logInfo: log,
   });
   assertEquals(second.defer, true);
   assertEquals(second.secondsLeft, STREAM_AFFINITY_GRACE_SECONDS - 30);
@@ -417,7 +422,7 @@ Deno.test("checkStreamAffinity - after the grace the claim proceeds and the rese
     ghCommandFn,
     trustedAuthors: FLEET,
     nowSeconds: NOW,
-    log,
+    logInfo: log,
   });
 
   const taken = await checkStreamAffinity({
@@ -428,7 +433,7 @@ Deno.test("checkStreamAffinity - after the grace the claim proceeds and the rese
     ghCommandFn,
     trustedAuthors: FLEET,
     nowSeconds: NOW + STREAM_AFFINITY_GRACE_SECONDS,
-    log,
+    logInfo: log,
   });
 
   assertEquals(taken.defer, false);
@@ -505,6 +510,141 @@ Deno.test("checkStreamAffinity - a gh outage fails open, loudly", async () => {
       lines.join(" | ")
     }`,
   );
+  resetStreamAffinityState();
+});
+
+Deno.test("checkStreamAffinity - the hand-over drops this host's stale record", async () => {
+  resetStreamAffinityState();
+  const workDir = await Deno.makeTempDir({ prefix: "stream-holder-" });
+  try {
+    // This host held the stream once; the holder has run several issues since,
+    // so resuming that record would replay an out-of-date conversation.
+    await saveStreamSession(workDir, STREAM, {
+      providerId: "claude",
+      sessionId: crypto.randomUUID(),
+    });
+    assert(await loadStreamSession(workDir, STREAM, "claude") !== null);
+
+    const { ghCommandFn } = holderGh([
+      markerComment(22, formatStreamHolderMarker(KEY, HOLDER, NOW - 60)),
+    ]);
+    const shared = {
+      repo: REPO,
+      issueNumber: 2336,
+      milestoneTitle: MILESTONE,
+      thisHost: OTHER,
+      ghCommandFn,
+      trustedAuthors: FLEET,
+      workDir,
+    };
+
+    await checkStreamAffinity({ ...shared, nowSeconds: NOW });
+    assert(
+      await loadStreamSession(workDir, STREAM, "claude") !== null,
+      "the record survives while the holder still has its head start",
+    );
+
+    const taken = await checkStreamAffinity({
+      ...shared,
+      nowSeconds: NOW + STREAM_AFFINITY_GRACE_SECONDS,
+    });
+    assertEquals(taken.graceExpired, true);
+    assertEquals(
+      await loadStreamSession(workDir, STREAM, "claude"),
+      null,
+      "taking the stream starts its conversation afresh",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+    resetStreamAffinityState();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The phase-facing wrapper
+// ---------------------------------------------------------------------------
+
+Deno.test("recordStreamHolderForRun - writes the holder of the stream the run joined", async () => {
+  const { ghCommandFn, calls } = holderGh([]);
+
+  const written = await recordStreamHolderForRun({
+    joined: { stream: STREAM, holderHost: HOLDER },
+    ghCommandFn,
+    trustedAuthors: FLEET,
+    nowSeconds: NOW,
+  });
+
+  assertEquals(written, true);
+  const post = calls.find((args) => args.includes("POST"));
+  assert(post);
+  assertStringIncludes(post.join(" "), `repos/${REPO}/issues/2319/comments`);
+  assertStringIncludes(post.join(" "), `host=${HOLDER}`);
+});
+
+Deno.test("recordStreamHolderForRun - a run that joined no stream writes nothing", async () => {
+  const { ghCommandFn, calls } = holderGh([]);
+
+  assertEquals(
+    await recordStreamHolderForRun({ joined: undefined, ghCommandFn }),
+    false,
+  );
+  // A join that recorded no host claims no affinity either.
+  assertEquals(
+    await recordStreamHolderForRun({
+      joined: { stream: STREAM },
+      ghCommandFn,
+    }),
+    false,
+  );
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("recordStreamHolderForRun - a gh failure is reported, never raised", async () => {
+  const { log, lines } = capture();
+
+  const written = await recordStreamHolderForRun({
+    joined: { stream: STREAM, holderHost: HOLDER },
+    ghCommandFn: () => Promise.reject(new Error("gh exploded")),
+    trustedAuthors: FLEET,
+    nowSeconds: NOW,
+    log,
+  });
+
+  assertEquals(written, false);
+  assert(lines.some((line) => line.includes("holder_write_failed")));
+});
+
+Deno.test("stream holder logging - a degraded read warns, the expected path informs", async () => {
+  resetStreamAffinityState();
+  const warnings = capture();
+  const info = capture();
+
+  // A milestone with no tracking issue is the feature declining to apply.
+  await writeStreamHolder({
+    repo: REPO,
+    stream: resolveStreamId(REPO, "hand-made milestone"),
+    host: HOLDER,
+    ghCommandFn: () => Promise.reject(new Error("must not be called")),
+    nowSeconds: NOW,
+    log: warnings.log,
+    logInfo: info.log,
+  });
+  assertEquals(warnings.lines.length, 0, warnings.lines.join(" | "));
+  assert(info.lines.some((line) => line.includes("no tracking issue")));
+
+  // A `gh` outage is degraded: affinity stops applying and nobody was told why.
+  await checkStreamAffinity({
+    repo: REPO,
+    issueNumber: 2336,
+    milestoneTitle: MILESTONE,
+    thisHost: OTHER,
+    ghCommandFn: () => Promise.reject(new Error("gh exploded")),
+    trustedAuthors: FLEET,
+    nowSeconds: NOW,
+    log: warnings.log,
+    logInfo: info.log,
+  });
+  assert(warnings.lines.some((line) => line.includes("holder_read_failed")));
   resetStreamAffinityState();
 });
 

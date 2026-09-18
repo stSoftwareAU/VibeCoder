@@ -50,6 +50,7 @@
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { runGhCommand } from "./github.ts";
 import { hostFromMachineId } from "./heartbeat_storage.ts";
+import { deleteStreamSession } from "./resume_state_store.ts";
 import {
   deleteIssueComment,
   fetchMarkerComments,
@@ -174,8 +175,18 @@ interface StreamHolderIo {
    * An empty list disables the filter, matching the stream lock.
    */
   trustedAuthors?: readonly string[];
-  /** Sink for the fail-open reports. Defaults to `console.warn`. */
+  /**
+   * Sink for a **degraded** outcome — a read or write that did not land, so
+   * affinity silently stops applying. Defaults to `console.warn`, because the
+   * reader has something to look into.
+   */
   log?: (message: string) => void;
+  /**
+   * Sink for the **expected** path — the countdown, the hand-over, a milestone
+   * that simply has no tracking issue. Defaults to `console.info`: nothing is
+   * wrong, this is the feature working.
+   */
+  logInfo?: (message: string) => void;
 }
 
 /** Comments of `comments` that this module trusts and that name `key`. */
@@ -228,14 +239,17 @@ export async function writeStreamHolder(
     trustedAuthors = [],
     nowSeconds = Math.floor(Date.now() / 1000),
     log = (message: string) => console.warn(message),
+    logInfo = (message: string) => console.info(message),
   } = options;
 
   const trackingIssue = streamTrackingIssue(stream);
   if (trackingIssue === null) {
     // The blank stream has no holder by design — each host keeps its own — so
-    // it is not worth a line. A milestone that *should* have had one is.
+    // it is not worth a line. A milestone made by hand in the UI is the
+    // feature declining to apply, not a fault: it is stated once per run at
+    // INFO, and nothing is degraded by it.
     if (!isBlankStream(stream)) {
-      log(
+      logInfo(
         `[stream_holder] repo=${repo} stream=${streamLabel(stream)} ` +
           `holder_not_recorded — the milestone title carries no \`#<N>\` ` +
           `head, so it has no tracking issue to record the holder on; ` +
@@ -338,7 +352,12 @@ export async function readStreamHolder(
   let key: string;
   try {
     key = streamKey(stream);
-  } catch {
+  } catch (err) {
+    log(
+      `[stream_holder] repo=${repo} holder_read_failed stream_unresolved ` +
+        `error=${describe(err)} — proceeding with the claim as if no host ` +
+        `held the stream (Issue #2336)`,
+    );
     return null;
   }
 
@@ -503,6 +522,14 @@ export async function checkStreamAffinity(
     thisHost: string;
     /** Current epoch seconds. Defaults to the wall clock. */
     nowSeconds?: number;
+    /**
+     * Durable work directory holding the stream records. Supplied means a
+     * hand-over genuinely **starts the stream afresh**: the local record — this
+     * host's own transcript from whenever it last held the stream, now several
+     * issues out of date — is dropped rather than resumed as if it were
+     * current. Omitted only skips that delete; the claim is unaffected.
+     */
+    workDir?: string;
   } & StreamHolderIo,
 ): Promise<StreamAffinityResult> {
   const {
@@ -513,7 +540,9 @@ export async function checkStreamAffinity(
     ghCommandFn = runGhCommand,
     trustedAuthors = [],
     nowSeconds = Math.floor(Date.now() / 1000),
-    log = (message: string) => console.info(message),
+    workDir,
+    log = (message: string) => console.warn(message),
+    logInfo = (message: string) => console.info(message),
   } = options;
 
   let stream: StreamId;
@@ -544,10 +573,23 @@ export async function checkStreamAffinity(
   const label = streamLabel(stream);
 
   if (decision.graceExpired) {
-    // This host is about to claim and — having no record of this stream on its
-    // own disk — open the conversation again. Say so: a stream that changes
-    // hands loses its context, and nothing else would report it.
-    log(
+    // The conversation is on the other host's disk, so taking the stream means
+    // opening it again from nothing. Any record this host still holds is its
+    // own transcript from when it last had the stream — stale by however many
+    // issues the holder has run since — so it is dropped rather than resumed
+    // as though it were current, and the hand-over is stated plainly.
+    if (workDir !== undefined) {
+      try {
+        await deleteStreamSession(workDir, stream);
+      } catch (err) {
+        log(
+          `[stream_holder] repo=${repo} issue=#${issueNumber} ` +
+            `stream_reset_failed error=${describe(err)} — this host may ` +
+            `resume a stale transcript for ${label} (Issue #2336)`,
+        );
+      }
+    }
+    logInfo(
       `stream session reset: affinity grace expired — ${label} was held by ` +
         `${decision.holderHost}, claimed on this host after ` +
         `${STREAM_AFFINITY_GRACE_SECONDS}s (Issue #2336)`,
@@ -569,7 +611,10 @@ export async function checkStreamAffinity(
   const key = sightingKey(repo, issueNumber);
   if (!deferralLogged.has(key)) {
     deferralLogged.add(key);
-    log(`[stream_holder] repo=${repo} issue=#${issueNumber} ${detail}`);
+    logInfo(
+      `[stream_holder] repo=${repo} issue=#${issueNumber} ${detail} — ` +
+        `retried on a later scan (Issue #2336)`,
+    );
   }
   return { ...decision, detail };
 }

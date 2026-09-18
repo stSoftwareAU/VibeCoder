@@ -1435,6 +1435,7 @@ async function executeClaudeBody(
         config.fleetPrAuthors ?? [],
       ),
       log: (message) => logger.warn(message, { repo, issueNumber }),
+      logInfo: (message) => logger.info(message, { repo, issueNumber }),
     });
   }
 
