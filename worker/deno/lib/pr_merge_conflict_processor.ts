@@ -1099,6 +1099,7 @@ async function resolveConflict(
   timer.start("deepen");
   const fetchBase = await git(run, ["fetch", "origin", baseBranch], workDir);
   if (fetchBase.code !== 0) {
+    timer.stop();
     return {
       ok: false,
       error: new Error(

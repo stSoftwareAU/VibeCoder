@@ -1147,6 +1147,24 @@ export async function syncMilestoneBranchWithDefault(
   // this branch implements where no hunk overlapped. It goes back to the
   // agent rung with the compiler's own output, not straight to a human, and
   // a repair that works is folded into the merge commit.
+  // Issue #2308: a repair round runs the resolution agent from *inside* the
+  // verification, and that run is usually the largest single block of the
+  // sync. Its minutes belong to `agent`, not to `gate` — otherwise the line
+  // attributes the time to the wrong stage, which is the one thing it exists
+  // to get right. The gate's own slices either side of the repair accumulate.
+  const timedRepairAgent: MilestoneConflictAgentFn | undefined = agentFn
+    ? async (request) => {
+      timer.stop();
+      timer.start("agent");
+      try {
+        return await agentFn(request);
+      } finally {
+        timer.stop();
+        timer.start("gate");
+      }
+    }
+    : undefined;
+
   timer.start("gate");
   const verified = await runGateWithRepair({
     gate: runResolutionGate,

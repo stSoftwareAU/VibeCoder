@@ -18,6 +18,7 @@ import {
   currentHost,
   formatStageTimings,
 } from "../lib/conflict_stage_timer.ts";
+import { getHostname } from "../lib/worker_identity.ts";
 
 /** A clock the test advances by hand. */
 function fakeClock(): { now: () => number; advance: (ms: number) => void } {
@@ -179,8 +180,14 @@ Deno.test("formatStageTimings - every stage of the union renders", () => {
   for (const stage of stages) assertStringIncludes(line, stage);
 });
 
-Deno.test("currentHost - resolves a non-empty host name", () => {
-  const host = currentHost();
-  assertEquals(typeof host, "string");
-  assertEquals(host.length > 0, true);
+Deno.test("currentHost - is the worker's own host resolver, not a second one", () => {
+  // The seam must delegate to the resolver every other worker instrument
+  // already uses; a private copy is how two records of the same run end up
+  // naming different hosts. Compared to `getHostname` rather than to a
+  // literal, so the assertion holds on any machine.
+  assertEquals(currentHost(), getHostname());
+  // And it always names something: `getHostname` falls back to a sentinel
+  // rather than returning an empty string, so the line can never read
+  // `Timings (host ``):`.
+  assertEquals(currentHost().length > 0, true);
 });

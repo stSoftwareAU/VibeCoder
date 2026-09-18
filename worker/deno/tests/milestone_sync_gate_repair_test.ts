@@ -543,3 +543,47 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a repair round's minutes are counted as `agent`, not as `gate` (Issue #2308)",
+  async () => {
+    // A repair run is usually the largest single block of a sync, and it
+    // happens *inside* the verification. Counting it as `gate` would put the
+    // sync's biggest cost against the wrong stage — the one thing the
+    // timings line exists to get right.
+    const fx = await setup();
+    try {
+      const calls: Calls = [];
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1965",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        traitGate,
+        undefined,
+        rung(calls, FAKE_REPAIRED),
+      );
+
+      assert(result.ok, `${!result.ok && result.error.message}`);
+      assertEquals(calls.length, 2, "one resolution run, then one repair run");
+
+      const timings = result.value.conflict?.timings ?? "";
+      assertStringIncludes(timings, "Timings (host ");
+      // The stages, in the order the sync ran them. The repair agent runs
+      // between two slices of the gate, and those slices accumulate into the
+      // single `gate` entry rather than opening a second one.
+      const stages = timings.slice(timings.indexOf("):") + 2).trim()
+        .split(" · ").map((part) => part.split(" ")[0]);
+      assertEquals(stages, ["deepen", "rules", "agent", "gate", "push"]);
+      // And no stage was abandoned on the way: wrapping the repair agent must
+      // not leave the gate looking like it never finished.
+      assertEquals(
+        timings.includes("unfinished"),
+        false,
+        `every stage of a repaired sync must be measured; got: ${timings}`,
+      );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);

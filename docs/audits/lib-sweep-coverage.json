@@ -1777,6 +1777,18 @@
       ]
     },
     {
+      "issue": 2308,
+      "chunk": "top-up-2308",
+      "title": "top-up: the merge-conflict stage timer",
+      "ledger": "docs/audits/security-sweep-2308-conflict-stage-timer.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_stage_timer.ts (#2308)",
+      "status": "swept",
+      "sweptAt": "6d2eefc9fbfea11913b6354d3a06e0d9ef884149",
+      "paths": [
+        "worker/deno/lib/conflict_stage_timer.ts"
+      ]
+    },
+    {
       "issue": 2314,
       "chunk": "top-up-2314",
       "title": "top-up: the Graft pull-side wiring",
