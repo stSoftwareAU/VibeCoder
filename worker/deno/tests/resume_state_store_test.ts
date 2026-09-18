@@ -129,6 +129,35 @@ Deno.test("resume_state_store - save sweeps sibling files older than the freshne
   }
 });
 
+Deno.test("resume_state_store - the sweep only considers per-issue record names (Issue #2332)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "resume_store_" });
+  try {
+    const dir = `${workDir}/.claude-sessions/resume`;
+    await Deno.mkdir(dir, { recursive: true });
+    // A file that is not a per-issue record: no issue number, and a `__`
+    // separator no repository slug can produce.
+    const foreign = `${dir}/stream-owner__repo__blank.json`;
+    await Deno.writeTextFile(foreign, JSON.stringify({ sessions: {} }));
+
+    const savedAt = 10_000_000;
+    await saveResumeState(workDir, REPO, 8, {
+      phaseCount: 1,
+      branch: "issue-8-old",
+    }, savedAt);
+    const later = savedAt + RESUME_STATE_MAX_AGE_MS + 60_000;
+    await saveResumeState(workDir, REPO, 9, {
+      phaseCount: 1,
+      branch: "issue-9-new",
+    }, later);
+
+    // The stale per-issue sibling is swept; the foreign file is left alone.
+    assertEquals(await loadResumeState(workDir, REPO, 8, later), null);
+    assertEquals((await Deno.stat(foreign)).isFile, true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
 Deno.test("resume_state_store - Codex thread id round-trips with providerId (Issue #1699)", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "resume_store_" });
   try {
