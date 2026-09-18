@@ -268,6 +268,7 @@ is an `issue` template:
 | `{{QUALITY_INSTRUCTIONS}}` | ✅ | The repository's quality-gate commands |
 | `{{REPO}}` | optional | `owner/repo` |
 | `{{VERBOSITY_INSTRUCTIONS}}` | optional | The configured response-verbosity block |
+| `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` | optional | The advisor/executor block on a run with `issue_executor_split` on (Issue #2343); empty on every other run |
 
 ### A new custom label — `pr` phase
 
