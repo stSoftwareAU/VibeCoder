@@ -214,7 +214,10 @@ export async function checkMilestoneStreamBusy(
 
   const stream = resolveStreamId(repo, milestoneTitle);
   // The blank stream holds no shared conversation, so nothing to lock.
-  if (isBlankStream(stream)) return { busy: false };
+  // Reading the resolved title back is what narrows it for the query below —
+  // `resolveStreamId` leaves it undefined for exactly this case.
+  const title = stream.milestoneTitle;
+  if (isBlankStream(stream) || title === undefined) return { busy: false };
   const label = streamLabel(stream);
 
   let issues: ListedIssue[];
@@ -227,7 +230,7 @@ export async function checkMilestoneStreamBusy(
       "--state",
       "open",
       "--milestone",
-      stream.milestoneTitle!,
+      title,
       "--limit",
       String(STREAM_LOCK_ISSUE_LIMIT),
       "--json",
@@ -248,6 +251,18 @@ export async function checkMilestoneStreamBusy(
         } — proceeding with the claim (Issue #2334)`,
     );
     return { busy: false };
+  }
+
+  // A listing that filled the page may have left live siblings unread, and
+  // "unread" must never read as "the stream is free" — say so.
+  if (issues.length >= STREAM_LOCK_ISSUE_LIMIT) {
+    console.warn(
+      `[stream_lock] repo=${repo} issue=#${issueNumber} ` +
+        `stream_listing_truncated stream=${label} ` +
+        `limit=${STREAM_LOCK_ISSUE_LIMIT} — open issues beyond the limit ` +
+        `were not read, so a live sibling among them cannot hold the ` +
+        `stream (Issue #2334)`,
+    );
   }
 
   const nowMs = nowSeconds * 1000;

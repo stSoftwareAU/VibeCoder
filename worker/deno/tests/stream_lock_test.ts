@@ -410,6 +410,40 @@ Deno.test("checkMilestoneStreamBusy - unparseable JSON fails open", async () => 
   }
 });
 
+Deno.test("checkMilestoneStreamBusy - a full page of issues says the listing was truncated", async () => {
+  // Every issue is quiet, so the check reports the stream free — but the page
+  // filled, so siblings beyond the limit were never read and the reader is
+  // told rather than left with a silent "free".
+  const { ghCommandFn } = listGh(
+    Array.from({ length: STREAM_LOCK_ISSUE_LIMIT }, (_unused, index) => ({
+      number: 3000 + index,
+      comments: [],
+    })),
+  );
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    const status = await checkMilestoneStreamBusy({
+      repo: REPO,
+      milestoneTitle: MILESTONE,
+      issueNumber: 2334,
+      ghCommandFn,
+      trustedAuthors: FLEET,
+      nowSeconds: NOW,
+    });
+    assertEquals(status.busy, false);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert(
+    warnings.some((line) => line.includes("stream_listing_truncated")),
+    "a truncated listing must be reported, not read as a free stream",
+  );
+});
+
 Deno.test("formatStreamBusy - names the stream, the holder issue and the host", () => {
   const line = formatStreamBusy({
     busy: true,
