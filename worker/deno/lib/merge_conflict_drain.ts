@@ -27,9 +27,9 @@
  *   issue slot holds its repository — is not re-selected by the next scan.
  *   Without it the drain spins on the same PR.
  *
- * Per-PR budgets (4-hour cooldown, two concluded attempts, `needs-human`) are
- * the scan's, unchanged: this loop only decides how many of the PRs already
- * due get taken this cycle.
+ * The per-PR budget (two concluded attempts, then the abandon rung and
+ * `needs-human`) is the scan's, unchanged: this loop only decides how many of
+ * the PRs already due get taken this cycle.
  *
  * All three bounds drop a due PR, and repeated every cycle they starve one
  * (Issue #1111): the scan re-derives the same order every pass, so the PR

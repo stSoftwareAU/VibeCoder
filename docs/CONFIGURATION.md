@@ -4350,9 +4350,8 @@ schedule. Three rules keep this watchdog out of its way (Issue #1213):
 
 `NEAT-AI-Ockham#119` is why. It was escalated at 09:57 as "green and unmerged …
 or close it", was labelled `merge-conflict` at 10:00, and a human — acting on
-the fleet's own thirteen-minute-old comment — closed it at 10:10, inside the
-ladder's cooldown and before its first attempt ever ran. The work was redone by
-hand two hours later.
+the fleet's own thirteen-minute-old comment — closed it at 10:10, before the
+ladder's first attempt ever ran. The work was redone by hand two hours later.
 
 On a trip it posts **one** escalation comment per PR per stall reason (deduped
 by the `needs-human-escalation` HTML marker, so a long stall never accrues a

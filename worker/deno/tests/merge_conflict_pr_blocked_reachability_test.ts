@@ -136,7 +136,6 @@ function scanOckham(mergeable: string, labels: string[]) {
     // allowlist, and nothing about claimability.
     isRepoAllowed: (repo: string) => isRepoAllowed(MONITORED, repo),
     ghCommandFn: makeGh(mergeable, labels),
-    nowMs: () => Date.parse("2026-09-05T00:08:36Z"),
   });
 }
 

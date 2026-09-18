@@ -27,10 +27,7 @@ import {
   type SyncStreakEntry,
   trackingIssueFromMilestoneTitle,
 } from "../lib/milestone_sync_streak.ts";
-import {
-  DEFAULT_CONFLICT_COOLDOWN_HOURS,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
-} from "../lib/pr_merge_conflict_scan.ts";
+import { DEFAULT_MAX_CONFLICT_ATTEMPTS } from "../lib/pr_merge_conflict_scan.ts";
 import {
   type MilestoneBranchSyncDeps,
   syncMilestoneBranches,
@@ -183,14 +180,6 @@ Deno.test("sync streaks - no streakPath means no tracking and no comment (Issue 
 // Per-branch conflict attempt ledger (Issue #1766)
 // ---------------------------------------------------------------------------
 
-Deno.test("conflict ledger - the budget is the one the PR ladder spends (Issue #1766)", () => {
-  assertEquals(
-    MILESTONE_CONFLICT_ATTEMPT_BUDGET,
-    DEFAULT_MAX_CONFLICT_ATTEMPTS,
-  );
-  assertEquals(MILESTONE_CONFLICT_ATTEMPT_BUDGET, 3);
-});
-
 Deno.test("conflict ledger - only a concluded failure is charged (Issue #1766)", () => {
   let entry: SyncStreakEntry = { count: 0, escalated: false };
 
@@ -259,7 +248,9 @@ Deno.test("conflict ledger - exhaustion counts concluded failures only (Issue #1
   assert(!isConflictBudgetExhausted({ count: 0, escalated: false }));
 });
 
-Deno.test("conflict ledger - a failure defers the same tip and not a moved one (Issue #1766)", () => {
+Deno.test("conflict ledger - a charged failure paces nothing (Issue #2305)", () => {
+  // The cooldown is gone: a failure spends one of the branch's two attempts
+  // and paces nothing, so the next cycle may try again straight away.
   const failedAt = Date.parse("2026-09-09T00:00:00Z");
   const entry = concludeConflictAttempt(
     { count: 0, escalated: false },
@@ -268,31 +259,27 @@ Deno.test("conflict ledger - a failure defers the same tip and not a moved one (
     "sha-x",
     failedAt,
   );
-  assert(entry.deferUntil !== undefined, "a failure sets the cooldown");
-
+  assertEquals(entry.conflictAttempts, 1);
   assert(
-    !isConflictAttemptDue(entry, "sha-x", failedAt + 60_000),
-    "not due again on the same tip inside the cooldown",
+    isConflictAttemptDue(entry),
+    "due again on the very next cycle, same tip and all",
   );
+  assert(isConflictAttemptDue({ count: 0, escalated: false }));
+});
+
+Deno.test("conflict ledger - an open attempt is the only thing not due (Issue #2305)", () => {
+  const at = Date.parse("2026-09-09T00:00:00Z");
+  const open = openConflictAttempt({ count: 0, escalated: false }, at);
+  assert(!isConflictAttemptDue(open), "an attempt open on this host holds");
   assert(
     isConflictAttemptDue(
-      entry,
-      "sha-x",
-      failedAt + (DEFAULT_CONFLICT_COOLDOWN_HOURS + 1) * 3600_000,
+      concludeConflictAttempt(open, "disrupted", "the run ended", "sha-x", at),
     ),
-    "due on the same tip once the cooldown has passed",
-  );
-  assert(
-    isConflictAttemptDue(entry, "sha-y", failedAt + 60_000),
-    "due immediately on a moved tip",
-  );
-  assert(
-    isConflictAttemptDue({ count: 0, escalated: false }, "sha-x", failedAt),
-    "a branch with no ledger is due",
+    "concluding it — even uncharged — hands the branch back",
   );
 });
 
-Deno.test("conflict ledger - a moved tip clears the deferral but not the count (Issue #1766)", () => {
+Deno.test("conflict ledger - a moved tip never refills the budget (Issue #1766)", () => {
   const failedAt = Date.parse("2026-09-09T00:00:00Z");
   const failed = concludeConflictAttempt(
     { count: 0, escalated: false, conflictAttempts: 1 },
@@ -310,59 +297,19 @@ Deno.test("conflict ledger - a moved tip clears the deferral but not the count (
     2,
     "a moved tip never zeroes the attempt count",
   );
-  assertEquals(moved.deferUntil, undefined, "a moved tip clears the deferral");
 
-  // The unmoved tip is the case the pacing depends on: recording the tip the
-  // attempt just failed against must leave the cooldown running, even on the
-  // first recording, when `lastSyncedDefaultSha` is still unset.
-  assertEquals(failed.lastSyncedDefaultSha, undefined);
   const same = recordDefaultSha(failed, "sha-x");
   assertEquals(same.conflictAttempts, 2);
-  assertEquals(same.deferUntil, failed.deferUntil, "the cooldown still runs");
-  assert(
-    !isConflictAttemptDue(same, "sha-x", failedAt + 30_000),
-    "an unmoved tip is not re-attempted 30 seconds later",
-  );
-
-  // And once the tip has been recorded, a later move clears it as before.
-  const thenMoved = recordDefaultSha(same, "sha-y");
-  assertEquals(thenMoved.deferUntil, undefined);
-  assertEquals(thenMoved.conflictAttempts, 2);
+  assertEquals(same.lastSyncedDefaultSha, "sha-x");
 });
 
-Deno.test("conflict ledger - an uncharged conclusion on a moved tip clears the deferral (Issue #1766)", () => {
-  const failedAt = Date.parse("2026-09-09T00:00:00Z");
-  const failed = concludeConflictAttempt(
-    { count: 0, escalated: false },
-    "failed",
-    "conflict",
-    "sha-x",
-    failedAt,
+Deno.test("conflict ledger - two runs, and the PR ladder's own budget (Issue #2305)", () => {
+  assertEquals(MILESTONE_CONFLICT_ATTEMPT_BUDGET, 2);
+  assertEquals(
+    MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    DEFAULT_MAX_CONFLICT_ATTEMPTS,
+    "one constant, two ladders — they cannot drift apart",
   );
-
-  // Same tip: the cooldown set for it still stands.
-  const stillX = concludeConflictAttempt(
-    openConflictAttempt(failed, failedAt + 60_000),
-    "disrupted",
-    "the cycle ended",
-    "sha-x",
-    failedAt + 120_000,
-  );
-  assertEquals(stillX.deferUntil, failed.deferUntil);
-  assert(!isConflictAttemptDue(stillX, "sha-x", failedAt + 180_000));
-
-  // A different tip: the conflict being paced is not the one in front of the
-  // branch any more, so the deferral goes even though nothing was charged.
-  const onY = concludeConflictAttempt(
-    openConflictAttempt(failed, failedAt + 60_000),
-    "disrupted",
-    "the cycle ended",
-    "sha-y",
-    failedAt + 120_000,
-  );
-  assertEquals(onY.deferUntil, undefined);
-  assertEquals(onY.conflictAttempts, 1, "and nothing was charged");
-  assert(isConflictAttemptDue(onY, "sha-y", failedAt + 180_000));
 });
 
 Deno.test("conflict ledger - only success zeroes the ledger (Issue #1766)", () => {
@@ -371,7 +318,6 @@ Deno.test("conflict ledger - only success zeroes the ledger (Issue #1766)", () =
     escalated: false,
     conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
     attemptOpenedAt: "2026-09-09T00:00:00.000Z",
-    deferUntil: "2026-09-09T04:00:00.000Z",
     lastAttempt: {
       at: "2026-09-09T00:10:00.000Z",
       outcome: "failed",
@@ -384,7 +330,6 @@ Deno.test("conflict ledger - only success zeroes the ledger (Issue #1766)", () =
 
   const reset = resetConflictLedgerOnSuccess(spent);
   assertEquals(reset.conflictAttempts, 0);
-  assertEquals(reset.deferUntil, undefined);
   assertEquals(reset.attemptOpenedAt, undefined);
   assertEquals(
     reset.lastAttempt,
@@ -419,9 +364,8 @@ Deno.test("conflict ledger - a pre-change streak file loads as zero attempts (Is
     assertEquals(entry.conflictEscalatedSha, "sha-old");
     assertEquals(entry.conflictAttempts ?? 0, 0);
     assertEquals(entry.attemptOpenedAt, undefined);
-    assertEquals(entry.deferUntil, undefined);
     assert(!isConflictBudgetExhausted(entry));
-    assert(isConflictAttemptDue(entry, "sha-any", Date.now()));
+    assert(isConflictAttemptDue(entry));
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -439,7 +383,6 @@ Deno.test("conflict ledger - a malformed ledger field is never trusted (Issue #1
           escalated: false,
           conflictAttempts: "two",
           attemptOpenedAt: 17,
-          deferUntil: "not a timestamp",
           lastAttempt: { at: "2026-09-09T00:00:00.000Z", outcome: "invented" },
           rollbacks: "many",
         },
@@ -456,15 +399,6 @@ Deno.test("conflict ledger - a malformed ledger field is never trusted (Issue #1
       undefined,
       "an outcome outside the three the ledger knows is not kept",
     );
-    assertEquals(
-      entry.deferUntil,
-      "not a timestamp",
-      "an unparseable deferral is kept, never read as 'no cooldown applies'",
-    );
-    assert(
-      !isConflictAttemptDue(entry, "sha-x", Date.now()),
-      "a corrupt persisted deferral holds the branch back",
-    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -479,12 +413,10 @@ Deno.test("conflict ledger - a full ledger survives a save/load round trip (Issu
     entry = openConflictAttempt(entry, at);
     entry = concludeConflictAttempt(entry, "failed", "conflict", "sha-x", at);
     entry = recordDefaultSha(entry, "sha-x");
-    // Re-open an attempt so the open marker and the live deferral — the two
-    // fields a conclusion would otherwise have cleared — are both persisted.
+    // Re-open an attempt so the open marker — the field a conclusion would
+    // otherwise have cleared — is persisted too.
     entry = openConflictAttempt(entry, at + 60_000);
-    assert(
-      entry.deferUntil !== undefined && entry.attemptOpenedAt !== undefined,
-    );
+    assert(entry.attemptOpenedAt !== undefined);
 
     await saveSyncStreaks(path, { "o/r|milestone/x": entry });
     const back = (await loadSyncStreaks(path))["o/r|milestone/x"];
@@ -499,25 +431,39 @@ Deno.test("conflict ledger - a full ledger survives a save/load round trip (Issu
   }
 });
 
-Deno.test("conflict ledger - a corrupt deferUntil holds the branch back, not forward (Issue #1766)", () => {
-  const entry: SyncStreakEntry = {
-    count: 0,
-    escalated: false,
-    conflictAttempts: 1,
-    deferUntil: "not a timestamp",
-    lastAttempt: {
-      at: "2026-09-09T00:00:00.000Z",
-      outcome: "failed",
-      reason: "conflict",
-      defaultSha: "sha-x",
-    },
-  };
-  assert(
-    !isConflictAttemptDue(entry, "sha-x", Date.now()),
-    "an unparseable deferral is treated as still running",
-  );
-  assert(
-    isConflictAttemptDue(entry, "sha-y", Date.now()),
-    "a moved tip is still due",
-  );
+Deno.test("conflict ledger - a legacy deferUntil is dropped on load, and the branch is due (Issue #2305)", async () => {
+  // A ledger an older worker wrote still carries `deferUntil`. It must not
+  // pace a branch against a cooldown that no longer exists.
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = milestoneSyncStreakPath(dir);
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        "o/r|milestone/x": {
+          count: 1,
+          escalated: false,
+          conflictAttempts: 1,
+          deferUntil: new Date(Date.now() + 4 * 3600_000).toISOString(),
+          lastAttempt: {
+            at: "2026-09-09T00:00:00.000Z",
+            outcome: "failed",
+            reason: "conflict",
+            defaultSha: "sha-x",
+          },
+        },
+      }),
+    );
+    const entry = (await loadSyncStreaks(path))["o/r|milestone/x"];
+    assert(entry, "the entry still loads");
+    assertEquals(entry.conflictAttempts, 1, "the charge it did record stands");
+    assertEquals(
+      (entry as unknown as Record<string, unknown>).deferUntil,
+      undefined,
+      "the legacy deferral is dropped",
+    );
+    assert(isConflictAttemptDue(entry), "and the branch is due immediately");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

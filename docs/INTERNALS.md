@@ -3325,7 +3325,7 @@ side is taken from.
 Only a file **every** rung leaves undecided aborts the merge; since
 Issue #1778 that abortion reaches nobody while the branch's conflict budget
 still has an attempt in it — it is charged to the ledger, named in one log line
-`conflict attempt n of 3 failed at rung <rung>`, and the exhausted budget is
+`conflict attempt n of 2 failed at rung <rung>`, and the exhausted budget is
 what reaches for the roll-back. An
 agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
 or leaves a conflict marker behind is a failed rung: the merge is aborted and
@@ -3415,7 +3415,7 @@ flowchart TD
     RU -- "left over" --> AG{"Resolution agent?"}
     AG -- "fails or aborts" --> X["Abort — nothing pushed —<br/>charge the ledger, log the rung,<br/>post nothing (Issue #1778)"]
     X --> XB{"Budget exhausted?"}
-    XB -- "no" --> XW["Wait out the cooldown"]
+    XB -- "no" --> XW["Retry on the next cycle"]
     XB -- "yes" --> XR["Hand off to the roll-back"]
     AG -- decided --> V["Commit the per-file rungs, then verify:<br/>#974 type check + check:manifests + unit suite"]
     T -- decided --> V
@@ -3638,7 +3638,8 @@ flowchart TD
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
 A milestone branch that conflicts with the default branch gets the same
-**budget of three concluded attempts** a conflicting PR gets:
+**budget of two concluded attempts, with no wait between them** (Issue #2305)
+that a conflicting PR gets:
 [milestone_sync_streak.ts](../worker/deno/lib/milestone_sync_streak.ts) exports
 `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as
 [`DEFAULT_MAX_CONFLICT_ATTEMPTS`](../worker/deno/lib/pr_merge_conflict_scan.ts)
@@ -3652,12 +3653,14 @@ restarts. The sync pass writes `lastSyncedDefaultSha` through it for the
 cadence gate (Issue #1776) and charges the conflict *attempts* around every
 merge it makes (Issue #1778). Each entry carries `conflictAttempts` (concluded failures),
 `attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
-(`at`, `outcome`, `reason`, `defaultSha`), `deferUntil`, `lastSyncedDefaultSha`
-and `rollbacks`. Every field is optional and every malformed field is dropped,
-so a file written before the ledger existed loads as a branch with an unspent
-budget rather than failing the whole load.
+(`at`, `outcome`, `reason`, `defaultSha`), `lastSyncedDefaultSha` and
+`rollbacks`. Every field is optional and every malformed field is dropped, so a
+file written before the ledger existed loads as a branch with an unspent budget
+rather than failing the whole load — and a `deferUntil` an older worker wrote
+is dropped on load, so a cooldown that no longer exists cannot pace a branch
+(Issue #2305).
 
-Four rules decide what the ledger does, and each is a pure helper:
+Three rules decide what the ledger does, and each is a pure helper:
 
 - **Only a concluded failure is charged.** `openConflictAttempt` records that
   an attempt started and charges nothing; `concludeConflictAttempt` charges
@@ -3665,36 +3668,27 @@ Four rules decide what the ledger does, and each is a pure helper:
   `not-charged`. An attempt left open reads as disrupted on the next cycle —
   the run died before the conflict was judged, so the conflict was never
   actually tried (the PR ladder's marker rule from #395 and #1693).
-- **A failure paces the next attempt.** A `failed` conclusion sets `deferUntil`
-  to now + `DEFAULT_CONFLICT_COOLDOWN_HOURS`. Without it a conflict that fails
-  identically against an unmoved default tip is re-attempted on every
-  30-second cycle and the whole budget is gone in 90 seconds.
-- **A moved tip clears the deferral, never the count.** A live `deferUntil`
-  always paces the branch against one tip — the one the failure ran against —
-  so *any* observation of a different tip clears it: `recordDefaultSha` when
-  the sync records the new tip, and `concludeConflictAttempt` when an
-  uncharged attempt concludes against it. `conflictAttempts` is left alone
-  either way: resetting on a tip move would refill the budget faster than a
-  busy default branch could let the ladder spend it, and an unresolvable
-  conflict would retry for ever. `isConflictAttemptDue` reads the pair — due
-  when the tip has moved since the last concluded attempt, or when the
-  deferral has passed. A `deferUntil` that does not parse is refused rather
-  than ignored, at load time as well as in memory: reading corruption as "no
-  cooldown applies" is the permissive direction on a safety bound, and the
-  next tip move clears it anyway.
+- **A failure paces nothing.** A `failed` conclusion charges one of the two
+  attempts and writes no deferral (Issue #2305): the branch is due again on the
+  very next cycle, and the budget itself — two runs, then the roll-back — is
+  what bounds the retrying. `isConflictAttemptDue` is therefore "no attempt is
+  open on this host"; a sibling host's live attempt is refused by the sync
+  claim (`milestone_sync_claim.ts`), which is cross-host as the ledger is not.
+  A moved tip never refills `conflictAttempts`: resetting on a tip move would
+  refill the budget faster than a busy default branch could let the ladder
+  spend it, and an unresolvable conflict would retry for ever.
 - **Only success zeroes it.** `resetConflictLedgerOnSuccess` is the one thing
-  that returns `conflictAttempts` to zero and clears the deferral; the
-  lifetime `rollbacks` count survives, because it describes the branch rather
-  than the conflict that just ended.
+  that returns `conflictAttempts` to zero; the lifetime `rollbacks` count
+  survives, because it describes the branch rather than the conflict that just
+  ended.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
     Idle --> Open: openConflictAttempt
     Open --> Idle: conclude disrupted / not-charged<br/>(budget untouched)
-    Open --> Deferred: conclude failed<br/>(+1 attempt, deferUntil set)
-    Deferred --> Idle: tip moves (recordDefaultSha)<br/>or cooldown passes
-    Idle --> Exhausted: conflictAttempts == budget (3)
+    Open --> Idle: conclude failed<br/>(+1 attempt, due again at once)
+    Idle --> Exhausted: conflictAttempts == budget (2)
     Open --> Idle: resetConflictLedgerOnSuccess
     Exhausted --> Idle: resetConflictLedgerOnSuccess
 ```
@@ -3703,18 +3697,20 @@ stateDiagram-v2
 
 [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts) spends
 those helpers around every merge it makes (Issue #1778). Before the merge it
-concludes any attempt a previous run left open as `disrupted`, skips the branch
-outright when `isConflictAttemptDue` is false — `skipped: conflict attempt not
-due until <deferUntil>` — and otherwise opens an attempt and **persists it
-before the merge starts**, so a run killed mid-merge leaves the marker the next
-cycle reads.
+concludes any attempt a previous run left open as `disrupted` — that open
+marker is exactly what `conflictAttemptDue` reads, so concluding it is what
+makes the branch due again — and then opens an attempt and **persists it
+before the merge starts**, so a run killed mid-merge leaves the marker the
+next cycle reads.
 
 The conclusion is decided by `judgeSyncFailure`, and only one shape of failure
 is the branch's to answer for:
 
 | What the merge did                                             | Ledger outcome                             |
 | -------------------------------------------------------------- | ------------------------------------------ |
-| Conflicted and every rung left it undecided                     | `failed` — one attempt charged, cooldown set |
+| Conflicted and every rung left it undecided                     | `failed` — one attempt charged, due again next cycle |
+| The agent ran out **its own** timeout                           | `failed` — the rung was climbed and the conflict beat it (Issue #2305) |
+| The **worker** ended the run at the cycle deadline              | `disrupted` — nothing was judged, so nothing is charged (Issues #1693, #2305) |
 | Conflicted while the cycle's agent rung was already spent       | `not-charged` — `agent deferred: cycle budget` |
 | Merge gate refused the merged tree, or refused the resolution    | `not-charged` — the gate keeps its own escalation, reported once |
 | A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
@@ -3722,11 +3718,11 @@ is the branch's to answer for:
 | Merged                                                          | `resetConflictLedgerOnSuccess`             |
 
 **Nothing is posted while an attempt remains.** A conflict failure produces one
-log line — `conflict attempt n of 3 failed at rung <rung>` — and no comment, no
+log line — `conflict attempt n of 2 failed at rung <rung>` — and no comment, no
 label and no issue. The per-conflict analysis escalation Issue #1559 posted on
-the first conflicting commit is gone: it fired before any of the three
-automatic attempts had been spent, which is exactly the "needs-human while a
-rung remains" this budget removes. On the third concluded failure the branch is
+the first conflicting commit is gone: it fired before any of the automatic
+attempts had been spent, which is exactly the "needs-human while a rung
+remains" this budget removes. On the last concluded failure the branch is
 handed to the roll-back (`executeRollback`, Issue #1781). On `merged: true`
 the ledger is reset, `rollbacks` is incremented and the reverted SHAs are
 recorded; on `merged: false` one `needs-human` comment lands on the existing
@@ -3759,7 +3755,7 @@ cycle-deadline watchdog rather than the flat 600-second one.
 
 **A branch past its budget is not merged again.** It is the roll-back's, so the
 pre-merge guard skips it with `the conflict budget is spent` rather than
-charging a fourth attempt and re-entering the hand-off every cooldown.
+charging a third attempt and re-entering the hand-off every cycle.
 
 ##### Sync before new work — the child run's own pre-cut sync
 
@@ -3792,25 +3788,25 @@ consequences are worth naming:
   in the ledger's `conflictEscalatedSha` so neither pass repeats it — and names
   the conflicting files in the log whether or not a reporter is wired.
 - **A landed sync concludes through the sweep's `recordSuccess`**, not a second
-  transition of its own: the budget is refilled, the open marker and the
-  deferral are dropped, and the failure streak ends with its escalation flags,
+  transition of its own: the budget is refilled, the open marker is dropped,
+  and the failure streak ends with its escalation flags,
   so the sweep cannot later escalate a branch this run already brought level.
 - **The agent rung is granted** (bounded by `grantAgentRun` against the run's own
   deadline, exactly as the sweep bounds it). Only an attempt that climbed the
-  whole ladder may charge the branch's budget, and charging is what writes the
-  `deferUntil` that paces every other slot off the milestone.
+  whole ladder may charge the branch's budget, and spending the **second**
+  charge is what paces every other slot off the milestone.
 - **A base nobody could measure is never cut from.** An unreadable behind-count
   defers rather than proceeding, and an unwritable ledger says so loudly and
   still merges — what is lost is the pacing, not the branch. The default tip is
   read **before** the count, because reading it is what fetches it: counting
   against a stale `origin/<default>` would answer "level" for a branch that is
   behind, which is the very defect this gate exists to stop.
-- **Only a charged failure paces the milestone.** A conflict every granted rung
-  left undecided writes `deferUntil`; a ruleset-refused push, a merge-gate
-  refusal or any other `not-charged` verdict does not — charging the branch for
-  a fault that is not its own is what Issues #1772 and #1778 removed. Those
-  deferrals are bounded by the per-issue expected-skip cooldown instead: one
-  bounce per issue, then the issue is in cooldown.
+- **Only a charged failure spends the budget.** A conflict every granted rung
+  left undecided is charged; a ruleset-refused push, a merge-gate refusal or
+  any other `not-charged` verdict is not — charging the branch for a fault that
+  is not its own is what Issues #1772 and #1778 removed. Those deferrals are
+  bounded by the per-issue expected-skip cooldown instead: one bounce per
+  issue, then the issue is in cooldown.
 
 When the branch cannot be brought level the run **defers**: it exits before any
 implementation agent is spent, with reason
@@ -3822,10 +3818,13 @@ claim-release comment, which states the reason.
 The loop guard is the other half. `findNextIssue` reads
 `milestone_sync_failures.json` once per scan — a local file, no API call — and
 `find_oldest_issue.ts` skips **every tier's** candidates in a milestone whose
-`deferUntil` is still in the future, logging
-`skipped: milestone behind default branch (paced until <deferUntil>)` and
-recording the `milestone-behind` skip reason. Without it a paced milestone was
-claimed, deferred and commented on again every 30-second cycle.
+ledger entry either has an attempt **open on this host** or has **spent its
+conflict budget** (Issue #2305), logging
+`skipped: milestone behind default branch (<reason>)` and recording the
+`milestone-behind` skip reason. Without it a paced milestone was claimed,
+deferred and commented on again every 30-second cycle. A branch with one
+charged failure and an attempt still in hand is *not* paced: its children may
+be claimed, and the next child run's own pre-cut sync is what tries again.
 
 ```mermaid
 flowchart TD
@@ -3837,8 +3836,8 @@ flowchart TD
     E -- "no" --> X["early exit<br/>deferred: milestone behind<br/>default branch"]
     E -- "yes" --> F["open attempt, merge default down<br/>(ladder + agent rung)"]
     F -- "landed" --> G["reset budget,<br/>record tip"] --> D
-    F -- "conflict unresolved" --> H["charge 1 attempt,<br/>set deferUntil"] --> X
-    X --> Y["selector skips the milestone's<br/>issues until deferUntil passes"]
+    F -- "conflict unresolved" --> H["charge 1 attempt<br/>(2 spends the budget)"] --> X
+    X --> Y["selector skips the milestone's issues<br/>while an attempt is open<br/>or the budget is spent"]
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
     style X fill:#9d4e15,stroke:#6b3410,color:#fff
 ```

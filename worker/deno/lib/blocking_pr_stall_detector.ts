@@ -35,8 +35,8 @@
  * green-but-unmerged, any escalation it does carry names the ladder instead of
  * offering "or close it", and a live escalation is withdrawn once the ladder
  * takes the PR. NEAT-AI-Ockham#119 was closed by hand thirteen minutes after
- * this watchdog listed that option, inside the ladder's cooldown and before
- * its first attempt ever ran.
+ * this watchdog listed that option, before the ladder's first attempt ever
+ * ran.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -316,7 +316,7 @@ export function detectBlockingPrStall(
   //
   // A PR the merge-conflict ladder owns is never green-but-unmerged (Issue
   // #1213): it is not landing because it conflicts, which is a lane with its
-  // own attempts, cooldown and abandon rung. NEAT-AI-Ockham#119 was reported
+  // own attempts and its own abandon rung. NEAT-AI-Ockham#119 was reported
   // here as "green and unmerged … or close it" and a human closed it before
   // the ladder's first attempt ever ran.
   const laneOwned = isMergeConflictLaneOwned(observation);
@@ -412,8 +412,8 @@ export const BLOCKING_PR_STALL_NEXT_STEP =
  *
  * The ladder resolves, then rebases, then abandons and restarts — closing is
  * its rung 3, taken after its own attempts fail, not an option to put in front
- * of a human at minute zero. A hand close inside the cooldown skips every rung
- * and the work is redone from scratch, which is what happened to
+ * of a human at minute zero. A hand close before those attempts run skips
+ * every rung and the work is redone from scratch, which is what happened to
  * NEAT-AI-Ockham#119.
  *
  * The actionable verbs stay: the ladder rebases a conflict, it does not fix red

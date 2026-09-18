@@ -253,7 +253,7 @@ Deno.test("detectConflictQueueStall - parked PRs are excluded", () => {
   }
 });
 
-Deno.test("detectConflictQueueStall - the threshold defaults to twice the cooldown", () => {
+Deno.test("detectConflictQueueStall - the threshold is eight hours (Issue #2305)", () => {
   assertEquals(DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS, 8);
   assertEquals(detect(observation(7.9)), null);
   assert(detect(observation(8.1)) !== null);
@@ -271,7 +271,7 @@ Deno.test("buildConflictStallComment - names the age, the silence and the skip r
   const stall = detect(
     observation(9, [], {
       skipReasons: [
-        { kind: "cooldown", msUntilDue: 900_000 },
+        { kind: "budget-spent", attemptsSpent: 2, maxAttempts: 2 },
         { kind: "repo-leased", deferralStreak: 4 },
       ],
     }),
@@ -280,8 +280,8 @@ Deno.test("buildConflictStallComment - names the age, the silence and the skip r
   const body = buildConflictStallComment(stall);
   assertStringIncludes(body, workEscalationMarker(REPO, PR));
   assertStringIncludes(body, "9 hours");
-  assertStringIncludes(body, "cooldown");
-  assertStringIncludes(body, "msUntilDue");
+  assertStringIncludes(body, "budget-spent");
+  assertStringIncludes(body, "attemptsSpent");
   assertStringIncludes(body, "repo-leased");
   assertStringIncludes(body, "deferralStreak");
 });
@@ -593,23 +593,23 @@ Deno.test("scanConflictQueueStalls - a state that stays uncomputed escalates not
 Deno.test("scanConflictQueueStalls - repeated identical skip reasons are collapsed", async () => {
   const github = fakeGitHub();
   const work = fakeEscalateWork();
-  const cooldown = {
+  const leased = {
     repo: REPO,
     prNumber: PR,
     outcome: "skipped" as const,
-    reason: { kind: "cooldown" as const, msUntilDue: 900_000 },
+    reason: { kind: "repo-leased" as const, deferralStreak: 4 },
   };
 
   const scan = await scanConflictQueueStalls({
     ...scanOptions(github, work),
     // The drain calls the scan once per PR it takes, so one held-back PR is
     // decided on several times in a cycle.
-    decisions: [cooldown, cooldown, cooldown],
+    decisions: [leased, leased, leased],
   });
 
   assertEquals(scan[0]?.skipReasons.length, 1);
   const body = postedComments(github.calls)[0] ?? "";
-  assertEquals(body.split("`cooldown`").length - 1, 1);
+  assertEquals(body.split("`repo-leased`").length - 1, 1);
 });
 
 Deno.test("scanConflictQueueStalls - a repo outside the allowlist is not touched", async () => {

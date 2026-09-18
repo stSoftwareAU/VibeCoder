@@ -38,6 +38,19 @@ import { unstageWorkerStateFiles } from "./git_push.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { describeGitFailure } from "./milestone_merge_state.ts";
 
+/**
+ * The reason the agent rung leaves when the **worker** ended the run — the
+ * watchdog's SIGTERM at the cycle deadline, not the agent's own ceiling
+ * (Issue #1693).
+ *
+ * Spelled once here because `judgeSyncFailure` reads it back to tell a kill
+ * from a judged failure: a kill concludes `disrupted` and is charged nothing,
+ * while an agent that ran out its own timeout is a failed attempt like any
+ * other (Issue #2305).
+ */
+export const AGENT_RUN_ENDED_BY_WORKER =
+  "the run was ended by the worker before it finished";
+
 /** One agent run asked for by the milestone sync. */
 export interface MilestoneConflictAgentRequest {
   /** Paths the triage and the dependency rules both left undecided. */
@@ -370,8 +383,7 @@ export async function climbConflictLadder(
     return {
       resolved,
       escalations: stillEscalated(() =>
-        `agent: the run was ended by the worker before it finished ` +
-        `(Issue #1693)`
+        `agent: ${AGENT_RUN_ENDED_BY_WORKER} (Issue #1693)`
       ),
     };
   }

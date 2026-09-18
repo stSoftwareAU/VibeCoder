@@ -22,7 +22,9 @@ import {
   loadSyncStreaks,
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   milestoneSyncStreakPath,
+  resetConflictLedgerOnSuccess,
   saveSyncStreaks,
+  type SyncStreakEntry,
   type SyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
@@ -164,16 +166,21 @@ Deno.test("presyncMilestoneBranch - a behind branch is synced and the new tip re
     assert(entry, "a successful sync records the tip it synced against");
     assertEquals(entry.conflictAttempts, 0);
     assertEquals(entry.attemptOpenedAt, undefined);
-    assertEquals(entry.deferUntil, undefined);
     assertEquals(entry.lastSyncedDefaultSha, "d".repeat(40));
   } finally {
     await fx.cleanup();
   }
 });
 
-Deno.test("presyncMilestoneBranch - a spent conflict budget is refilled by a later success", async () => {
+Deno.test("presyncMilestoneBranch - a part-spent conflict budget is refilled by a later success", async () => {
   const fx = await ledger({
-    [KEY]: { count: 1, escalated: false, conflictAttempts: 2 },
+    // One of the two attempts already charged (Issue #2305) — a spent budget
+    // defers instead, which its own test below covers.
+    [KEY]: {
+      count: 1,
+      escalated: false,
+      conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+    },
   });
   try {
     const result = await presyncMilestoneBranch({
@@ -243,11 +250,6 @@ Deno.test("presyncMilestoneBranch - an unresolved conflict charges exactly one a
     assert(entry);
     assertEquals(entry.conflictAttempts, 1, "charged exactly once");
     assertEquals(entry.attemptOpenedAt, undefined, "the marker is closed");
-    assert(entry.deferUntil, "a charged failure paces the branch");
-    assert(
-      Date.parse(entry.deferUntil) > NOW,
-      "the deferral must be in the future",
-    );
     assertEquals(entry.lastAttempt?.outcome, "failed");
   } finally {
     await fx.cleanup();
@@ -342,14 +344,15 @@ Deno.test("presyncMilestoneBranch - a merge that landed on a resolved conflict i
 // The ledger holds the branch back
 // ---------------------------------------------------------------------------
 
-Deno.test("presyncMilestoneBranch - a live deferral defers without attempting a merge", async () => {
-  const deferUntil = new Date(NOW + 3600_000).toISOString();
+Deno.test("presyncMilestoneBranch - one charged failure with budget left is tried again at once (Issue #2305)", async () => {
+  // The old ledger wrote a four-hour `deferUntil` here and this run would
+  // have deferred without merging. With the cooldown gone the branch has one
+  // attempt left and the merge runs on the very next cycle.
   const fx = await ledger({
     [KEY]: {
       count: 1,
       escalated: false,
       conflictAttempts: 1,
-      deferUntil,
       lastAttempt: {
         at: new Date(NOW - 60_000).toISOString(),
         outcome: "failed",
@@ -380,10 +383,9 @@ Deno.test("presyncMilestoneBranch - a live deferral defers without attempting a 
       }),
     );
 
-    assertEquals(result.status, "deferred");
-    assertEquals(synced, 0, "a paced branch is not merged into again");
-    assertStringIncludes(result.detail, `not due until ${deferUntil}`);
-    assertEquals((await loadSyncStreaks(fx.path))[KEY]?.conflictAttempts, 1);
+    assertEquals(result.status, "synced");
+    assertEquals(synced, 1, "the second of the two attempts runs at once");
+    assertEquals((await loadSyncStreaks(fx.path))[KEY]?.conflictAttempts, 0);
   } finally {
     await fx.cleanup();
   }
@@ -664,48 +666,71 @@ Deno.test("presyncMilestoneBranchForIssueRun - two runs on one repository do not
 // The selector's read of the same ledger
 // ---------------------------------------------------------------------------
 
-Deno.test("milestonePacedUntil - reports a live deferral for the milestone's branch", () => {
-  const deferUntil = new Date(NOW + 60_000).toISOString();
+Deno.test("milestonePacedUntil - an attempt open on this host paces the children (Issue #2305)", () => {
+  const openedAt = new Date(NOW - 60_000).toISOString();
   const streaks: SyncStreaks = {
     "owner/repo|milestone/1730-resolve-merge-conflicts": {
       count: 1,
       escalated: false,
-      deferUntil,
+      attemptOpenedAt: openedAt,
     },
   };
-  assertEquals(
-    milestonePacedUntil(
-      streaks,
-      "owner/repo",
-      "#1730 Resolve merge conflicts",
-      NOW,
-    ),
-    deferUntil,
+  const paced = milestonePacedUntil(
+    streaks,
+    "owner/repo",
+    "#1730 Resolve merge conflicts",
   );
+  assert(paced, "an open attempt paces the milestone");
+  assertStringIncludes(paced, openedAt);
 });
 
-Deno.test("milestonePacedUntil - a passed deferral, a missing entry and no milestone all pace nothing", () => {
-  const passed: SyncStreaks = {
+Deno.test("milestonePacedUntil - a spent budget paces the children (Issue #2305)", () => {
+  const streaks: SyncStreaks = {
     "owner/repo|milestone/1730-resolve-merge-conflicts": {
-      count: 1,
+      count: 2,
       escalated: false,
-      deferUntil: new Date(NOW - 1000).toISOString(),
+      conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
     },
   };
+  const paced = milestonePacedUntil(
+    streaks,
+    "owner/repo",
+    "#1730 Resolve merge conflicts",
+  );
+  assert(paced, "a spent budget paces the milestone");
+  assertStringIncludes(paced, "conflict budget is spent");
+});
+
+Deno.test("milestonePacedUntil - budget left, a reset ledger, a missing entry and no milestone all pace nothing (Issue #2305)", () => {
+  const key = "owner/repo|milestone/1730-resolve-merge-conflicts";
+  const title = "#1730 Resolve merge conflicts";
+
+  // One charged failure with an attempt left: the old `deferUntil` held the
+  // children for four hours; nothing holds them now.
+  const oneFailure: SyncStreaks = {
+    [key]: { count: 1, escalated: false, conflictAttempts: 1 },
+  };
+  assertEquals(milestonePacedUntil(oneFailure, "owner/repo", title), undefined);
+
+  // The success reset — which the roll-back also applies — releases them.
+  const spent: SyncStreakEntry = {
+    count: 2,
+    escalated: false,
+    conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    attemptOpenedAt: new Date(NOW).toISOString(),
+  };
+  assert(milestonePacedUntil({ [key]: spent }, "owner/repo", title));
   assertEquals(
     milestonePacedUntil(
-      passed,
+      { [key]: resetConflictLedgerOnSuccess(spent) },
       "owner/repo",
-      "#1730 Resolve merge conflicts",
-      NOW,
+      title,
     ),
     undefined,
   );
-  assertEquals(
-    milestonePacedUntil({}, "owner/repo", "#1730 X", NOW),
-    undefined,
-  );
-  assertEquals(milestonePacedUntil(passed, "owner/repo", "", NOW), undefined);
+
+  assertEquals(milestonePacedUntil({}, "owner/repo", "#1730 X"), undefined);
+  assertEquals(milestonePacedUntil(oneFailure, "owner/repo", ""), undefined);
 });
 
 Deno.test("presyncMilestoneOnceForArming - two PRs on one milestone share a single attempt (Issue #2005)", async () => {
@@ -750,23 +775,4 @@ Deno.test("presyncMilestoneOnceForArming - two PRs on one milestone share a sing
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => {});
   }
-});
-
-Deno.test("milestonePacedUntil - an unparseable deferral paces the branch rather than releasing it", () => {
-  const streaks: SyncStreaks = {
-    "owner/repo|milestone/1730-resolve-merge-conflicts": {
-      count: 1,
-      escalated: false,
-      deferUntil: "not-a-date",
-    },
-  };
-  assertEquals(
-    milestonePacedUntil(
-      streaks,
-      "owner/repo",
-      "#1730 Resolve merge conflicts",
-      NOW,
-    ),
-    "not-a-date",
-  );
 });

@@ -845,12 +845,15 @@ local HEAD did.
 
 A PR that conflicts with its base cannot run CI, so the merge-conflict pass
 merges the base branch in for real rather than side-picking. That pass is
-bounded by **three concluded attempts** —
+bounded by **two concluded attempts, with no wait between them** —
 `DEFAULT_MAX_CONFLICT_ATTEMPTS`
 ([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
-the first attempt and two retries against a base that has moved on since
-(Issue #1766). The third judged failure runs the abandon-and-restart rung, and
-only then does a human hear about it.
+the first attempt and one retry against whatever the base has become since
+(Issue #2305). The second judged failure runs the abandon-and-restart rung, and
+only then does a human hear about it. A PR one concluded failure in is due
+again on the very next pass: the four-hour cooldown that used to sit between
+the attempts bought nothing a moved base does not, and two hosts are kept off
+one PR by the cross-host lock rather than by a wait.
 
 That rung closes the PR — never force-pushes it — and re-queues its originating
 issue. A pickup label the issue already carries is kept as it is, so a restart
@@ -864,16 +867,16 @@ its one-restart-per-issue bound and its exits are in
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
 constant, two consumers — so the PR ladder and the milestone ladder cannot
 drift apart. The sync pass opens and concludes an attempt around every
-conflicting merge, paces the retries and hands an exhausted budget to the
-roll-back (Issue #1778); nothing is posted to a comment, a label or an issue
-while an automatic attempt remains.
+conflicting merge and hands an exhausted budget to the roll-back
+(Issue #1778); nothing is posted to a comment, a label or an issue while an
+automatic attempt remains.
 
 What does and does not spend an attempt:
 
 | Attempt outcome                              | Charged? | Why                                                                                       |
 | -------------------------------------------- | -------- | ----------------------------------------------------------------------------------------- |
 | **Failed** — the merge was judged unmergeable | Yes      | The conflict itself was looked at and beat the worker                                     |
-| **Disrupted** — opened, never concluded       | No       | A restart, a swept heartbeat or an exhausted run budget killed it; the conflict was never judged (Issues #395, #1693) |
+| **Disrupted** — opened, never concluded       | No       | A restart, a swept heartbeat, or the worker killing the agent at the cycle deadline; the conflict was never judged (Issues #395, #1693). An agent that runs out **its own** timeout is judged and charged (Issue #2305) |
 | **Not-charged** — a conclusion the branch is not answerable for | No | A merge gate refused the push, or the pass stood down before touching the branch |
 
 A disrupted attempt is re-attempted rather than charged, and is bounded
@@ -886,7 +889,7 @@ branch** it is the persisted per-branch ledger in
 `milestone_sync_failures.json` described in
 [INTERNALS.md → the milestone conflict ledger](INTERNALS.md#-the-conflict-attempt-ledger-a-milestone-branch-spends).
 Either way a **success** is the only thing that refills the budget: a moved
-default tip clears the pacing deferral, never the attempt count.
+default tip never refills the attempt count.
 
 ## Failure and recovery modes
 
