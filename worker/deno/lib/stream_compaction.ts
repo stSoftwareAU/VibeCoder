@@ -180,25 +180,28 @@ async function transcriptBytes(
   const wanted = `${sessionId}.jsonl`;
   let total: number | undefined;
   const walk = async (dir: string): Promise<void> => {
-    let entries: AsyncIterable<Deno.DirEntry>;
+    // `Deno.readDir` hands back the iterable synchronously and raises
+    // `NotFound` on the first `next()`, so the iteration — not the call —
+    // is what has to be guarded. A host whose `projects/` directory does not
+    // exist yet is the ordinary first run, not a fault to propagate.
     try {
-      entries = Deno.readDir(dir);
+      for await (const entry of Deno.readDir(dir)) {
+        const path = `${dir}/${entry.name}`;
+        if (entry.isDirectory) {
+          await walk(path);
+          continue;
+        }
+        if (entry.name !== wanted) continue;
+        try {
+          const stat = await Deno.stat(path);
+          total = (total ?? 0) + stat.size;
+        } catch {
+          // Vanished between readDir and stat — it measures nothing.
+        }
+      }
     } catch {
-      return; // Missing or unreadable: nothing to measure here.
-    }
-    for await (const entry of entries) {
-      const path = `${dir}/${entry.name}`;
-      if (entry.isDirectory) {
-        await walk(path);
-        continue;
-      }
-      if (entry.name !== wanted) continue;
-      try {
-        const stat = await Deno.stat(path);
-        total = (total ?? 0) + stat.size;
-      } catch {
-        // Vanished between readDir and stat — it measures nothing.
-      }
+      // Missing or unreadable: nothing to measure here. The caller reads an
+      // unmeasured transcript as "not proved compacted", never as a shrink.
     }
   };
   await walk(`${transcriptRoot}/projects`);
@@ -228,6 +231,11 @@ async function defaultCompactionRunner(
     prompt: request.prompt,
     timeoutSeconds: request.timeoutSeconds,
     agentProvider: request.providerId,
+    // Named so the run is not one more `phase=unknown` telemetry line
+    // (Issue #2709's complaint). No table routes this phase, so the chain
+    // falls through to the configured base model — a summarising turn has no
+    // use for the issue phase's top tier.
+    phase: "compaction",
     // phaseCount 1 is what makes the CLI flags `--resume <id>` rather than
     // `--session-id <id>`: this run continues the stream's conversation.
     sessionResumeState: {
@@ -383,7 +391,13 @@ export async function primeStreamCompaction(
         fields: { providerId: rest.providerId, compactError: describe(error) },
       };
   }
-  logger.info(result.message, { ...logFields, ...result.fields });
+  // One line, at the level that says what the reader must do: the fallback is
+  // a degraded run that continues — the conversation was not compacted and the
+  // CLI's own window is now the only defence — so it is a warning, while a
+  // verified compaction, a new session and a provider without the lever are
+  // all expected outcomes.
+  const record = result.action === "autocompact" ? logger.warn : logger.info;
+  record.call(logger, result.message, { ...logFields, ...result.fields });
   return result.autocompactTokens;
 }
 

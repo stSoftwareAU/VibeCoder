@@ -75,15 +75,19 @@ function stubRunner(
 function recordingLogger() {
   const lines: string[] = [];
   const fields: Record<string, unknown>[] = [];
+  const levels: string[] = [];
   return {
     lines,
     fields,
+    levels,
     logger: {
       info(message: string, extra?: Record<string, unknown>) {
+        levels.push("info");
         lines.push(message);
         fields.push(extra ?? {});
       },
       warn(message: string, extra?: Record<string, unknown>) {
+        levels.push("warn");
         lines.push(message);
         fields.push(extra ?? {});
       },
@@ -320,22 +324,112 @@ Deno.test("primeStreamCompaction - logs exactly one compaction line per run, whi
   }
 });
 
-Deno.test("primeStreamCompaction - a fault in the compaction never propagates to the issue", async () => {
-  const record = recordingLogger();
-  const tokens = await primeStreamCompaction({
+Deno.test("primeStreamCompaction - a runner that throws never propagates to the issue", async () => {
+  await withTranscript(4096, async (ctx) => {
+    const record = recordingLogger();
+    const tokens = await primeStreamCompaction({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      transcriptRoot: ctx.root,
+      runner: () => {
+        throw new Error("no CLI here");
+      },
+      logger: record.logger,
+    });
+    assertEquals(tokens, AUTOCOMPACT_WINDOW_TOKENS);
+    assertEquals(record.lines.length, 1);
+    // The spawn-failure branch specifically, not some earlier fault standing
+    // in for it — the reason names which path actually ran.
+    assertStringIncludes(
+      String(record.fields[0]?.reason),
+      "could not be spawned",
+    );
+  });
+});
+
+Deno.test("compactStreamSession - a transcript directory that does not exist yet is not a fault", async () => {
+  // The ordinary first run on a host: `<CLAUDE_CONFIG_DIR>/projects` has never
+  // been written. Measuring it must fall back, not throw.
+  const stub = stubRunner(() => ({ ok: true, exitCode: 0 }));
+  const result = await compactStreamSession({
     outcome: "resumed",
     providerId: "claude",
     sessionId: SESSION_ID,
-    // No transcript root and a runner that throws: the worst case still
-    // yields the fallback and one line.
-    runner: () => {
-      throw new Error("no CLI here");
-    },
     transcriptRoot: "/nonexistent/stream-compaction",
-    logger: record.logger,
+    runner: stub.runner,
   });
-  assertEquals(tokens, AUTOCOMPACT_WINDOW_TOKENS);
-  assertEquals(record.lines.length, 1);
+  assertEquals(result.action, "autocompact");
+  assertEquals(result.autocompactTokens, AUTOCOMPACT_WINDOW_TOKENS);
+  // The run still happened — the missing directory only made its outcome
+  // unprovable.
+  assertEquals(stub.calls.length, 1);
+});
+
+Deno.test("compactStreamSession - the transcript root comes from the provider's own child environment", async () => {
+  // The production path: no `transcriptRoot` is passed, so the module must
+  // find the directory the CLI will actually write to.
+  await withTranscript(4096, async (ctx) => {
+    const stub = stubRunner(async () => {
+      await ctx.write(64);
+      return { ok: true, exitCode: 0 };
+    });
+    const result = await compactStreamSession({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      parentEnv: { HOME: "/home/nobody", CLAUDE_CONFIG_DIR: ctx.root },
+      runner: stub.runner,
+    });
+    assertEquals(result.action, "compacted");
+    assertEquals(result.fields.transcriptBytesBefore, 4096);
+    assertEquals(result.fields.transcriptBytesAfter, 64);
+  });
+});
+
+Deno.test("compactStreamSession - a new stream session is skipped whatever the provider", async () => {
+  // Two rules meet here — nothing to compact, and no lever — and only one
+  // line may be logged. "Nothing to compact" is the more specific fact, and
+  // it is the one reported.
+  const stub = stubRunner(() => ({ ok: true, exitCode: 0 }));
+  const result = await compactStreamSession({
+    outcome: "new",
+    providerId: "codex",
+    sessionId: SESSION_ID,
+    transcriptRoot: "/nonexistent/stream-compaction",
+    runner: stub.runner,
+  });
+  assertEquals(result.action, "skipped");
+  assertEquals(stub.calls.length, 0);
+});
+
+Deno.test("primeStreamCompaction - the fallback is a warning, a verified compaction is not", async () => {
+  await withTranscript(4096, async (ctx) => {
+    const fallback = recordingLogger();
+    await primeStreamCompaction({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      transcriptRoot: ctx.root,
+      runner: () => ({ ok: true, exitCode: 0 }),
+      logger: fallback.logger,
+    });
+    assertEquals(fallback.levels, ["warn"]);
+
+    const compacted = recordingLogger();
+    await primeStreamCompaction({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      transcriptRoot: ctx.root,
+      runner: async () => {
+        await ctx.write(32);
+        return { ok: true, exitCode: 0 };
+      },
+      logger: compacted.logger,
+    });
+    assertEquals(compacted.levels, ["info"]);
+  });
 });
 
 Deno.test("--autocompact reaches the Claude and DeepSeek CLI argument lists", () => {
