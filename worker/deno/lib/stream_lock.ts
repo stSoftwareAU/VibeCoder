@@ -29,9 +29,12 @@
  *
  * ## Fail direction
  *
- * Fails **open**, loudly: a `gh` outage or an unparseable response logs a
- * warning and lets the claim proceed, matching every other pre-claim check —
- * an unreachable GitHub must not stop the fleet claiming work.
+ * Fails **open**, loudly: a `gh` outage, an unparseable response or a
+ * repository this module cannot resolve to a stream logs a warning and lets
+ * the claim proceed, matching every other pre-claim check — an unreachable
+ * GitHub must not stop the fleet claiming work. A page that filled — of the
+ * milestone's issues, or of one sibling's comments — is logged too, because
+ * "not read" must never be reported as "nothing there".
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -49,6 +52,7 @@ import {
 import {
   isBlankStream,
   resolveStreamId,
+  type StreamId,
   streamLabel,
 } from "./stream_identity.ts";
 
@@ -61,8 +65,13 @@ import {
  */
 export const STREAM_LOCK_ISSUE_LIMIT = 100;
 
-/** What proved the stream live. */
-export type StreamBusyEvidence = "heartbeat" | "claim_lock";
+/**
+ * How many comments `gh issue list --json comments` returns per issue.
+ *
+ * The page is gh's, not ours: a thread longer than this is returned
+ * truncated, so a marker beyond the page is unread rather than absent.
+ */
+const COMMENT_PAGE_SIZE = 100;
 
 /** A sibling issue in the same stream is live. */
 export interface StreamBusy {
@@ -73,8 +82,6 @@ export interface StreamBusy {
   holderHost: string;
   /** Human label of the stream, as {@link streamLabel} renders it. */
   streamLabel: string;
-  /** Which signal proved it live. */
-  evidence: StreamBusyEvidence;
 }
 
 /** Outcome of a stream-lock check. */
@@ -197,8 +204,10 @@ function freshClaimHost(
  * sibling is never listed, a sibling in another milestone or repository is
  * never listed, and the issue being claimed never blocks itself.
  *
- * @throws when `repo` is not `owner/name` — `resolveStreamId` fails loud
- *   rather than resolving a wrong stream.
+ * Never throws: a repository that is not `owner/name` — which
+ * `resolveStreamId` refuses to resolve — is reported as a loud warning and a
+ * fail-open, because a stream check must never turn a claim into a run
+ * failure.
  */
 export async function checkMilestoneStreamBusy(
   options: StreamLockOptions,
@@ -212,7 +221,21 @@ export async function checkMilestoneStreamBusy(
     nowSeconds = Math.floor(Date.now() / 1000),
   } = options;
 
-  const stream = resolveStreamId(repo, milestoneTitle);
+  let stream: StreamId;
+  try {
+    stream = resolveStreamId(repo, milestoneTitle);
+  } catch (err) {
+    // `resolveStreamId` fails loud on a malformed repository, and rightly —
+    // but a claim must not fail with it, so the refusal is reported and the
+    // claim proceeds unlocked.
+    console.warn(
+      `[stream_lock] repo=${repo} issue=#${issueNumber} ` +
+        `stream_unresolved error=${
+          err instanceof Error ? err.message : String(err)
+        } — proceeding with the claim (Issue #2334)`,
+    );
+    return { busy: false };
+  }
   // The blank stream holds no shared conversation, so nothing to lock.
   // Reading the resolved title back is what narrows it for the query below —
   // `resolveStreamId` leaves it undefined for exactly this case.
@@ -271,6 +294,19 @@ export async function checkMilestoneStreamBusy(
     if (issue.number === issueNumber) continue;
     const comments = fleetComments(issue, trustedAuthors);
     if (comments.length === 0) continue;
+    // gh returns one page of comments per issue, so a longer thread hides
+    // its newest markers — unread, not absent.
+    if (
+      Array.isArray(issue.comments) &&
+      issue.comments.length >= COMMENT_PAGE_SIZE
+    ) {
+      console.warn(
+        `[stream_lock] repo=${repo} issue=#${issueNumber} ` +
+          `sibling_comments_truncated sibling=#${issue.number} ` +
+          `page=${COMMENT_PAGE_SIZE} — markers past the first page were not ` +
+          `read (Issue #2334)`,
+      );
+    }
 
     const beating = liveHeartbeatHost(comments, nowSeconds);
     if (beating !== null) {
@@ -279,7 +315,6 @@ export async function checkMilestoneStreamBusy(
         holderIssue: issue.number,
         holderHost: beating,
         streamLabel: label,
-        evidence: "heartbeat",
       };
     }
 
@@ -290,7 +325,6 @@ export async function checkMilestoneStreamBusy(
         holderIssue: issue.number,
         holderHost: claiming,
         streamLabel: label,
-        evidence: "claim_lock",
       };
     }
   }

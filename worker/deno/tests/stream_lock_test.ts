@@ -90,7 +90,6 @@ Deno.test("checkMilestoneStreamBusy - a sibling beating 30 s ago holds the strea
   assert(status.busy);
   assertEquals(status.holderIssue, 2333);
   assertEquals(status.holderHost, "GRQ-23-box");
-  assertEquals(status.evidence, "heartbeat");
   // Exactly one listing call — the check costs one extra `gh issue list`.
   assertEquals(calls.length, 1);
   const listing = (calls[0] ?? []).join(" ");
@@ -170,7 +169,6 @@ Deno.test("checkMilestoneStreamBusy - a fresh fleet CLAIM_LOCK holds the stream"
   assert(status.busy);
   assertEquals(status.holderIssue, 2333);
   assertEquals(status.holderHost, "Mac-Ultra-M2");
-  assertEquals(status.evidence, "claim_lock");
 });
 
 Deno.test("checkMilestoneStreamBusy - a CLAIM_LOCK past the recent window is stale", async () => {
@@ -444,13 +442,74 @@ Deno.test("checkMilestoneStreamBusy - a full page of issues says the listing was
   );
 });
 
+Deno.test("checkMilestoneStreamBusy - a full page of one sibling's comments is reported", async () => {
+  // The newest marker can sit past gh's comment page, so an unread page must
+  // be said out loud rather than read as "this sibling carries nothing".
+  const { ghCommandFn } = listGh([
+    {
+      number: 2333,
+      comments: Array.from(
+        { length: 100 },
+        () => comment("just talking"),
+      ),
+    },
+  ]);
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    const status = await checkMilestoneStreamBusy({
+      repo: REPO,
+      milestoneTitle: MILESTONE,
+      issueNumber: 2334,
+      ghCommandFn,
+      trustedAuthors: FLEET,
+      nowSeconds: NOW,
+    });
+    assertEquals(status.busy, false);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert(
+    warnings.some((line) => line.includes("sibling_comments_truncated")),
+    "an unread comment page must be reported",
+  );
+});
+
+Deno.test("checkMilestoneStreamBusy - a repository that is not owner/name fails open, not loud-crashing the claim", async () => {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  let status: Awaited<ReturnType<typeof checkMilestoneStreamBusy>>;
+  try {
+    status = await checkMilestoneStreamBusy({
+      repo: "not-a-repo",
+      milestoneTitle: MILESTONE,
+      issueNumber: 2334,
+      ghCommandFn: () => Promise.reject(new Error("must not be called")),
+      trustedAuthors: FLEET,
+      nowSeconds: NOW,
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assertEquals(status.busy, false);
+  assert(
+    warnings.some((line) => line.includes("stream_unresolved")),
+    "an unresolvable repository must be reported, not thrown at the claim",
+  );
+});
+
 Deno.test("formatStreamBusy - names the stream, the holder issue and the host", () => {
   const line = formatStreamBusy({
     busy: true,
     holderIssue: 2333,
     holderHost: "GRQ-23",
     streamLabel: `${REPO}${MILESTONE}`,
-    evidence: "heartbeat",
   });
   assertEquals(
     line,
