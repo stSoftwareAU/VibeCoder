@@ -1540,8 +1540,8 @@ export function createDefaultRunCoreConfig(): RunCoreConfig {
     // Issue #62: mirrors `OPERATIONAL_DEFAULTS.planningTimeout` so Planning
     // Mode's watchdog floor tracks the agent timeout it wraps.
     planningTimeoutSeconds: OPERATIONAL_DEFAULTS.planningTimeout,
-    // Issue #2335: off unless the operator turned session resume on, which
-    // is what `OPERATIONAL_DEFAULTS.enableSessionResume` says too.
+    // Issue #2335: follows the shipped default — on since Issue #2339 —
+    // unless the operator turned session resume off.
     enableSessionResume: OPERATIONAL_DEFAULTS.enableSessionResume,
   };
 }

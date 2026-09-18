@@ -1725,7 +1725,7 @@ unless explicitly overridden.
 | Circuit breaker threshold | `circuit_breaker_threshold` | `3` | Consecutive zero-progress scan cycles before exponential backoff |
 | CI check max retries | `ci_check_max_retries` | `3` | Maximum retries per CI (Continuous Integration) check failure before skipping |
 | Security log file              | `security_log_file`              | _(empty)_  | Path to a dedicated security event log file                                                                                                                                                          |
-| Enable session resume          | `enable_session_resume`          | `false`    | Enable CLI-level session continuity across phases of the same issue. See [Session Resume](#-session-resume).                                                                              |
+| Enable session resume          | `enable_session_resume`          | `true`     | Per-stream conversations, the stream locks and the per-issue compaction. See [Session Resume](#-session-resume).                                                                          |
 | Max session size (bytes)       | `max_session_size_bytes`         | `52428800` | Maximum session store size per repository before compaction (50 MB). See [Session Compaction](#-session-compaction).                                                                      |
 | Max session age (days)         | `max_session_age_days`           | `7`        | Maximum age for session files before cleanup. See [Session Compaction](#-session-compaction).                                                                                             |
 | Context budget warning %       | `context_budget_warning_percent` | `50`       | Usage percentage that triggers a budget warning. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                            |
@@ -3196,40 +3196,117 @@ are unchanged.
 
 ## 🔄 Session Resume
 
-Session resume enables CLI-level session continuity across phases of the same
-issue. When enabled, subsequent phases (e.g. clarification → planning →
-implementation) resume the same Claude session rather than starting fresh. This
-preserves context learnt during earlier phases, reducing redundant token usage
-and improving coherence.
+Session resume enables CLI-level session continuity — across the phases of one
+issue, and across the successive issues of a **stream**. When enabled,
+subsequent phases (e.g. clarification → planning → implementation) resume the
+same Claude session rather than starting fresh, and the conversation itself
+belongs to the stream rather than to the issue. This preserves context learnt
+earlier, reducing redundant token usage and improving coherence.
 
 **Configuration:**
 
-| Setting               | Config Key              | Default | Description                                       |
-| --------------------- | ----------------------- | ------- | ------------------------------------------------- |
-| Enable session resume | `enable_session_resume` | `false` | Enable CLI-level session continuity across phases |
+| Setting               | Config Key              | Default | Description                                                             |
+| --------------------- | ----------------------- | ------- | ----------------------------------------------------------------------- |
+| Enable session resume | `enable_session_resume` | `true`  | Per-stream conversations, the stream locks, and the per-issue compaction |
 
 ```json
 {
-  "enable_session_resume": true
+  "enable_session_resume": false
 }
 ```
 
+### The stream model
+
+A **stream** is the unit that owns one agent conversation per provider
+(`worker/deno/lib/stream_identity.ts`):
+
+- **One stream per (repository, milestone)**, plus **one blank stream per
+  repository** holding that repository's issues with no milestone.
+- The repository is always part of the stream identity, so **two repositories
+  never share a conversation**, even when they use the same milestone title. A
+  milestone key also carries the first 8 hex of a SHA-256 of the raw title, so
+  two titles that slug alike cannot silently merge into one conversation.
+- **Implementation and planning runs join the stream**; idle-task, grill-me,
+  question, PR-feedback and CI-fix runs each keep a per-issue session and touch
+  no stream record. That split is one exhaustive table —
+  `STREAM_JOIN_POLICY` in `worker/deno/lib/stream_session.ts` — so a run kind
+  added later cannot join a stream by omission.
+- **Two locks, never both on one issue.** A milestone issue takes the
+  **fleet-wide** stream lock: a claim is refused as `stream_busy` while another
+  open issue of that milestone is live anywhere in the fleet. A blank-stream
+  issue takes the **per-host** lock instead — an in-process registry keyed by
+  `streamKey`, so one non-milestone issue per repository per host, with no
+  `gh` call and no cross-host coordination. Both are skips, not failures.
+- **Affinity with a five-minute grace.** The conversation lives on one host's
+  disk, so the host that ran a stream last records itself as the holder on the
+  milestone's tracking issue. Another host defers that stream's eligible issue
+  for `STREAM_AFFINITY_GRACE_SECONDS` (300 s) from its own first sighting; after
+  the grace the first host to scan claims it and becomes the new holder.
+  Affinity is an optimisation, never a lock.
+- **Compaction before each new issue.** A resumed conversation has carried every
+  issue of the stream so far, so it is compacted before the issue's first phase
+  — see [Compaction behaviour by provider](MODEL-AND-CACHING.md#compaction-behaviour-by-provider).
+- **Milestone-close housekeeping.** When a milestone closes, every host sweeps
+  its worktrees, its local branches and that stream's session record. The sweep
+  runs **regardless of this flag**: with resume off there is simply no stream
+  session on disk to remove, and the worktree and branch halves still run.
+
+```mermaid
+flowchart LR
+    subgraph RA["Repository A"]
+      MA1["Stream: milestone #100"]
+      MA2["Stream: milestone #200"]
+      BA["Blank stream (no milestone)"]
+    end
+    subgraph RB["Repository B"]
+      MB1["Stream: milestone #100<br/>(same title, separate conversation)"]
+      BB["Blank stream (no milestone)"]
+    end
+    MA1 --- CA1["one conversation per provider"]
+    MA2 --- CA2["one conversation per provider"]
+    BA --- CA3["one conversation per provider"]
+    MB1 --- CB1["one conversation per provider"]
+    BB --- CB2["one conversation per provider"]
+    style MA1 fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style MB1 fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+**What the flag controls:**
+
+- **On (default).** Implementation and planning runs join their stream's
+  conversation and replay it with `--resume`; the fleet-wide milestone lock and
+  the host-local blank lock both apply; stream affinity gives the holding host
+  its five-minute head start; and a resumed conversation is compacted before
+  each new issue.
+- **Off (`enable_session_resume: false`).** Every run keeps a **per-issue**
+  session, no stream record is read or written, **no stream lock** is taken
+  (and the milestone lock's extra `gh issue list` never runs), no affinity
+  deferral applies, and there is no stream conversation to compact.
+  Milestone-close housekeeping still sweeps worktrees and branches, and picking
+  up pushed WIP is unaffected — that never depended on this flag (Issue #220).
+
 **How it works:**
 
-1. On the first phase of an issue, the worker generates a deterministic session
-   ID combining the repository, issue number, and timestamp.
-2. Claude is invoked with `--session-id <id>` to start a new named session.
-3. On subsequent phases for the same issue, Claude is invoked with `--resume` to
-   continue the existing session.
+1. An implementation or planning run resolves its **stream** and loads the
+   session recorded there for the provider it is about to spawn. A run kind that
+   does not join a stream instead generates a per-issue session ID combining the
+   repository, issue number, and timestamp.
+2. With no session to continue, Claude is invoked with `--session-id <id>` to
+   start a new named session — which then becomes the stream's session.
+3. With a session to continue — the stream's, or the issue's own checkpoint,
+   which wins where it has one — Claude is invoked with `--resume`.
 4. Each phase completion is recorded so the worker knows whether to start or
-   resume.
+   resume, and the execute phase writes back the session the run ended on.
 
-**When to enable:**
+**When to turn it off:**
 
-- Enable when issues frequently go through multiple phases (clarification,
-  planning, implementation) and you want Claude to retain context between them.
-- Leave disabled (default) if your workflow is predominantly single-phase or if
-  you prefer each phase to start with a clean slate.
+- Turn it off when every issue must start from a clean slate — a host debugging
+  a context-sensitive failure, or one where the per-stream conversation would
+  carry work you do not want inherited.
+- Turning it off gives up the per-stream conversation, both stream locks and the
+  per-issue compaction — the **What the flag controls** list in
+  [The stream model](#the-stream-model) above. It does **not** turn off
+  milestone-close housekeeping or pushed-WIP resume.
 
 **Resume-on-reclaim:** a killed session (reboot, OOM, container death) resumes
 instead of restarting from zero. **Picking up pushed WIP does not depend on
@@ -3417,9 +3494,9 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   the session sweeper's age/size caps so it cannot grow unbounded.
 
 > **📝 Note:** Session resume is independent of
-> [session compaction](#-session-compaction) — resume controls
-> within-issue continuity, while compaction manages the on-disk session store
-> size.
+> [session compaction](#-session-compaction) — resume controls conversation
+> continuity (within an issue, and across the issues of a stream), while
+> compaction manages the on-disk session store size.
 
 **Reference:** `worker/deno/lib/session_resume.ts` (implementation),
 `worker/deno/lib/issue_branch_resume.ts` (issue-number branch lookup),
