@@ -267,6 +267,7 @@
         "worker/deno/lib/log_dir.ts",
         "worker/deno/lib/marker_comment_pages.ts",
         "worker/deno/lib/merge_conflict_stall_watchdog.ts",
+        "worker/deno/lib/merge_fallback_issue.ts",
         "worker/deno/lib/merge_landing.ts",
         "worker/deno/lib/merged_sweep_watermark.ts",
         "worker/deno/lib/milestone_branch_self_heal.ts",
