@@ -93,7 +93,12 @@ export type MergeFallbackTarget =
 export interface MergeFallbackStageTiming {
   /** Stage name — `deepen`, `rules`, `context`, `agent`, `gate`, `push`. */
   stage: string;
-  seconds: number;
+  /**
+   * Whole seconds the stage took, or `null` for a stage that started and
+   * never stopped (Issue #2311) — rendered `unfinished`, as
+   * `conflict_stage_timer.ts` renders it, never as a duration.
+   */
+  seconds: number | null;
 }
 
 /** What one agent run did, and what it cost. */
@@ -256,7 +261,11 @@ function renderRun(run: MergeFallbackRun): string[] {
       ? `- **Stage timings**: ${NOT_RECORDED}`
       : `- **Stage timings**: ${
         timings
-          .map((t) => `${sanitiseIssueText(t.stage)} ${t.seconds}s`)
+          .map((t) =>
+            `${sanitiseIssueText(t.stage)} ${
+              t.seconds === null ? "unfinished" : `${t.seconds}s`
+            }`
+          )
           .join(", ")
       }`,
     ...renderAnalysis(run.analysis),

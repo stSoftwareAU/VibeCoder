@@ -5,9 +5,14 @@
  * each reverted child's issue is reopened with the roll-back marker so the
  * merged-PR closers leave it open, its open PRs and any open summary PR are
  * closed with a comment naming the revert, and exactly one notice is posted
- * on the existing escalation target. A roll-back that could not merge
- * escalates once — `needs-human` on that same target — and never files an
- * issue.
+ * on the existing escalation target.
+ *
+ * Nothing here asks a human for anything (Issue #2311). Both outcomes — the
+ * roll-back that merged and the one that could not — file or append the one
+ * `merge-fallback` flag issue, and the notice on the escalation target links
+ * to it. The `needs-human` label a failed roll-back used to apply is gone:
+ * the flag is the record, and the branch is re-attempted once the default
+ * branch moves.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -75,12 +80,16 @@ export interface RollbackNoticeInput {
   reverted: readonly NoticeReverted[];
   reopened: readonly number[];
   needsTrustedRelabel: readonly number[];
+  /** The `merge-fallback` flag this fallback filed or appended (#2311). */
+  flagIssue?: number;
 }
 
 export interface RollbackFailedCommentInput {
   milestoneBranch: string;
   defaultBranch: string;
   reason: string;
+  /** The `merge-fallback` flag this fallback filed or appended (#2311). */
+  flagIssue?: number;
 }
 
 export interface RequeueOptions {
@@ -92,6 +101,8 @@ export interface RequeueOptions {
   rollbacks: number;
   attempts: number;
   reverted: readonly RevertedChild[];
+  /** The `merge-fallback` flag this fallback filed or appended (#2311). */
+  flagIssue?: number;
   ghCommandFn: GhCommandFn;
   log: (message: string) => void;
 }
@@ -105,6 +116,8 @@ export interface EscalateRollbackFailureOptions {
   reason: string;
   /** When true this exhaustion has already been reported — post nothing. */
   alreadyEscalated: boolean;
+  /** The `merge-fallback` flag this fallback filed or appended (#2311). */
+  flagIssue?: number;
   ghCommandFn: GhCommandFn;
   log: (message: string) => void;
 }
@@ -149,6 +162,7 @@ export function buildRollbackNotice(input: RollbackNoticeInput): string {
     `${input.attempts} concluded conflict attempt(s) so ` +
     `\`${input.defaultBranch}\` merges cleanly. This is roll-back #` +
     `${input.rollbacks} on this branch.\n\n` +
+    `${describeFlagIssue(input.flagIssue)}` +
     `### Reverted PRs\n\n${revertedLines}\n\n` +
     `### Reopened issues\n\n${reopenedLines}\n\n` +
     `### Issues that need a trusted re-label\n\n` +
@@ -157,16 +171,37 @@ export function buildRollbackNotice(input: RollbackNoticeInput): string {
     `the child can be claimed again:\n\n${checklist}\n`;
 }
 
-/** The one `needs-human` comment a failed roll-back posts. */
+/**
+ * The link to the `merge-fallback` flag, or a line saying it is not there
+ * (Issue #2311). A flag that could not be filed is said out loud: a notice
+ * that simply omits the link reads as a fallback nobody recorded.
+ */
+function describeFlagIssue(flagIssue: number | undefined): string {
+  return flagIssue !== undefined && flagIssue > 0
+    ? `The conflict is recorded on the \`merge-fallback\` flag #` +
+      `${flagIssue} — both runs, what they tripped on and what was ` +
+      `reverted.\n\n`
+    : `The \`merge-fallback\` flag could not be filed for this fallback, so ` +
+      `the run log is the only record of it (Issue #2311).\n\n`;
+}
+
+/**
+ * The one comment a roll-back that could not merge posts (Issue #2311).
+ *
+ * It asks for nothing and labels nothing: the `merge-fallback` flag is the
+ * record, and the branch is offered its two runs again as soon as the
+ * default branch moves.
+ */
 export function buildRollbackFailedComment(
   input: RollbackFailedCommentInput,
 ): string {
-  return `## Milestone branch stuck — needs-human (Issue #1781)\n\n` +
+  return `## Milestone branch roll-back could not merge (Issue #1781)\n\n` +
     `\`${input.milestoneBranch}\` spent its conflict budget and the ` +
     `roll-back could not make \`${input.defaultBranch}\` merge cleanly.\n\n` +
     `Reason: ${input.reason}\n\n` +
-    `No new issue is filed. The worker will not try this branch again ` +
-    `until the budget is reset.\n`;
+    `${describeFlagIssue(input.flagIssue)}` +
+    `Nothing is asked of anyone here. The branch is tried again — two more ` +
+    `runs — once \`${input.defaultBranch}\` moves (Issue #2311).\n`;
 }
 
 interface OpenPr {
@@ -293,6 +328,9 @@ export async function requeueRolledBackChildren(
     reverted: noticeReverted,
     reopened,
     needsTrustedRelabel,
+    ...(options.flagIssue !== undefined
+      ? { flagIssue: options.flagIssue }
+      : {}),
     ghCommandFn,
     log,
   });
@@ -307,10 +345,14 @@ export async function requeueRolledBackChildren(
 }
 
 /**
- * One `needs-human` comment on the existing escalation target when the
- * roll-back could not merge. A second call with `alreadyEscalated` posts
- * nothing. A milestone with nowhere to land is one log line and still
- * counts as escalated, so the line is not repeated every cycle.
+ * One notice on the existing escalation target when the roll-back could not
+ * merge (Issues #1781, #2311).
+ *
+ * It carries no `needs-human` label and asks for nothing — the
+ * `merge-fallback` flag named in it is the record. A second call with
+ * `alreadyEscalated` posts nothing. A milestone with nowhere to land is one
+ * log line and still counts as reported, so the line is not repeated every
+ * cycle.
  */
 export async function escalateRollbackFailure(
   options: EscalateRollbackFailureOptions,
@@ -373,6 +415,9 @@ export async function escalateRollbackFailure(
     milestoneBranch,
     defaultBranch,
     reason,
+    ...(options.flagIssue !== undefined
+      ? { flagIssue: options.flagIssue }
+      : {}),
   });
   try {
     await ghCommandFn([
@@ -384,18 +429,13 @@ export async function escalateRollbackFailure(
       "--body",
       body,
     ]);
-    await ghCommandFn([
-      "issue",
-      "edit",
-      String(target.issue),
-      "--repo",
-      repo,
-      "--add-label",
-      "needs-human",
-    ]);
     log(
-      `Escalated a failed milestone roll-back for '${milestoneBranch}' ` +
-        `in ${repo} to issue #${target.issue} (Issue #1781).`,
+      `Reported a failed milestone roll-back for '${milestoneBranch}' ` +
+        `in ${repo} on issue #${target.issue}, flagged as ${
+          options.flagIssue !== undefined && options.flagIssue > 0
+            ? `#${options.flagIssue}`
+            : "no merge-fallback issue"
+        } (Issues #1781, #2311).`,
     );
     return { posted: true, issue: target.issue, countedAsEscalated: true };
   } catch (err) {
@@ -723,6 +763,7 @@ async function postSuccessNotice(
     reverted: readonly NoticeReverted[];
     reopened: readonly number[];
     needsTrustedRelabel: readonly number[];
+    flagIssue?: number;
     ghCommandFn: GhCommandFn;
     log: (message: string) => void;
   },
@@ -770,6 +811,9 @@ async function postSuccessNotice(
     reverted: options.reverted,
     reopened: options.reopened,
     needsTrustedRelabel: options.needsTrustedRelabel,
+    ...(options.flagIssue !== undefined
+      ? { flagIssue: options.flagIssue }
+      : {}),
   });
   try {
     await options.ghCommandFn([

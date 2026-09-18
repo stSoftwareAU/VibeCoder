@@ -1,11 +1,14 @@
 /**
- * A milestone sync that fails twice for the identical reason escalates on the
- * second cycle, not the fourth (Issue #1964).
+ * A milestone conflict never asks a human, however often it repeats
+ * (Issue #2311).
  *
- * `milestone/168-…` in the GRQ fleet spent four cycles — and four agent runs —
- * producing the same one-line failure before anyone was told. A reason that
- * has not changed is a reason no retry will change, so the second occurrence
- * is the escalation.
+ * Issue #1964 escalated an identical second failure with `needs-human` on the
+ * second cycle rather than the fourth. The conflict budget, the roll-back and
+ * the `merge-fallback` flag replaced that outright: two runs, then a
+ * fallback that files one flag issue. What survives here is the ordinary
+ * streak escalation for a **non-conflict** failure — a fetch, a push or a
+ * plain git error — which is not a conflict outcome and still reaches a
+ * human at {@link MILESTONE_SYNC_ESCALATION_THRESHOLD}.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -15,26 +18,45 @@ import {
   type MilestoneBranchSyncDeps,
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
+import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import {
-  isRepeatedFailureReason,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   milestoneSyncStreakPath,
-  type SyncStreakEntry,
 } from "../lib/milestone_sync_streak.ts";
 
 const MILESTONE_TITLE = "#168 Emergency stop";
 const MILESTONE_BRANCH = "milestone/168-emergency-stop";
+const DEFAULT_SHA = "dddddddddddddddddddddddddddddddddddddddd";
 
-/** The failure the fleet actually saw, now carrying git's stdout. */
-const COMMIT_FAILURE =
-  `Failed to re-word the conflict resolution for '${MILESTONE_BRANCH}' ` +
-  `(Issues #4260, #1964): nothing to commit, working tree clean`;
+/** The non-conflict failure the fleet actually saw, carrying git's stdout. */
+const FETCH_FAILURE =
+  `Failed to fetch 'main' for '${MILESTONE_BRANCH}': could not read from ` +
+  `remote repository`;
 
-/** Sync deps whose sync fails with `reason` on every cycle. */
+/** A conflict every rung of the ladder left undecided. */
+function conflictFailure(): MilestoneConflictEscalation {
+  return new MilestoneConflictEscalation(
+    "every rung left it undecided",
+    [{
+      path: "worker/deno/lib/scan_content.ts",
+      reason: "agent: agent timed out after 1800s",
+      oursExports: [],
+      theirsExports: [],
+      oursTests: [],
+      theirsTests: [],
+      onlyOursTests: [],
+      onlyTheirsTests: [],
+    }],
+    [],
+    DEFAULT_SHA,
+  );
+}
+
+/** Sync deps whose sync fails the same way on every cycle. */
 function failingDeps(
   calls: string[][],
   streakPath: string,
-  reason: () => string,
+  failure: () => Error,
   succeed = false,
 ): MilestoneBranchSyncDeps {
   return {
@@ -69,7 +91,7 @@ function failingDeps(
           ok: true as const,
           value: { message: "Synced" },
         })
-        : Promise.resolve({ ok: false as const, error: new Error(reason()) }),
+        : Promise.resolve({ ok: false as const, error: failure() }),
     log: () => undefined,
   };
 }
@@ -79,48 +101,77 @@ function commentCalls(calls: string[][]): string[][] {
   return calls.filter((c) => c[0] === "issue" && c[1] === "comment");
 }
 
+/** Every gh argv, flattened — what a human would have been sent. */
+function everyWrite(calls: string[][]): string {
+  return calls.map((c) => c.join(" ")).join("\n");
+}
+
 Deno.test(
-  "milestone sync - two cycles failing for the identical reason escalate on the second (Issue #1964)",
+  "milestone sync - a conflict repeating cycle after cycle never writes needs-human (Issue #2311)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-1964-repeat-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-2311-conflict-" });
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
 
-      await syncMilestoneBranches(
-        failingDeps(calls, streakPath, () => COMMIT_FAILURE),
+      for (let cycle = 0; cycle < 4; cycle++) {
+        await syncMilestoneBranches(
+          failingDeps(calls, streakPath, conflictFailure),
+        );
+      }
+
+      assert(
+        !everyWrite(calls).includes("needs-human"),
+        `a conflict outcome reached a human: ${
+          JSON.stringify(everyWrite(calls))
+        }`,
       );
       assertEquals(
         commentCalls(calls).length,
         0,
-        "one failure is not yet a pattern",
+        "the budget and the flag answer a conflict, not a comment",
       );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
 
-      await syncMilestoneBranches(
-        failingDeps(calls, streakPath, () => COMMIT_FAILURE),
-      );
+Deno.test(
+  "milestone sync - a persistent non-conflict failure still escalates at the threshold (Issue #2311)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-2311-fetch-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const fetchFailure = () => new Error(FETCH_FAILURE);
+
+      for (
+        let cycle = 1;
+        cycle < MILESTONE_SYNC_ESCALATION_THRESHOLD;
+        cycle++
+      ) {
+        await syncMilestoneBranches(
+          failingDeps(calls, streakPath, fetchFailure),
+        );
+        assertEquals(
+          commentCalls(calls).length,
+          0,
+          `cycle ${cycle} is below the threshold and escalates nothing`,
+        );
+      }
+
+      await syncMilestoneBranches(failingDeps(calls, streakPath, fetchFailure));
       const comments = commentCalls(calls);
-      assertEquals(
-        comments.length,
-        1,
-        "the second identical failure escalates",
-      );
+      assertEquals(comments.length, 1, "the threshold escalates once");
       const body = comments[0]![comments[0]!.length - 1] ?? "";
       assertStringIncludes(body, MILESTONE_BRANCH);
       assertStringIncludes(
         body,
-        "nothing to commit, working tree clean",
+        "could not read from remote repository",
         "the escalation carries git's own output",
       );
-      assertStringIncludes(
-        body,
-        "identical",
-        "the escalation says the reason has not changed",
-      );
-      assert(
-        MILESTONE_SYNC_ESCALATION_THRESHOLD > 2,
-        "precondition: the ordinary streak threshold would not have fired yet",
-      );
+      assertStringIncludes(body, "needs a human");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
@@ -128,46 +179,21 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - a reason that changes each cycle still waits for the ordinary threshold (Issue #1964)",
+  "milestone sync - a non-conflict failure repeating escalates once, not every cycle (Issue #2311)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-1964-repeat-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-2311-once-" });
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
-      let cycle = 0;
-
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < MILESTONE_SYNC_ESCALATION_THRESHOLD + 3; i++) {
         await syncMilestoneBranches(
-          failingDeps(calls, streakPath, () => `transient failure ${++cycle}`),
-        );
-      }
-      assertEquals(
-        commentCalls(calls).length,
-        0,
-        "two different reasons are not the stuck loop this rule catches",
-      );
-    } finally {
-      await Deno.remove(dir, { recursive: true });
-    }
-  },
-);
-
-Deno.test(
-  "milestone sync - a repeated failure escalates once, not every cycle (Issue #1964)",
-  async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-1964-repeat-" });
-    try {
-      const streakPath = milestoneSyncStreakPath(dir);
-      const calls: string[][] = [];
-      for (let i = 0; i < 4; i++) {
-        await syncMilestoneBranches(
-          failingDeps(calls, streakPath, () => COMMIT_FAILURE),
+          failingDeps(calls, streakPath, () => new Error(FETCH_FAILURE)),
         );
       }
       assertEquals(
         commentCalls(calls).length,
         1,
-        "exactly one comment across four identical failures",
+        "exactly one comment across every identical failure",
       );
     } finally {
       await Deno.remove(dir, { recursive: true });
@@ -176,60 +202,27 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - a failure, a success, then the same failure is a first failure again (Issue #1964)",
+  "milestone sync - a success clears the streak, so the count starts again (Issue #2311)",
   async () => {
-    const dir = await Deno.makeTempDir({ prefix: "issue-1964-repeat-" });
+    const dir = await Deno.makeTempDir({ prefix: "issue-2311-cleared-" });
     try {
       const streakPath = milestoneSyncStreakPath(dir);
       const calls: string[][] = [];
-      const same = () => COMMIT_FAILURE;
+      const same = () => new Error(FETCH_FAILURE);
 
-      await syncMilestoneBranches(failingDeps(calls, streakPath, same));
-      await syncMilestoneBranches(
-        failingDeps(calls, streakPath, same, true),
-      );
+      for (let i = 1; i < MILESTONE_SYNC_ESCALATION_THRESHOLD; i++) {
+        await syncMilestoneBranches(failingDeps(calls, streakPath, same));
+      }
+      await syncMilestoneBranches(failingDeps(calls, streakPath, same, true));
       await syncMilestoneBranches(failingDeps(calls, streakPath, same));
 
       assertEquals(
         commentCalls(calls).length,
         0,
-        "the success broke the streak, so this is the first failure again",
+        "the success broke the streak, so the count is below the threshold",
       );
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
-  },
-);
-
-Deno.test(
-  "isRepeatedFailureReason - only an unbroken run of identical reasons counts (Issue #1964)",
-  () => {
-    const entry = (reason: string): SyncStreakEntry => ({
-      count: 2,
-      escalated: false,
-      lastAttempt: { at: "2026-09-11T00:00:00Z", outcome: "failed", reason },
-    });
-
-    assertEquals(isRepeatedFailureReason(entry("same"), "same", 2), true);
-    assertEquals(
-      isRepeatedFailureReason(entry("same"), "different", 2),
-      false,
-      "a changed reason is progress, however small",
-    );
-    assertEquals(
-      isRepeatedFailureReason(entry("same"), "same", 1),
-      false,
-      "one failure is not a repeat, whatever the audit record says",
-    );
-    assertEquals(
-      isRepeatedFailureReason(entry(""), "", 2),
-      false,
-      "an empty reason matches nothing — it says nothing to repeat",
-    );
-    assertEquals(
-      isRepeatedFailureReason({ count: 2, escalated: false }, "same", 2),
-      false,
-      "a branch with no recorded attempt has nothing to compare against",
-    );
   },
 );

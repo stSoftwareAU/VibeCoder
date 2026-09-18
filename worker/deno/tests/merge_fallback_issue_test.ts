@@ -487,3 +487,22 @@ Deno.test("mergeFallbackMarker - a quote in a branch cannot close an attribute",
 Deno.test("MERGE_FALLBACK_LABEL - the worker is permitted to apply it", () => {
   assert(isWorkerAppliableLabel(MERGE_FALLBACK_LABEL));
 });
+
+Deno.test("buildMergeFallbackBody - a stage that never finished renders unfinished, not a duration (Issue #2311)", () => {
+  const body = buildMergeFallbackBody({
+    target: { kind: "pr", repo: "org/repo", prNumber: 4 },
+    runs: [{
+      run: 1,
+      host: "mel-01",
+      timings: [
+        { stage: "deepen", seconds: 3 },
+        { stage: "agent", seconds: null },
+      ],
+    }],
+  });
+  assertStringIncludes(body, "**Stage timings**: deepen 3s, agent unfinished");
+  assert(
+    !body.includes("agent nulls"),
+    "an unfinished stage must never render as a duration",
+  );
+});

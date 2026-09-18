@@ -261,12 +261,21 @@ automatic ladder is the whole answer:
    back** the PRs that introduced the conflict and reopen their issues for the
    fleet to redo (Issue #1781). A run the worker itself cuts short is not one
    of the two: only a run that judged the conflict is charged.
+5. **Flag the fallback, ask nobody** (Issues #2304, #2311). Every fallback
+   files or appends exactly one `merge-fallback` issue — both spent runs, the
+   conflicted files, what was reverted — and that flag is the only issue a
+   conflict ever files. A milestone roll-back that could not merge records the
+   default-branch tip it answered for and is offered its two runs again once
+   that tip moves, so no conflict outcome needs a person to release it.
 
 Every comment the sync or the conflict processor posts is a **record** of what
 the ladder did and will do next, on the thread as it stands. It never reopens a
 planning issue, never applies `needs-human`, and never asks a person to merge
-(Issues #2214, #2226). A path that does is a bug to fix the same day, not a
-design choice. The canonical operator manual is
+(Issues #2214, #2226, #2311). The streak escalation that survives on the
+milestone path answers a **non-conflict** failure — a fetch, a push, an
+ordinary git error — never a conflict. A path that hands a conflict to a human
+is a bug to fix the same day, not a design choice. The canonical operator
+manual is
 [docs/INTERNALS.md § Milestone and dependency handling](docs/INTERNALS.md).
 
 ### Milestone independence

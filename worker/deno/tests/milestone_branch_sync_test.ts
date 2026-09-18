@@ -1119,6 +1119,8 @@ const LEDGER_BRANCH = createMilestoneBranchName(LEDGER_TITLE);
 const SECOND_BRANCH = createMilestoneBranchName(SECOND_TITLE);
 const LEDGER_SHA = "a".repeat(40);
 const MOVED_SHA = "b".repeat(40);
+/** The `merge-fallback` flag the stubbed `gh issue create` reports (#2311). */
+const FLAG_ISSUE = 4242;
 
 /** How the injected sync ends, for the ledger tests. */
 type LedgerFailure =
@@ -1295,6 +1297,13 @@ function ledgerDeps(
         );
       }
       if (key.startsWith("issue view")) return Promise.resolve("OPEN");
+      // The `merge-fallback` flag filer reads the new issue's number out of
+      // `gh issue create`'s URL (Issues #2304, #2311).
+      if (key.startsWith("issue create")) {
+        return Promise.resolve(
+          `https://github.com/owner/repo/issues/${FLAG_ISSUE}\n`,
+        );
+      }
       return Promise.resolve("[]");
     },
     syncBranchFn: async (
@@ -2486,6 +2495,10 @@ Deno.test("syncMilestoneBranches - a successful roll-back resets the ledger and 
     assertEquals(entry?.revertedPrs, [12]);
     assert(events.includes("rolled_back"));
     assert(
+      events.includes("fallback_flagged"),
+      `no fallback_flagged event: ${JSON.stringify(events)}`,
+    );
+    assert(
       calls.some((c) =>
         c[0] === "issue" && c[1] === "reopen" && c.includes("45")
       ),
@@ -2498,12 +2511,33 @@ Deno.test("syncMilestoneBranches - a successful roll-back resets the ledger and 
       ),
       "the marker is posted",
     );
+
+    // Issue #2311: exactly one `merge-fallback` flag, and the notice links it.
+    const flags = calls.filter((c) =>
+      c[0] === "issue" && c[1] === "create" && c.includes("merge-fallback")
+    );
+    assertEquals(flags.length, 1, "exactly one merge-fallback issue is filed");
+    const flagBody = flags[0]![flags[0]!.indexOf("--body") + 1] ?? "";
+    assertStringIncludes(flagBody, LEDGER_BRANCH);
+    assertStringIncludes(flagBody, "### Agent runs");
+    assertStringIncludes(flagBody, "conflict unresolved at rung agent");
+    assert(
+      calls.some((c) =>
+        c[0] === "issue" && c[1] === "comment" &&
+        (c[c.length - 1] ?? "").includes(`merge-fallback\` flag #${FLAG_ISSUE}`)
+      ),
+      "the roll-back notice links the flag",
+    );
+    assert(
+      !calls.some((c) => c.includes("needs-human")),
+      "a conflict outcome never writes needs-human",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("syncMilestoneBranches - a failed roll-back escalates once and a second cycle posts nothing (Issue #1781)", async () => {
+Deno.test("syncMilestoneBranches - a roll-back that could not merge files the flag, asks no human, and is re-armed when the default tip moves (Issues #1781, #2311)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "issue-1781-fail-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
@@ -2536,18 +2570,56 @@ Deno.test("syncMilestoneBranches - a failed roll-back escalates once and a secon
       c[0] === "issue" && c[1] === "comment"
     );
     assertEquals(comments.length, 1, "exactly one comment");
-    assertStringIncludes(
-      comments[0]![comments[0]!.length - 1] ?? "",
-      "needs-human",
+    const notice = comments[0]![comments[0]!.length - 1] ?? "";
+    assertStringIncludes(notice, `merge-fallback\` flag #${FLAG_ISSUE}`);
+    assert(
+      !calls.some((c) => c.includes("needs-human")),
+      `a roll-back that could not merge reached a human: ${
+        JSON.stringify(calls.filter((c) => c.includes("needs-human")))
+      }`,
     );
-    assertEquals((await readLedger(streakPath))?.escalated, true);
     assertEquals(
-      (await readLedger(streakPath))?.conflictAttempts,
+      calls.filter((c) =>
+        c[0] === "issue" && c[1] === "create" && c.includes("merge-fallback")
+      ).length,
+      1,
+      "exactly one merge-fallback issue is filed",
+    );
+    const spent = await readLedger(streakPath);
+    assertEquals(spent?.escalated, false, "no needs-human streak to record");
+    assertEquals(
+      spent?.conflictAttempts,
       MILESTONE_CONFLICT_ATTEMPT_BUDGET,
       "a failed roll-back does not refill the budget",
     );
+    assertEquals(
+      spent?.fallbackDefaultSha,
+      LEDGER_SHA,
+      "the tip this fallback answered for is recorded",
+    );
 
+    // The same tip: the branch is still the fallback's, and nothing repeats.
+    const same: string[][] = [];
+    await syncMilestoneBranches(ledgerDeps(same, {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "conflict",
+      }],
+      streakPath,
+      nowMs: 100_000,
+      rollbackOutcome: outcome,
+    }));
+    assertEquals(
+      same.filter((c) => c[0] === "issue" && c[1] === "comment").length,
+      0,
+      "an unmoved default branch is not tried again",
+    );
+
+    // The default branch moves: two more runs, and the same flag collects
+    // whatever they find (Issue #2311).
     const later: string[][] = [];
+    let attempts = 0;
     const again = ledgerDeps(later, {
       milestones: [{
         title: LEDGER_TITLE,
@@ -2559,15 +2631,21 @@ Deno.test("syncMilestoneBranches - a failed roll-back escalates once and a secon
       defaultSha: MOVED_SHA,
       rollbackOutcome: outcome,
     });
+    const inner = again.syncBranchFn;
+    again.syncBranchFn = (repo, branch, base, opts) => {
+      attempts++;
+      return inner(repo, branch, base, opts);
+    };
     await syncMilestoneBranches(again);
+    assertEquals(attempts, 1, "the moved tip re-arms the two-run budget");
     assertEquals(
-      later.filter((c) => c[0] === "issue" && c[1] === "comment").length,
-      0,
-      "the second cycle posts nothing",
+      (await readLedger(streakPath))?.conflictAttempts,
+      1,
+      "and the re-armed budget starts from one spent run",
     );
-    assertEquals(
-      later.filter((c) => c[0] === "issue" && c[1] === "create").length,
-      0,
+    assert(
+      !later.some((c) => c.includes("needs-human")),
+      "the re-attempt still asks no human",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

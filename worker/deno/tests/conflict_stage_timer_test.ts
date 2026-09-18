@@ -17,6 +17,7 @@ import {
   createConflictStageTimer,
   currentHost,
   formatStageTimings,
+  parseStageTimings,
 } from "../lib/conflict_stage_timer.ts";
 import { getHostname } from "../lib/worker_identity.ts";
 
@@ -190,4 +191,30 @@ Deno.test("currentHost - is the worker's own host resolver, not a second one", (
   // rather than returning an empty string, so the line can never read
   // `Timings (host ``):`.
   assertEquals(currentHost().length > 0, true);
+});
+
+Deno.test("parseStageTimings - reads back every stage a rendered line carries (Issue #2311)", () => {
+  const report = [
+    { stage: "deepen" as const, seconds: 3 },
+    { stage: "agent" as const, seconds: 212 },
+    { stage: "gate" as const, seconds: null },
+  ];
+  const parsed = parseStageTimings(formatStageTimings(report, "mel-01"));
+  assertEquals(parsed.host, "mel-01");
+  assertEquals(parsed.stages, [
+    { stage: "deepen", seconds: 3 },
+    { stage: "agent", seconds: 212 },
+    { stage: "gate", seconds: null },
+  ]);
+});
+
+Deno.test("parseStageTimings - an untimed report and unreadable text yield no stages (Issue #2311)", () => {
+  const empty = parseStageTimings(formatStageTimings([], "mel-01"));
+  assertEquals(empty.host, "mel-01");
+  assertEquals(empty.stages, []);
+
+  // Not a timings line at all: nothing is invented from it.
+  const nonsense = parseStageTimings("the merge conflicted");
+  assertEquals(nonsense.host, undefined);
+  assertEquals(nonsense.stages, []);
 });

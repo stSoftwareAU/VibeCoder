@@ -585,8 +585,37 @@ about either caller, and each fallback path passes it what that path observed.
   item and gains `idle-task` — the one pickup label `worker_label_guard.ts`
   lets the worker apply. Every other fallback files the flag unqueued.
 
-The builder and filer land with Issue #2304; the PR fallback and the milestone
-roll-back are wired to it by their own sub-issues under #2298.
+The builder and filer land with Issue #2304; the PR fallback is wired to it by
+its own sub-issue under #2298.
+
+**The milestone roll-back is wired to it by Issue #2311**, and that wiring is
+what removed the last `needs-human` from the milestone conflict path:
+
+- Every roll-back files or appends the flag — the one that merged cleanly and
+  the one that could not — before the children are re-queued, so the flag
+  reports the budget that was actually spent. The roll-back notice on the
+  escalation target links it by number, and a filing that failed says so in
+  that notice rather than omitting the link.
+- A roll-back that **could not merge** posts that notice and nothing else: no
+  `needs-human` label, no second issue, no request of anyone. It records the
+  default-branch tip it answered for
+  (`fallbackDefaultSha` in `milestone_sync_failures.json`), and when the
+  default branch moves past that tip the branch is offered its two runs again
+  — the same flag collecting whatever they find. Without that re-arm a branch
+  whose roll-back failed would sit out every remaining cycle for ever, which
+  is only acceptable if somebody was asked to look, and nobody is.
+- The **repeated-identical-failure** escalation of Issue #1964 is gone with
+  it. The streak escalation (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) still
+  fires, but only for a **non-conflict** failure — a fetch, a push or an
+  ordinary git error — which is not a conflict outcome at all.
+- Each spent run is reported from the ledger's own record of it: the host, the
+  stage timings (`conflict_stage_timer.ts` renders them, and
+  `parseStageTimings` reads them back) and what that run made of the conflict
+  file by file. A run that recorded none of it renders as `not recorded`.
+- The flag emits a `fallback_flagged` self-heal event carrying the issue
+  number, beside the `sync_failed` and `rolled_back` events. A `sync_failed`
+  with a roll-back and no `fallback_flagged` beside it is the alert that the
+  record was not written.
 
 ### 💥 When the attempt itself is disrupted
 

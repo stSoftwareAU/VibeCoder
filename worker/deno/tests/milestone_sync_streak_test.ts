@@ -467,3 +467,121 @@ Deno.test("conflict ledger - a legacy deferUntil is dropped on load, and the bra
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("conflict ledger - every charged run is kept, with its host, timings and analysis (Issue #2311)", () => {
+  const at = Date.parse("2026-09-18T00:00:00Z");
+  let entry: SyncStreakEntry = { count: 0, escalated: false };
+
+  entry = concludeConflictAttempt(entry, "failed", "rung agent", "sha-x", at, {
+    host: "mel-01",
+    timings: "Timings (host `mel-01`): agent 212s",
+    analysis: "- `a.ts` — agent: could not reconcile both sides",
+  });
+  // A conclusion the branch is not answerable for records itself but joins
+  // nothing: the flag reports the runs that were actually spent.
+  entry = concludeConflictAttempt(
+    entry,
+    "not-charged",
+    "push rejected by ruleset",
+    "sha-x",
+    at + 1_000,
+  );
+  entry = concludeConflictAttempt(
+    entry,
+    "failed",
+    "rung agent",
+    "sha-y",
+    at + 2_000,
+    { host: "syd-02" },
+  );
+
+  assertEquals(entry.conflictAttempts, 2);
+  assertEquals(entry.failedAttempts?.length, 2, "both spent runs are kept");
+  assertEquals(entry.failedAttempts?.[0]?.host, "mel-01");
+  assertEquals(
+    entry.failedAttempts?.[0]?.timings,
+    "Timings (host `mel-01`): agent 212s",
+  );
+  assertEquals(
+    entry.failedAttempts?.[0]?.analysis,
+    "- `a.ts` — agent: could not reconcile both sides",
+  );
+  assertEquals(entry.failedAttempts?.[1]?.host, "syd-02");
+  assertEquals(entry.failedAttempts?.[1]?.defaultSha, "sha-y");
+});
+
+Deno.test("conflict ledger - the spent runs never outgrow the budget (Issue #2311)", () => {
+  const at = Date.parse("2026-09-18T00:00:00Z");
+  let entry: SyncStreakEntry = { count: 0, escalated: false };
+  for (let run = 0; run < MILESTONE_CONFLICT_ATTEMPT_BUDGET + 3; run++) {
+    entry = concludeConflictAttempt(
+      entry,
+      "failed",
+      `run ${run}`,
+      "sha-x",
+      at + run,
+    );
+  }
+  assertEquals(
+    entry.failedAttempts?.length,
+    MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    "the list is capped at the budget it describes",
+  );
+  assertEquals(
+    entry.failedAttempts?.[MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1]?.reason,
+    `run ${MILESTONE_CONFLICT_ATTEMPT_BUDGET + 2}`,
+    "and keeps the most recent runs",
+  );
+});
+
+Deno.test("conflict ledger - a success drops the spent runs and the fallback's tip (Issue #2311)", () => {
+  const spent: SyncStreakEntry = {
+    count: 0,
+    escalated: false,
+    conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    failedAttempts: [{
+      at: "2026-09-18T00:00:00.000Z",
+      outcome: "failed",
+      reason: "rung agent",
+    }],
+    fallbackDefaultSha: "sha-x",
+  };
+  const reset = resetConflictLedgerOnSuccess(spent);
+  assertEquals(reset.failedAttempts, undefined);
+  assertEquals(reset.fallbackDefaultSha, undefined);
+  assertEquals(reset.conflictAttempts, 0);
+});
+
+Deno.test("conflict ledger - the spent runs and the fallback tip round trip (Issue #2311)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = milestoneSyncStreakPath(dir);
+    const entry: SyncStreakEntry = {
+      count: 2,
+      escalated: false,
+      gateEscalated: false,
+      conflictAttempts: 2,
+      failedAttempts: [
+        {
+          at: "2026-09-18T00:00:00.000Z",
+          outcome: "failed",
+          reason: "rung agent",
+          defaultSha: "sha-x",
+          host: "mel-01",
+          analysis: "- `a.ts` — agent: undecided",
+          timings: "Timings (host `mel-01`): agent 212s",
+        },
+        // A malformed row is dropped rather than failing the whole load.
+        { at: "", outcome: "failed", reason: "no timestamp" },
+      ],
+      fallbackDefaultSha: "sha-x",
+    };
+    await saveSyncStreaks(path, { "o/r|milestone/x": entry });
+    const back = (await loadSyncStreaks(path))["o/r|milestone/x"];
+    assertEquals(back?.failedAttempts?.length, 1, "the malformed row is gone");
+    assertEquals(back?.failedAttempts?.[0], entry.failedAttempts?.[0]);
+    assertEquals(back?.fallbackDefaultSha, "sha-x");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

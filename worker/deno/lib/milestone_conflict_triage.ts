@@ -193,6 +193,14 @@ export class MilestoneConflictEscalation extends Error {
      * repository and made the same analysis a comment per cycle.
      */
     readonly milestoneSha?: string,
+    /**
+     * The attempt's stage timings and host, as `formatStageTimings` rendered
+     * them (Issues #2308, #2311). A failed run costs the same twenty minutes
+     * a successful one does, and the `merge-fallback` flag is where that
+     * cost is read back — so the refusal carries it rather than leaving it
+     * in a log nobody keeps.
+     */
+    readonly timings?: string,
   ) {
     super(message);
   }
