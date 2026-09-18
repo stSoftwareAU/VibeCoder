@@ -37,7 +37,14 @@ import {
   adoptProviderSession,
   createSessionResumeState,
   recordPhaseCompletion,
+  type SessionResumeState,
 } from "./session_resume.ts";
+import {
+  anticipatedProviderId,
+  primeStreamSession,
+  recordStreamSession,
+} from "./stream_session.ts";
+import type { StreamId } from "./stream_identity.ts";
 import {
   buildBoundaryIntegrityInstruction,
   createPromptDelimiters,
@@ -1533,7 +1540,61 @@ async function _processPlanningWithHeartbeat(
   // revises once, and only then publishes the final sub-issues. The critique
   // text itself is never published. Sub-issue detection runs on the turn-2
   // output, so the existing fallback/retry logic below is unchanged.
+  // Planning joins its stream's conversation too (Issue #2333): a repository's
+  // planning issues carry no milestone, so they run on its blank stream and
+  // each new plan continues where the last one left off. The milestone a plan
+  // creates is a different stream, which starts fresh at its first sub-issue —
+  // nothing forks this conversation into it.
+  let streamSession: { stream: StreamId; providerId: string } | undefined;
   let sessionState = createSessionResumeState();
+  if (config.enableSessionResume) {
+    const providerId = anticipatedProviderId(config.repoConfig?.[repo]);
+    const adoption = await primeStreamSession({
+      workDir: config.workDir,
+      repo,
+      ...(milestoneTitle !== undefined ? { milestoneTitle } : {}),
+      providerId,
+      runKind: "planning",
+      logger,
+    });
+    if (adoption) {
+      sessionState = adoption.state;
+      streamSession = { stream: adoption.stream, providerId };
+    }
+  }
+
+  /**
+   * Hand this run's conversation on to the stream's next planning issue.
+   *
+   * Called after every turn that completed, because planning has more than one
+   * way out: the draft turn can publish sub-issues and return, and the publish
+   * turn can time out. A stream that is never written is a conversation lost,
+   * so the write follows whichever turn actually ran last.
+   */
+  const handOnStreamSession = async (
+    state: SessionResumeState,
+  ): Promise<void> => {
+    if (!streamSession) return;
+    const providerId = state.providerId ?? streamSession.providerId;
+    const recorded = await recordStreamSession({
+      workDir: config.workDir,
+      stream: streamSession.stream,
+      providerId,
+      sessionId: state.sessionId,
+      ...(state.credentialScope !== undefined
+        ? { credentialScope: state.credentialScope }
+        : {}),
+    });
+    if (!recorded) {
+      // Loud: the next planning issue starts a new conversation, and nothing
+      // else would say why.
+      logger.warn(
+        "Could not record this planning run's session on the stream — the " +
+          "next planning issue starts a new conversation (Issue #2333)",
+        { repo, issueNumber, providerId },
+      );
+    }
+  };
 
   // Collect stats from every planning Claude invocation in the run (Issue
   // #2649). Designed for a list — draft + critique (#2648), plus the #1219
@@ -1598,6 +1659,9 @@ async function _processPlanningWithHeartbeat(
         providerId: draftResult.value.provider,
       });
     }
+    // The draft turn can publish sub-issues and return below, so the stream is
+    // written here as well as after the publish turn (Issue #2333).
+    await handOnStreamSession(sessionState);
     recordInvocation(invocations, draftResult.value, codegraph, graft);
     if (draftResult.value.timedOut) {
       logger.warn(
@@ -1753,6 +1817,19 @@ async function _processPlanningWithHeartbeat(
     };
   }
   recordInvocation(invocations, claudeResult.value, codegraph, graft);
+
+  // Before the timeout check below: a publish turn that ran out of time still
+  // had the conversation, and the next planning run should continue it rather
+  // than start over. Codex names its own thread (#1699), so capture the
+  // provider's id first.
+  await handOnStreamSession(
+    claudeResult.value.provider
+      ? adoptProviderSession(publishSessionState, {
+        sessionId: claudeResult.value.agentOutput?.sessionId,
+        providerId: claudeResult.value.provider,
+      })
+      : publishSessionState,
+  );
 
   const claudeOutput = claudeResult.value.output;
 

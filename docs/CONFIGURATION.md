@@ -3283,8 +3283,29 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   milestone-close housekeeping, or when a session proves unresumable and the
   stream is reset. No migration is involved: a pre-existing per-issue record
   keeps loading exactly as before, and a host with no stream record starts the
-  stream fresh. The store is in place; the phases that read and write it land
-  with the rest of the stream work in this milestone.
+  stream fresh.
+- **Implementation and planning runs join that conversation** (Issue #2333).
+  With `enable_session_resume` on, the setup phase resolves the issue's stream,
+  loads the session recorded for the provider it is about to spawn, and primes
+  `--resume` on it; the execute phase writes back the session the run ended on,
+  naming this host as the holder. So the second issue of a milestone continues
+  where the first left off instead of starting empty, and a planning run
+  continues the repository's blank-stream conversation. A **new milestone
+  starts fresh at its first sub-issue** — the planning run's own conversation
+  is never forked into the milestone it created.
+- **Every other run kind keeps a per-issue session** and reads and writes no
+  stream record at all: grill-me, question, idle-task, PR-feedback and CI-fix.
+  That exclusion is one list — `STREAM_JOIN_POLICY` in
+  `worker/deno/lib/stream_session.ts` — and it is exhaustive by type, so a run
+  kind added later cannot join a stream by omission.
+- The issue's **own** checkpoint still wins where it has one: a re-claim that
+  resumed a WIP branch replays that branch's interrupted conversation, which is
+  closer to the work than the stream's, and leaves the stream record alone.
+- A stream record naming a session this provider cannot resume is **reset**,
+  never fatal: the dead entry is dropped, a fresh session opens in its place,
+  and the run logs `stream session reset: <reason>` before continuing. Every
+  run logs one line naming what it joined —
+  `stream <label> session <id> (resumed|new|reset)`.
 - A branch carrying **only** WIP markers does not become a PR: when a claim
   resumed a checkpoint and added no commit of its own, the completion phase
   refuses to raise a half-done PR from parked work and the issue returns to
@@ -3301,6 +3322,7 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
 
 **Reference:** `worker/deno/lib/session_resume.ts` (implementation),
 `worker/deno/lib/issue_branch_resume.ts` (issue-number branch lookup),
+`worker/deno/lib/stream_session.ts` (which run kinds join a stream, and how),
 `worker/deno/lib/config_defaults.ts` (default value).
 
 ## 📦 Session Compaction

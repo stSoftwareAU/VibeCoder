@@ -42,6 +42,8 @@ import {
 import { ensureHistoryDepth } from "../git_history.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { saveResumeState } from "../resume_state_store.ts";
+import { recordStreamSession } from "../stream_session.ts";
+import { streamLabel } from "../stream_identity.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -616,7 +618,12 @@ async function executeClaudeBody(
     });
   }
 
-  // Initialise session resume state if enabled (Issue #1324)
+  // Initialise session resume state if enabled (Issue #1324).
+  //
+  // Normally already set: the setup phase primed it from the issue's
+  // checkpoint, or joined the issue's stream conversation (Issue #2333). This
+  // is what is left — a run whose stream could not be resolved, or a run kind
+  // that keeps a per-issue session — and it starts one, as it always did.
   if (config.enableSessionResume && !state.sessionResumeState) {
     state.sessionResumeState = createSessionResumeState();
     logger.info("Session resume enabled", {
@@ -1400,6 +1407,37 @@ async function executeClaudeBody(
         ? { credentialScope: state.sessionResumeState.credentialScope }
         : {}),
     });
+    // Hand the conversation on to the stream's next issue (Issue #2333). The
+    // provider that actually served the run owns the id — a fallback provider
+    // writes its own slot and leaves the primary's alone. Set only when this
+    // run joined a stream, so an excluded run kind writes no record.
+    if (state.streamSession) {
+      const providerId = state.sessionResumeState.providerId ??
+        claudeResult.value.provider ?? state.streamSession.providerId;
+      const recorded = await recordStreamSession({
+        workDir: config.workDir,
+        stream: state.streamSession.stream,
+        providerId,
+        sessionId: state.sessionResumeState.sessionId,
+        ...(state.sessionResumeState.credentialScope !== undefined
+          ? { credentialScope: state.sessionResumeState.credentialScope }
+          : {}),
+      });
+      if (!recorded) {
+        // Loud: the stream's next issue will start a fresh conversation
+        // instead of continuing this one, and nothing else would say so.
+        logger.warn(
+          "Could not record this run's session on the stream — the next " +
+            "issue of the stream starts a new conversation (Issue #2333)",
+          {
+            repo,
+            issueNumber,
+            stream: streamLabel(state.streamSession.stream),
+            providerId,
+          },
+        );
+      }
+    }
   }
 
   // Detect changes — check for uncommitted changes or new commits

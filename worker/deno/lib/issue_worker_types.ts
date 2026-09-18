@@ -14,6 +14,7 @@ import type { IssueComment } from "./issue_data.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
 import type { SessionResumeState } from "./session_resume.ts";
+import type { StreamId } from "./stream_identity.ts";
 import type { FailedCheck, GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
@@ -179,6 +180,17 @@ export interface PhaseState {
   heartbeatHandle?: HeartbeatHandle;
   /** Session resume state for CLI-level session continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
+  /**
+   * The stream whose conversation {@link sessionResumeState} belongs to
+   * (Issue #2333), and the provider slot it was taken from, set by the setup
+   * phase when this run joined a stream.
+   *
+   * Its presence is what tells the execute phase to write the session it ends
+   * up on back to the stream record: absent — a run kind that keeps a
+   * per-issue session, or a stream that could not be resolved — no stream
+   * record is read or written for this run.
+   */
+  streamSession?: { stream: StreamId; providerId: string };
   /**
    * True when setup resumed the issue branch from a prior attempt's WIP
    * checkpoint (Issue #4170). The execute phase tells the agent prior
