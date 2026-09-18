@@ -471,6 +471,27 @@ async function executeClaudeBody(
     logger.info(describeGraftContext(graftContext), { repo, issueNumber });
   }
 
+  // The issue-executor split (Issue #2342): on, the invocation carries
+  // `--agents` definitions so the advisor delegates mechanical edit work to
+  // Sonnet executors, and the prompt carries the advisor/executor block that
+  // tells it to (Issue #2343). Off — the default — `agents` stays absent, no
+  // argument is emitted, the block renders as nothing, and every sub-agent
+  // inherits the phase's model as before. Resolved once, before the prompt is
+  // built, so the prompt and the argv cannot disagree. Wired here as well as
+  // on the standalone command path, or the key would be inert on exactly the
+  // runs the fleet actually makes.
+  const issueExecutorSplit = isIssueExecutorSplitEnabled(
+    "issue",
+    config.repoConfig?.[repo],
+    config,
+  );
+  if (issueExecutorSplit) {
+    logger.info(
+      `Issue-executor split is on for ${repo}: the invocation carries ` +
+        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
+
   const promptResult = await deps.infrastructure.buildPrompt({
     repo,
     issueNumber: String(issueNumber),
@@ -499,6 +520,8 @@ async function executeClaudeBody(
     // for every implementation run (Issue #849); the per-run custom prompt
     // above still wins when this run was dispatched by a custom label.
     promptOverrides: promptOverrideMappings(config),
+    // Issue #2343: a split run's prompt carries the advisor/executor block.
+    issueExecutorSplit,
   });
   if (!promptResult.ok) {
     return {
@@ -744,24 +767,6 @@ async function executeClaudeBody(
         onCheckpoint: saveCheckpointState,
       })
       : undefined;
-
-  // The issue-executor split (Issue #2342): on, the invocation carries
-  // `--agents` definitions so the advisor delegates mechanical edit work to
-  // Sonnet executors. Off — the default — `agents` stays absent, no argument
-  // is emitted, and every sub-agent inherits the phase's model as before.
-  // Wired here as well as on the standalone command path, or the key would be
-  // inert on exactly the runs the fleet actually makes.
-  const issueExecutorSplit = isIssueExecutorSplitEnabled(
-    "issue",
-    config.repoConfig?.[repo],
-    config,
-  );
-  if (issueExecutorSplit) {
-    logger.info(
-      `Issue-executor split is on for ${repo}: the invocation carries ` +
-        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
-    );
-  }
 
   // Execute Claude with timeout and retry.
   //

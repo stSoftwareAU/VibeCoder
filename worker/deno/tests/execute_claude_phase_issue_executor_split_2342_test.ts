@@ -19,9 +19,11 @@ import {
 import { ISSUE_EXECUTOR_AGENT_NAME } from "../lib/issue_executor_agents.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 
-/** What one phase run handed the runner. */
+/** What one phase run handed the runner and the prompt builder. */
 interface Observed {
   runOptions?: RunClaudeOptions;
+  /** The options the prompt build was given (Issue #2343). */
+  promptOptions?: Record<string, unknown>;
 }
 
 function createDeps(observed: Observed): ExecuteClaudePhaseDeps {
@@ -38,8 +40,9 @@ function createDeps(observed: Observed): ExecuteClaudePhaseDeps {
         ok: true,
         value: { systemPrompt: "sys", prompt: "user" },
       }),
-    buildCachedIssuePrompt: () =>
-      Promise.resolve({
+    buildCachedIssuePrompt: ((options: Record<string, unknown>) => {
+      observed.promptOptions = options;
+      return Promise.resolve({
         ok: true as const,
         value: {
           systemPrompt: "sys",
@@ -47,7 +50,8 @@ function createDeps(observed: Observed): ExecuteClaudePhaseDeps {
           promptSha: "a".repeat(64),
           cacheHit: false,
         },
-      }),
+      });
+    }) as never,
     validateRepoState: () =>
       Promise.resolve({
         ok: true,
@@ -92,9 +96,16 @@ function options(
 async function runWith(
   overrides: Partial<ExecuteClaudePhaseOptions>,
 ): Promise<RunClaudeOptions | undefined> {
+  return (await observeRun(overrides)).runOptions;
+}
+
+/** Run the phase and report everything it handed its dependencies. */
+async function observeRun(
+  overrides: Partial<ExecuteClaudePhaseOptions>,
+): Promise<Observed> {
   const observed: Observed = {};
   await runExecuteClaudePhase(options(overrides), createDeps(observed));
-  return observed.runOptions;
+  return observed;
 }
 
 Deno.test("execute_claude_phase - the key off hands the runner no sub-agent definitions (Issue #2342)", async () => {
@@ -135,4 +146,16 @@ Deno.test("execute_claude_phase - a per-repo true beats a host-wide off (Issue #
 
   assert(runOptions?.agents, "the repository's own opt-in stands on its own");
   assertEquals(Object.keys(runOptions.agents), [ISSUE_EXECUTOR_AGENT_NAME]);
+});
+
+Deno.test("execute_claude_phase - the key reaches the prompt build as well as the argv (Issue #2343)", async () => {
+  // One boolean decides both, so a run cannot carry executors without the
+  // advisor/executor block that tells it to use them.
+  const on = await observeRun({ issueExecutorSplit: true });
+  assertEquals(on.promptOptions?.issueExecutorSplit, true);
+  assert(on.runOptions?.agents, "the same run carries the definitions");
+
+  const off = await observeRun({});
+  assertEquals(off.promptOptions?.issueExecutorSplit, false);
+  assertEquals(off.runOptions?.agents, undefined);
 });

@@ -1185,6 +1185,25 @@ async function executeClaudePhaseBody(
     ? new PromptCache({ cacheDir: promptCacheDir })
     : undefined;
 
+  // The issue-executor split (Issue #2342): with the key on, the invocation
+  // carries `--agents` definitions so the advisor delegates mechanical edit
+  // work to Sonnet executors, and the prompt carries the advisor/executor
+  // block that tells it to (Issue #2343). Off — the default — `agents` stays
+  // absent, no argument is emitted, the block renders as nothing, and every
+  // sub-agent inherits the phase's model exactly as it does today. Resolved
+  // before the prompt is built so the prompt and the argv cannot disagree.
+  const issueExecutorSplit = isIssueExecutorSplitEnabled(
+    "issue",
+    repoConfig,
+    { issueExecutorSplit: options.issueExecutorSplit === true },
+  );
+  if (issueExecutorSplit) {
+    deps.log(
+      "Issue-executor split is on: the invocation carries " +
+        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
+
   const promptResult = await deps.buildCachedIssuePrompt({
     repo,
     issueNumber: String(issueNumber),
@@ -1211,6 +1230,8 @@ async function executeClaudePhaseBody(
     // template here too — this phase is a second entry point into the same
     // build, and skipping the overrides would silently run the built-in one.
     ...(promptOverrides ? { promptOverrides } : {}),
+    // Issue #2343: a split run's prompt carries the advisor/executor block.
+    issueExecutorSplit,
   });
 
   if (!promptResult.ok) {
@@ -1384,22 +1405,6 @@ async function executeClaudePhaseBody(
   }
 
   // --- Execute Claude ---
-  // The issue-executor split (Issue #2342): with the key on, the invocation
-  // carries `--agents` definitions so the advisor delegates mechanical edit
-  // work to Sonnet executors. Off — the default — `agents` stays absent and
-  // no argument is emitted, so every sub-agent inherits the phase's model
-  // exactly as it does today.
-  const issueExecutorSplit = isIssueExecutorSplitEnabled(
-    "issue",
-    repoConfig,
-    { issueExecutorSplit: options.issueExecutorSplit === true },
-  );
-  if (issueExecutorSplit) {
-    deps.log(
-      "Issue-executor split is on: the invocation carries " +
-        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
-    );
-  }
   deps.log("Starting Claude Code to work on the issue...");
   let claudeResult: Result<ClaudeRunResult>;
   try {
