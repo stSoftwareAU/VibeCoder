@@ -83,6 +83,12 @@ import { type RebaseRungRoute, runRebaseRung } from "./conflict_rebase_rung.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
+import {
+  type ConflictStageTimer,
+  createConflictStageTimer,
+  currentHost,
+  formatStageTimings,
+} from "./conflict_stage_timer.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { BOTH_INSERTED_RULE_NAME } from "./both_inserted_conflict_rule.ts";
@@ -256,6 +262,17 @@ export interface MergeConflictProcessorDeps {
    * naming that route — loud and non-destructive, never a silent close.
    */
   trustedAuthors?: readonly string[];
+  /**
+   * The host named on every stage-timings line (Issue #2308). Defaults to
+   * {@link currentHost}; tests inject a fixed name.
+   */
+  hostFn?: () => string;
+  /**
+   * The clock the stage timings are measured against (Issue #2308). Defaults
+   * to `Date.now`; tests inject a counter so an assertion on a stage's
+   * seconds never reads a wall clock.
+   */
+  nowMsFn?: () => number;
 }
 
 /** What the human must do when the worker gives up on a conflict. */
@@ -292,6 +309,34 @@ async function git(
     return { code: 1, stdout: "", stderr: result.error.message };
   }
   return result.value;
+}
+
+/**
+ * Log this attempt's stage timings and render them for the PR comment
+ * (Issue #2308).
+ *
+ * One call site produces both sinks, so the comment and the structured log
+ * record can never disagree about what the attempt spent where.
+ *
+ * @param input - The PR the attempt ran against
+ * @param processorDeps - Logger and the host seam
+ * @param timer - The attempt's timer
+ * @returns The rendered timings line, ready to append to a conclusion comment
+ */
+function recordStageTimings(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  timer: ConflictStageTimer,
+): string {
+  const host = (processorDeps.hostFn ?? currentHost)();
+  const timings = timer.report();
+  processorDeps.logger.info("Merge-conflict stage timings", {
+    repo: input.repo,
+    prNumber: input.prNumber,
+    host,
+    timings,
+  });
+  return formatStageTimings(timings, host);
 }
 
 /** Paths git still reports as unmerged. */
@@ -535,6 +580,9 @@ export function buildRuleResolutionSection(
  * worker's own issue context cannot corroborate as an unverified judgement.
  * That flag replaced a refusal: aborting such a merge cost the attempt and
  * left the PR conflicting, which helped nobody.
+ *
+ * The stage timings ride at the bottom (Issue #2308), so the twenty minutes
+ * an attempt took are accounted for on the attempt's own conclusion.
  */
 export function buildResolvedComment(
   baseBranch: string,
@@ -542,6 +590,7 @@ export function buildResolvedComment(
   detail?: string,
   ruleResolved: readonly ResolvedConflictFile[] = [],
   issueContext?: ConflictIssueContext | null,
+  timings?: string,
 ): string {
   const body = detail && detail.trim().length > 0
     ? detail.trim()
@@ -552,7 +601,19 @@ export function buildResolvedComment(
     body,
     ...buildIntentOverrideSection(parseIntentOverrides(detail), issueContext),
     ...buildRuleResolutionSection(ruleResolved, baseBranch, branchName),
+    ...buildStageTimingSection(timings),
   ].join("\n");
+}
+
+/**
+ * The stage-timings block both PR conclusion comments carry (Issue #2308).
+ *
+ * @param timings - The rendered line, or undefined when nothing was timed
+ * @returns The lines to append, or none at all
+ */
+function buildStageTimingSection(timings?: string): string[] {
+  if (!timings || timings.trim().length === 0) return [];
+  return ["", timings.trim()];
 }
 
 /**
@@ -570,6 +631,7 @@ export function buildFailedComment(
   baseBranch: string,
   failureDetail: string,
   conflictedFiles: readonly string[],
+  timings?: string,
 ): string {
   const files = conflictedFiles.length > 0
     ? ["", "Conflicted files:", ...conflictedFiles.map((f) => `- \`${f}\``)]
@@ -584,6 +646,7 @@ export function buildFailedComment(
     "",
     "The branch was left exactly as its author pushed it — the worker never " +
     "side-picks a conflict (Issue #4373), so no change has been lost.",
+    ...buildStageTimingSection(timings),
   ].join("\n");
 }
 
@@ -1015,6 +1078,9 @@ async function resolveConflict(
   } = processorDeps;
   const run = deps.git.runGitCommand;
   const attemptNumber = input.attemptCount + 1;
+  // Where this attempt's minutes go (Issue #2308). Started here so every
+  // conclusion below — resolved or failed — can account for the whole pass.
+  const timer = createConflictStageTimer(processorDeps.nowMsFn);
 
   // Check out the PR branch. A branch that no longer exists on origin means
   // the PR closed or merged since the scan listed it — nothing to do.
@@ -1036,8 +1102,10 @@ async function resolveConflict(
     };
   }
 
+  timer.start("deepen");
   const fetchBase = await git(run, ["fetch", "origin", baseBranch], workDir);
   if (fetchBase.code !== 0) {
+    timer.stop();
     return {
       ok: false,
       error: new Error(
@@ -1058,6 +1126,7 @@ async function resolveConflict(
     cwd: workDir,
     gitRunner: run,
   });
+  timer.stop();
   if (!depth.ok) {
     return await escalateNoCommonAncestor(
       input,
@@ -1211,6 +1280,7 @@ async function resolveConflict(
           merge.stderr.trim() || merge.stdout.trim()
         }`,
         attemptNumber,
+        timer,
       );
     }
 
@@ -1222,12 +1292,14 @@ async function resolveConflict(
     // re-reason about files that are already staged and resolved.
     const applyRules = processorDeps.applyDependencyRulesFn ??
       applyDependencyConflictRules;
+    timer.start("rules");
     const ruleReport = await applyRules({
       workingDir: workDir,
       conflictedFiles,
       git: (args) => git(run, [...args], workDir),
       logger,
     });
+    timer.stop();
     const deferredFiles = ruleReport.deferred.map((file) => file.path);
     if (ruleReport.resolved.length > 0) {
       logger.info("Deterministic dependency rules resolved conflicted files", {
@@ -1251,11 +1323,13 @@ async function resolveConflict(
       // the paths actually going to the agent — the rule-resolved files cost
       // no judgement, so they cost no lookups either — and recorded on the
       // attempt before the agent is asked anything.
+      timer.start("issue-context");
       issueContext = await gatherIssueContext(
         input,
         processorDeps,
         deferredFiles,
       );
+      timer.stop();
       await recordConsultedIssues(
         processorDeps,
         repo,
@@ -1266,6 +1340,7 @@ async function resolveConflict(
       );
 
       agentRan = true;
+      timer.start("agent");
       const agentOutcome = await runMergeConflictAgent({
         repo,
         target: { kind: "pr", prNumber },
@@ -1283,6 +1358,7 @@ async function resolveConflict(
         logger,
         runAgent: deps.claude.runClaudeWithRetry,
       });
+      timer.stop();
       if (!agentOutcome.ok) {
         await abortMerge(run, workDir);
         return await failAttempt(
@@ -1291,6 +1367,7 @@ async function resolveConflict(
           conflictedFiles,
           agentOutcome.error.message,
           attemptNumber,
+          timer,
         );
       }
       if (agentOutcome.value.terminated) {
@@ -1301,6 +1378,7 @@ async function resolveConflict(
           attemptCommentId,
           conflictedFiles,
           attemptNumber,
+          timer,
         );
       }
     } else {
@@ -1332,6 +1410,7 @@ async function resolveConflict(
           stillUnmerged.join(", ")
         }`,
         attemptNumber,
+        timer,
       );
     }
     if (await hasConflictMarkers(run, workDir, conflictedFiles)) {
@@ -1342,6 +1421,7 @@ async function resolveConflict(
         conflictedFiles,
         "the working tree still contains conflict markers",
         attemptNumber,
+        timer,
       );
     }
   }
@@ -1349,6 +1429,7 @@ async function resolveConflict(
   // Commit whatever the agent left staged and push. No force: the merge
   // commit fast-forwards the remote branch, so every PR commit survives.
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
+  timer.start("push");
   const finalise = await deps.git.commitAndPushPending(
     branchName,
     `Merge ${baseBranch} into ${branchName} (Issue #84)\n\nResolved the PR's merge conflict without side-picking.`,
@@ -1356,6 +1437,7 @@ async function resolveConflict(
     false,
     preFlight,
   );
+  timer.stop();
   if (!finalise.ok) {
     // A ruleset refusing the push is a configuration fact, not a resolution
     // the agent got wrong (Issue #1772) — it recurs identically every run, so
@@ -1375,6 +1457,7 @@ async function resolveConflict(
       conflictedFiles,
       `commit/push failed: ${finalise.error.message}`,
       attemptNumber,
+      timer,
     );
   }
   if (finalise.value.finalUnpushedCount > 0) {
@@ -1407,6 +1490,7 @@ async function resolveConflict(
         gitDetail || "git reported no output"
       }`,
       attemptNumber,
+      timer,
     );
   }
 
@@ -1428,6 +1512,7 @@ async function resolveConflict(
         ? detail.trim()
         : `'${baseBranch}' is still not merged into '${branchName}'`,
       attemptNumber,
+      timer,
     );
   }
 
@@ -1443,6 +1528,7 @@ async function resolveConflict(
         detail,
         ruleResolved,
         issueContext,
+        recordStageTimings(input, processorDeps, timer),
       ),
     );
   } catch (err) {
@@ -2452,9 +2538,16 @@ async function withdrawCutShortAttempt(
   attemptCommentId: number | null,
   conflictedFiles: readonly string[],
   attemptNumber: number,
+  timer: ConflictStageTimer,
 ): Promise<Result<MergeConflictResult>> {
   const { logger, deps } = processorDeps;
   const { repo, prNumber } = input;
+
+  // An attempt the run ended under the agent is precisely the twenty-minute
+  // pass the timings exist to explain (Issue #2308). It concludes on no
+  // comment — the marker is deleted and the attempt withdrawn — so the log is
+  // the only place its breakdown can land, and it lands there.
+  recordStageTimings(input, processorDeps, timer);
 
   await deleteAttemptMarker(
     deps,
@@ -2507,6 +2600,7 @@ async function failAttempt(
   conflictedFiles: readonly string[],
   failureDetail: string,
   attemptNumber: number,
+  timer: ConflictStageTimer,
 ): Promise<Result<MergeConflictResult>> {
   const { logger, deps } = processorDeps;
   const maxAttempts = processorDeps.maxAttempts ??
@@ -2532,6 +2626,7 @@ async function failAttempt(
         input.baseBranch,
         failureDetail,
         conflictedFiles,
+        recordStageTimings(input, processorDeps, timer),
       ),
     );
   } catch (err) {

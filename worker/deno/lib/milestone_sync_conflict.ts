@@ -134,6 +134,14 @@ export interface MilestoneSyncConflict {
    * wrote nothing.
    */
   agentReply?: string;
+  /**
+   * The attempt's stage timings and the host it ran on (Issue #2308), already
+   * rendered by `formatStageTimings`.
+   *
+   * A sync merge routinely runs for twenty minutes or more; this line is what
+   * says which rung spent them. Absent when nothing was timed.
+   */
+  timings?: string;
 }
 
 /** Outcome of a milestone sync merge. */
@@ -273,10 +281,18 @@ export interface ConflictEscalation {
  * files and both sides' commits, so the reader can diff each side; and it
  * says plainly what has to be checked — that the branch's own work survived
  * a resolution that favoured the default branch.
+ *
+ * Either report ends with the stage timings and the host (Issue #2308), so
+ * the minutes the sync spent are accounted for wherever it is read.
  */
 export function buildConflictEscalationComment(
   e: ConflictEscalation,
 ): string {
+  // One suffix, both reports: the success notice above and the
+  // check-what-was-overwritten report below must not drift apart.
+  const timings = e.conflict.timings && e.conflict.timings.trim().length > 0
+    ? `\n\n${e.conflict.timings.trim()}`
+    : "";
   // A triaged resolution is a different report (Issue #1559): every file was
   // decided on its own and the merged tree was verified before the push, so
   // the reader is told what was decided and why, not asked to check what was
@@ -320,7 +336,7 @@ export function buildConflictEscalationComment(
       `No conflicted test file was resolved by taking a side that drops ` +
       `cases: a test file resolves only when one side keeps every case and ` +
       `every line of the other. Nothing here needs a human, but the reasoning ` +
-      `is on the merge commit if you want to check it.`;
+      `is on the merge commit if you want to check it.${timings}`;
   }
 
   // A conflict git could not itself name still has to reach a human — an
@@ -343,5 +359,5 @@ export function buildConflictEscalationComment(
     `sides changed the same code, the branch's version was replaced by ` +
     `\`${e.defaultBranch}\`'s. Reconcile it now, while the divergence is one ` +
     `day wide — at rollup time the two sides will have solved the same ` +
-    `problem twice and the merge becomes a research project.`;
+    `problem twice and the merge becomes a research project.${timings}`;
 }

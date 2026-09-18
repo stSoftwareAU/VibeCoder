@@ -20,6 +20,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildAttemptComment,
   buildConflictEscalationReason,
+  buildFailedComment,
   buildNudgeComment,
   buildNudgeCommitMessage,
   buildRebaseComment,
@@ -3118,4 +3119,171 @@ Deno.test("buildRungFailedComment - the abandon rung says the ladder waits rathe
   );
   assertEquals(body.includes(CONFLICT_ATTEMPT_MARKER), false);
   assertEquals(body.includes(CONFLICT_RESOLVED_MARKER), false);
+});
+
+// ---------------------------------------------------------------------------
+// Stage timings and host (Issue #2308)
+// ---------------------------------------------------------------------------
+
+/** A logger that keeps every `info` record, so the timings one can be read. */
+function makeTimingsLogger(
+  records: { message: string; context?: LogContext }[],
+): Logger {
+  const base = makeSilentLogger();
+  return {
+    ...base,
+    info: (message: string, context?: LogContext) => {
+      records.push({ message, context });
+    },
+  };
+}
+
+/** The one structured timings record an attempt emits. */
+function timingsRecord(
+  records: { message: string; context?: LogContext }[],
+): { message: string; context?: LogContext } | undefined {
+  return records.find((r) => r.message === "Merge-conflict stage timings");
+}
+
+Deno.test("processMergeConflict - the resolved comment carries the stage timings and the host (Issue #2308)", async () => {
+  const records: { message: string; context?: LogContext }[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    { logger: makeTimingsLogger(records), hostFn: () => "mel-01" },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+
+  const resolved = captured.comments.at(-1) ?? "";
+  assertStringIncludes(resolved, CONFLICT_RESOLVED_MARKER);
+  assertStringIncludes(resolved, "Timings (host `mel-01`):");
+  // Every stage this attempt ran is named — the deepen, the rules, the issue
+  // context, the agent and the push.
+  for (const stage of ["deepen", "rules", "issue-context", "agent", "push"]) {
+    assertStringIncludes(resolved, stage);
+  }
+});
+
+Deno.test("processMergeConflict - the structured log record carries the same host and stages (Issue #2308)", async () => {
+  const records: { message: string; context?: LogContext }[] = [];
+  // An injected clock, advanced five seconds per reading. A stage is bounded
+  // by exactly two readings — its start and its stop — so each one costs five
+  // seconds and the assertion below never touches a wall clock.
+  let clockMs = 0;
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    {
+      logger: makeTimingsLogger(records),
+      hostFn: () => "mel-01",
+      nowMsFn: () => (clockMs += 5_000),
+    },
+  );
+
+  assert(result.ok);
+  const record = timingsRecord(records);
+  assert(record, "the attempt must emit one structured timings record");
+  assertEquals(record.context?.host, "mel-01");
+
+  const timings = record.context?.timings as
+    | { stage: string; seconds: number | null }[]
+    | undefined;
+  assert(Array.isArray(timings), "the record must carry the stage report");
+  assertEquals(
+    timings.map((t) => t.stage),
+    ["deepen", "rules", "issue-context", "agent", "push"],
+  );
+  // Five injected seconds per stage, and every stage finished: a stage that
+  // silently went missing, or reported `unfinished`, fails here.
+  for (const timing of timings) assertEquals(timing.seconds, 5);
+});
+
+Deno.test("processMergeConflict - a failed attempt's conclusion carries the stage timings (Issue #2308)", async () => {
+  const records: { message: string; context?: LogContext }[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ markersAfterAgent: true }),
+    { logger: makeTimingsLogger(records), hostFn: () => "syd-07" },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+
+  const conclusion = captured.comments.at(-1) ?? "";
+  assertStringIncludes(conclusion, CONFLICT_FAILED_MARKER);
+  assertStringIncludes(conclusion, "Timings (host `syd-07`):");
+  assertStringIncludes(conclusion, "agent");
+
+  const record = timingsRecord(records);
+  assert(record, "a failed attempt must emit its timings record too");
+  assertEquals(record.context?.host, "syd-07");
+});
+
+Deno.test("buildResolvedComment - appends the timings line last, and omits it when there is none (Issue #2308)", () => {
+  const line = "Timings (host `mel-01`): deepen 3s · agent 212s";
+  const withTimings = buildResolvedComment(
+    "main",
+    "issue-16-fix",
+    "Merged cleanly.",
+    [],
+    null,
+    line,
+  );
+  assertStringIncludes(withTimings, line);
+  assertEquals(withTimings.trimEnd().endsWith(line), true);
+
+  const without = buildResolvedComment("main", "issue-16-fix");
+  assertEquals(without.includes("Timings (host"), false);
+});
+
+Deno.test("buildFailedComment - appends the timings line, and omits it when there is none (Issue #2308)", () => {
+  const line = "Timings (host `syd-07`): deepen 3s · agent unfinished";
+  const withTimings = buildFailedComment(
+    1,
+    2,
+    "main",
+    "the agent left 1 path(s) unmerged",
+    ["SECURITY.md"],
+    line,
+  );
+  assertStringIncludes(withTimings, line);
+
+  const without = buildFailedComment(1, 2, "main", "boom", ["SECURITY.md"]);
+  assertEquals(without.includes("Timings (host"), false);
+});
+
+Deno.test("processMergeConflict - an attempt the run ended still logs where its minutes went (Issue #2308)", async () => {
+  // The pass that spent twenty minutes under the agent and then died is the
+  // one a reader most needs the breakdown for. It concludes on no comment —
+  // the marker is deleted and the attempt withdrawn — so the log is the only
+  // sink, and an exit that logged nothing would hide exactly that pass.
+  const records: { message: string; context?: LogContext }[] = [];
+  let clockMs = 0;
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    {
+      logger: makeTimingsLogger(records),
+      hostFn: () => "syd-07",
+      nowMsFn: () => (clockMs += 5_000),
+    },
+    { claudeResult: { terminated: true } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  const record = timingsRecord(records);
+  assert(record, "a withdrawn attempt must still emit its timings record");
+  assertEquals(record.context?.host, "syd-07");
+  const timings = record.context?.timings as
+    | { stage: string; seconds: number | null }[]
+    | undefined;
+  assert(Array.isArray(timings), "the record carries the stage report");
+  assertEquals(
+    timings.map((t) => t.stage),
+    ["deepen", "rules", "issue-context", "agent"],
+  );
+  for (const timing of timings) assertEquals(timing.seconds, 5);
 });

@@ -782,6 +782,32 @@ that gap, and reading the queue means reading both:
   appeared, before rung 1 ran; see
   [Blocking-PR stall watchdog](../CONFIGURATION.md#-blocking-pr-stall-watchdog).
 
+## ⏱️ Every attempt says where its minutes went
+
+An attempt routinely runs for twenty to thirty minutes, and the only record of
+where that time went used to be the wall-clock gap between two log lines.
+Issue #2308 closed that: every attempt records the wall-clock seconds of each
+stage it ran — on this path `deepen`, `rules`, `issue-context`, `agent` and
+`push` — plus the host it ran on. There is no `gate` stage here, because the
+PR path runs no quality gate (Issue #2306); CI on the pushed merge is the
+gate. The line rides at the bottom of the attempt's own conclusion comment —
+the resolved marker or the failed one — and the same stages and host go out as
+one structured log record, so a reader never has to reconcile two different
+breakdowns:
+
+```text
+Timings (host `mel-01`): deepen 3s · rules 1s · issue-context 4s · agent 212s · push 6s
+```
+
+A stage that was started and never stopped renders as `unfinished` rather than
+disappearing from the line or being given a plausible-looking duration. A
+measurement that did not happen must never read as a fast one.
+
+An attempt the run ended under the agent concludes on no comment at all — its
+marker is deleted and the attempt is withdrawn rather than spent — so its
+breakdown lands in the log only. That is the pass most worth reading: it is
+the one that spent twenty minutes and produced nothing.
+
 ## 🧾 Every decision leaves a reason behind
 
 The label alone said *that* a PR was stuck, never *why the worker left it

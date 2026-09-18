@@ -379,6 +379,30 @@ pre-merge commit and escalated — with both halves: what the verification said
 *unverifiable*, and a resolution that cannot be verified is not a resolution —
 it is refused the same way.
 
+### Every sync says where its minutes went
+
+The sync merge runs the same ladder the PR path does, and it can take just as
+long. Issue #2308 gives each conflicting sync that lands the wall-clock
+seconds of its stages — `deepen`, `rules`, `agent`, `gate`, `push` — and the
+host it ran on, rendered as one line at the bottom of the sync report comment
+(both the "resolved a conflict automatically" notice and the older
+check-what-was-overwritten report) and emitted as one structured log record
+with the same fields:
+
+```text
+Timings (host `mel-01`): deepen 2s · rules 1s · agent 212s · gate 94s · push 5s
+```
+
+A repair round runs the resolution agent from inside the verification, and
+those minutes are counted as `agent`, not as `gate` — the gate's own slices
+either side of the repair accumulate into one `gate` entry. A stage started
+and never stopped renders as `unfinished` rather than vanishing from the line.
+
+A sync that refuses or escalates emits the same log record. It posts no
+"resolved a conflict automatically" notice to carry the line, but it spent the
+same minutes, and a twenty-minute sync that concluded in a refusal is exactly
+the attempt the breakdown was built to explain.
+
 ### The sync must record the default branch as an ancestor
 
 A squashed sync applies the default branch's *content* under a single-parent

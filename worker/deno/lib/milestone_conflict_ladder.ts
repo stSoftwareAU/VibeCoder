@@ -38,6 +38,7 @@ import { unstageWorkerStateFiles } from "./git_push.ts";
 import { readPrResponseMessage } from "./pr_branch_preparation.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { describeGitFailure } from "./milestone_merge_state.ts";
+import type { ConflictStageTimer } from "./conflict_stage_timer.ts";
 
 /**
  * The reason the agent rung leaves when the **worker** ended the run — the
@@ -102,6 +103,12 @@ export interface ConflictLadderInput {
   portedFn?: PortedFn;
   /** When a conflict's shape is logged as wrong-base; defaults apply. */
   shapeThresholds?: ShapeThresholds;
+  /**
+   * The sync's stage timer (Issue #2308). The ladder times its `rules` and
+   * `agent` rungs into it; absent, nothing is timed and the ladder behaves
+   * exactly as before.
+   */
+  timer?: ConflictStageTimer;
   logger?: Logger;
 }
 
@@ -283,6 +290,7 @@ export async function climbConflictLadder(
     applyRulesFn = applyDependencyConflictRules,
     portedFn = resolvePortedPaths,
     shapeThresholds,
+    timer,
     logger,
   } = input;
 
@@ -292,6 +300,7 @@ export async function climbConflictLadder(
   const resolved: FileDecision[] = [];
 
   // --- Rung 2: the deterministic dependency rules ---------------------------
+  timer?.start("rules");
   const ruleReport = await applyRulesFn({
     workingDir: options.cwd ?? ".",
     conflictedFiles: escalations.map((d) => d.path),
@@ -303,6 +312,7 @@ export async function climbConflictLadder(
       }
       : undefined,
   });
+  timer?.stop();
 
   for (const file of ruleReport.resolved) {
     const decision = byPath.get(file.path);
@@ -373,12 +383,14 @@ export async function climbConflictLadder(
     "Milestone sync: handing the remaining conflicts to the agent (Issue #1777)",
     { milestoneBranch, defaultBranch, conflictedFiles: deferred },
   );
+  timer?.start("agent");
   const outcome = await agentFn({
     conflictedFiles: deferred,
     milestoneBranch,
     defaultBranch,
     workDir: options.cwd ?? ".",
   });
+  timer?.stop();
 
   if (!outcome.ok) {
     return {
