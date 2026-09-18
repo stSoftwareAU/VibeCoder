@@ -1737,7 +1737,7 @@ unless explicitly overridden.
 | Comment flood threshold | `comment_flood_threshold` | `10` | Threshold of untrusted comments that triggers a flood audit event |
 | Include untrusted comments | `include_untrusted_comments` | `true` | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely. |
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
-| Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. `graft_context.deep` adds Graft's model-written summary pass under the host's own provider key (Issue #2315). See [Graft repo-context injection](#-graft-repo-context-injection). |
+| Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback and CI-fix** paths (Issues #2159, #2160) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
@@ -1865,69 +1865,12 @@ repository's committed `.gitignore`. Graft itself is run with `--no-gitignore
 observed here, because Graft is not installed on the image this was written
 against. The `info/exclude` entry holds either way.
 
-**The summary pass — `graft_context.deep` (Issue #2315).** By default the
-graph is Tier 1 only: tree-sitter symbols and call edges, no model involved.
-Graft's Tier 2 — a plain-English summary and crux per symbol, and concept
-nodes per file — is what its own documentation calls the part an agent needs
-to skip exploration, and it needs a model and a key. A host opts in per
-provider:
-
-```json
-{
-  "graft_context": {
-    "enabled": true,
-    "deep": {
-      "provider": "anthropic",
-      "model": "claude-sonnet-5",
-      "api_key_env": "ANTHROPIC_API_KEY",
-      "timeout_seconds": 1800,
-      "concurrency": 5
-    }
-  }
-}
-```
-
-`provider` is required and is the **wire format**, never a company:
-`anthropic` (the native API), `openai` (any OpenAI-compatible endpoint —
-`base_url` picks OpenRouter, Fireworks, Groq, a local server or OpenAI
-itself), `litellm` or `orcarouter`. `model` is the id as the provider names
-it, and Graft's per-provider default when absent. `api_key_env` is the
-**name** of the environment variable the worker reads the key from — never the
-key — defaulting to `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `LITELLM_API_KEY`
-or `ORCAROUTER_API_KEY` by provider; a value that is not a variable name
-stops the worker rather than being logged. The key reaches Graft as
-`GRAFT_API_KEY` in that one subprocess's environment and nowhere else.
-`timeout_seconds` (default **1800**) bounds the pass and `concurrency` is
-Graft's `-j`.
-
-With a `deep` block, each run tries `graft build --deep --allow-partial`
-first. A pass that finishes **is** the build. A host that names a variable it
-does not hold logs one `[GRAFT_DEEP_UNAVAILABLE]` line, records the pass as
-`skipped`, and builds the structural graph. A pass that fails or reaches its
-limit logs one `[GRAFT_DEEP_FAILED] … falling back to the structural build`
-line, records it as `failed`, and builds the structural graph — so the run
-still gets its bundle either way. Graft checkpoints every summary by body
-hash, so a pass cut at its limit keeps what it paid for and the next run
-continues from there; on a large repository the first few runs each fill in
-more of the layer until the pass fits inside the limit.
-
-The pass is reported beside the collection's own figures — `deep ok 118 s
-(340 summarised, 8,120 cached)` on the run-stats line and the `Graft context:`
-log line, and as `deep`, `deepSeconds`, `deepSummarised` and `deepCached` in
-the callback block. **Graft reports no token totals for the pass**, so its
-spend is not in the run's token or cost figures; the summarised count is the
-measure of what it did, and the trial in
-[Repo-context Trial](REPO-CONTEXT-TRIAL.md) reads it as an indexing cost
-outside the bar rather than as free.
-
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a
 block that is not an object — or an `enabled` that is not a boolean, such as
 `"yes"` — **stops the worker** with an error naming `graft_context.enabled`.
-The same holds inside `deep`: a missing or unknown `provider`, a limit that is
-not a positive whole number, or an `api_key_env` that is not a variable name
-stops the worker naming `graft_context.deep.<key>`. A host whose operator
-believes Graft is on must never silently run with it off.
+A host whose operator believes Graft is on must never silently run with it
+off.
 
 ### 📝 Agent transcripts
 
@@ -3209,11 +3152,7 @@ invocation and removed after it exits:
     "bundleChars": 4096,
     "nodeCount": 820,
     "callEdgeCount": 1204,
-    "queries": 7,
-    "deep": "ok",
-    "deepSeconds": 118.4,
-    "deepSummarised": 340,
-    "deepCached": 8120
+    "queries": 7
   }
 }
 ```
@@ -3236,9 +3175,7 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_GRAFT_ENABLED`, `VIBECODER_GRAFT_STATUS`,
 `VIBECODER_GRAFT_BUILD_SECONDS`, `VIBECODER_GRAFT_BUNDLE_CHARS`,
 `VIBECODER_GRAFT_NODE_COUNT`, `VIBECODER_GRAFT_CALL_EDGE_COUNT`,
-`VIBECODER_GRAFT_QUERIES`, `VIBECODER_GRAFT_DEEP`,
-`VIBECODER_GRAFT_DEEP_SECONDS`, `VIBECODER_GRAFT_DEEP_SUMMARISED`,
-`VIBECODER_GRAFT_DEEP_CACHED`, `VIBECODER_CODEGRAPH_ENABLED`, `VIBECODER_CODEGRAPH_STATUS`,
+`VIBECODER_GRAFT_QUERIES`, `VIBECODER_CODEGRAPH_ENABLED`, `VIBECODER_CODEGRAPH_STATUS`,
 `VIBECODER_CODEGRAPH_INDEX_SECONDS`, `VIBECODER_CODEGRAPH_NODE_COUNT`,
 `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT`, `VIBECODER_CODEGRAPH_QUERIES`. A
 cycle hook also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,

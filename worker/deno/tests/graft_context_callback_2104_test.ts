@@ -120,39 +120,6 @@ Deno.test("#2314 - the query tally rides the block and the environment once reco
   assertEquals(callbackGraftFacts({ ...OK_COLLECTION, queries: 0 }).queries, 0);
 });
 
-Deno.test("#2315 - the summary pass rides the block and the environment when configured", () => {
-  const withDeep: GraftContextResult = {
-    ...OK_COLLECTION,
-    deep: "ok",
-    deepSeconds: 118.4,
-    deepSummarised: 340,
-    deepCached: 8120,
-  };
-  const block = graftBlock(terminalRun({ graft: withDeep }));
-  assertEquals(block.deep, "ok");
-  assertEquals(block.deepSeconds, 118.4);
-  assertEquals(block.deepSummarised, 340);
-  assertEquals(block.deepCached, 8120);
-  const env = hookEnv(terminalRun({ graft: withDeep }));
-  assertEquals(env.VIBECODER_GRAFT_DEEP, "ok");
-  assertEquals(env.VIBECODER_GRAFT_DEEP_SECONDS, "118.4");
-  assertEquals(env.VIBECODER_GRAFT_DEEP_SUMMARISED, "340");
-  assertEquals(env.VIBECODER_GRAFT_DEEP_CACHED, "8120");
-  // A host with no pass configured says nothing about one.
-  const plain = hookEnv(terminalRun({ graft: OK_COLLECTION }));
-  for (
-    const name of [
-      "VIBECODER_GRAFT_DEEP",
-      "VIBECODER_GRAFT_DEEP_SECONDS",
-      "VIBECODER_GRAFT_DEEP_SUMMARISED",
-      "VIBECODER_GRAFT_DEEP_CACHED",
-    ]
-  ) {
-    assertEquals(plain[name], undefined, `${name} exported without a pass`);
-  }
-  assert(!("deep" in graftBlock(terminalRun({ graft: OK_COLLECTION }))));
-});
-
 Deno.test("#2104 - the bundle text never reaches a hook", () => {
   const block = graftBlock(terminalRun({ graft: OK_COLLECTION }));
   assert(!("bundle" in block), "the bundle rode into the callback document");
