@@ -18,7 +18,6 @@ import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
-import type { GraftDeepConfig } from "./graft_context_config.ts";
 import { bindGraftRun, type GraftRun } from "./graft_run.ts";
 import {
   collectGraftContext,
@@ -362,8 +361,6 @@ export interface CiProcessorDeps {
    * exactly as it does today.
    */
   graftContextEnabled?: boolean;
-  /** The Graft summary pass to build with (Issue #2315), when configured. */
-  graftContextDeep?: GraftDeepConfig;
   /**
    * Collect the Graft repo-context bundle (Issue #2103). Optional —
    * {@link collectGraftContext} is used when omitted, and it spawns nothing
@@ -520,9 +517,6 @@ async function collectGraftForCiFix(
     repoDir: repoDir ?? "",
     query: graftQueryForPr(prTitle, failureText),
     enabled,
-    ...(processorDeps.graftContextDeep
-      ? { deep: processorDeps.graftContextDeep }
-      : {}),
     logger,
   });
 }
