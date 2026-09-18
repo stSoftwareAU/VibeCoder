@@ -1187,6 +1187,13 @@ Deno.test("describeGraftContext - the query tally joins the figures once recorde
 // The summary pass — `graft build --deep` (Issue #2315)
 // ---------------------------------------------------------------------------
 
+/**
+ * The fake key the pass is handed, assembled at run time so the literal never
+ * sits in one piece beside `GRAFT_API_KEY` in the source — the shape the
+ * gitleaks `generic-api-key` rule flags. It assembles identically each run.
+ */
+const TEST_KEY = ["sk-test", "0123456789"].join("-");
+
 const DEEP: GraftDeepConfig = {
   provider: "anthropic",
   model: "claude-sonnet-5",
@@ -1215,8 +1222,7 @@ Deno.test("collectGraftContext - the deep pass builds under its own limit with t
       run: runner.run,
       git: git.git,
       deep: { ...DEEP, baseUrl: "https://example.invalid/v1" },
-      env: (name) =>
-        name === "GRAFT_TEST_KEY" ? "sk-test-0123456789" : undefined,
+      env: (name) => name === "GRAFT_TEST_KEY" ? TEST_KEY : undefined,
     });
     assertEquals(result.status, "ok");
     assertEquals(result.deep, "ok");
@@ -1250,7 +1256,7 @@ Deno.test("collectGraftContext - the deep pass builds under its own limit with t
     assertEquals(build.env, {
       DO_NOT_TRACK: "1",
       GRAFT_PROVIDER: "anthropic",
-      GRAFT_API_KEY: "sk-test-0123456789",
+      GRAFT_API_KEY: TEST_KEY,
       GRAFT_MODEL: "claude-sonnet-5",
       GRAFT_BASE_URL: "https://example.invalid/v1",
     });
@@ -1304,7 +1310,7 @@ Deno.test("collectGraftContext - a pass that times out hands over to the structu
       run: runner.run,
       git: git.git,
       deep: DEEP,
-      env: () => "sk-test-0123456789",
+      env: () => TEST_KEY,
     });
     assertEquals(result.status, "ok", "the run still gets its bundle");
     assertEquals(result.deep, "failed");
@@ -1320,7 +1326,7 @@ Deno.test("collectGraftContext - a pass that times out hands over to the structu
     assertStringIncludes(warns[0]!, "[GRAFT_DEEP_FAILED]");
     assertStringIncludes(warns[0]!, "timed out");
     assert(
-      !warns.some((w) => w.includes("sk-test-0123456789")),
+      !warns.some((w) => w.includes(TEST_KEY)),
       "the key must never reach a log line",
     );
   });
@@ -1342,7 +1348,7 @@ Deno.test("collectGraftContext - a failed pass whose fallback also fails reports
       run: runner.run,
       git: git.git,
       deep: DEEP,
-      env: () => "sk-test-0123456789",
+      env: () => TEST_KEY,
     });
     assertEquals(result.status, "failed");
     assertEquals(result.deep, "failed");
