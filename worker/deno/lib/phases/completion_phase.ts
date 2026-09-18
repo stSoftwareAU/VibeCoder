@@ -747,6 +747,12 @@ async function postWorkOnRunStats(
     // The run's CodeGraph figures, recorded by the execute phase beside the
     // invocations above, ride the same comment (Issue #2161).
     ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
+    // Which attempt the quality gate passed on, from the slot the gate phase
+    // filled (Issue #2345). Absent when the run never reached the gate, which
+    // renders no line at all.
+    ...(state.qualityGateOutcome
+      ? { qualityGate: state.qualityGateOutcome }
+      : {}),
   });
 }
 

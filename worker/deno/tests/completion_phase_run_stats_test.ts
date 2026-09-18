@@ -329,6 +329,56 @@ Deno.test("completion - a failed CodeGraph step is reported, not hidden (Issue #
   assertStringIncludes(stats.body, "- **CodeGraph:** failed — index 300 s");
 });
 
+Deno.test("completion - reports the attempt the quality gate passed on (Issue #2345)", async () => {
+  for (const attempt of [1, 2]) {
+    const ctx = makeContext();
+    const state = makeState({
+      claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+      qualityGateOutcome: { status: "passed", attempt },
+    });
+    const comments: RecordedComment[] = [];
+
+    await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+    const stats = statsCommentOn(comments, ctx.issueNumber);
+    assert(stats, "expected a run-stats comment on the issue");
+    assertStringIncludes(
+      stats.body,
+      `- quality gate: passed on attempt ${attempt}`,
+    );
+  }
+});
+
+Deno.test("completion - a gate that never passed is reported as failed (Issue #2345)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    qualityGateOutcome: { status: "failed" },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(stats.body, "- quality gate: failed");
+});
+
+Deno.test("completion - a run that never reached the gate mentions none (Issue #2345)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assert(
+    !stats.body.includes("quality gate"),
+    `a run without the gate must not mention it: ${stats.body}`,
+  );
+});
+
 Deno.test("completion - a run with no CodeGraph step mentions none (Issue #2161)", async () => {
   const ctx = makeContext();
   const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });

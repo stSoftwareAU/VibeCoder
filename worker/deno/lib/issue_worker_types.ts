@@ -15,6 +15,7 @@ import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
 import type { SessionResumeState } from "./session_resume.ts";
 import type { FailedCheck, GenericFinding } from "./baseline_gate.ts";
+import type { QualityGateAttemptOutcome } from "./quality_gate_attempt.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { GraftContextResult } from "./graft_context.ts";
@@ -169,6 +170,15 @@ export interface PhaseState {
    * no duration to report.
    */
   baselineQualityDurationSeconds?: number;
+  /**
+   * What the post-change quality gate did this run (Issue #2345) — passed on
+   * its first attempt, passed after the single remediation cycle, or failed.
+   * Set by `workOnIssueQualityGate`; read by the completion phase, which
+   * renders it on the run-stats comment so the pilot's first-attempt pass rate
+   * is readable on the issue rather than only in the host's worker log.
+   * `undefined` when the run never reached the gate.
+   */
+  qualityGateOutcome?: QualityGateAttemptOutcome;
   /**
    * Outcome of the per-repo `bump-deps.sh` phase (Issue #1613). Set by
    * `workOnIssueBumpDeps`. Consumed by the quality-gate audit (which

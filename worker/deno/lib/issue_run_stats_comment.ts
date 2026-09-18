@@ -54,6 +54,7 @@ import {
 } from "./phase_run_stats.ts";
 import { formatUsd } from "./cost_estimate.ts";
 import type { GraftContextResult } from "./graft_context.ts";
+import type { QualityGateAttemptOutcome } from "./quality_gate_attempt.ts";
 import { getRunId } from "./run_id.ts";
 
 /**
@@ -260,6 +261,47 @@ function formatGraftSeconds(seconds: number): string {
 }
 
 /**
+ * The quality-gate line's fixed prefix (Issue #2345, part of #2320).
+ *
+ * **Stable and greppable by contract.** The advisor/executor pilot's
+ * first-attempt quality-gate pass rate is counted by grepping these exact
+ * strings off the issue — `quality gate: passed on attempt 1`,
+ * `quality gate: passed on attempt 2`, `quality gate: failed` — so the wording,
+ * the lower case and the ordering must not be re-styled. Bolding the prefix or
+ * renaming the verb empties the metric silently, with nothing failing to say
+ * so.
+ *
+ * Deliberately outside the cost lines' shape ({@link ESTIMATED_COST_PATTERN}),
+ * so it can never be mistaken for spend by {@link tallyIssueCost}.
+ */
+const QUALITY_GATE_STATS_PREFIX = "- quality gate:";
+
+/**
+ * Render the run's quality-gate line for the stats block (Issue #2345).
+ *
+ * One line on every run that reached the gate: which of the gate's two bounded
+ * attempts it passed on, or `failed` when it never passed. A caller with no
+ * outcome — every phase that runs no quality gate — renders nothing, so those
+ * comments are byte-for-byte what they were before this line existed.
+ *
+ * @param outcome - What the quality gate did, from the phase state
+ * @returns The bullet line, or `""` when the run had no quality gate
+ */
+export function buildQualityGateStatsLine(
+  outcome?: QualityGateAttemptOutcome,
+): string {
+  if (!outcome) return "";
+  if (outcome.status === "failed") {
+    return `${QUALITY_GATE_STATS_PREFIX} failed`;
+  }
+  // The attempt is the gate's own loop counter, so it is already a small
+  // positive integer; truncated and floored purely so a malformed value can
+  // never render a fraction into a line something greps.
+  const attempt = Math.max(1, Math.trunc(outcome.attempt));
+  return `${QUALITY_GATE_STATS_PREFIX} passed on attempt ${attempt}`;
+}
+
+/**
  * Render the run's Graft line for the stats block (Issue #2105, part of #2060).
  *
  * One line on every run, so the figures are readable on the issue itself
@@ -322,6 +364,9 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
  * @param args.codegraph - What this run's CodeGraph step produced (Issue
  *   #2161); omitted renders exactly the comment this function rendered before
  *   the trial existed
+ * @param args.qualityGate - What the run's quality gate did (Issue #2345);
+ *   omitted — every phase that runs no gate — renders no such line, so those
+ *   comments are byte-for-byte what they were before
  * @returns The comment body, or `""` when no invocation produced stats (so
  *   callers post nothing rather than an empty comment)
  */
@@ -333,6 +378,7 @@ export function buildIssueRunStatsComment(args: {
   priorComments?: readonly string[];
   graft?: GraftContextResult;
   codegraph?: CodegraphContextResult;
+  qualityGate?: QualityGateAttemptOutcome;
 }): string {
   const invocations = args.claudeResults.flatMap((result) =>
     buildPhaseInvocations(args.phase, result)
@@ -354,9 +400,12 @@ export function buildIssueRunStatsComment(args: {
   const codegraphLine = args.codegraph
     ? `\n${buildCodegraphStatsLine(args.codegraph)}`
     : "";
+  // Issue #2345: the gate's own outcome, beside the figures of the run it
+  // gated and ahead of the cumulative issue total.
+  const qualityGateLine = buildQualityGateStatsLine(args.qualityGate);
   const body = `${marker}\n${section}${
     graftLine ? `\n${graftLine}` : ""
-  }${codegraphLine}`;
+  }${codegraphLine}${qualityGateLine ? `\n${qualityGateLine}` : ""}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
   );
@@ -494,6 +543,8 @@ export async function postIssueRunStatsComment(args: {
   graft?: GraftContextResult;
   /** What this run's CodeGraph step produced (Issue #2161). */
   codegraph?: CodegraphContextResult;
+  /** What this run's quality gate did (Issue #2345); omitted renders no line. */
+  qualityGate?: QualityGateAttemptOutcome;
   getIssueComments: (
     repo: string,
     issueNumber: number,
@@ -517,11 +568,13 @@ export async function postIssueRunStatsComment(args: {
     : {};
   const graft = args.graft ? { graft: args.graft } : {};
   const codegraph = args.codegraph ? { codegraph: args.codegraph } : {};
+  const qualityGate = args.qualityGate ? { qualityGate: args.qualityGate } : {};
 
   // Built without the issue's comments first, purely to answer "is there
   // anything to report?" — so a stats-free wrap-up costs no GitHub call. The
-  // CodeGraph figures are left out of this probe deliberately: they never make
-  // a stats-free run worth a comment, so they cannot change the answer.
+  // CodeGraph figures and the quality-gate outcome are left out of this probe
+  // deliberately: neither makes a stats-free run worth a comment, so neither
+  // can change the answer.
   if (
     !buildIssueRunStatsComment({
       phase,
@@ -577,6 +630,7 @@ export async function postIssueRunStatsComment(args: {
         ...bestModel,
         ...graft,
         ...codegraph,
+        ...qualityGate,
       }),
     );
     return { posted: true };

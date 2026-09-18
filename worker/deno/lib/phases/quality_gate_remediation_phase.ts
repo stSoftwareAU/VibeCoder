@@ -392,6 +392,10 @@ async function resolveBumpCommitSha(
  * itself failed, the raw quality-output failure message for
  * `handleIssueFailure`. Does NOT call `handleIssueFailure` itself; that is
  * the outer wrapper's responsibility (Issue #1550).
+ *
+ * Every exit records `state.qualityGateOutcome` (Issue #2345) — the attempt the
+ * gate passed on, or `failed` — so the completion phase can report it on the
+ * run-stats comment instead of leaving it in the host's private worker log.
  */
 async function runQualityGateBody(
   ctx: IssueContext,
@@ -411,6 +415,12 @@ async function runQualityGateBody(
   // ultimately fails — helps reviewers see what was pre-existing.
   let lastDiffCarryover = 0;
 
+  // Issue #2345: the gate has not passed until it says so. Recorded up front so
+  // every exit below — including one nobody anticipated — reports `failed`
+  // rather than leaving the run-stats comment silent about a gate that ran.
+  // The two passing exits overwrite it with the attempt they passed on.
+  state.qualityGateOutcome = { status: "failed" };
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const qualityResult = await deps.quality.runQualityGate({
       scriptDir: state.repoPath,
@@ -428,6 +438,7 @@ async function runQualityGateBody(
 
     if (qualityResult.value.passed) {
       logger.info("Quality gate passed", { attempt });
+      state.qualityGateOutcome = { status: "passed", attempt };
       return { phaseResult: { status: "continue" } };
     }
 
@@ -469,6 +480,9 @@ async function runQualityGateBody(
           decision.preExisting,
           { logger },
         );
+        // The run proceeds exactly as it would after a green gate, so the
+        // report says so: passed on this attempt (Issue #2345).
+        state.qualityGateOutcome = { status: "passed", attempt };
         return { phaseResult: { status: "continue" } };
       }
       lastDiffCarryover = decision.preExisting.length;

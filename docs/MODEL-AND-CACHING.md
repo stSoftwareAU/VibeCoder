@@ -1112,9 +1112,15 @@ flowchart TD
   ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection)),
   one extra bullet — `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714
   nodes, 22,908 call edges` — is appended to the rendered block (Issue #2105).
-  It is the only addition to the format, carries no cost figure, and is omitted
-  entirely by a caller that has no outcome, so a run without Graft posts exactly
-  the bytes it posted before.
+  It carries no cost figure and is omitted entirely by a caller that has no
+  outcome, so a run without Graft posts exactly the bytes it posted before.
+- **The run's quality-gate attempt.** An implementation run appends one more
+  bullet — `- quality gate: passed on attempt 1`, `passed on attempt 2`, or
+  `- quality gate: failed` — naming which of the gate's two bounded attempts
+  passed (Issue #2345). The wording is **stable and greppable by contract**: the
+  advisor/executor pilot (#2320) counts its first-attempt pass rate off these
+  exact strings, so re-casing or bolding the line empties the metric. A phase
+  that runs no quality gate renders no such line, so its comment is unchanged.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.
