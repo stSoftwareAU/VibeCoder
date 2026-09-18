@@ -33,6 +33,8 @@ import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   findBranchEvidenceImages,
   formatBranchEvidenceSection,
+  isUiSourceFile,
+  isVersionBumpOnly,
   validateScreenshotEvidence,
 } from "../screenshot_validation.ts";
 import {
@@ -1359,6 +1361,33 @@ async function completionBody(
     logger.warn("Could not determine changed files for screenshot validation");
   }
 
+  // Issue #2300: a UI file whose only change is a version stamp — the
+  // cache-busting bump GRQ-health's update_version.sh writes into
+  // index.html, sw.js and dashboard.js on every change — is not a UI
+  // change. Each such file's own patch is read against the same base, and
+  // one that reads as a bump is set aside from the gate's triggers.
+  const versionBumpOnlyFiles: string[] = [];
+  if (comparableBase.ok) {
+    for (const file of changedFiles.filter(isUiSourceFile)) {
+      const patch = await deps.git.runGitCommand(
+        ["diff", "--unified=0", `${comparableBase.value}...HEAD`, "--", file],
+        { cwd: state.repoPath },
+      );
+      if (
+        patch.ok && patch.value.code === 0 &&
+        isVersionBumpOnly(patch.value.stdout)
+      ) {
+        versionBumpOnlyFiles.push(file);
+      }
+    }
+    if (versionBumpOnlyFiles.length > 0) {
+      logger.info(
+        "UI files changed only by a version bump are not counted as a UI change (Issue #2300)",
+        { files: versionBumpOnlyFiles },
+      );
+    }
+  }
+
   const summaryResult = await loadPrSummary(state.repoPath, issueNumber);
   if (summaryResult.ok && summaryResult.value.content) {
     logger.info("Loaded PR summary file", {
@@ -1471,6 +1500,7 @@ async function completionBody(
     repo,
     issueNumber,
     skipScreenshotCheck: skipScreenshot,
+    versionBumpOnlyFiles,
   });
 
   const needsScreenshotLabel = LABEL_DEFAULTS.needsScreenshotLabel;
