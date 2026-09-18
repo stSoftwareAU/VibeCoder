@@ -1545,9 +1545,11 @@ Implementation:
 While [per-repository session persistence](#per-repository-session-persistence)
 preserves the `.claude/` directory between invocations (file-system-level
 state), **session resume** provides **CLI-level session continuity**
-across phases of the same issue. This allows subsequent phases (e.g.,
-quality check after implementation) to build on conversation context
-already established, rather than starting from scratch.
+across the phases of one issue and, for implementation and planning runs,
+across the successive issues of a **stream**. This allows subsequent phases
+(e.g., quality check after implementation) — and the next issue of the same
+milestone — to build on conversation context already established, rather
+than starting from scratch.
 
 #### How It Works
 
@@ -2597,8 +2599,10 @@ phase.
 > **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Codex resumes the captured per-issue thread (`codex exec resume <SESSION_ID>`, never `--last`); Gemini resumes its own most recent session (`--resume latest`) rather than one the worker names, so continuity is per-container rather than per-issue. DeepSeek resumes a worker-named session as Claude does, but out of its own `CLAUDE_CONFIG_DIR`, so the continuity never crosses the two.
 
 CLI-level session continuity uses `--session-id` and `--resume` flags to
-carry conversation context across phases of the same issue. Later phases
-can reference earlier decisions without re-explaining them.
+carry conversation context across the phases of one issue, and across the
+successive issues of a stream for the run kinds that join one. Later phases —
+and the next issue of the same milestone — can reference earlier decisions
+without re-explaining them.
 
 **Saving:** Reduces redundant context across clarification → planning →
 implementation → quality phases.

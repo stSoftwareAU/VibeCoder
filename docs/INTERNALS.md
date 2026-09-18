@@ -4181,7 +4181,7 @@ failure management and deprioritisation.
 ### 🔁 Session resume
 
 CLI-level session continuity across multi-phase issue processing using
-`--session-id` and `--resume` flags.
+`--session-id` and `--resume` flags. On by default since Issue #2339.
 [session_resume.ts](../worker/deno/lib/session_resume.ts) generates a
 deterministic session ID from the repository name, issue number, and timestamp,
 then builds the appropriate CLI flags for each phase:
@@ -4193,7 +4193,11 @@ then builds the appropriate CLI flags for each phase:
   the flag builder knows whether to include `--resume`.
 
 This complements the per-repository `.claude/` directory persistence by enabling
-conversation-level continuity within a single issue's lifecycle.
+conversation-level continuity within a single issue's lifecycle — and, for the
+implementation and planning runs that join a **stream**
+([stream_session.ts](../worker/deno/lib/stream_session.ts)), across the
+successive issues of that stream. The stream model is documented in
+[CONFIGURATION.md § Session Resume](CONFIGURATION.md#-session-resume).
 
 ### 🗜️ Session compaction
 

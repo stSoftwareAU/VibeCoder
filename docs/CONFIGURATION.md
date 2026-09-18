@@ -3287,13 +3287,16 @@ flowchart LR
 
 **How it works:**
 
-1. On the first phase of an issue, the worker generates a deterministic session
-   ID combining the repository, issue number, and timestamp.
-2. Claude is invoked with `--session-id <id>` to start a new named session.
-3. On subsequent phases for the same issue, Claude is invoked with `--resume` to
-   continue the existing session.
+1. An implementation or planning run resolves its **stream** and loads the
+   session recorded there for the provider it is about to spawn. A run kind that
+   does not join a stream instead generates a per-issue session ID combining the
+   repository, issue number, and timestamp.
+2. With no session to continue, Claude is invoked with `--session-id <id>` to
+   start a new named session — which then becomes the stream's session.
+3. With a session to continue — the stream's, or the issue's own checkpoint,
+   which wins where it has one — Claude is invoked with `--resume`.
 4. Each phase completion is recorded so the worker knows whether to start or
-   resume.
+   resume, and the execute phase writes back the session the run ended on.
 
 **When to turn it off:**
 
@@ -3301,8 +3304,8 @@ flowchart LR
   a context-sensitive failure, or one where the per-stream conversation would
   carry work you do not want inherited.
 - Turning it off gives up the per-stream conversation, both stream locks and the
-  per-issue compaction, as listed under
-  [What the flag controls](#the-stream-model) above. It does **not** turn off
+  per-issue compaction — the **What the flag controls** list in
+  [The stream model](#the-stream-model) above. It does **not** turn off
   milestone-close housekeeping or pushed-WIP resume.
 
 **Resume-on-reclaim:** a killed session (reboot, OOM, container death) resumes
@@ -3491,9 +3494,9 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   the session sweeper's age/size caps so it cannot grow unbounded.
 
 > **📝 Note:** Session resume is independent of
-> [session compaction](#-session-compaction) — resume controls
-> within-issue continuity, while compaction manages the on-disk session store
-> size.
+> [session compaction](#-session-compaction) — resume controls conversation
+> continuity (within an issue, and across the issues of a stream), while
+> compaction manages the on-disk session store size.
 
 **Reference:** `worker/deno/lib/session_resume.ts` (implementation),
 `worker/deno/lib/issue_branch_resume.ts` (issue-number branch lookup),
