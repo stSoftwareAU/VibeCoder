@@ -68,14 +68,18 @@ A candidate that belongs to a sibling scan is left to that scan. The
 or paraphrase-only doc comment is `doc-coverage`'s, a comment that says something
 untrue is check 13 here.
 
-## The thirteen-check catalogue
+## The fourteen-check catalogue
 
 The prompt (`prompts/documentation_audit/`) walks the documentation inventory
-against thirteen checks in Phase 2. Checks 1–9 are **drift-shaped** — they find
+against fourteen checks in Phase 2. Checks 1–9 are **drift-shaped** — they find
 docs that disagree with other docs. Checks 10–12 (from v4 onward) are
 **verification-shaped**: documentation is a set of claims about the codebase,
 and each of those checks tests a claim against the source. Check 13 (from v9
-onward) turns the same verification on the comments inside the source itself.
+onward) turns the same verification on the comments inside the source itself,
+and check 14 measures what the repo's surviving agent instruction file **says**
+against Anthropic's published
+[Claude Code memory guidance](https://code.claude.com/docs/en/memory) (credited
+in [REFERENCES.md](REFERENCES.md)).
 
 1. **Unabsorbed PR-summary learnings** — a durable learning (success or recorded
    failure) not yet reflected in the main docs. Fix: fold it in, then delete the
@@ -147,6 +151,39 @@ onward) turns the same verification on the comments inside the source itself.
     finding is filed separately from its file's removal cluster. The scan stays
     silent on `TODO`/`FIXME` notes, commented-out code, licence headers, and
     comments explaining *why* rather than what.
+
+14. **Agent instructions do not follow Claude Code guidance** (from Issue #2321)
+    — checks 5 and 9 decide how many agent instruction files a repo keeps;
+    check 14 reads what the surviving one **says**. The assessed set is check
+    9's detection set plus every file they import with an `@path` line, judged
+    together with `README.md` — an item documented in the README satisfies that
+    item. The check never asks a repo to create a `CLAUDE.md`, and it is held
+    while check 5 or check 9 is outstanding, because content review is moot
+    mid-consolidation. What it reports:
+    - **Missing commands** (`severity:medium`) — a runnable command line, in the
+      agent instruction file or the README, for each stage the repo has: test
+      always; build only with a build signal (a `build` task/script, a `Makefile`
+      `build` target, `Cargo.toml`, `pom.xml`/`build.gradle`); lint only with a
+      linter or formatter config. One documented gate command (`./quality.sh`)
+      satisfies every stage it runs. A repo with **no** agent instruction file is
+      a finding only when the README also lacks those commands.
+    - **Over 200 lines** (`severity:medium`) — Anthropic's published budget,
+      counted as `wc -l` physical lines with no exclusions, **per file** rather
+      than file-plus-imports. It never fires on `README.md`.
+    - **Excluded content** (`severity:low`) — file-by-file tours, standard
+      language conventions, tutorials, self-evident rules; folded into the same
+      file's size entry.
+    - **Five conditional items** (`severity:low`) — style rules, repository
+      etiquette, architectural decisions, environment quirks and gotchas, each
+      reported only when a fixed signal in the repo makes it applicable
+      (a linter/formatter config; `CONTRIBUTING.md` or a PR template;
+      `docs/adr/` or an architecture doc; `.env.example` or a compose
+      environment block; gotchas never).
+
+    All of one repo's gaps collapse into **one** finding per run under the fixed
+    title `Agent instruction files do not follow Claude Code guidance`, so the
+    stable id does not move as the gap list changes and the check can take at
+    most one of the six cap slots.
 
 ### Cap pressure — verification out-produces drift
 
@@ -250,11 +287,14 @@ triage.
 - **`severity:medium`** — stale, duplicated, or redundant content; an
   unverifiable claim (check 12); a comment the adjacent code refutes and that
   should simply be removed (check 13); prose paraphrasing upstream documentation
-  instead of linking to it; an agent file that should be trimmed or deleted; two
-  or more coexisting agent instruction files that should be consolidated; a
-  batch of undefined terms.
+  instead of linking to it; an agent file that should be trimmed or deleted,
+  including one over the 200-line budget or missing a mandatory command
+  (check 14); two or more coexisting agent instruction files that should be
+  consolidated; a batch of undefined terms.
 - **`severity:low`** — polish: a broken link, a single undefined term, a place a
-  diagram would help, minor readability.
+  diagram would help, minor readability; a conditional agent-instruction item
+  whose signal is present but whose content is absent, or content the guidance
+  says to exclude (check 14).
 
 ## Stable finding ID recipe
 
