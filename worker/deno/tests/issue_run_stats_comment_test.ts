@@ -11,6 +11,7 @@ import {
   buildIssueCostTotalLine,
   buildIssueRunStatsComment,
   buildIssueRunStatsMarker,
+  buildQualityGateStatsLine,
   ghIssueCommentLister,
   hasIssueRunStatsComment,
   hasRunStatsCommentForRun,
@@ -22,6 +23,7 @@ import {
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
+import type { QualityGateAttemptOutcome } from "../lib/issue_run_stats_comment.ts";
 import {
   type CodegraphContextResult,
   prepareCodegraphContext,
@@ -1012,6 +1014,141 @@ Deno.test("postIssueRunStatsComment - CodeGraph figures alone are not something 
     logger: makeLogger(),
     authorOptions: FLEET_OPTIONS,
     codegraph: { status: "ok", enabled: true, nodeCount: 5, queries: 1 },
+  });
+
+  assertEquals(result, { posted: false, reason: "no_stats" });
+  assertEquals(github.posted.length, 0);
+});
+
+// ============================================================================
+// Quality-gate attempt line (Issue #2345)
+// ============================================================================
+
+/** The comment's quality-gate line, or `undefined` when it carries none. */
+function qualityGateLineOf(body: string): string | undefined {
+  return body.split("\n").find((line) => line.startsWith("- quality gate:"));
+}
+
+/** A stats comment for an implementation run whose gate did `qualityGate`. */
+function commentWithQualityGate(
+  qualityGate: QualityGateAttemptOutcome,
+  phase = "issue",
+): string {
+  return buildIssueRunStatsComment({
+    phase,
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-gate-run",
+    qualityGate,
+  });
+}
+
+Deno.test("quality-gate line - a gate that passed first time reports attempt 1", () => {
+  const body = commentWithQualityGate({ status: "passed", attempt: 1 });
+
+  assertEquals(qualityGateLineOf(body), "- quality gate: passed on attempt 1");
+  assertStringIncludes(body, "quality gate: passed on attempt 1");
+});
+
+Deno.test("quality-gate line - a gate that passed after remediation reports attempt 2", () => {
+  const body = commentWithQualityGate({ status: "passed", attempt: 2 });
+
+  assertEquals(qualityGateLineOf(body), "- quality gate: passed on attempt 2");
+});
+
+Deno.test("quality-gate line - a gate that never passed reads failed", () => {
+  const body = commentWithQualityGate({ status: "failed" });
+
+  assertEquals(qualityGateLineOf(body), "- quality gate: failed");
+  assertEquals(body.includes("passed on attempt"), false);
+});
+
+Deno.test("buildQualityGateStatsLine - renders no line without an outcome", () => {
+  assertEquals(buildQualityGateStatsLine(undefined), "");
+});
+
+Deno.test("quality-gate line - a phase with no quality gate is byte-for-byte unchanged", () => {
+  const claudeResults = [claudeResult(["claude-opus-4-8"])];
+  const body = buildIssueRunStatsComment({
+    phase: "grill_me",
+    claudeResults,
+    runId: "vibe-gate-run",
+  });
+
+  // Exactly the comment this function rendered before the line existed: the
+  // marker, the shared section, then the disclaimer — nothing between.
+  const { section } = buildDegradationReport({
+    invocations: claudeResults.flatMap((r) =>
+      buildPhaseInvocations("grill_me", r)
+    ),
+    phase: "grill_me",
+  });
+  assertEquals(
+    body,
+    `${
+      buildIssueRunStatsMarker("vibe-gate-run")
+    }\n${section}\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
+  );
+  assertEquals(qualityGateLineOf(body), undefined);
+  assertEquals(body.includes("quality gate"), false);
+});
+
+Deno.test("quality-gate line - sits inside the stats block, above the disclaimer", () => {
+  const body = commentWithQualityGate({ status: "passed", attempt: 2 });
+
+  const gateAt = body.indexOf("- quality gate:");
+  assert(gateAt > body.indexOf("- **Degraded:**"));
+  assert(gateAt < body.indexOf(ISSUE_RUN_STATS_DISCLAIMER));
+});
+
+Deno.test("quality-gate line - the cost tally and total line ignore it", () => {
+  const withLine = commentWithQualityGate({ status: "passed", attempt: 1 });
+  const without = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-gate-run",
+  });
+
+  assertEquals(tallyIssueCost([withLine]), tallyIssueCost([without]));
+  assertEquals(tallyIssueCost([withLine]).partial, false);
+});
+
+Deno.test("postIssueRunStatsComment - posts the gate outcome with the run's costs", async () => {
+  const github = makeGitHubDouble();
+
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2345,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    qualityGate: { status: "passed", attempt: 2 },
+  });
+
+  assertEquals(result.posted, true);
+  assertEquals(
+    qualityGateLineOf(github.posted[0] ?? ""),
+    "- quality gate: passed on attempt 2",
+  );
+});
+
+Deno.test("postIssueRunStatsComment - a gate outcome alone is not something to report", async () => {
+  const github = makeGitHubDouble();
+
+  // No invocation produced stats, so there is no comment to carry the line —
+  // the gate outcome must not manufacture a stats comment of its own.
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2345,
+    phase: "issue",
+    claudeResults: [],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    qualityGate: { status: "passed", attempt: 1 },
   });
 
   assertEquals(result, { posted: false, reason: "no_stats" });
