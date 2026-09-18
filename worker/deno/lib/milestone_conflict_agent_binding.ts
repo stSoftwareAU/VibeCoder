@@ -66,7 +66,10 @@ export function bindMilestoneConflictAgent(
   // unbounded.
   const grantSeconds = grant.agentTimeoutSeconds;
   let grantStartedAtMs: number | undefined;
-  return (request: MilestoneConflictAgentRequest) => {
+  // Issue #2309: the caller is told once, when the rung is genuinely entered.
+  // A gate repair is the same attempt continuing, so it announces nothing.
+  let announced = false;
+  return async (request: MilestoneConflictAgentRequest) => {
     let claudeTimeout = config.claudeTimeout;
     if (grantSeconds !== undefined) {
       grantStartedAtMs ??= now();
@@ -75,21 +78,25 @@ export function bindMilestoneConflictAgent(
       if (request.repair && remaining < MIN_GATE_REPAIR_SECONDS) {
         // Refused by name, so the sync reports a repair that was never
         // attempted rather than one that failed.
-        return Promise.resolve({
+        return {
           ok: false as const,
           error: gateRepairBudgetExhausted(
             `the cycle's agent grant of ${grantSeconds}s has ` +
               `${Math.max(0, remaining)}s left, and a repair run needs at ` +
               `least ${MIN_GATE_REPAIR_SECONDS}s (Issues #1693, #1965)`,
           ),
-        });
+        };
       }
       // A repair takes what the first run and the verification left; the
       // resolution run itself keeps the whole grant, exactly as before.
       if (request.repair) claudeTimeout = remaining;
       else claudeTimeout = grantSeconds;
     }
-    return runMergeConflictAgent({
+    if (!announced) {
+      announced = true;
+      await grant.onAgentRungEntered?.();
+    }
+    return await runMergeConflictAgent({
       repo,
       target: { kind: "branch", intoBranch: request.milestoneBranch },
       baseBranch: request.defaultBranch,
