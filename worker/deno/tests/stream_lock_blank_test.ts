@@ -27,8 +27,10 @@ import {
   type DiscoveredIssue,
   type RunCoreDeps,
   runCoreLoop,
+  scanExcludedIssues,
 } from "../lib/run_core.ts";
 import { InFlightRepoRegistry } from "../lib/in_flight_repos.ts";
+import { waitUntil } from "./support/rendezvous.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const OTHER = "stSoftwareAU/Graft";
@@ -216,6 +218,42 @@ Deno.test("blank stream lock - locking a blank stream makes no gh call at all", 
 });
 
 // ---------------------------------------------------------------------------
+// The refusal holds the issue out of the next scan only while the stream is
+// busy — the next scan after the holder releases can claim it
+// ---------------------------------------------------------------------------
+
+Deno.test("blank stream lock - the refused issue leaves the scan's exclusion set the moment the holder releases", () => {
+  const locks = new BlankStreamLockRegistry();
+  locks.tryAcquire({ repo: REPO, issueNumber: 900, slotId: "s1" });
+  // What the refusing slot records: the issue it could not take, and the
+  // stream to re-check.
+  const streamBusy = new Map([[
+    `${REPO}#901`,
+    { repo: REPO, milestoneTitle: "" },
+  ]]);
+  const deferred = new Set([`${OTHER}#7`]);
+
+  // While the sibling holds the stream, the issue stays out of the scan so
+  // the slot is offered a different candidate instead.
+  assertEquals(
+    [...scanExcludedIssues(deferred, locks, streamBusy)].sort(),
+    [`${OTHER}#7`, `${REPO}#901`],
+  );
+
+  // Once the run ends the exclusion lifts on the very next scan — a
+  // cycle-scoped deferral would have stranded #901 for the rest of the run.
+  locks.release({ repo: REPO });
+  assertEquals(
+    [...scanExcludedIssues(deferred, locks, streamBusy)],
+    [`${OTHER}#7`],
+    "the issue must be claimable again as soon as the stream frees",
+  );
+  assertEquals(streamBusy.size, 0, "the stale entry must be pruned, not kept");
+  // The pool's own deferrals are never mutated by the pruning.
+  assertEquals([...deferred], [`${OTHER}#7`]);
+});
+
+// ---------------------------------------------------------------------------
 // The slot pool: two slots, one blank stream
 // ---------------------------------------------------------------------------
 
@@ -371,11 +409,11 @@ async function runPool(options: {
       remaining.splice(remaining.indexOf(issue), 1);
       claimed.push(`${issue.repo}#${issue.issueNumber}`);
       // Hold the claim until the sibling has resolved its own scan, so the
-      // assertions are about concurrency rather than about sequencing.
-      // Bounded, so a regression fails an assertion instead of hanging.
-      for (let tick = 0; tick < 500 && remaining.length > 0; tick++) {
-        await new Promise((resolve) => setTimeout(resolve, 1));
-      }
+      // assertions are about concurrency rather than about sequencing. A
+      // condition rather than a fixed sleep (Issue #1098): a loaded host only
+      // makes the wait longer, never the answer different, and the bound means
+      // a regression fails an assertion instead of hanging.
+      await waitUntil(() => remaining.length === 0);
       now = cycleMs + 1;
       if (options.throwOn?.has(issue.issueNumber)) {
         throw new Error(`run for #${issue.issueNumber} aborted`);

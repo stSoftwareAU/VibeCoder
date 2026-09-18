@@ -270,6 +270,21 @@ Deno.test("createProductionRunCoreDeps - config has sensible defaults", async ()
   assertEquals(config.rateLimitBackoff > 0, true);
 });
 
+Deno.test("createProductionRunCoreDeps - enable_session_resume reaches the loop's config (Issue #2335)", async () => {
+  // The pool's host-local blank-stream lock is gated on this flag, so the
+  // operator's `.config.json` value has to actually arrive in RunCoreConfig —
+  // nothing else in the loop can read `WorkerConfig`.
+  const off = await createProductionRunCoreDeps(createTestOptions({
+    config: { ...buildDefaultWorkerConfig(), enableSessionResume: false },
+  }));
+  assertEquals(off.config.enableSessionResume, false);
+
+  const on = await createProductionRunCoreDeps(createTestOptions({
+    config: { ...buildDefaultWorkerConfig(), enableSessionResume: true },
+  }));
+  assertEquals(on.config.enableSessionResume, true);
+});
+
 Deno.test("createProductionRunCoreDeps - PID check returns canProceed true", async () => {
   const options = createTestOptions();
   const { deps } = await createProductionRunCoreDeps(options);

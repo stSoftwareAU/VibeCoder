@@ -511,11 +511,6 @@ export class BlankStreamLockRegistry {
     return stream === undefined ? undefined : this.#held.get(streamKey(stream));
   }
 
-  /** Every blank stream held right now, for status rendering. */
-  holds(): ReadonlyArray<BlankStreamHold> {
-    return [...this.#held.values()];
-  }
-
   /** Number of blank streams held. */
   get size(): number {
     return this.#held.size;
