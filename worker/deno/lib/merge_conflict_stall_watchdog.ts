@@ -55,9 +55,9 @@ import {
   conflictPrKey,
   conflictReasonOperands,
   type ConflictSkipReason,
-  DEFAULT_CONFLICT_COOLDOWN_HOURS,
   MERGE_CONFLICT_LABEL,
 } from "./pr_merge_conflict_scan.ts";
+import { readParkedBase } from "./merge_conflict_markers.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 
 // ---------------------------------------------------------------------------
@@ -68,12 +68,12 @@ import type { TimelineCache } from "./timeline_cache.ts";
  * Hours a PR may carry `merge-conflict` with nothing concluding before the
  * queue is called stalled.
  *
- * Twice the post-attempt cooldown: one whole cooldown window can pass with no
- * attempt for entirely ordinary reasons (a busy lane, a held lease), so the
+ * Eight hours is this watchdog's own window (Issue #2305 removed the
+ * post-attempt cooldown it used to be derived from). Hours can pass with no
+ * attempt for entirely ordinary reasons — a busy lane, a held lease — so the
  * bound is the window a healthy queue cannot plausibly exceed.
  */
-export const DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS = 2 *
-  DEFAULT_CONFLICT_COOLDOWN_HOURS;
+export const DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS = 8;
 
 /**
  * Noun phrase for the escalation issue's title.
@@ -134,6 +134,13 @@ export interface ConflictStallObservation {
    * unestablished state is never escalated.
    */
   mergeableState?: string;
+  /**
+   * The base branch's tip sha (Issue #2312). Compared against the park
+   * marker's own base: a parked PR is not a stall while its base has not
+   * moved. Absent means the listing did not carry one, and an unknown base
+   * can never match a park — the stall is then judged the ordinary way.
+   */
+  baseRefOid?: string;
 }
 
 /** A merge-conflict queue that has stopped moving on one PR. */
@@ -215,6 +222,15 @@ interface StallSignals {
   openAttempt: boolean;
   /** This stall has already been escalated. */
   escalated: boolean;
+  /**
+   * The base tip the newest park marker names, when the PR is parked
+   * (Issue #2312). A park is the opposite of the silence this watchdog looks
+   * for — it is the record that says *why* nothing is happening — so it
+   * suppresses the stall, but only while the base tip it names is still the
+   * PR's base. Once that tip moves the scan owes the PR an attempt again, and
+   * the ordinary clock applies.
+   */
+  parkedBase?: string;
 }
 
 /**
@@ -266,10 +282,16 @@ function readStallSignals(
       // Everything before this conclusion belongs to the stall it ended.
       signals.openAttempt = false;
       signals.escalated = false;
+      delete signals.parkedBase;
       continue;
     }
     if (body.includes(CONFLICT_ATTEMPT_MARKER)) signals.openAttempt = true;
     if (body.includes(escalationMarker)) signals.escalated = true;
+    // Read through the marker module rather than by substring: the base sha is
+    // the whole signal, and a marker whose sha cannot be read must not park
+    // the watchdog on a value nothing can ever match (Issue #2312).
+    const park = readParkedBase([raw]);
+    if (park !== null) signals.parkedBase = park.base;
   }
 
   return signals;
@@ -280,8 +302,8 @@ function readStallSignals(
  *
  * Returns `null` for every PR that is legitimately not a stall: parked behind
  * `needs-human`, closed, not in the queue at all, of unknown label age, inside
- * the threshold, moved by a concluded attempt, or already escalated for this
- * same stall.
+ * the threshold, moved by a concluded attempt, already escalated for this same
+ * stall, or parked on an unmoved base tip (Issue #2312).
  *
  * An attempt that opened and never concluded still counts as a stall — the
  * disruption bound has not fired either, so nothing is moving the PR. Keying
@@ -324,6 +346,25 @@ export function detectConflictQueueStall(
     workEscalationMarker(observation.repo, observation.prNumber),
   );
   if (signals.escalated) return null;
+  // Issue #2312: a parked PR is not a stalled one. The park marker is what
+  // *follows* the label — the fleet saying it has spent this issue's restarts
+  // and is waiting on the base tip, not going quiet — so escalating it would
+  // report a mechanical failure that did not happen. The suppression is
+  // deliberately narrow: it holds only while the PR's base is still the sha
+  // the marker names, so a park the scan should already have re-attempted is
+  // still caught by the ordinary clock.
+  //
+  // A base tip that could not be read therefore resolves the *opposite* way
+  // here to the way it resolves in the scan, and on purpose: each component
+  // fails towards saying something. The scan will not spend an agent run on a
+  // merge it cannot tell has changed, and this watchdog will not go silent on
+  // a PR it cannot tell is still waiting.
+  if (
+    signals.parkedBase !== undefined &&
+    signals.parkedBase === observation.baseRefOid?.trim().toLowerCase()
+  ) {
+    return null;
+  }
 
   // A conclusion puts the PR back in the ordinary ladder and starts a fresh
   // clock: the stall being measured is the silence *since* the last thing that
@@ -605,12 +646,17 @@ interface LabelledPr {
   number: number;
   labels: string[];
   mergeableState?: string;
+  /** The base tip, for the park comparison (Issue #2312). */
+  baseRefOid?: string;
 }
 
-/** Fields the label listing asks for — the live state rides along with it. */
-const STALL_PR_FIELDS = "number,labels,mergeable";
+/**
+ * Fields the label listing asks for — the live state rides along with it, and
+ * so does the base tip a park marker is compared against (Issue #2312).
+ */
+const STALL_PR_FIELDS = "number,labels,mergeable,baseRefOid";
 
-/** Parse `gh pr list --json number,labels,mergeable` output. */
+/** Parse `gh pr list --json number,labels,mergeable,baseRefOid` output. */
 function parseLabelledPrs(raw: string): LabelledPr[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
@@ -623,6 +669,7 @@ function parseLabelledPrs(raw: string): LabelledPr[] {
       number?: unknown;
       labels?: unknown;
       mergeable?: unknown;
+      baseRefOid?: unknown;
     };
     if (typeof record.number !== "number") continue;
     const labels: string[] = [];
@@ -639,6 +686,9 @@ function parseLabelledPrs(raw: string): LabelledPr[] {
       labels,
       ...(typeof record.mergeable === "string"
         ? { mergeableState: record.mergeable.toUpperCase() }
+        : {}),
+      ...(typeof record.baseRefOid === "string" && record.baseRefOid.length > 0
+        ? { baseRefOid: record.baseRefOid }
         : {}),
     });
   }
@@ -849,6 +899,7 @@ export async function scanConflictQueueStalls(
           prNumber: pr.number,
           labels: pr.labels,
           mergeableState,
+          ...(pr.baseRefOid !== undefined ? { baseRefOid: pr.baseRefOid } : {}),
           ...(labelledAtMs !== undefined ? { labelledAtMs } : {}),
           comments: await fetchIssueCommentPages(repo, pr.number, ghCommandFn),
           skipReasons: skipReasonsFor(decisions, repo, pr.number),

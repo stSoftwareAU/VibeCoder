@@ -2472,10 +2472,6 @@ export async function createProductionRunCoreDeps(
             // Issue #1660: heartbeat and marker state belong in the work
             // root, not the clone `setupRepo` returned above.
             workRoot: workDir,
-            qualityInstructions: buildQualityInstructions(
-              config.repoConfig,
-              conflict.repo,
-            ),
             customInstructions: getCustomInstructions(
               config.repoConfig,
               conflict.repo,
@@ -2489,9 +2485,8 @@ export async function createProductionRunCoreDeps(
             workerId: getWorkerUniqueId(config.workerName),
             needsHumanLabel: config.needsHumanLabel,
             repoConfigs: config.repoConfig,
-            // Issue #1247: the abandon rung reads its one-restart-per-issue
-            // bound off comment markers, so it needs to know whose markers
-            // count.
+            // Issue #1247: the abandon rung reads its restart bound off comment
+            // markers, so it needs to know whose markers count.
             trustedAuthors,
           });
 
@@ -3394,22 +3389,17 @@ export async function createProductionRunCoreDeps(
         // refuses a stream a sibling holds, this one refuses a stream whose
         // branch is behind the default branch and paced by the ledger.
         milestonePacedUntil: (repo, milestone) => {
-          const until = milestonePacedUntil(
-            pacingLedger,
-            repo,
-            milestone,
-            Date.now(),
-          );
-          if (until === undefined) return undefined;
+          const paced = milestonePacedUntil(pacingLedger, repo, milestone);
+          if (paced === undefined) return undefined;
           const key = `${repo}|${milestone}`;
           if (!pacingLogged.has(key)) {
             pacingLogged.add(key);
             logger.info(
-              `skipped: ${MILESTONE_BEHIND} (paced until ${until}) — ` +
+              `skipped: ${MILESTONE_BEHIND} (${paced}) — ` +
                 `${repo} milestone '${milestone}'`,
             );
           }
-          return until;
+          return paced;
         },
         // Repositories the maintenance lane has leased wholesale (Issues
         // #4176, #213, narrowed by #1091), unioned with the ones backed off
@@ -5254,9 +5244,10 @@ async function syncMilestoneBranchesFn(
   logger: Logger,
   env: EnvLookup,
   /**
-   * The handler's watchdog deadline (Issue #1778). The sweep offers its
-   * single conflict-agent rung only while this covers a whole agent run;
-   * absent, the pass is unbounded and the rung is offered on its own merits.
+   * The handler's watchdog deadline (Issue #1778). The sweep offers a
+   * conflict-agent rung to each behind branch only while this still covers a
+   * whole agent run (Issue #2309); absent, the pass is unbounded and every
+   * rung is offered on its own merits.
    */
   deadlineEpochMs?: number,
 ): Promise<void> {
@@ -5357,11 +5348,11 @@ async function syncMilestoneBranchesFn(
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
     syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
-      // Issue #1778: the cycle grants the agent rung to at most one branch,
-      // and only while the handler's budget covers a whole run. A branch
-      // that was not granted it is handed no agent at all, so the ladder
-      // stops after the deterministic rules rather than starting a run the
-      // watchdog would kill mid-edit (#1693).
+      // Issue #2309: every behind branch is offered the agent rung, and only
+      // the handler's remaining budget refuses one. A branch that was not
+      // granted it is handed no agent at all, so the ladder stops after the
+      // deterministic rules rather than starting a run the watchdog would
+      // kill mid-edit (Issues #1778, #1693).
       // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
       // this sweep and a child run's pre-cut sync hand the ladder exactly the
       // same rung — including the grant's own timeout.
@@ -5390,6 +5381,20 @@ async function syncMilestoneBranchesFn(
       );
     },
     localCloneExistsFn,
+    // Issue #2309: longest-behind first within each repository. The
+    // measurement itself lives in `milestone_behind_count.ts`, where both its
+    // failure paths are reachable from a test; a count that cannot be read is
+    // returned as the failure git gave, never as a zero.
+    behindCountFn: async (repo, milestoneBranch, defaultBranch) => {
+      const { measureMilestoneBehindCount } = await import(
+        "./milestone_behind_count.ts"
+      );
+      return await measureMilestoneBehindCount({
+        milestoneBranch,
+        defaultBranch,
+        cwd: `${workDir}/${repo.split("/")[1]}`,
+      });
+    },
     // Issue #2030: lane lease per repository, and a cross-host claim per
     // branch so two hosts never resolve the same sync at once.
     leaseRepoFn: (repo) => acquireMaintenanceRepoLease(repo),

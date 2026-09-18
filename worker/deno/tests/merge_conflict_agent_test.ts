@@ -101,7 +101,6 @@ function makeRequest(
     conflictedFiles: ["worker/deno/lib/timeouts.ts"],
     workDir: "/tmp/nonexistent-merge-conflict-agent",
     promptsDir: PROMPTS_DIR,
-    qualityInstructions: "Run ./quality.sh",
     logger: makeSilentLogger(),
     runAgent,
     ...overrides,

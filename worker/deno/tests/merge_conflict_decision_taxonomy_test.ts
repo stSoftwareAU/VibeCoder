@@ -3,7 +3,7 @@
  *
  * Issue #1076's symptom was "the label went on and then silence": a skipped
  * PR left either nothing behind or an unstructured log line, so a fleet that
- * had stalled and a fleet correctly waiting out a cooldown read the same. The
+ * had stalled and a fleet correctly holding a PR back read the same. The
  * fix is a closed taxonomy — every exit yields exactly one reason, carrying
  * the operands that make the decision checkable afterwards.
  *
@@ -84,7 +84,12 @@ const SAMPLES: Record<ConflictSkipReasonKind, ConflictSkipReason> = {
     issueNumber: 16,
     attemptsSpent: 2,
   },
-  "cooldown": { kind: "cooldown", msUntilDue: 90_000 },
+  // Issue #2312: the rung after the restarts are spent — a wait, not a human.
+  "parked": {
+    kind: "parked",
+    base: "1111111111111111111111111111111111111111",
+    flagIssueNumber: 900,
+  },
   "disrupted-bound": {
     kind: "disrupted-bound",
     disruptedCount: 3,
@@ -126,8 +131,9 @@ Deno.test("ConflictSkipReason - every kind has a sample and renders operands", (
 });
 
 Deno.test("conflictReasonOperands - each reason carries what makes it checkable", () => {
-  assertEquals(conflictReasonOperands(SAMPLES["cooldown"]), {
-    msUntilDue: 90_000,
+  assertEquals(conflictReasonOperands(SAMPLES["disrupted-bound"]), {
+    disruptedCount: 3,
+    maxDisruptedAttempts: 3,
   });
   assertEquals(conflictReasonOperands(SAMPLES["budget-spent"]), {
     attemptsSpent: 2,
@@ -156,13 +162,16 @@ Deno.test("conflictReasonOperands - each reason carries what makes it checkable"
     bound: "cap",
     deferralStreak: 3,
   });
+});
+
+Deno.test("ConflictSkipReason - the cooldown kind is gone (Issue #2305)", () => {
+  // The PR ladder no longer waits between attempts, so a pass can never
+  // record one — the runtime list is what a stall investigation greps.
   assertEquals(
-    conflictReasonOperands({
-      kind: "cooldown",
-      msUntilDue: 90_000,
-      lastAttemptAt: "2026-09-05T00:00:00Z",
-    }),
-    { msUntilDue: 90_000, lastAttemptAt: "2026-09-05T00:00:00Z" },
+    CONFLICT_SKIP_REASON_KINDS.includes(
+      "cooldown" as ConflictSkipReasonKind,
+    ),
+    false,
   );
 });
 
@@ -170,7 +179,7 @@ Deno.test("isQueuedConflictReason - separates the queue from what never entered 
   assertEquals(isQueuedConflictReason("not-conflicting"), false);
   assertEquals(isQueuedConflictReason("out-of-scope-author"), false);
   assertEquals(isQueuedConflictReason("queue-empty"), false);
-  assertEquals(isQueuedConflictReason("cooldown"), true);
+  assertEquals(isQueuedConflictReason("budget-spent"), true);
   assertEquals(isQueuedConflictReason("lock-held"), true);
   // Issue #1115: the PR was in the queue right up until it was closed.
   assertEquals(isQueuedConflictReason("abandoned-restarted"), true);
@@ -221,7 +230,7 @@ Deno.test("recordConflictDecision - queue decisions are INFO, the rest DEBUG", (
     repo: "org/repo",
     prNumber: 1,
     outcome: "skipped",
-    reason: SAMPLES["cooldown"],
+    reason: SAMPLES["disrupted-bound"],
   });
   recordConflictDecision(logger, {
     repo: "org/repo",
@@ -233,7 +242,7 @@ Deno.test("recordConflictDecision - queue decisions are INFO, the rest DEBUG", (
   assertEquals(logger.entries[0]?.level, "info");
   assertStringIncludes(
     logger.entries[0]?.message ?? "",
-    "merge_conflict_decision=cooldown repo=org/repo pr=1",
+    "merge_conflict_decision=disrupted-bound repo=org/repo pr=1",
   );
   assertEquals(
     logger.entries[1]?.level,
@@ -249,13 +258,13 @@ Deno.test("summariseConflictDecisions - counts the labelled set and each reason"
       repo: "org/repo",
       prNumber: 2,
       outcome: "skipped",
-      reason: SAMPLES["cooldown"],
+      reason: SAMPLES["disrupted-bound"],
     },
     {
       repo: "org/repo",
       prNumber: 3,
       outcome: "skipped",
-      reason: SAMPLES["cooldown"],
+      reason: SAMPLES["disrupted-bound"],
     },
     {
       repo: "org/repo",
@@ -275,7 +284,11 @@ Deno.test("summariseConflictDecisions - counts the labelled set and each reason"
     considered: 5,
     labelled: 4,
     attempted: 1,
-    byReason: { cooldown: 2, "needs-human": 1, "not-conflicting": 1 },
+    byReason: {
+      "disrupted-bound": 2,
+      "needs-human": 1,
+      "not-conflicting": 1,
+    },
   });
 });
 
@@ -288,7 +301,7 @@ Deno.test("recordConflictPassSummary - one summary line, counts and all", () => 
       repo: "org/repo",
       prNumber: 2,
       outcome: "skipped",
-      reason: SAMPLES["cooldown"],
+      reason: SAMPLES["disrupted-bound"],
     },
   ], { stopReason: "queue-empty" });
 
@@ -296,7 +309,8 @@ Deno.test("recordConflictPassSummary - one summary line, counts and all", () => 
   assertEquals(logger.entries[0]?.level, "info");
   assertStringIncludes(
     logger.entries[0]?.message ?? "",
-    "merge_conflict_pass=scan labelled=2 attempted=1 considered=2 cooldown=1",
+    "merge_conflict_pass=scan labelled=2 attempted=1 considered=2 " +
+      "disrupted-bound=1",
   );
   assertEquals(logger.entries[0]?.context?.stopReason, "queue-empty");
 });
@@ -373,7 +387,7 @@ export function describe(reason: ConflictSkipReason): string {
     case "needs-human":
     case "budget-spent":
     case "abandoned-restarted":
-    case "cooldown":
+    case "parked":
     case "disrupted-bound":
     case "lock-held":
     case "pr-not-open":
@@ -400,8 +414,8 @@ const REASON_WITH_NO_CASE = fixture(`export function describe(
   reason: ConflictSkipReason,
 ): string {
   switch (reason.kind) {
-    case "cooldown":
-      return "cooldown";
+    case "budget-spent":
+      return "budget-spent";
   }
   const unhandled: never = reason;
   return String(unhandled);

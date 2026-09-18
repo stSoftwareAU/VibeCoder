@@ -267,8 +267,10 @@
         "worker/deno/lib/log_dir.ts",
         "worker/deno/lib/marker_comment_pages.ts",
         "worker/deno/lib/merge_conflict_stall_watchdog.ts",
+        "worker/deno/lib/merge_fallback_issue.ts",
         "worker/deno/lib/merge_landing.ts",
         "worker/deno/lib/merged_sweep_watermark.ts",
+        "worker/deno/lib/milestone_behind_count.ts",
         "worker/deno/lib/milestone_branch_self_heal.ts",
         "worker/deno/lib/milestone_branch_sync.ts",
         "worker/deno/lib/milestone_children_gate.ts",
@@ -286,6 +288,7 @@
         "worker/deno/lib/milestone_presync.ts",
         "worker/deno/lib/milestone_resolution_gate.ts",
         "worker/deno/lib/milestone_ruleset_check.ts",
+        "worker/deno/lib/milestone_sync_announcement.ts",
         "worker/deno/lib/milestone_sync_conflict.ts",
         "worker/deno/lib/milestone_sync_diagnostic_closeout.ts",
         "worker/deno/lib/milestone_sync_pr.ts",
@@ -1776,6 +1779,18 @@
       ]
     },
     {
+      "issue": 2308,
+      "chunk": "top-up-2308",
+      "title": "top-up: the merge-conflict stage timer",
+      "ledger": "docs/audits/security-sweep-2308-conflict-stage-timer.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_stage_timer.ts (#2308)",
+      "status": "swept",
+      "sweptAt": "a78fba3d0e928fdfc1f60b8b3045bef1f4ca9203",
+      "paths": [
+        "worker/deno/lib/conflict_stage_timer.ts"
+      ]
+    },
+    {
       "issue": 2314,
       "chunk": "top-up-2314",
       "title": "top-up: the Graft pull-side wiring",
@@ -1797,6 +1812,30 @@
       "sweptAt": "18d6898055bfcf06795a9139fcf57899c5bf27f8",
       "paths": [
         "worker/deno/lib/plan_coverage_repair.ts"
+      ]
+    },
+    {
+      "issue": 2310,
+      "chunk": "top-up-2310",
+      "title": "top-up: the conflict fallback context readers",
+      "ledger": "docs/audits/security-sweep-2310-conflict-fallback-context.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_fallback_context.ts (#2310)",
+      "status": "swept",
+      "sweptAt": "e2d94e976a1c48d157203e8388ad178282877389",
+      "paths": [
+        "worker/deno/lib/conflict_fallback_context.ts"
+      ]
+    },
+    {
+      "issue": 2311,
+      "chunk": "top-up-2311",
+      "title": "top-up: the milestone fallback flag",
+      "ledger": "docs/audits/security-sweep-2311-milestone-fallback-flag.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_fallback_flag.ts (#2311)",
+      "status": "swept",
+      "sweptAt": "8d8cd77682a6d31412f56537a676dc67f379b991",
+      "paths": [
+        "worker/deno/lib/milestone_fallback_flag.ts"
       ]
     },
     {

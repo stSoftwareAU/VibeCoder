@@ -38,7 +38,6 @@ import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
-  DEFAULT_CONFLICT_COOLDOWN_HOURS,
 } from "./pr_merge_conflict_scan.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 
@@ -62,12 +61,12 @@ export const DEFAULT_DEFERRAL_NOTICE_STREAK = 3;
  * How long a streak must have run before the notice is posted.
  *
  * Three passes can be seven minutes apart on a quiet host, which is not
- * starvation — it is a busy cycle. One cooldown window is the same clock the
- * per-PR budget already uses, so "deferred repeatedly, over more than one
- * window" is what earns a comment.
+ * starvation — it is a busy cycle. Four hours is this notice's own window
+ * (Issue #2305 removed the per-PR cooldown it used to be derived from): a PR
+ * deferred pass after pass across half a working day is starved whatever the
+ * attempt budget is doing.
  */
-export const DEFAULT_DEFERRAL_NOTICE_MIN_SPAN_MS =
-  DEFAULT_CONFLICT_COOLDOWN_HOURS * 3600_000;
+export const DEFAULT_DEFERRAL_NOTICE_MIN_SPAN_MS = 4 * 3600_000;
 
 /**
  * How long an untouched entry survives in the cursor.

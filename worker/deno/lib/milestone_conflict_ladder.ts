@@ -35,8 +35,23 @@ import type {
   MergeConflictRepairContext,
 } from "./merge_conflict_agent.ts";
 import { unstageWorkerStateFiles } from "./git_push.ts";
+import { readPrResponseMessage } from "./pr_branch_preparation.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { describeGitFailure } from "./milestone_merge_state.ts";
+import type { ConflictStageTimer } from "./conflict_stage_timer.ts";
+
+/**
+ * The reason the agent rung leaves when the **worker** ended the run — the
+ * watchdog's SIGTERM at the cycle deadline, not the agent's own ceiling
+ * (Issue #1693).
+ *
+ * Spelled once here because `judgeSyncFailure` reads it back to tell a kill
+ * from a judged failure: a kill concludes `disrupted` and is charged nothing,
+ * while an agent that ran out its own timeout is a failed attempt like any
+ * other (Issue #2305).
+ */
+export const AGENT_RUN_ENDED_BY_WORKER =
+  "the run was ended by the worker before it finished";
 
 /** One agent run asked for by the milestone sync. */
 export interface MilestoneConflictAgentRequest {
@@ -88,6 +103,12 @@ export interface ConflictLadderInput {
   portedFn?: PortedFn;
   /** When a conflict's shape is logged as wrong-base; defaults apply. */
   shapeThresholds?: ShapeThresholds;
+  /**
+   * The sync's stage timer (Issue #2308). The ladder times its `rules` and
+   * `agent` rungs into it; absent, nothing is timed and the ladder behaves
+   * exactly as before.
+   */
+  timer?: ConflictStageTimer;
   logger?: Logger;
 }
 
@@ -97,6 +118,15 @@ export interface ConflictLadderOutcome {
   resolved: FileDecision[];
   /** Still for a human, each reason naming the rung that could not decide. */
   escalations: FileDecision[];
+  /**
+   * What the agent rung wrote into `.pr_response_message` (Issue #2306).
+   *
+   * The agent names every judgement call file by file there, and on this
+   * path there is no PR comment to carry them — so the reply travels with
+   * the outcome and lands on the sync report instead. Absent when no agent
+   * ran, or when it wrote nothing.
+   */
+  agentReply?: string;
 }
 
 /** Bind a {@link ConflictGitRunner} to the clone the merge is in. */
@@ -260,6 +290,7 @@ export async function climbConflictLadder(
     applyRulesFn = applyDependencyConflictRules,
     portedFn = resolvePortedPaths,
     shapeThresholds,
+    timer,
     logger,
   } = input;
 
@@ -269,6 +300,7 @@ export async function climbConflictLadder(
   const resolved: FileDecision[] = [];
 
   // --- Rung 2: the deterministic dependency rules ---------------------------
+  timer?.start("rules");
   const ruleReport = await applyRulesFn({
     workingDir: options.cwd ?? ".",
     conflictedFiles: escalations.map((d) => d.path),
@@ -280,6 +312,7 @@ export async function climbConflictLadder(
       }
       : undefined,
   });
+  timer?.stop();
 
   for (const file of ruleReport.resolved) {
     const decision = byPath.get(file.path);
@@ -350,12 +383,14 @@ export async function climbConflictLadder(
     "Milestone sync: handing the remaining conflicts to the agent (Issue #1777)",
     { milestoneBranch, defaultBranch, conflictedFiles: deferred },
   );
+  timer?.start("agent");
   const outcome = await agentFn({
     conflictedFiles: deferred,
     milestoneBranch,
     defaultBranch,
     workDir: options.cwd ?? ".",
   });
+  timer?.stop();
 
   if (!outcome.ok) {
     return {
@@ -370,8 +405,7 @@ export async function climbConflictLadder(
     return {
       resolved,
       escalations: stillEscalated(() =>
-        `agent: the run was ended by the worker before it finished ` +
-        `(Issue #1693)`
+        `agent: ${AGENT_RUN_ENDED_BY_WORKER} (Issue #1693)`
       ),
     };
   }
@@ -433,5 +467,13 @@ export async function climbConflictLadder(
       reason: "resolved by the merge-conflict agent",
     });
   }
-  return { resolved, escalations: [] };
+  // Read after staging, so consuming the reply file cannot change what the
+  // commit carries: `stageAgentResolution` has already taken the worker's
+  // own state files back out of the index (Issue #1654).
+  const agentReply = await readPrResponseMessage(options.cwd, logger);
+  return {
+    resolved,
+    escalations: [],
+    ...(agentReply ? { agentReply } : {}),
+  };
 }

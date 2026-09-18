@@ -37,6 +37,8 @@ interface Recorded {
   ghCalls: string[][];
   /** Every log line the pass wrote. */
   logs: string[];
+  /** Whether each branch's sync was offered the agent rung (Issue #2309). */
+  grants: Record<string, boolean>;
 }
 
 /** Options for {@link cadenceDeps}. */
@@ -85,8 +87,9 @@ function cadenceDeps(
             error: new Error("local 'main' could not be read"),
           },
       ),
-    syncBranchFn: (_repo, milestoneBranch) => {
+    syncBranchFn: (_repo, milestoneBranch, _defaultBranch, syncOptions) => {
       recorded.synced.push(milestoneBranch);
+      recorded.grants[milestoneBranch] = syncOptions?.agentAllowed ?? false;
       return succeed
         ? Promise.resolve({ ok: true as const, value: { message: "merged" } })
         : Promise.resolve({
@@ -101,8 +104,41 @@ function cadenceDeps(
 
 /** Fresh recorder. */
 function recorder(): Recorded {
-  return { synced: [], ghCalls: [], logs: [] };
+  return { synced: [], ghCalls: [], logs: [], grants: {} };
 }
+
+Deno.test(
+  "syncMilestoneBranches - both behind branches are offered the agent rung in one cycle (Issue #2309)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-2309-cadence-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const recorded = recorder();
+      await syncMilestoneBranches(
+        cadenceDeps({
+          streakPath,
+          defaultSha: "sha-b",
+          milestones: [
+            { title: TITLE, number: 7 },
+            { title: FRESH_TITLE, number: 8 },
+          ],
+          // Both conflict, so both would climb the rung if offered one.
+          succeed: false,
+        }, recorded),
+      );
+
+      assertEquals(recorded.synced.sort(), [BRANCH, FRESH_BRANCH].sort());
+      assertEquals(recorded.grants[BRANCH], true);
+      assertEquals(
+        recorded.grants[FRESH_BRANCH],
+        true,
+        "the cycle's rung is no longer spent by whichever branch went first",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
 
 Deno.test(
   "syncMilestoneBranches - an unchanged default tip syncs nothing (Issue #1776)",

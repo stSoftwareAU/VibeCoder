@@ -14,9 +14,12 @@
  * agent against work nobody wanted. Every write that pass makes — the push,
  * the claim comment, the `needs-human` label — lands on a dead PR.
  *
- * The fix is one `gh pr view --json state` per claim, taken *before* the first
- * write. The listing cache is untouched; the cost is one round trip on the
- * path that was about to spend an agent run.
+ * The fix is one `gh pr view --json state,mergeable` per claim, taken *before*
+ * the first write. The listing cache is untouched; the cost is one round trip
+ * on the path that was about to spend an agent run. Issue #2307 added
+ * `mergeable` to that same round trip, so the merge-conflict drain also learns
+ * that a PR another host or a human already merged in is no longer
+ * conflicting.
  *
  * **An unreadable state is never "open".** `gh` failing, a network blip or a
  * state string nobody recognises all return `{ unknown: true }`, and every
@@ -29,10 +32,14 @@
  */
 
 import {
-  classifyPrLiveState,
   makeGhPrStateFetcher,
+  parsePrLiveFields,
+  PR_LIVE_STATE_JSON_FIELDS,
 } from "./pr_branch_update.ts";
+import type { PrLiveMergeable } from "./pr_branch_update.ts";
 import type { LogContext, Logger } from "../types.ts";
+
+export type { PrLiveMergeable } from "./pr_branch_update.ts";
 
 /** The two live states that mean "do not write to this PR". */
 export type ClosedPrState = "CLOSED" | "MERGED";
@@ -46,15 +53,20 @@ export type PrNotOpenReading =
   | { open?: undefined; unknown: true; error: string };
 
 /**
- * What one `gh pr view --json state` said about a PR.
+ * What one `gh pr view --json state,mergeable` said about a PR.
  *
  * The optional `undefined` members are what let a caller narrow with a plain
  * `if (state.unknown)` / `if (state.open)` — the reading is checked at four
  * claim points, and a union that needs an `in` test at each of them is a union
  * someone eventually gets wrong.
+ *
+ * Issue #2307: an open PR carries GitHub's live `mergeable` verdict as well,
+ * and it is **required** rather than optional — the argv always asks for it,
+ * so a construction site that cannot say what GitHub answered is one that
+ * should not compile.
  */
 export type PrLiveStateReading =
-  | { open: true; unknown?: undefined }
+  | { open: true; mergeable: PrLiveMergeable; unknown?: undefined }
   | PrNotOpenReading;
 
 /** Run a `gh` command and return its stdout. */
@@ -68,8 +80,27 @@ export type GhCommandFn = (args: string[]) => Promise<string>;
  * the test fixtures use it through `tests/support/pr_live_state_stub.ts`.
  */
 export function isPrLiveStateRead(args: readonly string[]): boolean {
-  return args[0] === "pr" && args[1] === "view" && args.includes("state");
+  if (args[0] !== "pr" || args[1] !== "view") return false;
+  const jsonIndex = args.indexOf("--json");
+  if (jsonIndex < 0) return false;
+  const fields = args[jsonIndex + 1] ?? "";
+  // This read's own field list only: `state,mergeable` since Issue #2307, and
+  // the bare `state` it asked for before. Every other `pr view --json state,…`
+  // in the worker — `state,mergedAt`, `state,headRefName` — is someone else's
+  // question, and must not be answered with this reading.
+  return fields === PR_LIVE_STATE_JSON_FIELDS || fields === "state";
 }
+
+/**
+ * What an open, still-conflicting PR's live read answers (Issue #2307).
+ *
+ * The mock fleet and the test fixtures both answer with this, so the payload
+ * a stub returns and the payload `readPrLiveState` parses cannot drift.
+ * `CONFLICTING` because a fixture that reaches the merge-conflict drain is one
+ * the queue says conflicts; the other passes read only the `state` half.
+ */
+export const OPEN_CONFLICTING_PR_PAYLOAD =
+  '{"mergeable":"CONFLICTING","state":"OPEN"}';
 
 /**
  * Read a PR's live state, bypassing every cache.
@@ -96,8 +127,8 @@ export async function readPrLiveState(
     };
   }
 
-  const state = classifyPrLiveState(raw);
-  if (state === "OPEN") return { open: true };
+  const { state, mergeable } = parsePrLiveFields(raw);
+  if (state === "OPEN") return { open: true, mergeable };
   if (state === "CLOSED" || state === "MERGED") return { open: false, state };
   return {
     unknown: true,

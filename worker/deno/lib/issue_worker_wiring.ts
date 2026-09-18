@@ -22,7 +22,10 @@ import type { GitHubClient, Logger, Result, WorkerConfig } from "../types.ts";
 
 // GitHub operations
 import { createGitHubClient, runGhCommand } from "./github.ts";
-import { isPrLiveStateRead } from "./pr_live_state.ts";
+import {
+  isPrLiveStateRead,
+  OPEN_CONFLICTING_PR_PAYLOAD,
+} from "./pr_live_state.ts";
 import { safeGhCommand } from "./gh_wrapper.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { handleIssueFailure } from "./label_failure.ts";
@@ -814,8 +817,12 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     // Issue #1774: every PR pass re-reads live PR state before its first
     // write. A mock fleet's PRs are open, so the default answers that one
     // read; a test that wants a closed PR overrides `runGhCommand` itself.
+    // Issue #2307: the read carries `mergeable` too, and a mock PR the
+    // merge-conflict pass reached is one the queue says conflicts.
     runGhCommand: (args: string[]) =>
-      isPrLiveStateRead(args) ? Promise.resolve("OPEN") : Promise.resolve(""),
+      isPrLiveStateRead(args)
+        ? Promise.resolve(OPEN_CONFLICTING_PR_PAYLOAD)
+        : Promise.resolve(""),
     ensureLabelExists: mockFn<GitHubDeps["ensureLabelExists"]>(() =>
       Promise.resolve({ ok: true, value: undefined })
     ),

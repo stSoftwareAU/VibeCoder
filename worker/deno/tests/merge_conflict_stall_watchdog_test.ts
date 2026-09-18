@@ -29,6 +29,7 @@ import {
   CONFLICT_RESOLVED_MARKER,
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
+import { conflictParkedMarker } from "../lib/merge_conflict_markers.ts";
 import {
   ESCALATED_AS_WORK_LABEL,
   type WorkEscalation,
@@ -253,7 +254,63 @@ Deno.test("detectConflictQueueStall - parked PRs are excluded", () => {
   }
 });
 
-Deno.test("detectConflictQueueStall - the threshold defaults to twice the cooldown", () => {
+// ---------------------------------------------------------------------------
+// Parked on the base tip (Issue #2312)
+// ---------------------------------------------------------------------------
+
+/** The base tip a park marker names in these fixtures. */
+const PARKED_BASE = "1111111111111111111111111111111111111111";
+/** The base tip after somebody pushed to the base branch. */
+const MOVED_BASE = "2222222222222222222222222222222222222222";
+
+Deno.test("detectConflictQueueStall - a parked PR on an unmoved base is not a stall", () => {
+  // The park marker is what *follows* the label: the fleet has spent this
+  // issue's restarts and is waiting on the base tip, which is the opposite of
+  // the silence this watchdog reports.
+  assertEquals(
+    detect(
+      observation(20, [comment(conflictParkedMarker(PARKED_BASE), 10)], {
+        baseRefOid: PARKED_BASE,
+      }),
+    ),
+    null,
+  );
+});
+
+Deno.test("detectConflictQueueStall - a parked PR whose base moved is judged the usual way", () => {
+  // The suppression is narrow on purpose: once the base moves, the scan owes
+  // this PR an attempt again, so a park must not buy permanent silence.
+  const stall = detect(
+    observation(20, [comment(conflictParkedMarker(PARKED_BASE), 10)], {
+      baseRefOid: MOVED_BASE,
+    }),
+  );
+  assert(stall !== null);
+});
+
+Deno.test("detectConflictQueueStall - an outsider's park marker cannot silence the watchdog", () => {
+  const stall = detect(
+    observation(20, [
+      comment(conflictParkedMarker(PARKED_BASE), 10, "drive-by"),
+    ], { baseRefOid: PARKED_BASE }),
+  );
+  assert(stall !== null);
+});
+
+Deno.test("detectConflictQueueStall - a conclusion after a park ends the park", () => {
+  // An attempt that concluded after the park means the PR was un-parked and
+  // worked on; the park no longer describes what is happening.
+  const stall = detect(
+    observation(30, [
+      comment(conflictParkedMarker(PARKED_BASE), 20),
+      comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 12),
+    ], { baseRefOid: PARKED_BASE }),
+  );
+  assert(stall !== null);
+  assertEquals(stall.stalledMs, 12 * HOUR);
+});
+
+Deno.test("detectConflictQueueStall - the threshold is eight hours (Issue #2305)", () => {
   assertEquals(DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS, 8);
   assertEquals(detect(observation(7.9)), null);
   assert(detect(observation(8.1)) !== null);
@@ -271,7 +328,7 @@ Deno.test("buildConflictStallComment - names the age, the silence and the skip r
   const stall = detect(
     observation(9, [], {
       skipReasons: [
-        { kind: "cooldown", msUntilDue: 900_000 },
+        { kind: "budget-spent", attemptsSpent: 2, maxAttempts: 2 },
         { kind: "repo-leased", deferralStreak: 4 },
       ],
     }),
@@ -280,8 +337,8 @@ Deno.test("buildConflictStallComment - names the age, the silence and the skip r
   const body = buildConflictStallComment(stall);
   assertStringIncludes(body, workEscalationMarker(REPO, PR));
   assertStringIncludes(body, "9 hours");
-  assertStringIncludes(body, "cooldown");
-  assertStringIncludes(body, "msUntilDue");
+  assertStringIncludes(body, "budget-spent");
+  assertStringIncludes(body, "attemptsSpent");
   assertStringIncludes(body, "repo-leased");
   assertStringIncludes(body, "deferralStreak");
 });
@@ -593,23 +650,23 @@ Deno.test("scanConflictQueueStalls - a state that stays uncomputed escalates not
 Deno.test("scanConflictQueueStalls - repeated identical skip reasons are collapsed", async () => {
   const github = fakeGitHub();
   const work = fakeEscalateWork();
-  const cooldown = {
+  const leased = {
     repo: REPO,
     prNumber: PR,
     outcome: "skipped" as const,
-    reason: { kind: "cooldown" as const, msUntilDue: 900_000 },
+    reason: { kind: "repo-leased" as const, deferralStreak: 4 },
   };
 
   const scan = await scanConflictQueueStalls({
     ...scanOptions(github, work),
     // The drain calls the scan once per PR it takes, so one held-back PR is
     // decided on several times in a cycle.
-    decisions: [cooldown, cooldown, cooldown],
+    decisions: [leased, leased, leased],
   });
 
   assertEquals(scan[0]?.skipReasons.length, 1);
   const body = postedComments(github.calls)[0] ?? "";
-  assertEquals(body.split("`cooldown`").length - 1, 1);
+  assertEquals(body.split("`repo-leased`").length - 1, 1);
 });
 
 Deno.test("scanConflictQueueStalls - a repo outside the allowlist is not touched", async () => {

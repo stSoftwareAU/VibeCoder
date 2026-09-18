@@ -27,9 +27,9 @@
  *   issue slot holds its repository — is not re-selected by the next scan.
  *   Without it the drain spins on the same PR.
  *
- * Per-PR budgets (4-hour cooldown, two concluded attempts, `needs-human`) are
- * the scan's, unchanged: this loop only decides how many of the PRs already
- * due get taken this cycle.
+ * The per-PR budget (two concluded attempts, then the abandon rung and
+ * `needs-human`) is the scan's, unchanged: this loop only decides how many of
+ * the PRs already due get taken this cycle.
  *
  * All three bounds drop a due PR, and repeated every cycle they starve one
  * (Issue #1111): the scan re-derives the same order every pass, so the PR
@@ -185,6 +185,10 @@ export interface ConflictDrainOptions {
    * since it was taken still looks conflicting. Required, not optional: a
    * guard that can be switched off by omission is a guard that is off in
    * production the day someone adds a wiring site and forgets it.
+   *
+   * The reading also carries GitHub's live `mergeable` verdict (Issue #2307),
+   * so a conflict resolved since the listing is skipped for what it is rather
+   * than attempted.
    */
   prLiveState: (pr: ConflictingPr) => Promise<PrLiveStateReading>;
   /**   * Resolve one conflict. Returns null when the attempt failed loudly.
@@ -470,6 +474,31 @@ export async function drainConflictingPrs(
           next.prNumber,
           reading,
         );
+        continue;
+      }
+
+      // Issue #2307: the same round trip says whether the PR still conflicts.
+      // A conflict another host or a human resolved in the ten minutes since
+      // the listing is nothing to attempt, and a `mergeable` GitHub is still
+      // recomputing is not a verdict — both stand down before the lease, so
+      // no comment, push or label reaches a PR nobody checked.
+      if (reading.mergeable !== "CONFLICTING") {
+        const decision: ConflictPrDecision = {
+          repo: next.repo,
+          prNumber: next.prNumber,
+          outcome: "skipped",
+          reason: reading.mergeable === "MERGEABLE"
+            ? { kind: "not-conflicting", mergeableState: reading.mergeable }
+            : {
+              kind: "scan-error",
+              stage: "mergeable-state",
+              message:
+                "gh pr view reported an unknown mergeable state at the claim " +
+                "point",
+            },
+        };
+        decisions.push(decision);
+        recordConflictDecision(logger, decision);
         continue;
       }
 

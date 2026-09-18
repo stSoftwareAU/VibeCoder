@@ -140,6 +140,9 @@ export const WORKER_APPLIABLE_CONTENT_LABELS: ReadonlySet<string> = new Set([
   "enhancement",
   "format-drift",
   "gate-skip-drift",
+  // Issue #2304: the flag every merge-conflict fallback files, so a closed
+  // PR or a reverted child is a record rather than a silence.
+  "merge-fallback",
   "orphan-deps",
   "private-repo-reference",
   "retro",

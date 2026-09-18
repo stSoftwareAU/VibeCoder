@@ -16,48 +16,15 @@
  */
 
 import { atomicWrite } from "./file_utils.ts";
-import {
-  DEFAULT_CONFLICT_COOLDOWN_HOURS,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
-} from "./pr_merge_conflict_scan.ts";
+import { DEFAULT_MAX_CONFLICT_ATTEMPTS } from "./pr_merge_conflict_scan.ts";
 
 /** Consecutive failures before a needs-human escalation is posted. */
 export const MILESTONE_SYNC_ESCALATION_THRESHOLD = 3;
 
 /**
- * Whether this cycle's concluded reason repeats the previous cycle's
- * (Issue #1964).
- *
- * A branch whose failure reason has not changed is not making progress: the
- * fleet watched `milestone/168-…` spend four cycles, and four agent runs, on
- * one identical line before anyone was told. An identical repeat is therefore
- * escalated on its second occurrence rather than at
- * {@link MILESTONE_SYNC_ESCALATION_THRESHOLD}.
- *
- * "The previous cycle" means the previous **failing** cycle in an unbroken
- * run of them. {@link SyncStreakEntry.lastAttempt} survives a success on
- * purpose — it is the audit record — so the caller passes `failureCount`,
- * this cycle's consecutive-failure count, and a branch that failed, synced,
- * then failed the same way again reads as the first failure it is.
- *
- * @param entry - The branch's streak entry, before this cycle concludes
- * @param reason - The reason this cycle concluded with
- * @param failureCount - Consecutive failures including this cycle's
- */
-export function isRepeatedFailureReason(
-  entry: SyncStreakEntry,
-  reason: string,
-  failureCount: number,
-): boolean {
-  if (failureCount < 2) return false;
-  const previous = entry.lastAttempt?.reason;
-  return typeof previous === "string" && previous.length > 0 &&
-    previous === reason;
-}
-
-/**
  * Concluded conflict-resolution failures a milestone branch may spend before
- * the ladder stops trying (Issue #1766).
+ * the ladder stops trying (Issue #1766), with no wait between them
+ * (Issue #2305).
  *
  * One constant, two consumers: this is {@link DEFAULT_MAX_CONFLICT_ATTEMPTS},
  * the budget the PR ladder spends, re-exported under the name the milestone
@@ -89,6 +56,19 @@ export interface ConflictAttemptRecord {
   reason: string;
   /** Default-branch tip the attempt merged from, when it was known. */
   defaultSha?: string;
+  /** Host that ran the attempt (Issue #2311). */
+  host?: string;
+  /**
+   * What the attempt made of the conflict, file by file (Issue #2311) — the
+   * account the `merge-fallback` flag reproduces. {@link reason} is the one
+   * line the ledger compares; this is the detail a reader needs.
+   */
+  analysis?: string;
+  /**
+   * The attempt's stage timings as `formatStageTimings` rendered them
+   * (Issues #2308, #2311). Absent when nothing was timed.
+   */
+  timings?: string;
 }
 
 /** One branch's streak state. */
@@ -138,16 +118,25 @@ export interface SyncStreakEntry {
    * mirroring the PR ladder's marker rule (Issues #395 and #1693).
    */
   attemptOpenedAt?: string;
+  /**
+   * The {@link attemptOpenedAt} of the attempt whose agent rung has already
+   * been announced (Issue #2309). One opened attempt is announced once: the
+   * comment names the host and the start time, and a second cycle that
+   * re-enters the same attempt must not repeat it.
+   */
+  announcedAttemptAt?: string;
   /** The most recent concluded attempt, whatever it concluded. */
   lastAttempt?: ConflictAttemptRecord;
   /**
-   * ISO timestamp before which no further attempt is due. Set by a concluded
-   * failure to now + {@link DEFAULT_CONFLICT_COOLDOWN_HOURS}, and cleared by
-   * {@link recordDefaultSha} when the default tip moves — a conflict that
-   * failed identically against the same tip must not be re-attempted every
-   * 30-second cycle and burn the whole budget in 90 seconds.
+   * Every charged failure of the budget currently being spent
+   * (Issue #2311) — the runs the `merge-fallback` flag reports.
+   *
+   * {@link lastAttempt} is one record, and the flag has to name **both** runs
+   * that were spent before the fallback ran. Charged failures only, so the
+   * list is the budget's own history; {@link resetConflictLedgerOnSuccess}
+   * drops it with the attempts it describes.
    */
-  deferUntil?: string;
+  failedAttempts?: ConflictAttemptRecord[];
   /** Default-branch tip this branch was last synced against. */
   lastSyncedDefaultSha?: string;
   /**
@@ -158,6 +147,17 @@ export interface SyncStreakEntry {
    * when the default branch happens to move.
    */
   lastSyncedMilestoneSha?: string;
+  /**
+   * The default-branch tip a roll-back **could not merge** was run against
+   * (Issue #2311).
+   *
+   * The roll-back is the last automatic step, so a branch whose roll-back
+   * failed would otherwise sit out every remaining cycle for ever — and the
+   * fallback asked no human to rescue it. New commits on the default branch
+   * are a different merge, so this records which tip was already answered
+   * for: a tip that has moved past it re-arms the two-run budget.
+   */
+  fallbackDefaultSha?: string;
   /** Lifetime count of conflict resolutions rolled back on this branch. */
   rollbacks?: number;
   /** Child PR numbers a roll-back has already reverted (Issue #1781). */
@@ -248,7 +248,13 @@ export async function clearSyncCursor(path: string): Promise<void> {
   }
 }
 
-/** Load streaks; a missing or corrupt file reads as empty. */
+/**
+ * Load streaks; a missing or corrupt file reads as empty.
+ *
+ * Every field is named here, so a `deferUntil` an older worker wrote is
+ * dropped on load rather than pacing a branch against a cooldown that no
+ * longer exists (Issue #2305).
+ */
 export async function loadSyncStreaks(path: string): Promise<SyncStreaks> {
   try {
     const parsed = JSON.parse(await Deno.readTextFile(path));
@@ -334,12 +340,29 @@ function readLastAttempt(value: unknown): ConflictAttemptRecord | undefined {
     return undefined;
   }
   const defaultSha = optionalText(record.defaultSha);
+  const host = optionalText(record.host);
+  const analysis = optionalText(record.analysis);
+  const timings = optionalText(record.timings);
   return {
     at,
     outcome,
     reason: typeof record.reason === "string" ? record.reason : "",
     ...(defaultSha ? { defaultSha } : {}),
+    ...(host ? { host } : {}),
+    ...(analysis ? { analysis } : {}),
+    ...(timings ? { timings } : {}),
   };
+}
+
+/** The charged failures of the current budget, dropping malformed rows. */
+function readFailedAttempts(
+  value: unknown,
+): ConflictAttemptRecord[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((row) => {
+    const record = readLastAttempt(row);
+    return record ? [record] : [];
+  });
 }
 
 /**
@@ -353,21 +376,21 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const attempts = optionalCount(entry.conflictAttempts);
   const rollbacks = optionalCount(entry.rollbacks);
   const openedAt = optionalText(entry.attemptOpenedAt);
-  const deferUntil = optionalText(entry.deferUntil);
+  const announcedAt = optionalText(entry.announcedAttemptAt);
   const syncedSha = optionalText(entry.lastSyncedDefaultSha);
   const syncedMilestoneSha = optionalText(entry.lastSyncedMilestoneSha);
   const lastAttempt = readLastAttempt(entry.lastAttempt);
+  const failedAttempts = readFailedAttempts(entry.failedAttempts);
+  const fallbackSha = optionalText(entry.fallbackDefaultSha);
   const revertedPrs = readPositiveInts(entry.revertedPrs);
   const revertedShas = readShaList(entry.revertedShas);
   return {
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
+    ...(announcedAt ? { announcedAttemptAt: announcedAt } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
-    // An unparseable deferral is kept, not dropped: dropping it would read a
-    // corrupt value as "no cooldown applies", which is the permissive
-    // direction on a safety bound. `isConflictAttemptDue` refuses it instead,
-    // and the next tip move clears it.
-    ...(deferUntil ? { deferUntil } : {}),
+    ...(failedAttempts !== undefined ? { failedAttempts } : {}),
+    ...(fallbackSha ? { fallbackDefaultSha: fallbackSha } : {}),
     ...(syncedSha ? { lastSyncedDefaultSha: syncedSha } : {}),
     ...(syncedMilestoneSha
       ? { lastSyncedMilestoneSha: syncedMilestoneSha }
@@ -396,35 +419,6 @@ function readShaList(value: unknown): string[] | undefined {
 }
 
 /**
- * Drop `deferUntil` when `defaultSha` is a tip the deferral was not set
- * against (Issue #1766).
- *
- * The invariant every writer keeps: a live `deferUntil` always paces the
- * branch against the tip in `lastAttempt.defaultSha`. Any observation of a
- * different tip — a sync recording it, or a later attempt concluding against
- * it — is what clears the deferral, because the conflict being paced is no
- * longer the conflict in front of the branch.
- *
- * Only a tip that has been seen before can be observed to have moved: with no
- * recorded tip the deferral stands, since dropping it would hand the branch
- * straight back and spend the whole budget inside one cooldown.
- */
-function clearDeferralIfTipMoved(
-  entry: SyncStreakEntry,
-  defaultSha: string | undefined,
-): SyncStreakEntry {
-  const previous = entry.lastSyncedDefaultSha ?? entry.lastAttempt?.defaultSha;
-  if (
-    defaultSha === undefined || previous === undefined ||
-    previous === defaultSha
-  ) {
-    return entry;
-  }
-  const { deferUntil: _deferred, ...rest } = entry;
-  return rest;
-}
-
-/**
  * Record that a conflict-resolution attempt has started (Issue #1766).
  *
  * Opening charges nothing. An attempt that never concludes stays open, reads
@@ -443,15 +437,19 @@ export function openConflictAttempt(
  * Conclude the open attempt, charging the budget only for a real failure
  * (Issue #1766).
  *
- * A `failed` conclusion spends one attempt and defers the branch for
- * {@link DEFAULT_CONFLICT_COOLDOWN_HOURS}; `not-charged` and `disrupted`
- * conclusions record what happened and spend nothing.
+ * A `failed` conclusion spends one attempt of the branch's two and nothing
+ * else — no deferral is written, so the next attempt is due on the very next
+ * cycle (Issue #2305). `not-charged` and `disrupted` conclusions record what
+ * happened and spend nothing.
  *
  * @param entry - The branch's streak entry.
  * @param outcome - What the attempt concluded.
  * @param reason - One line naming what it tripped on.
  * @param defaultSha - Default-branch tip the attempt merged from.
  * @param nowMs - Conclusion time in epoch milliseconds.
+ * @param details - The host that ran it, its stage timings and what it made
+ *   of the conflict (Issue #2311), so the `merge-fallback` flag can report
+ *   what each run cost, where it ran and what it concluded.
  */
 export function concludeConflictAttempt(
   entry: SyncStreakEntry,
@@ -459,32 +457,33 @@ export function concludeConflictAttempt(
   reason: string,
   defaultSha?: string,
   nowMs: number = Date.now(),
+  details: { host?: string; timings?: string; analysis?: string } = {},
 ): SyncStreakEntry {
   const { attemptOpenedAt: _opened, ...rest } = entry;
   const charged = outcome === "failed";
-  const paced = charged
-    ? rest
-    // An uncharged conclusion against a tip the failure never saw is an
-    // observation that the tip has moved, so it clears the deferral the same
-    // way `recordDefaultSha` does. Without this the ledger would keep pacing
-    // the branch against a conflict that no longer exists.
-    : clearDeferralIfTipMoved(rest, defaultSha);
+  const record: ConflictAttemptRecord = {
+    at: new Date(nowMs).toISOString(),
+    outcome,
+    reason,
+    ...(defaultSha ? { defaultSha } : {}),
+    ...(details.host ? { host: details.host } : {}),
+    ...(details.analysis ? { analysis: details.analysis } : {}),
+    ...(details.timings ? { timings: details.timings } : {}),
+  };
+  // Only a charged failure joins the budget's history — the flag reports the
+  // runs that were spent, not the ones the branch was never answerable for.
+  // The list is capped at the budget so a re-armed branch cannot grow it
+  // without bound.
+  const failedAttempts = charged
+    ? [...(entry.failedAttempts ?? []), record].slice(
+      -MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    )
+    : entry.failedAttempts;
   return {
-    ...paced,
+    ...rest,
     conflictAttempts: (entry.conflictAttempts ?? 0) + (charged ? 1 : 0),
-    lastAttempt: {
-      at: new Date(nowMs).toISOString(),
-      outcome,
-      reason,
-      ...(defaultSha ? { defaultSha } : {}),
-    },
-    ...(charged
-      ? {
-        deferUntil: new Date(
-          nowMs + DEFAULT_CONFLICT_COOLDOWN_HOURS * 3600_000,
-        ).toISOString(),
-      }
-      : {}),
+    lastAttempt: record,
+    ...(failedAttempts !== undefined ? { failedAttempts } : {}),
   };
 }
 
@@ -502,50 +501,34 @@ export function isConflictBudgetExhausted(
 }
 
 /**
- * Whether another conflict-resolution attempt is due (Issue #1766).
+ * Whether another conflict-resolution attempt is due — that is, whether no
+ * attempt is open on this branch (Issue #2305).
  *
- * Due when the default tip has moved since the last concluded attempt — the
- * conflict is a different one now — or when the deferral set by that
- * attempt's failure has passed. An unparseable `deferUntil` reads as "still
- * running", the conservative direction the PR ladder takes for an
- * unparseable attempt timestamp: guessing the other way re-attempts every
- * pass.
+ * There is no deferral to wait out any more: a charged failure spends one of
+ * the branch's two attempts and the next one is due immediately. What is left
+ * is the open-attempt marker, and a marker still open is a run this host has
+ * not concluded yet. A sibling host's attempt is refused by the sync claim
+ * (`milestone_sync_claim.ts`), not by this ledger, which is host-local.
  *
  * @param entry - The branch's streak entry.
- * @param currentDefaultSha - Default-branch tip as it stands now.
- * @param nowMs - Current time in epoch milliseconds.
  */
-export function isConflictAttemptDue(
-  entry: SyncStreakEntry,
-  currentDefaultSha: string,
-  nowMs: number = Date.now(),
-): boolean {
-  const lastSha = entry.lastAttempt?.defaultSha;
-  if (lastSha !== undefined && lastSha !== currentDefaultSha) return true;
-  if (entry.deferUntil === undefined) return true;
-  const until = Date.parse(entry.deferUntil);
-  if (Number.isNaN(until)) return false;
-  return nowMs >= until;
+export function isConflictAttemptDue(entry: SyncStreakEntry): boolean {
+  return entry.attemptOpenedAt === undefined;
 }
 
 /**
  * Record the default-branch tip this branch has been measured against
  * (Issue #1766).
  *
- * A moved tip clears the deferral — the conflict to be resolved is a new one,
- * so waiting out a cooldown set for the old one helps nobody — but it never
- * touches {@link SyncStreakEntry.conflictAttempts}. A busy default branch
- * would otherwise refill the budget faster than the ladder could spend it,
- * and a genuinely unresolvable conflict would retry forever.
+ * It never touches {@link SyncStreakEntry.conflictAttempts}: a busy default
+ * branch would otherwise refill the budget faster than the ladder could spend
+ * it, and a genuinely unresolvable conflict would retry forever.
  */
 export function recordDefaultSha(
   entry: SyncStreakEntry,
   defaultSha: string,
 ): SyncStreakEntry {
-  return {
-    ...clearDeferralIfTipMoved(entry, defaultSha),
-    lastSyncedDefaultSha: defaultSha,
-  };
+  return { ...entry, lastSyncedDefaultSha: defaultSha };
 }
 
 /**
@@ -556,11 +539,19 @@ export function recordDefaultSha(
  * SyncStreakEntry.rollbacks} count, the last synced tip and the
  * {@link SyncStreakEntry.lastAttempt} audit record survive — they describe
  * the branch's history, not the budget that has just been refilled.
+ * {@link SyncStreakEntry.failedAttempts} goes with the attempts it describes
+ * (Issue #2311): it is the spent budget's own history, and the next fallback
+ * must report its own runs rather than a previous conflict's.
  */
 export function resetConflictLedgerOnSuccess(
   entry: SyncStreakEntry,
 ): SyncStreakEntry {
-  const { attemptOpenedAt: _opened, deferUntil: _deferred, ...rest } = entry;
+  const {
+    attemptOpenedAt: _opened,
+    failedAttempts: _spent,
+    fallbackDefaultSha: _flagged,
+    ...rest
+  } = entry;
   return { ...rest, conflictAttempts: 0 };
 }
 
