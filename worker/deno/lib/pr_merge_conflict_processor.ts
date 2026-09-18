@@ -18,14 +18,15 @@
  * The contract this processor implements is exactly #4373's:
  *
  * - Perform a **real merge** of the base into the PR branch. Both sides'
- *   changes survive, or the attempt stops and escalates — never a side-pick.
- *   The one narrow exception is issue intent (Issue #1114): where the
- *   originating issues behind *both* sides are known and one explicitly
- *   supersedes the other, the agent resolves to the intended outcome and both
- *   issues are named on the PR. Absent that evidence the contract is unchanged,
- *   and the mechanical guards below apply either way.
- * - Run the repo's quality gate on the merged result (the agent does this;
- *   a conflicting PR has had no CI at all, so this is often the first run).
+ *   changes survive wherever both can stand — never a side-pick. Where they
+ *   genuinely contradict, the agent judges and names the call file by file on
+ *   the PR (Issue #2306); issue intent (Issue #1114) is the one judgement with
+ *   written evidence behind it, cited where both sides' issues are known and
+ *   one explicitly supersedes the other. The mechanical guards below apply
+ *   either way.
+ * - Run no quality gate here (Issue #2306). CI on the pushed merge is the
+ *   gate: a conflicting PR has had none at all, so that is often the first
+ *   time its tests meet current base code.
  * - Push without force, so every commit on the PR survives.
  * - Comment on the PR describing what was merged.
  *
@@ -527,9 +528,13 @@ export function buildRuleResolutionSection(
 /**
  * Body of the comment posted when the merge lands.
  *
- * When the agent settled a conflict on issue intent (Issue #1114) the comment
- * names each override — both issue numbers, the file, and what was superseded
- * — so the judgement is auditable without reading the diff.
+ * The agent's own reply is carried verbatim, so the `Judgement:` line it wrote
+ * for each conflicted file lands on the PR (Issue #2306). When it settled a
+ * conflict on issue intent (Issue #1114) the comment names each override —
+ * both issue numbers, the file, and what was superseded — and flags any the
+ * worker's own issue context cannot corroborate as an unverified judgement.
+ * That flag replaced a refusal: aborting such a merge cost the attempt and
+ * left the PR conflicting, which helped nobody.
  */
 export function buildResolvedComment(
   baseBranch: string,
@@ -1166,8 +1171,8 @@ async function resolveConflict(
   let issueContext: ConflictIssueContext | null = null;
 
   // The reply file is consumed on read so a stale reply cannot be reused, and
-  // this attempt reads it in up to three places — the override guard, the
-  // ancestor failure and the resolved comment. Read it once (Issue #1767).
+  // this attempt reads it in up to two places — the ancestor failure and the
+  // resolved comment. Read it once (Issue #1767).
   const agentReply = createMergeConflictReplyReader(workDir, logger);
   if (merge.code !== 0) {
     const unmerged = await git(
@@ -1339,15 +1344,6 @@ async function resolveConflict(
         attemptNumber,
       );
     }
-
-    // An override claimed where both sides' originating issues were *not*
-    // known is no longer a refusal (Issue #2306). The agent resolves every
-    // conflicted file by judgement now, so a claim the worker cannot
-    // corroborate is an unverified judgement rather than a side-pick with a
-    // justification attached: it is flagged on the conclusion comment by
-    // `buildIntentOverrideSection`, where a reviewer can audit it, and the
-    // merge lands. Aborting instead cost the attempt and left the PR
-    // conflicting, which helped nobody.
   }
 
   // Commit whatever the agent left staged and push. No force: the merge

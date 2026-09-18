@@ -106,7 +106,7 @@ Deno.test("merge_conflict - the template carries no quality-instructions placeho
   );
 });
 
-Deno.test("merge_conflict - the rendered prompt tells the agent not to run the gate", async () => {
+Deno.test("merge_conflict - the rendered prompt withholds the gate from the agent", async () => {
   const built = await buildMergeConflictPrompt({
     repo: "stSoftwareAU/VibeCoder",
     target: { kind: "pr", prNumber: 4321 },
@@ -117,10 +117,14 @@ Deno.test("merge_conflict - the rendered prompt tells the agent not to run the g
   assertEquals(built.ok, true);
   if (!built.ok) return;
   const flat = flatten(built.value.prompt);
-  assertStringIncludes(flat, "Do not run the repository's quality gate");
+  assertStringIncludes(
+    flat,
+    "The repository's quality gate is not yours this merge",
+  );
   // The gate that does apply is named on each path, so "do not run it" is
   // not read as "nothing checks this merge".
   assertStringIncludes(flat, "CI on the pushed merge");
+  assertStringIncludes(flat, "Resolve carefully enough that those checks pass");
   assertStringIncludes(flat, "type-check gate");
 });
 
@@ -187,8 +191,14 @@ Deno.test("merge_conflict - the contradictory timeout example is decided by judg
     false,
     "the abort worked example was removed by Issue #2306",
   );
-  assertStringIncludes(example, "Judgement:");
-  assertStringIncludes(example, "read");
+  // The example must still say what to do with a contradictory constant: read
+  // both sides, decide, and write the judgement line naming the outcome.
+  assertStringIncludes(example, "Read what each side's code does");
+  assertStringIncludes(
+    example,
+    "Judgement: worker/deno/lib/timeouts.ts — kept the 10s interactive default",
+  );
+  assertStringIncludes(example, ".pr_response_message");
 });
 
 // --- The bounded dependency carve-out ---

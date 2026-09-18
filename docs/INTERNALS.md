@@ -3334,7 +3334,9 @@ staged (`git add -- <paths>`, never `-A`), so the worker's own state files in
 the shared clone never reach the pre-commit gate (Issue #1654). Each resolved
 file carries the rung that settled it — `triage: <case>`, `rule: <reason>` or
 `agent` — and that per-file list is what the merge commit, the sync's log line
-and the report comment all print.
+and the report comment all print. The report comment also quotes the agent's
+own reply where the agent rung ran, so its `Judgement:` lines are auditable on
+the branch path as they are on a PR (Issue #2306).
 
 **No resolution may reduce test coverage.** A conflicted test file is resolved
 by taking a side only when that side already keeps every case *and* every line

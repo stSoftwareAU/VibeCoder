@@ -161,8 +161,9 @@ progress and stopped on conflicts. Its contract is absolute:
   itself: the worker
   settles dependency-version hunks in known manifests before the agent runs, and
   those files are absent from the agent's conflicted-file list. The carve-out
-  stops there — a conflicting constant in source code is still a human's call,
-  because a version has a total order to appeal to and a source value does not.
+  stops there — a conflicting constant in source code is the agent's own
+  judgement, named on its `Judgement:` line, because a version has a total
+  order to appeal to and a source value does not.
 - **Issue intent may override "both sides survive" — evidenced, or not at
   all.** When the originating issues behind _both_ sides of a path are known and
   one of them explicitly supersedes, reverts, replaces or retunes the other, the
@@ -183,9 +184,9 @@ Any failure aborts the merge, leaving the branch untouched.
 ### 📦 Dependency files are decided before the agent runs
 
 One conflict shape needs no judgement at all: both branches bumped the same
-dependency. The agent's contract forbids it from deciding that — "the same value
-set to two different values" is a human's call — so the worker settles it
-deterministically **before** the agent is asked anything:
+dependency. Asking the agent to re-reason about a decidable question spends a
+model run on nothing, so the worker settles it deterministically **before** the
+agent is asked anything:
 
 - Each conflicted path is offered to the registered manifest rules
   (`deno.json`/`deno.jsonc`, `package.json`, `Cargo.toml`, `go.mod`). Per
