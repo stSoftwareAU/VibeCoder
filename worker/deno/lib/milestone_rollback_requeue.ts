@@ -114,8 +114,6 @@ export interface EscalateRollbackFailureOptions {
   milestoneBranch: string;
   defaultBranch: string;
   reason: string;
-  /** When true this exhaustion has already been reported — post nothing. */
-  alreadyEscalated: boolean;
   /** The `merge-fallback` flag this fallback filed or appended (#2311). */
   flagIssue?: number;
   ghCommandFn: GhCommandFn;
@@ -349,10 +347,11 @@ export async function requeueRolledBackChildren(
  * merge (Issues #1781, #2311).
  *
  * It carries no `needs-human` label and asks for nothing — the
- * `merge-fallback` flag named in it is the record. A second call with
- * `alreadyEscalated` posts nothing. A milestone with nowhere to land is one
- * log line and still counts as reported, so the line is not repeated every
- * cycle.
+ * `merge-fallback` flag named in it is the record. It is called once per
+ * fallback: the spent budget keeps the branch out of the sync until the
+ * default tip moves, which is what stops the notice repeating every cycle.
+ * A milestone with nowhere to land is one log line and still counts as
+ * reported.
  */
 export async function escalateRollbackFailure(
   options: EscalateRollbackFailureOptions,
@@ -364,14 +363,9 @@ export async function escalateRollbackFailure(
     milestoneBranch,
     defaultBranch,
     reason,
-    alreadyEscalated,
     ghCommandFn,
     log,
   } = options;
-
-  if (alreadyEscalated) {
-    return { posted: false, issue: null, countedAsEscalated: true };
-  }
 
   const parentIssue = trackingIssueFromMilestoneTitle(milestoneTitle);
   if (parentIssue === null) {

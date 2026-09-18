@@ -301,7 +301,7 @@ Deno.test("requeueRolledBackChildren - an untouched sibling is never reopened or
   );
 });
 
-Deno.test("escalateRollbackFailure - one notice on the parent, no needs-human, and a second call posts nothing (Issues #1781, #2311)", async () => {
+Deno.test("escalateRollbackFailure - one notice on the parent naming the flag, and no needs-human (Issues #1781, #2311)", async () => {
   const calls: string[][] = [];
   const script = (args: string[]): string => {
     const key = args.join(" ");
@@ -315,7 +315,6 @@ Deno.test("escalateRollbackFailure - one notice on the parent, no needs-human, a
     milestoneBranch: BRANCH,
     defaultBranch: "main",
     reason: "nothing left to revert",
-    alreadyEscalated: false,
     flagIssue: 4242,
     ghCommandFn: ghStub(calls, script),
     log: () => undefined,
@@ -323,21 +322,8 @@ Deno.test("escalateRollbackFailure - one notice on the parent, no needs-human, a
   assertEquals(first.posted, true);
   assertEquals(first.issue, 1730);
 
-  const second = await escalateRollbackFailure({
-    repo: REPO,
-    milestoneTitle: "#1730 Ledger",
-    milestoneNumber: 52,
-    milestoneBranch: BRANCH,
-    defaultBranch: "main",
-    reason: "nothing left to revert",
-    alreadyEscalated: true,
-    ghCommandFn: ghStub(calls, script),
-    log: () => undefined,
-  });
-  assertEquals(second.posted, false);
-
   const comments = calls.filter((c) => c[0] === "issue" && c[1] === "comment");
-  assertEquals(comments.length, 1, "exactly one comment across both cycles");
+  assertEquals(comments.length, 1, "one notice for one fallback");
   assertStringIncludes(
     comments[0]![comments[0]!.length - 1] ?? "",
     "merge-fallback` flag #4242",
@@ -362,7 +348,6 @@ Deno.test("escalateRollbackFailure - nowhere to post is one log line and counts 
     milestoneBranch: BRANCH,
     defaultBranch: "main",
     reason: "nothing left to revert",
-    alreadyEscalated: false,
     ghCommandFn: ghStub(calls, (args) => {
       if (args[0] === "issue" && args[1] === "list") return "[]";
       return "";

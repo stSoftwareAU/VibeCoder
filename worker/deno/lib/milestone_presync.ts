@@ -33,9 +33,9 @@ import {
 } from "./milestone_sync_conflict.ts";
 import { isConflictEscalation } from "./milestone_conflict_triage.ts";
 import { currentHost } from "./conflict_stage_timer.ts";
+import { describeConflictAnalyses } from "./milestone_fallback_flag.ts";
 import {
   conflictAttemptDue,
-  describeConflictAnalyses,
   escalateSyncConflict,
   type GhCommandFn,
   grantAgentRun,

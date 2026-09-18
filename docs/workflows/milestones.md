@@ -350,13 +350,16 @@ as an unexplained `git commit` exit 1.
 Every git failure on the sync path quotes git's **stdout as well as its
 stderr**, because `git commit` explains "nothing to commit, working tree
 clean" on stdout, and a push that fails for anything but a repository rule is
-now a **failed sync** rather than a note on a success. A sync whose reason is
-identical to the previous cycle's escalates on that **second** occurrence,
-carrying the previous conclusion, instead of spending four cycles and four
-agent runs repeating it.
+now a **failed sync** rather than a note on a success. The second-occurrence
+escalation Issue #1964 added for an identical repeated reason was removed by
+Issue #2311: a conflict is answered by the two-run budget, the roll-back and
+the `merge-fallback` flag, and a **non-conflict** failure escalates on the
+ordinary streak threshold.
 
-Only a file every rung leaves undecided aborts the merge and reaches a human,
-and the escalation then names the rung that failed (`agent: …`). An agent that
+Only a file every rung leaves undecided aborts the merge, and the refusal then
+names the rung that failed (`agent: …`). It charges one of the branch's two
+runs and reaches no human (Issue #2311) — the second spent run hands the branch
+to the roll-back and its `merge-fallback` flag. An agent that
 fails, is ended by the worker, leaves a path unmerged or leaves a conflict
 marker behind is a failed rung: nothing is pushed and the branch stands exactly
 at its pre-merge commit. The escalation carries the preparation: what each side

@@ -513,7 +513,9 @@ Deno.test("conflict ledger - every charged run is kept, with its host, timings a
 Deno.test("conflict ledger - the spent runs never outgrow the budget (Issue #2311)", () => {
   const at = Date.parse("2026-09-18T00:00:00Z");
   let entry: SyncStreakEntry = { count: 0, escalated: false };
-  for (let run = 0; run < MILESTONE_CONFLICT_ATTEMPT_BUDGET + 3; run++) {
+  // Three runs past the budget, so the cap has something to drop.
+  const runs = MILESTONE_CONFLICT_ATTEMPT_BUDGET + 3;
+  for (let run = 0; run < runs; run++) {
     entry = concludeConflictAttempt(
       entry,
       "failed",
