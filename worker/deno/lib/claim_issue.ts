@@ -39,6 +39,7 @@ import { fetchOpenPRsForFleet, getBlockingPRForIssue } from "./issue_query.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { postCooldownComment } from "./shared_cooldown.ts";
+import { checkStreamAffinity } from "./stream_holder.ts";
 import { checkMilestoneStreamBusy, formatStreamBusy } from "./stream_lock.ts";
 import { getHostname } from "./worker_identity.ts";
 
@@ -233,6 +234,15 @@ export type ClaimFailureReason =
    * holder's heartbeat goes stale.
    */
   | "stream_busy"
+  /**
+   * Another host holds this milestone stream's conversation and its head start
+   * has not run out (Issue #2336). The transcript lives on that host's disk, so
+   * claiming here would start the stream's conversation again from nothing.
+   * Like `stream_busy` this is **not** a failure: no `failed-once` label, no
+   * churn record and no cooldown — after
+   * `STREAM_AFFINITY_GRACE_SECONDS` the first host to scan claims it anyway.
+   */
+  | "stream_affinity"
   /** Verification re-read of comments failed after the claim was posted. */
   | "verification_failed"
   /** Any other error from `gh` (network, transient 5xx, etc.). */
@@ -510,6 +520,10 @@ async function liveHeartbeatWithoutAssigneeCheck(
  * the claim comment, so a blocked issue costs no assignment churn — and it
  * runs only when `streamLock` is supplied, so a fleet with session resume off
  * makes no extra API call.
+ *
+ * Issue #2336: Check 4 defers an issue whose milestone stream another host
+ * holds, for as long as that host's head start lasts. It runs last of the
+ * four, because it is the only one that can change its mind on a later scan.
  */
 async function preClaimFreshnessCheck(
   repo: string,
@@ -517,7 +531,11 @@ async function preClaimFreshnessCheck(
   ghCommandFn: (args: string[]) => Promise<string>,
   allowedAuthors: string[] = [],
   nowSeconds: number = Math.floor(Date.now() / 1000),
-  streamLock?: { milestoneTitle?: string },
+  streamLock?: {
+    milestoneTitle?: string;
+    affinityHost?: string;
+    workDir?: string;
+  },
 ): Promise<
   {
     shouldBailOut: boolean;
@@ -633,6 +651,35 @@ async function preClaimFreshnessCheck(
         shouldBailOut: true,
         reason: "stream_busy",
         reasonDetail: detail,
+      };
+    }
+  }
+
+  // Check 4 (Issue #2336): the stream's conversation lives on one host's disk,
+  // so the host that ran it last gets its next issue first. A non-holder waits
+  // out that head start and takes the issue on a later scan if the holder has
+  // not come back. Not a failure, and never a lock: after the grace the first
+  // host to scan claims it and starts the conversation afresh.
+  if (streamLock?.affinityHost) {
+    const affinity = await checkStreamAffinity({
+      repo,
+      issueNumber,
+      thisHost: streamLock.affinityHost,
+      ghCommandFn,
+      trustedAuthors: allowedAuthors,
+      nowSeconds,
+      ...(streamLock.milestoneTitle
+        ? { milestoneTitle: streamLock.milestoneTitle }
+        : {}),
+      ...(streamLock.workDir ? { workDir: streamLock.workDir } : {}),
+    });
+    // The countdown is logged by `checkStreamAffinity` itself, once per issue
+    // — repeating it here would double every deferral in the fleet log.
+    if (affinity.defer && affinity.detail) {
+      return {
+        shouldBailOut: true,
+        reason: "stream_affinity",
+        reasonDetail: affinity.detail,
       };
     }
   }
@@ -1239,8 +1286,17 @@ export async function claimIssue(
     // Issue #2334: the milestone stream lock, only for a run that joins a
     // stream. Omitted here means the check — and its `gh issue list` — never
     // happens.
+    //
+    // Issue #2336: the same flag carries this host's identity for the affinity
+    // head start. The machine id is preferred because that is what the holder
+    // marker records; the claiming host's name is the fallback, and the two
+    // compare equal because affinity matches on the host part alone.
     streamLockEnabled
-      ? { ...(milestoneTitle ? { milestoneTitle } : {}) }
+      ? {
+        affinityHost: markerOptions?.machineId ?? claimingHost,
+        ...(milestoneTitle ? { milestoneTitle } : {}),
+        ...(markerOptions?.workDir ? { workDir: markerOptions.workDir } : {}),
+      }
       : undefined,
   );
   if (freshnessCheck.shouldBailOut) {
