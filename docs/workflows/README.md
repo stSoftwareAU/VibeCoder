@@ -57,8 +57,8 @@ loop that checks work in **priority order**: PR (Pull Request) feedback (1),
 spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
 merge-conflict resolution (1.61), CI nudges
 and the blocking-PR watchdog (1.62, 1.63), auto-merge (1.65), issue closure
-(1.67), closed-PR recovery (1.68), milestone completion and branch sync (1.7,
-1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
+(1.67), closed-PR recovery (1.68), milestone completion (1.7),
+closed-milestone housekeeping (1.71) and branch sync (1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
 the Failure-Detection repair resume (1.81), questions (1.85), configured
 custom-label prompts (1.86) and their PR-phase twin (1.87, both only when an
 operator configured a mapping of that phase),
@@ -157,7 +157,8 @@ flowchart TD
   P165 --> P167["1.67: Issue closure"]
   P167 --> P168["1.68: Closed-PR recovery"]
   P168 --> P17["1.7: Milestone completion"]
-  P17 --> P172["1.72: Milestone branch sync"]
+  P17 --> P171["1.71: Closed-milestone housekeeping"]
+  P171 --> P172["1.72: Milestone branch sync"]
   P172 --> P175["1.75: Refinement"]
   P175 --> P178["1.78: Grill-me"]
   P178 --> P179["1.79: Quorum plan-off"]
@@ -203,6 +204,7 @@ flowchart TD
 | 1.67     | Issue closure                                         | Close issues for merged PRs via GH CLI                                                                                                   |
 | 1.68 | Closed-PR recovery | Recover assigned issues with closed-without-merge PRs |
 | 1.7      | Milestone completion                                  | Final consolidation PR                                                                                                                   |
+| 1.71     | Closed-milestone housekeeping                         | Drop a closed milestone's worktrees, local branches and stream session on this host                                                      |
 | 1.72     | Milestone branch sync                                 | Merge the default branch into open `milestone/*` branches; claims nothing                                                                |
 | 1.75     | Issue refinement                                      | `refine-issue` label                                                                                                                     |
 | 1.78 | Grill-me clarification | `grill-me` label — runs before planning so a freshly-grilled issue is not also planned in the same pass |

@@ -42,6 +42,9 @@ import {
 import { ensureHistoryDepth } from "../git_history.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { saveResumeState } from "../resume_state_store.ts";
+import { handOnStreamSession } from "../stream_session.ts";
+import { recordStreamHolderForRun } from "../stream_holder.ts";
+import { resolveFleetAuthors } from "../fleet_authors.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -616,7 +619,12 @@ async function executeClaudeBody(
     });
   }
 
-  // Initialise session resume state if enabled (Issue #1324)
+  // Initialise session resume state if enabled (Issue #1324).
+  //
+  // Normally already set: the setup phase primed it from the issue's
+  // checkpoint, or joined the issue's stream conversation (Issue #2333). This
+  // is what is left — a run whose stream could not be resolved, or a run kind
+  // that keeps a per-issue session — and it starts one, as it always did.
   if (config.enableSessionResume && !state.sessionResumeState) {
     state.sessionResumeState = createSessionResumeState();
     logger.info("Session resume enabled", {
@@ -774,6 +782,12 @@ async function executeClaudeBody(
           mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
           logger,
           sessionResumeState: state.sessionResumeState,
+          // The stream conversation could not be verifiably compacted before
+          // this issue started (Issue #2337), so every agent run of the issue
+          // asks the CLI to compact at the earliest window it accepts.
+          ...(state.autocompactTokens
+            ? { autocompactTokens: state.autocompactTokens }
+            : {}),
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
           issueNumber,
           // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
@@ -1399,6 +1413,35 @@ async function executeClaudeBody(
       ...(state.sessionResumeState.credentialScope
         ? { credentialScope: state.sessionResumeState.credentialScope }
         : {}),
+    });
+    // Hand the conversation on to the stream's next issue (Issue #2333). A
+    // no-op unless setup joined a stream, so an excluded run kind — or one
+    // resuming its own checkpoint — writes no stream record.
+    await handOnStreamSession({
+      workDir: config.workDir,
+      joined: state.streamSession,
+      state: state.sessionResumeState,
+      ...(claudeResult.value.provider
+        ? { runProviderId: claudeResult.value.provider }
+        : {}),
+      logger,
+      logFields: { repo, issueNumber },
+    });
+    // Record this host as the holder of the stream's conversation (Issue
+    // #2336). The transcript the hand-on just wrote lives on this machine's
+    // disk, so this machine should get the stream's next issue first. A blank
+    // stream, a milestone with no tracking issue, or a `gh` failure records
+    // nothing and is logged — affinity is an optimisation, never a lock.
+    await recordStreamHolderForRun({
+      joined: state.streamSession,
+      ghCommandFn: deps.github.runGhCommand,
+      trustedAuthors: resolveFleetAuthors(
+        ctx.githubUser,
+        config.allowedAuthors,
+        config.fleetPrAuthors ?? [],
+      ),
+      log: (message) => logger.warn(message, { repo, issueNumber }),
+      logInfo: (message) => logger.info(message, { repo, issueNumber }),
     });
   }
 

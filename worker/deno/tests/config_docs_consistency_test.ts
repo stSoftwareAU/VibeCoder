@@ -15,6 +15,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { KNOWN_CONFIG_KEYS } from "../lib/config_unknown_keys.ts";
+import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 
 // tests/ → worker/deno/ → worker/ → repo root
 function repoPath(relative: string): URL {
@@ -122,5 +123,34 @@ Deno.test("config docs - primary sample .config.json uses only recognised keys",
       KNOWN_CONFIG_KEYS.has(key) || LEGACY_ALIASES.has(key),
       `Sample .config.json documents unrecognised key "${key}"`,
     );
+  }
+});
+
+/**
+ * The documented default must track the shipped one (Issue #2339).
+ *
+ * `enable_session_resume` was flipped to `true`, and three separate tables
+ * across two documents state its default. A drift check against
+ * `OPERATIONAL_DEFAULTS` is what stops the docs half of that flip from
+ * rotting: every row documenting the key must name the value the code ships.
+ */
+Deno.test("config docs - documented enable_session_resume default matches the code (Issue #2339)", async () => {
+  const expected = `\`${OPERATIONAL_DEFAULTS.enableSessionResume}\``;
+  for (const doc of ["docs/CONFIGURATION.md", "docs/MODEL-AND-CACHING.md"]) {
+    const rows = (await read(doc))
+      .split("\n")
+      .filter((line) =>
+        line.startsWith("|") && line.includes("`enable_session_resume`")
+      );
+    assert(
+      rows.length > 0,
+      `${doc} must carry a table row documenting enable_session_resume`,
+    );
+    for (const row of rows) {
+      assert(
+        row.includes(expected),
+        `${doc} documents enable_session_resume without the shipped default ${expected}: ${row}`,
+      );
+    }
   }
 });
