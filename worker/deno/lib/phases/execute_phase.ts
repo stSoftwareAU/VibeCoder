@@ -28,7 +28,10 @@ import {
   graftContextFacts,
   graftQueryFor,
 } from "../graft_context.ts";
-import { isGraftContextEnabled } from "../graft_context_config.ts";
+import {
+  graftDeepConfig,
+  isGraftContextEnabled,
+} from "../graft_context_config.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -452,6 +455,7 @@ async function executeClaudeBody(
     repoDir: state.repoPath,
     query: graftQueryFor(issueTitle, issueBody),
     enabled: isGraftContextEnabled(config),
+    ...(graftDeepConfig(config) ? { deep: graftDeepConfig(config) } : {}),
     logger,
   });
   // The #1550 retry re-enters this body; the earlier attempt's Graft tool

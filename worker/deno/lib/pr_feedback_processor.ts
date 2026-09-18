@@ -34,6 +34,7 @@ import {
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
+import type { GraftDeepConfig } from "./graft_context_config.ts";
 import { bindGraftRun } from "./graft_run.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
@@ -223,6 +224,8 @@ export interface PrFeedbackProcessorDeps {
    * exactly as it does today.
    */
   graftContextEnabled?: boolean;
+  /** The Graft summary pass to build with (Issue #2315), when configured. */
+  graftContextDeep?: GraftDeepConfig;
   /**
    * Collect the Graft repo-context bundle (Issue #2103). Optional —
    * {@link collectGraftContext} is used when omitted, and it spawns nothing
@@ -345,6 +348,9 @@ async function collectGraftForFeedback(
     repoDir: processorDeps.workDir,
     query: graftQueryForPr(prTitle, feedbackText),
     enabled,
+    ...(processorDeps.graftContextDeep
+      ? { deep: processorDeps.graftContextDeep }
+      : {}),
     logger,
   });
 }

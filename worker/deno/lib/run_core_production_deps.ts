@@ -123,7 +123,10 @@ import {
   findPrCommentsToFix,
 } from "./pr_maintenance.ts";
 import { processPrFeedback } from "./pr_feedback_processor.ts";
-import { isGraftContextEnabled } from "./graft_context_config.ts";
+import {
+  graftDeepConfig,
+  isGraftContextEnabled,
+} from "./graft_context_config.ts";
 import { maybeFileIdleTaskCommand } from "../commands/maybe_file_idle_task.ts";
 import { runIdleTaskFilerCycle } from "./idle_task_filer_run.ts";
 import {
@@ -1862,6 +1865,9 @@ export async function createProductionRunCoreDeps(
             repoConfigs: config.repoConfig,
             // Issue #2103: the host switch for the Graft repo-context bundle.
             graftContextEnabled: isGraftContextEnabled(config),
+            ...(graftDeepConfig(config)
+              ? { graftContextDeep: graftDeepConfig(config) }
+              : {}),
           },
         );
 
@@ -2093,6 +2099,9 @@ export async function createProductionRunCoreDeps(
             fleetLogins: resolveFleetMaintenanceAuthorSet(fleetPrAuthorInput),
             // Issue #2103: the host switch for the Graft repo-context bundle.
             graftContextEnabled: isGraftContextEnabled(config),
+            ...(graftDeepConfig(config)
+              ? { graftContextDeep: graftDeepConfig(config) }
+              : {}),
           },
         );
 
