@@ -1945,6 +1945,19 @@
       "paths": [
         "worker/deno/lib/issue_executor_split_prompt.ts"
       ]
+    },
+    {
+      "issue": 2344,
+      "chunk": "top-up-2344",
+      "title": "top-up: the advisor edit guard",
+      "ledger": "docs/audits/security-sweep-2344-issue-executor-enforcement.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_enforcement.ts, issue_edit_guard_cli.ts (#2344)",
+      "status": "swept",
+      "sweptAt": "fe1ca4615c07852220f8c464928f445300efa5ae",
+      "paths": [
+        "worker/deno/lib/issue_edit_guard_cli.ts",
+        "worker/deno/lib/issue_executor_enforcement.ts"
+      ]
     }
   ],
   "roots": [

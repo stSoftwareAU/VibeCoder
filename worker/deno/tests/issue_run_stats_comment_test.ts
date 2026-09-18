@@ -116,6 +116,31 @@ Deno.test("buildIssueRunStatsComment - renders the shared stats format", () => {
   assertStringIncludes(body, "Estimated cost (USD, estimate only)");
 });
 
+Deno.test("buildIssueRunStatsComment - a split run's counts reach the rendered body (Issue #2344)", () => {
+  const split = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"], {
+      executorSplit: {
+        advisorEditCalls: 0,
+        deniedAdvisorEdits: ["Edit"],
+        executorDispatches: 3,
+        executorRetasks: 1,
+      },
+    })],
+  });
+
+  assertStringIncludes(split, "- executor split:");
+  assertStringIncludes(split, "0 advisor edit calls");
+  assertStringIncludes(split, "3 executors dispatched");
+
+  // A run that was not split renders the body it always did.
+  const unsplit = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+  });
+  assertEquals(unsplit.includes("executor split:"), false);
+});
+
 Deno.test("buildIssueRunStatsComment - carries marker and disclaimer", () => {
   const body = buildIssueRunStatsComment({
     phase: "issue",

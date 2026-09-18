@@ -1121,6 +1121,13 @@ flowchart TD
   advisor/executor pilot (#2320) counts its first-attempt pass rate off these
   exact strings, so re-casing or bolding the line empties the metric. A phase
   that runs no quality gate renders no such line, so its comment is unchanged.
+- **The run's advisor/executor split.** A run with `issue_executor_split` on
+  appends one more bullet — `- executor split: 0 advisor edit calls, 2 denied,
+  3 executors dispatched, 1 re-tasks` (Issue #2344) — read off that run's own
+  stream-json. Advisor edit calls are the violations (the `PreToolUse` guard
+  denies them, so a healthy run reads `0`); denials, dispatches and re-tasks
+  are how the pilot is measured. Stable and greppable by contract, exactly like
+  the quality-gate line above. A run with the key off renders no such line.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.
