@@ -22,7 +22,10 @@
  * Trust annotation, suspicious-pattern auditing and the per-comment nonce
  * headers are **not** re-implemented: this module selects, then delegates to
  * `prepareTrustAnnotatedCommentList`, which is the vetted path every other
- * prompt route already uses.
+ * prompt route already uses. The audits are delegated too, but over the
+ * **whole** thread rather than the selection (Issue #2243) — the budget in (2)
+ * is a cap, and a cap in front of the flood detector suppresses exactly the
+ * signal the detector exists to raise.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -30,6 +33,7 @@
 import type { IssueComment } from "./issue_data.ts";
 import {
   classifyCommentAuthor,
+  collectCommentSecurityAudits,
   type CommentTrustOptions,
   isOperationalComment,
   prepareTrustAnnotatedCommentList,
@@ -105,6 +109,12 @@ export interface ImplementationCommentSelectionOptions
 export interface ImplementationCommentSelection {
   /** The comments to carry, in chronological order. */
   selected: IssueComment[];
+  /**
+   * Every comment the budget considered — the thread minus worker bookkeeping,
+   * before the count and character caps. This is the set the security audits
+   * run over, so a cap never runs in front of a detector (Issue #2243).
+   */
+  candidates: IssueComment[];
   /** Worker bookkeeping comments dropped outright. */
   droppedNoise: number;
   /** Comments dropped because the count or character budget was spent. */
@@ -178,6 +188,7 @@ export function selectImplementationComments(
   const selected = candidates.filter((_, i) => admitted.has(i));
   return {
     selected,
+    candidates,
     droppedNoise,
     droppedForBudget: candidates.length - selected.length,
   };
@@ -236,7 +247,10 @@ export function buildImplementationCommentContext(
   comments: readonly IssueComment[],
   options: ImplementationCommentContextOptions,
 ): ImplementationCommentContext {
-  const { selected } = selectImplementationComments(comments, options);
+  const { selected, candidates } = selectImplementationComments(
+    comments,
+    options,
+  );
   if (selected.length === 0) {
     return { issueComments: "", securityAuditMessages: [] };
   }
@@ -250,8 +264,24 @@ export function buildImplementationCommentContext(
     };
   }
 
+  const toTrustComment = (c: IssueComment) => ({
+    body: c.body,
+    author: { login: c.author },
+  });
+
+  // Audit the whole thread, not the selection: the budget above is a cap, and
+  // a cap must never run in front of the flood detector or the
+  // suspicious-pattern audit (Issue #2243). The selection below decides only
+  // what the prompt *carries*. These messages are a superset of the ones the
+  // formatting call raises over the subset, so they replace rather than
+  // duplicate them.
+  const securityAuditMessages = collectCommentSecurityAudits(
+    candidates.map(toTrustComment),
+    options,
+  );
+
   const trusted = prepareTrustAnnotatedCommentList(
-    selected.map((c) => ({ body: c.body, author: { login: c.author } })),
+    selected.map(toTrustComment),
     options,
   );
   return {
@@ -259,6 +289,6 @@ export function buildImplementationCommentContext(
     ...(trusted.formattedComments
       ? { commentBoundaryId: trusted.boundaryId }
       : {}),
-    securityAuditMessages: trusted.securityAuditMessages,
+    securityAuditMessages,
   };
 }
