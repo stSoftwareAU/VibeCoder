@@ -33,20 +33,20 @@ summarise, authorised.
   explicitly asks for all stay in — see
   [Never Fail Silently — Fail Loud](#never-fail-silently--fail-loud) below and
   [SECURITY.md](SECURITY.md). Mark each deliberate corner cut with exactly one
-  comment line, the ceiling first and the condition that lifts it after
-  `upgrade when`, so `grep -r SIMPLE-ON-PURPOSE` lists every cut:
+  comment line opening with `// SIMPLE-ON-PURPOSE:` — the ceiling first, then
+  the condition that lifts it after `upgrade when` — so
+  `grep -r SIMPLE-ON-PURPOSE` lists every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid code duplication; maintain a single source of truth.
 - **Boy Scout Rule** — Leave the code cleaner than you found it.
 - **Single Responsibility / Smaller Files** — Favour many smaller, focused
-  source files over large monolithic ones. Three similar lines of code is better
-  than a premature abstraction.
+  source files over large monolithic ones.
 - **Avoid over-engineering** — Only make changes that are directly requested or
   clearly necessary. Do not add features, refactor code, or make "improvements"
-  beyond what was asked. A review of a diff names three departures explicitly:
-  a standard-library function reinvented by hand, a dependency added when an
-  installed one or the standard library already does the job, and an
-  abstraction with a single implementation.
+  beyond what was asked. Reviewing a diff, flag these three departures
+  explicitly: a standard-library function reinvented by hand, a dependency
+  added when an installed one or the standard library already does the job,
+  and an abstraction with a single implementation.
 - **Deno TypeScript for new logic** — All new business logic, decision-making,
   and data processing must be implemented in Deno TypeScript (`worker/deno/`),
   not in shell scripts. Shell scripts are for orchestration only (calling Deno

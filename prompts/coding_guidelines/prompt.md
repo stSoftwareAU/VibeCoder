@@ -102,8 +102,9 @@ progress survives.
   that prevents data loss, security, accessibility, and whatever the issue
   explicitly asks for all stay in — see **Secure Coding Principles** and **Never
   Fail Silently — Fail Loud** below. Mark each deliberate corner cut with
-  exactly one comment line, the ceiling first and the condition that lifts it
-  after `upgrade when`, so `grep -r SIMPLE-ON-PURPOSE` lists every cut:
+  exactly one comment line opening with `// SIMPLE-ON-PURPOSE:` — the ceiling
+  first, then the condition that lifts it after `upgrade when` — so
+  `grep -r SIMPLE-ON-PURPOSE` lists every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid duplication; maintain a single source of truth.
 - **Boy Scout Rule** — Leave the code cleaner than you found it.

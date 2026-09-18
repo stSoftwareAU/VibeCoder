@@ -99,12 +99,16 @@ const kissBullet = (text: string, surface: string) =>
   );
 
 /**
- * A prose phrase, matched across the line wrapping Markdown introduces — both
- * surfaces wrap at 80 columns, so a fixed-space pattern would fail on wording
- * that is present and correct.
+ * Prose with its line wrapping flattened away. Both surfaces wrap at 80
+ * columns, so a phrase that is present and correct is routinely split across
+ * two lines; comparing on the flattened, lower-cased form finds it without
+ * building a pattern out of the phrase.
  */
-const phrase = (words: string) =>
-  new RegExp(words.trim().split(/\s+/).join("\\s+"), "i");
+const flatten = (text: string) => text.replace(/\s+/g, " ").toLowerCase();
+
+/** Where `words` appears in `text`, ignoring wrapping and case; -1 if absent. */
+const findPhrase = (text: string, words: string) =>
+  flatten(text).indexOf(flatten(words));
 
 /** The seven rungs, in the order the ladder must state them. */
 const LADDER_RUNGS: readonly string[] = [
@@ -139,7 +143,7 @@ function assertPhrasesInOrder(
 ): void {
   let previous = -1;
   for (const words of phrases) {
-    const found = text.search(phrase(words));
+    const found = findPhrase(text, words);
     assert(found >= 0, `${surface} has lost the ${what} "${words}": ${text}`);
     assert(
       found > previous,
@@ -148,6 +152,18 @@ function assertPhrasesInOrder(
     previous = found;
   }
 }
+
+/**
+ * The worked example line — the marker token to the end of its code span.
+ * `+` rather than `*` skips the bare token the rule sentence quotes, whose
+ * code span closes immediately after the colon, and lands on the example.
+ */
+const markerExample = (text: string, surface: string) =>
+  passage(
+    text,
+    /\/\/ SIMPLE-ON-PURPOSE:[^`\n]+/,
+    `the ${MARKER_TOKEN} worked example in ${surface}`,
+  );
 
 async function latestPromptText(name: string): Promise<string> {
   const result = await loadPrompt(name, PROMPTS_DIR);
@@ -327,7 +343,7 @@ Deno.test("twin pair - both surfaces state the never-cut floor and the corner-cu
   ) {
     for (const item of FLOOR_ITEMS) {
       assert(
-        phrase(item).test(text),
+        findPhrase(text, item) >= 0,
         `${surface} has lost "${item}" from the never-cut floor: ${text}`,
       );
     }
@@ -338,13 +354,35 @@ Deno.test("twin pair - both surfaces state the never-cut floor and the corner-cu
         `so \`grep -r SIMPLE-ON-PURPOSE\` stops listing every cut: ${text}`,
     );
 
-    // Both fields, ceiling first: the marker's whole value is that a reader
-    // grepping it learns the limit and what lifts it, in that order.
+    // The rule names both fields, ceiling first…
     assertPhrasesInOrder(
       surface,
       text,
       "corner-cut marker field",
       MARKER_FIELDS,
+    );
+
+    // …and so does the worked example, which is what an author copies. The
+    // check runs on the example line alone: the sentence above it already
+    // says "ceiling" and "upgrade when" in order, so a reversed example
+    // would slip past a check made against the whole bullet.
+    const example = markerExample(text, surface).slice(MARKER_TOKEN.length);
+    const [ceiling, trigger, ...extra] = example.split(/upgrade when/i);
+    assertEquals(
+      extra.length,
+      0,
+      `${surface}'s ${MARKER_TOKEN} example must say "upgrade when" exactly ` +
+        `once, marking off the trigger from the ceiling: ${example}`,
+    );
+    assert(
+      (ceiling ?? "").replace(/[\s—-]/g, "") !== "",
+      `${surface}'s ${MARKER_TOKEN} example states no ceiling before ` +
+        `"upgrade when": ${example}`,
+    );
+    assert(
+      (trigger ?? "").trim() !== "",
+      `${surface}'s ${MARKER_TOKEN} example states no trigger after ` +
+        `"upgrade when": ${example}`,
     );
   }
 });
