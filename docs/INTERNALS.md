@@ -3218,7 +3218,7 @@ flowchart TD
     D --> E
     E --> F[Lane worktrees on the milestone<br/>or child issue branches]
     F --> G{Uncommitted or<br/>unpushed work?}
-    G -- yes --> H["SELF-HEALING: skipped path (uncommitted work)"]
+    G -- yes --> H["SELF-HEALING: skipped path<br/>(uncommitted work / unpushed work)"]
     G -- no --> I[Remove worktree, local branches,<br/>stream-streamKey.json]
     I --> J{Every removal succeeded?}
     J -- yes --> K[Record the title as swept — never revisited]
@@ -3236,9 +3236,10 @@ Three boundaries make it safe to run on every scan:
   root with a 15-minute TTL, and every fully-swept title is persisted forever,
   so a closed milestone costs one `gh` call in its lifetime rather than one per
   scan — and never re-appears in the listed set.
-- **Never destructive.** A worktree with uncommitted changes, or a branch whose
-  commits no remote holds, is logged as
-  `SELF-HEALING: skipped <path> (uncommitted work)` and left to the existing
+- **Never destructive.** A worktree with uncommitted changes is logged as
+  `SELF-HEALING: skipped <path> (uncommitted work)`, and a branch whose commits
+  no remote holds as `SELF-HEALING: skipped <branch> (unpushed work)` — the
+  line names the reason that actually applied. Both are left to the existing
   time-based cleanups ([`worktree_cleanup.ts`](../worker/deno/lib/worktree_cleanup.ts),
   [`branch_cleanup.ts`](../worker/deno/lib/branch_cleanup.ts)), which this
   complements rather than replaces. "Pushed" is measured against every remote

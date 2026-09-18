@@ -10,7 +10,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   childIssueBranchNumber,
   milestoneCloseStatePath,
@@ -150,7 +150,18 @@ Deno.test("parseClosedMilestones - reads concatenated --paginate pages", () => {
     { number: 2, title: "b" },
   ]);
   assertEquals(parseClosedMilestones(""), []);
-  assertEquals(parseClosedMilestones("not json"), []);
+});
+
+Deno.test("parseClosedMilestones - throws on unreadable output rather than reading it as none", () => {
+  assertThrows(
+    () => parseClosedMilestones("not json"),
+    Error,
+    "not a JSON array",
+  );
+  assertThrows(
+    () => parseClosedMilestones('{"message":"Not Found"}'),
+    Error,
+  );
 });
 
 Deno.test("sweepClosedMilestones - removes the worktree, branches and stream session of a closed milestone", async () => {
@@ -314,7 +325,7 @@ Deno.test("sweepClosedMilestones - skips a branch whose commits are on no remote
     );
     assert(
       logs.some((l) =>
-        l === `SELF-HEALING: skipped ${CHILD_BRANCH} (uncommitted work)`
+        l === `SELF-HEALING: skipped ${CHILD_BRANCH} (unpushed work)`
       ),
       `the documented skip line is logged: ${logs.join(" | ")}`,
     );

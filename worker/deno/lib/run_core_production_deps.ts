@@ -3023,7 +3023,9 @@ export async function createProductionRunCoreDeps(
           }
         } catch (err) {
           // Housekeeping never fails a run — but it is never silent either.
-          logger.error(
+          // A warning, not an error: the loop continues to the next repo and
+          // the next scan retries this one.
+          logger.warn(
             `[milestone-close] ${repo} threw (continuing): ${
               err instanceof Error ? err.message : String(err)
             }`,

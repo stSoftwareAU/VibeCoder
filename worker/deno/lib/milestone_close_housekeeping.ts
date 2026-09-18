@@ -37,6 +37,7 @@
  */
 
 import { createMilestoneBranchName } from "./git_branch.ts";
+import { runGhCommand } from "./github.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
@@ -146,9 +147,9 @@ export function childIssueBranchNumber(branch: string): number | null {
  * Parse a `gh api --paginate` response into closed milestones.
  *
  * `--paginate` concatenates one top-level array per page, so the pages are
- * split on the `][` boundary before parsing. Unparseable output yields no
- * milestones — the caller then sweeps nothing this scan rather than acting on
- * a half-read listing.
+ * split on the `][` boundary before parsing. **Throws** on unreadable output:
+ * reporting a malformed response as "no closed milestones" would cache that
+ * emptiness for the TTL and quietly stop the sweep.
  */
 export function parseClosedMilestones(raw: string): ClosedMilestone[] {
   return parseJsonArrayPages(raw).flatMap((item) => {
@@ -172,21 +173,37 @@ function parseIssueNumbers(raw: string): number[] {
   });
 }
 
-/** Split concatenated `--paginate` pages and parse each as a JSON array. */
+/**
+ * Split concatenated `--paginate` pages and parse each as a JSON array.
+ *
+ * Throws when a page is not a JSON array — an unreadable response must not be
+ * indistinguishable from an empty one.
+ */
 function parseJsonArrayPages(raw: string): unknown[] {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return [];
   const out: unknown[] = [];
-  for (const chunk of trimmed.split(/\]\s*\[/)) {
-    const opened = chunk.startsWith("[") ? chunk : `[${chunk}`;
-    const closed = opened.endsWith("]") ? opened : `${opened}]`;
+  const chunks = trimmed.split(/\]\s*\[/);
+  for (let index = 0; index < chunks.length; index++) {
+    // Only the split itself may restore a bracket: a first chunk that does not
+    // already open an array, or a last one that does not close it, is not a
+    // page this parser lost a bracket from — it is not an array at all.
+    const opened = index === 0 ? chunks[index]! : `[${chunks[index]}`;
+    const closed = index === chunks.length - 1 ? opened : `${opened}]`;
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(closed);
-      if (Array.isArray(parsed)) out.push(...parsed);
-    } catch {
-      // A page that does not parse contributes nothing; the caller sweeps
-      // only what it could actually read.
+      parsed = JSON.parse(closed);
+    } catch (err) {
+      throw new Error(
+        `gh returned output that is not a JSON array: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
+    if (!Array.isArray(parsed)) {
+      throw new Error("gh returned JSON that is not an array");
+    }
+    out.push(...parsed);
   }
   return out;
 }
@@ -194,22 +211,10 @@ function parseJsonArrayPages(raw: string): unknown[] {
 /** The production dependency set. */
 export function createDefaultSweepDeps(): ClosedMilestoneSweepDeps {
   return {
-    gh: async (args) => {
-      const command = new Deno.Command("gh", {
-        args,
-        stdout: "piped",
-        stderr: "piped",
-      });
-      const output = await command.output();
-      if (!output.success) {
-        throw new Error(
-          `gh ${args.join(" ")} failed: ${
-            new TextDecoder().decode(output.stderr).trim()
-          }`,
-        );
-      }
-      return new TextDecoder().decode(output.stdout);
-    },
+    // The shared chokepoint, not a second raw spawn: it carries the timeout,
+    // the retry/backoff and the rate-limit short-circuit every other `gh`
+    // caller in the worker gets.
+    gh: runGhCommand,
     git: async (args, cwd) => {
       const result = await runGitCommand([...args], { cwd });
       return result.ok
@@ -301,7 +306,11 @@ export async function sweepClosedMilestones(
     result.skipped.push(...outcome.skipped);
     result.failures.push(...outcome.failures);
     result.errors.push(...outcome.errors);
-    if (outcome.failures.length === 0) {
+    // "Swept" is positively confirmed, never inferred from the absence of a
+    // failure: a milestone whose worktrees or branches could not even be read
+    // stays unswept and is retried, rather than being recorded forever as
+    // done on the strength of a fault.
+    if (outcome.failures.length === 0 && outcome.errors.length === 0) {
       swept.add(milestone.title);
       result.swept.push(milestone.title);
     }
@@ -359,9 +368,9 @@ async function sweepMilestone(
         `${title}: ${detail} — retrying next scan`,
     );
   };
-  const skippedLine = (subject: string) => {
-    outcome.skipped.push(`${subject} (closed milestone ${title})`);
-    deps.log(`SELF-HEALING: skipped ${subject} (uncommitted work)`);
+  const skippedLine = (subject: string, reason: SkipReason) => {
+    outcome.skipped.push(`${subject} (closed milestone ${title}): ${reason}`);
+    deps.log(`SELF-HEALING: skipped ${subject} (${reason})`);
   };
 
   // 1. Which local branches belong to this milestone?
@@ -391,9 +400,9 @@ async function sweepMilestone(
           { repoPath, worktreePath: worktree.path, branch },
           deps,
         );
-        if (held) {
+        if (held !== null) {
           blocked.add(branch);
-          skippedLine(worktree.path);
+          skippedLine(worktree.path, held);
           continue;
         }
         const removed = await deps.git(
@@ -419,7 +428,7 @@ async function sweepMilestone(
     // checked out; it goes with that worktree on a later scan.
     if (blocked.has(branch)) continue;
     if (await hasUnpushedCommits(repoPath, branch, deps)) {
-      skippedLine(branch);
+      skippedLine(branch, "unpushed work");
       continue;
     }
     const deleted = await deps.git(["branch", "-D", branch], repoPath);
@@ -531,20 +540,32 @@ async function milestoneBranches(
 }
 
 /**
- * True when a worktree must be left alone: it has uncommitted changes, its
- * branch has commits no remote holds, or git could not be asked. Unreadable
- * counts as held — keeping a directory costs disk, removing one loses work.
+ * Why an artefact was left alone — the parenthesised half of the
+ * `SELF-HEALING: skipped <subject> (<reason>)` line, naming the reason that
+ * actually applied rather than one standing in for both.
+ */
+export type SkipReason = "uncommitted work" | "unpushed work";
+
+/**
+ * Why a worktree must be left alone, or `null` when it may go: it has
+ * uncommitted changes, its branch has commits no remote holds, or git could
+ * not be asked. Unreadable counts as held — keeping a directory costs disk,
+ * removing one loses work.
  */
 async function holdsUnfinishedWork(
   context: { repoPath: string; worktreePath: string; branch: string },
   deps: ClosedMilestoneSweepDeps,
-): Promise<boolean> {
+): Promise<SkipReason | null> {
   const status = await deps.git(
     ["status", "--porcelain"],
     context.worktreePath,
   );
-  if (status.code !== 0 || status.stdout.trim().length > 0) return true;
-  return await hasUnpushedCommits(context.repoPath, context.branch, deps);
+  if (status.code !== 0 || status.stdout.trim().length > 0) {
+    return "uncommitted work";
+  }
+  return await hasUnpushedCommits(context.repoPath, context.branch, deps)
+    ? "unpushed work"
+    : null;
 }
 
 /**
