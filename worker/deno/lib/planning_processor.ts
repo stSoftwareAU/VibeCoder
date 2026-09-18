@@ -54,10 +54,7 @@ import {
   graftQueryFor,
   withGraftContext,
 } from "./graft_context.ts";
-import {
-  graftDeepConfig,
-  isGraftContextEnabled,
-} from "./graft_context_config.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
 import { bindGraftRun, type GraftRun } from "./graft_run.ts";
@@ -1471,7 +1468,6 @@ async function _processPlanningWithHeartbeat(
     repoDir,
     query: graftQueryFor(issueTitle, issueBody),
     enabled: isGraftContextEnabled(config),
-    ...(graftDeepConfig(config) ? { deep: graftDeepConfig(config) } : {}),
     logger,
   });
   graftSlot.result = graftContext;
