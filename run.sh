@@ -1126,6 +1126,93 @@ volume_too_small_detail() {
     "$1" "$(($2 / 1024))" "$(($3 / 1024))"
 }
 
+# The share of the host's shortfall a reset must return before destroying the
+# clones is worth it (Issue #2313). 100 - the default - means the reset must
+# be able to clear the claiming floor on its own; 0 disables the gate.
+volume_reset_shortfall_percent() {
+  local pct="${VIBE_WORK_VOLUME_HEAL_SHORTFALL_PERCENT:-100}"
+  [[ "${pct}" =~ ^[0-9]+$ ]] || pct=100
+  printf '%s' "${pct}"
+}
+
+# Kilobytes the resettable volumes must hold before a recreate is worth it:
+# the operator's share of the shortfall (floor - free), never less than the
+# Issue #2117 minimum. GRQ-23 was 10-20 GB short of its floor while the work
+# volume held 364 MB - 12.1 GB at its largest - so six recreates in 30 hours
+# destroyed every clone, worktree and Graft graph and cleared the floor not
+# once. A volume that cannot cover the missing space is not where it went.
+#
+# Arguments: free kilobytes, floor kilobytes.
+volume_reset_required_kb() {
+  local avail_kb="$1" floor_kb="$2" min_kb pct shortfall=0 cover
+  min_kb="$(volume_reset_min_kb)"
+  pct="$(volume_reset_shortfall_percent)"
+  if ((floor_kb > avail_kb)); then
+    shortfall=$((floor_kb - avail_kb))
+  fi
+  cover=$((shortfall * pct / 100))
+  if ((cover > min_kb)); then printf '%s' "${cover}"; else printf '%s' "${min_kb}"; fi
+}
+
+# Kilobytes the named volumes the plan allows a reset to destroy hold in the
+# runtime's store, on stdout; non-zero when none of them could be measured.
+# An absent measurement is never read as "they hold nothing" - Docker and
+# Podman keep their volumes where this launcher cannot look, and a guess must
+# not decide a destruction (Issues #2216, #2313).
+resettable_held_kb() {
+  local volume kb total=0 status=1
+  for volume in "$@"; do
+    volume_may_reset "${volume}" || continue
+    kb="$(volume_store_kb "${volume}" || true)"
+    [[ "${kb}" =~ ^[0-9]+$ ]] || continue
+    total=$((total + kb))
+    status=0
+  done
+  printf '%s' "${total}"
+  return "${status}"
+}
+
+volume_cannot_cover_detail() {
+  printf '%s hold only %s MB in %s against a %s MB shortfall, and a reset must return %s MB - the host'"'"'s missing space is somewhere else, so recreating them would destroy the clones for nothing (Issue #2313)' \
+    "$1" "$(($2 / 1024))" "${container_store}" "$(($3 / 1024))" "$(($4 / 1024))"
+}
+
+# Free kilobytes measured after a recreate that did not clear the floor
+# (Issue #2313) - the reading that already proved these volumes are not where
+# this host's space went. Kept beside the last-reset stamp, not inside it, so
+# the stamp's format is unchanged.
+UNRECOVERED_STATE_FILE="${VIBE_WORK_VOLUME_UNRECOVERED_STATE:-${HEAL_STATE_FILE}-unrecovered}"
+
+record_unrecovered_free_kb() {
+  mkdir -p "$(dirname "${UNRECOVERED_STATE_FILE}")" 2>/dev/null || true
+  printf '%s\n' "$1" >"${UNRECOVERED_STATE_FILE}" 2>/dev/null || true
+}
+
+forget_unrecovered_free_kb() {
+  rm -f "${UNRECOVERED_STATE_FILE}" 2>/dev/null || true
+}
+
+# The recorded reading on stdout when a previous recreate already failed to
+# clear the floor AND this host's free space has not moved since by more than
+# the reset minimum; non-zero otherwise. Destroying the clones a second time
+# against an unchanged reading is the six-recreates-in-30-hours loop of
+# Issue #2313.
+unrecovered_free_kb() {
+  local avail_kb="$1" last delta tolerance
+  last="$(cat "${UNRECOVERED_STATE_FILE}" 2>/dev/null || true)"
+  [[ "${last}" =~ ^[0-9]+$ ]] || return 1
+  delta=$((avail_kb - last))
+  if ((delta < 0)); then delta=$((-delta)); fi
+  tolerance="$(volume_reset_min_kb)"
+  ((delta <= tolerance)) || return 1
+  printf '%s' "${last}"
+}
+
+unrecovered_repeat_detail() {
+  printf 'a previous recreate already left %s with %s MB free, still below the claiming floor, and it is now %s MB - the host'"'"'s missing space is somewhere else, so %s are left alone until that reading moves (Issue #2313)' \
+    "${disk_gate_path}" "$(($1 / 1024))" "$(($2 / 1024))" "$3"
+}
+
 # Issue #2092: a host below its claiming floor resets any work volume big
 # enough to matter BEFORE the image build. The reset the volume init drives
 # (below) needs an image — the init runs inside it — so a host whose build is
@@ -1151,6 +1238,24 @@ reset_work_volumes_before_build() {
   floor_detail="$(claim_floor_detail "${total_kb}")"
   local min_kb need_kb
   min_kb="$(volume_reset_min_kb)"
+
+  # Cover the shortfall or destroy nothing (Issue #2313). A host below its
+  # floor because its own data grew is not healed by wiping clones the reset
+  # cannot make up the difference with; it is told where its space went.
+  if ((avail_kb < floor_kb)); then
+    local recorded_kb held_kb required_kb
+    if recorded_kb="$(unrecovered_free_kb "${avail_kb}")"; then
+      report_unrecovered "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "the work volumes")"
+      return 0
+    fi
+    required_kb="$(volume_reset_required_kb "${avail_kb}" "${floor_kb}")"
+    if held_kb="$(resettable_held_kb ${volume_names[@]+"${volume_names[@]}"})" &&
+      ((held_kb < required_kb)); then
+      report_unrecovered "$(volume_cannot_cover_detail "the resettable volumes" "${held_kb}" "$((floor_kb - avail_kb))" "${required_kb}")"
+      return 0
+    fi
+  fi
+
   for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     # Role before size (Issue #2216): a volume the plan does not list is kept
     # whatever it holds, and whether or not its store can be measured.
@@ -1535,6 +1640,9 @@ heal_untrimmable_volumes() {
   local floor_detail
   floor_detail="$(claim_floor_detail "${total_kb}")"
   if ((avail_kb >= floor_kb)); then
+    # The host is above its floor, so whatever a past recreate failed to
+    # recover has been recovered by something else (Issue #2313).
+    forget_unrecovered_free_kb
     log_run_core "work-volume: trim refused for ${trim_refused_volumes[*]}; $((avail_kb / 1024)) MB free is above the claiming ${floor_detail} - the image is ratcheting but the host is not short (Issue #478)"
     return 0
   fi
@@ -1556,11 +1664,24 @@ heal_untrimmable_volumes() {
     return 0
   fi
 
+  # Ask the state before asking the volumes (Issue #2313): when a recreate has
+  # already left this host below its floor and its free space has not moved
+  # since, the answer is in that reading, not in another set of destroyed
+  # clones. GRQ-23 recreated six times in 30 hours on readings that never
+  # changed by more than a gigabyte.
+  local recorded_kb
+  if recorded_kb="$(unrecovered_free_kb "${avail_kb}")"; then
+    report_unrecovered "$(unrecovered_repeat_detail "${recorded_kb}" "${avail_kb}" "${resettable_refused[*]}")"
+    return 0
+  fi
+
   # Measure before deciding (Issue #2077): what the volumes hold on the host
-  # is the one fact that says whether a recreate can clear the floor. Only a
-  # volume big enough to hold the missing space is worth destroying.
-  local kb held_kb=0 measured=0 sum_min_kb
-  sum_min_kb="$(volume_reset_min_kb)"
+  # is the one fact that says whether a recreate can clear the floor. Only
+  # volumes holding the host's missing space are worth destroying, so the
+  # threshold is the shortfall itself (Issue #2313), never a fixed gigabyte
+  # that a ratcheting image clears within a cycle or two.
+  local kb held_kb=0 measured=0 sum_required_kb
+  sum_required_kb="$(volume_reset_required_kb "${avail_kb}" "${floor_kb}")"
   for volume in "${resettable_refused[@]}"; do
     kb="$(volume_store_kb "${volume}" || true)"
     if [[ "${kb}" =~ ^[0-9]+$ ]]; then
@@ -1568,8 +1689,8 @@ heal_untrimmable_volumes() {
       held_kb=$((held_kb + kb))
     fi
   done
-  if ((measured)) && ((held_kb < sum_min_kb)); then
-    report_unrecovered "${resettable_refused[*]} hold only $((held_kb / 1024)) MB in ${container_store} - the host's missing space is somewhere else, so recreating them would destroy the clones for nothing"
+  if ((measured)) && ((held_kb < sum_required_kb)); then
+    report_unrecovered "$(volume_cannot_cover_detail "${resettable_refused[*]}" "${held_kb}" "$((floor_kb - avail_kb))" "${sum_required_kb}")"
     return 0
   fi
 
@@ -1612,8 +1733,14 @@ heal_untrimmable_volumes() {
   # Measured, not assumed: the heal is only a heal if the host got the space.
   avail_kb="$(host_disk_field_kb 2)"
   if [[ "${avail_kb}" =~ ^[0-9]+$ ]] && ((avail_kb >= floor_kb)); then
+    forget_unrecovered_free_kb
     log_run_core "work-volume: the recreate returned ${disk_gate_path} to $((avail_kb / 1024)) MB free, above the $((floor_kb / 1024)) MB claiming floor (Issue #478)"
     return 0
+  fi
+  # Remember the reading that proved it (Issue #2313), so the next launch
+  # reports where the space went rather than destroying the clones again.
+  if [[ "${avail_kb}" =~ ^[0-9]+$ ]]; then
+    record_unrecovered_free_kb "${avail_kb}"
   fi
   report_unrecovered "the recreate left ${disk_gate_path} with $((avail_kb / 1024)) MB free, still below the $((floor_kb / 1024)) MB claiming floor - the work volume is not where this host's space went"
 }
