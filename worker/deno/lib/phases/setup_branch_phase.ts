@@ -49,6 +49,7 @@ import {
   primeStreamSession,
   resolveStreamRunKind,
 } from "../stream_session.ts";
+import { primeStreamCompaction } from "../stream_compaction.ts";
 import {
   claimRepoLevelRejectionReport,
   describeRepoLevelRejection,
@@ -672,6 +673,20 @@ export async function workOnIssueSetupBranch(
         providerId,
         holderHost: machineId,
       };
+      // Compact that conversation before the issue's first phase runs
+      // (Issue #2337). It has carried every issue of this stream so far, so
+      // left alone it is the next issue that dies of a full context window.
+      // Returns the `--autocompact` window when the compaction could not be
+      // verified — the CLI's own lever, pulled as early as it goes.
+      state.autocompactTokens = await primeStreamCompaction({
+        outcome: adoption.outcome,
+        providerId,
+        sessionId: adoption.state.sessionId,
+        cwd: repoPath,
+        workDir: config.workDir,
+        logger,
+        logFields: { repo, issueNumber },
+      });
     }
   }
 

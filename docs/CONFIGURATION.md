@@ -3306,6 +3306,23 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   and the run logs `stream session reset: <reason>` before continuing. Every
   run logs one line naming what it joined —
   `stream <label> session <id> (resumed|new|reset)`.
+- **A resumed conversation is compacted before the issue's first phase**
+  (Issue #2337), because it has carried every issue of the stream so far and
+  left alone it is the *next* issue that fills the context window. Claude and
+  DeepSeek — one CLI, so one pair of levers — send `/compact` as the prompt of
+  a `--resume` print run, then **measure** the session's transcript file under
+  `CLAUDE_CONFIG_DIR`: smaller means it worked, and the run logs
+  `compaction: /compact`. Anything short of that proof — an unchanged or larger
+  transcript, a non-zero `/compact` run, a transcript that cannot be measured,
+  a spawn that failed — is treated as uncompacted, and every agent run of the
+  issue instead carries `--autocompact 100000` (the smallest window the CLI
+  accepts, so its own compaction happens earliest), logged as
+  `compaction: autocompact 100000`. A `new` or `reset` stream session has no
+  conversation to compact and logs `compaction skipped: new stream session`
+  without spending a CLI call, and Codex and Gemini expose no compaction
+  control at all, so they carry the full transcript and log
+  `compaction unavailable` naming the provider. Every run logs **exactly one**
+  compaction line, and no compaction outcome can fail an issue.
 - **One run per milestone stream at a time, fleet-wide** (Issue #2334). With
   the flag on, a claim on a milestone issue first asks whether any **other
   open** issue of that milestone is live — a heartbeat that beat inside the

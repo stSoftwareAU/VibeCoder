@@ -594,6 +594,16 @@ export interface RunClaudeOptions {
   promptCacheHit?: boolean;
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
+  /**
+   * Context window (in tokens) at which the CLI compacts on its own
+   * (Issue #2337) — `--autocompact`.
+   *
+   * Set by a run whose stream conversation could not be verifiably compacted
+   * before the issue started (`stream_compaction.ts`), so every phase run of
+   * that issue carries it. Omitted, no flag is emitted and the CLI's default
+   * window stands.
+   */
+  autocompactTokens?: number;
   /** Effort level override — low, medium, high, xhigh, max (Issue #1403, #2620). */
   effort?: string;
   /**
@@ -1087,6 +1097,11 @@ export async function runClaudeWithTimeout(
     effort: options.effort,
     disallowedTools,
     sessionResumeState: options.sessionResumeState,
+    // The pulled-forward autocompaction window (Issue #2337), when the
+    // stream's conversation could not be compacted before the issue started.
+    ...(options.autocompactTokens
+      ? { autocompactTokens: options.autocompactTokens }
+      : {}),
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
   };
   const args = provider.buildInvocation({

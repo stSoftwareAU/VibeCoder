@@ -192,6 +192,16 @@ export interface PhaseState {
    */
   streamSession?: JoinedStream;
   /**
+   * The `--autocompact` window every agent run of this issue must carry
+   * (Issue #2337), set by the setup phase when the stream's conversation could
+   * not be verifiably compacted before the issue started.
+   *
+   * Absent — the compaction was verified, the stream session is new, or the
+   * provider exposes no such lever — no flag is passed and the CLI's default
+   * window stands.
+   */
+  autocompactTokens?: number;
+  /**
    * True when setup resumed the issue branch from a prior attempt's WIP
    * checkpoint (Issue #4170). The execute phase tells the agent prior
    * progress exists so it continues rather than restarting.
