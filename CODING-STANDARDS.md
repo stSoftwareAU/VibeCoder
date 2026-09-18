@@ -24,7 +24,18 @@ summarise, authorised.
 
 - **KISS** — Favour simplicity; avoid unnecessary complexity. Prefer the
   approach with fewer moving parts and less indirection, even if it costs a few
-  more lines.
+  more lines. Work down the **smallest-change-first ladder** and stop at the
+  first rung that solves the problem: skip what is not needed, reuse what the
+  codebase has, use the standard library, use a native platform feature, use a
+  dependency already installed, write one line, and only then write new code.
+  The floor is never cut: input validation at a trust boundary, error handling
+  that prevents data loss, security, accessibility, and whatever the issue
+  explicitly asks for all stay in — see
+  [Never Fail Silently — Fail Loud](#never-fail-silently--fail-loud) below and
+  [SECURITY.md](SECURITY.md). Mark each deliberate corner cut with exactly one
+  comment line, the ceiling first and the condition that lifts it after
+  `upgrade when`, so `grep -r SIMPLE-ON-PURPOSE` lists every cut:
+  `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid code duplication; maintain a single source of truth.
 - **Boy Scout Rule** — Leave the code cleaner than you found it.
 - **Single Responsibility / Smaller Files** — Favour many smaller, focused
@@ -32,7 +43,10 @@ summarise, authorised.
   than a premature abstraction.
 - **Avoid over-engineering** — Only make changes that are directly requested or
   clearly necessary. Do not add features, refactor code, or make "improvements"
-  beyond what was asked.
+  beyond what was asked. A review of a diff names three departures explicitly:
+  a standard-library function reinvented by hand, a dependency added when an
+  installed one or the standard library already does the job, and an
+  abstraction with a single implementation.
 - **Deno TypeScript for new logic** — All new business logic, decision-making,
   and data processing must be implemented in Deno TypeScript (`worker/deno/`),
   not in shell scripts. Shell scripts are for orchestration only (calling Deno

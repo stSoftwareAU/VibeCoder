@@ -26,6 +26,12 @@
  * one budget, and say it is a target enforced by shape rather than a
  * stopwatch — the cases below fail the moment any of them disagrees again.
  *
+ * Issue #2322 added a fourth: the **smallest-change-first ladder**, its
+ * never-cut floor and the `// SIMPLE-ON-PURPOSE:` corner-cut marker, all hung
+ * under the `**KISS**` bullet. A ladder rung, a floor item or the marker
+ * stated on one surface and not the other is drift, so both surfaces are read
+ * and compared rung by rung, in order — an unordered ladder is not a ladder.
+ *
  * Modelled on `hidden_allowlist_drift_test.ts` (Issue #784).
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
@@ -83,6 +89,65 @@ const contributingBudget = (contributing: string) =>
     /- \*\*Speed budget\*\*[\s\S]*?(?=\n\n)/,
     "the `**Speed budget**` bullet in CONTRIBUTING.md",
   );
+
+/** The `**KISS**` bullet, which carries the ladder, floor and marker. */
+const kissBullet = (text: string, surface: string) =>
+  passage(
+    text,
+    /- \*\*KISS\*\*[\s\S]*?(?=\n- \*\*)/,
+    `the \`**KISS**\` bullet in ${surface}`,
+  );
+
+/**
+ * A prose phrase, matched across the line wrapping Markdown introduces — both
+ * surfaces wrap at 80 columns, so a fixed-space pattern would fail on wording
+ * that is present and correct.
+ */
+const phrase = (words: string) =>
+  new RegExp(words.trim().split(/\s+/).join("\\s+"), "i");
+
+/** The seven rungs, in the order the ladder must state them. */
+const LADDER_RUNGS: readonly string[] = [
+  "skip what is not needed",
+  "reuse what the codebase has",
+  "use the standard library",
+  "use a native platform feature",
+  "use a dependency already installed",
+  "write one line",
+  "write new code",
+];
+
+/** What a corner cut may never remove. */
+const FLOOR_ITEMS: readonly string[] = [
+  "input validation at a trust boundary",
+  "error handling that prevents data loss",
+  "security",
+  "accessibility",
+  "the issue explicitly asks for",
+];
+
+/** The corner-cut marker token and its two fields, in order. */
+const MARKER_TOKEN = "// SIMPLE-ON-PURPOSE:";
+const MARKER_FIELDS: readonly string[] = ["ceiling", "upgrade when"];
+
+/** Assert each phrase is present, and each one after the one before it. */
+function assertPhrasesInOrder(
+  surface: string,
+  text: string,
+  what: string,
+  phrases: readonly string[],
+): void {
+  let previous = -1;
+  for (const words of phrases) {
+    const found = text.search(phrase(words));
+    assert(found >= 0, `${surface} has lost the ${what} "${words}": ${text}`);
+    assert(
+      found > previous,
+      `${surface} states the ${what} "${words}" out of order: ${text}`,
+    );
+    previous = found;
+  }
+}
 
 async function latestPromptText(name: string): Promise<string> {
   const result = await loadPrompt(name, PROMPTS_DIR);
@@ -220,6 +285,66 @@ Deno.test("twin pair - the speed budget is stated as a shape-enforced target, no
       /enforced by shape/.test(text),
       `${surface} states the speed budget without saying it is enforced by ` +
         `shape rather than by a run-time timeout: ${text}`,
+    );
+  }
+});
+
+Deno.test("twin pair - both surfaces state the same smallest-change-first ladder, in order (Issue #2322)", async () => {
+  const [standards, guidelines] = await Promise.all([
+    readStandards(),
+    latestPromptText("coding_guidelines"),
+  ]);
+
+  for (
+    const [surface, text] of [
+      ["CODING-STANDARDS.md", kissBullet(standards, "CODING-STANDARDS.md")],
+      ["coding_guidelines", kissBullet(guidelines, "coding_guidelines")],
+    ] as const
+  ) {
+    assert(
+      /smallest-change-first ladder/i.test(text),
+      `${surface} no longer names the smallest-change-first ladder: ${text}`,
+    );
+
+    // Each rung present, and each one after the rung before it: a ladder
+    // whose rungs have been reordered no longer says "stop at the first
+    // rung that solves the problem".
+    assertPhrasesInOrder(surface, text, "ladder rung", LADDER_RUNGS);
+  }
+});
+
+Deno.test("twin pair - both surfaces state the never-cut floor and the corner-cut marker (Issue #2322)", async () => {
+  const [standards, guidelines] = await Promise.all([
+    readStandards(),
+    latestPromptText("coding_guidelines"),
+  ]);
+
+  for (
+    const [surface, text] of [
+      ["CODING-STANDARDS.md", kissBullet(standards, "CODING-STANDARDS.md")],
+      ["coding_guidelines", kissBullet(guidelines, "coding_guidelines")],
+    ] as const
+  ) {
+    for (const item of FLOOR_ITEMS) {
+      assert(
+        phrase(item).test(text),
+        `${surface} has lost "${item}" from the never-cut floor: ${text}`,
+      );
+    }
+
+    assert(
+      text.includes(MARKER_TOKEN),
+      `${surface} no longer states the ${MARKER_TOKEN} corner-cut marker, ` +
+        `so \`grep -r SIMPLE-ON-PURPOSE\` stops listing every cut: ${text}`,
+    );
+
+    // Both fields, ceiling first: the marker's whole value is that a reader
+    // grepping it learns the limit and what lifts it, in that order.
+    assertPhrasesInOrder(
+      surface,
+      text,
+      "corner-cut marker field",
+      MARKER_FIELDS,
     );
   }
 });
