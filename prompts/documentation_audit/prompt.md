@@ -27,6 +27,12 @@ at all. The one exception is a comment describing behaviour the code was meant
 to have and never got — that is a **possible bug in the code**, and the finding
 says so instead of asking for the comment to be removed.
 
+Check 14 is _guidance-shaped_. Checks 5 and 9 decide **how many** agent
+instruction files a repo keeps; check 14 reads **what the surviving one says**
+and measures it against Anthropic's published Claude Code guidance — the
+commands an agent cannot guess, the size budget, and the content that guidance
+says to leave out.
+
 ## Sibling boundary — what belongs to this scan
 
 This scan owns **prose / Markdown documentation**, and — from check 13 — the
@@ -57,7 +63,7 @@ The scan runs in five phases, each producing the input to the next:
    win over any check below.
 1. **Inventory** — the documentation surface: the main README, the detailed
    docs, the agent instruction files, and the PR-summary archive.
-2. **Detect** — evidence-backed candidate findings against the thirteen-check
+2. **Detect** — evidence-backed candidate findings against the fourteen-check
    catalogue in Phase 2.
 3. **Triage** — dedup, filter, group by theme, and rank the candidates.
 4. **File** — one GitHub issue per surviving finding (grouped, not one per
@@ -164,8 +170,8 @@ end with, reproduced verbatim (see Phase 4):
    keep tidy. This scan files **issues**, never a PR. The actual doc changes
    (folding learnings in, deleting stale summaries, trimming agent files) ride
    the normal work-on flow on the filed issues — never here.
-2. **No code execution.** `cat`, `grep`, `rg`, `ls`, `find`, and structured file
-   readers are permitted. Any command that **executes** repo logic (`bash`,
+2. **No code execution.** `cat`, `grep`, `rg`, `ls`, `find`, `wc` (check 14
+   needs a line count), and structured file readers are permitted. Any command that **executes** repo logic (`bash`,
    `deno run`/`deno test`, `node`, `python`, `make`, `cargo`, `npm`, `mvn`,
    `go`, `pytest`, `bats`, …) is forbidden. Never regress a Deno repo to Node
    tooling. The only permitted `gh` calls are `gh issue list` (Phase 4 dedup),
@@ -250,8 +256,10 @@ parallel rather than sequentially**. Detect and record:
 - **Agent instruction files** — `AGENTS.md`, `CLAUDE.md`,
   `.github/copilot-instructions.md`, `.cursorrules`, `GEMINI.md`, near-miss
   variants (`AGENT.md`, `CLAUDE.local.md`, …), and any other AI-agent
-  instruction file. **Count them** — two or more substantive agent files is a
-  check-9 candidate on its own.
+  instruction file, **plus every file they import with an `@path` line** — an
+  imported file loads at launch exactly as its parent does. **Count them** — two
+  or more substantive agent files is a check-9 candidate on its own — and record
+  each one's **line count**, which check 14 measures against its size budget.
 - **The PR-summary archive** — the durable learnings store, conventionally
   `docs/archive/pr-summaries/pr-summary-*.md`. Record how many summaries exist
   and skim them for durable learnings (successes and failed approaches).
@@ -281,7 +289,7 @@ highest-first by:
 If the repo contains neither prose documentation nor source comments, exit
 immediately with **zero findings** filed.
 
-## Phase 2 — Apply the thirteen-check catalogue
+## Phase 2 — Apply the fourteen-check catalogue
 
 Walk the inventory from Phase 1, in the drift order it established, against the
 checks below. A candidate is valid only when you can cite the specific file(s)
@@ -289,10 +297,11 @@ and line(s) that demonstrate the concern. Hypotheses without evidence are
 carried to Phase 3 and dropped there.
 
 Checks 1–9 are drift checks; checks 10–12 verify a doc's claims against the
-source, and check 13 verifies the source's own comments against the code beside
-them. The verification checks are systematic sweeps and will out-produce the
-drift checks on a large `docs/` tree, so each one collapses its findings — see
-the per-check grouping rules and Phase 3 rule 2.
+source, check 13 verifies the source's own comments against the code beside
+them, and check 14 measures the agent instruction files against the published
+Claude Code guidance. The verification checks are systematic sweeps and will
+out-produce the drift checks on a large `docs/` tree, so each one collapses its
+findings — see the per-check grouping rules and Phase 3 rule 2.
 
 **Bound the sweep, not just the results.** Phase 3 keeps at most **6** findings,
 so reading the whole `docs/` tree and the whole PR-summary archive symbol by
@@ -550,12 +559,99 @@ a comment that is merely thin — a missing or paraphrase-only doc comment is
 that is genuinely implemented somewhere the function reaches, such as a helper it
 calls.
 
+### 14. Agent instructions do not follow Claude Code guidance
+
+Checks 5 and 9 decide **how many** agent instruction files a repo keeps; this
+check reads **what the surviving one says**. Anthropic's published Claude Code
+guidance states what such a file should contain and how long it should be, and a
+repo whose instructions ignore it hands every agent a weaker brief than the repo
+could give it in the same breath.
+
+**The file set.** Check 9's detection set — `AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md`, `.github/copilot-instructions.md`, `.cursorrules` and near-miss
+names (`AGENT.md`, `CLAUDE.local.md`, …) — plus every file those import with an
+`@path` line. Never ask a repo to **create** a `CLAUDE.md`: check 9's end-state
+hierarchy stands, so the assessed unit is `README.md` plus at most one thin
+`AGENTS.md`, and an item documented in the README satisfies that item even when
+the agent instruction file omits it.
+
+**Run this check only when checks 5 and 9 are clear.** If two or more
+content-bearing agent instruction files coexist, file the check-9 finding and
+hold this one until one file remains; if the single agent instruction file
+merely repeats the README or is stale, file the check-5 finding and hold this
+one until check 5 is clear. Reviewing the content of a file that is about to be
+deleted or rewritten spends a cap slot on a moving target.
+
+**Mandatory — a runnable command line per applicable stage**
+(`severity:medium`). The agent instruction file **or** `README.md` must give a
+command the reader can paste and run from the repository root — inside a fenced
+block or an inline code span — for each stage the repo actually has:
+
+- **test** — always required;
+- **build** — required only when the repo has a build stage: a `build` entry in
+  `deno.json` `tasks` or `package.json` `scripts`, a `Makefile` with a `build`
+  target, a `Cargo.toml`, or a `pom.xml` / `build.gradle`;
+- **lint** — required only when the repo carries a linter or formatter config
+  from the signal list below.
+
+Naming the test runner or the build tool without a command line does **not**
+satisfy the item. One documented gate command satisfies every stage it runs, so
+a repo whose README documents `./quality.sh` — a gate that runs the tests and
+the linter — satisfies the test item and the lint item with that one line. A
+missing build or lint command in a repo that has no such stage is not a finding.
+
+A repo with **no agent instruction file at all** is a finding here only when
+`README.md` also lacks those commands; an absent agent file is otherwise the
+documented end-state, not a gap.
+
+**Conditional — five further items, each behind a fixed signal**
+(`severity:low`). Report one only when its signal is present **and** the item is
+absent from both the agent instruction file and the README. Do not infer a
+signal that is not on this list, and do not substitute judgement for it:
+
+| Item | Signal that makes it applicable |
+| ---- | ------------------------------- |
+| Code style rules differing from the language default | a linter or formatter config — a `deno.json` `lint`/`fmt` block, `.eslintrc*`, `rustfmt.toml`, `.prettierrc*`, … |
+| Repository etiquette (branch naming, PR conventions) | `CONTRIBUTING.md` or `.github/pull_request_template.md` |
+| Project-specific architectural decisions | `docs/adr/` or an architecture document under `docs/` |
+| Developer environment quirks (required env vars) | `.env.example`, or an environment block in `docker-compose.yml` |
+| Common gotchas | none — gotchas are never mandatory and are never inferred |
+
+**Size — under 200 lines per agent instruction file** (`severity:medium`).
+Anthropic's published figure is "target under 200 lines per `CLAUDE.md` file":
+longer files consume more context and reduce adherence. Count total physical
+lines as `wc -l` reports them, with no exclusion for blank lines or fenced code
+blocks, and measure each file on its own rather than a file plus its imports —
+an imported file over 200 lines is its own entry in the finding. The size test
+applies to agent instruction files and their imports only; it never fires on
+`README.md`, which is a human document with no such budget.
+
+**Excluded content** (`severity:low`). The same guidance lists what an agent
+instruction file should leave out: anything derivable by reading the code,
+standard language conventions, detailed API documentation, frequently changing
+information, long explanations or tutorials, file-by-file descriptions of the
+codebase, and self-evident practices. Fold an excluded-content observation into
+the same file's size entry — it is the same fix, made for the same reason.
+
+**Grouping.** All of one repo's check-14 gaps collapse into a single finding per
+run, so the check can consume at most one of the six cap slots. Its title is
+fixed — `Agent instruction files do not follow Claude Code guidance` — so the
+stable id does not move between runs as the gap list changes; the gap list lives
+in the **body**, naming for each gap the file, the item missing or violated, and
+the fix. The severity emoji and `severity:*` label still follow the worst gap in
+the group. The finding's primary file is the agent instruction file assessed, or
+`README.md` when the repo has none.
+
+**Stay silent** when every applicable item is satisfied, when the only gap is a
+conditional item whose signal is absent from the repo, and when the repo has no
+agent instruction file but its README carries the required commands.
+
 <examples>
 
 Worked verdicts for the judgement calls this catalogue turns on — runnable
 versus illustrative fence, backed versus unverifiable claim, a pointer stub
-versus a substantive second agent file, and the three comment shapes check 13
-separates. Both error directions are costly: a
+versus a substantive second agent file, the three comment shapes check 13
+separates, and the two calls check 14 turns on. Both error directions are costly: a
 false positive spends a human triage cycle on a doc that was right, and teaches
 the fleet that findings are noise; a false negative leaves the docs lying to the
 next agent. The excerpts are illustrative; judge the real files you read.
@@ -660,6 +756,41 @@ confirms — and the rate-limit figure is a design rationale, so check 12 does n
 fire on it either.</reason>
 </example>
 
+<example name="oversized-agent-instruction-file">
+<excerpt>`AGENTS.md` — the repo's only agent instruction file, 412 lines by
+`wc -l`, of which 150 walk the reader file by file through `src/`. It names
+`deno test` nowhere, but `README.md` documents `deno task test` in a fenced
+block. `deno.json` carries a `lint` block; the repo has no `CONTRIBUTING.md`,
+no `.env.example` and no `docs/adr/`.</excerpt>
+<check>14 — agent instructions do not follow Claude Code guidance</check>
+<verdict>file one finding — `severity:medium`</verdict>
+<reason>Two gaps, one finding. The file is over the 200-line budget and its
+file-by-file tour is content the guidance says to leave out, so the excluded
+content folds into the size entry rather than becoming its own. The test command
+is satisfied by the README — README plus the agent file is the assessed unit —
+but the `deno.json` lint block makes a lint command mandatory and neither
+document gives one, and it makes style rules a `severity:low` conditional entry
+in the same finding. Etiquette, architecture and environment quirks have no
+signal, so they are not reported at all. The title is the fixed
+`Agent instruction files do not follow Claude Code guidance`; the label follows
+the worst gap, `severity:medium`.</reason>
+</example>
+
+<example name="gate-command-satisfies-both-stages">
+<excerpt>The repo has no agent instruction file. `README.md` documents
+`./quality.sh` in a fenced block and says it runs the formatter, the linter and
+the full test suite. There is no `Cargo.toml`, no `Makefile` and no `build`
+task.</excerpt>
+<check>14 — but nothing to file</check>
+<verdict>stay silent</verdict>
+<reason>The near-miss worth getting right. An absent agent instruction file is
+the documented end-state, not a gap, so it fires only when the README also
+lacks the commands — and it does not. One documented gate command satisfies
+every stage it runs, so `./quality.sh` covers both the test item and the lint
+item; the repo has no build stage, so no build command is owed. Filing here
+would ask a repo to add the `CLAUDE.md` check 9 exists to remove.</reason>
+</example>
+
 </examples>
 
 ## Phase 3 — Triage
@@ -717,10 +848,13 @@ Apply these rules in order to every candidate from Phase 2:
   wrong-but-not-yet-harmful; an unverifiable claim (check 12); a comment the
   adjacent code refutes and that should simply be removed (check 13); prose that
   paraphrases upstream documentation instead of linking to it; an agent file
-  that should be trimmed or deleted; two or more coexisting agent instruction
-  files that should be consolidated; a batch of undefined terms.
+  that should be trimmed or deleted, including one over the 200-line budget or
+  missing a mandatory command (check 14); two or more coexisting agent
+  instruction files that should be consolidated; a batch of undefined terms.
 - **`severity:low`** — polish: a broken link, a single undefined term, a place a
-  diagram would help, minor readability.
+  diagram would help, minor readability; a conditional agent-instruction item
+  whose signal is present but whose content is absent, or content the guidance
+  says to exclude (check 14).
 
 ## Stable finding ID recipe
 
@@ -830,7 +964,10 @@ command becomes true.
    in the file with its line and the code that refutes it, and that the fix is to
    delete each one — or, when the comment documents deliberate behaviour the code
    lacks, the missing guard, limit or error path, the function that should carry
-   it, and that the comment stays; for paraphrased upstream documentation
+   it, and that the comment stays; for an agent-instruction gap (check 14),
+   every gap in one list — the file, the item missing or violated, and the fix —
+   under the fixed title `Agent instruction files do not follow Claude Code
+   guidance`; for paraphrased upstream documentation
    (check 4), the canonical
    upstream link to replace it with and the relationship detail worth keeping;
    for a term, the plain-English definition and a Wikipedia link where apt.
