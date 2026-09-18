@@ -13,7 +13,11 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { buildIssuePrompt, type PromptParts } from "../lib/prompt_builder.ts";
+import {
+  buildCiFixPrompt,
+  buildIssuePrompt,
+  type PromptParts,
+} from "../lib/prompt_builder.ts";
 import { ISSUE_EXECUTOR_AGENT_NAME } from "../lib/issue_executor_agents.ts";
 import { ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS } from "../lib/issue_executor_split_prompt.ts";
 import { loadPrompt } from "../lib/prompt_manager.ts";
@@ -213,16 +217,31 @@ Deno.test("coding guidelines - the delegation cap stands, with the block as its 
     loaded.value,
     "Spawn a\n  subagent only when the task genuinely needs isolated parallel exploration",
   );
-  // The lift is conditional on a section only a key-on `issue` run carries.
+  // The lift is conditional on the phase *and* on a section only a key-on
+  // `issue` run carries.
   assertStringIncludes(
     loaded.value,
-    "the one exception is a run whose\n  phase prompt carries an **Advisor and Executors** section",
+    "the one exception is an\n  `issue`-phase run whose prompt carries an **Advisor and Executors** section",
   );
   // The measured-harmful 4.8-era encouragement stays out (docs/MODEL-AND-CACHING.md).
   assertEquals(loaded.value.includes("delegate readily"), false);
 });
 
 Deno.test("other phases carry no Advisor and Executors section, so the cap is not lifted for them", async () => {
+  // An assembled prompt from another phase — the block is reachable only
+  // through the `issue` builder, so no other phase can trip the exception.
+  const ciFix = unwrap(
+    await buildCiFixPrompt({
+      repo: "owner/repo",
+      prNumber: "7",
+      checkName: "build",
+      annotationDetails: "error TS2345",
+      promptsDir: PROMPTS_DIR,
+    }),
+  );
+  assertEquals(ciFix.prompt.includes("Advisor and Executors"), false);
+  assertEquals(ciFix.systemPrompt.includes("## Advisor and Executors"), false);
+
   for (const phase of ["ci_fix", "pr_feedback", "planning", "question"]) {
     const loaded = await loadPrompt(phase, PROMPTS_DIR);
     assertEquals(loaded.ok, true, `${phase} failed to load`);
