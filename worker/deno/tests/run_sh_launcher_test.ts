@@ -1838,10 +1838,18 @@ Deno.test("run.sh - a refused trim below the claiming floor recreates the volume
 Deno.test("run.sh - a refused trim below the floor resets only volumes big enough to matter, never the approval store (Issue #2117)", async () => {
   // GRQ-23: the heal recreated the 67 MB content-approval store alongside
   // a 44 GB work volume, and the worker refused 59 issues for the run.
+  //
+  // The floor was once unreachable here (999999 GB). Since Issue #2313 a
+  // reset must cover the host's shortfall, and no volume covers that one, so
+  // the host is 32 MB short of a reachable floor instead — the reset still
+  // happens, and this test still asks which volumes it touches.
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_INIT_STDOUT: TRIM_REFUSED_STDOUT,
-    VIBE_HOST_DISK_LOW_FLOOR_GB: "999999",
+    STUB_DF_AVAIL_KB: String(15 * 1024 * 1024 - 32 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
     // 32 MB: the 64 MB work volume is worth resetting, the 8 MB store is not.
     VIBE_WORK_VOLUME_HEAL_MIN_KB: String(32 * 1024),
   });
@@ -2021,10 +2029,15 @@ Deno.test("run.sh - a host below its floor resets the volume however recent the 
   }
 });
 
-Deno.test("run.sh - a reset that cannot clear the floor still runs, and is reported as unrecovered (Issue #2077)", async () => {
-  // The same host with only 8 MB in the work volume: 32 MB short, 8 MB held.
-  // Low on disk means the volume goes; that it did not clear the floor is
-  // then reported as unrecovered, never as a fix.
+Deno.test("run.sh - a reset that cannot clear the floor still runs, and is reported as unrecovered (Issues #2077, #2313)", async () => {
+  // The same host, 32 MB short, with 64 MB in the work volume: the reset can
+  // cover the missing space, so low on disk means the volume goes. That the
+  // host was still below its floor afterwards — the df stub does not move —
+  // is then reported as unrecovered, never as a fix, and the reading is
+  // remembered so the next launch does not destroy the clones again.
+  //
+  // The volume held 8 MB here until Issue #2313: a reset that cannot cover
+  // the shortfall no longer runs at all, which the case below asserts.
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
@@ -2048,7 +2061,7 @@ Deno.test("run.sh - a reset that cannot clear the floor still runs, and is repor
     });
     await Deno.writeFile(
       `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
-      new Uint8Array(8 * 1024 * 1024),
+      new Uint8Array(64 * 1024 * 1024),
     );
 
     const outcome = await runLauncher(harness);
@@ -2058,6 +2071,233 @@ Deno.test("run.sh - a reset that cannot clear the floor still runs, and is repor
     assertStringIncludes(log, `recreating ${WORK_VOLUME_NAME}`);
     assertStringIncludes(log, "the recreate left");
     assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
+
+    // Issue #2313: the free-space reading the recreate failed to move is
+    // recorded, so the next launch can tell "still short" from "short again".
+    assertEquals(
+      (await Deno.readTextFile(
+        `${harness.tmpDir}/home/.vibe-coder/work-volume-heal-unrecovered`,
+      )).trim(),
+      String(15 * 1024 * 1024 - 32 * 1024),
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// --- A reset that cannot return the missing space is never made (#2313) ----
+//
+// GRQ-23 sat just under its 47 GB claiming floor for 30 hours because the
+// Mac's own data had grown — 185 GB under ~/src, 37 GB of Cursor cache — and
+// the launcher recreated `vibe-work` six times anyway, destroying every
+// clone, every lane worktree and every Graft graph for a volume holding
+// 364 MB against a 10–20 GB shortfall. What a reset can return is now
+// measured against what the host is actually missing.
+
+Deno.test("run.sh - a volume that cannot cover the shortfall is reported, not destroyed (Issue #2313)", async () => {
+  // 256 MB short of the floor, 64 MB in the work volume: recreating it
+  // cannot clear the floor, so the clones stay and the operator is told
+  // where the host's space actually went.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+    STUB_DF_AVAIL_KB: String(15 * 1024 * 1024 - 256 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(
+      await removedVolumes(harness),
+      [],
+      "a volume that cannot cover the shortfall must survive",
+    );
+    // The fresh-volume re-init never happened either.
+    assertEquals(await initCount(harness), 1);
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
+    assertStringIncludes(log, "256 MB shortfall");
+    assertStringIncludes(log, "the host's missing space is somewhere else");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the shortfall share a reset must return is an operator knob (Issue #2313)", async () => {
+  // The same 256 MB shortfall and 64 MB volume, with the gate lowered to a
+  // fifth: a host whose operator accepts partial recovery still resets.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+    STUB_DF_AVAIL_KB: String(15 * 1024 * 1024 - 256 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+    VIBE_WORK_VOLUME_HEAL_SHORTFALL_PERCENT: "20",
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    assertStringIncludes(
+      await runCoreLog(harness),
+      `recreating ${WORK_VOLUME_NAME}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a recreate that did not clear the floor is not repeated on an unchanged host (Issue #2313)", async () => {
+  // The six-recreates-in-30-hours loop: each launch found the host below its
+  // floor, recreated the volume, and left the host below its floor again.
+  // The recorded reading is what stops the second one.
+  const availKb = 15 * 1024 * 1024 - 32 * 1024;
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+    STUB_DF_AVAIL_KB: String(availKb),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    // 16 MB is both the reset minimum and how far free space must move
+    // before an unrecovered reading is stale.
+    VIBE_WORK_VOLUME_HEAL_MIN_KB: String(16 * 1024),
+  });
+  try {
+    await Deno.mkdir(`${harness.tmpDir}/home/.vibe-coder`, { recursive: true });
+    // The previous launch's recreate left the host 8 MB from where it is now.
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/home/.vibe-coder/work-volume-heal-unrecovered`,
+      `${availKb - 8 * 1024}\n`,
+    );
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(
+      await removedVolumes(harness),
+      [],
+      "an unchanged host must not pay for the same recreate twice",
+    );
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "a previous recreate already left");
+    assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - free space that has actually moved retries the recreate (Issue #2313)", async () => {
+  // The memory above is a record of one reading, not a permanent refusal: a
+  // host whose free space has moved is a different host, so the reset runs.
+  const availKb = 15 * 1024 * 1024 - 32 * 1024;
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_INIT_STDOUT: `VOLUME_TRIM_REFUSED ${TARGETS.work}`,
+    STUB_DF_AVAIL_KB: String(availKb),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_KB: String(16 * 1024),
+  });
+  try {
+    await Deno.mkdir(`${harness.tmpDir}/home/.vibe-coder`, { recursive: true });
+    // 64 MB away from the reading that failed: well past the 16 MB minimum.
+    await Deno.writeTextFile(
+      `${harness.tmpDir}/home/.vibe-coder/work-volume-heal-unrecovered`,
+      `${availKb - 64 * 1024}\n`,
+    );
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(await removedVolumes(harness), [WORK_VOLUME_NAME]);
+    assertStringIncludes(
+      await runCoreLog(harness),
+      `recreating ${WORK_VOLUME_NAME}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the pre-build reset leaves a volume that cannot cover the shortfall alone (Issue #2313)", async () => {
+  // The same decision on the pre-build path (Issue #2092), which measures the
+  // volumes before the image build: 256 MB short, 64 MB held, nothing to gain.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: "Error: failed to build",
+    STUB_DF_AVAIL_KB: String(15 * 1024 * 1024 - 256 * 1024),
+    STUB_DF_TOTAL_KB: String(460 * 1024 * 1024),
+    VIBE_HOST_DISK_LOW_FLOOR_GB: "15",
+    VIBE_HOST_DISK_LOW_FLOOR_PERCENT: "0",
+    VIBE_WORK_VOLUME_HEAL_MIN_GB: "0",
+  });
+  try {
+    const store =
+      `${harness.tmpDir}/home/Library/Application Support/com.apple.container`;
+    await Deno.mkdir(`${store}/volumes/${WORK_VOLUME_NAME}`, {
+      recursive: true,
+    });
+    await Deno.writeFile(
+      `${store}/volumes/${WORK_VOLUME_NAME}/volume.img`,
+      new Uint8Array(64 * 1024 * 1024),
+    );
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "the stubbed build must still fail");
+
+    assertEquals(await removedVolumes(harness), []);
+    const log = await runCoreLog(harness);
+    assertEquals(log.includes("pre-build reset"), false, log);
+    assertStringIncludes(log, "[WORK_VOLUME_UNRECOVERED]");
+    assertStringIncludes(log, "the host's missing space is somewhere else");
   } finally {
     await harness.cleanup();
   }

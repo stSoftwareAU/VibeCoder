@@ -1287,28 +1287,45 @@ takes it:
    Size cannot carry that guard on its own: the launcher measures the Apple
    container store, Docker and Podman keep their volumes elsewhere, and an
    unmeasurable store used to fall straight through the minimum below.
-4. **The reset is never held back, and never silent.** What the resettable
-   volumes hold in the store is measured next: volumes holding less than
-   `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) are never destroyed, each judged on
-   its own size (Issue #2117), because resetting them gains nothing.
-   Otherwise a host below the floor resets the volume on **every launch it is
-   below it**, however recent the last reset: the volume is disposable and the
-   host is not (Issue #2077 — a 24 h interval once left GRQ-23, re-ratcheted
-   to 45 GB in eleven hours with 1.2 GB live and at 3% free, claiming nothing
-   for thirteen hours). The last reset is recorded in
+4. **The reset must be able to return the missing space (Issue #2313).** What
+   the resettable volumes hold in the store is measured next, and compared
+   with the host's **shortfall** — `floor − free`. A set of volumes holding
+   less than `VIBE_WORK_VOLUME_HEAL_SHORTFALL_PERCENT` (100 %) of that
+   shortfall is reported as `[WORK_VOLUME_UNRECOVERED]` and left **intact**:
+   recreating it cannot clear the floor, so it would destroy the clones, the
+   lane worktrees and the Graft graphs for nothing. GRQ-23 sat just under a
+   47 GB floor for 30 hours because the Mac's own data had grown — 185 GB
+   under `~/src`, 37 GB of Cursor cache — and the launcher recreated
+   `vibe-work` six times against a volume holding 364 MB. A fixed minimum
+   could not catch that: on a trim-refused runtime the image ratchets past
+   1 GB within a cycle or two. Each volume is still judged on its own size
+   against `VIBE_WORK_VOLUME_HEAL_MIN_GB` (1 GB) as well (Issue #2117),
+   because resetting a small one gains nothing.
+5. **The reset is never held back by the clock, and never silent.** Where the
+   volumes *can* cover the shortfall, a host below the floor resets them on
+   **every launch it is below it**, however recent the last reset: the volume
+   is disposable and the host is not (Issue #2077 — a 24 h interval once left
+   GRQ-23, re-ratcheted to 45 GB in eleven hours with 1.2 GB live and at 3%
+   free, claiming nothing for thirteen hours). The last reset is recorded in
    `~/.vibe-coder/work-volume-heal` so the log says how fast the image is
    ratcheting. Free space is **re-measured** after the recreate: a heal that
    did not clear the floor is reported as `[WORK_VOLUME_UNRECOVERED]` on
-   stderr and in `run_core.log`, never as a fix.
-5. **The launch still proceeds.** Only the hard floor refuses a launch — a
+   stderr and in `run_core.log`, never as a fix, and that reading is recorded
+   in `~/.vibe-coder/work-volume-heal-unrecovered`. Until the host's free
+   space moves by more than `VIBE_WORK_VOLUME_HEAL_MIN_GB`, the next launch
+   reports the same unrecovered reading rather than destroying the clones
+   again (Issue #2313) — a recreate that has already been proved fruitless is
+   not repeated against an unchanged host.
+6. **The launch still proceeds.** Only the hard floor refuses a launch — a
    host that cannot claim must still run and report, or it vanishes from the
    fleet board (Issue #477).
-6. **A host that cannot build can still reset (Issue #2092).** The init above
+7. **A host that cannot build can still reset (Issue #2092).** The init above
    runs inside the image, so a host whose image build is failing would never
    reach it — GRQ-23 fell from 24 GB free to 11 GB in under an hour while
    `loop.sh` retried a broken builder (#2089). So before any build, a host
-   below its floor makes the same measurement and resets any *resettable*
-   volume holding at least `VIBE_WORK_VOLUME_HEAL_MIN_GB`, logged as
+   below its floor makes the same measurements — the shortfall gate of point
+   4 included — and resets any *resettable* volume holding at least
+   `VIBE_WORK_VOLUME_HEAL_MIN_GB`, logged as
    `work-volume: pre-build reset of vibe-work …`; the init after the build
    re-owns the fresh volume as it does after the heal.
 
@@ -1320,8 +1337,10 @@ flowchart TD
     G -->|"no"| N["recorded in run_core.log;<br/>nothing destroyed"]
     G -->|"yes"| P{"plan lists the volume<br/>as resettable?"}
     P -->|"no"| K["kept — approval store<br/>is never reset for disk"]
-    P -->|"yes"| S{"volumes hold<br/>&lt; 1 GB?"}
-    S -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]"]
+    P -->|"yes"| U{"a past recreate already<br/>failed, free space unmoved?"}
+    U -->|"yes"| E["[WORK_VOLUME_UNRECOVERED]<br/>volumes left intact"]
+    U -->|"no"| S{"volumes hold less than<br/>the shortfall (floor − free)?"}
+    S -->|"yes"| E
     S -->|"no"| D["delete + create volume,<br/>re-run the init<br/>(every launch below the floor)"]
     D --> M{"floor cleared?<br/>(re-measured)"}
     M -->|"yes"| H["host recovered<br/>without an operator"]
