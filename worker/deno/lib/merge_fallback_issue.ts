@@ -93,7 +93,20 @@ export type MergeFallbackTarget =
 export interface MergeFallbackStageTiming {
   /** Stage name — `deepen`, `rules`, `context`, `agent`, `gate`, `push`. */
   stage: string;
-  seconds: number;
+  /**
+   * Whole seconds the stage took, or `null` when it was started and never
+   * stopped — rendered as `unfinished`, exactly as `conflict_stage_timer.ts`
+   * reports it (Issue #2308). An attempt that died inside the agent is the
+   * case these timings exist to show, so it must not render as a duration.
+   */
+  seconds: number | null;
+}
+
+/** One path an abandoned PR changed, as `gh pr view --json files` lists it. */
+export interface MergeFallbackDiffFile {
+  path: string;
+  additions: number;
+  deletions: number;
 }
 
 /** What one agent run did, and what it cost. */
@@ -121,6 +134,18 @@ export interface MergeFallbackEvent {
   behindSince?: string;
   /** What the fallback closed or reverted. */
   fallbackAction?: string;
+  /**
+   * What the abandoned PR changed (Issue #2310). This is what makes the flag a
+   * re-do item for a conflicting PR whose originating issue cannot be found:
+   * the PR is closed, so the summary is the only statement of what the work
+   * touched. Absent means the fallback did not read one — a milestone branch has
+   * no PR diff, and the route that re-queues an originating issue does not need
+   * one — and the section is then not rendered at all, rather than claiming a
+   * read that was never attempted.
+   */
+  diffSummary?: readonly MergeFallbackDiffFile[];
+  /** Paths beyond the caller's cap, counted rather than dropped in silence. */
+  diffSummaryOmitted?: number;
 }
 
 /** A fallback event, plus the one filing choice the caller owns. */
@@ -256,7 +281,11 @@ function renderRun(run: MergeFallbackRun): string[] {
       ? `- **Stage timings**: ${NOT_RECORDED}`
       : `- **Stage timings**: ${
         timings
-          .map((t) => `${sanitiseIssueText(t.stage)} ${t.seconds}s`)
+          .map((t) =>
+            `${sanitiseIssueText(t.stage)} ${
+              t.seconds === null ? "unfinished" : `${t.seconds}s`
+            }`
+          )
           .join(", ")
       }`,
     ...renderAnalysis(run.analysis),
@@ -278,6 +307,38 @@ function renderTarget(target: MergeFallbackTarget): string[] {
     field("Repository", target.repo),
     field("Milestone branch", target.milestoneBranch),
     field("Default branch", target.defaultBranch),
+  ];
+}
+
+/**
+ * What the abandoned PR changed, when the fallback read it (Issue #2310).
+ *
+ * The section renders only when {@link MergeFallbackEvent.diffSummary} is
+ * present, because absent means nobody asked: a milestone branch has no PR diff
+ * at all, and the PR route that re-queues an originating issue needs none — the
+ * issue is the re-do item there. Printing `not recorded` for a read nobody
+ * attempted would claim a measurement failure that never happened.
+ *
+ * A summary that **was** read and came back empty says so in words, so "GitHub
+ * reported no changed file" is never mistaken for "the diff was not read".
+ */
+function renderDiffSummary(event: MergeFallbackEvent): string[] {
+  const files = event.diffSummary;
+  if (files === undefined) return [];
+  const omitted = event.diffSummaryOmitted ?? 0;
+  return [
+    "### What the PR changed",
+    "",
+    ...(files.length === 0
+      ? ["GitHub reported no changed file for this PR."]
+      : files.map((file) =>
+        `- \`${sanitiseIssueText(file.path)}\` ` +
+        `(+${file.additions}/-${file.deletions})`
+      )),
+    ...(omitted > 0
+      ? ["", `_${omitted} further path(s) are not listed — the cap was hit._`]
+      : []),
+    "",
   ];
 }
 
@@ -316,6 +377,7 @@ export function buildMergeFallbackBody(event: MergeFallbackEvent): string {
     "### Agent runs",
     "",
     ...(runs.length === 0 ? [NOT_RECORDED, ""] : runs.flatMap(renderRun)),
+    ...renderDiffSummary(event),
     "### How far behind the base",
     "",
     field("Commits behind the base", event.behindBy),
@@ -443,6 +505,41 @@ export async function fileMergeFallbackIssue(
       error: error instanceof Error ? error : new Error(String(error)),
     };
   }
+}
+
+/**
+ * The filer both PR-path fallback routes use, bound to one `gh` (Issue #2310).
+ *
+ * One definition of the wiring rather than two: the label creation has to be
+ * routed through the caller's own `gh` — the default reaches the real CLI — and
+ * a second copy of that closure is a second thing to get wrong.
+ *
+ * @param deps - The caller's `gh`, its logger, and the fleet identity the
+ *   dedup match is verified against
+ * @returns A filer taking only the filing, for use as an injected seam
+ */
+export function createFallbackFlagFiler(deps: {
+  gh: (args: string[]) => Promise<string>;
+  logger?: Logger;
+  fleetAuthors?: readonly string[];
+}): (filing: MergeFallbackFiling) => Promise<Result<MergeFallbackOutcome>> {
+  return (filing: MergeFallbackFiling) =>
+    fileMergeFallbackIssue(filing, {
+      gh: deps.gh,
+      ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+      ...(deps.fleetAuthors !== undefined
+        ? { fleetAuthors: deps.fleetAuthors }
+        : {}),
+      ensureLabelExists: (
+        repo: string,
+        labelName: string,
+        colour?: string,
+        description?: string,
+      ) =>
+        defaultEnsureLabelExists(repo, labelName, colour, description, {
+          ghCommandFn: deps.gh,
+        }),
+    });
 }
 
 /**

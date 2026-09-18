@@ -850,7 +850,9 @@ bounded by **two concluded attempts, with no wait between them** —
 ([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
 the first attempt and one retry against whatever the base has become since
 (Issue #2305). The second judged failure runs the abandon-and-restart rung, and
-only then does a human hear about it. A PR one concluded failure in is due
+no outcome of the *scan's* spent-budget route asks a person at all (Issue #2310);
+the resolution processor's own last escalation goes with the next sub-issue under
+ #2298. A PR one concluded failure in is due
 again on the very next pass: the four-hour cooldown that used to sit between
 the attempts bought nothing a moved base does not, and two hosts are kept off
 one PR by the cross-host lock rather than by a wait.
@@ -859,7 +861,11 @@ That rung closes the PR — never force-pushes it — and re-queues its originat
 issue. A pickup label the issue already carries is kept as it is, so a restart
 never demotes a `top-priority` issue; an issue carrying none gains `idle-task`,
 the one pickup label the worker may apply, and no route through the rung parks
-the issue at `needs-human` (Issue #2277). Its preconditions,
+the issue at `needs-human` (Issue #2277). Every fallback files one
+`merge-fallback` issue recording what happened, linked from the closed PR; a PR
+whose originating issue cannot be found is closed too, and its flag carries
+`idle-task` and the PR's diff summary so the flag *is* the re-do item
+(Issue #2310). Its preconditions,
 its one-restart-per-issue bound and its exits are in
 [the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
 

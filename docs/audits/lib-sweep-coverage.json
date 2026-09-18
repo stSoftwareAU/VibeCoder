@@ -1813,6 +1813,18 @@
       "paths": [
         "worker/deno/lib/plan_coverage_repair.ts"
       ]
+    },
+    {
+      "issue": 2310,
+      "chunk": "top-up-2310",
+      "title": "top-up: the conflict fallback context readers",
+      "ledger": "docs/audits/security-sweep-2310-conflict-fallback-context.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_fallback_context.ts (#2310)",
+      "status": "swept",
+      "sweptAt": "e2d94e976a1c48d157203e8388ad178282877389",
+      "paths": [
+        "worker/deno/lib/conflict_fallback_context.ts"
+      ]
     }
   ],
   "roots": [

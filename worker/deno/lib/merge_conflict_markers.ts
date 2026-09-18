@@ -16,6 +16,17 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+/**
+ * Visible queue label applied to every PR found CONFLICTING (Issue #84).
+ *
+ * Here rather than in the scan that applies it (Issue #2310): the fallback
+ * context reads the label's own `labeled` timeline event to date a divergence,
+ * and the scan imports *it*, so the label had to live where both can reach it
+ * without a cycle. `pr_merge_conflict_scan.ts` re-exports it, so every existing
+ * importer keeps its import path.
+ */
+export const MERGE_CONFLICT_LABEL = "merge-conflict";
+
 /** Marker that identifies one recorded conflict-resolution attempt. */
 export const CONFLICT_ATTEMPT_MARKER = "<!-- vibe-coder:merge-conflict-attempt";
 
