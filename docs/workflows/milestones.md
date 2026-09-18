@@ -398,6 +398,11 @@ those minutes are counted as `agent`, not as `gate` — the gate's own slices
 either side of the repair accumulate into one `gate` entry. A stage started
 and never stopped renders as `unfinished` rather than vanishing from the line.
 
+A sync that refuses or escalates emits the same log record. It posts no
+"resolved a conflict automatically" notice to carry the line, but it spent the
+same minutes, and a twenty-minute sync that concluded in a refusal is exactly
+the attempt the breakdown was built to explain.
+
 ### The sync must record the default branch as an ancestor
 
 A squashed sync applies the default branch's *content* under a single-parent

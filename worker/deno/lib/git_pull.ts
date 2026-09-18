@@ -588,6 +588,12 @@ export async function syncMilestoneBranchWithDefault(
   agentFn?: MilestoneConflictAgentFn,
   /** Logger for the ladder's diagnostics; absent logs nothing. */
   logger?: Logger,
+  /**
+   * The clock the stage timings are measured against (Issue #2308). Injected
+   * so a test can assert which stage a run's seconds landed in without ever
+   * reading a wall clock.
+   */
+  nowMsFn: () => number = () => Date.now(),
 ): Promise<Result<MilestoneSyncOutcome>> {
   // Refuse an option-injecting ref before any git runs (Issue #12). The
   // default branch used to be repo-derived (setupRepo read it from
@@ -742,7 +748,31 @@ export async function syncMilestoneBranchWithDefault(
   // Where this sync's minutes go (Issue #2308). The deepen, the ladder's two
   // rungs, the verification gate and the push are each timed into it, and the
   // rendered line rides out with the conflict on the sync report.
-  const timer = createConflictStageTimer();
+  const timer = createConflictStageTimer(nowMsFn);
+
+  /**
+   * Log this sync's stage timings and render them for the report comment
+   * (Issue #2308).
+   *
+   * Called from every exit below, not only the one that pushed: a sync that
+   * spent twenty minutes and then refused is exactly the attempt a reader
+   * needs the breakdown for, and an exit that logged nothing would hide it.
+   * One call site feeds both sinks, so the log record and the comment can
+   * never claim different breakdowns.
+   *
+   * @returns The rendered line, ready to append to a sync report comment
+   */
+  const recordTimings = (): string => {
+    const host = currentHost();
+    const stageTimings = timer.report();
+    logger?.info("Milestone sync stage timings", {
+      milestoneBranch,
+      defaultBranch,
+      host,
+      timings: stageTimings,
+    });
+    return formatStageTimings(stageTimings, host);
+  };
 
   // Ensure enough history for range/merge ops on a shallow clone (Issue #1502)
   timer.start("deepen");
@@ -953,6 +983,9 @@ export async function syncMilestoneBranchWithDefault(
       .map((side) =>
         analyseConflictedFile(side, escalated.get(side.path)!.reason)
       );
+    // An escalation is an attempt too (Issue #2308) — the rungs that reached
+    // it cost the same minutes, and the log says where they went.
+    recordTimings();
     return {
       ok: false,
       error: new MilestoneConflictEscalation(
@@ -1007,6 +1040,9 @@ export async function syncMilestoneBranchWithDefault(
           describeGitFailure(reset)
         }`;
     }
+    // A refusal costs the same minutes a push does (Issue #2308), so it
+    // accounts for them the same way.
+    recordTimings();
     return {
       ok: false,
       error: new Error(
@@ -1168,7 +1204,7 @@ export async function syncMilestoneBranchWithDefault(
   timer.start("gate");
   const verified = await runGateWithRepair({
     gate: runResolutionGate,
-    ...(agentFn ? { agentFn } : {}),
+    ...(timedRepairAgent ? { agentFn: timedRepairAgent } : {}),
     options,
     milestoneBranch,
     defaultBranch,
@@ -1209,6 +1245,8 @@ export async function syncMilestoneBranchWithDefault(
         describeRepairEscalation(firstGate, repair)
       }`
       : gatedResolved.error.message;
+    // A gate that refused still spent the minutes (Issue #2308).
+    recordTimings();
     return {
       ok: false,
       error: new MilestoneConflictEscalation(
@@ -1245,17 +1283,8 @@ export async function syncMilestoneBranchWithDefault(
   // A resolution the gate refused and the agent rung then repaired says so
   // wherever it is read (Issue #1965).
   const repaired = repair?.status === "repaired" ? repair.record : undefined;
-  // Where the sync's minutes went (Issue #2308). One call, two sinks — the
-  // structured log record and the sync report comment — so neither can claim
-  // a different breakdown from the other.
-  const host = currentHost();
-  const stageTimings = timer.report();
-  logger?.info("Milestone sync stage timings", {
-    milestoneBranch,
-    defaultBranch,
-    host,
-    timings: stageTimings,
-  });
+  // Where the sync's minutes went (Issue #2308).
+  const timings = recordTimings();
   return {
     ok: true,
     value: {
@@ -1274,7 +1303,7 @@ export async function syncMilestoneBranchWithDefault(
         // its reply, and this comment is where that record surfaces on the
         // milestone path.
         ...(ladder.agentReply ? { agentReply: ladder.agentReply } : {}),
-        timings: formatStageTimings(stageTimings, host),
+        timings,
       },
     },
   };

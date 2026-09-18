@@ -1783,7 +1783,7 @@
       "ledger": "docs/audits/security-sweep-2308-conflict-stage-timer.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_stage_timer.ts (#2308)",
       "status": "swept",
-      "sweptAt": "6d2eefc9fbfea11913b6354d3a06e0d9ef884149",
+      "sweptAt": "a78fba3d0e928fdfc1f60b8b3045bef1f4ca9203",
       "paths": [
         "worker/deno/lib/conflict_stage_timer.ts"
       ]

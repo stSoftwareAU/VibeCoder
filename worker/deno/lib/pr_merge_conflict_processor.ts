@@ -267,6 +267,12 @@ export interface MergeConflictProcessorDeps {
    * {@link currentHost}; tests inject a fixed name.
    */
   hostFn?: () => string;
+  /**
+   * The clock the stage timings are measured against (Issue #2308). Defaults
+   * to `Date.now`; tests inject a counter so an assertion on a stage's
+   * seconds never reads a wall clock.
+   */
+  nowMsFn?: () => number;
 }
 
 /** What the human must do when the worker gives up on a conflict. */
@@ -1074,7 +1080,7 @@ async function resolveConflict(
   const attemptNumber = input.attemptCount + 1;
   // Where this attempt's minutes go (Issue #2308). Started here so every
   // conclusion below — resolved or failed — can account for the whole pass.
-  const timer = createConflictStageTimer();
+  const timer = createConflictStageTimer(processorDeps.nowMsFn);
 
   // Check out the PR branch. A branch that no longer exists on origin means
   // the PR closed or merged since the scan listed it — nothing to do.
@@ -1372,6 +1378,7 @@ async function resolveConflict(
           attemptCommentId,
           conflictedFiles,
           attemptNumber,
+          timer,
         );
       }
     } else {
@@ -2531,9 +2538,16 @@ async function withdrawCutShortAttempt(
   attemptCommentId: number | null,
   conflictedFiles: readonly string[],
   attemptNumber: number,
+  timer: ConflictStageTimer,
 ): Promise<Result<MergeConflictResult>> {
   const { logger, deps } = processorDeps;
   const { repo, prNumber } = input;
+
+  // An attempt the run ended under the agent is precisely the twenty-minute
+  // pass the timings exist to explain (Issue #2308). It concludes on no
+  // comment — the marker is deleted and the attempt withdrawn — so the log is
+  // the only place its breakdown can land, and it lands there.
+  recordStageTimings(input, processorDeps, timer);
 
   await deleteAttemptMarker(
     deps,

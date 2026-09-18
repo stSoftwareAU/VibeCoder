@@ -3168,10 +3168,18 @@ Deno.test("processMergeConflict - the resolved comment carries the stage timings
 
 Deno.test("processMergeConflict - the structured log record carries the same host and stages (Issue #2308)", async () => {
   const records: { message: string; context?: LogContext }[] = [];
+  // An injected clock, advanced five seconds per reading. A stage is bounded
+  // by exactly two readings — its start and its stop — so each one costs five
+  // seconds and the assertion below never touches a wall clock.
+  let clockMs = 0;
   const { result } = await runProcessor(
     makeInput(),
     makeGitScript(),
-    { logger: makeTimingsLogger(records), hostFn: () => "mel-01" },
+    {
+      logger: makeTimingsLogger(records),
+      hostFn: () => "mel-01",
+      nowMsFn: () => (clockMs += 5_000),
+    },
   );
 
   assert(result.ok);
@@ -3187,9 +3195,9 @@ Deno.test("processMergeConflict - the structured log record carries the same hos
     timings.map((t) => t.stage),
     ["deepen", "rules", "issue-context", "agent", "push"],
   );
-  // Seconds are whatever the real clock said — what matters is that each
-  // stage reports a finished duration rather than silently going missing.
-  for (const timing of timings) assertEquals(typeof timing.seconds, "number");
+  // Five injected seconds per stage, and every stage finished: a stage that
+  // silently went missing, or reported `unfinished`, fails here.
+  for (const timing of timings) assertEquals(timing.seconds, 5);
 });
 
 Deno.test("processMergeConflict - a failed attempt's conclusion carries the stage timings (Issue #2308)", async () => {
@@ -3244,4 +3252,38 @@ Deno.test("buildFailedComment - appends the timings line, and omits it when ther
 
   const without = buildFailedComment(1, 2, "main", "boom", ["SECURITY.md"]);
   assertEquals(without.includes("Timings (host"), false);
+});
+
+Deno.test("processMergeConflict - an attempt the run ended still logs where its minutes went (Issue #2308)", async () => {
+  // The pass that spent twenty minutes under the agent and then died is the
+  // one a reader most needs the breakdown for. It concludes on no comment —
+  // the marker is deleted and the attempt withdrawn — so the log is the only
+  // sink, and an exit that logged nothing would hide exactly that pass.
+  const records: { message: string; context?: LogContext }[] = [];
+  let clockMs = 0;
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    {
+      logger: makeTimingsLogger(records),
+      hostFn: () => "syd-07",
+      nowMsFn: () => (clockMs += 5_000),
+    },
+    { claudeResult: { terminated: true } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  const record = timingsRecord(records);
+  assert(record, "a withdrawn attempt must still emit its timings record");
+  assertEquals(record.context?.host, "syd-07");
+  const timings = record.context?.timings as
+    | { stage: string; seconds: number | null }[]
+    | undefined;
+  assert(Array.isArray(timings), "the record carries the stage report");
+  assertEquals(
+    timings.map((t) => t.stage),
+    ["deepen", "rules", "issue-context", "agent"],
+  );
+  for (const timing of timings) assertEquals(timing.seconds, 5);
 });

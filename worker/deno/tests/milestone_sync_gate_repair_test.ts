@@ -18,6 +18,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import type { LogContext, Logger } from "../types.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import type {
@@ -205,6 +206,26 @@ const traitGate: MergeGateFn = async (repoDir) => {
 
 /** Every request the injected rung was handed, in order. */
 type Calls = MilestoneConflictAgentRequest[];
+
+/** A logger that keeps the `info` records so a test can read them back. */
+function makeTimingsLogger(
+  records: { message: string; context?: LogContext }[],
+): Logger {
+  const noop = () => {};
+  return {
+    info: (message: string, context?: LogContext) => {
+      records.push({ message, context });
+    },
+    warn: noop,
+    error: noop,
+    debug: noop,
+    security: noop,
+    skipReason: noop,
+    timing: noop,
+    scanSummary: noop,
+    workerSummary: noop,
+  };
+}
 
 /**
  * A rung that resolves the prose conflict, then repairs whatever the gate
@@ -554,6 +575,18 @@ Deno.test(
     const fx = await setup();
     try {
       const calls: Calls = [];
+      // An injected clock, advanced only by the agent runs themselves: git
+      // and the gate cost nothing here, so every second in the report is one
+      // this test put on a named run and can hold the sync to.
+      let clockMs = 0;
+      const resolveRunMs = 60_000;
+      const repairRunMs = 300_000;
+      const inner = rung(calls, FAKE_REPAIRED);
+      const agentFn: MilestoneConflictAgentFn = (request) => {
+        clockMs += request.repair ? repairRunMs : resolveRunMs;
+        return inner(request);
+      };
+
       const result = await syncMilestoneBranchWithDefault(
         "milestone/1965",
         "main",
@@ -561,7 +594,9 @@ Deno.test(
         undefined,
         traitGate,
         undefined,
-        rung(calls, FAKE_REPAIRED),
+        agentFn,
+        undefined,
+        () => clockMs,
       );
 
       assert(result.ok, `${!result.ok && result.error.message}`);
@@ -572,9 +607,28 @@ Deno.test(
       // The stages, in the order the sync ran them. The repair agent runs
       // between two slices of the gate, and those slices accumulate into the
       // single `gate` entry rather than opening a second one.
-      const stages = timings.slice(timings.indexOf("):") + 2).trim()
-        .split(" · ").map((part) => part.split(" ")[0]);
-      assertEquals(stages, ["deepen", "rules", "agent", "gate", "push"]);
+      const seconds = new Map(
+        timings.slice(timings.indexOf("):") + 2).trim().split(" · ").map(
+          (part) => {
+            const [stage, cost] = part.split(" ");
+            return [stage, cost] as const;
+          },
+        ),
+      );
+      assertEquals([...seconds.keys()], [
+        "deepen",
+        "rules",
+        "agent",
+        "gate",
+        "push",
+      ]);
+      // Both agent runs — the resolution and the repair the gate asked for —
+      // are charged to `agent`, and the gate keeps only its own slices.
+      assertEquals(
+        seconds.get("agent"),
+        `${(resolveRunMs + repairRunMs) / 1000}s`,
+      );
+      assertEquals(seconds.get("gate"), "0s");
       // And no stage was abandoned on the way: wrapping the repair agent must
       // not leave the gate looking like it never finished.
       assertEquals(
@@ -582,6 +636,66 @@ Deno.test(
         false,
         `every stage of a repaired sync must be measured; got: ${timings}`,
       );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a refused sync still records where its minutes went (Issue #2308)",
+  async () => {
+    // The sync a reader most needs a breakdown for is the one that spent
+    // twenty minutes and then refused. An exit that logged nothing would hide
+    // exactly that attempt, so every exit accounts for its stages — not only
+    // the one that pushed.
+    const fx = await setup();
+    try {
+      const calls: Calls = [];
+      const records: { message: string; context?: LogContext }[] = [];
+      let clockMs = 0;
+      const repairRunMs = 420_000;
+      // A repair that changes the file without adding the missing method: the
+      // gate refuses it again, so the sync escalates rather than pushing.
+      const NO_HELP = FAKE_BRANCH.replace("inner: FakeBroker,", "inner: Fake,");
+      const inner = rung(calls, NO_HELP);
+      const agentFn: MilestoneConflictAgentFn = (request) => {
+        if (request.repair) clockMs += repairRunMs;
+        return inner(request);
+      };
+
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1965",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        traitGate,
+        undefined,
+        agentFn,
+        makeTimingsLogger(records),
+        () => clockMs,
+      );
+
+      assert(!result.ok, "a tree the gate still refuses is not pushed");
+      const record = records.find((r) =>
+        r.message === "Milestone sync stage timings"
+      );
+      assert(record, "a refused sync must still emit its timings record");
+      const timings = record.context?.timings as
+        | { stage: string; seconds: number | null }[]
+        | undefined;
+      assert(Array.isArray(timings), "the record carries the stage report");
+      assertEquals(
+        timings.map((t) => t.stage),
+        ["deepen", "rules", "agent", "gate", "push"],
+      );
+      // Two bounded repair rounds, both charged to `agent` rather than to the
+      // gate that asked for them.
+      assertEquals(
+        timings.find((t) => t.stage === "agent")?.seconds,
+        (repairRunMs * 2) / 1000,
+      );
+      assertEquals(timings.find((t) => t.stage === "gate")?.seconds, 0);
     } finally {
       await fx.cleanup();
     }

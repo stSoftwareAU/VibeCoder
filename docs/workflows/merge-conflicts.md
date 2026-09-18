@@ -803,6 +803,11 @@ A stage that was started and never stopped renders as `unfinished` rather than
 disappearing from the line or being given a plausible-looking duration. A
 measurement that did not happen must never read as a fast one.
 
+An attempt the run ended under the agent concludes on no comment at all — its
+marker is deleted and the attempt is withdrawn rather than spent — so its
+breakdown lands in the log only. That is the pass most worth reading: it is
+the one that spent twenty minutes and produced nothing.
+
 ## 🧾 Every decision leaves a reason behind
 
 The label alone said *that* a PR was stuck, never *why the worker left it
