@@ -1981,7 +1981,7 @@ sections, then deletes the now-obsolete summaries**. A summary is only ever
 deleted **after** its learnings demonstrably land elsewhere, so no learning is
 lost; the deletion happens in the *fix* issue's PR, never during the scan.
 
-**Thirteen checks (Phase 2 of `prompts/documentation_audit/`).** (1) unabsorbed
+**Fourteen checks (Phase 2 of `prompts/documentation_audit/`).** (1) unabsorbed
 PR-summary learnings, (2) stale/obsolete content, (3) contradictions and
 inconsistencies, (4) duplicate/redundant content — including, from v4 onward,
 prose that paraphrases an external tool's docs instead of linking to them, (5)
@@ -2030,6 +2030,24 @@ comment that says something untrue is this scan's. `TODO`/`FIXME` notes,
 commented-out code, licence headers, and comments explaining *why* rather than
 what are all silent.
 
+**Agent instructions against the published guidance (check 14, Issue #2321).**
+Checks 5 and 9 decide **how many** agent instruction files a repo keeps; check
+14 reads **what the surviving one says**, measuring it — plus every file it
+imports with an `@path` line, and `README.md` as part of the same assessed unit
+— against Anthropic's published **Claude Code guidance**. It reports a stage
+command an agent cannot guess (test always; build and lint only when a fixed
+signal shows the repo has that stage, and one documented gate command such as
+`./quality.sh` satisfies every stage it runs) at `severity:medium`, a file over
+the published 200-line budget at `severity:medium` (counted as `wc -l` physical
+lines, per file, never on `README.md`), and — at `severity:low` — content the
+guidance says to exclude plus five conditional items (style rules, etiquette,
+architectural decisions, environment quirks, gotchas) each gated on a fixed
+repo signal rather than judgement. The check never asks a repo to create a
+`CLAUDE.md` (check 9's end-state stands) and is held while check 5 or 9 is
+outstanding, since content review is moot mid-consolidation. All of a repo's
+gaps collapse into **one** finding per run under a fixed title, so its stable id
+does not move as the gap list changes.
+
 **Meaningful grouping.** Findings must be a coherent, approvable unit of work —
 **never** one issue per typo, **never** one unreviewable mega-issue.
 
@@ -2050,7 +2068,7 @@ grammar (a `<!-- … -->` Markdown comment) suppresses a finding on future runs.
 wired into the claim handler, idle-task filer, wrapper-seeder, and backfill title
 map. Tests: `worker/deno/tests/documentation_audit_template_test.ts`. See
 [`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md) for the
-operator manual (thirteen-check catalogue, idle-trigger diagram, severity table,
+operator manual (fourteen-check catalogue, idle-trigger diagram, severity table,
 id recipe, suppression syntax, no-PR rule, weekly cadence).
 
 ### Workflow-annotation scans (template #15)
