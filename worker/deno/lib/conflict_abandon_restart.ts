@@ -20,8 +20,14 @@
  * **Preconditions are checked before anything is destroyed.** The order below
  * is the safety property, not an implementation detail:
  *
- * 1. the PR's originating issue is known — **no issue, no abandon**, because
- *    closing a PR the fleet cannot re-raise loses the work outright;
+ * 1. the PR's originating issue is known — and when it is not, the PR is still
+ *    closed, but only after the `merge-fallback` flag issue has been filed as
+ *    the re-do item, carrying `idle-task` and the PR's diff summary
+ *    (Issue #2310). The rule this replaces was "no issue, no abandon", on the
+ *    grounds that closing a PR the fleet cannot re-raise loses the work; the
+ *    reasoning holds, and the flag is what the fleet re-raises from. What is
+ *    forbidden is closing with **no findable record**, so a flag that could not
+ *    be filed leaves the PR open naming the `fallback-flag` step;
  * 2. the issue has not already been restarted once — **one abandon per
  *    originating issue**, so a restarted issue whose fresh PR also exhausts
  *    its budget goes to `needs-human` rather than round the loop again. The
@@ -66,13 +72,25 @@ import {
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
+  MERGE_CONFLICT_LABEL,
 } from "./merge_conflict_markers.ts";
+import {
+  parseStageTimingsLine,
+  readPrDiffSummary,
+  readPrDivergence,
+} from "./conflict_fallback_context.ts";
+import {
+  fileMergeFallbackIssue,
+  type MergeFallbackFiling,
+  type MergeFallbackOutcome,
+  type MergeFallbackRun,
+} from "./merge_fallback_issue.ts";
 import { CONSULTED_ISSUES_HEADING } from "./conflict_intent_audit.ts";
 import { DISCOVERY_LABELS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { prTitleMatchesIssue } from "./pr_title_issue_ref.ts";
 import { sanitiseIssueText } from "./conflict_intent_context.ts";
-import { addLabelToIssue } from "./label_operations.ts";
+import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
 
@@ -250,6 +268,49 @@ export function summariseFailedAttempts(
   };
 }
 
+/** The bodies of the failure conclusions, in thread order. */
+function failedCommentBodies(comments: readonly unknown[]): string[] {
+  const bodies: string[] = [];
+  for (const raw of comments) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const body = (raw as { body?: unknown }).body;
+    if (typeof body !== "string") continue;
+    if (body.includes(CONFLICT_FAILED_MARKER)) bodies.push(body);
+  }
+  return bodies;
+}
+
+/**
+ * Both runs as the `merge-fallback` flag issue records them (Issue #2310).
+ *
+ * The analysis is what {@link summariseFailedAttempts} read off the failure
+ * conclusion — the agent's own words — and the timings and host come from the
+ * timings line the same comment carries (Issue #2308). The run that measured
+ * them is long gone by the time a fallback runs, so the thread is the only
+ * surviving source for either.
+ *
+ * @param comments - The PR's thread, already reduced to the fleet's own
+ *   comments by `conflict_marker_trust.ts`
+ * @returns One run per concluded failure, in the order the thread records them
+ */
+export function mergeFallbackRunsFromComments(
+  comments: readonly unknown[],
+): MergeFallbackRun[] {
+  const history = summariseFailedAttempts(comments);
+  const bodies = failedCommentBodies(comments);
+  return history.attempts.map((attempt, index) => {
+    const parsed = parseStageTimingsLine(bodies[index] ?? "");
+    return {
+      run: attempt.attempt ?? index + 1,
+      ...(attempt.detail.length > 0 ? { analysis: attempt.detail } : {}),
+      ...(parsed !== undefined && parsed.timings.length > 0
+        ? { timings: parsed.timings }
+        : {}),
+      ...(parsed?.host !== undefined ? { host: parsed.host } : {}),
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The re-queue label
 // ---------------------------------------------------------------------------
@@ -327,7 +388,16 @@ export function describeConcludedAttempts(
 
 /** Why the abandon was declined before anything was changed. */
 export type AbandonDeclineReason =
-  /** No originating issue: the fleet could not re-raise what it closed. */
+  /**
+   * No originating issue.
+   *
+   * **No longer produced by {@link abandonAndRestart}** (Issue #2310): a PR
+   * whose originating issue cannot be found is now closed, and the
+   * `merge-fallback` flag issue — carrying the PR's diff summary and
+   * `idle-task` — becomes the re-do item in its place. The member is kept
+   * because it is still the shape a caller may be handed by an injected rung,
+   * and {@link describeExhaustedRoute} must keep an answer for it.
+   */
   | { kind: "no-originating-issue"; detail: PrUnresolvedReason }
   /**
    * The issue has already been restarted once — the bound (#1115).
@@ -363,16 +433,33 @@ export type AbandonStep =
   | "pr-comment"
   | "pr-close"
   | "issue-reopen"
-  | "issue-label";
+  | "issue-label"
+  /**
+   * Filing the `merge-fallback` flag for a PR with no originating issue
+   * (Issue #2310). Only that route can fail here, and it fails *before* the
+   * close: the flag is the re-do item, so closing the PR without one would
+   * lose the work outright — the same harm the old decline avoided.
+   */
+  | "fallback-flag";
 
 /** What {@link abandonAndRestart} did. */
 export type AbandonRestartOutcome =
   /**
-   * The PR was closed and its issue re-queued. {@link label} says how: the
-   * pickup label it already carried was kept, or `idle-task` was applied
-   * because it carried none (Issue #2277).
+   * The PR was closed and the work re-queued. {@link label} says how: the
+   * pickup label the originating issue already carried was kept, or
+   * `idle-task` was applied because it carried none (Issue #2277).
+   *
+   * When {@link flagIssueNumber} is set, the PR named no originating issue and
+   * this rung filed the `merge-fallback` flag as the re-do item in its place
+   * (Issue #2310); {@link issueNumber} is then that flag issue, which is the
+   * issue the work comes back through. The caller must not file a second flag.
    */
-  | { outcome: "abandoned"; issueNumber: number; label: RequeueLabel }
+  | {
+    outcome: "abandoned";
+    issueNumber: number;
+    label: RequeueLabel;
+    flagIssueNumber?: number;
+  }
   /** A precondition refused the abandon; nothing was changed. */
   | { outcome: "declined"; reason: AbandonDeclineReason }
   /** A step failed; the caller must escalate naming {@link step}. */
@@ -591,6 +678,13 @@ export interface AbandonRestartDeps {
     issueNumber: number,
     label: string,
   ) => Promise<Result<void>>;
+  /**
+   * Flag-issue filer for the no-originating-issue route (Issue #2310) —
+   * defaults to {@link fileMergeFallbackIssue} over {@link gh}.
+   */
+  fileFallbackFlag?: (
+    filing: MergeFallbackFiling,
+  ) => Promise<Result<MergeFallbackOutcome>>;
 }
 
 /**
@@ -912,6 +1006,49 @@ export function buildRestartIssueComment(args: {
   ].join("\n");
 }
 
+/**
+ * The comment posted on a PR closed with no originating issue (Issue #2310).
+ *
+ * Until now that PR was left open and handed to a human. Nobody came: it sat
+ * conflicting, out of budget and unowned. So it is closed too — and because
+ * there is no issue to re-queue, the `merge-fallback` flag issue is the re-do
+ * item, which is what this comment has to make findable.
+ */
+export function buildNoIssueAbandonPrComment(args: {
+  request: AbandonRestartRequest;
+  history: FailedAttemptHistory;
+  /** Why no originating issue could be resolved. */
+  reason: PrUnresolvedReason;
+  /** The flag issue that now carries the work. */
+  flagIssueNumber: number;
+}): string {
+  const { request, history, flagIssueNumber } = args;
+  const branch = sanitiseIssueText(request.branchName);
+  const base = sanitiseIssueText(request.baseBranch);
+  return [
+    `♻️ **Abandoning this PR — the work comes back as #${flagIssueNumber}**`,
+    "",
+    `${describeConcludedAttempts(history)}, and GitHub still will not merge ` +
+    `\`${branch}\` into \`${base}\`.`,
+    "",
+    `This PR names **no originating issue** (${args.reason}): neither its ` +
+    "branch name, nor a closing keyword in its body, nor GitHub's own linkage " +
+    "points at one. Leaving it open used to be the safe answer, but nobody " +
+    "came — it stayed conflicting, out of budget and unowned. So the fallback " +
+    `records the work as issue #${flagIssueNumber} instead: a ` +
+    "`merge-fallback` flag carrying `idle-task` and this PR's diff summary, " +
+    "which makes it the re-do item the fleet picks up.",
+    "",
+    "**Conflicted paths**",
+    "",
+    ...conflictedPathLines(history),
+    "",
+    `The branch \`${branch}\` is **not** deleted and has **not** been ` +
+    "force-pushed: every commit on it stays exactly as its author pushed it, " +
+    "so the abandoned work remains readable and linked from here.",
+  ].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // The rung
 // ---------------------------------------------------------------------------
@@ -955,6 +1092,168 @@ async function fetchIssueSnapshot(
     if (typeof name === "string") labels.push(name);
   }
   return { state: parsed.state, labels };
+}
+
+/** The step reporter {@link abandonAndRestart} and its branches share. */
+type FailedReporter = (
+  step: AbandonStep,
+  error: unknown,
+  issueNumber?: number,
+) => AbandonRestartOutcome;
+
+/**
+ * Close a conflicting PR that names no originating issue, filing the
+ * `merge-fallback` flag as the re-do item (Issue #2310).
+ *
+ * The old answer was to decline: closing a PR the fleet cannot re-raise loses
+ * the work outright. That reasoning still holds — what changed is that the flag
+ * issue *is* something the fleet can re-raise from. It carries `idle-task` and
+ * the PR's diff summary, so the work is queued rather than parked on a human
+ * who never came.
+ *
+ * **The flag is filed before anything is closed.** A close with no findable
+ * record is the loss the decline existed to prevent, so a filing failure —
+ * including one that files an issue whose number cannot be read — leaves the PR
+ * open and names the `fallback-flag` step.
+ */
+async function abandonWithoutOriginatingIssue(
+  request: AbandonRestartRequest,
+  deps: AbandonRestartDeps,
+  reason: PrUnresolvedReason,
+  failed: FailedReporter,
+): Promise<AbandonRestartOutcome> {
+  const { repo, prNumber } = request;
+  const gh = deps.gh;
+  const logger = deps.logger;
+
+  let comments: readonly unknown[];
+  try {
+    // Attributed like every other read of this thread (Issue #1247): the flag
+    // issue quotes it, so an outsider's text must never be filed as the
+    // fleet's own record of what the runs found.
+    comments = partitionConflictComments(
+      request.prComments ?? await fetchIssueCommentPages(repo, prNumber, gh),
+      deps.trustedAuthors,
+    ).trusted;
+  } catch (error) {
+    return failed("pr-thread", error);
+  }
+  const history = summariseFailedAttempts(comments);
+
+  // Best-effort context: a read that failed renders as `not recorded` in the
+  // flag body rather than as a guess, and never stops the fallback.
+  const divergence = await readPrDivergence({
+    repo,
+    prNumber,
+    baseBranch: request.baseBranch,
+    headBranch: request.branchName,
+    queueLabel: MERGE_CONFLICT_LABEL,
+    gh,
+    ...(logger !== undefined ? { logger } : {}),
+  });
+  const diff = await readPrDiffSummary({
+    repo,
+    prNumber,
+    gh,
+    ...(logger !== undefined ? { logger } : {}),
+  });
+
+  const filing: MergeFallbackFiling = {
+    target: {
+      kind: "pr",
+      repo,
+      prNumber,
+      headBranch: request.branchName,
+      baseBranch: request.baseBranch,
+    },
+    conflictedFiles: history.conflictedPaths,
+    runs: mergeFallbackRunsFromComments(comments),
+    ...divergence,
+    ...(diff !== undefined
+      ? { diffSummary: diff.files, diffSummaryOmitted: diff.omitted }
+      : {}),
+    fallbackAction: `Closed ${repo}#${prNumber} (\`${request.branchName}\`). ` +
+      `No originating issue could be found (${reason}), so this issue carries ` +
+      "`idle-task` and is the re-do item for that work.",
+    requestIdleTask: true,
+  };
+
+  const filer = deps.fileFallbackFlag ??
+    ((toFile: MergeFallbackFiling) =>
+      fileMergeFallbackIssue(toFile, {
+        gh,
+        ...(logger !== undefined ? { logger } : {}),
+        fleetAuthors: deps.trustedAuthors,
+        ensureLabelExists: (
+          labelRepo: string,
+          labelName: string,
+          colour?: string,
+          description?: string,
+        ) =>
+          ensureLabelExists(labelRepo, labelName, colour, description, {
+            ghCommandFn: gh,
+          }),
+      }));
+
+  const filed = await filer(filing);
+  if (!filed.ok) return failed("fallback-flag", filed.error);
+  const flagIssueNumber = filed.value.issueNumber;
+  if (!Number.isSafeInteger(flagIssueNumber) || flagIssueNumber <= 0) {
+    return failed(
+      "fallback-flag",
+      new Error(
+        "the merge-fallback flag was filed but its number could not be read, " +
+          "so nothing can link to the re-do item — this PR is left open " +
+          "rather than closed against a record nobody can find",
+      ),
+    );
+  }
+
+  try {
+    await gh([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      buildNoIssueAbandonPrComment({
+        request,
+        history,
+        reason,
+        flagIssueNumber,
+      }),
+    ]);
+  } catch (error) {
+    return failed("pr-comment", error, flagIssueNumber);
+  }
+
+  try {
+    // No `--delete-branch`: the abandoned commits must stay readable (#1076).
+    await gh(["pr", "close", String(prNumber), "--repo", repo]);
+  } catch (error) {
+    return failed("pr-close", error, flagIssueNumber);
+  }
+
+  logger?.warn?.(
+    `PR #${prNumber} named no originating issue (${reason}) — closed it and ` +
+      `filed merge-fallback issue #${flagIssueNumber} (\`${IDLE_TASK_LABEL}\`) ` +
+      `as the re-do item — ${describeConcludedAttempts(history)}`,
+    {
+      repo,
+      prNumber,
+      issueNumber: flagIssueNumber,
+      flagIssueNumber,
+      label: IDLE_TASK_LABEL,
+      appended: filed.value.appended,
+    },
+  );
+  return {
+    outcome: "abandoned",
+    issueNumber: flagIssueNumber,
+    label: { applied: IDLE_TASK_LABEL },
+    flagIssueNumber,
+  };
 }
 
 /**
@@ -1008,13 +1307,16 @@ export async function abandonAndRestart(
     return failed("originating-issue", error);
   }
   if (!context.prSide.resolved) {
-    return {
-      outcome: "declined",
-      reason: {
-        kind: "no-originating-issue",
-        detail: context.prSide.reason,
-      },
-    };
+    // Issue #2310: no longer a decline. The PR is closed and the
+    // `merge-fallback` flag issue — `idle-task`, with this PR's diff summary —
+    // becomes the re-do item, because a PR parked for a human who never comes
+    // loses the work just as surely as closing one with no record.
+    return await abandonWithoutOriginatingIssue(
+      request,
+      deps,
+      context.prSide.reason,
+      failed,
+    );
   }
   const issueNumber = context.prSide.issue.number;
 
