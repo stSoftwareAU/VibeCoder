@@ -97,6 +97,7 @@ import {
   recordPartialFailureDetectionRepair,
 } from "./failure_detection_repair_label.ts";
 import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
+import { repairPlanCoverage } from "./plan_coverage_repair.ts";
 import {
   escalateMilestoneGroupOffenders,
   type MilestoneGroup,
@@ -2346,6 +2347,54 @@ async function closePlanningIssue(
       // table wins — so only fleet-authored comments are candidates (#1244).
       authorOptions: planningAuthorOptions(config, githubUser, logger),
     });
+    if (!coverageVerdict.passed) {
+      // A failing gate is repaired before anyone is asked (VibeCoder#2319).
+      // The commonest failure is a publish turn that created sound sub-issues
+      // and never posted the table — derivable from the parent and those
+      // sub-issues, so the worker drafts it, posts it, and re-gates. The
+      // repair cannot manufacture a pass: a drafted row naming no covering
+      // sub-issue fails the re-gate and escalates below, now with the table.
+      logger.warn(
+        `Plan-coverage gate: ${
+          summariseCoverageGateFailure(coverageVerdict)
+        } — attempting model-driven self-repair`,
+        { repo, issueNumber },
+      );
+      const coverageRepair = await repairPlanCoverage({
+        repo,
+        parentIssueNumber: issueNumber,
+        subIssueNumbers: textSubIssueNumbers,
+        verdict: coverageVerdict,
+        ghCommandFn: deps.github.runGhCommand,
+        runClaude: (repairPrompt: string) =>
+          deps.claude.runClaudeWithRetry(
+            {
+              prompt: applyRepoContext(repairPrompt),
+              timeoutSeconds: config.planningTimeout,
+              killAfterSeconds: config.planningKillAfter,
+              phase: "planning",
+              cwd: config.workDir,
+              logger,
+              ...codegraphMcpOption,
+            },
+            { maxRetries: config.maxRateLimitRetries },
+          ),
+        postComment: (body: string) =>
+          ghClient.postComment(repo, issueNumber, body),
+        logger,
+        authorOptions: planningAuthorOptions(config, githubUser, logger),
+        ...(handlerDeadlineEpochMs !== undefined
+          ? { deadlineMs: handlerDeadlineEpochMs }
+          : {}),
+      });
+      coverageVerdict = coverageRepair.verdict;
+      // The repair's Claude call belongs to the same run's tally (#2159).
+      invocations.push(...coverageRepair.invocations);
+      for (const invocation of coverageRepair.invocations) {
+        codegraph?.record(invocation.runStats);
+        graft?.record(invocation.runStats);
+      }
+    }
     if (coverageVerdict.passed) {
       logger.info(
         "Plan-coverage gate: every ask is covered or explicitly out of scope (Issue #520)",
@@ -2364,9 +2413,10 @@ async function closePlanningIssue(
           uncovered: coverageVerdict.offenders.map((o) => o.ask).join(" | "),
         },
       );
-      // The shared needs-human chokepoint — not a second escalation path. An
-      // uncovered ask needs a human decision (create the sub-issue, or accept
-      // the ask as out of scope), which no self-repair can make.
+      // The shared needs-human chokepoint — not a second escalation path.
+      // What reaches here survived the self-repair above: an uncovered ask
+      // needs a human decision (create the sub-issue, or accept the ask as
+      // out of scope), which no draft can make.
       await escalateUncoveredAsks({
         ghClient,
         repo,

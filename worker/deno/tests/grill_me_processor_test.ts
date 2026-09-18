@@ -2000,6 +2000,82 @@ Deno.test(
   },
 );
 
+// Live incident (stSoftwareAU/VibeCoder#2319, 2026-09-18): the developer
+// answered Ready by applying `planning` and removing `needs-human`. A host
+// still listing the issue under a stale `grill-me` cache entry re-entered this
+// branch and re-added `needs-human` twice in five minutes — with no comment,
+// because the Ready marker dedups the explanation — which hid the issue from
+// the planning scan the developer had just asked for.
+for (
+  const nextPhaseLabel of [
+    "planning",
+    "quorum",
+    "top-priority",
+    "work-on",
+    "low-priority",
+  ]
+) {
+  Deno.test(
+    `processGrillMe - Ready already posted and \`${nextPhaseLabel}\` applied: needs-human is not re-added`,
+    async () => {
+      const ctx = makeContext();
+      const addedLabels: string[] = [];
+      const removedLabels: string[] = [];
+      const postedComments: string[] = [];
+
+      const ghClient = stubGhClient({
+        getIssueComments: () =>
+          Promise.resolve([
+            makeComment({
+              author: "testbot",
+              body: `${GRILL_ME_READY_MARKER}\n\nReady`,
+            }),
+          ]),
+        // The developer has already answered: the next-phase label is on
+        // and `needs-human` is off. `grill-me` lingers only in the caller's
+        // stale listing, which is what routed the issue here.
+        getIssue: () =>
+          Promise.resolve(makeIssue({ labels: ["grill-me", nextPhaseLabel] })),
+        addLabel: (_r, _n, label) => {
+          addedLabels.push(label);
+          return Promise.resolve();
+        },
+        removeLabel: (_r, _n, label) => {
+          removedLabels.push(label);
+          return Promise.resolve();
+        },
+        postComment: (_r, _n, body) => {
+          postedComments.push(body);
+          return Promise.resolve(undefined);
+        },
+      });
+
+      const deps = createMockDeps();
+
+      const result = await processGrillMe(ctx, {
+        promptsDir: PROMPTS_DIR,
+        ghClient,
+        logger: deps.logger,
+        deps,
+      });
+      assertEquals(result.ok, true);
+      if (!result.ok) return;
+      assertEquals(result.value.processed, false);
+      assertEquals(
+        addedLabels,
+        [],
+        "the developer already chose the next phase — nothing is awaiting a human",
+      );
+      assertEquals(postedComments, []);
+      assertEquals(result.value.needsHumanAdded, false);
+      assert(
+        removedLabels.includes("grill-me"),
+        "the lingering grill-me label is still cleaned up",
+      );
+    },
+  );
+}
+
 Deno.test(
   "processGrillMe - Ready marker from Claude removes grill-me and keeps needs-human (Issue #2064)",
   async () => {

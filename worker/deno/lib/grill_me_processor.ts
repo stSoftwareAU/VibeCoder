@@ -87,6 +87,7 @@ import {
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { reportGrillMeDegradation } from "./grill_me_run_stats.ts";
 import { releaseAllWorkerClaims } from "./claim_release.ts";
+import { DISCOVERY_LABELS } from "./config_defaults.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
   decideGrillMeStop,
@@ -1317,7 +1318,23 @@ async function _processGrillMeWithHeartbeat(
           });
         }
       }
-      if (!issue.labels.includes(needsHumanLabel)) {
+      // The developer answers Ready by applying a next-phase label and
+      // removing `needs-human`. Once one is on, nothing is awaiting a human:
+      // re-adding the label here hides the issue from the very scan the
+      // developer just asked for. This branch is still reached afterwards
+      // because the dispatch listing is cached and can name `grill-me` for
+      // minutes after the label came off (VibeCoder#2319).
+      const nextPhaseLabel = [
+        config.planningLabel,
+        config.quorumLabel,
+        ...DISCOVERY_LABELS,
+      ].find((label) => issue.labels.includes(label));
+      if (nextPhaseLabel !== undefined) {
+        logger.info(
+          "Ready already answered with a next-phase label — not re-adding needs-human",
+          { repo, issueNumber, nextPhaseLabel },
+        );
+      } else if (!issue.labels.includes(needsHumanLabel)) {
         const outcome = await escalateToHuman({
           ghClient,
           repo,
