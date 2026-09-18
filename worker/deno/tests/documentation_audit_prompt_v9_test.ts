@@ -41,6 +41,26 @@ async function loadDocumentationAudit(): Promise<string> {
 const readDoc = (relPath: string) =>
   Deno.readTextFile(`${REPO_ROOT}${relPath}`);
 
+/**
+ * Collapse every run of whitespace to a single space, so an assertion about a
+ * sentence does not depend on where the Markdown source happens to wrap it.
+ */
+const flatten = (text: string) => text.replace(/\s+/g, " ");
+
+/**
+ * One numbered Phase 2 check, from its `### <n>.` heading to the next check's
+ * heading (or the worked examples for the last one), flattened.
+ */
+async function catalogueSection(n: number): Promise<string> {
+  const text = await loadDocumentationAudit();
+  const start = text.indexOf(`### ${n}. `);
+  assert(start >= 0, `check ${n} heading not found in the catalogue`);
+  const next = text.indexOf(`### ${n + 1}. `, start);
+  const end = next >= 0 ? next : text.indexOf("<examples>", start);
+  assert(end > start, `check ${n} section is empty`);
+  return flatten(text.slice(start, end));
+}
+
 Deno.test("documentation_audit - keeps the dedup and attribution placeholders", async () => {
   const body = await loadDocumentationAudit();
   for (
@@ -77,23 +97,14 @@ Deno.test("documentation_audit - carries check 13 for comments that contradict t
 });
 
 Deno.test("documentation_audit - check 13 removes the comment by default, citing file and line", async () => {
-  const text = await loadDocumentationAudit();
-  const check = text.slice(
-    text.indexOf("### 13. Comment contradicts the code"),
-    text.indexOf("### 14."),
-  );
-  assert(check.length > 0, "check 13 section not found before the examples");
+  const check = await catalogueSection(13);
   // The default remedy is deletion, evidenced by a file/line citation.
   assertStringIncludes(check, "delete the comment");
   assertStringIncludes(check, "Cite the comment's file and line");
 });
 
 Deno.test("documentation_audit - check 13 files a possible code bug when the comment documents absent behaviour", async () => {
-  const text = await loadDocumentationAudit();
-  const check = text.slice(
-    text.indexOf("### 13. Comment contradicts the code"),
-    text.indexOf("### 14."),
-  );
+  const check = await catalogueSection(13);
   assertStringIncludes(check, "possible bug in the code");
   // The three shapes the issue enumerates for deliberate-but-unimplemented
   // behaviour.
@@ -111,11 +122,7 @@ Deno.test("documentation_audit - check 13 states the doc-coverage ownership boun
 });
 
 Deno.test("documentation_audit - check 13 carves out the legitimate look-alikes", async () => {
-  const text = await loadDocumentationAudit();
-  const check = text.slice(
-    text.indexOf("### 13. Comment contradicts the code"),
-    text.indexOf("### 14."),
-  );
+  const check = await catalogueSection(13);
   const silent = check.slice(check.indexOf("**Stay silent**"));
   assert(silent.length > 0, "check 13 must carry a stay-silent carve-out");
   // A TODO is future intent, commented-out code is not a claim, and a
@@ -126,11 +133,7 @@ Deno.test("documentation_audit - check 13 carves out the legitimate look-alikes"
 });
 
 Deno.test("documentation_audit - check 13 collapses per source file", async () => {
-  const text = await loadDocumentationAudit();
-  const check = text.slice(
-    text.indexOf("### 13. Comment contradicts the code"),
-    text.indexOf("### 14."),
-  );
+  const check = await catalogueSection(13);
   assertStringIncludes(check, "one finding per source file");
 });
 
@@ -150,29 +153,10 @@ Deno.test("documentation_audit - check 13 has worked examples for both verdicts"
 // --- Check 14: agent instructions versus the Claude Code guidance ---
 
 /**
- * Collapse every run of whitespace to a single space, so an assertion about a
- * sentence does not depend on where the Markdown source happens to wrap it.
- */
-const flatten = (text: string) => text.replace(/\s+/g, " ");
-
-/**
  * The check-14 section on its own — heading to the worked examples — with its
  * line wrapping flattened away.
  */
-async function checkFourteen(): Promise<string> {
-  const text = await loadDocumentationAudit();
-  const section = text.slice(
-    text.indexOf(
-      "### 14. Agent instructions do not follow Claude Code guidance",
-    ),
-    text.indexOf("<examples>"),
-  );
-  assert(
-    section.length > "### 14.".length,
-    "check 14 section not found before the examples",
-  );
-  return flatten(section);
-}
+const checkFourteen = () => catalogueSection(14);
 
 Deno.test("documentation_audit - carries check 14 for the agent-instruction guidance", async () => {
   const text = await loadDocumentationAudit();
@@ -216,10 +200,15 @@ Deno.test("documentation_audit - check 14 requires a runnable command line per a
   // Build and lint are owed only by a repo that has the stage.
   assertStringIncludes(check, "Cargo.toml");
   assertStringIncludes(check, "`Makefile` with a `build`");
-  assertStringIncludes(check, "is not a finding");
+  assertStringIncludes(
+    check,
+    "in a repo that has no such stage is not a finding",
+  );
   // Naming the runner is not a command; one gate command covers its stages.
-  assertStringIncludes(check, "Naming the test runner");
-  assertStringIncludes(check, "satisfy the item");
+  assertStringIncludes(
+    check,
+    "Naming the test runner or the build tool without a command line does **not** satisfy the item",
+  );
   assertStringIncludes(check, "./quality.sh");
 });
 
@@ -243,9 +232,23 @@ Deno.test("documentation_audit - check 14 gates the five conditional items on a 
   ) {
     assertStringIncludes(check, signal);
   }
+  for (
+    const item of [
+      "Code style rules",
+      "Repository etiquette",
+      "Project-specific architectural decisions",
+      "Developer environment quirks",
+      "Common gotchas",
+    ]
+  ) {
+    assertStringIncludes(check, item);
+  }
   assertStringIncludes(check, "Do not infer a signal");
   assertStringIncludes(check, "gotchas are never mandatory");
-  assertStringIncludes(check, "`severity:low`");
+  assertStringIncludes(
+    check,
+    "**Conditional — five further items, each behind a fixed signal** (`severity:low`)",
+  );
 });
 
 Deno.test("documentation_audit - check 14 measures 200 physical lines per file and never on the README", async () => {
@@ -254,7 +257,7 @@ Deno.test("documentation_audit - check 14 measures 200 physical lines per file a
   assertStringIncludes(check, "`wc -l`");
   assertStringIncludes(check, "no exclusion for blank lines");
   assertStringIncludes(check, "an imported file over 200");
-  assertStringIncludes(check, "fires on `README.md`");
+  assertStringIncludes(check, "it never fires on `README.md`");
 });
 
 Deno.test("documentation_audit - check 14 folds excluded content into the same file's size entry", async () => {
@@ -265,8 +268,7 @@ Deno.test("documentation_audit - check 14 folds excluded content into the same f
 
 Deno.test("documentation_audit - check 14 collapses to one finding per repo under a fixed title", async () => {
   const check = await checkFourteen();
-  assertStringIncludes(check, "collapse into");
-  assertStringIncludes(check, "finding per run");
+  assertStringIncludes(check, "collapse into a single finding per run");
   assertStringIncludes(
     check,
     "Agent instruction files do not follow Claude Code guidance",
@@ -303,9 +305,18 @@ Deno.test("documentation_audit - the line count check 14 needs is a permitted co
 Deno.test("documentation_audit - severity guidance covers the check-14 gaps", async () => {
   const text = await loadDocumentationAudit();
   const severitySection = flatten(
-    text.slice(text.indexOf("### Severity guidance")),
+    text.slice(
+      text.indexOf("### Severity guidance"),
+      text.indexOf("## Stable finding ID recipe"),
+    ),
   );
-  assertStringIncludes(severitySection, "check 14");
+  assert(severitySection.length > 0, "the severity guidance was not found");
+  // Both halves: the mandatory gaps are medium, the conditional ones low.
+  assertStringIncludes(
+    severitySection,
+    "missing a mandatory command (check 14)",
+  );
+  assertStringIncludes(severitySection, "says to exclude (check 14)");
 });
 
 Deno.test("documentation_audit - the suggested-fix guidance tells the filer what a check-14 body says", async () => {
@@ -352,11 +363,7 @@ Deno.test("documentation_audit - the Phase 2 sweep bound cannot starve check 13"
 });
 
 Deno.test("documentation_audit - an unresolved check-13 direction does not outrank a confirmed finding", async () => {
-  const text = await loadDocumentationAudit();
-  const check = text.slice(
-    text.indexOf("### 13. Comment contradicts the code"),
-    text.indexOf("### 14."),
-  );
+  const check = await catalogueSection(13);
   assertStringIncludes(check, "possible-bug shape at `severity:medium`");
 });
 
@@ -373,13 +380,15 @@ Deno.test("documentation_audit - states the check counts consistently", async ()
   );
 });
 
-Deno.test("documentation_audit - the read-before-you-assert rule extends to check 13", async () => {
+Deno.test("documentation_audit - the read-before-you-assert rule extends to check 14", async () => {
   const text = await loadDocumentationAudit();
-  assertStringIncludes(text, "This binds hardest on checks 10–13");
-  assert(
-    !text.includes("binds hardest on checks 10–12"),
-    "the read-before-you-assert range must extend to check 13",
-  );
+  assertStringIncludes(text, "This binds hardest on checks 10–14");
+  for (const stale of ["10–12", "10–13"]) {
+    assert(
+      !text.includes(`binds hardest on checks ${stale}`),
+      `the read-before-you-assert range must extend past checks ${stale}`,
+    );
+  }
 });
 
 Deno.test("documentation_audit - severity guidance covers a contradicting comment", async () => {

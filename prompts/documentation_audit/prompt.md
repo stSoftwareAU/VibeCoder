@@ -171,7 +171,8 @@ end with, reproduced verbatim (see Phase 4):
    (folding learnings in, deleting stale summaries, trimming agent files) ride
    the normal work-on flow on the filed issues — never here.
 2. **No code execution.** `cat`, `grep`, `rg`, `ls`, `find`, `wc` (check 14
-   needs a line count), and structured file readers are permitted. Any command that **executes** repo logic (`bash`,
+   needs a line count), and structured file readers are permitted. Any command
+   that **executes** repo logic (`bash`,
    `deno run`/`deno test`, `node`, `python`, `make`, `cargo`, `npm`, `mvn`,
    `go`, `pytest`, `bats`, …) is forbidden. Never regress a Deno repo to Node
    tooling. The only permitted `gh` calls are `gh issue list` (Phase 4 dedup),
@@ -189,7 +190,7 @@ end with, reproduced verbatim (see Phase 4):
    context you have not read, open the file. A "factual error" or
    "contradiction" finding must cite the two places that disagree. If you cannot
    resolve the question from the repo, drop the candidate rather than asserting
-   an unbacked claim. This binds hardest on checks 10–13: a claim is verified by
+   an unbacked claim. This binds hardest on checks 10–14: a claim is verified by
    opening the defining source file, the schema, or the help text in the source
    — never by running the command (constraint 2) and never by recall. If the
    defining source cannot be located at all, the finding is "unverifiable"
@@ -613,7 +614,7 @@ signal that is not on this list, and do not substitute judgement for it:
 | ---- | ------------------------------- |
 | Code style rules differing from the language default | a linter or formatter config — a `deno.json` `lint`/`fmt` block, `.eslintrc*`, `rustfmt.toml`, `.prettierrc*`, … |
 | Repository etiquette (branch naming, PR conventions) | `CONTRIBUTING.md` or `.github/pull_request_template.md` |
-| Project-specific architectural decisions | `docs/adr/` or an architecture document under `docs/` |
+| Project-specific architectural decisions | `docs/adr/`, or a file whose name contains `ARCHITECTURE` or `DESIGN` (`docs/ARCHITECTURE.md`, `DESIGN-PRINCIPLES.md`, …) |
 | Developer environment quirks (required env vars) | `.env.example`, or an environment block in `docker-compose.yml` |
 | Common gotchas | none — gotchas are never mandatory and are never inferred |
 
@@ -631,7 +632,9 @@ instruction file should leave out: anything derivable by reading the code,
 standard language conventions, detailed API documentation, frequently changing
 information, long explanations or tutorials, file-by-file descriptions of the
 codebase, and self-evident practices. Fold an excluded-content observation into
-the same file's size entry — it is the same fix, made for the same reason.
+the same file's size entry — it is the same fix, made for the same reason. When
+the file is **under** the 200-line budget there is no size entry to fold into,
+so the observation is its own `severity:low` entry in the finding.
 
 **Grouping.** All of one repo's check-14 gaps collapse into a single finding per
 run, so the check can consume at most one of the six cap slots. Its title is
@@ -758,22 +761,24 @@ fire on it either.</reason>
 
 <example name="oversized-agent-instruction-file">
 <excerpt>`AGENTS.md` — the repo's only agent instruction file, 412 lines by
-`wc -l`, of which 150 walk the reader file by file through `src/`. It names
-`deno test` nowhere, but `README.md` documents `deno task test` in a fenced
-block. `deno.json` carries a `lint` block; the repo has no `CONTRIBUTING.md`,
-no `.env.example` and no `docs/adr/`.</excerpt>
+`wc -l`, of which 150 walk the reader file by file through `src/`. Neither it
+nor `README.md` names a linting command or says anything about code style;
+`README.md` does document `deno task test` in a fenced block. `deno.json`
+carries a `lint` block; the repo has no `CONTRIBUTING.md`, no `.env.example`
+and no `docs/adr/`.</excerpt>
 <check>14 — agent instructions do not follow Claude Code guidance</check>
 <verdict>file one finding — `severity:medium`</verdict>
-<reason>Two gaps, one finding. The file is over the 200-line budget and its
-file-by-file tour is content the guidance says to leave out, so the excluded
-content folds into the size entry rather than becoming its own. The test command
-is satisfied by the README — README plus the agent file is the assessed unit —
-but the `deno.json` lint block makes a lint command mandatory and neither
-document gives one, and it makes style rules a `severity:low` conditional entry
-in the same finding. Etiquette, architecture and environment quirks have no
-signal, so they are not reported at all. The title is the fixed
+<reason>Three entries, one finding. (1) The file is over the 200-line budget,
+and its file-by-file tour is content the guidance says to leave out, so the
+excluded content folds into that size entry rather than becoming its own.
+(2) The test command is satisfied by the README — README plus the agent file is
+the assessed unit — but the `deno.json` lint block makes a lint command
+mandatory and neither document gives one. (3) That same lint block is the
+signal for style rules, and neither document states one, so style rules are a
+`severity:low` conditional entry. Etiquette, architecture and environment quirks
+have no signal, so they are not assessed at all. The title is the fixed
 `Agent instruction files do not follow Claude Code guidance`; the label follows
-the worst gap, `severity:medium`.</reason>
+the worst entry, `severity:medium`.</reason>
 </example>
 
 <example name="gate-command-satisfies-both-stages">

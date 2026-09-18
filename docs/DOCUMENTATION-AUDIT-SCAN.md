@@ -77,7 +77,9 @@ docs that disagree with other docs. Checks 10–12 (from v4 onward) are
 and each of those checks tests a claim against the source. Check 13 (from v9
 onward) turns the same verification on the comments inside the source itself,
 and check 14 measures what the repo's surviving agent instruction file **says**
-against Anthropic's published Claude Code guidance.
+against Anthropic's published
+[Claude Code memory guidance](https://code.claude.com/docs/en/memory) (credited
+in [REFERENCES.md](REFERENCES.md)).
 
 1. **Unabsorbed PR-summary learnings** — a durable learning (success or recorded
    failure) not yet reflected in the main docs. Fix: fold it in, then delete the
