@@ -62,9 +62,10 @@ const STREAM_FILE_PREFIX = "stream-";
 
 /**
  * A per-issue record's file name: `<repo-slug>-<issue>.json`, where the slug
- * is `[A-Za-z0-9-]` only. A stream key carries the `__` segment separator, so
- * a stream record can never match — which is what keeps the per-issue sweep
- * blind to stream files (Issue #2332).
+ * is `[A-Za-z0-9-]` only. The sweep considers nothing else, so it is blind to
+ * stream files twice over: they carry {@link STREAM_FILE_PREFIX}, which it
+ * skips outright, and their key carries the `__` segment separator, which this
+ * pattern excludes (Issue #2332).
  */
 const PER_ISSUE_FILE_PATTERN = /^[A-Za-z0-9-]+-\d+\.json$/u;
 
@@ -254,9 +255,11 @@ export function streamSessionPath(workDir: string, stream: StreamId): string {
  * provider starts that provider's own stream session rather than overwriting
  * the primary's.
  *
- * Best-effort: returns false (and writes nothing) on any filesystem failure.
- * Throws only when `stream.repo` is malformed, which is a caller bug, not a
- * resume miss.
+ * Best-effort: returns false (and writes nothing) on any filesystem failure —
+ * including a record that exists but cannot be read, because merging into an
+ * empty map there would destroy the other providers' sessions rather than
+ * merely miss a resume. Throws only when `stream.repo` is malformed, which is
+ * a caller bug, not a resume miss.
  */
 export async function saveStreamSession(
   workDir: string,
@@ -271,6 +274,7 @@ export async function saveStreamSession(
 ): Promise<boolean> {
   const path = streamSessionPath(workDir, stream);
   const sessions = await readStreamSessions(path);
+  if (sessions === null) return false;
   sessions[session.providerId] = {
     sessionId: session.sessionId,
     savedAtEpochMs: nowEpochMs,
@@ -286,8 +290,9 @@ export async function saveStreamSession(
 
 /**
  * Load one provider's session for a stream. Returns null when the record is
- * missing, unparseable, holds no session for that provider, or holds an id the
- * provider's CLI would refuse (#204).
+ * missing, unreadable, unparseable, holds no session for that provider, or
+ * holds an id the provider's CLI would refuse (#204). Throws when
+ * `stream.repo` is malformed.
  *
  * There is deliberately no clock parameter: a stream session never expires.
  */
@@ -299,17 +304,25 @@ export async function loadStreamSession(
   const sessions = await readStreamSessions(
     streamSessionPath(workDir, stream),
   );
-  const session = sessions[providerId];
+  const session = sessions?.[providerId];
   if (session === undefined) return null;
   return isPersistableSessionId(session.sessionId, providerId) ? session : null;
 }
 
 /**
  * Remove a stream's session — one provider's when `providerId` is given, the
- * whole record otherwise. Idempotent; never throws for a missing record.
+ * whole record otherwise. Idempotent for a missing record; throws only when
+ * `stream.repo` is malformed.
  *
- * Called by milestone-close housekeeping (the whole record) and by the reset
- * path when one provider's session proves unresumable.
+ * For milestone-close housekeeping (the whole record) and for the reset path
+ * when one provider's session proves unresumable; those callers land with the
+ * rest of this milestone.
+ *
+ * When a single-provider delete cannot read the record it removes the whole
+ * file: the caller's contract is that the named session is gone afterwards,
+ * and losing a sibling entry only costs the stream a fresh start, whereas
+ * leaving an unresumable session behind is the fault this call exists to
+ * clear.
  */
 export async function deleteStreamSession(
   workDir: string,
@@ -322,6 +335,12 @@ export async function deleteStreamSession(
     return;
   }
   const sessions = await readStreamSessions(path);
+  if (sessions === null) {
+    // Unreadable — drop the whole record rather than leave the named
+    // session behind.
+    await Deno.remove(path).catch(() => undefined);
+    return;
+  }
   if (sessions[providerId] === undefined) return;
   delete sessions[providerId];
   if (Object.keys(sessions).length === 0) {
@@ -331,33 +350,49 @@ export async function deleteStreamSession(
   await writeStreamSessions(workDir, path, sessions);
 }
 
-/** Read a stream record, degrading a missing or corrupt file to an empty map. */
+/**
+ * Read a stream record.
+ *
+ * An absent file and a corrupt one both read as an empty map — there is
+ * nothing to preserve in either. A file that exists but cannot be read
+ * (permissions, I/O) reads as `null`, so a caller merging into the result
+ * aborts instead of writing a record that silently drops every provider it
+ * could not see.
+ */
 async function readStreamSessions(
   path: string,
-): Promise<Record<string, PersistedStreamSession>> {
+): Promise<Record<string, PersistedStreamSession> | null> {
   let raw: string;
   try {
     raw = await Deno.readTextFile(path);
-  } catch {
-    return {};
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound ? {} : null;
   }
   return parseStreamSessions(raw);
 }
 
-/** Write a stream record. Best-effort: false on any filesystem failure. */
+/**
+ * Write a stream record through a temporary file and a rename, so a crash
+ * mid-write leaves the previous record rather than a truncated one — the
+ * record has no expiry and no sweep, so a truncation would be permanent.
+ * Best-effort: false on any filesystem failure.
+ */
 async function writeStreamSessions(
   workDir: string,
   path: string,
   sessions: Record<string, PersistedStreamSession>,
 ): Promise<boolean> {
+  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
   try {
     await Deno.mkdir(resumeStateDir(workDir), { recursive: true });
     await Deno.writeTextFile(
-      path,
+      temporary,
       JSON.stringify({ sessions }, null, 2) + "\n",
     );
+    await Deno.rename(temporary, path);
     return true;
   } catch {
+    await Deno.remove(temporary).catch(() => undefined);
     return false;
   }
 }
@@ -466,7 +501,13 @@ async function sweepStaleSiblings(
 ): Promise<void> {
   try {
     for await (const entry of Deno.readDir(dir)) {
-      if (!entry.isFile || !PER_ISSUE_FILE_PATTERN.test(entry.name)) continue;
+      if (
+        !entry.isFile ||
+        entry.name.startsWith(STREAM_FILE_PREFIX) ||
+        !PER_ISSUE_FILE_PATTERN.test(entry.name)
+      ) {
+        continue;
+      }
       const path = `${dir}/${entry.name}`;
       try {
         const parsed = parsePersisted(await Deno.readTextFile(path));

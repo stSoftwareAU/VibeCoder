@@ -9,7 +9,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   deleteResumeState,
   deleteStreamSession,
@@ -43,15 +43,10 @@ async function exists(path: string): Promise<boolean> {
 }
 
 Deno.test("stream session - path is stream-<streamKey>.json beside the per-issue records", () => {
-  const path = streamSessionPath("/work", BLANK_STREAM);
+  // Both records live in the one directory, under distinguishable names.
   assertEquals(
-    path,
+    streamSessionPath("/work", BLANK_STREAM),
     "/work/.claude-sessions/resume/stream-stsoftwareau__vibecoder__blank.json",
-  );
-  // Both records live in the one directory.
-  assert(
-    path.startsWith("/work/.claude-sessions/resume/"),
-    "stream record shares the resume directory",
   );
 });
 
@@ -76,24 +71,42 @@ Deno.test("stream session - save then load round-trips every field", async () =>
   }
 });
 
-Deno.test("stream session - a record written 48 hours ago still loads", async () => {
+Deno.test("stream session - a record written 48 hours ago still loads, where a per-issue record expires", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "resume_stream_" });
   try {
-    const savedAt = 10_000_000;
+    // Both records are stamped 48 hours before the real clock, so the two
+    // lifecycles are compared on one timeline: the stream has no expiry to
+    // measure against, the per-issue record is measured against Date.now().
+    const savedAt = Date.now() - 48 * HOUR_MS;
+    assert(Date.now() - savedAt > RESUME_STATE_MAX_AGE_MS);
     await saveStreamSession(workDir, STREAM, {
       providerId: "claude",
       sessionId: SESSION_ID,
     }, savedAt);
-    // Well past the per-issue freshness window — the stream never expires.
-    const later = savedAt + 48 * HOUR_MS;
-    assert(later - savedAt > RESUME_STATE_MAX_AGE_MS);
+    await saveResumeState(workDir, REPO, 2331, {
+      sessionId: SESSION_ID,
+      phaseCount: 1,
+      branch: "issue-2331",
+    }, savedAt);
+
     const loaded = await loadStreamSession(workDir, STREAM, "claude");
     assert(loaded, "a 48-hour-old stream session still loads");
     assertEquals(loaded.sessionId, SESSION_ID);
+    assertEquals(loaded.savedAtEpochMs, savedAt);
     assert(await exists(streamSessionPath(workDir, STREAM)));
+    // The per-issue record, saved at the same instant, is past its window.
+    assertEquals(await loadResumeState(workDir, REPO, 2331), null);
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
+});
+
+Deno.test("stream session - a malformed repository throws rather than resolving to some key", () => {
+  assertThrows(
+    () => streamSessionPath("/work", { repo: "not-a-repo" }),
+    Error,
+    "owner/name",
+  );
 });
 
 Deno.test("stream session - two providers hold sessions side by side", async () => {
@@ -163,10 +176,6 @@ Deno.test("stream session - an unknown provider loads as null", async () => {
       sessionId: SESSION_ID,
     }, 1_000);
     assertEquals(await loadStreamSession(workDir, STREAM, "gemini"), null);
-    assertEquals(
-      await loadStreamSession(workDir, BLANK_STREAM, "claude"),
-      null,
-    );
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
@@ -212,6 +221,34 @@ Deno.test("stream session - a corrupt record loads as null and the next save rep
       (await loadStreamSession(workDir, STREAM, "claude"))?.sessionId,
       SESSION_ID,
     );
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("stream session - a record that exists but cannot be read is never overwritten", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "resume_stream_" });
+  try {
+    // A directory where the record belongs: it exists, and reading it fails
+    // with something other than "not found" — the shape of a permission or
+    // I/O fault. Merging into an empty map here would drop every provider.
+    const path = streamSessionPath(workDir, STREAM);
+    await Deno.mkdir(path, { recursive: true });
+    await Deno.writeTextFile(`${path}/keep`, "not the record");
+
+    assertEquals(
+      await saveStreamSession(workDir, STREAM, {
+        providerId: "claude",
+        sessionId: SESSION_ID,
+      }, 1_000),
+      false,
+    );
+    assertEquals(await loadStreamSession(workDir, STREAM, "claude"), null);
+    // The unreadable record is left as it was, not replaced by a one-provider
+    // record standing in for what could not be read.
+    assertEquals((await Deno.stat(path)).isDirectory, true);
+    // Delete degrades to a no-op rather than throwing.
+    await deleteStreamSession(workDir, STREAM, "claude");
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }

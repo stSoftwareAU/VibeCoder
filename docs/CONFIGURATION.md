@@ -3283,7 +3283,8 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   milestone-close housekeeping, or when a session proves unresumable and the
   stream is reset. No migration is involved: a pre-existing per-issue record
   keeps loading exactly as before, and a host with no stream record starts the
-  stream fresh.
+  stream fresh. The store is in place; the phases that read and write it land
+  with the rest of the stream work in this milestone.
 - A branch carrying **only** WIP markers does not become a PR: when a claim
   resumed a checkpoint and added no commit of its own, the completion phase
   refuses to raise a half-done PR from parked work and the issue returns to
