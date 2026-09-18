@@ -984,8 +984,10 @@ export async function syncMilestoneBranchWithDefault(
         analyseConflictedFile(side, escalated.get(side.path)!.reason)
       );
     // An escalation is an attempt too (Issue #2308) — the rungs that reached
-    // it cost the same minutes, and the log says where they went.
-    recordTimings();
+    // it cost the same minutes, and the log says where they went. The line
+    // travels with the refusal as well (Issue #2311): the `merge-fallback`
+    // flag reports what each spent run cost.
+    const escalationTimings = recordTimings();
     return {
       ok: false,
       error: new MilestoneConflictEscalation(
@@ -1001,6 +1003,7 @@ export async function syncMilestoneBranchWithDefault(
         defaultSha,
         undefined,
         preMergeSha,
+        escalationTimings,
       ),
     };
   }
@@ -1245,8 +1248,9 @@ export async function syncMilestoneBranchWithDefault(
         describeRepairEscalation(firstGate, repair)
       }`
       : gatedResolved.error.message;
-    // A gate that refused still spent the minutes (Issue #2308).
-    recordTimings();
+    // A gate that refused still spent the minutes (Issue #2308), and the
+    // refusal carries them (Issue #2311).
+    const gateTimings = recordTimings();
     return {
       ok: false,
       error: new MilestoneConflictEscalation(
@@ -1264,6 +1268,7 @@ export async function syncMilestoneBranchWithDefault(
         defaultSha,
         gateFailure,
         preMergeSha,
+        gateTimings,
       ),
     };
   }

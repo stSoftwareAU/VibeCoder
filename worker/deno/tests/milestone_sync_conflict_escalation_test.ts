@@ -118,6 +118,11 @@ Deno.test(
       assertStringIncludes(body, DEFAULT_SHA);
       assertStringIncludes(body, MILESTONE_BRANCH);
       assertStringIncludes(body, "main");
+      // Issue #2311: no conflict outcome ever reaches a human.
+      assert(
+        !calls.some((c) => c.join(" ").includes("needs-human")),
+        `a conflict outcome wrote needs-human: ${JSON.stringify(calls)}`,
+      );
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

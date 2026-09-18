@@ -22,37 +22,6 @@ import { DEFAULT_MAX_CONFLICT_ATTEMPTS } from "./pr_merge_conflict_scan.ts";
 export const MILESTONE_SYNC_ESCALATION_THRESHOLD = 3;
 
 /**
- * Whether this cycle's concluded reason repeats the previous cycle's
- * (Issue #1964).
- *
- * A branch whose failure reason has not changed is not making progress: the
- * fleet watched `milestone/168-…` spend four cycles, and four agent runs, on
- * one identical line before anyone was told. An identical repeat is therefore
- * escalated on its second occurrence rather than at
- * {@link MILESTONE_SYNC_ESCALATION_THRESHOLD}.
- *
- * "The previous cycle" means the previous **failing** cycle in an unbroken
- * run of them. {@link SyncStreakEntry.lastAttempt} survives a success on
- * purpose — it is the audit record — so the caller passes `failureCount`,
- * this cycle's consecutive-failure count, and a branch that failed, synced,
- * then failed the same way again reads as the first failure it is.
- *
- * @param entry - The branch's streak entry, before this cycle concludes
- * @param reason - The reason this cycle concluded with
- * @param failureCount - Consecutive failures including this cycle's
- */
-export function isRepeatedFailureReason(
-  entry: SyncStreakEntry,
-  reason: string,
-  failureCount: number,
-): boolean {
-  if (failureCount < 2) return false;
-  const previous = entry.lastAttempt?.reason;
-  return typeof previous === "string" && previous.length > 0 &&
-    previous === reason;
-}
-
-/**
  * Concluded conflict-resolution failures a milestone branch may spend before
  * the ladder stops trying (Issue #1766), with no wait between them
  * (Issue #2305).
@@ -87,6 +56,19 @@ export interface ConflictAttemptRecord {
   reason: string;
   /** Default-branch tip the attempt merged from, when it was known. */
   defaultSha?: string;
+  /** Host that ran the attempt (Issue #2311). */
+  host?: string;
+  /**
+   * What the attempt made of the conflict, file by file (Issue #2311) — the
+   * account the `merge-fallback` flag reproduces. {@link reason} is the one
+   * line the ledger compares; this is the detail a reader needs.
+   */
+  analysis?: string;
+  /**
+   * The attempt's stage timings as `formatStageTimings` rendered them
+   * (Issues #2308, #2311). Absent when nothing was timed.
+   */
+  timings?: string;
 }
 
 /** One branch's streak state. */
@@ -145,6 +127,16 @@ export interface SyncStreakEntry {
   announcedAttemptAt?: string;
   /** The most recent concluded attempt, whatever it concluded. */
   lastAttempt?: ConflictAttemptRecord;
+  /**
+   * Every charged failure of the budget currently being spent
+   * (Issue #2311) — the runs the `merge-fallback` flag reports.
+   *
+   * {@link lastAttempt} is one record, and the flag has to name **both** runs
+   * that were spent before the fallback ran. Charged failures only, so the
+   * list is the budget's own history; {@link resetConflictLedgerOnSuccess}
+   * drops it with the attempts it describes.
+   */
+  failedAttempts?: ConflictAttemptRecord[];
   /** Default-branch tip this branch was last synced against. */
   lastSyncedDefaultSha?: string;
   /**
@@ -155,6 +147,17 @@ export interface SyncStreakEntry {
    * when the default branch happens to move.
    */
   lastSyncedMilestoneSha?: string;
+  /**
+   * The default-branch tip a roll-back **could not merge** was run against
+   * (Issue #2311).
+   *
+   * The roll-back is the last automatic step, so a branch whose roll-back
+   * failed would otherwise sit out every remaining cycle for ever — and the
+   * fallback asked no human to rescue it. New commits on the default branch
+   * are a different merge, so this records which tip was already answered
+   * for: a tip that has moved past it re-arms the two-run budget.
+   */
+  fallbackDefaultSha?: string;
   /** Lifetime count of conflict resolutions rolled back on this branch. */
   rollbacks?: number;
   /** Child PR numbers a roll-back has already reverted (Issue #1781). */
@@ -337,12 +340,29 @@ function readLastAttempt(value: unknown): ConflictAttemptRecord | undefined {
     return undefined;
   }
   const defaultSha = optionalText(record.defaultSha);
+  const host = optionalText(record.host);
+  const analysis = optionalText(record.analysis);
+  const timings = optionalText(record.timings);
   return {
     at,
     outcome,
     reason: typeof record.reason === "string" ? record.reason : "",
     ...(defaultSha ? { defaultSha } : {}),
+    ...(host ? { host } : {}),
+    ...(analysis ? { analysis } : {}),
+    ...(timings ? { timings } : {}),
   };
+}
+
+/** The charged failures of the current budget, dropping malformed rows. */
+function readFailedAttempts(
+  value: unknown,
+): ConflictAttemptRecord[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((row) => {
+    const record = readLastAttempt(row);
+    return record ? [record] : [];
+  });
 }
 
 /**
@@ -360,6 +380,8 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const syncedSha = optionalText(entry.lastSyncedDefaultSha);
   const syncedMilestoneSha = optionalText(entry.lastSyncedMilestoneSha);
   const lastAttempt = readLastAttempt(entry.lastAttempt);
+  const failedAttempts = readFailedAttempts(entry.failedAttempts);
+  const fallbackSha = optionalText(entry.fallbackDefaultSha);
   const revertedPrs = readPositiveInts(entry.revertedPrs);
   const revertedShas = readShaList(entry.revertedShas);
   return {
@@ -367,6 +389,8 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
     ...(announcedAt ? { announcedAttemptAt: announcedAt } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
+    ...(failedAttempts !== undefined ? { failedAttempts } : {}),
+    ...(fallbackSha ? { fallbackDefaultSha: fallbackSha } : {}),
     ...(syncedSha ? { lastSyncedDefaultSha: syncedSha } : {}),
     ...(syncedMilestoneSha
       ? { lastSyncedMilestoneSha: syncedMilestoneSha }
@@ -423,6 +447,9 @@ export function openConflictAttempt(
  * @param reason - One line naming what it tripped on.
  * @param defaultSha - Default-branch tip the attempt merged from.
  * @param nowMs - Conclusion time in epoch milliseconds.
+ * @param details - The host that ran it, its stage timings and what it made
+ *   of the conflict (Issue #2311), so the `merge-fallback` flag can report
+ *   what each run cost, where it ran and what it concluded.
  */
 export function concludeConflictAttempt(
   entry: SyncStreakEntry,
@@ -430,18 +457,33 @@ export function concludeConflictAttempt(
   reason: string,
   defaultSha?: string,
   nowMs: number = Date.now(),
+  details: { host?: string; timings?: string; analysis?: string } = {},
 ): SyncStreakEntry {
   const { attemptOpenedAt: _opened, ...rest } = entry;
   const charged = outcome === "failed";
+  const record: ConflictAttemptRecord = {
+    at: new Date(nowMs).toISOString(),
+    outcome,
+    reason,
+    ...(defaultSha ? { defaultSha } : {}),
+    ...(details.host ? { host: details.host } : {}),
+    ...(details.analysis ? { analysis: details.analysis } : {}),
+    ...(details.timings ? { timings: details.timings } : {}),
+  };
+  // Only a charged failure joins the budget's history — the flag reports the
+  // runs that were spent, not the ones the branch was never answerable for.
+  // The list is capped at the budget so a re-armed branch cannot grow it
+  // without bound.
+  const failedAttempts = charged
+    ? [...(entry.failedAttempts ?? []), record].slice(
+      -MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    )
+    : entry.failedAttempts;
   return {
     ...rest,
     conflictAttempts: (entry.conflictAttempts ?? 0) + (charged ? 1 : 0),
-    lastAttempt: {
-      at: new Date(nowMs).toISOString(),
-      outcome,
-      reason,
-      ...(defaultSha ? { defaultSha } : {}),
-    },
+    lastAttempt: record,
+    ...(failedAttempts !== undefined ? { failedAttempts } : {}),
   };
 }
 
@@ -497,11 +539,19 @@ export function recordDefaultSha(
  * SyncStreakEntry.rollbacks} count, the last synced tip and the
  * {@link SyncStreakEntry.lastAttempt} audit record survive — they describe
  * the branch's history, not the budget that has just been refilled.
+ * {@link SyncStreakEntry.failedAttempts} goes with the attempts it describes
+ * (Issue #2311): it is the spent budget's own history, and the next fallback
+ * must report its own runs rather than a previous conflict's.
  */
 export function resetConflictLedgerOnSuccess(
   entry: SyncStreakEntry,
 ): SyncStreakEntry {
-  const { attemptOpenedAt: _opened, ...rest } = entry;
+  const {
+    attemptOpenedAt: _opened,
+    failedAttempts: _spent,
+    fallbackDefaultSha: _flagged,
+    ...rest
+  } = entry;
   return { ...rest, conflictAttempts: 0 };
 }
 

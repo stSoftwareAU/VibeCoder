@@ -32,6 +32,8 @@ import {
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
 import { isConflictEscalation } from "./milestone_conflict_triage.ts";
+import { currentHost } from "./conflict_stage_timer.ts";
+import { describeConflictAnalyses } from "./milestone_fallback_flag.ts";
 import {
   conflictAttemptDue,
   escalateSyncConflict,
@@ -375,12 +377,20 @@ export async function presyncMilestoneBranch(
   // undecided is the branch's to answer for.
   const verdict = judgeSyncFailure(sync.error, grant.agentAllowed);
   const conflict = isConflictEscalation(sync.error) ? sync.error : undefined;
+  // The same record the sweep writes (Issue #2311): a run charged here is a
+  // run the `merge-fallback` flag reports, so it carries its host, its stage
+  // timings and what it made of the conflict.
   entry = concludeConflictAttempt(
     entry,
     verdict.outcome,
     verdict.reason,
     conflict?.defaultSha ?? defaultSha,
     nowMs,
+    {
+      host: currentHost(),
+      ...(conflict?.timings ? { timings: conflict.timings } : {}),
+      ...(conflict ? { analysis: describeConflictAnalyses(conflict) } : {}),
+    },
   );
   await persist(`the ${verdict.outcome} conclusion`);
   if (verdict.outcome === "failed") {

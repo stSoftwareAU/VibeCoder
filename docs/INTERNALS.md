@@ -3667,7 +3667,11 @@ restarts. The sync pass writes `lastSyncedDefaultSha` through it for the
 cadence gate (Issue #1776) and charges the conflict *attempts* around every
 merge it makes (Issue #1778). Each entry carries `conflictAttempts` (concluded failures),
 `attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
-(`at`, `outcome`, `reason`, `defaultSha`), `lastSyncedDefaultSha` and
+(`at`, `outcome`, `reason`, `defaultSha`, and — since Issue #2311 — `host`,
+`timings` and `analysis`), `failedAttempts` (every charged run of the budget
+currently being spent, which is what the `merge-fallback` flag reports),
+`fallbackDefaultSha` (the default tip a roll-back that could not merge already
+answered for), `lastSyncedDefaultSha` and
 `rollbacks`. Every field is optional and every malformed field is dropped, so a
 file written before the ledger existed loads as a branch with an unspent budget
 rather than failing the whole load — and a `deferUntil` an older worker wrote
@@ -3688,13 +3692,22 @@ Three rules decide what the ledger does, and each is a pure helper:
   what bounds the retrying. `isConflictAttemptDue` is therefore "no attempt is
   open on this host"; a sibling host's live attempt is refused by the sync
   claim (`milestone_sync_claim.ts`), which is cross-host as the ledger is not.
-  A moved tip never refills `conflictAttempts`: resetting on a tip move would
-  refill the budget faster than a busy default branch could let the ladder
-  spend it, and an unresolvable conflict would retry for ever.
-- **Only success zeroes it.** `resetConflictLedgerOnSuccess` is the one thing
-  that returns `conflictAttempts` to zero; the lifetime `rollbacks` count
-  survives, because it describes the branch rather than the conflict that just
-  ended.
+  A moved tip never refills `conflictAttempts` **while the ladder still has
+  somewhere to go**: resetting on every tip move would refill the budget faster
+  than a busy default branch could let the ladder spend it. The one exception
+  is a branch whose roll-back **could not merge** (Issue #2311), which is the
+  end of the automatic ladder and no longer asks a human to release it. That
+  fallback records the tip it answered for in `fallbackDefaultSha`, and a
+  default tip that has moved past it re-arms the two runs — new commits are a
+  different merge, and the same `merge-fallback` flag collects what they find.
+  The alternative was a branch that sat out every remaining cycle for ever with
+  nobody asked to look at it; the cost is bounded by the default branch's own
+  cadence — one re-arm per default push, never one per sync cycle.
+- **Only success — or that fallback re-arm — zeroes it.**
+  `resetConflictLedgerOnSuccess` is the one thing that returns
+  `conflictAttempts` to zero; the lifetime `rollbacks` count survives, because
+  it describes the branch rather than the conflict that just ended, while
+  `failedAttempts` and `fallbackDefaultSha` go with the budget they describe.
 
 ```mermaid
 stateDiagram-v2
@@ -3737,10 +3750,14 @@ label and no issue. The per-conflict analysis escalation Issue #1559 posted on
 the first conflicting commit is gone: it fired before any of the automatic
 attempts had been spent, which is exactly the "needs-human while a rung
 remains" this budget removes. On the last concluded failure the branch is
-handed to the roll-back (`executeRollback`, Issue #1781). On `merged: true`
-the ledger is reset, `rollbacks` is incremented and the reverted SHAs are
-recorded; on `merged: false` one `needs-human` comment lands on the existing
-escalation target and a second cycle posts nothing. Without a clone git
+handed to the roll-back (`executeRollback`, Issue #1781). **Both outcomes file
+or append the one `merge-fallback` flag** first (Issue #2311), so it reports
+the budget that was actually spent, and the flag's number is linked from the
+notice that follows. On `merged: true` the ledger is reset, `rollbacks` is
+incremented and the reverted SHAs are recorded; on `merged: false` the notice
+goes out with **no** `needs-human` label, the budget stays spent, and
+`fallbackDefaultSha` records the tip answered for so a moved default branch
+re-arms the two runs. Without a clone git
 runner the default still logs `budget exhausted: roll-back not yet available`.
 
 **Every behind branch is offered the agent rung; the budget decides**
@@ -3927,11 +3944,14 @@ paths.
   cause named. Each would otherwise plan an empty roll-back and report
   `nothing left to revert` with every child still in place.
 
-A `merged: false` result is logged `WARNING` with its reason, then escalated
-once — `needs-human` on the parent planning issue (reopened if closed) else
-the oldest open child, never a new issue (Issue #1781). A destination of
-`none` is one log line and the streak is marked escalated so the line is not
-repeated.
+A `merged: false` result is logged `WARNING` with its reason, and one notice
+lands on the parent planning issue (reopened if closed) else the oldest open
+child (Issue #1781). Since Issue #2311 that notice carries **no**
+`needs-human` label and asks for nothing: it names the `merge-fallback` flag
+the fallback filed, says the branch is tried again once the default branch
+moves, and files no issue of its own. A destination of `none` is one log line.
+The notice cannot repeat every cycle because the spent budget keeps the branch
+out of the sync until `fallbackDefaultSha` is overtaken.
 
 On `merged: true`
 [milestone_rollback_requeue.ts](../worker/deno/lib/milestone_rollback_requeue.ts)
@@ -3941,9 +3961,12 @@ roll-back marker is posted, a closed issue is reopened, `idle-task` is
 re-applied when that is what it carried, `work-on` is stripped and listed
 for a trusted re-label, every open PR of that issue and any open milestone
 summary PR is closed with a comment naming the revert, and exactly one
-notice — no `needs-human` — names the reverted PRs, the reopened issues, the
-running roll-back count and the checklist. Untouched children stay closed.
-Self-heal events `rolled_back` / `rollback_failed` record each outcome.
+notice — no `needs-human` — names the `merge-fallback` flag, the reverted PRs,
+the reopened issues, the running roll-back count and the checklist. Untouched
+children stay closed. Self-heal events `rolled_back` / `rollback_failed`
+record each outcome, and `fallback_flagged` carries the flag's issue number
+(Issue #2311) — a `sync_failed` with a roll-back and no `fallback_flagged`
+beside it means the record was never written.
 
 ```mermaid
 flowchart TD

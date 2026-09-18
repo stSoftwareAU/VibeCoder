@@ -136,6 +136,43 @@ export function formatStageTimings(
   }`;
 }
 
+/** A parsed timings line: the host it names, and each stage it reports. */
+export interface ParsedStageTimings {
+  /** The host the line names, when it named one. */
+  host?: string;
+  /** One entry per stage, `null` seconds for an unfinished stage. */
+  stages: { stage: string; seconds: number | null }[];
+}
+
+/**
+ * Read a rendered timings line back (Issue #2311).
+ *
+ * The inverse of {@link formatStageTimings}, and deliberately beside it so
+ * the two cannot drift: the line is what a conclusion records, and the
+ * `merge-fallback` flag reports each spent run's stages from it. Anything the
+ * grammar does not fit is dropped rather than guessed — a stage nobody can
+ * read is not a stage that took zero seconds.
+ *
+ * @param line - A line as {@link formatStageTimings} rendered it
+ */
+export function parseStageTimings(line: string): ParsedStageTimings {
+  const match = line.match(/^Timings \(host `([^`]*)`\): (.*)$/);
+  if (!match) return { stages: [] };
+  const host = match[1] ?? "";
+  const body = (match[2] ?? "").trim();
+  const stages = body === "no stage was timed" ? [] : body.split(" · ").flatMap(
+    (part) => {
+      const stage = part.match(/^(\S+) (unfinished|\d+)s?$/);
+      if (!stage) return [];
+      return [{
+        stage: stage[1]!,
+        seconds: stage[2] === "unfinished" ? null : Number(stage[2]),
+      }];
+    },
+  );
+  return { ...(host ? { host } : {}), stages };
+}
+
 /**
  * The host this attempt is running on — the one seam the callers use.
  *

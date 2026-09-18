@@ -1825,6 +1825,18 @@
       "paths": [
         "worker/deno/lib/conflict_fallback_context.ts"
       ]
+    },
+    {
+      "issue": 2311,
+      "chunk": "top-up-2311",
+      "title": "top-up: the milestone fallback flag",
+      "ledger": "docs/audits/security-sweep-2311-milestone-fallback-flag.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_fallback_flag.ts (#2311)",
+      "status": "swept",
+      "sweptAt": "8d8cd77682a6d31412f56537a676dc67f379b991",
+      "paths": [
+        "worker/deno/lib/milestone_fallback_flag.ts"
+      ]
     }
   ],
   "roots": [

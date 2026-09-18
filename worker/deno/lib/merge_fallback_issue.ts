@@ -94,10 +94,11 @@ export interface MergeFallbackStageTiming {
   /** Stage name — `deepen`, `rules`, `context`, `agent`, `gate`, `push`. */
   stage: string;
   /**
-   * Whole seconds the stage took, or `null` when it was started and never
-   * stopped — rendered as `unfinished`, exactly as `conflict_stage_timer.ts`
-   * reports it (Issue #2308). An attempt that died inside the agent is the
-   * case these timings exist to show, so it must not render as a duration.
+   * Whole seconds the stage took, or `null` for a stage that started and
+   * never stopped (Issue #2311) — rendered `unfinished`, exactly as
+   * `conflict_stage_timer.ts` reports it (Issue #2308). An attempt that died
+   * inside the agent is the case these timings exist to show, so it must not
+   * render as a duration.
    */
   seconds: number | null;
 }
