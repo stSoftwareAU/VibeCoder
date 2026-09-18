@@ -17,8 +17,22 @@ import {
   formatStreamBusy,
   STREAM_LOCK_ISSUE_LIMIT,
 } from "../lib/stream_lock.ts";
-import { LIVE_HEARTBEAT_WINDOW_SECONDS } from "../lib/claim_issue.ts";
+import {
+  type ClaimOptions,
+  LIVE_HEARTBEAT_WINDOW_SECONDS,
+} from "../lib/claim_issue.ts";
 import { formatHeartbeatMarker } from "../lib/heartbeat_storage.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  type IssueContext,
+  type PhaseState,
+  workOnIssueSetupBranch,
+} from "../lib/issue_worker.ts";
+import {
+  isExpectedSkipResult,
+  type PhaseResult,
+} from "../lib/issue_worker_types.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const MILESTONE = "#2319 session resume on by default";
@@ -407,5 +421,86 @@ Deno.test("formatStreamBusy - names the stream, the holder issue and the host", 
   assertEquals(
     line,
     `stream busy: ${REPO}${MILESTONE} held by #2333 on GRQ-23`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The setup phase's wiring — the lock is on only for runs that join a stream
+// ---------------------------------------------------------------------------
+
+/** Capture the `ClaimOptions` the setup phase builds. */
+function captureClaim(enableSessionResume: boolean): {
+  run: () => Promise<PhaseResult>;
+  seen: ClaimOptions[];
+} {
+  const seen: ClaimOptions[] = [];
+  const ctx: IssueContext = {
+    repo: REPO,
+    issueNumber: 2334,
+    issueTitle: "Fleet-wide milestone stream lock",
+    issueBody: "",
+    issueLabels: [],
+    issueComments: "",
+    githubUser: "stservice",
+    milestoneTitle: MILESTONE,
+    config: { ...buildDefaultWorkerConfig(), enableSessionResume },
+  };
+  const deps = createMockDeps({
+    issues: {
+      claimIssue: (options: ClaimOptions) => {
+        seen.push(options);
+        return Promise.resolve({
+          ok: true as const,
+          value: {
+            claimed: false,
+            reason: "stream_busy" as const,
+            reasonDetail: `${REPO}${MILESTONE} held by #2333 on GRQ-23`,
+          },
+        });
+      },
+    },
+  });
+  const state: PhaseState = {
+    branchName: "issue-2334",
+    baseBranch: "main",
+    defaultBranch: "main",
+    repoPath: "/tmp/test-repo",
+    clarityStatus: "not_assessed",
+    claudeOutput: "",
+    executeStartTime: 0,
+    baselineQualityPassed: true,
+    baselineQualityOutput: "",
+  };
+  return { run: () => workOnIssueSetupBranch(ctx, state, deps), seen };
+}
+
+Deno.test("setup phase - the stream lock follows enable_session_resume", async () => {
+  const on = captureClaim(true);
+  await on.run();
+  assertEquals(on.seen[0]?.streamLockEnabled, true);
+
+  const off = captureClaim(false);
+  await off.run();
+  assertEquals(off.seen[0]?.streamLockEnabled, false);
+});
+
+Deno.test("setup phase - a stream_busy refusal is a skip, not a failure", async () => {
+  const { run } = captureClaim(true);
+  const result = await run();
+
+  assertEquals(result.status, "early_exit");
+  assert(result.status === "early_exit");
+  assertEquals(result.claimNotHeld, true);
+  assertStringIncludes(result.reason, "stream_busy");
+  assertStringIncludes(result.reason, "held by #2333 on GRQ-23");
+  // The reason shape the loop classifies on: an expected skip takes no
+  // failure ladder, so no `failed-once` label and no failure counter.
+  assertEquals(
+    isExpectedSkipResult({
+      success: false,
+      phase: "setup",
+      reason: result.reason,
+    }),
+    true,
   );
 });
