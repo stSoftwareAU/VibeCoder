@@ -5210,9 +5210,10 @@ async function syncMilestoneBranchesFn(
   logger: Logger,
   env: EnvLookup,
   /**
-   * The handler's watchdog deadline (Issue #1778). The sweep offers its
-   * single conflict-agent rung only while this covers a whole agent run;
-   * absent, the pass is unbounded and the rung is offered on its own merits.
+   * The handler's watchdog deadline (Issue #1778). The sweep offers a
+   * conflict-agent rung to each behind branch only while this still covers a
+   * whole agent run (Issue #2309); absent, the pass is unbounded and every
+   * rung is offered on its own merits.
    */
   deadlineEpochMs?: number,
 ): Promise<void> {
@@ -5313,11 +5314,11 @@ async function syncMilestoneBranchesFn(
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
     syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
-      // Issue #1778: the cycle grants the agent rung to at most one branch,
-      // and only while the handler's budget covers a whole run. A branch
-      // that was not granted it is handed no agent at all, so the ladder
-      // stops after the deterministic rules rather than starting a run the
-      // watchdog would kill mid-edit (#1693).
+      // Issue #2309: every behind branch is offered the agent rung, and only
+      // the handler's remaining budget refuses one. A branch that was not
+      // granted it is handed no agent at all, so the ladder stops after the
+      // deterministic rules rather than starting a run the watchdog would
+      // kill mid-edit (Issues #1778, #1693).
       // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
       // this sweep and a child run's pre-cut sync hand the ladder exactly the
       // same rung — including the grant's own timeout.
@@ -5346,6 +5347,20 @@ async function syncMilestoneBranchesFn(
       );
     },
     localCloneExistsFn,
+    // Issue #2309: longest-behind first within each repository. The
+    // measurement itself lives in `milestone_behind_count.ts`, where both its
+    // failure paths are reachable from a test; a count that cannot be read is
+    // returned as the failure git gave, never as a zero.
+    behindCountFn: async (repo, milestoneBranch, defaultBranch) => {
+      const { measureMilestoneBehindCount } = await import(
+        "./milestone_behind_count.ts"
+      );
+      return await measureMilestoneBehindCount({
+        milestoneBranch,
+        defaultBranch,
+        cwd: `${workDir}/${repo.split("/")[1]}`,
+      });
+    },
     // Issue #2030: lane lease per repository, and a cross-host claim per
     // branch so two hosts never resolve the same sync at once.
     leaseRepoFn: (repo) => acquireMaintenanceRepoLease(repo),

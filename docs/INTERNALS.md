@@ -3725,7 +3725,7 @@ is the branch's to answer for:
 | Conflicted and every rung left it undecided                     | `failed` — one attempt charged, due again next cycle |
 | The agent ran out **its own** timeout                           | `failed` — the rung was climbed and the conflict beat it (Issue #2305) |
 | The **worker** ended the run at the cycle deadline              | `disrupted` — nothing was judged, so nothing is charged (Issues #1693, #2305) |
-| Conflicted while the cycle's agent rung was already spent       | `not-charged` — `agent deferred: cycle budget` |
+| Conflicted with too little of the cycle left to cover a rung     | `not-charged` — `agent deferred: cycle budget` (Issue #2309) |
 | Merge gate refused the merged tree, or refused the resolution    | `not-charged` — the gate keeps its own escalation, reported once |
 | A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
 | Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
@@ -3743,8 +3743,9 @@ recorded; on `merged: false` one `needs-human` comment lands on the existing
 escalation target and a second cycle posts nothing. Without a clone git
 runner the default still logs `budget exhausted: roll-back not yet available`.
 
-**One agent run per cycle, across every repo and milestone.** `grantAgentRun`
-decides it, and it is the merge-conflict drain's rule with **both** halves:
+**Every behind branch is offered the agent rung; the budget decides**
+(Issue #2309). `grantAgentRun` decides it, and it is the merge-conflict drain's
+rule with **both** halves:
 
 - **A floor.** A rung is not started at all unless the handler's remaining
   budget, less the `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS` a resolution spends
@@ -3758,14 +3759,39 @@ decides it, and it is the merge-conflict drain's rule with **both** halves:
   while making every conflict `not-charged`, so the budget would never exhaust
   and an unresolvable conflict would reach nobody at all.
 
-The grant is spent when it is handed out and refunded only for a merge that had
-no conflict: the bound is "at most one agent run a cycle", so over-spending is
-the safe direction — a merge that failed *after* the agent ran leaves the grant
-spent rather than handing a second branch a second run. Every other conflicting
-branch that cycle climbs the triage and the deterministic rules only, and its
-attempt is concluded `not-charged`. Priority 1.72 is declared `agentBacked`
-(like the drain's own handler) so the handler that spawns that agent gets the
-cycle-deadline watchdog rather than the flat 600-second one.
+The rung used to be latched: the first branch to hold it spent the cycle's one
+grant, and every other conflicting branch that cycle was refused a rung the
+budget could still have covered (Issue #1778). Issue #2309 removed the latch.
+`grantAgentRun` is asked **per branch**, reading the deadline that is actually
+left, so a second conflicting branch is refused only when the floor above says
+the cycle can no longer cover a run — and a refused branch still concludes
+`agent deferred: cycle budget`, never a charged failure. Priority 1.72 is
+declared `agentBacked` (like the drain's own handler) so the handler that spawns
+that agent gets the cycle-deadline watchdog rather than the flat 600-second one.
+
+**Longest behind first** (Issue #2309). Because the cycle's budget is spent in
+branch order, the order matters: before a repository's branches are synced, each
+one's behind count is measured against the default tip the pass just fetched
+(one `git rev-list --count origin/<milestone>..origin/<default>`, the same
+measurement `milestone_presync.ts` makes) and they are synced behind-count
+descending. A branch the ledger already records against this tip is level by
+construction and is not measured at all, so an idle cycle pays nothing for an
+order it will not use. A branch whose count cannot be read sorts as level and is
+still synced, only later in the pass — ordering must never be the reason a
+branch is not synced — and a branch that is genuinely level still
+takes today's cheap path through the cadence guard. The cross-repo cursor
+(Issue #2215) and the per-repo lease (Issue #2030) are unchanged: the order is
+decided **within** each repository's pass, which is where the fetch and the
+lease already are.
+
+**A running attempt says so** (Issue #2309). When the rung is genuinely entered
+— not merely offered — the sweep logs one line and posts one comment on the
+milestone's escalation target naming the host and the ISO time the attempt
+opened. It is keyed on the ledger's `attemptOpenedAt` and recorded as
+`announcedAttemptAt`, so one opened attempt is announced exactly once, and a
+merge the deterministic rules settle announces nothing. Like every other post
+this sweep makes, it is a record: nothing is reopened, labelled or asked of
+anyone.
 
 **A branch past its budget is not merged again.** It is the roll-back's, so the
 pre-merge guard skips it with `the conflict budget is spent` rather than
