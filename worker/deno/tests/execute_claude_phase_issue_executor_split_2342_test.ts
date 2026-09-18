@@ -148,6 +148,20 @@ Deno.test("execute_claude_phase - a per-repo true beats a host-wide off (Issue #
   assertEquals(Object.keys(runOptions.agents), [ISSUE_EXECUTOR_AGENT_NAME]);
 });
 
+Deno.test("execute_claude_phase - a split run also asks the runner to enforce advisor edits (Issue #2344)", async () => {
+  // The guard and the executors are the same decision: a run carrying
+  // executors must also carry the hook that keeps the edits inside them.
+  const on = await runWith({ issueExecutorSplit: true });
+  assertEquals(on?.issueExecutorSplit, true);
+
+  const off = await runWith({});
+  assertEquals(
+    off?.issueExecutorSplit,
+    undefined,
+    "a key-off run configures no hook and parses no counts",
+  );
+});
+
 Deno.test("execute_claude_phase - the key reaches the prompt build as well as the argv (Issue #2343)", async () => {
   // One boolean decides both, so a run cannot carry executors without the
   // advisor/executor block that tells it to use them.

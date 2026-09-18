@@ -389,6 +389,18 @@ export interface AgentInvocationRequest {
    */
   mcpConfigPath?: string;
   /**
+   * Extra settings for this invocation, as the JSON string `--settings` takes
+   * beside a path (Issue #2344).
+   *
+   * Carries the split run's `PreToolUse` guard, which denies the advisor's own
+   * `Edit`/`Write` calls while allowing an executor's — a distinction
+   * `disallowedTools` cannot express, because a tool removed from the session
+   * pool is gone for sub-agents too. Absent — every run that has not opted
+   * into the split — emits no argument. Claude-only: no other provider takes
+   * the flag.
+   */
+  settingsJson?: string;
+  /**
    * The prompt will be written to the child's stdin (Issue #4385): build
    * the argv so the CLI reads it from there, and put no prompt text in
    * argv. Only meaningful for a provider whose `promptTransport` is
@@ -593,6 +605,11 @@ function buildClaudeCliArgs(
   // rather than quietly reverting to single-model routing.
   if (request.agents) {
     args.push("--agents", JSON.stringify(request.agents));
+  }
+  // The split run's advisor edit guard (Issue #2344), beside the sub-agent
+  // definitions it enforces. Absent pushes nothing.
+  if (request.settingsJson) {
+    args.push("--settings", request.settingsJson);
   }
   args.push("--verbose");
   args.push("--output-format", "stream-json");

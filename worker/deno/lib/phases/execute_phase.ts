@@ -808,8 +808,12 @@ async function executeClaudeBody(
           // Issue #2159 layers the `codegraph` server beside that grant on an
           // enabled run whose index built, and changes nothing otherwise.
           mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
-          // Issue #2342: only a split run carries sub-agent definitions.
-          ...(issueExecutorSplit ? { agents: buildIssueExecutorAgents() } : {}),
+          // Issue #2342: only a split run carries sub-agent definitions, and
+          // only a split run carries the guard that keeps every `Edit`/`Write`
+          // inside one of them (Issue #2344).
+          ...(issueExecutorSplit
+            ? { agents: buildIssueExecutorAgents(), issueExecutorSplit: true }
+            : {}),
           logger,
           sessionResumeState: state.sessionResumeState,
           // The stream conversation could not be verifiably compacted before

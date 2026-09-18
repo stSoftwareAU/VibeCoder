@@ -120,6 +120,17 @@ Deno.test("execute_phase - a per-repo true beats a host-wide off (Issue #2342)",
   assertEquals(executor.model, "sonnet");
 });
 
+Deno.test("execute_phase - a split run also asks the agent runner to enforce advisor edits (Issue #2344)", async () => {
+  // One decision, two effects: the executors, and the hook that keeps every
+  // `Edit`/`Write` inside them.
+  assertEquals((await runPhase(true))?.issueExecutorSplit, true);
+  assertEquals(
+    (await runPhase(false))?.issueExecutorSplit,
+    undefined,
+    "a key-off run configures no hook and parses no counts",
+  );
+});
+
 /**
  * The same key reaches the prompt build (Issue #2343).
  *

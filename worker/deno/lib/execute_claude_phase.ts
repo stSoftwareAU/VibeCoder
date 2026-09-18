@@ -1453,8 +1453,12 @@ async function executeClaudePhaseBody(
         // enabled run whose index built; on every other status this is
         // exactly `screenshotRequired`, as before.
         mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
-        // Issue #2342: only a split run carries sub-agent definitions.
-        ...(issueExecutorSplit ? { agents: buildIssueExecutorAgents() } : {}),
+        // Issue #2342: only a split run carries sub-agent definitions, and
+        // only a split run carries the guard that keeps every `Edit`/`Write`
+        // inside one of them (Issue #2344).
+        ...(issueExecutorSplit
+          ? { agents: buildIssueExecutorAgents(), issueExecutorSplit: true }
+          : {}),
         // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
         ...(options.progressExtension
           ? { progressExtension: options.progressExtension }

@@ -53,6 +53,7 @@ import {
   type PhaseClaudeResult,
 } from "./phase_run_stats.ts";
 import { formatUsd } from "./cost_estimate.ts";
+import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import { getRunId } from "./run_id.ts";
 
@@ -352,6 +353,51 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
 }
 
 /**
+ * Prefix of the advisor/executor split line (Issue #2344).
+ *
+ * Greppable by contract, like the quality-gate line above: a pilot run's
+ * violations are read off the issue by matching this prefix, so the wording,
+ * the lower case and the ordering must not be re-styled.
+ */
+const EXECUTOR_SPLIT_STATS_PREFIX = "- executor split:";
+
+/**
+ * Render the run's advisor/executor split line (Issue #2344).
+ *
+ * One line on a split run, and nothing at all on every other run — a comment
+ * from a key-off run is byte-for-byte what it was before this line existed.
+ * Reports the advisor edits that got through (the violations), the ones the
+ * `PreToolUse` guard denied, the executors dispatched and the re-tasks issued.
+ *
+ * @param claudeResults - Completed invocations of the run being reported
+ * @returns The bullet line, or `""` when no invocation was a split run
+ */
+export function buildExecutorSplitStatsLine(
+  claudeResults: readonly PhaseClaudeResult[],
+): string {
+  const splits = claudeResults
+    .map((result) => result.runStats?.executorSplit)
+    .filter((stats): stats is IssueExecutorSplitStats => stats !== undefined);
+  if (splits.length === 0) return "";
+
+  const total = splits.reduce((sum, stats) => ({
+    advisorEditCalls: sum.advisorEditCalls + stats.advisorEditCalls,
+    denials: sum.denials + stats.deniedAdvisorEdits.length,
+    executorDispatches: sum.executorDispatches + stats.executorDispatches,
+    executorRetasks: sum.executorRetasks + stats.executorRetasks,
+  }), {
+    advisorEditCalls: 0,
+    denials: 0,
+    executorDispatches: 0,
+    executorRetasks: 0,
+  });
+
+  return `${EXECUTOR_SPLIT_STATS_PREFIX} ${total.advisorEditCalls} advisor ` +
+    `edit calls, ${total.denials} denied, ${total.executorDispatches} ` +
+    `executors dispatched, ${total.executorRetasks} re-tasks`;
+}
+
+/**
  * Build the wrap-up run-stats comment body for an issue.
  *
  * The stats block itself is rendered by the shared
@@ -413,9 +459,13 @@ export function buildIssueRunStatsComment(args: {
   // Issue #2345: the gate's own outcome, beside the figures of the run it
   // gated and ahead of the cumulative issue total.
   const qualityGateLine = buildQualityGateStatsLine(args.qualityGate);
+  // Issue #2344: what the advisor/executor split did, on a split run only.
+  const splitLine = buildExecutorSplitStatsLine(args.claudeResults);
   const body = `${marker}\n${section}${
     graftLine ? `\n${graftLine}` : ""
-  }${codegraphLine}${qualityGateLine ? `\n${qualityGateLine}` : ""}`;
+  }${codegraphLine}${qualityGateLine ? `\n${qualityGateLine}` : ""}${
+    splitLine ? `\n${splitLine}` : ""
+  }`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
   );
