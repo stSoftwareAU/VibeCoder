@@ -1709,9 +1709,8 @@ pass claimed it from the cached listing and started writing to it. All four PR
 passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge**
 — therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
 before the first write: one `gh pr view --json state,mergeable`, no cache. The
-two
-processors call it directly through `guardPrStillOpen`; the drain and the sweep
-take it as a **required** injected seam, wired to the same function in
+two processors call it directly through `guardPrStillOpen`; the drain and the
+sweep take it as a **required** injected seam, wired to the same function in
 `run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or
 `MERGED` PR is skipped with `skipped: PR closed` / `skipped: PR merged` naming
 the repo and the number, and no push, comment or label follows. An unreadable

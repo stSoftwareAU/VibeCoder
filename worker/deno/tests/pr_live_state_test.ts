@@ -11,6 +11,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   guardPrStillOpen,
+  isPrLiveStateRead,
   prLiveSkipReason,
   readPrLiveState,
 } from "../lib/pr_live_state.ts";
@@ -132,6 +133,22 @@ Deno.test("readPrLiveState - an unrecognised state is unknown, never open", asyn
 
   assert(reading.unknown === true);
   assert(reading.error.includes("DRAFT"), "the raw state must be named");
+});
+
+Deno.test("isPrLiveStateRead - recognises this read's own argv, and nothing else", () => {
+  // Issue #2307: the field list is the whole point. Five other lookups ask
+  // `gh pr view --json state,<something else>`, and a fixture that answered
+  // those with a live-state payload would be answering the wrong question.
+  assert(isPrLiveStateRead(["pr", "view", "7", "--json", "state,mergeable"]));
+  assert(isPrLiveStateRead(["pr", "view", "7", "--json", "state"]));
+  assert(!isPrLiveStateRead(["pr", "view", "7", "--json", "state,mergedAt"]));
+  assert(
+    !isPrLiveStateRead(["pr", "view", "7", "--json", "state,headRefName"]),
+  );
+  assert(!isPrLiveStateRead(["pr", "view", "7", "--json", "mergeable"]));
+  assert(!isPrLiveStateRead(["pr", "view", "7", "--json"]), "no field list");
+  assert(!isPrLiveStateRead(["pr", "view", "7"]), "no --json at all");
+  assert(!isPrLiveStateRead(["pr", "list", "--json", "state,mergeable"]));
 });
 
 Deno.test("prLiveSkipReason - the two closed lines are distinct", () => {

@@ -1,7 +1,8 @@
 /**
  * Test support for the claim-point PR state re-read (Issue #1774).
  *
- * Every PR pass now asks `gh pr view --json state` before its first write, so
+ * Every PR pass now asks `gh pr view --json state,mergeable` before its first
+ * write (Issues #1774, #2307), so
  * a fixture whose `gh` stub answers nothing reports `UNKNOWN` and the pass
  * correctly stands down. A fixture that means "this PR is open" has to say so,
  * and this is where it says it — once, rather than in forty test files.
@@ -13,10 +14,16 @@
  */
 
 export { isPrLiveStateRead } from "../../lib/pr_live_state.ts";
-import { isPrLiveStateRead } from "../../lib/pr_live_state.ts";
+import {
+  isPrLiveStateRead,
+  OPEN_CONFLICTING_PR_PAYLOAD,
+} from "../../lib/pr_live_state.ts";
 
 /**
  * Wrap a test `gh` stub so the claim-point read reports an open PR.
+ *
+ * It answers the whole payload, `mergeable` included (Issue #2307): a bare
+ * `"OPEN"` reads as an unknown verdict, which the merge-conflict drain skips.
  *
  * @param inner - The fixture's own stub; defaults to one that returns "".
  * @returns A stub that answers the state read and delegates everything else.
@@ -25,7 +32,9 @@ export function openPrGh(
   inner: (args: string[]) => Promise<string> = () => Promise.resolve(""),
 ): (args: string[]) => Promise<string> {
   return (args: string[]) =>
-    isPrLiveStateRead(args) ? Promise.resolve("OPEN") : inner(args);
+    isPrLiveStateRead(args)
+      ? Promise.resolve(OPEN_CONFLICTING_PR_PAYLOAD)
+      : inner(args);
 }
 
 /**

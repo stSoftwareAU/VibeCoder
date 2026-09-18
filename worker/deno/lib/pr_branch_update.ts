@@ -203,9 +203,20 @@ export function makeGhPrStateFetcher(
       "--repo",
       repo,
       "--json",
-      "state,mergeable",
+      PR_LIVE_STATE_JSON_FIELDS,
     ]);
 }
+
+/**
+ * The `--json` field list this read asks for, as one value (Issue #2307).
+ *
+ * Exported so the predicate that recognises this read matches this exact
+ * field list rather than "any `pr view` mentioning state" — five other
+ * lookups ask for `state,mergedAt`, `state,headRefName` and friends, and a
+ * fixture that answered those with a state payload would be answering
+ * questions nobody asked it.
+ */
+export const PR_LIVE_STATE_JSON_FIELDS = "state,mergeable";
 
 /** Overall result of executing PR branch updates (Issue #1233). */
 export interface PrBranchUpdateExecutionResult {

@@ -31,7 +31,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { makeGhPrStateFetcher, parsePrLiveFields } from "./pr_branch_update.ts";
+import {
+  makeGhPrStateFetcher,
+  parsePrLiveFields,
+  PR_LIVE_STATE_JSON_FIELDS,
+} from "./pr_branch_update.ts";
 import type { PrLiveMergeable } from "./pr_branch_update.ts";
 import type { LogContext, Logger } from "../types.ts";
 
@@ -79,9 +83,24 @@ export function isPrLiveStateRead(args: readonly string[]): boolean {
   if (args[0] !== "pr" || args[1] !== "view") return false;
   const jsonIndex = args.indexOf("--json");
   if (jsonIndex < 0) return false;
-  // `--json state,mergeable` since Issue #2307, `--json state` before it.
-  return (args[jsonIndex + 1] ?? "").split(",").includes("state");
+  const fields = args[jsonIndex + 1] ?? "";
+  // This read's own field list only: `state,mergeable` since Issue #2307, and
+  // the bare `state` it asked for before. Every other `pr view --json state,…`
+  // in the worker — `state,mergedAt`, `state,headRefName` — is someone else's
+  // question, and must not be answered with this reading.
+  return fields === PR_LIVE_STATE_JSON_FIELDS || fields === "state";
 }
+
+/**
+ * What an open, still-conflicting PR's live read answers (Issue #2307).
+ *
+ * The mock fleet and the test fixtures both answer with this, so the payload
+ * a stub returns and the payload `readPrLiveState` parses cannot drift.
+ * `CONFLICTING` because a fixture that reaches the merge-conflict drain is one
+ * the queue says conflicts; the other passes read only the `state` half.
+ */
+export const OPEN_CONFLICTING_PR_PAYLOAD =
+  '{"mergeable":"CONFLICTING","state":"OPEN"}';
 
 /**
  * Read a PR's live state, bypassing every cache.

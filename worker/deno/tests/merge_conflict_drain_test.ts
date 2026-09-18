@@ -784,12 +784,13 @@ Deno.test("drainConflictingPrs - an unknown mergeable skips the PR without spend
   );
 });
 
-Deno.test("drainConflictingPrs - a live MERGED or MERGEABLE read writes nothing to the PR", async () => {
+Deno.test("drainConflictingPrs - a live MERGED, CLOSED or MERGEABLE read writes nothing to the PR", async () => {
   // The live read wired the way production wires it, so the assertion is about
   // the `gh` calls a skipped PR receives: exactly one, the read itself.
   for (
     const payload of [
       '{"mergeable":"UNKNOWN","state":"MERGED"}',
+      '{"mergeable":"UNKNOWN","state":"CLOSED"}',
       '{"mergeable":"MERGEABLE","state":"OPEN"}',
     ]
   ) {
