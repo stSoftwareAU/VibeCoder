@@ -84,6 +84,12 @@ const SAMPLES: Record<ConflictSkipReasonKind, ConflictSkipReason> = {
     issueNumber: 16,
     attemptsSpent: 2,
   },
+  // Issue #2312: the rung after the restarts are spent — a wait, not a human.
+  "parked": {
+    kind: "parked",
+    base: "1111111111111111111111111111111111111111",
+    flagIssueNumber: 900,
+  },
   "disrupted-bound": {
     kind: "disrupted-bound",
     disruptedCount: 3,
@@ -381,6 +387,7 @@ export function describe(reason: ConflictSkipReason): string {
     case "needs-human":
     case "budget-spent":
     case "abandoned-restarted":
+    case "parked":
     case "disrupted-bound":
     case "lock-held":
     case "pr-not-open":

@@ -83,8 +83,9 @@ flowchart TD
     Abort --> Failed["Failure conclusion comment"]
     Failed --> Budget2{"Attempts spent?"}
     Budget2 -->|No| Sleep
-    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(not already restarted,<br/>no other PR)"}
-    Abandon -->|"Already restarted once,<br/>or a step failed"| Left["Left open, reason recorded —<br/>no human is asked"]
+    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(fewer than 2 restarts,<br/>no other PR)"}
+    Abandon -->|"Both restarts spent"| Park["Parked: left open on merge-conflict<br/>with a base-keyed park marker;<br/>re-attempted when the base tip moves"]
+    Abandon -->|"A step failed"| Left["Left open, reason recorded —<br/>no human is asked"]
     Abandon -->|"No originating issue"| NoIssue["Close the PR; the flag issue<br/>carries idle-task and the<br/>PR's diff summary"]
     Abandon -->|"Yes"| Restart["Close the PR (never force-push),<br/>re-queue its issue — keeping any<br/>pickup label, else adding idle-task"]
     Restart --> Flag["File one merge-fallback issue<br/>and link it from the PR"]
@@ -113,6 +114,7 @@ flowchart TD
     style Restart fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style NoIssue fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Flag fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+    style Park fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Left fill:#707070,stroke:,color:#fff
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
     style Human fill:#c96868,stroke:#7a2020,color:#fff
@@ -560,12 +562,31 @@ produces is recorded in the pass's own log instead.
   200 paths), and only then is the PR closed. A flag that could **not** be filed
   leaves the PR open naming the `fallback-flag` step: closing against a record
   nobody can find is the loss the old rule was protecting against.
-- **One restart per originating issue.** The marker lives on the *issue*, not
-  the PR: the PR being counted is closed moments later and a replacement takes
-  its place, so a PR-keyed bound would loop. It is posted before the close,
-  which is also what makes two hosts produce one abandon. If the fresh PR
-  spends its budget too, the bound declines the second restart and the PR is
-  left open with `budget-spent` recorded — not handed to anybody.
+- **Two restarts per originating issue** (Issue #2312). The marker lives on the
+  *issue*, not the PR: the PR being counted is closed moments later and a
+  replacement takes its place, so a PR-keyed bound would loop. It is posted
+  before the close, which is also what makes two hosts produce one abandon.
+  One restart was too few — the first fresh PR is raised off a base that has
+  often moved again by the time it conflicts, and a second redo settles a
+  useful share of those. A claim naming *this* PR declines whatever the count
+  says: it means an earlier abandon of this very PR did not finish, and closing
+  it twice is not a retry.
+- **After the second restart the PR is parked, not escalated** (Issue #2312).
+  The third exhaustion leaves the PR **open**, keeps `merge-conflict` on it,
+  appends the event to the PR's own `merge-fallback` flag, and posts one
+  comment carrying `<!-- vibe-merge-conflict-parked base="<sha>" -->`. It is
+  recorded as the `parked` skip reason and **no** `needs-human` label or
+  comment is applied anywhere on this path. The marker keys on the **base**
+  sha, unlike every other marker in this vocabulary, because nothing acts until
+  the *base* tip moves: a base that has not moved cannot merge any better than
+  it did an hour ago. Every later pass compares the PR's live `baseRefOid`
+  against the marker and skips it unchanged; the first pass where they differ
+  attempts the PR again with a fresh two-attempt budget **counted from the park
+  marker onward**, so it does not arrive back at a spent one. A base tip that
+  cannot be read is not evidence that it moved, so the PR stays parked and the
+  unreadable tip is warned about. The stall watchdog honours the same
+  comparison: a parked PR on an unmoved base is not a stall, because the park
+  marker is what *follows* the label rather than the silence after it.
 - **A part-done abandon is never where this stops.** Every step names itself on
   failure, and the pass records that step at WARN with `route=abandon-failed` —
   "PR closed, issue not re-queued" must be visible, not silent.
@@ -903,6 +924,7 @@ each carries the operands that make the decision checkable afterwards:
 | `needs-human` | `label` | A human already owns the conflict. |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
+| `parked` | `base`, `flagIssueNumber` | The originating issue has spent its two restarts, so the PR is left open on `merge-conflict` and waits for its base tip to move (Issue #2312). `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. No `needs-human` label and no comment asking anybody for anything. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
 | `pr-not-open` | `state` | The live `gh pr view --json state,mergeable` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |

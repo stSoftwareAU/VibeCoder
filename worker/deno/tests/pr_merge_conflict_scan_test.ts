@@ -14,6 +14,7 @@ import {
   buildFallbackFlagLinkComment,
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
+  CONFLICT_PARKED_MARKER,
   CONFLICT_RESOLVED_MARKER,
   conflictPrKey,
   countDisruptedAttempts,
@@ -33,6 +34,7 @@ import {
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
 } from "../lib/conflict_abandon_restart.ts";
+import { conflictParkedMarker } from "../lib/merge_conflict_markers.ts";
 import type { MergeFallbackFiling } from "../lib/merge_fallback_issue.ts";
 import type { LogContext, Logger } from "../types.ts";
 
@@ -59,6 +61,11 @@ function makeSilentLogger(): Logger {
 const FLEET = "vibe-bot";
 /** An account with no fleet privileges at all — the attacker (Issue #1247). */
 const OUTSIDER = "drive-by";
+
+/** The base branch tip every fixture PR sits on (Issue #2312). */
+const BASE_TIP = "1111111111111111111111111111111111111111";
+/** The base tip after somebody pushed to the base branch (Issue #2312). */
+const MOVED_BASE_TIP = "2222222222222222222222222222222222222222";
 
 /** Message prefix of a per-PR decision record (Issue #1109). */
 const DECISION_PREFIX = "merge_conflict_decision=";
@@ -105,6 +112,8 @@ interface FakeRepoState {
     baseRefName: string;
     /** Present only when the listing carried an author (Issue #1109). */
     author?: { login: string };
+    /** The base branch's tip, as the listing carries it (Issue #2312). */
+    baseRefOid?: string;
   }>;
   /** Mergeable state per PR number. */
   mergeable: Record<number, string>;
@@ -277,6 +286,12 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
       }));
     }
 
+    // The base tip, when the listing did not carry one (Issue #2312).
+    if (args[0] === "pr" && args[1] === "view" && args.includes("baseRefOid")) {
+      const pr = state.prs.find((entry) => entry.number === Number(args[2]));
+      return Promise.resolve(`${pr?.baseRefOid ?? ""}\n`);
+    }
+
     if (args[0] === "pr" && args[1] === "view" && args.includes("labels")) {
       const prNumber = Number(args[2]);
       if (state.failLabels?.includes(prNumber)) {
@@ -346,7 +361,12 @@ function makeOptions(
 
 function makeState(overrides?: Partial<FakeRepoState>): FakeRepoState {
   return {
-    prs: [{ number: 48, headRefName: "issue-16-fix", baseRefName: "main" }],
+    prs: [{
+      number: 48,
+      headRefName: "issue-16-fix",
+      baseRefName: "main",
+      baseRefOid: BASE_TIP,
+    }],
     mergeable: { 48: "CONFLICTING" },
     labels: { 48: [] },
     comments: { 48: [] },
@@ -1067,8 +1087,9 @@ Deno.test("findConflictingPr - an attempt open a minute ago is re-attempted, not
 });
 
 Deno.test("findConflictingPr - the budget-spent record carries the attempts and the cap", async () => {
-  // `budget-spent` is what remains when the fallback itself will not run — the
-  // one-restart-per-issue bound, here (Issue #2310).
+  // `budget-spent` is what remains when the fallback itself will not run. The
+  // spent-restart bound no longer lands here — it parks the PR (Issue #2312) —
+  // so this is the other-open-PR decline, which still leaves the PR in place.
   const fake = makeFakeGh(makeState({
     comments: {
       48: concludedFailures(
@@ -1082,7 +1103,11 @@ Deno.test("findConflictingPr - the budget-spent record carries the attempts and 
     abandonRestart: () =>
       Promise.resolve({
         outcome: "declined",
-        reason: { kind: "already-restarted", issueNumber: 16, samePr: false },
+        reason: {
+          kind: "other-open-pr",
+          issueNumber: 16,
+          prUrl: "https://github.com/org/repo/pull/99",
+        },
       }),
   });
 
@@ -1125,6 +1150,7 @@ Deno.test("findConflictingPr - every labelled PR gets a record, plus one summary
       number,
       headRefName: `issue-${number}`,
       baseRefName: "main",
+      baseRefOid: BASE_TIP,
     })),
     mergeable: { 10: "CONFLICTING", 11: "CONFLICTING", 12: "CONFLICTING" },
     labels: { 10: ["needs-human"], 11: [], 12: ["needs-human"] },
@@ -1142,12 +1168,16 @@ Deno.test("findConflictingPr - every labelled PR gets a record, plus one summary
   }));
 
   const { result, log } = await scanWith(fake, {
-    // The bound declines the fallback for #11, so its record stays
+    // A precondition declines the fallback for #11, so its record stays
     // `budget-spent` (Issue #2310).
     abandonRestart: () =>
       Promise.resolve({
         outcome: "declined",
-        reason: { kind: "already-restarted", issueNumber: 16, samePr: false },
+        reason: {
+          kind: "other-open-pr",
+          issueNumber: 16,
+          prUrl: "https://github.com/org/repo/pull/99",
+        },
       }),
   });
 
@@ -1550,40 +1580,157 @@ Deno.test("findConflictingPr - an exhausted PR with no originating issue is clos
   assertNoNeedsHumanWrites(fake);
 });
 
-Deno.test("findConflictingPr - a restarted issue exhausting again asks no human (Issue #2310)", async () => {
-  // The bound: one abandon per originating issue. The marker is on the issue
-  // because the PR that replaced the abandoned one is a different PR.
-  const state = exhaustedState({
-    prs: [{ number: 61, headRefName: "issue-16-fix-2", baseRefName: "main" }],
+/**
+ * A PR whose issue has already been restarted `restarts` times (Issue #2312).
+ *
+ * The markers live on the *issue*, because the PR that replaced each abandoned
+ * one is a different PR every time.
+ */
+function restartedState(
+  restarts: number,
+  overrides?: Partial<FakeRepoState>,
+): FakeRepoState {
+  return exhaustedState({
+    prs: [{
+      number: 61,
+      headRefName: "issue-16-fix-2",
+      baseRefName: "main",
+      baseRefOid: BASE_TIP,
+    }],
     mergeable: { 61: "CONFLICTING" },
     labels: { 61: [] },
     comments: {
       61: exhaustedComments(),
-      16: [{
-        body: conflictRestartMarker("org/repo", 48),
+      16: Array.from({ length: restarts }, (_, index) => ({
+        body: conflictRestartMarker("org/repo", 48 + index),
         created_at: "2026-08-19T09:00:00Z",
-      }],
+      })),
     },
     prsByState: {
       open: [{ number: 61, title: "Raise the cap (#16)" }],
       merged: [],
       closed: [],
     },
+    ...overrides,
   });
-  const fake = makeFakeGh(state);
+}
+
+Deno.test("findConflictingPr - one restart on the issue still allows a second (Issue #2312)", async () => {
+  // The regression against the one-restart rule: a single claim on the issue
+  // used to decline every later abandon. It no longer does.
+  const fake = makeFakeGh(restartedState(1));
 
   const { log } = await scanWith(fake);
 
-  assertEquals(reasonFor(log, 61), "budget-spent");
-  // The bound still holds — one restart per originating issue — but it no
-  // longer ends at a person (Issue #2310): the replacement PR is left open,
-  // and what happens to it next is the following rung's business.
-  assertEquals(escalatedToHuman(fake, 61), false);
+  assertEquals(reasonFor(log, 61), "abandoned-restarted");
+  assertEquals(
+    fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
+    1,
+  );
+  assertNoNeedsHumanWrites(fake);
+});
+
+Deno.test("findConflictingPr - the third exhaustion parks the PR, asking no human (Issue #2312)", async () => {
+  const fake = makeFakeGh(restartedState(2));
+
+  const { log } = await scanWith(fake);
+
+  assertEquals(reasonFor(log, 61), "parked");
+  assertEquals(recordFor(log, 61).context?.base, BASE_TIP);
+  // Parked, not closed: the work stays where a reader can find it.
   assertEquals(
     fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
     0,
   );
+  assertEquals(escalatedToHuman(fake, 61), false);
   assertNoNeedsHumanWrites(fake);
+
+  // One comment, carrying the marker the next pass reads back.
+  const parkComments = fake.commentsPosted.filter((c) =>
+    c.prNumber === 61 && c.body.includes(CONFLICT_PARKED_MARKER)
+  );
+  assertEquals(parkComments.length, 1);
+  assertStringIncludes(parkComments[0]?.body ?? "", `base="${BASE_TIP}"`);
+
+  // …and the event is appended to the PR's own merge-fallback flag.
+  assertEquals(fake.issuesCreated.length, 1);
+  assertStringIncludes(fake.issuesCreated[0]?.title ?? "", "PR #61");
+  assertStringIncludes(parkComments[0]?.body ?? "", "#900");
+});
+
+Deno.test("findConflictingPr - a parked PR on an unmoved base is skipped every pass (Issue #2312)", async () => {
+  const fake = makeFakeGh(restartedState(2, {
+    comments: {
+      61: [
+        ...exhaustedComments(),
+        {
+          body: conflictParkedMarker(BASE_TIP),
+          created_at: "2026-08-20T09:00:00Z",
+        },
+      ],
+      16: [],
+    },
+  }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 61), "parked");
+  // No second park comment, no flag, no attempt: a skip costs nothing.
+  assertEquals(
+    fake.commentsPosted.filter((c) => c.prNumber === 61).length,
+    0,
+  );
+  assertEquals(fake.issuesCreated.length, 0);
+});
+
+Deno.test("findConflictingPr - a moved base offers a parked PR again with a fresh budget (Issue #2312)", async () => {
+  // The park marker resets the attempt count: the two failures before it
+  // belong to the merge that is now obsolete, so the PR is due again rather
+  // than arriving back at its spent budget.
+  const fake = makeFakeGh(restartedState(2, {
+    prs: [{
+      number: 61,
+      headRefName: "issue-16-fix-2",
+      baseRefName: "main",
+      baseRefOid: MOVED_BASE_TIP,
+    }],
+    comments: {
+      61: [
+        ...exhaustedComments(),
+        {
+          body: conflictParkedMarker(BASE_TIP),
+          created_at: "2026-08-20T09:00:00Z",
+        },
+      ],
+      16: [],
+    },
+  }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(reasonFor(log, 61), "attempted");
+  assertEquals(result.value.selected?.prNumber, 61);
+  assertEquals(result.value.selected?.attemptCount, 0);
+});
+
+Deno.test("findConflictingPr - an outsider's park marker cannot silence a PR (Issue #2312)", async () => {
+  // The park marker suppresses every later attempt, so one anybody could post
+  // would be a way to take a PR out of the queue for good.
+  const fake = makeFakeGh(makeState({
+    comments: {
+      48: [{
+        body: conflictParkedMarker(BASE_TIP),
+        created_at: "2026-08-20T09:00:00Z",
+        user: { login: OUTSIDER },
+      }],
+    },
+  }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(reasonFor(log, 48), "attempted");
+  assertEquals(result.value.selected?.prNumber, 48);
 });
 
 Deno.test("findConflictingPr - a failed abandon step is recorded, not escalated (Issue #2310)", async () => {

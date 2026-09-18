@@ -29,6 +29,7 @@ import {
   CONFLICT_RESOLVED_MARKER,
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
+import { conflictParkedMarker } from "../lib/merge_conflict_markers.ts";
 import {
   ESCALATED_AS_WORK_LABEL,
   type WorkEscalation,
@@ -251,6 +252,62 @@ Deno.test("detectConflictQueueStall - parked PRs are excluded", () => {
   for (const [name, obs] of parked) {
     assertEquals(detect(obs), null, name);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Parked on the base tip (Issue #2312)
+// ---------------------------------------------------------------------------
+
+/** The base tip a park marker names in these fixtures. */
+const PARKED_BASE = "1111111111111111111111111111111111111111";
+/** The base tip after somebody pushed to the base branch. */
+const MOVED_BASE = "2222222222222222222222222222222222222222";
+
+Deno.test("detectConflictQueueStall - a parked PR on an unmoved base is not a stall", () => {
+  // The park marker is what *follows* the label: the fleet has spent this
+  // issue's restarts and is waiting on the base tip, which is the opposite of
+  // the silence this watchdog reports.
+  assertEquals(
+    detect(
+      observation(20, [comment(conflictParkedMarker(PARKED_BASE), 10)], {
+        baseRefOid: PARKED_BASE,
+      }),
+    ),
+    null,
+  );
+});
+
+Deno.test("detectConflictQueueStall - a parked PR whose base moved is judged the usual way", () => {
+  // The suppression is narrow on purpose: once the base moves, the scan owes
+  // this PR an attempt again, so a park must not buy permanent silence.
+  const stall = detect(
+    observation(20, [comment(conflictParkedMarker(PARKED_BASE), 10)], {
+      baseRefOid: MOVED_BASE,
+    }),
+  );
+  assert(stall !== null);
+});
+
+Deno.test("detectConflictQueueStall - an outsider's park marker cannot silence the watchdog", () => {
+  const stall = detect(
+    observation(20, [
+      comment(conflictParkedMarker(PARKED_BASE), 10, "drive-by"),
+    ], { baseRefOid: PARKED_BASE }),
+  );
+  assert(stall !== null);
+});
+
+Deno.test("detectConflictQueueStall - a conclusion after a park ends the park", () => {
+  // An attempt that concluded after the park means the PR was un-parked and
+  // worked on; the park no longer describes what is happening.
+  const stall = detect(
+    observation(30, [
+      comment(conflictParkedMarker(PARKED_BASE), 20),
+      comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 12),
+    ], { baseRefOid: PARKED_BASE }),
+  );
+  assert(stall !== null);
+  assertEquals(stall.stalledMs, 12 * HOUR);
 });
 
 Deno.test("detectConflictQueueStall - the threshold is eight hours (Issue #2305)", () => {

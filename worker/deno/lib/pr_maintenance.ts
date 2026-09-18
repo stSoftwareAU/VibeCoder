@@ -84,6 +84,13 @@ export interface PrEntry {
   headRefName: string;
   headRefOid?: string;
   baseRefName?: string;
+  /**
+   * The base branch's tip sha, when the listing asked for it — the maintenance
+   * superset does (Issue #2312). It is what tells a parked merge-conflict PR
+   * "the base has moved, this is a different merge now", so it has to ride the
+   * listing every scan already makes rather than cost a call per parked PR.
+   */
+  baseRefOid?: string;
   autoMergeRequest?: { mergeMethod: string } | null;
   title?: string;
   /**
@@ -359,7 +366,7 @@ export interface CiCheckScanOptions extends PrScanOptions {
  * harmless to callers, which read only what they use.
  */
 export const PR_MAINTENANCE_LIST_FIELDS =
-  "number,title,headRefName,headRefOid,baseRefName,autoMergeRequest,createdAt,updatedAt,author,mergeable";
+  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable";
 
 /**
  * Explicit page size for the cached superset listing (Issue #4303). The
