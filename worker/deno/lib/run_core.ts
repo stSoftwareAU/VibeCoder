@@ -630,6 +630,15 @@ export interface RunCoreDeps {
   // Priority 1.7: Milestone completions
   checkMilestoneCompletions: () => Promise<Result<void>>;
 
+  /**
+   * Priority 1.71: milestone-close housekeeping (Issue #2338).
+   *
+   * A closed milestone's stream is over, so this host drops the worktrees,
+   * local branches and stream session it still holds for it. Optional: a
+   * deps set that does not wire it leaves the sweep unrun, exactly as before.
+   */
+  sweepClosedMilestones?: () => Promise<Result<void>>;
+
   // Priority 1.75: Refinement
   findAndProcessRefinement: () => Promise<Result<PriorityHandlerResult>>;
 
@@ -1792,6 +1801,22 @@ export function buildPriorityDispatchTable(
             ? { ok: true as const, value: { processed: false } }
             : { ok: false as const, error: r.error }
         ),
+    },
+    {
+      // Issue #2338: a closed milestone's stream is over — sweep this host's
+      // worktrees, local branches and stream session for it. Placed straight
+      // after the completion pass that closes milestones, so a milestone
+      // closed this cycle is swept on the next scan rather than waiting for
+      // the time-based cleanups at the next startup.
+      priority: 1.71,
+      name: "Closed Milestone Housekeeping",
+      execute: () =>
+        (deps.sweepClosedMilestones?.() ??
+          Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
+            r.ok
+              ? { ok: true as const, value: { processed: false } }
+              : { ok: false as const, error: r.error }
+          ),
     },
     {
       priority: 1.72,

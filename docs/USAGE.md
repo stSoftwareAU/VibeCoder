@@ -752,6 +752,7 @@ flowchart TD
     P167["🟡 Priority 1.67 — Issue Closure (merged PRs)"]
     P168["🟡 Priority 1.68 — Closed-PR Recovery"]
     P17["🟢 Priority 1.7 — Milestone Completion (tracking issue + PR)"]
+    P171["🟢 Priority 1.71 — Closed-Milestone Housekeeping (worktrees, branches, stream session)"]
     P172["🟢 Priority 1.72 — Milestone Branch Sync"]
     P175["🟢 Priority 1.75 — Issue Refinement Requests"]
     P178["🟢 Priority 1.78 — Grill-Me Clarification"]
@@ -766,7 +767,7 @@ flowchart TD
     P25["🟤 Priority 2.5 — `low-priority` label (fallback when no eligible higher-tier candidate exists in any repo)"]
     P29["⚪ Priority 2.9 — `idle-task` label (worker-filed busywork; only self-appliable label)"]
 
-    P09 --> P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P172 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
+    P09 --> P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P171 --> P172 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
 
     style P09 fill:#d00000,stroke:#9d0208,color:#fff
     style P1 fill:#d00000,stroke:#9d0208,color:#fff
@@ -781,6 +782,7 @@ flowchart TD
     style P167 fill:#ffdd00,stroke:#ffba08,color:#000
     style P168 fill:#ffee00,stroke:#ffdd00,color:#000
     style P17 fill:#aacc00,stroke:#80b918,color:#000
+    style P171 fill:#95d5b2,stroke:#52b788,color:#000
     style P172 fill:#aacc00,stroke:#80b918,color:#000
     style P175 fill:#55a630,stroke:#2b9348,color:#fff
     style P178 fill:#55a630,stroke:#2b9348,color:#fff

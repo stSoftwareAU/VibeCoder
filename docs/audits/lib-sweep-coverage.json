@@ -1858,6 +1858,18 @@
       "paths": [
         "worker/deno/lib/stream_compaction.ts"
       ]
+    },
+    {
+      "issue": 2338,
+      "chunk": "top-up-2338",
+      "title": "top-up: the milestone-close sweep",
+      "ledger": "docs/audits/security-sweep-2338-milestone-close-housekeeping.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_close_housekeeping.ts (#2338)",
+      "status": "swept",
+      "sweptAt": "ea3eff5190dcd7c0e897e19e323a776078d6e095",
+      "paths": [
+        "worker/deno/lib/milestone_close_housekeeping.ts"
+      ]
     }
   ],
   "roots": [
