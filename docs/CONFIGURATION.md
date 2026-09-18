@@ -3285,6 +3285,19 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   keeps loading exactly as before, and a host with no stream record starts the
   stream fresh. The store is in place; the phases that read and write it land
   with the rest of the stream work in this milestone.
+- **One run per milestone stream at a time, fleet-wide** (Issue #2334). With
+  the flag on, a claim on a milestone issue first asks whether any **other
+  open** issue of that milestone is live — a heartbeat that beat inside the
+  live window, or a `CLAIM_LOCK` posted in the last minute, from a fleet
+  account. If one is, the claim is refused as `stream_busy` before the
+  assignee and the claim comment are written, and the worker logs
+  `stream busy: <stream> held by #<issue> on <host>`. It is a **skip, not a
+  failure**: no `failed-once` label, no churn record and no cooldown beyond
+  the normal scan interval, so the issue is claimed on a later scan once the
+  holder's heartbeat goes stale. Blank-stream issues (no milestone) own no
+  shared conversation and are never checked, and with
+  `enable_session_resume` off the check — and its one extra `gh issue list` —
+  never runs at all.
 - A branch carrying **only** WIP markers does not become a PR: when a claim
   resumed a checkpoint and added no commit of its own, the completion phase
   refuses to raise a half-done PR from parked work and the issue returns to

@@ -124,6 +124,13 @@ export async function workOnIssueSetupBranch(
     fleetAuthors,
     pushCapableAuthors,
     milestoneTitle,
+    // Issue #2334: one run per milestone stream at a time, fleet-wide. This
+    // phase is the standard pipeline's claim — the run that joins the
+    // stream's conversation — so the lock applies here and nowhere else; the
+    // pre-pipeline routes (idle-task, add-repo, seed-idle-tasks) never join a
+    // stream and never set it. With `enable_session_resume` off there is no
+    // shared conversation, so there is no lock and no extra API call.
+    streamLockEnabled: config.enableSessionResume,
     markerOptions: {
       machineId,
       workDir: config.workDir,

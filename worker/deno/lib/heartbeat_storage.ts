@@ -432,8 +432,11 @@ export function appendAttempt(
  * Machine ids are `{hostname}-{uuid}` (see lib/machine_id.ts), so strip a
  * trailing UUID to recover the hostname. Anything that does not end in a UUID
  * is shown verbatim.
+ *
+ * Exported for the stream lock (Issue #2334), which names the host holding a
+ * milestone stream from the heartbeat marker it found beating.
  */
-function hostFromMachineId(machineId: string): string {
+export function hostFromMachineId(machineId: string): string {
   const uuid =
     /-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   return machineId.replace(uuid, "");

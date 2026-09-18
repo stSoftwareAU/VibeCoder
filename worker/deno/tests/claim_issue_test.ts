@@ -14,9 +14,11 @@ import {
   classifyGhAssignError,
   extractWorkerIdFromComment,
   fetchIssueState,
+  LIVE_HEARTBEAT_WINDOW_SECONDS,
   releaseClaimWithCooldown,
   resolveTrustedClaimAuthors,
 } from "../lib/claim_issue.ts";
+import { formatHeartbeatMarker } from "../lib/heartbeat_storage.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2778,4 +2780,139 @@ Deno.test("claim issue - an issue not closed this run still runs the normal clai
   });
 
   assertEquals(calls.length > 0, true, "the claim path issued gh calls");
+});
+
+// ---------------------------------------------------------------------------
+// Milestone stream lock (Issue #2334)
+// ---------------------------------------------------------------------------
+
+/**
+ * A `gh` runner for the claim path with a milestone listing attached: an
+ * unassigned, open issue with no claim comments of its own, whose milestone
+ * carries the supplied sibling issues.
+ */
+function streamGh(siblings: unknown[]) {
+  const calls: string[][] = [];
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const joined = args.join(" ");
+    if (joined.includes("issue list")) {
+      return Promise.resolve(JSON.stringify(siblings));
+    }
+    if (joined.includes("--json assignees")) return Promise.resolve("[]");
+    if (joined.includes("--jq .state")) return Promise.resolve("OPEN");
+    if (joined.includes("/comments")) return Promise.resolve("[]");
+    return Promise.resolve("");
+  };
+  return { ghCommandFn, calls };
+}
+
+/** A sibling issue whose heartbeat last beat `ageSeconds` ago. */
+function beatingSibling(number: number, ageSeconds: number) {
+  const epoch = Math.floor(Date.now() / 1000) - ageSeconds;
+  return {
+    number,
+    comments: [{
+      body: formatHeartbeatMarker("GRQ-23-box", epoch),
+      author: { login: "stservice" },
+      createdAt: new Date(0).toISOString(),
+    }],
+  };
+}
+
+Deno.test("claim issue - refuses a claim while a sibling of the milestone stream is beating (Issue #2334)", async () => {
+  const { ghCommandFn, calls } = streamGh([beatingSibling(2333, 30)]);
+
+  const result = await claimIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2334,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    fleetAuthors: ["worker-bot", "stservice"],
+    milestoneTitle: "#2319 session resume on by default",
+    streamLockEnabled: true,
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.claimed, false);
+    assertEquals(result.value.reason, "stream_busy");
+    assertEquals(
+      (result.value.reasonDetail ?? "").includes("held by #2333 on GRQ-23-box"),
+      true,
+      result.value.reasonDetail,
+    );
+  }
+  // A blocked issue collects no assignee, no claim comment and no label —
+  // the skip is not a failure and costs no churn.
+  assertEquals(wasCalledWith(calls, "--add-assignee"), false);
+  assertEquals(wasCalledWith(calls, "issue comment"), false);
+  assertEquals(wasCalledWith(calls, "--add-label"), false);
+});
+
+Deno.test("claim issue - a sibling whose heartbeat is stale does not hold the stream (Issue #2334)", async () => {
+  const { ghCommandFn, calls } = streamGh([
+    beatingSibling(2333, LIVE_HEARTBEAT_WINDOW_SECONDS + 1),
+  ]);
+
+  const result = await claimIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2334,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    fleetAuthors: ["worker-bot", "stservice"],
+    milestoneTitle: "#2319 session resume on by default",
+    streamLockEnabled: true,
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.claimed, true);
+  assertEquals(wasCalledWith(calls, "--add-assignee worker-bot"), true);
+});
+
+Deno.test("claim issue - a blank-stream issue is claimed without any stream check (Issue #2334)", async () => {
+  const { ghCommandFn, calls } = streamGh([beatingSibling(2333, 30)]);
+
+  const result = await claimIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2334,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    fleetAuthors: ["worker-bot", "stservice"],
+    streamLockEnabled: true,
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.claimed, true);
+  assertEquals(wasCalledWith(calls, "issue list"), false);
+});
+
+Deno.test("claim issue - session resume off makes no stream check and no extra gh call (Issue #2334)", async () => {
+  const { ghCommandFn, calls } = streamGh([beatingSibling(2333, 30)]);
+
+  const result = await claimIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2334,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    fleetAuthors: ["worker-bot", "stservice"],
+    milestoneTitle: "#2319 session resume on by default",
+    // streamLockEnabled omitted — the flag is off, so there is no lock.
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.claimed, true);
+  assertEquals(wasCalledWith(calls, "issue list"), false);
 });
