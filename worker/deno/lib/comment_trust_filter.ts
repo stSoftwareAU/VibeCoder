@@ -256,6 +256,57 @@ export function prepareTrustAnnotatedComments(
 }
 
 /**
+ * Collect the `[SECURITY]` audit events an annotated comment set raises.
+ *
+ * Both the comment-flood verdict and the per-comment suspicious-pattern events
+ * are read from the *whole* set, deliberately ahead of every cap, so a flood is
+ * reported even when the surplus is dropped afterwards and an injection pattern
+ * is never silently absent from the audit log (Issue #1342 / #2873).
+ *
+ * @param annotated - Every comment considered, before any cap is applied
+ * @returns Audit messages, suspicious-pattern events first
+ */
+function auditsFromAnnotated(annotated: AnnotatedComment[]): string[] {
+  const messages = annotated
+    .filter((c) => c.securityAuditMessage !== undefined)
+    .map((c) => c.securityAuditMessage!);
+
+  const flood = detectCommentFlood(
+    annotated,
+    COMMENT_RATE_LIMIT_DEFAULTS.commentFloodThreshold,
+  );
+  if (flood.detected && flood.auditMessage) {
+    messages.push(flood.auditMessage);
+  }
+
+  return messages;
+}
+
+/**
+ * Audit a comment thread without formatting any of it (Issue #2243).
+ *
+ * A caller that caps the thread *before* handing it to
+ * {@link prepareTrustAnnotatedCommentList} — the implementation prompt's budget
+ * selection (Issue #1910) — would otherwise run that cap in front of the
+ * detectors, so a flood or an injection pattern in a comment the budget dropped
+ * would never be reported. Such a caller audits the full thread here and
+ * formats only what it carries.
+ *
+ * @param comments - Every comment in the thread, before any cap
+ * @param options - Trust configuration
+ * @returns The `[SECURITY]` audit events raised by the full thread
+ */
+export function collectCommentSecurityAudits(
+  comments: IssueComment[],
+  options: CommentTrustOptions,
+): string[] {
+  if (comments.length === 0) {
+    return [];
+  }
+  return auditsFromAnnotated(annotateCommentsWithTrust(comments, options));
+}
+
+/**
  * Prepare trust-annotated comments from an already-parsed comment list.
  *
  * The structural core of {@link prepareTrustAnnotatedComments}: trust
@@ -290,22 +341,9 @@ export function prepareTrustAnnotatedCommentList(
     return emptyResult;
   }
 
-  // Detect comment flooding from untrusted authors before any caps are
-  // applied, so a flood is reported even when the surplus is later dropped
-  // (Issue #1342 / #2873).
-  const flood = detectCommentFlood(
-    annotated,
-    COMMENT_RATE_LIMIT_DEFAULTS.commentFloodThreshold,
-  );
-
-  // Suspicious-pattern audit events are collected from the full annotated set
-  // (before rate limiting) so a security signal is never silently dropped.
-  const securityAuditMessages = annotated
-    .filter((c) => c.securityAuditMessage !== undefined)
-    .map((c) => c.securityAuditMessage!);
-  if (flood.detected && flood.auditMessage) {
-    securityAuditMessages.push(flood.auditMessage);
-  }
+  // Audits run over the full annotated set, before any cap, so a security
+  // signal is never silently dropped (Issue #1342 / #2873).
+  const securityAuditMessages = auditsFromAnnotated(annotated);
 
   // Enforce the Issue #1342 volume caps: per-untrusted-comment size cap,
   // untrusted comment count cap, and total character budget. Without this the
