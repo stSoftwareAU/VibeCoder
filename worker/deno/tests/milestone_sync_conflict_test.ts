@@ -184,6 +184,55 @@ Deno.test(
 );
 
 Deno.test(
+  "buildConflictEscalationComment - the agent's judgement lines reach the sync report (Issue #2306)",
+  () => {
+    const body = buildConflictEscalationComment({
+      repo: "owner/repo",
+      milestoneBranch: MILESTONE_BRANCH,
+      defaultBranch: "main",
+      conflict: {
+        ...CONFLICT,
+        resolution: "auto",
+        decisions: [],
+        agentReply: "Judgement: worker/deno/lib/a.ts — kept both guards; " +
+          "dropped nothing; because they guard different inputs\n" +
+          "Judgement: worker/deno/lib/b.ts — kept the 10s timeout; dropped " +
+          "the 60s default; because only the interactive path reads it",
+      },
+      tips: [],
+    });
+
+    assertStringIncludes(
+      body,
+      "Judgement: worker/deno/lib/a.ts — kept both guards",
+    );
+    assertStringIncludes(
+      body,
+      "Judgement: worker/deno/lib/b.ts — kept the 10s timeout",
+    );
+    assertStringIncludes(body, "The resolution agent's own account");
+  },
+);
+
+Deno.test(
+  "buildConflictEscalationComment - no agent reply leaves the report as it was (Issue #2306)",
+  () => {
+    const body = buildConflictEscalationComment({
+      repo: "owner/repo",
+      milestoneBranch: MILESTONE_BRANCH,
+      defaultBranch: "main",
+      conflict: { ...CONFLICT, resolution: "auto", decisions: [] },
+      tips: [],
+    });
+
+    assert(
+      !body.includes("The resolution agent's own account"),
+      "a resolution no agent rung touched reports no agent account",
+    );
+  },
+);
+
+Deno.test(
   "buildConflictEscalationComment - a resolution the gate refused and the agent repaired names the repair (Issue #1965)",
   () => {
     const body = buildConflictEscalationComment({

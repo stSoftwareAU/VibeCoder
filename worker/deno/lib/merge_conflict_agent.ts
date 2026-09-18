@@ -71,8 +71,6 @@ export interface MergeConflictAgentRequest {
   timeouts?: MergeConflictAgentTimeouts;
   /** Override the prompts directory (tests). */
   promptsDir?: string;
-  /** Quality instructions for the prompt. */
-  qualityInstructions?: string;
   /** Custom repo-specific instructions. */
   customInstructions?: string;
   /** Logger for diagnostic output. */
@@ -119,7 +117,6 @@ export async function runMergeConflictAgent(
     issueContext = null,
     workDir,
     promptsDir,
-    qualityInstructions,
     customInstructions,
     logger,
     repair,
@@ -142,7 +139,6 @@ export async function runMergeConflictAgent(
     target,
     baseBranch,
     conflictedFiles,
-    qualityInstructions,
     customInstructions,
     repoContextContent,
     promptsDir,
