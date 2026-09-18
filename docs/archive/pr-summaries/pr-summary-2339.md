@@ -83,7 +83,48 @@ flowchart TD
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — placeholder
+- **violation** — no PR summary file — evidence:
+  `docs/archive/pr-summaries/pr-summary-2339.md` — reason: fixed here; the
+  reviewer saw the diff before the summary was written.
+- **violation** — "A Code Change Owes a Docs Change": the rewritten Session
+  Resume section still carried the superseded per-issue keying — evidence:
+  `docs/CONFIGURATION.md:3288` ("How it works") — reason: fixed here; the steps
+  now describe the stream lookup and the checkpoint precedence.
+- **violation** — the compaction note still said resume controls "within-issue"
+  continuity — evidence: `docs/CONFIGURATION.md:3496` — reason: fixed here.
+- **violation** — sibling surfaces still framed resume as per-issue only —
+  evidence: `docs/MODEL-AND-CACHING.md:1546`, `docs/MODEL-AND-CACHING.md:2599`,
+  `docs/INTERNALS.md:4196` — reason: fixed here; INTERNALS now points at the
+  stream model.
+- **violation** — a link named a bold paragraph with no anchor — evidence:
+  `docs/CONFIGURATION.md:3305` — reason: fixed here; it now names the enclosing
+  heading.
+- **violation** — TDD rule 5: the new docs-drift test reads Markdown as text
+  rather than exercising worker code — evidence:
+  `worker/deno/tests/config_docs_consistency_test.ts:137` — reason: stands. It
+  is the house pattern of the file it was added to (Issue #3464), and it is the
+  docs-drift check this issue's Failure Detection asks for; it asserts against
+  `OPERATIONAL_DEFAULTS`, so it cannot pass while the docs disagree with the
+  code.
+- **violation** — DRY: the shipped-default pin is duplicated inside a
+  pushed-WIP test — evidence:
+  `worker/deno/tests/resume_branch_by_issue_test.ts:120` — reason: stands. The
+  issue asks that this file assert the new default "deliberately, not
+  incidentally", and the line next to the fixture's explicit `false` is what
+  makes the distinction visible at the point it matters.
+- **clean** — Australian English throughout; the four `config_defaults_test.ts`
+  additions drive `buildDefaultWorkerConfig()` and `loadConfig()` against real
+  temp config files rather than inspecting source; no hidden or credential
+  paths staged; the commit carries the `Vibe-Coder-Run-Id` trailer; the new
+  Mermaid block validates; the default lives only in `OPERATIONAL_DEFAULTS`,
+  with `config.ts:868`, `run_core.ts:1545` and
+  `run_core_production_deps.ts:1210` all reading through it.
+
+A working-tree slip is worth flagging to the reviewer: an earlier
+`deno fmt docs/ worker/deno/` in this run reformatted 712 unrelated files
+(the repo formats from `worker/deno/` and excludes `docs/`). It was reverted
+with `git checkout -- .` before anything was staged, and the four intended
+edits were reapplied by hand — the diff contains no reformatting.
 
 ## Test Plan
 
