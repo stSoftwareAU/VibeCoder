@@ -1621,6 +1621,9 @@ export async function findConflictingPr(
           `moved to ${baseRefOid} — attempting it again`,
         { repo, prNumber: pr.number, parkedBase: park.base, baseRefOid },
       );
+      // The thread is narrowed, not just the tally: everything before the park
+      // belongs to a merge against a base that no longer exists, so an abandon
+      // from here must not quote it back as what *this* conflict recorded.
       prComments = prComments.slice(park.index + 1);
       history = parseConflictAttempts(prComments);
     }
