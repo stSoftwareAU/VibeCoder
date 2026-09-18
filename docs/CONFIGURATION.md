@@ -3319,6 +3319,41 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   shared conversation and are never checked, and with
   `enable_session_resume` off the check — and its one extra `gh issue list` —
   never runs at all.
+- **One non-milestone issue per repository per host** (Issue #2335). The blank
+  stream has no fleet-wide conversation to collide in — each host keeps its
+  **own** blank conversation per repository — so it is locked **host-locally**
+  instead: an in-process registry, keyed by the conversation's own `streamKey`,
+  that a slot takes when it claims a non-milestone issue and gives back when
+  the run ends, on every terminal path (success, skip, failure, throw, timeout,
+  kill). A sibling slot finding the stream held logs
+  `stream busy: <stream> held by slot <slot> on #<issue>` and takes the next
+  eligible issue rather than idling the scan. The refused issue leaves that
+  slot's scan only while the stream stays busy: the exclusion lifts the moment
+  the holder releases, so the issue is claimable on the very next scan.
+  The lock consults **no GitHub state and makes no `gh` call**, so two hosts
+  run that repository's non-milestone issues in parallel, each with its own
+  conversation — which is correct, because they are two conversations. The two
+  locks never both apply to one issue: a milestone issue takes no host-local
+  hold, and a blank-stream issue skips the fleet-wide check entirely. With
+  `enable_session_resume` off there is no shared conversation, so no
+  host-local lock is taken.
+
+  ```mermaid
+  flowchart TD
+      A["Slot claims an issue"] --> B{"enable_session_resume?"}
+      B -- off --> R["Claim — no stream lock"]
+      B -- on --> C{"Has a milestone?"}
+      C -- yes --> D["Fleet-wide check<br/>(one gh issue list)"]
+      D -- "sibling live" --> E["stream_busy — retry on a later scan"]
+      D -- free --> R
+      C -- "no (blank stream)" --> F{"Held by a sibling slot<br/>on this host?"}
+      F -- yes --> G["stream busy: … held by slot …<br/>skip, take the next eligible issue"]
+      F -- no --> H["Take the host-local hold"] --> R
+      R --> I["Run ends — release in finally"]
+      style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+      style F fill:#1d3557,stroke:#14213d,color:#fff
+  ```
+
 - **The host holding a stream gets its next issue first** (Issue #2336). The
   conversation lives on one host's disk, so when a stream run finishes it
   records itself as the holder — a hidden
@@ -3372,7 +3407,8 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
 **Reference:** `worker/deno/lib/session_resume.ts` (implementation),
 `worker/deno/lib/issue_branch_resume.ts` (issue-number branch lookup),
 `worker/deno/lib/stream_session.ts` (which run kinds join a stream, and how),
-`worker/deno/lib/stream_lock.ts` (one run per stream at a time),
+`worker/deno/lib/stream_lock.ts` (the fleet-wide milestone lock and the
+host-local blank-stream lock),
 `worker/deno/lib/stream_holder.ts` (the holder marker and its head start),
 `worker/deno/lib/config_defaults.ts` (default value).
 
