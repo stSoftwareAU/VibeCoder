@@ -52,7 +52,9 @@ export function runIssueEditGuard(
   } catch (error) {
     write.err(
       `${ISSUE_EXECUTOR_DENIAL_MARKER} guard could not parse its hook ` +
-        `payload (${error instanceof Error ? error.message : String(error)}); ` +
+        `payload (${
+          error instanceof Error ? error.message : String(error)
+        }); ` +
         `the call was allowed and the advisor edit count is the record.`,
     );
     return;

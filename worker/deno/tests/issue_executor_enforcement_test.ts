@@ -8,11 +8,7 @@
  * the key-off case, where none of it is configured.
  */
 
-import {
-  assert,
-  assertEquals,
-  assertStringIncludes,
-} from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildIssueExecutorHookSettings,
   decideIssueEditHook,
@@ -24,6 +20,9 @@ import {
 import { runIssueEditGuard } from "../lib/issue_edit_guard_cli.ts";
 import { buildExecutorSplitStatsLine } from "../lib/issue_run_stats_comment.ts";
 import { selectAgentProvider } from "../lib/agent_provider.ts";
+import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { createAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /** One `PreToolUse` payload, as the CLI writes it to the hook's stdin. */
 function payload(
@@ -154,7 +153,10 @@ Deno.test("issue executor hook settings - registers a PreToolUse command hook fo
     guardModulePath: "/checkout/worker/deno/lib/issue_edit_guard_cli.ts",
   }) as {
     hooks: {
-      PreToolUse: { matcher: string; hooks: { type: string; command: string }[] }[];
+      PreToolUse: {
+        matcher: string;
+        hooks: { type: string; command: string }[];
+      }[];
     };
   };
   const entry = settings.hooks.PreToolUse[0]!;
@@ -162,6 +164,24 @@ Deno.test("issue executor hook settings - registers a PreToolUse command hook fo
   assertEquals(entry.hooks[0]!.type, "command");
   assertStringIncludes(entry.hooks[0]!.command, "/usr/bin/deno");
   assertStringIncludes(entry.hooks[0]!.command, "issue_edit_guard_cli.ts");
+  assertEquals(
+    entry.hooks[0]!.command.includes("DENO_DIR="),
+    false,
+    "no cache is pinned when the caller named none",
+  );
+
+  // The guard constrains the agent, so where the image bakes a read-only Deno
+  // seed the child is pinned to it — the agent's own environment cannot point
+  // the cache at code it prepared (Issue #1448's finding).
+  const pinned = buildIssueExecutorHookSettings({
+    denoPath: "/usr/bin/deno",
+    guardModulePath: "/checkout/worker/deno/lib/issue_edit_guard_cli.ts",
+    denoDir: "/opt/deno-seed",
+  }) as { hooks: { PreToolUse: { hooks: { command: string }[] }[] } };
+  assertStringIncludes(
+    pinned.hooks.PreToolUse[0]!.hooks[0]!.command,
+    "DENO_DIR='/opt/deno-seed'",
+  );
 });
 
 /** A split run's stream: two advisor edits, three dispatches, one re-task. */
@@ -238,7 +258,7 @@ Deno.test("split run summary - a guard-denied advisor edit counts as a denial, n
 });
 
 Deno.test("split run summary - malformed and empty streams count nothing rather than throwing (Issue #2344)", () => {
-  const stats = summariseIssueExecutorSplitRun("{not json\n\n{\"type\":\"x\"}");
+  const stats = summariseIssueExecutorSplitRun('{not json\n\n{"type":"x"}');
   assertEquals(stats.advisorEditCalls, 0);
   assertEquals(stats.executorDispatches, 0);
   assertEquals(stats.executorRetasks, 0);
@@ -280,6 +300,68 @@ Deno.test("run stats comment - reports the split counts, and nothing at all with
     "",
     "a key-off run renders no split line",
   );
+});
+
+Deno.test({
+  name:
+    "claude runner - a split run installs the guard and tallies the stream; a key-off run does neither (Issue #2344)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const fixture = splitRunStream().split("\n").join("\\n");
+    const run = async (split: boolean) => {
+      const stub = await createAgentStub(
+        `printf '%s\\n' "$@" > "$(dirname "$0")/argv.txt"\n` +
+          `printf '${fixture}\\n'\nexit 0\n`,
+        { prefix: "claude_stub_2344_" },
+      );
+      try {
+        const result = await runClaudeWithTimeout({
+          clock: fakeClock(),
+          prompt: "P",
+          model: "m",
+          agentBinaryPath: stub.path,
+          timeoutSeconds: 30,
+          killAfterSeconds: 2,
+          ...(split ? { issueExecutorSplit: true } : {}),
+        });
+        const argv = (await Deno.readTextFile(`${stub.dir}/argv.txt`)).split(
+          "\n",
+        );
+        return { result, argv };
+      } finally {
+        await stub.dispose();
+      }
+    };
+
+    const on = await run(true);
+    assert(
+      on.argv.includes("--settings"),
+      `a split run installs the guard: ${on.argv.join(" ")}`,
+    );
+    assertStringIncludes(
+      on.argv[on.argv.indexOf("--settings") + 1]!,
+      "issue_edit_guard_cli.ts",
+    );
+    assert(on.result.ok);
+    const stats = on.result.value.runStats?.executorSplit;
+    assert(stats, "a split run carries the split counts");
+    assertEquals(stats.advisorEditCalls, 2);
+    assertEquals(stats.executorDispatches, 3);
+    assertEquals(stats.executorRetasks, 1);
+
+    const off = await run(false);
+    assertEquals(
+      off.argv.includes("--settings"),
+      false,
+      "a key-off run configures no hook",
+    );
+    assert(off.result.ok);
+    assertEquals(
+      off.result.value.runStats?.executorSplit,
+      undefined,
+      "a key-off run carries no split counts",
+    );
+  },
 });
 
 Deno.test("claude invocation - carries --settings only when the split asked for it (Issue #2344)", () => {

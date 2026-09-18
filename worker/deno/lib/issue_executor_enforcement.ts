@@ -36,6 +36,7 @@
  */
 
 import { ISSUE_EXECUTOR_AGENT_NAME } from "./issue_executor_agents.ts";
+import { resolveGuardDenoDir } from "./guard_deno_dir.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
 
@@ -156,14 +157,22 @@ export function formatIssueEditDenialLog(tool: string): string {
  *
  * @param opts.denoPath - Absolute path of the `deno` binary running the guard
  * @param opts.guardModulePath - Absolute path of the guard entry point
+ * @param opts.denoDir - Read-only Deno cache to pin the guard child to, so the
+ *   agent's own environment cannot point it at a cache it prepared
+ *   (Issue #1448's finding, applied to this guard). Omitted inherits the
+ *   environment, as on a host with no baked seed.
  * @returns The settings object the CLI merges for this invocation
  */
 export function buildIssueExecutorHookSettings(opts: {
   denoPath: string;
   guardModulePath: string;
+  denoDir?: string;
 }): Record<string, unknown> {
-  const command = `${posixSingleQuote(opts.denoPath)} run --quiet ` +
-    `--no-config --no-lock ${posixSingleQuote(opts.guardModulePath)}`;
+  const pinnedCache = opts.denoDir
+    ? `DENO_DIR=${posixSingleQuote(opts.denoDir)} `
+    : "";
+  const command = `${pinnedCache}${posixSingleQuote(opts.denoPath)} run ` +
+    `--quiet --no-config --no-lock ${posixSingleQuote(opts.guardModulePath)}`;
   return {
     hooks: {
       PreToolUse: [
@@ -192,10 +201,16 @@ export function buildIssueExecutorHookSettings(opts: {
 export function resolveIssueExecutorHookSettings(
   opts: { denoPath?: string; guardModulePath?: string } = {},
 ): Record<string, unknown> {
+  // The image's baked read-only Deno seed, when there is one. `""` asks for
+  // no per-run fallback: where no read-only seed exists — a developer host,
+  // the test suite — the guard child inherits the environment's cache, as
+  // every other Deno the worker spawns there does.
+  const cache = resolveGuardDenoDir("");
   return buildIssueExecutorHookSettings({
     denoPath: opts.denoPath ?? Deno.execPath(),
     guardModulePath: opts.guardModulePath ??
       resolveGuardModulePath(ISSUE_EDIT_GUARD_MODULE, import.meta.url),
+    ...(cache.readOnly ? { denoDir: cache.path } : {}),
   });
 }
 
@@ -302,7 +317,9 @@ export function summariseIssueExecutorSplitRun(
         if (name === undefined) continue;
         if (ISSUE_EXECUTOR_EDIT_TOOLS.includes(name)) {
           advisorEdits.set(text(block.id) ?? `${advisorEdits.size}`, name);
-        } else if (DISPATCH_TOOLS.includes(name) && namesExecutor(block.input)) {
+        } else if (
+          DISPATCH_TOOLS.includes(name) && namesExecutor(block.input)
+        ) {
           executorDispatches++;
         } else if (name === CONTINUE_TOOL && namesExecutor(block.input)) {
           executorRetasks++;
