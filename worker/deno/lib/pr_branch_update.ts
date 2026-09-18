@@ -101,8 +101,61 @@ export interface PrBranchUpdateDetail {
  */
 export type PrLiveState = "OPEN" | "MERGED" | "CLOSED" | "UNKNOWN";
 
-/** Map a raw `gh pr view --json state` value onto {@link PrLiveState}. */
-export function classifyPrLiveState(raw: string): PrLiveState {
+/**
+ * GitHub's live verdict on whether a PR's head merges into its base
+ * (Issue #2307).
+ *
+ * `UNKNOWN` is GitHub's own answer while it recomputes the merge, and it is
+ * also what an unreadable or unrecognised value reads as — never "mergeable"
+ * and never "conflicting", because a guess in either direction is a write to
+ * a PR nobody checked.
+ */
+export type PrLiveMergeable = "CONFLICTING" | "MERGEABLE" | "UNKNOWN";
+
+/** One `gh pr view --json state,mergeable` payload, parsed (Issue #2307). */
+export interface PrLiveFields {
+  /** The PR's live state. */
+  state: PrLiveState;
+  /** GitHub's live mergeable verdict. */
+  mergeable: PrLiveMergeable;
+}
+
+/**
+ * Parse one `gh pr view --json state,mergeable` payload (Issue #2307).
+ *
+ * A bare state string — what the fetcher asked for with `--jq .state` before
+ * this issue, and what a `gh` stub still answers — reads as that state with
+ * an unknown `mergeable`, so neither reader breaks on the older shape.
+ * Anything that is neither reads as `UNKNOWN` on both fields: an unparseable
+ * payload never resolves to "open and mergeable".
+ */
+export function parsePrLiveFields(raw: string): PrLiveFields {
+  const text = raw.trim();
+  if (!text.startsWith("{")) {
+    return { state: classifyState(text), mergeable: "UNKNOWN" };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { state: "UNKNOWN", mergeable: "UNKNOWN" };
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return { state: "UNKNOWN", mergeable: "UNKNOWN" };
+  }
+  const fields = parsed as Record<string, unknown>;
+  return {
+    state: classifyState(
+      typeof fields.state === "string" ? fields.state : "",
+    ),
+    mergeable: classifyMergeable(
+      typeof fields.mergeable === "string" ? fields.mergeable : "",
+    ),
+  };
+}
+
+/** Map one state string onto {@link PrLiveState}; anything else is unknown. */
+function classifyState(raw: string): PrLiveState {
   const state = raw.trim().toUpperCase();
   if (state === "OPEN" || state === "MERGED" || state === "CLOSED") {
     return state;
@@ -110,11 +163,34 @@ export function classifyPrLiveState(raw: string): PrLiveState {
   return "UNKNOWN";
 }
 
+/** Map one mergeable string onto {@link PrLiveMergeable}. */
+function classifyMergeable(raw: string): PrLiveMergeable {
+  const mergeable = raw.trim().toUpperCase();
+  return mergeable === "CONFLICTING" || mergeable === "MERGEABLE"
+    ? mergeable
+    : "UNKNOWN";
+}
+
+/**
+ * Map a raw `gh pr view` payload onto {@link PrLiveState}.
+ *
+ * Accepts both shapes {@link parsePrLiveFields} does — the `state,mergeable`
+ * object and the bare state string.
+ */
+export function classifyPrLiveState(raw: string): PrLiveState {
+  return parsePrLiveFields(raw).state;
+}
+
 /**
  * Build the `getPrState` dependency from a `gh` runner (Issue #386).
  *
  * Kept here so both wiring sites (the `pr-maintenance` command and the main
- * loop's production deps) ask the same question the same way.
+ * loop's production deps) ask the same question the same way — and so the
+ * claim-point reader in `pr_live_state.ts` asks it with exactly this argv.
+ *
+ * Issue #2307: `mergeable` rides along with `state`, because the
+ * merge-conflict drain must know a PR is *still* conflicting before it spends
+ * a clone and an agent on it. One round trip answers both.
  */
 export function makeGhPrStateFetcher(
   ghFn: (args: string[]) => Promise<string>,
@@ -127,9 +203,7 @@ export function makeGhPrStateFetcher(
       "--repo",
       repo,
       "--json",
-      "state",
-      "--jq",
-      ".state",
+      "state,mergeable",
     ]);
 }
 

@@ -814,8 +814,12 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     // Issue #1774: every PR pass re-reads live PR state before its first
     // write. A mock fleet's PRs are open, so the default answers that one
     // read; a test that wants a closed PR overrides `runGhCommand` itself.
+    // Issue #2307: the read carries `mergeable` too, and a mock PR the
+    // merge-conflict pass reached is one the queue says conflicts.
     runGhCommand: (args: string[]) =>
-      isPrLiveStateRead(args) ? Promise.resolve("OPEN") : Promise.resolve(""),
+      isPrLiveStateRead(args)
+        ? Promise.resolve('{"mergeable":"CONFLICTING","state":"OPEN"}')
+        : Promise.resolve(""),
     ensureLabelExists: mockFn<GitHubDeps["ensureLabelExists"]>(() =>
       Promise.resolve({ ok: true, value: undefined })
     ),

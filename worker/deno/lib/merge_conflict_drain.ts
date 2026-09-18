@@ -185,6 +185,10 @@ export interface ConflictDrainOptions {
    * since it was taken still looks conflicting. Required, not optional: a
    * guard that can be switched off by omission is a guard that is off in
    * production the day someone adds a wiring site and forgets it.
+   *
+   * The reading also carries GitHub's live `mergeable` verdict (Issue #2307),
+   * so a conflict resolved since the listing is skipped for what it is rather
+   * than attempted.
    */
   prLiveState: (pr: ConflictingPr) => Promise<PrLiveStateReading>;
   /**   * Resolve one conflict. Returns null when the attempt failed loudly.
@@ -470,6 +474,31 @@ export async function drainConflictingPrs(
           next.prNumber,
           reading,
         );
+        continue;
+      }
+
+      // Issue #2307: the same round trip says whether the PR still conflicts.
+      // A conflict another host or a human resolved in the ten minutes since
+      // the listing is nothing to attempt, and a `mergeable` GitHub is still
+      // recomputing is not a verdict — both stand down before the lease, so
+      // no comment, push or label reaches a PR nobody checked.
+      if (reading.mergeable !== "CONFLICTING") {
+        const decision: ConflictPrDecision = {
+          repo: next.repo,
+          prNumber: next.prNumber,
+          outcome: "skipped",
+          reason: reading.mergeable === "MERGEABLE"
+            ? { kind: "not-conflicting", mergeableState: reading.mergeable }
+            : {
+              kind: "scan-error",
+              stage: "mergeable-state",
+              message:
+                "gh pr view reported an unknown mergeable state at the claim " +
+                "point",
+            },
+        };
+        decisions.push(decision);
+        recordConflictDecision(logger, decision);
         continue;
       }
 

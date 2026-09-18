@@ -29,11 +29,13 @@ export function openPrGh(
 }
 
 /**
- * A `gh` stub that answers the claim-point read with `state` and records
- * every call, so a write to a PR the pass should have skipped is visible.
+ * A `gh` stub that answers the claim-point read and records every call, so a
+ * write to a PR the pass should have skipped is visible.
  *
  * @param calls - Collector every call's argv is appended to.
- * @param state - What `gh pr view --json state` reports.
+ * @param state - What the read reports: either a bare state string, or the
+ *   `{"mergeable":…,"state":…}` payload `--json state,mergeable` returns
+ *   (Issue #2307).
  */
 export function recordingStateGh(
   calls: string[][],

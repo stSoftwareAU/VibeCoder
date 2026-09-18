@@ -27,14 +27,14 @@ function recorder() {
   return { infos, warns, logger };
 }
 
-Deno.test("readPrLiveState - an open PR reads as open", async () => {
+Deno.test("readPrLiveState - an open PR reads as open, with its mergeable verdict", async () => {
   const calls: string[][] = [];
   const reading = await readPrLiveState("owner/repo", 12, (args) => {
     calls.push(args);
-    return Promise.resolve("OPEN\n");
+    return Promise.resolve('{"mergeable":"CONFLICTING","state":"OPEN"}\n');
   });
 
-  assertEquals(reading, { open: true });
+  assertEquals(reading, { open: true, mergeable: "CONFLICTING" });
   assertEquals(calls, [[
     "pr",
     "view",
@@ -42,17 +42,69 @@ Deno.test("readPrLiveState - an open PR reads as open", async () => {
     "--repo",
     "owner/repo",
     "--json",
-    "state",
-    "--jq",
-    ".state",
+    "state,mergeable",
   ]]);
+});
+
+Deno.test("readPrLiveState - a PR that merges cleanly reads as open and MERGEABLE", async () => {
+  assertEquals(
+    await readPrLiveState(
+      "owner/repo",
+      12,
+      () => Promise.resolve('{"mergeable":"MERGEABLE","state":"OPEN"}'),
+    ),
+    { open: true, mergeable: "MERGEABLE" },
+  );
+});
+
+Deno.test("readPrLiveState - an unreadable mergeable is unknown, never mergeable", async () => {
+  // GitHub answers UNKNOWN while it recomputes the merge; a value nobody
+  // recognises, a missing field and an unparseable payload read the same way.
+  for (
+    const raw of [
+      '{"mergeable":"UNKNOWN","state":"OPEN"}',
+      '{"mergeable":"SOMETHING_NEW","state":"OPEN"}',
+      '{"state":"OPEN"}',
+      "OPEN",
+    ]
+  ) {
+    assertEquals(
+      await readPrLiveState("owner/repo", 12, () => Promise.resolve(raw)),
+      { open: true, mergeable: "UNKNOWN" },
+      `raw payload ${raw} must read as an unknown mergeable`,
+    );
+  }
+});
+
+Deno.test("readPrLiveState - an unparseable payload is never open", async () => {
+  const reading = await readPrLiveState(
+    "owner/repo",
+    12,
+    () => Promise.resolve('{"state":"OPEN"'),
+  );
+
+  assert(reading.unknown === true, "a broken payload must be unknown");
+  assert(reading.open !== true, "a broken payload must never read as open");
 });
 
 Deno.test("readPrLiveState - CLOSED and MERGED are reported apart", async () => {
   assertEquals(
-    await readPrLiveState("owner/repo", 1, () => Promise.resolve("CLOSED")),
+    await readPrLiveState(
+      "owner/repo",
+      1,
+      () => Promise.resolve('{"mergeable":"UNKNOWN","state":"CLOSED"}'),
+    ),
     { open: false, state: "CLOSED" },
   );
+  assertEquals(
+    await readPrLiveState(
+      "owner/repo",
+      1,
+      () => Promise.resolve('{"mergeable":"UNKNOWN","state":"MERGED"}'),
+    ),
+    { open: false, state: "MERGED" },
+  );
+  // The bare-state shape a `gh` stub still answers keeps working.
   assertEquals(
     await readPrLiveState("owner/repo", 1, () => Promise.resolve("merged\n")),
     { open: false, state: "MERGED" },
@@ -103,11 +155,11 @@ Deno.test("guardPrStillOpen - an open PR is not logged as a skip", async () => {
     repo: "owner/repo",
     prNumber: 3,
     pass: "CI fix",
-    gh: () => Promise.resolve("OPEN"),
+    gh: () => Promise.resolve('{"mergeable":"MERGEABLE","state":"OPEN"}'),
     logger,
   });
 
-  assertEquals(reading, { open: true });
+  assertEquals(reading, { open: true, mergeable: "MERGEABLE" });
   assertEquals(infos.length, 0);
   assertEquals(warns.length, 0);
 });

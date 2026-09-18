@@ -805,16 +805,16 @@ each carries the operands that make the decision checkable afterwards:
 | Reason | Operands | Meaning |
 | --- | --- | --- |
 | `attempted` | — | Selected for a resolution this pass. |
-| `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry. |
+| `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry. Also emitted at the claim point, when the live `gh pr view --json state,mergeable` re-read says `MERGEABLE` because another host or a human resolved the conflict since the listing (Issue #2307). |
 | `out-of-scope-author` | `author` | Outside the push-capable maintenance set. |
 | `already-handled` | — | Taken or deferred earlier in this same cycle's drain. |
-| `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
+| `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. `mergeable-state` also covers the claim-point re-read answering a `mergeable` nobody can act on — GitHub still recomputing the merge — which skips the cycle rather than guessing (Issue #2307). |
 | `needs-human` | `label` | A human already owns the conflict. |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed — the PR is now a human's. |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
-| `pr-not-open` | `state` | The live `gh pr view` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
+| `pr-not-open` | `state` | The live `gh pr view --json state,mergeable` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
 | `repo-leased` | `deferralStreak` | An issue slot holds the repository's shared clone. The streak is the consecutive passes that have now deferred this PR without attempting it. |
 | `deferred-bound` | `bound`, `deferralStreak` | The deadline or the cap left this due PR in the queue before any attempt started. |
 | `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. |

@@ -190,7 +190,8 @@ Deno.test("drain fairness - a PR the lease deferred leads the next pass", async 
   const firstResolved: number[] = [];
   const first = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([held, pr("org/free", 2)]),
     acquireLease: (conflict) =>
@@ -213,7 +214,8 @@ Deno.test("drain fairness - a PR the lease deferred leads the next pass", async 
   const secondResolved: number[] = [];
   await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder(queue),
     acquireLease: () => ({ release: () => {} }),
@@ -231,7 +233,8 @@ Deno.test("drain fairness - a PR the lease deferred leads the next pass", async 
   const control: number[] = [];
   await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder(queue),
     acquireLease: () => ({ release: () => {} }),
@@ -254,7 +257,8 @@ Deno.test("drain fairness - a PR the deadline left behind leads the next pass", 
 
   const first = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/alpha", 1), left]),
     acquireLease: () => ({ release: () => {} }),
@@ -281,7 +285,8 @@ Deno.test("drain fairness - a PR the deadline left behind leads the next pass", 
   const resolved: number[] = [];
   await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/beta", 7), pr("org/alpha", 8), left]),
     acquireLease: () => ({ release: () => {} }),
@@ -303,7 +308,8 @@ Deno.test("drain fairness - a PR the cap left behind leads the next pass", async
 
   const first = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/busy", 1), pr("org/busy", 2), left]),
     acquireLease: () => ({ release: () => {} }),
@@ -325,7 +331,8 @@ Deno.test("drain fairness - a PR the cap left behind leads the next pass", async
   const resolved: number[] = [];
   await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/busy", 4), pr("org/busy", 5), left]),
     acquireLease: () => ({ release: () => {} }),
@@ -347,7 +354,8 @@ Deno.test("drain fairness - the cursor is on the volume, not in the process", as
 
   await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([pr("org/held", 1)]),
     acquireLease: () => null,
@@ -374,7 +382,8 @@ Deno.test("drain fairness - an attempt clears the streak", async () => {
   for (let pass = 0; pass < 2; pass++) {
     await drainConflictingPrs({
       // Issue #1774: this PR is still open at the claim point.
-      prLiveState: () => Promise.resolve({ open: true }),
+      prLiveState: () =>
+        Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
       logger: makeSilentLogger(),
       findNext: queueFinder([target]),
       acquireLease: () => null,
@@ -392,7 +401,8 @@ Deno.test("drain fairness - an attempt clears the streak", async () => {
   // The lease frees up and the PR is finally attempted.
   const attempted = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([target]),
     acquireLease: () => ({ release: () => {} }),
@@ -423,7 +433,8 @@ Deno.test("drain fairness - an attempt that never ran leaves the streak standing
 
   await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([target]),
     acquireLease: () => null,
@@ -434,7 +445,8 @@ Deno.test("drain fairness - an attempt that never ran leaves the streak standing
 
   const stillborn = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([target]),
     acquireLease: () => ({ release: () => {} }),
@@ -461,7 +473,8 @@ Deno.test("drain fairness - an attempt the watchdog cut short keeps its streak",
 
   await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([target]),
     acquireLease: () => null,
@@ -472,7 +485,8 @@ Deno.test("drain fairness - an attempt the watchdog cut short keeps its streak",
 
   const cutShort = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: makeSilentLogger(),
     findNext: queueFinder([target]),
     acquireLease: () => ({ release: () => {} }),
@@ -504,7 +518,8 @@ Deno.test("drain visibility - a starved PR gets exactly one comment per streak",
   const runPass = () =>
     drainConflictingPrs({
       // Issue #1774: this PR is still open at the claim point.
-      prLiveState: () => Promise.resolve({ open: true }),
+      prLiveState: () =>
+        Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
       logger: makeSilentLogger(),
       findNext: queueFinder([target]),
       acquireLease: () => null,
@@ -549,7 +564,8 @@ Deno.test("drain visibility - a starved PR gets exactly one comment per streak",
   for (let pass = 0; pass < 3; pass++) {
     await drainConflictingPrs({
       // Issue #1774: this PR is still open at the claim point.
-      prLiveState: () => Promise.resolve({ open: true }),
+      prLiveState: () =>
+        Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
       logger: makeSilentLogger(),
       findNext: queueFinder([target]),
       acquireLease: () => null,
@@ -577,7 +593,8 @@ Deno.test("drain visibility - five deferrals spend neither budget", async () => 
   for (let pass = 0; pass < 5; pass++) {
     const result = await drainConflictingPrs({
       // Issue #1774: this PR is still open at the claim point.
-      prLiveState: () => Promise.resolve({ open: true }),
+      prLiveState: () =>
+        Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
       logger: makeSilentLogger(),
       findNext: queueFinder([target]),
       acquireLease: () => null,
@@ -629,7 +646,8 @@ Deno.test("drain visibility - the summary carries the streak, not just the stop"
   for (let pass = 0; pass < 2; pass++) {
     await drainConflictingPrs({
       // Issue #1774: this PR is still open at the claim point.
-      prLiveState: () => Promise.resolve({ open: true }),
+      prLiveState: () =>
+        Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
       logger: makeSilentLogger(),
       findNext: queueFinder([target]),
       acquireLease: () => null,
@@ -643,7 +661,8 @@ Deno.test("drain visibility - the summary carries the streak, not just the stop"
   const log = makeRecordingLogger();
   const result = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: log,
     findNext: queueFinder([target]),
     acquireLease: () => null,
@@ -677,7 +696,8 @@ Deno.test("drain fairness - a broken volume costs fairness, never the pass", asy
 
   const failed = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: log,
     findNext: queueFinder([pr("org/alpha", 1)]),
     acquireLease: () => ({ release: () => {} }),
@@ -716,7 +736,8 @@ Deno.test("drain visibility - a notice that cannot be posted warns and is retrie
 
   const result = await drainConflictingPrs({
     // Issue #1774: this PR is still open at the claim point.
-    prLiveState: () => Promise.resolve({ open: true }),
+    prLiveState: () =>
+      Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
     logger: log,
     findNext: queueFinder([target]),
     acquireLease: () => null,

@@ -421,7 +421,7 @@ earlier in the pipeline (Issues #344 / #352):
 
 | When | What is asked | Outcome |
 | --- | --- | --- |
-| Before the clone and the push | `gh pr view --json state` | `MERGED`/`CLOSED` → counted as `mergedCount`, logged at INFO, no clone, no push |
+| Before the clone and the push | `gh pr view --json state,mergeable` (the shared argv, Issue #2307 — this reader uses the `state` half) | `MERGED`/`CLOSED` → counted as `mergedCount`, logged at INFO, no clone, no push |
 | After a failed update only | The same lookup | `MERGED`/`CLOSED` → `mergedCount`; still `OPEN` → `failedCount`/`conflictCount` and the WARNING, unchanged |
 | Lookup unavailable or failing | — | `UNKNOWN`: the update proceeds and every failure stays loud; the lookup error is warned about, never swallowed |
 
