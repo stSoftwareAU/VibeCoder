@@ -390,6 +390,7 @@ import { isRepoAllowed } from "./config_validator.ts";
 import { isAuthorisedCommenter } from "./security.ts";
 import { createGitHubClient, runGhCommand } from "./github.ts";
 import { drainDeferredPrs as libDrainDeferredPrs } from "./deferred_pr_drain.ts";
+import { sweepClosedMilestones as libSweepClosedMilestones } from "./milestone_close_housekeeping.ts";
 import { InFlightRepoRegistry } from "./in_flight_repos.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import { setLiveSlotHolds } from "./live_slot_holds.ts";
@@ -1204,6 +1205,10 @@ export async function createProductionRunCoreDeps(
     // budget with it rather than being clipped by the flat 600 s.
     planningTimeoutSeconds: config.planningTimeout ??
       runCoreConfig.planningTimeoutSeconds,
+    // Issue #2335: the pool's host-local blank-stream lock applies only when
+    // runs join a stream's shared conversation.
+    enableSessionResume: config.enableSessionResume ??
+      runCoreConfig.enableSessionResume,
     // Issue #966: the loop's lane-rotation cursor lives on the work volume.
     // The resolved directory travels in the config rather than being read
     // back out of `WORK_DIR` at the point of use.
@@ -2993,6 +2998,36 @@ export async function createProductionRunCoreDeps(
           error: err instanceof Error ? err : new Error(String(err)),
         };
       }
+    },
+
+    // -- Priority 1.71: Milestone-close housekeeping (Issue #2338) --
+    // Once per scan per monitored repository, and independent of
+    // `enable_session_resume`: with resume off there is simply no stream
+    // session record to drop, and the worktree and branch sweep is unchanged.
+    async sweepClosedMilestones() {
+      for (const repo of repos) {
+        try {
+          const outcome = await libSweepClosedMilestones(
+            { repo, workDir },
+            { gh: runGhCommand, log: (message) => logger.info(message) },
+          );
+          for (const problem of [...outcome.errors, ...outcome.failures]) {
+            logger.warn(
+              `[milestone-close] ${repo}: ${problem} (retrying next scan)`,
+            );
+          }
+        } catch (err) {
+          // Housekeeping never fails a run — but it is never silent either.
+          // A warning, not an error: the loop continues to the next repo and
+          // the next scan retries this one.
+          logger.warn(
+            `[milestone-close] ${repo} threw (continuing): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+      return { ok: true, value: undefined };
     },
 
     // -- Priority 1.75: Refinement --

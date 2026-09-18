@@ -12,6 +12,7 @@ import {
   createDefaultRunCoreConfig,
   type DiscoveredIssue,
   liveSlotRunCount,
+  type RunCoreConfig,
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
@@ -166,8 +167,16 @@ function issue(repo: string, n: number): DiscoveredIssue {
 }
 
 /** Run one cycle: the loop ends when the clock passes the deadline. */
-async function runOneCycle(deps: RunCoreDeps, maxConcurrentIssues: number) {
-  const config = { ...createDefaultRunCoreConfig(), maxConcurrentIssues };
+async function runOneCycle(
+  deps: RunCoreDeps,
+  maxConcurrentIssues: number,
+  overrides: Partial<RunCoreConfig> = {},
+) {
+  const config = {
+    ...createDefaultRunCoreConfig(),
+    maxConcurrentIssues,
+    ...overrides,
+  };
   await runCoreLoop(config, deps);
 }
 
@@ -1512,7 +1521,11 @@ Deno.test("slot pool - a slot that loses the acquire race drops that repo's cach
     },
   });
 
-  await runOneCycle(deps, 2);
+  // Session resume is turned off deliberately (Issue #2339 made `true` the
+  // shipped default): with it on, this blank-stream issue is refused earlier
+  // by the #2335 host-local lock, which excludes the issue from the sibling's
+  // next scan instead of reaching the registry race #219 is about.
+  await runOneCycle(deps, 2, { enableSessionResume: false });
 
   assertEquals(
     invalidated[0],

@@ -568,6 +568,7 @@ match**:
 | 1.66     | Branch cleanup (delete branches for merged PRs) | [branch_cleanup.ts](../worker/deno/lib/branch_cleanup.ts)               |
 | 1.67     | Issue closure (close issues for merged PRs)     | [issue_lifecycle.ts](../worker/deno/lib/issue_lifecycle.ts)             |
 | 1.7      | Milestone completion (final consolidation PR)   | [milestone_completion.ts](../worker/deno/lib/milestone_completion.ts)   |
+| 1.71     | Closed-milestone housekeeping (worktrees, branches, stream session) | [milestone_close_housekeeping.ts](../worker/deno/lib/milestone_close_housekeeping.ts) |
 | 1.75     | Issue refinement (`refine-issue` label)         | [refinement_processor.ts](../worker/deno/lib/refinement_processor.ts)   |
 | 1.8      | Question answering (`question` label)           | [question_processor.ts](../worker/deno/lib/question_processor.ts)       |
 | 1.85     | Planning (`planning` label)                     | [planning_processor.ts](../worker/deno/lib/planning_processor.ts)       |
@@ -3213,6 +3214,54 @@ The `milestone-health` Deno command diagnoses milestone configuration and
 processing issues, helping operators identify and fix problems with milestone
 workflows.
 
+### 🧹 Milestone-close housekeeping
+
+When a milestone closes its stream is over, so every host drops the local
+footprint it still holds for that milestone on its **next scan** —
+`worker/deno/lib/milestone_close_housekeeping.ts`, Priority 1.71. Each removal
+emits one `SELF-HEALING: <what> for closed milestone <title>` line.
+
+```mermaid
+flowchart TD
+    A[Scan, per monitored repo] --> B{Closed-milestone listing<br/>cached and fresh?}
+    B -- yes --> C[Reuse the cached listing]
+    B -- no --> D["gh api repos/:repo/milestones --state closed"]
+    C --> E[Drop already-swept titles]
+    D --> E
+    E --> F[Lane worktrees on the milestone<br/>or child issue branches]
+    F --> G{Uncommitted or<br/>unpushed work?}
+    G -- yes --> H["SELF-HEALING: skipped path<br/>(uncommitted work / unpushed work)"]
+    G -- no --> I[Remove worktree, local branches,<br/>stream-streamKey.json]
+    I --> J{Every removal succeeded?}
+    J -- yes --> K[Record the title as swept — never revisited]
+    J -- no --> L[Log loud; retried on the next scan]
+```
+
+What it sweeps for a closed milestone: the lane worktrees holding its
+`milestone/**` branch or one of its child issue branches, those local branches,
+and the stream session record (`stream-<streamKey>.json`) for **every**
+provider.
+
+Three boundaries make it safe to run on every scan:
+
+- **Swept once, then never revisited.** The listing is cached under the work
+  root with a 15-minute TTL, and every fully-swept title is persisted forever,
+  so a closed milestone costs one `gh` call in its lifetime rather than one per
+  scan — and never re-appears in the listed set.
+- **Never destructive.** A worktree with uncommitted changes is logged as
+  `SELF-HEALING: skipped <path> (uncommitted work)`, and a branch whose commits
+  no remote holds as `SELF-HEALING: skipped <branch> (unpushed work)` — the
+  line names the reason that actually applied. Both are left to the existing
+  time-based cleanups ([`worktree_cleanup.ts`](../worker/deno/lib/worktree_cleanup.ts),
+  [`branch_cleanup.ts`](../worker/deno/lib/branch_cleanup.ts)), which this
+  complements rather than replaces. "Pushed" is measured against every remote
+  ref, not `origin/<branch>` — a merged milestone branch is routinely deleted
+  on the remote while its commits live on the default branch.
+- **Never fatal.** A failed removal is logged loud and the milestone is *not*
+  recorded as swept, so the next scan retries it; the run itself always
+  completes. The sweep is independent of `enable_session_resume` — with resume
+  off there is simply no stream session record to drop.
+
 ### 🔄 Periodic milestone branch sync
 
 Milestone branches are now periodically synchronised with the default branch,
@@ -4194,7 +4243,7 @@ failure management and deprioritisation.
 ### 🔁 Session resume
 
 CLI-level session continuity across multi-phase issue processing using
-`--session-id` and `--resume` flags.
+`--session-id` and `--resume` flags. On by default since Issue #2339.
 [session_resume.ts](../worker/deno/lib/session_resume.ts) generates a
 deterministic session ID from the repository name, issue number, and timestamp,
 then builds the appropriate CLI flags for each phase:
@@ -4206,7 +4255,11 @@ then builds the appropriate CLI flags for each phase:
   the flag builder knows whether to include `--resume`.
 
 This complements the per-repository `.claude/` directory persistence by enabling
-conversation-level continuity within a single issue's lifecycle.
+conversation-level continuity within a single issue's lifecycle — and, for the
+implementation and planning runs that join a **stream**
+([stream_session.ts](../worker/deno/lib/stream_session.ts)), across the
+successive issues of that stream. The stream model is documented in
+[CONFIGURATION.md § Session Resume](CONFIGURATION.md#-session-resume).
 
 ### 🗜️ Session compaction
 
@@ -4438,6 +4491,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [pr_retarget.ts](../worker/deno/lib/pr_retarget.ts)                                                               | PR retargeting                                                                                                                                                                       |
 |                             | [branch_cleanup.ts](../worker/deno/lib/branch_cleanup.ts)                                                         | Stale branch cleanup after PR merge                                                                                                                                                  |
 |                             | [remote_branch_delete.ts](../worker/deno/lib/remote_branch_delete.ts)                                             | Remote-branch deletion chokepoint — refuses protected, head-PR, base-PR and unreadable branches                                                                                      |
+|                             | [milestone_close_housekeeping.ts](../worker/deno/lib/milestone_close_housekeeping.ts)                             | Milestone-close sweep — drops a closed milestone's worktrees, local branches and stream session on the next scan                                                                     |
 | **Git operations**          |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [git_branch.ts](../worker/deno/lib/git_branch.ts)                                                                 | Branch management and sync                                                                                                                                                           |
 |                             | [git_push.ts](../worker/deno/lib/git_push.ts)                                                                     | Push operations                                                                                                                                                                      |

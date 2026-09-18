@@ -37,7 +37,15 @@ import {
   adoptProviderSession,
   createSessionResumeState,
   recordPhaseCompletion,
+  type SessionResumeState,
 } from "./session_resume.ts";
+import {
+  anticipatedProviderId,
+  handOnStreamSession,
+  type JoinedStream,
+  primeStreamSession,
+} from "./stream_session.ts";
+import { primeStreamCompaction } from "./stream_compaction.ts";
 import {
   buildBoundaryIntegrityInstruction,
   createPromptDelimiters,
@@ -1533,7 +1541,68 @@ async function _processPlanningWithHeartbeat(
   // revises once, and only then publishes the final sub-issues. The critique
   // text itself is never published. Sub-issue detection runs on the turn-2
   // output, so the existing fallback/retry logic below is unchanged.
+  // Planning joins its stream's conversation too (Issue #2333): a repository's
+  // planning issues carry no milestone, so they run on its blank stream and
+  // each new plan continues where the last one left off. The milestone a plan
+  // creates is a different stream, which starts fresh at its first sub-issue —
+  // nothing forks this conversation into it.
+  let streamSession: JoinedStream | undefined;
   let sessionState = createSessionResumeState();
+  /**
+   * The `--autocompact` window every planning turn carries (Issue #2337),
+   * set when the stream's conversation could not be verifiably compacted
+   * before this planning run started.
+   */
+  let autocompactOption: { autocompactTokens?: number } = {};
+  if (config.enableSessionResume) {
+    const providerId = anticipatedProviderId({
+      ...(config.repoConfig?.[repo]
+        ? { repoConfig: config.repoConfig[repo] }
+        : {}),
+      logger,
+    });
+    const adoption = await primeStreamSession({
+      workDir: config.workDir,
+      repo,
+      ...(milestoneTitle !== undefined ? { milestoneTitle } : {}),
+      providerId,
+      runKind: "planning",
+      logger,
+    });
+    if (adoption) {
+      sessionState = adoption.state;
+      streamSession = { stream: adoption.stream, providerId };
+      // Compact the conversation this planning stream has been having before
+      // the first turn starts (Issue #2337).
+      const autocompactTokens = await primeStreamCompaction({
+        outcome: adoption.outcome,
+        providerId,
+        sessionId: adoption.state.sessionId,
+        cwd: config.workDir,
+        workDir: config.workDir,
+        logger,
+        logFields: { repo, issueNumber },
+      });
+      if (autocompactTokens) autocompactOption = { autocompactTokens };
+    }
+  }
+
+  /**
+   * Hand this run's conversation on to the stream's next planning issue.
+   *
+   * Called after every turn that completed, because planning has more than one
+   * way out: the draft turn can publish sub-issues and return, and the publish
+   * turn can time out. A stream that is never written is a conversation lost,
+   * so the write follows whichever turn actually ran last.
+   */
+  const handOnStream = (state: SessionResumeState): Promise<void> =>
+    handOnStreamSession({
+      workDir: config.workDir,
+      joined: streamSession,
+      state,
+      logger,
+      logFields: { repo, issueNumber },
+    });
 
   // Collect stats from every planning Claude invocation in the run (Issue
   // #2649). Designed for a list — draft + critique (#2648), plus the #1219
@@ -1574,6 +1643,7 @@ async function _processPlanningWithHeartbeat(
       cwd: config.workDir,
       logger,
       sessionResumeState: sessionState,
+      ...autocompactOption,
       ...codegraphMcpOption,
     },
     {
@@ -1598,6 +1668,9 @@ async function _processPlanningWithHeartbeat(
         providerId: draftResult.value.provider,
       });
     }
+    // The draft turn can publish sub-issues and return below, so the stream is
+    // written here as well as after the publish turn (Issue #2333).
+    await handOnStream(sessionState);
     recordInvocation(invocations, draftResult.value, codegraph, graft);
     if (draftResult.value.timedOut) {
       logger.warn(
@@ -1725,6 +1798,7 @@ async function _processPlanningWithHeartbeat(
       cwd: config.workDir,
       logger,
       sessionResumeState: publishSessionState,
+      ...autocompactOption,
       ...codegraphMcpOption,
     },
     {
@@ -1753,6 +1827,19 @@ async function _processPlanningWithHeartbeat(
     };
   }
   recordInvocation(invocations, claudeResult.value, codegraph, graft);
+
+  // Before the timeout check below: a publish turn that ran out of time still
+  // had the conversation, and the next planning run should continue it rather
+  // than start over. Codex names its own thread (#1699), so capture the
+  // provider's id first.
+  await handOnStream(
+    claudeResult.value.provider
+      ? adoptProviderSession(publishSessionState, {
+        sessionId: claudeResult.value.agentOutput?.sessionId,
+        providerId: claudeResult.value.provider,
+      })
+      : publishSessionState,
+  );
 
   const claudeOutput = claudeResult.value.output;
 

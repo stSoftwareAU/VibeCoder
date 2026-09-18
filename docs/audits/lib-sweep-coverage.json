@@ -1837,6 +1837,78 @@
       "paths": [
         "worker/deno/lib/milestone_fallback_flag.ts"
       ]
+    },
+    {
+      "issue": 2331,
+      "chunk": "top-up-2331",
+      "title": "top-up: the stream identity seam",
+      "ledger": "docs/audits/security-sweep-2331-stream-identity.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_identity.ts (#2331)",
+      "status": "swept",
+      "sweptAt": "5d51a0c56a60ed763712b77b691049a7f50bee59",
+      "paths": [
+        "worker/deno/lib/stream_identity.ts"
+      ]
+    },
+    {
+      "issue": 2334,
+      "chunk": "top-up-2334",
+      "title": "top-up: the milestone stream lock",
+      "ledger": "docs/audits/security-sweep-2334-stream-lock.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_lock.ts (#2334)",
+      "status": "swept",
+      "sweptAt": "9a429bee650fc8d5241c6ec367e964a91e0d22db",
+      "paths": [
+        "worker/deno/lib/stream_lock.ts"
+      ]
+    },
+    {
+      "issue": 2333,
+      "chunk": "top-up-2333",
+      "title": "top-up: the stream join seam",
+      "ledger": "docs/audits/security-sweep-2333-stream-session.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_session.ts (#2333)",
+      "status": "swept",
+      "sweptAt": "a81b632224f0ad32e9a8481e9708bff37279a13a",
+      "paths": [
+        "worker/deno/lib/stream_session.ts"
+      ]
+    },
+    {
+      "issue": 2336,
+      "chunk": "top-up-2336",
+      "title": "top-up: the stream affinity head start",
+      "ledger": "docs/audits/security-sweep-2336-stream-holder.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_holder.ts (#2336)",
+      "status": "swept",
+      "sweptAt": "484e2bda901621b9baa3bb760a93238f213dd91b",
+      "paths": [
+        "worker/deno/lib/stream_holder.ts"
+      ]
+    },
+    {
+      "issue": 2337,
+      "chunk": "top-up-2337",
+      "title": "top-up: the stream compaction seam",
+      "ledger": "docs/audits/security-sweep-2337-stream-compaction.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_compaction.ts (#2337)",
+      "status": "swept",
+      "sweptAt": "a81fafe2169010b126103593972f42d5490e3fa0",
+      "paths": [
+        "worker/deno/lib/stream_compaction.ts"
+      ]
+    },
+    {
+      "issue": 2338,
+      "chunk": "top-up-2338",
+      "title": "top-up: the milestone-close sweep",
+      "ledger": "docs/audits/security-sweep-2338-milestone-close-housekeeping.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_close_housekeeping.ts (#2338)",
+      "status": "swept",
+      "sweptAt": "ea3eff5190dcd7c0e897e19e323a776078d6e095",
+      "paths": [
+        "worker/deno/lib/milestone_close_housekeeping.ts"
+      ]
     }
   ],
   "roots": [

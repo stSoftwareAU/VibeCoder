@@ -45,6 +45,12 @@ import {
   resumeIssueBranch,
 } from "../issue_branch_resume.ts";
 import {
+  anticipatedProviderId,
+  primeStreamSession,
+  resolveStreamRunKind,
+} from "../stream_session.ts";
+import { primeStreamCompaction } from "../stream_compaction.ts";
+import {
   claimRepoLevelRejectionReport,
   describeRepoLevelRejection,
   isRepoLevelBranchRejection,
@@ -124,6 +130,13 @@ export async function workOnIssueSetupBranch(
     fleetAuthors,
     pushCapableAuthors,
     milestoneTitle,
+    // Issue #2334: one run per milestone stream at a time, fleet-wide. This
+    // phase is the standard pipeline's claim — the run that joins the
+    // stream's conversation — so the lock applies here and nowhere else; the
+    // pre-pipeline routes (idle-task, add-repo, seed-idle-tasks) never join a
+    // stream and never set it. With `enable_session_resume` off there is no
+    // shared conversation, so there is no lock and no extra API call.
+    streamLockEnabled: config.enableSessionResume,
     markerOptions: {
       machineId,
       workDir: config.workDir,
@@ -620,6 +633,59 @@ export async function workOnIssueSetupBranch(
       };
       logger.info("Priming CLI session resume from persisted state", {
         branch: state.branchName,
+      });
+    }
+  }
+
+  // Join the issue's stream conversation (Issue #2333). The per-issue
+  // checkpoint above wins where it primed a session: it names the very
+  // conversation this branch's interrupted run was having, which is closer to
+  // the work than the stream's. Otherwise an implementation run continues the
+  // conversation its stream — this repository's milestone, or its blank stream
+  // — has been having, instead of starting empty.
+  //
+  // An idle-task sweep keeps its per-issue session and reads no stream record;
+  // `primeStreamSession` returns undefined for it, and for any fault.
+  if (config.enableSessionResume && !state.sessionResumeState) {
+    const providerId = anticipatedProviderId({
+      ...(config.repoConfig?.[repo]
+        ? { repoConfig: config.repoConfig[repo] }
+        : {}),
+      logger,
+    });
+    const adoption = await primeStreamSession({
+      workDir: config.workDir,
+      repo,
+      ...(ctx.milestoneTitle !== undefined
+        ? { milestoneTitle: ctx.milestoneTitle }
+        : {}),
+      providerId,
+      runKind: resolveStreamRunKind(ctx.issueLabels),
+      logger,
+    });
+    if (adoption) {
+      state.sessionResumeState = adoption.state;
+      // `holderHost` is what the run records on the milestone's tracking issue
+      // when it finishes (Issue #2336): the conversation ends up on this
+      // machine's disk, so this machine gets the stream's next issue first.
+      state.streamSession = {
+        stream: adoption.stream,
+        providerId,
+        holderHost: machineId,
+      };
+      // Compact that conversation before the issue's first phase runs
+      // (Issue #2337). It has carried every issue of this stream so far, so
+      // left alone it is the next issue that dies of a full context window.
+      // Returns the `--autocompact` window when the compaction could not be
+      // verified — the CLI's own lever, pulled as early as it goes.
+      state.autocompactTokens = await primeStreamCompaction({
+        outcome: adoption.outcome,
+        providerId,
+        sessionId: adoption.state.sessionId,
+        cwd: repoPath,
+        workDir: config.workDir,
+        logger,
+        logFields: { repo, issueNumber },
       });
     }
   }
