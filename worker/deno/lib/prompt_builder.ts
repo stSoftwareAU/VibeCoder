@@ -2245,7 +2245,6 @@ export interface MergeConflictPromptOptions {
   baseBranch: string;
   /** Paths left conflicted by the in-progress merge. */
   conflictedFiles: readonly string[];
-  qualityInstructions?: string;
   customInstructions?: string;
   promptsDir?: string;
   /** Active agent identity for the per-model guidelines overlay (Issue #374). */
@@ -2408,7 +2407,6 @@ export async function buildMergeConflictPrompt(
     target,
     baseBranch,
     conflictedFiles,
-    qualityInstructions,
     customInstructions,
     promptsDir,
     repoContextContent,
@@ -2429,8 +2427,6 @@ export async function buildMergeConflictPrompt(
     options.agentIdentity,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
-
-  const qualityBlock = qualityInstructions ? `\n\n${qualityInstructions}` : "";
 
   // One nonce for the whole prompt: the repository guidance, the originating
   // issues, the base branch name and the conflicted paths are all untrusted
@@ -2453,7 +2449,6 @@ export async function buildMergeConflictPrompt(
     TARGET_DESCRIPTION: buildConflictTargetDescription(target, delimiters),
     BASE_BRANCH: fenceUntrustedValue(baseBranch, delimiters),
     CONFLICTED_FILES: fileList,
-    QUALITY_INSTRUCTIONS: qualityBlock,
     VERBOSITY_INSTRUCTIONS: buildVerbosityBlock(verbosityLevel),
     ISSUE_CONTEXT: formatConflictIssueContextSection(
       issueContext,

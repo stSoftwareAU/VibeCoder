@@ -125,6 +125,15 @@ export interface MilestoneSyncConflict {
    * from a semantic one.
    */
   repair?: GateRepairRecord;
+  /**
+   * The resolution agent's own reply (Issue #2306), naming each judgement
+   * call file by file.
+   *
+   * There is no PR comment on this path, so the sync report is where those
+   * `Judgement:` lines become auditable. Absent when no agent rung ran or it
+   * wrote nothing.
+   */
+  agentReply?: string;
 }
 
 /** Outcome of a milestone sync merge. */
@@ -287,6 +296,16 @@ export function buildConflictEscalationComment(
     const repairNote = e.conflict.repair
       ? `\n\n${describeGateRepair(e.conflict.repair)}`
       : "";
+    // Issue #2306: the agent names every judgement call file by file in its
+    // reply, and this comment is the only place that record surfaces on the
+    // milestone path. It is agent-authored text, so it is reproduced as a
+    // quoted block rather than folded into the worker's own prose.
+    const judgements = e.conflict.agentReply
+      ? `\n\n**The resolution agent's own account:**\n\n${
+        e.conflict.agentReply.split("\n").map((line) => `> ${line}`.trimEnd())
+          .join("\n")
+      }`
+      : "";
     return `## Milestone sync resolved a conflict automatically\n\n` +
       `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
       `\`${e.repo}\` conflicted, and every conflicted file was settled by a ` +
@@ -294,7 +313,9 @@ export function buildConflictEscalationComment(
       `resolution agent (Issues #1559, #1777). The merged tree passed the ` +
       `repository's own check, its manifest check and its unit suite before ` +
       `it was pushed — a red tree would have been rolled back instead.\n\n` +
-      `${decisions || "- (no decision was recorded)"}${repairNote}\n\n` +
+      `${
+        decisions || "- (no decision was recorded)"
+      }${judgements}${repairNote}\n\n` +
       `${describeBranchTips(e.tips)}\n\n` +
       `No conflicted test file was resolved by taking a side that drops ` +
       `cases: a test file resolves only when one side keeps every case and ` +

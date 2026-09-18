@@ -1224,6 +1224,10 @@ export async function syncMilestoneBranchWithDefault(
         resolution: "auto",
         decisions: resolved,
         ...(repaired ? { repair: repaired } : {}),
+        // Issue #2306: the agent names each judgement call file by file in
+        // its reply, and this comment is where that record surfaces on the
+        // milestone path.
+        ...(ladder.agentReply ? { agentReply: ladder.agentReply } : {}),
       },
     },
   };

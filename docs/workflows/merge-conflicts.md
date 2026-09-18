@@ -14,9 +14,12 @@ cannot build, so there is no failing check for the CI-fix queue to pick up;
 reviewers rarely comment on a PR that cannot merge, so there is nothing for the
 PR-feedback queue either. Priority **1.61** closes that gap: it labels every
 `CONFLICTING` PR `merge-conflict` so the stuck queue is visible, then merges the
-base branch into the PR branch **for real** — both sides' changes survive, never
-a side-pick — runs the repository's quality gate on the result, and pushes
-without force. A dependency-version conflict is settled by deterministic rules
+base branch into the PR branch **for real** — both sides' changes survive
+wherever both can stand, never a side-pick — and pushes without force. Where the
+two sides genuinely contradict, the agent **decides** and names the call file by
+file on the PR; it does not run the repository's quality gate, because CI on the
+pushed merge is the gate on a PR and the worker's own type-check gate is the
+gate on a milestone branch (Issue #2306). A dependency-version conflict is settled by deterministic rules
 first, and the AI is only asked about what those rules could not decide.
 
 **The ladder has four rungs and only the last one is a person.** An
@@ -64,9 +67,9 @@ flowchart TD
     Rules --> Left{"Anything left unresolved?"}
     Left -->|No| Verify
     Left -->|Yes| Context["Gather both sides' originating issues<br/>(deferred paths only)"]
-    Context --> Agent["Run agent with merge_conflict prompt<br/>(deferred files only,<br/>issues fenced as evidence)"]
+    Context --> Agent["Run agent with merge_conflict prompt<br/>(deferred files only, issues fenced as<br/>evidence, one Judgement: line per file)"]
     Agent --> Verify{"Tree fully resolved?"}
-    Verify -->|No — markers or unmerged paths| Abort["git merge --abort"]
+    Verify -->|No — markers or unmerged paths| Abort["Worker aborts:<br/>git merge --abort"]
     Verify -->|Yes| Push
     Push --> Ancestor{"Base now an ancestor of HEAD?"}
     Ancestor -->|Yes| Resolved["Resolved marker,<br/>drop merge-conflict label"]
@@ -116,9 +119,11 @@ flowchart TD
 - **Scope:** open PRs in the push-capable maintenance set (the fleet's own
   logins, plus a human PR whose author explicitly invited the worker) reported
   by GitHub as `mergeable == CONFLICTING`.
-- **Not in scope:** PRs already carrying `needs-human` (a human owns those), and
-  conflicts whose two sides genuinely contradict each other — those leave the
-  merge ladder for abandon-and-restart, and a human after that.
+- **Not in scope:** PRs already carrying `needs-human` (a human owns those). A
+  conflict whose two sides genuinely contradict each other **is** in scope — the
+  agent judges it and names the call (Issue #2306); only a resolution the
+  mechanical guards refuse leaves the merge ladder for abandon-and-restart, and
+  a human after that.
 
 ## 📏 The contract
 
@@ -137,16 +142,28 @@ progress and stopped on conflicts. Its contract is absolute:
   Both are reported decision-by-decision on the PR.
 - **A duplicate is the one exception.** When both sides added the *same*
   content, keeping it once *is* keeping both — and the agent must say so.
-- **Stop rather than guess.** Two changes that genuinely contradict each other
-  (the same constant set to different values), with no evidenced intent to
-  settle them, are not the agent's decision. It aborts the merge and explains;
-  the worker takes the PR to the next rung of the ladder.
+- **Judge rather than stop.** Two changes that genuinely contradict each other
+  (the same constant set to different values) are still the agent's to resolve
+  (Issue #2306). It reads both sides' code, and the originating issues where
+  they are known, and resolves to the outcome both intents are best served by.
+  An abandoned merge helped nobody: the PR stayed conflicting, no CI ran on it,
+  and the next attempt reread the same two sides.
+- **Every conflicted file gets a named judgement.** The agent writes one
+  `Judgement: <path> — <kept …; dropped …; because …>` line per conflicted file
+  into `.pr_response_message`; the worker carries that reply verbatim onto the
+  PR's conclusion comment, and onto the milestone sync report on the branch
+  path. A reviewer audits every call from the comment, without reading the diff.
+- **The agent runs no quality gate.** CI on the pushed merge is the gate on a
+  PR — a conflicting PR has had none at all, so that run is usually the first
+  time its tests meet current base code — and the worker's type-check gate,
+  with its repair round, is the gate on a milestone branch.
 - **Dependency versions are the first bounded carve-out.** The prompt says so
   itself: the worker
   settles dependency-version hunks in known manifests before the agent runs, and
   those files are absent from the agent's conflicted-file list. The carve-out
-  stops there — a conflicting constant in source code is still a human's call,
-  because a version has a total order to appeal to and a source value does not.
+  stops there — a conflicting constant in source code is the agent's own
+  judgement, named on its `Judgement:` line, because a version has a total
+  order to appeal to and a source value does not.
 - **Issue intent may override "both sides survive" — evidenced, or not at
   all.** When the originating issues behind _both_ sides of a path are known and
   one of them explicitly supersedes, reverts, replaces or retunes the other, the
@@ -154,7 +171,8 @@ progress and stopped on conflicts. Its contract is absolute:
   shape as the dependency carve-out: a bounded exception, applied only where an
   external order exists to appeal to, and reported decision-by-decision on the
   PR. One side's issue, a plausible-sounding title, or a supersession the agent
-  cannot quote establishes nothing — the contract above then stands unchanged.
+  cannot quote establishes nothing — the resolution is then the agent's own
+  judgement, named as such rather than cited as evidenced.
 - **No force-push, no rebase, no branch recreation.** The merge commit
   fast-forwards the remote branch, so every commit on the PR survives.
 
@@ -166,9 +184,9 @@ Any failure aborts the merge, leaving the branch untouched.
 ### 📦 Dependency files are decided before the agent runs
 
 One conflict shape needs no judgement at all: both branches bumped the same
-dependency. The agent's contract forbids it from deciding that — "the same value
-set to two different values" is a human's call — so the worker settles it
-deterministically **before** the agent is asked anything:
+dependency. Asking the agent to re-reason about a decidable question spends a
+model run on nothing, so the worker settles it deterministically **before** the
+agent is asked anything:
 
 - Each conflicted path is offered to the registered manifest rules
   (`deno.json`/`deno.jsonc`, `package.json`, `Cargo.toml`, `go.mod`). Per
@@ -227,8 +245,8 @@ resolver is allowed to do with it.
 
 ### 🧭 What were the two sides trying to do?
 
-"Stop rather than guess" is right given what the agent knows, and it frequently
-knows too little: the same constant set to two different values often is not a
+The agent judges every conflicted file, and it frequently knows too little to
+judge well: the same constant set to two different values often is not a
 contradiction at all — one issue superseded the other, and the answer is written
 down in an issue neither side of the merge can see.
 
@@ -289,12 +307,14 @@ settle still reaches no agent and now consults no issue either.
   resolution then fails.
 - **The resolved comment names every override**: the file, both issue numbers,
   and one line on what was kept and what it superseded.
-- **An uncorroborated override is refused, not reported.** Eligibility is the
-  worker's own computation, so an override claimed for a path where both sides'
-  issues were _not_ known is decidable without trusting the model: the merge is
-  aborted and the attempt fails, exactly as for a side-pick. A claim the parser
-  cannot read is reported on the PR instead — a line it could not understand is
-  not a confession.
+- **An uncorroborated override is reported as an unverified judgement**
+  (Issue #2306). Eligibility is the worker's own computation, so an override
+  claimed for a path where both sides' issues were _not_ known is decidable
+  without trusting the model — but it no longer aborts the merge. The claim is
+  flagged on the conclusion comment for a reviewer to audit, and the merge
+  lands: refusing it cost the attempt and left the PR conflicting, which helped
+  nobody. A claim the parser cannot read is reported the same way — a line it
+  could not understand is not a confession.
 - **No issue context means today's behaviour, unchanged** — the block is absent
   from the prompt, and the attempt comment says no originating issues were
   found.

@@ -100,7 +100,10 @@ Deno.test("buildConsultedIssuesSection - one side only permits no override anywh
   })));
   assertStringIncludes(text, "**PR side** — none found");
   assertStringIncludes(text, "no** conflicted path");
-  assertStringIncludes(text, "no intent override is permitted");
+  assertStringIncludes(text, "no evidenced intent override is available");
+  // Issue #2306: with no evidence the resolution is still made — by the
+  // agent's own judgement, named file by file — rather than stopped.
+  assertStringIncludes(text, "named file by file");
 });
 
 Deno.test("buildConsultedIssuesSection - a gather failure is stated, not swallowed", () => {
@@ -168,18 +171,21 @@ Deno.test("buildIntentOverrideSection - names both issues, the file and the outc
   assertStringIncludes(text, "kept #900, superseded #812");
   assertStringIncludes(text, "60s default");
   assert(
-    !text.includes("uncorroborated"),
+    !text.includes("unverified judgement"),
     "an override on a path where both issues were known is corroborated",
   );
 });
 
-Deno.test("buildIntentOverrideSection - an uncorroborated claim is flagged loudly", () => {
+Deno.test("buildIntentOverrideSection - an uncorroborated claim is flagged as an unverified judgement", () => {
   const report = parseIntentOverrides(
     "Intent override: docs/notes.md — kept #900, superseded #812 — a guess",
   );
   const text = section(buildIntentOverrideSection(report, makeContext()));
   assertStringIncludes(text, "⚠️");
-  assertStringIncludes(text, "were **not** known for this path");
+  assertStringIncludes(text, "unverified judgement");
+  assertStringIncludes(text, "were not known for this path");
+  // Issue #2306: the claim is reported, not punished — the merge landed.
+  assertStringIncludes(text, "The merge still landed");
 });
 
 Deno.test("buildIntentOverrideSection - a malformed claim is reported, not dropped", () => {
