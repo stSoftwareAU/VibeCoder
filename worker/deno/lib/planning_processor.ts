@@ -45,6 +45,7 @@ import {
   type JoinedStream,
   primeStreamSession,
 } from "./stream_session.ts";
+import { primeStreamCompaction } from "./stream_compaction.ts";
 import {
   buildBoundaryIntegrityInstruction,
   createPromptDelimiters,
@@ -1547,6 +1548,12 @@ async function _processPlanningWithHeartbeat(
   // nothing forks this conversation into it.
   let streamSession: JoinedStream | undefined;
   let sessionState = createSessionResumeState();
+  /**
+   * The `--autocompact` window every planning turn carries (Issue #2337),
+   * set when the stream's conversation could not be verifiably compacted
+   * before this planning run started.
+   */
+  let autocompactOption: { autocompactTokens?: number } = {};
   if (config.enableSessionResume) {
     const providerId = anticipatedProviderId({
       ...(config.repoConfig?.[repo]
@@ -1565,6 +1572,18 @@ async function _processPlanningWithHeartbeat(
     if (adoption) {
       sessionState = adoption.state;
       streamSession = { stream: adoption.stream, providerId };
+      // Compact the conversation this planning stream has been having before
+      // the first turn starts (Issue #2337).
+      const autocompactTokens = await primeStreamCompaction({
+        outcome: adoption.outcome,
+        providerId,
+        sessionId: adoption.state.sessionId,
+        cwd: config.workDir,
+        workDir: config.workDir,
+        logger,
+        logFields: { repo, issueNumber },
+      });
+      if (autocompactTokens) autocompactOption = { autocompactTokens };
     }
   }
 
@@ -1624,6 +1643,7 @@ async function _processPlanningWithHeartbeat(
       cwd: config.workDir,
       logger,
       sessionResumeState: sessionState,
+      ...autocompactOption,
       ...codegraphMcpOption,
     },
     {
@@ -1778,6 +1798,7 @@ async function _processPlanningWithHeartbeat(
       cwd: config.workDir,
       logger,
       sessionResumeState: publishSessionState,
+      ...autocompactOption,
       ...codegraphMcpOption,
     },
     {

@@ -1846,6 +1846,18 @@
       "paths": [
         "worker/deno/lib/stream_holder.ts"
       ]
+    },
+    {
+      "issue": 2337,
+      "chunk": "top-up-2337",
+      "title": "top-up: the stream compaction seam",
+      "ledger": "docs/audits/security-sweep-2337-stream-compaction.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_compaction.ts (#2337)",
+      "status": "swept",
+      "sweptAt": "a81fafe2169010b126103593972f42d5490e3fa0",
+      "paths": [
+        "worker/deno/lib/stream_compaction.ts"
+      ]
     }
   ],
   "roots": [

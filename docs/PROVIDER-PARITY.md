@@ -187,6 +187,11 @@ WIP branches are untouched.
   paid turn.
 - Exhaustion prose from the CLI often lacks a parseable reset timezone;
   the reset stays unknown rather than guessed.
+- Only Claude and DeepSeek (the same CLI) expose a conversation-compaction
+  lever to the worker, so only they get the pre-issue stream compaction
+  described in [CONFIGURATION.md](CONFIGURATION.md#-session-resume)
+  (Issue #2337). A Codex or Gemini run carries the stream's full transcript and
+  logs `compaction unavailable` naming the provider.
 - Automatic selection currently supports Claude OAuth and Codex ChatGPT
   subscriptions. Gemini, DeepSeek and every unknown or metered billing mode are
   ineligible. The shipped default remains pinned.

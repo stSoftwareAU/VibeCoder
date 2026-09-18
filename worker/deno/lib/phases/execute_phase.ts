@@ -782,6 +782,12 @@ async function executeClaudeBody(
           mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
           logger,
           sessionResumeState: state.sessionResumeState,
+          // The stream conversation could not be verifiably compacted before
+          // this issue started (Issue #2337), so every agent run of the issue
+          // asks the CLI to compact at the earliest window it accepts.
+          ...(state.autocompactTokens
+            ? { autocompactTokens: state.autocompactTokens }
+            : {}),
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
           issueNumber,
           // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
