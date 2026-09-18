@@ -15,6 +15,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { installConsoleRedaction } from "./console_redaction.ts";
 import {
   decideIssueEditHook,
   formatIssueEditDenialLog,
@@ -67,6 +68,10 @@ export function runIssueEditGuard(
 }
 
 if (import.meta.main) {
+  // Issue #1280: this guard is its own process, and the payload it echoes —
+  // the denied tool name — comes from the agent's session.
+  installConsoleRedaction();
+
   runIssueEditGuard(await readStdin(), {
     out: (text) => console.log(text),
     err: (text) => console.error(text),

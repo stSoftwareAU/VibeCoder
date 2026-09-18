@@ -19,7 +19,11 @@ import {
 } from "../lib/issue_executor_enforcement.ts";
 import { runIssueEditGuard } from "../lib/issue_edit_guard_cli.ts";
 import { buildExecutorSplitStatsLine } from "../lib/issue_run_stats_comment.ts";
-import { selectAgentProvider } from "../lib/agent_provider.ts";
+import {
+  DEEPSEEK_PROVIDER_ID,
+  resolveAgentProvider,
+  selectAgentProvider,
+} from "../lib/agent_provider.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import { createAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
@@ -76,6 +80,33 @@ Deno.test("issue edit guard - Write is guarded, other tools are not (Issue #2344
       .deny,
     false,
   );
+});
+
+Deno.test("issue edit guard - the advisor still writes the run's own record (Issue #2344)", () => {
+  // The prompt requires the advisor to write the PR summary itself, and
+  // #2343's block reserves the run's own record to it. Denying that would
+  // leave a split run unable to finish.
+  const summary = {
+    ...payload("Write"),
+    tool_input: {
+      file_path: "/repo/docs/archive/pr-summaries/pr-summary-2344.md",
+    },
+  };
+  assertEquals(decideIssueEditHook(summary).deny, false);
+
+  const reply = {
+    ...payload("Write"),
+    tool_input: { file_path: "/repo/.pr_response_message" },
+  };
+  assertEquals(decideIssueEditHook(reply).deny, false);
+
+  // Anything else the advisor writes is still an executor's job.
+  const source = {
+    ...payload("Write"),
+    tool_input: { file_path: "/repo/docs/archive/pr-summaries/../../x.ts" },
+  };
+  assert(decideIssueEditHook(source).deny, "only the run record is carved out");
+  assert(decideIssueEditHook(payload("Edit")).deny);
 });
 
 Deno.test("issue edit guard - a denied advisor Edit produces the CLI deny shape and a log line naming the tool (Issue #2344)", () => {
@@ -257,6 +288,59 @@ Deno.test("split run summary - a guard-denied advisor edit counts as a denial, n
   assertEquals(stats.deniedAdvisorEdits, ["Edit"]);
 });
 
+Deno.test("split run summary - the CLI's own permission_denials record counts a denial (Issue #2344)", () => {
+  // The first-class record, which does not depend on the denial reason
+  // surviving into the tool result's prose.
+  const stream = [
+    JSON.stringify({
+      type: "assistant",
+      parent_tool_use_id: null,
+      message: {
+        content: [{ type: "tool_use", id: "t1", name: "Write", input: {} }],
+      },
+    }),
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      permission_denials: [{
+        tool_name: "Write",
+        tool_use_id: "t1",
+        tool_input: {},
+      }],
+    }),
+  ].join("\n");
+
+  const stats = summariseIssueExecutorSplitRun(stream);
+  assertEquals(stats.advisorEditCalls, 0);
+  assertEquals(stats.deniedAdvisorEdits, ["Write"]);
+});
+
+Deno.test("split run summary - a re-task addressed to a numbered executor instance counts (Issue #2344)", () => {
+  const stream = JSON.stringify({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: "tool_use",
+          id: "t1",
+          name: "SendMessage",
+          input: { to: "executor-2" },
+        },
+        {
+          type: "tool_use",
+          id: "t2",
+          name: "SendMessage",
+          input: { to: "Explore" },
+        },
+      ],
+    },
+  });
+
+  const stats = summariseIssueExecutorSplitRun(stream);
+  assertEquals(stats.executorRetasks, 1, "only the executor's continuation");
+});
+
 Deno.test("split run summary - malformed and empty streams count nothing rather than throwing (Issue #2344)", () => {
   const stats = summariseIssueExecutorSplitRun('{not json\n\n{"type":"x"}');
   assertEquals(stats.advisorEditCalls, 0);
@@ -386,4 +470,13 @@ Deno.test("claude invocation - carries --settings only when the split asked for 
     false,
     "a key-off run's argv is exactly today's",
   );
+
+  // DeepSeek drops the executor definitions, so the guard goes with them: a
+  // guard with no executors denies the advisor's edits and strands the run.
+  const deepSeek = resolveAgentProvider(DEEPSEEK_PROVIDER_ID).buildInvocation({
+    prompt: "P",
+    model: "deepseek-flash",
+    settingsJson: '{"hooks":{}}',
+  });
+  assertEquals(deepSeek.includes("--settings"), false);
 });

@@ -1095,7 +1095,10 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     // today's single-model routing. Dropped from the argv — but stated, never
     // in silence, so a split configured under DeepSeek is visible rather than
     // a run that looks split and is not.
-    const { agents, ...deepSeekRequest } = request;
+    // The advisor edit guard goes with them (Issue #2344): without executors
+    // to make the edits, a guard here would deny the advisor's own and leave
+    // the run unable to edit anything.
+    const { agents, settingsJson: _guard, ...deepSeekRequest } = request;
     if (agents) warnDeepSeekAgentsUnsupported(request.phase);
     return buildClaudeCliArgs(
       {

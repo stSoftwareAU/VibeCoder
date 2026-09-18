@@ -63,8 +63,40 @@ export interface IssueEditHookPayload {
   hook_event_name?: unknown;
   /** The tool about to run, e.g. `Edit`. */
   tool_name?: unknown;
+  /** The tool's arguments; only `file_path` is read, for the carve-out. */
+  tool_input?: { file_path?: unknown };
   /** Present only when the call comes from a sub-agent (the executors). */
   agent_id?: unknown;
+}
+
+/**
+ * Files the advisor writes itself, whatever the split says.
+ *
+ * The prompt requires the advisor to write **the run's own record** — the PR
+ * summary, and the PR-feedback reply the worker posts — and Issue #2343's own
+ * block reserves exactly that to it ("the run's own record — the PR summary
+ * file and anything else this prompt tells you to write yourself"). Denying
+ * those would make a split run unable to finish, so they are carved out here
+ * rather than left to collide at runtime.
+ */
+const ADVISOR_RUN_RECORD_PATTERNS: readonly RegExp[] = [
+  // docs/archive/pr-summaries/pr-summary-<issue>.md
+  /(^|\/)docs\/archive\/pr-summaries\/pr-summary-[^/]+\.md$/,
+  // The PR-feedback reply file (`PR_RESPONSE_MESSAGE_FILE`).
+  /(^|\/)\.pr_response_message$/,
+];
+
+/**
+ * Whether a path is one of the advisor's own run-record files.
+ *
+ * Linear over a two-entry pattern list, both anchored at a path separator, so
+ * there is no backtracking surface and no partial-path match.
+ *
+ * @param filePath - The `file_path` the tool was called with
+ * @returns `true` when the advisor is the author the prompt names
+ */
+export function isAdvisorRunRecordPath(filePath: string): boolean {
+  return ADVISOR_RUN_RECORD_PATTERNS.some((pattern) => pattern.test(filePath));
 }
 
 /** What the guard decided about one tool call. */
@@ -104,6 +136,13 @@ export function decideIssueEditHook(payload: unknown): IssueEditHookDecision {
   // The caller test. Present → a sub-agent called it, which in a split run is
   // an executor and exactly where the edit belongs.
   if (text(input.agent_id) !== undefined) return { deny: false };
+
+  // The advisor's own record stays the advisor's own (see
+  // {@link isAdvisorRunRecordPath}).
+  const filePath = text(input.tool_input?.file_path);
+  if (filePath !== undefined && isAdvisorRunRecordPath(filePath)) {
+    return { deny: false };
+  }
 
   return {
     deny: true,
@@ -245,12 +284,26 @@ const DISPATCH_TOOLS: readonly string[] = ["Task", "Agent"];
 /** Tool name that continues an already-dispatched sub-agent. */
 const CONTINUE_TOOL = "SendMessage";
 
-/** Whether a dispatch/continue tool call names an executor sub-agent. */
+/**
+ * Whether a dispatch/continue tool call is aimed at an executor.
+ *
+ * A dispatch names the sub-agent **type** (`subagent_type`), which is exactly
+ * {@link ISSUE_EXECUTOR_AGENT_NAME}. A continuation addresses a running
+ * **instance** (`to`), whose name the CLI derives from the type — `executor`,
+ * or `executor-2` where several run — so an instance is matched on that
+ * prefix rather than on equality alone.
+ */
 function namesExecutor(input: Record<string, unknown> | undefined): boolean {
   if (!input) return false;
-  const named = text(input.subagent_type) ?? text(input.agent_type) ??
-    text(input.to);
-  return named === ISSUE_EXECUTOR_AGENT_NAME;
+  const type = text(input.subagent_type) ?? text(input.agent_type);
+  if (type !== undefined) return type === ISSUE_EXECUTOR_AGENT_NAME;
+  const target = text(input.to) ?? text(input.recipient) ??
+    text(input.agent_id);
+  if (target === undefined) return false;
+  const lowered = target.toLowerCase();
+  return lowered === ISSUE_EXECUTOR_AGENT_NAME ||
+    lowered.startsWith(`${ISSUE_EXECUTOR_AGENT_NAME}-`) ||
+    lowered.startsWith(`${ISSUE_EXECUTOR_AGENT_NAME}_`);
 }
 
 /** Flatten a `tool_result` content field to the text it carries. */
@@ -278,6 +331,11 @@ function resultText(content: unknown): string {
  * **re-task** is a `SendMessage` continuation addressed to an executor already
  * running, which is how the advisor hands back a diff that did not match. A
  * fresh dispatch starts a fresh executor and is counted as a dispatch.
+ *
+ * A denial is read from the `result` line's `permission_denials` array — the
+ * CLI's own record — and, failing that, from the guard's marker in the tool
+ * result. A denied call made no edit, so it leaves {@link
+ * IssueExecutorSplitStats.advisorEditCalls} untouched.
  *
  * Malformed lines are skipped rather than thrown on: the summary is
  * observability, and a truncated stream must not fail a run that otherwise
@@ -328,17 +386,34 @@ export function summariseIssueExecutorSplitRun(
       continue;
     }
 
+    // The CLI's own record of every refused call, on the final `result` line:
+    // `permission_denials: [{ tool_name, tool_use_id, tool_input }]`. First
+    // choice, because it does not depend on the denial reason surviving into
+    // the tool result's prose.
+    if (parsed.type === "result" && Array.isArray(parsed.permission_denials)) {
+      for (const entry of parsed.permission_denials) {
+        if (typeof entry !== "object" || entry === null) continue;
+        const id = text((entry as { tool_use_id?: unknown }).tool_use_id);
+        const tool = id === undefined ? undefined : advisorEdits.get(id);
+        if (tool === undefined || id === undefined) continue;
+        advisorEdits.delete(id);
+        denied.push(tool);
+      }
+      continue;
+    }
+
     if (parsed.type !== "user") continue;
     for (const block of blocks as { type?: unknown; tool_use_id?: unknown }[]) {
       if (block?.type !== "tool_result") continue;
       const id = text(block.tool_use_id);
       const tool = id === undefined ? undefined : advisorEdits.get(id);
-      if (tool === undefined) continue;
+      if (tool === undefined || id === undefined) continue;
       const body = resultText((block as { content?: unknown }).content);
+      // Second source: the guard's own marker, echoed into the tool result.
       if (!body.includes(ISSUE_EXECUTOR_DENIAL_MARKER)) continue;
       // The guard refused this one: it made no edit, so it is a denial
       // rather than a violation.
-      advisorEdits.delete(id!);
+      advisorEdits.delete(id);
       denied.push(tool);
     }
   }

@@ -24,7 +24,7 @@ the stream summariser (`summariseIssueExecutorSplitRun`).
 
 | Input                | Source                                     | How it is handled                                                                                                  |
 | -------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| hook payload         | the Claude CLI, over the guard's stdin      | parsed as JSON by the caller; every field is read through a `typeof value === "string"` narrowing, never trusted raw |
+| hook payload         | the Claude CLI, over the guard's stdin      | parsed as JSON by the caller; every field — `tool_name`, `agent_id`, `tool_input.file_path` — is read through a `typeof value === "string"` narrowing, never trusted raw |
 | raw stream-json      | the agent's own stdout, already captured    | line-by-line `JSON.parse` in a `try`; a malformed line is skipped, never thrown through                             |
 | `denoPath`/module path | `Deno.execPath()` and `resolveGuardModulePath` | single-quoted for the shell with `posixSingleQuote` before reaching the hook command                              |
 
@@ -36,7 +36,7 @@ the stream summariser (`summariseIssueExecutorSplitRun`).
 | trust boundary    | the hook payload is **untrusted input from the constrained party's own session**; the only decision drawn from it is deny/allow, and the default on anything unrecognised is allow, which is the pre-existing behaviour          |
 | network           | none                                                                                                                                                                                                                          |
 | filesystem        | none of its own; `resolveGuardModulePath` and `resolveGuardDenoDir` stat candidate paths (swept under their own slices)                                                                                                        |
-| regex safety      | no regular expressions — the matcher string is a literal join of the two tool names                                                                                                                                            |
+| regex safety      | the matcher string is a literal join of the two tool names. The one regex pair, `ADVISOR_RUN_RECORD_PATTERNS`, is anchored at both ends with no nested quantifier, so it is linear in the path length |
 | secret surface    | holds no credential; reads no environment variable directly                                                                                                                                                                    |
 | capability grant  | **removes** capability: it can only deny a tool call, never allow one the session did not already permit                                                                                                                       |
 | fail direction    | fail-open **by design** at the guard, fail-loud at the record: an unreadable payload is allowed with a `[issue-executor-split]` line on stderr, because failing closed would strand a run whose executors could no longer edit. The advisor-edit count on the run-stats comment is the second, independent record of any edit that got through |
@@ -62,6 +62,16 @@ construction.
 | exit code        | always `0` — a denial is a refused tool call carried in the decision JSON, never a failed run                                 |
 | error handling   | a `JSON.parse` failure is reported on stderr with the parser's message and the call is allowed; nothing is swallowed silently |
 | output surface   | one JSON object on stdout for a denial, nothing for an allow                                                                  |
+
+## The carve-out
+
+`decideIssueEditHook` allows the advisor's own `Write` of the run's record —
+`docs/archive/pr-summaries/pr-summary-*.md` and `.pr_response_message` — which
+the prompt requires it to author. The carve-out is matched on the **path the
+tool was called with**, an agent-supplied value, so it is deliberately narrow:
+two anchored patterns, no directory-traversal allowance, and it widens nothing
+the advisor did not already hold — it can only decline to deny a tool the
+session already granted.
 
 ## The one behaviour worth restating
 
