@@ -74,10 +74,28 @@ flowchart TD
   `true` — evidence: `worker/deno/tests/resume_branch_by_issue_test.ts:58` now
   sets `enableSessionResume: false` explicitly and line 120 pins
   `buildDefaultWorkerConfig().enableSessionResume === true`;
-  `worker/deno/tests/config_defaults_test.ts::config_defaults - OPERATIONAL_DEFAULTS.enableSessionResume is true (Issue #2339)`
-  — reviewer: met
-- **met** — `./quality.sh` passes — evidence: full gate run after the final edit
-  — reviewer: met
+  `worker/deno/tests/config_defaults_test.ts::config_defaults - OPERATIONAL_DEFAULTS.enableSessionResume is true (Issue #2339)`;
+  `worker/deno/tests/run_core_slot_pool_test.ts:1528` likewise passes the flag
+  explicitly — reviewer: met
+- **met** — `./quality.sh` passes — evidence: full gate run after the final
+  edit, `Result: PASSED (with skipped checks)`; the only skip is
+  `config integration`, which the gate skips in normal mode on every run —
+  reviewer: missing — reason: the reviewer was given the diff only and was
+  told not to run the gate, so it could not confirm a run it cannot see. The
+  gate was run here, twice: it failed the first time (four tests) and passes
+  after the fixes recorded above.
+- **unrequested** — `docs/archive/pr-summaries/pr-summary-2339.md` —
+  reviewer: unrequested — reason: the repository's mandatory PR-summary
+  artifact, required of every PR by the house standards rather than by this
+  issue's own text.
+- **unrequested** — `worker/deno/lib/run_core.ts:1543` comment, and the
+  `docs/INTERNALS.md` / `run_core_slot_pool_test.ts` edits —
+  reviewer: unrequested — reason: surfaces the flip falsified. The comment and
+  the INTERNALS paragraph described the flag as off; the slot-pool test stopped
+  exercising the acquire race it exists for, because under the new default its
+  blank-stream issue is refused earlier by the #2335 lock. Each is the
+  docs-or-test half the issue's own "verify no other site hardcodes the old
+  default" instruction implies.
 
 ## Standards Review
 
@@ -97,7 +115,7 @@ flowchart TD
   `docs/INTERNALS.md:4196` — reason: fixed here; INTERNALS now points at the
   stream model.
 - **violation** — a link named a bold paragraph with no anchor — evidence:
-  `docs/CONFIGURATION.md:3305` — reason: fixed here; it now names the enclosing
+  `docs/CONFIGURATION.md:3308` — reason: fixed here; it now names the enclosing
   heading.
 - **violation** — TDD rule 5: the new docs-drift test reads Markdown as text
   rather than exercising worker code — evidence:
