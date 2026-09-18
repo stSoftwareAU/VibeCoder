@@ -22,19 +22,25 @@ pushed merge is the gate on a PR and the worker's own type-check gate is the
 gate on a milestone branch (Issue #2306). A dependency-version conflict is settled by deterministic rules
 first, and the AI is only asked about what those rules could not decide.
 
-**The ladder has four rungs and only the last one is a person.** An
-**intent-aware** attempt, which reads the originating issues behind *both*
-sides before calling anything a contradiction; a second one on the very next
-pass, with no wait between them (Issue #2305); then **abandon-and-restart** — the conflicting PR is closed, never
-force-pushed, and its originating issue re-queued so the fleet redoes the work
-off the current base; and only when that is declined or fails does the worker
-escalate with `needs-human` and a conflict summary. The re-queued issue keeps
-whatever pickup label it already carries, and gains `idle-task` when it carries
-none (Issue #2277). One restart per originating issue: if the fresh PR
-conflicts irreconcilably too, that is a human's call rather than another lap. A
-PR whose originating issue cannot be found never reaches the third rung at
-all — closing what the fleet cannot re-raise would lose the work — so it falls
-straight through to a human.
+**The ladder is two judged runs and then a fallback, and the fallback asks
+nobody.** An **intent-aware** attempt, which reads the originating issues behind
+*both* sides before calling anything a contradiction; a second one on the very
+next pass, with no wait between them (Issue #2305); then
+**abandon-and-restart** — the conflicting PR is closed, never force-pushed, and
+its originating issue re-queued so the fleet redoes the work off the current
+base. The re-queued issue keeps whatever pickup label it already carries, and
+gains `idle-task` when it carries none (Issue #2277). Every fallback leaves one
+`merge-fallback` issue behind recording what happened, linked from the closed PR
+(Issues #2304, #2310 — the scan's fallback; the resolution processor's own copy
+of this rung is wired to the flag by the next sub-issue under #2298). A PR whose
+originating issue **cannot** be found is closed
+as well, and its flag issue carries `idle-task` and the PR's diff summary, so the
+flag is the re-do item. One restart per originating issue: if the fresh PR
+conflicts irreconcilably too, the bound declines the second restart and the PR is
+left open with the reason recorded. **The merge-conflict scan applies
+`needs-human` for no conflict outcome at all** (Issue #2310) — only for a
+*worker* fault, three attempts disrupted before any conclusion — and a
+hand-applied `needs-human` is still honoured as a veto.
 
 Every attempt ends visibly: merged, failed, or escalated. An attempt that
 opened and then went silent was disrupted, not judged — it does not spend the
@@ -77,10 +83,12 @@ flowchart TD
     Abort --> Failed["Failure conclusion comment"]
     Failed --> Budget2{"Attempts spent?"}
     Budget2 -->|No| Sleep
-    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(originating issue known,<br/>not already restarted,<br/>no other PR)"}
-    Abandon -->|"No originating issue,<br/>or already restarted once"| Human["Label needs-human + summary<br/>naming the route"]
-    Abandon -->|"A step failed"| Human
+    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(not already restarted,<br/>no other PR)"}
+    Abandon -->|"Already restarted once,<br/>or a step failed"| Left["Left open, reason recorded —<br/>no human is asked"]
+    Abandon -->|"No originating issue"| NoIssue["Close the PR; the flag issue<br/>carries idle-task and the<br/>PR's diff summary"]
     Abandon -->|"Yes"| Restart["Close the PR (never force-push),<br/>re-queue its issue — keeping any<br/>pickup label, else adding idle-task"]
+    Restart --> Flag["File one merge-fallback issue<br/>and link it from the PR"]
+    NoIssue --> Flag
     style Scan fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Conflicting fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Label fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
@@ -103,6 +111,9 @@ flowchart TD
     style Abort fill:#707070,stroke:,color:#fff
     style Abandon fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Restart fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style NoIssue fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style Flag fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+    style Left fill:#707070,stroke:,color:#fff
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
     style Human fill:#c96868,stroke:#7a2020,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
@@ -352,16 +363,18 @@ settle still reaches no agent and now consults no issue either.
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
   that conflicts again months later starts from a full budget.
-- The final *concluded* failure runs **abandon-and-restart** first, and applies
-  `needs-human` only when that rung declines or fails. The `needs-human`
-  summary names the conflicted files, why the merge failed, and which route
-  through the ladder ended at a person.
-- **Nothing stalls unowned.** If that final escalation never landed — the label
-  add failed, or the run ended between the failure comment and the escalation —
-  the next scan finds a PR that is out of budget and carries no `needs-human`,
-  runs the same abandon rung, and escalates it itself if that declines. A spent
-  budget is a quiet skip only once the PR is visibly a human's — or visibly
-  restarted.
+- The final *concluded* failure runs **abandon-and-restart** first. In the
+  resolution processor that rung is still followed by a `needs-human`
+  escalation when it declines or fails, naming the conflicted files, why the
+  merge failed and which route ended at a person — the **scan's** copy of that
+  escalation is gone (Issue #2310), and the processor's is the next sub-issue
+  under #2298.
+- **Nothing stalls unowned.** If the processor's own conclusion never landed —
+  the run ended between the failure comment and it — the next scan finds a PR
+  that is out of budget and carries no `needs-human` and runs the same abandon
+  rung itself. The scan escalates nothing from that route any more (Issue
+  #2310): it closes, re-queues and files the flag, and where the rung declines
+  or fails it records `budget-spent` and leaves the PR open.
 
 ### 🔁 Stale verdict — the base is already in
 
@@ -462,8 +475,9 @@ destroys nothing, but a person's commit graph is theirs to reshape.
   and its originating issue is re-queued on the pickup label it already carried,
   so the pipeline raises a fresh PR off the current base.
 - **No rung applies `needs-human`** — not to the PR, not to its issue. A
-  declined abandon (the issue was already restarted, or the PR names no
-  originating issue) or a failed one posts **one** comment carrying
+  declined abandon (the issue was already restarted, or it has another open PR
+  of its own — a PR naming *no* originating issue is closed against its flag
+  issue instead, Issue #2310) or a failed one posts **one** comment carrying
   `<!-- vibe-merge-conflict-rung-failed rung="abandon" head="<sha>" -->` and
   stops there, adding no label anywhere. Nothing has been spent and nothing is
   broken on this route — the verdict is merely stale — so parking the work at
@@ -507,9 +521,12 @@ destroys nothing, but a person's commit graph is theirs to reshape.
 
 A branch that has defeated two real merges is usually cheaper to **redo** than
 to reconcile, and redoing it needs nobody (Issue #1115,
-`worker/deno/lib/conflict_abandon_restart.ts`). So the rung between a spent
-budget and `needs-human` closes the conflicting PR and re-queues its
-originating issue, and the pipeline raises a fresh PR off the current base.
+`worker/deno/lib/conflict_abandon_restart.ts`). So the rung a spent budget
+reaches closes the conflicting PR and re-queues its originating issue, and the
+pipeline raises a fresh PR off the current base. **No outcome of the scan's
+spent-budget branch ends at a person** (Issue #2310): it applies no
+`needs-human` label and posts no escalation comment, and every outcome it
+produces is recorded in the pass's own log instead.
 
 - **"Start again" never means force-push.** The PR is *closed*, not merged; the
   branch is neither deleted nor rewritten, so every commit on it stays readable
@@ -517,7 +534,7 @@ originating issue, and the pipeline raises a fresh PR off the current base.
   the same PR would destroy its commits and its review history — the same class
   of harm as the side-picking the contract forbids.
 - **Three preconditions run before anything is destroyed**, in this order: the
-  PR's originating issue is known; that issue has not already been restarted;
+  PR's originating issue is resolved; that issue has not already been restarted;
   and it has no *other* open PR of its own. A failed lookup is never read as
   an absence. The issue's own labels are then read to decide which pickup label
   the re-queue leaves it on — never whether the abandon happens.
@@ -533,17 +550,25 @@ originating issue, and the pipeline raises a fresh PR off the current base.
   worker may not apply `work-on`, but `idle-task` re-queues it with nobody
   waiting — an issue parked at `needs-human` is blocked from discovery, which is
   the opposite of restarted.
-- **No originating issue, no abandon.** Closing a PR the fleet cannot re-raise
-  loses the work outright, so that PR is left open and goes to a human instead
-  — the fall-through the flowchart above shows.
+- **No originating issue: the flag issue becomes the re-do item** (Issue #2310).
+  The old rule was "no issue, no abandon" — closing a PR the fleet cannot
+  re-raise loses the work outright — and it left the PR open for a human who
+  never came, so it sat conflicting, out of budget and unowned. The reasoning
+  holds; what changed is *what the fleet re-raises from*. The
+  `merge-fallback` flag is filed first, carrying `idle-task` and the PR's diff
+  summary (`gh pr view --json files`: path, additions and deletions, capped at
+  200 paths), and only then is the PR closed. A flag that could **not** be filed
+  leaves the PR open naming the `fallback-flag` step: closing against a record
+  nobody can find is the loss the old rule was protecting against.
 - **One restart per originating issue.** The marker lives on the *issue*, not
   the PR: the PR being counted is closed moments later and a replacement takes
   its place, so a PR-keyed bound would loop. It is posted before the close,
   which is also what makes two hosts produce one abandon. If the fresh PR
-  spends its budget too, that is `needs-human`, not another lap.
+  spends its budget too, the bound declines the second restart and the PR is
+  left open with `budget-spent` recorded — not handed to anybody.
 - **A part-done abandon is never where this stops.** Every step names itself on
-  failure, and the caller escalates quoting that step — "PR closed, issue not
-  re-queued" must be visible, not silent.
+  failure, and the pass records that step at WARN with `route=abandon-failed` —
+  "PR closed, issue not re-queued" must be visible, not silent.
 
 ### 🚩 Every fallback is flagged
 
@@ -584,12 +609,23 @@ about either caller, and each fallback path passes it what that path observed.
   issue cannot be found cannot be re-queued, so its flag becomes the re-do work
   item and gains `idle-task` — the one pickup label `worker_label_guard.ts`
   lets the worker apply. Every other fallback files the flag unqueued.
+- **The PR path fills it from the thread it already has** (Issue #2310). The
+  conflicted files and both runs' analyses come from the failure conclusions on
+  the PR (`summariseFailedAttempts`), each run's stage timings and host from the
+  timings line those same comments carry (Issue #2308,
+  `conflict_fallback_context.ts`), `behind_by` from the compare API, and
+  "since when" from the `merge-conflict` label's own `labeled` timeline event —
+  the read the stall watchdog already makes. The flag's number is then posted
+  back on the closed PR, so a closed thread still points at its record.
+- **A flag the pass could not file never undoes the fallback.** On the re-queue
+  route the PR is already closed and the issue already re-queued by the time the
+  flag is filed, so a failure there is logged at WARN and both stand. (The
+  no-originating-issue route is the other way round for the reason above: there
+  the flag *is* the work item, so it is filed first.)
 
-The builder and filer land with Issue #2304; the PR fallback is wired to it by
-its own sub-issue under #2298.
-
-**The milestone roll-back is wired to it by Issue #2311**, and that wiring is
-what removed the last `needs-human` from the milestone conflict path:
+The builder and filer land with Issue #2304, the PR fallback is wired to it by
+Issue #2310, and the milestone roll-back by Issue #2311 — the wiring that
+removed the last `needs-human` from the milestone conflict path:
 
 - Every roll-back files or appends the flag — the one that merged cleanly and
   the one that could not — before the children are re-queued, so the flag
@@ -865,8 +901,8 @@ each carries the operands that make the decision checkable afterwards:
 | `already-handled` | — | Taken or deferred earlier in this same cycle's drain. |
 | `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. `mergeable-state` also covers the claim-point re-read answering a `mergeable` nobody can act on — GitHub still recomputing the merge — which skips the cycle rather than guessing (Issue #2307). |
 | `needs-human` | `label` | A human already owns the conflict. |
-| `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed — the PR is now a human's. |
-| `abandoned-restarted` | `issueNumber`, `attemptsSpent` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. |
+| `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
+| `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
 | `pr-not-open` | `state` | The live `gh pr view --json state,mergeable` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
@@ -921,9 +957,9 @@ Three bounds keep the drain from becoming a monopoly:
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
-The per-PR budget is unchanged by the drain: the two concluded attempts and
-the abandon rung with `needs-human` behind it are the scan's, and the drain
-only decides how many of the PRs already due get taken now.
+The per-PR budget is unchanged by the drain: the two concluded attempts and the
+abandon rung with its `merge-fallback` flag behind it are the scan's, and the
+drain only decides how many of the PRs already due get taken now.
 
 ### ⏱️ A resolution is never started on time the cycle does not have
 
@@ -1052,6 +1088,21 @@ blockages are now filed as issues the fleet can claim
 (`worker/deno/lib/escalate_as_work.ts`), and the PR carries the non-vetoing
 `escalated` marker instead. `needs-human` is reserved for what genuinely needs
 a person: a policy call, a credential, confirming intent.
+
+**The merge-conflict scan applies it for no conflict outcome** (Issue #2310). A
+spent budget used to end here — `needs-human` plus a summary naming the route —
+which is how a mechanical stall acquired a label that means "a human must
+decide". It does not any more: the budget-spent branch closes and re-queues,
+files the `merge-fallback` flag, and records everything else in the pass log.
+The resolution processor's own final escalation is the last one left on this
+path and goes with the next sub-issue under #2298. Two things are deliberately
+unchanged:
+
+- **A hand-applied `needs-human` is still a veto.** A human who labels a PR owns
+  it, so the scan keeps skipping it and never overrides the label.
+- **The disruption bound still escalates.** Three attempts cut short before any
+  conclusion is a fault in the *worker*, not an outcome of the conflict, and a
+  person is the right reader for it.
 
 ## 🔁 The lane rotates, so this pass is not always last
 

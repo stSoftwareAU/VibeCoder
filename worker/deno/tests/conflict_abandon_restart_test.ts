@@ -31,6 +31,7 @@ import {
   abandonAndRestart,
   type AbandonRestartRequest,
   buildAbandonPrComment,
+  buildNoIssueAbandonPrComment,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
   describeConcludedAttempts,
@@ -38,11 +39,19 @@ import {
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
   findOtherPrsForIssue,
+  mergeFallbackRunsFromHistory,
   planRequeueLabel,
   requeueLabelName,
   restartMarkerPrNumbers,
   summariseFailedAttempts,
 } from "../lib/conflict_abandon_restart.ts";
+import type { ConflictIssueContext } from "../lib/conflict_issue_context.ts";
+import type {
+  MergeFallbackFiling,
+  MergeFallbackOutcome,
+} from "../lib/merge_fallback_issue.ts";
+import { formatStageTimings } from "../lib/conflict_stage_timer.ts";
+import type { Result } from "../types.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
@@ -110,6 +119,10 @@ function makeRequest(
 }
 
 interface FakeState {
+  /** Files `gh pr view --json files` reports for the PR (Issue #2310). */
+  prFiles: Array<{ path: string; additions: number; deletions: number }>;
+  /** Commits the compare API reports the head is behind (Issue #2310). */
+  behindBy: number;
   /** Issue state as `gh issue view --json state,labels` reports it. */
   issueState: string;
   issueLabels: string[];
@@ -131,6 +144,12 @@ interface FakeGh {
 
 function makeFake(overrides: Partial<FakeState> = {}): FakeGh {
   const state: FakeState = {
+    prFiles: [{
+      path: "worker/deno/lib/limits.ts",
+      additions: 12,
+      deletions: 3,
+    }],
+    behindBy: 41,
     issueState: "OPEN",
     issueLabels: ["work-on"],
     issueComments: [],
@@ -157,6 +176,21 @@ function makeFake(overrides: Partial<FakeState> = {}): FakeGh {
       return Promise.reject(new Error(`gh refused: ${state.failOn}`));
     }
 
+    // How far behind the base the head is, for the flag issue (Issue #2310).
+    if (args[0] === "api" && String(args[1]).includes("/compare/")) {
+      return Promise.resolve(`${state.behindBy}\n`);
+    }
+
+    // The `merge-conflict` label's own `labeled` event (Issue #2310).
+    if (args[0] === "api" && String(args[1]).includes("/timeline")) {
+      return Promise.resolve(JSON.stringify([{
+        event: "labeled",
+        label: { name: "merge-conflict" },
+        actor: { login: FLEET },
+        created_at: "2026-08-18T09:30:00Z",
+      }]));
+    }
+
     // Issue comment pages.
     if (args[0] === "api" && String(args[1]).includes("/comments")) {
       const page = /[?&]page=(\d+)/.exec(String(args[1]))?.[1] ?? "1";
@@ -180,6 +214,14 @@ function makeFake(overrides: Partial<FakeState> = {}): FakeGh {
       const issue = state.issues[number];
       if (!issue) return Promise.reject(new Error(`no issue #${number}`));
       return Promise.resolve(JSON.stringify({ number, ...issue }));
+    }
+
+    // The abandoned PR's diff summary — the re-do item's starting point.
+    if (args[0] === "pr" && args[1] === "view") {
+      const fields = String(args[args.indexOf("--json") + 1] ?? "");
+      if (fields.includes("files")) {
+        return Promise.resolve(JSON.stringify({ files: state.prFiles }));
+      }
     }
 
     if (args[0] === "pr" && args[1] === "list") {
@@ -281,6 +323,48 @@ Deno.test("summariseFailedAttempts - a thread with no conclusions yields nothing
   ]);
   assertEquals(history.attempts, []);
   assertEquals(history.conflictedPaths, []);
+});
+
+Deno.test("mergeFallbackRunsFromHistory - each run's analysis, timings and host (Issue #2310)", () => {
+  // The run that measured the timings is long gone by the time a fallback
+  // runs, so the conclusion comment is the only surviving source for them.
+  const comments = failedComments().map((raw, index) => ({
+    ...raw,
+    body: `${raw.body}\n\n${
+      formatStageTimings(
+        [
+          { stage: "deepen", seconds: 3 },
+          { stage: "agent", seconds: index === 1 ? null : 212 },
+        ],
+        `host-${index + 1}`,
+      )
+    }`,
+  }));
+
+  const runs = mergeFallbackRunsFromHistory(summariseFailedAttempts(comments));
+
+  assertEquals(runs.length, 2);
+  assertEquals(runs[0]?.run, 1);
+  assertEquals(runs[0]?.host, "host-1");
+  assertEquals(runs[0]?.timings, [
+    { stage: "deepen", seconds: 3 },
+    { stage: "agent", seconds: 212 },
+  ]);
+  assertStringIncludes(runs[0]?.analysis ?? "", "two different values");
+  // An attempt that died inside the agent says so, rather than reporting a
+  // duration it never measured.
+  assertEquals(runs[1]?.timings?.[1], { stage: "agent", seconds: null });
+  assertEquals(runs[1]?.host, "host-2");
+});
+
+Deno.test("mergeFallbackRunsFromHistory - a run with no timings line still records its analysis", () => {
+  const runs = mergeFallbackRunsFromHistory(
+    summariseFailedAttempts(failedComments()),
+  );
+  assertEquals(runs.length, 2);
+  assertEquals(runs[0]?.timings, undefined);
+  assertEquals(runs[0]?.host, undefined);
+  assertStringIncludes(runs[0]?.analysis ?? "", "attempt 1");
 });
 
 Deno.test("restartMarkerPrNumbers - names the PR each claim was made for", () => {
@@ -488,41 +572,270 @@ Deno.test("abandonAndRestart - an issue already carrying idle-task has nothing a
 // Preconditions — the destructive cases, asserted before the close
 // ---------------------------------------------------------------------------
 
-Deno.test("abandonAndRestart - no originating issue: nothing is closed at all", async () => {
-  // The earliest failure point. A PR whose branch, body and linkage name no
-  // issue cannot be re-raised, so closing it would lose the work outright.
+/** A context whose PR side resolves to nothing at all (Issue #2310). */
+function noIssueContext(): () => Promise<ConflictIssueContext> {
+  return () =>
+    Promise.resolve({
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      prSide: { resolved: false, reason: "no-signal" },
+      baseSide: [],
+      truncation: {
+        commitCapPaths: [],
+        issueCapHit: false,
+        textTruncatedIssues: [],
+        ghCallCapHit: false,
+      },
+      ghCallsUsed: 0,
+      warnings: [],
+    });
+}
+
+/** A flag filer that records what it was asked to file. */
+function recordingFiler(
+  outcome: Result<MergeFallbackOutcome>,
+  filings: MergeFallbackFiling[],
+  order?: string[],
+): (filing: MergeFallbackFiling) => Promise<Result<MergeFallbackOutcome>> {
+  return (filing) => {
+    filings.push(filing);
+    order?.push("flag-filed");
+    return Promise.resolve(outcome);
+  };
+}
+
+Deno.test("abandonAndRestart - no originating issue: the PR is closed and the flag is the re-do item (Issue #2310)", async () => {
+  // This used to decline: closing a PR the fleet cannot re-raise loses the
+  // work. The reasoning holds — the flag issue is what the fleet re-raises
+  // from, carrying `idle-task` and the PR's diff summary, so the work is
+  // queued instead of parked on a human who never came.
   const fake = makeFake();
+  const filings: MergeFallbackFiling[] = [];
+
   const outcome = await abandonAndRestart(
-    makeRequest({ branchName: "hotfix/no-issue-here", prComments: [] }),
+    makeRequest({ branchName: "hotfix/no-issue-here" }),
     {
       gh: fake.gh,
       trustedAuthors: FLEET_AUTHORS,
-      resolveContext: () =>
+      resolveContext: noIssueContext(),
+      fileFallbackFlag: recordingFiler({
+        ok: true,
+        value: {
+          issueNumber: 900,
+          url: `https://github.com/${REPO}/issues/900`,
+          appended: false,
+        },
+      }, filings),
+    },
+  );
+
+  assertEquals(outcome, {
+    outcome: "abandoned",
+    issueNumber: 900,
+    label: { applied: "idle-task" },
+    flagIssueNumber: 900,
+  });
+
+  // The flag carries `idle-task` and the diff summary — that is what makes it
+  // a work item rather than a note.
+  assertEquals(filings.length, 1);
+  const filing = filings[0];
+  assertEquals(filing?.requestIdleTask, true);
+  assertEquals(filing?.diffSummary, [{
+    path: "worker/deno/lib/limits.ts",
+    additions: 12,
+    deletions: 3,
+  }]);
+  assertEquals(filing?.diffSummaryOmitted, 0);
+  assertEquals(filing?.target, {
+    kind: "pr",
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    headBranch: "hotfix/no-issue-here",
+    baseBranch: "main",
+  });
+  assertEquals(filing?.behindBy, 41);
+  assertEquals(filing?.behindSince, "2026-08-18T09:30:00.000Z");
+  assertEquals(filing?.conflictedFiles, ["worker/deno/lib/limits.ts"]);
+  assertEquals(filing?.runs?.length, 2);
+
+  // Closed, not merged, and the branch is left where it is.
+  const closes = callsMatching(fake, "pr", "close");
+  assertEquals(closes.length, 1);
+  assert(!(closes[0] ?? []).includes("--delete-branch"));
+  assertEquals(callsMatching(fake, "pr", "merge").length, 0);
+
+  // The close comment names the issue the work comes back through.
+  const prBody = bodyOfCall(fake, "pr", "comment");
+  assertStringIncludes(prBody, "#900");
+  assertStringIncludes(prBody, "no originating issue");
+  // No issue exists to claim a restart on, so none is commented on.
+  assertEquals(callsMatching(fake, "issue", "comment").length, 0);
+  assertNoNeedsHuman(fake);
+});
+
+Deno.test("abandonAndRestart - no originating issue: a flag that cannot be filed leaves the PR open (Issue #2310)", async () => {
+  // The one thing worse than a PR left open: a PR closed against a record
+  // nobody can find. The flag is filed *before* anything is closed.
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({ branchName: "hotfix/no-issue-here" }),
+    {
+      gh: fake.gh,
+      trustedAuthors: FLEET_AUTHORS,
+      resolveContext: noIssueContext(),
+      fileFallbackFlag: () =>
+        Promise.resolve({ ok: false, error: new Error("gh: 503") }),
+    },
+  );
+
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "fallback-flag");
+  assertStringIncludes(outcome.message, "503");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+  assertEquals(callsMatching(fake, "pr", "comment").length, 0);
+  assertNoNeedsHuman(fake);
+});
+
+Deno.test("abandonAndRestart - no originating issue: an unreadable flag number leaves the PR open (Issue #2310)", async () => {
+  // `gh` filed the issue but reported no number, so nothing can link to the
+  // re-do item. Closing against it would be the same loss as closing with no
+  // record at all.
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({ branchName: "hotfix/no-issue-here" }),
+    {
+      gh: fake.gh,
+      trustedAuthors: FLEET_AUTHORS,
+      resolveContext: noIssueContext(),
+      fileFallbackFlag: () =>
         Promise.resolve({
-          repo: REPO,
-          prNumber: PR_NUMBER,
-          prSide: { resolved: false, reason: "no-signal" },
-          baseSide: [],
-          truncation: {
-            commitCapPaths: [],
-            issueCapHit: false,
-            textTruncatedIssues: [],
-            ghCallCapHit: false,
-          },
-          ghCallsUsed: 0,
-          warnings: [],
+          ok: true,
+          value: { issueNumber: 0, url: "", appended: false },
+        }),
+    },
+  );
+
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "fallback-flag");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - no originating issue: an appended flag is labelled idle-task (Issue #2310)", async () => {
+  // A second fallback on the same PR appends to the open flag, and the filer
+  // labels only the issues it creates — so without this the PR would be closed
+  // against a flag nobody picks up, and the work would be lost.
+  const fake = makeFake();
+  const labelled: Array<{ issueNumber: number; label: string }> = [];
+
+  const outcome = await abandonAndRestart(
+    makeRequest({ branchName: "hotfix/no-issue" }),
+    {
+      gh: fake.gh,
+      trustedAuthors: FLEET_AUTHORS,
+      resolveContext: noIssueContext(),
+      addLabel: (_repo, issueNumber, label) => {
+        labelled.push({ issueNumber, label });
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      fileFallbackFlag: () =>
+        Promise.resolve({
+          ok: true,
+          value: { issueNumber: 800, url: "", appended: true },
         }),
     },
   );
 
   assertEquals(outcome, {
-    outcome: "declined",
-    reason: { kind: "no-originating-issue", detail: "no-signal" },
+    outcome: "abandoned",
+    issueNumber: 800,
+    label: { applied: "idle-task" },
+    flagIssueNumber: 800,
   });
-  // Ordering, not just outcome: the close call is never reached.
+  assertEquals(labelled, [{ issueNumber: 800, label: "idle-task" }]);
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+});
+
+Deno.test("abandonAndRestart - no originating issue: an unlabelled appended flag leaves the PR open (Issue #2310)", async () => {
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({ branchName: "hotfix/no-issue" }),
+    {
+      gh: fake.gh,
+      trustedAuthors: FLEET_AUTHORS,
+      resolveContext: noIssueContext(),
+      addLabel: () =>
+        Promise.resolve({ ok: false, error: new Error("label add refused") }),
+      fileFallbackFlag: () =>
+        Promise.resolve({
+          ok: true,
+          value: { issueNumber: 800, url: "", appended: true },
+        }),
+    },
+  );
+
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "fallback-flag");
   assertEquals(callsMatching(fake, "pr", "close").length, 0);
-  assertEquals(callsMatching(fake, "pr", "comment").length, 0);
-  assertEquals(callsMatching(fake, "issue", "comment").length, 0);
+});
+
+Deno.test("buildNoIssueAbandonPrComment - names the flag issue, the reason and the branch", () => {
+  const body = buildNoIssueAbandonPrComment({
+    request: makeRequest({ branchName: "hotfix/no-issue" }),
+    history: summariseFailedAttempts(failedComments()),
+    reason: "no-signal",
+    flagIssueNumber: 900,
+  });
+
+  assertStringIncludes(body, "#900");
+  assertStringIncludes(body, "no-signal");
+  assertStringIncludes(body, "hotfix/no-issue");
+  assertStringIncludes(body, "idle-task");
+  assertStringIncludes(body, "worker/deno/lib/limits.ts");
+  // Closed, not force-pushed: the abandoned commits stay readable.
+  assertStringIncludes(body, "not** deleted");
+});
+
+Deno.test("buildNoIssueAbandonPrComment - a thread with no conclusion states the absence", () => {
+  const body = buildNoIssueAbandonPrComment({
+    request: makeRequest({ prComments: [] }),
+    history: summariseFailedAttempts([]),
+    reason: "no-signal",
+    flagIssueNumber: 900,
+  });
+
+  assertStringIncludes(body, "No concluded merge-conflict resolution attempt");
+  assertStringIncludes(body, "no conflicted path was recorded");
+});
+
+Deno.test("abandonAndRestart - no originating issue: the flag is filed before the close", async () => {
+  // Ordering, not just outcome — the property the old decline protected.
+  const fake = makeFake();
+  const order: string[] = [];
+  const filings: MergeFallbackFiling[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "close") order.push("pr-close");
+    return fake.gh(args);
+  };
+
+  await abandonAndRestart(makeRequest({ branchName: "hotfix/no-issue" }), {
+    gh,
+    trustedAuthors: FLEET_AUTHORS,
+    resolveContext: noIssueContext(),
+    fileFallbackFlag: recordingFiler(
+      {
+        ok: true,
+        value: { issueNumber: 901, url: "", appended: false },
+      },
+      filings,
+      order,
+    ),
+  });
+
+  assertEquals(order, ["flag-filed", "pr-close"]);
 });
 
 Deno.test("abandonAndRestart - an issue with another open PR is left alone", async () => {

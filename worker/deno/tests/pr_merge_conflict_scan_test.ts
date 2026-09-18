@@ -11,6 +11,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildFallbackFlagLinkComment,
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
@@ -32,6 +33,7 @@ import {
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
 } from "../lib/conflict_abandon_restart.ts";
+import type { MergeFallbackFiling } from "../lib/merge_fallback_issue.ts";
 import type { LogContext, Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -134,12 +136,21 @@ interface FakeRepoState {
   prsByState?: Record<string, Array<{ number: number; title: string }>>;
   /** Args prefix (joined with a space) whose call must throw (Issue #1115). */
   failOn?: string;
+  /** Files `gh pr view --json files` reports per PR (Issue #2310). */
+  prFiles?: Record<
+    number,
+    Array<{ path: string; additions: number; deletions: number }>
+  >;
+  /** Issue number `gh issue create` reports for a filed flag (Issue #2310). */
+  createdIssueNumber?: number;
 }
 
 interface FakeGh {
   ghCommandFn: (args: string[]) => Promise<string>;
   labelsAdded: Array<{ prNumber: number; label: string }>;
   commentsPosted: Array<{ prNumber: number; body: string }>;
+  /** Issues `gh issue create` was asked to file (Issue #2310). */
+  issuesCreated: Array<{ title: string; body: string; labels: string[] }>;
   calls: string[][];
 }
 
@@ -147,6 +158,9 @@ interface FakeGh {
 function makeFakeGh(state: FakeRepoState): FakeGh {
   const labelsAdded: Array<{ prNumber: number; label: string }> = [];
   const commentsPosted: Array<{ prNumber: number; body: string }> = [];
+  const issuesCreated: Array<
+    { title: string; body: string; labels: string[] }
+  > = [];
   const calls: string[][] = [];
 
   const ghCommandFn = (args: string[]): Promise<string> => {
@@ -171,6 +185,40 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
           body: "",
         })),
       ));
+    }
+
+    // The `merge-fallback` flag issue (Issue #2310) — filed, and deduped by
+    // the title search that runs before it.
+    if (args[0] === "issue" && args[1] === "create") {
+      const labels: string[] = [];
+      args.forEach((arg, index) => {
+        if (arg === "--label") labels.push(String(args[index + 1] ?? ""));
+      });
+      issuesCreated.push({
+        title: String(args[args.indexOf("--title") + 1] ?? ""),
+        body: String(args[args.indexOf("--body") + 1] ?? ""),
+        labels,
+      });
+      const number = state.createdIssueNumber ?? 900;
+      return Promise.resolve(`https://github.com/org/repo/issues/${number}\n`);
+    }
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve("[]");
+    }
+
+    // How far behind the base the head is, for the flag (Issue #2310).
+    if (args[0] === "api" && String(args[1]).includes("/compare/")) {
+      return Promise.resolve("41\n");
+    }
+
+    // The queue label's own `labeled` event, for the flag (Issue #2310).
+    if (args[0] === "api" && String(args[1]).includes("/timeline")) {
+      return Promise.resolve(JSON.stringify([{
+        event: "labeled",
+        label: { name: MERGE_CONFLICT_LABEL },
+        actor: { login: FLEET },
+        created_at: "2026-08-18T09:30:00Z",
+      }]));
     }
 
     // The originating issue, for the abandon rung (Issue #1115).
@@ -220,6 +268,13 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
         };
       });
       return Promise.resolve(JSON.stringify({ data: { repository } }));
+    }
+
+    // The abandoned PR's diff summary (Issue #2310).
+    if (args[0] === "pr" && args[1] === "view" && args.includes("files")) {
+      return Promise.resolve(JSON.stringify({
+        files: state.prFiles?.[Number(args[2])] ?? [],
+      }));
     }
 
     if (args[0] === "pr" && args[1] === "view" && args.includes("labels")) {
@@ -272,7 +327,7 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
     return Promise.resolve("");
   };
 
-  return { ghCommandFn, labelsAdded, commentsPosted, calls };
+  return { ghCommandFn, labelsAdded, commentsPosted, issuesCreated, calls };
 }
 
 function makeOptions(
@@ -645,11 +700,12 @@ Deno.test("findConflictingPr - one concluded failure still buys the second attem
   );
 });
 
-Deno.test("findConflictingPr - a spent budget with no needs-human is escalated, not stalled", async () => {
-  // Issue #395: the last attempt escalates from the processor, so a failure
+Deno.test("findConflictingPr - a spent budget falls back rather than stalling (Issue #2310)", async () => {
+  // Issue #395: the last attempt concludes from the processor, so a failure
   // there (or a run cut short between the conclusion and the escalation)
   // left the PR conflicting, out of budget, and owned by nobody — skipped
-  // silently on every scan for ever. The scan is the backstop.
+  // silently on every scan for ever. The scan is still that backstop; what it
+  // does now is the fallback, not a hand-off to a person.
   const now = Date.parse("2026-08-20T12:00:00Z");
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
@@ -663,16 +719,13 @@ Deno.test("findConflictingPr - a spent budget with no needs-human is escalated, 
 
   assert(result.ok);
   assertEquals(result.value.selected, null);
+  assertNoNeedsHumanWrites(fake);
   assertEquals(
-    fake.labelsAdded.some((l) =>
-      l.prNumber === 48 && l.label === "needs-human"
-    ),
-    true,
+    fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
+    1,
+    "the PR is closed by the fallback",
   );
-
-  const escalation = fake.commentsPosted.at(-1)?.body ?? "";
-  assertStringIncludes(escalation, String(DEFAULT_MAX_CONFLICT_ATTEMPTS));
-  assertStringIncludes(escalation, "**Next step:**");
+  assertEquals(fake.issuesCreated.length, 1, "and the fallback is flagged");
 });
 
 Deno.test("findConflictingPr - a disrupted attempt is re-attempted, not counted as spent", async () => {
@@ -1014,6 +1067,8 @@ Deno.test("findConflictingPr - an attempt open a minute ago is re-attempted, not
 });
 
 Deno.test("findConflictingPr - the budget-spent record carries the attempts and the cap", async () => {
+  // `budget-spent` is what remains when the fallback itself will not run — the
+  // one-restart-per-issue bound, here (Issue #2310).
   const fake = makeFakeGh(makeState({
     comments: {
       48: concludedFailures(
@@ -1023,7 +1078,13 @@ Deno.test("findConflictingPr - the budget-spent record carries the attempts and 
     },
   }));
 
-  const { log } = await scanWith(fake);
+  const { log } = await scanWith(fake, {
+    abandonRestart: () =>
+      Promise.resolve({
+        outcome: "declined",
+        reason: { kind: "already-restarted", issueNumber: 16, samePr: false },
+      }),
+  });
 
   assertEquals(reasonFor(log, 48), "budget-spent");
   assertEquals(
@@ -1080,7 +1141,15 @@ Deno.test("findConflictingPr - every labelled PR gets a record, plus one summary
     },
   }));
 
-  const { result, log } = await scanWith(fake);
+  const { result, log } = await scanWith(fake, {
+    // The bound declines the fallback for #11, so its record stays
+    // `budget-spent` (Issue #2310).
+    abandonRestart: () =>
+      Promise.resolve({
+        outcome: "declined",
+        reason: { kind: "already-restarted", issueNumber: 16, samePr: false },
+      }),
+  });
 
   assertEquals(result.value.selected, null);
   assertEquals(result.value.decisions.length, 3);
@@ -1258,6 +1327,25 @@ function escalatedToHuman(fake: FakeGh, prNumber: number): boolean {
   );
 }
 
+/**
+ * No `gh` call this pass made names `needs-human` at all (Issue #2310).
+ *
+ * Every stubbed call is captured argument by argument — label adds, comment
+ * bodies, label creation — so an escalation reaching *any* of them fails here
+ * rather than in production. This is the assertion that fails against the old
+ * route, where a spent budget ended at a `needs-human` label and comment.
+ */
+function assertNoNeedsHumanWrites(fake: FakeGh): void {
+  const offending = fake.calls.find((args) =>
+    args.some((arg) => arg.includes("needs-human"))
+  );
+  assertEquals(
+    offending,
+    undefined,
+    `no conflict outcome may name needs-human: ${JSON.stringify(offending)}`,
+  );
+}
+
 Deno.test("findConflictingPr - an exhausted PR with a known issue is abandoned, not escalated", async () => {
   const fake = makeFakeGh(exhaustedState());
 
@@ -1289,32 +1377,180 @@ Deno.test("findConflictingPr - an exhausted PR with a known issue is abandoned, 
   assertStringIncludes(claim.body, CONFLICT_RESTART_MARKER);
 });
 
-Deno.test("findConflictingPr - an exhausted PR with no originating issue is not closed", async () => {
-  // The destructive case: closing a PR the fleet cannot re-raise loses the
-  // work outright, so the ladder falls through to a human instead.
+Deno.test("findConflictingPr - an abandoned PR leaves one merge-fallback flag behind (Issue #2310)", async () => {
+  // The fallback undoes work. Until #2304 it undid it silently, so the next
+  // attempt started from the same blank page and could walk into the same
+  // conflict again. This is the PR path's wiring to that record.
+  const fake = makeFakeGh(exhaustedState());
+
+  const { log } = await scanWith(fake);
+
+  assertEquals(reasonFor(log, 48), "abandoned-restarted");
+  assertEquals(recordFor(log, 48).context?.flagIssueNumber, 900);
+
+  assertEquals(fake.issuesCreated.length, 1, "one flag per fallback");
+  const flag = fake.issuesCreated[0];
+  // Not the re-do item here: the originating issue was re-queued, so the flag
+  // is a record and carries no pickup label.
+  assertEquals(flag?.labels, ["merge-fallback"]);
+  assertStringIncludes(flag?.title ?? "", "org/repo PR #48");
+  assertStringIncludes(flag?.body ?? "", "tripped on the same constant");
+  assertStringIncludes(flag?.body ?? "", "worker/deno/lib/limits.ts");
+  assertStringIncludes(flag?.body ?? "", "41");
+  assertStringIncludes(flag?.body ?? "", "2026-08-18T09:30:00.000Z");
+  assertStringIncludes(flag?.body ?? "", "re-queued issue #16");
+
+  // The close comment carries the link, so the closed PR stays traceable.
+  const link = fake.commentsPosted.find((c) =>
+    c.prNumber === 48 && c.body.includes("#900")
+  );
+  assert(link, "the closed PR does not link its flag issue");
+  assertNoNeedsHumanWrites(fake);
+});
+
+Deno.test("buildFallbackFlagLinkComment - names the flag and asks nobody (Issue #2310)", () => {
+  const filed = buildFallbackFlagLinkComment(900, false);
+  assertStringIncludes(filed, "#900");
+  assertStringIncludes(filed, "Nobody is being asked to do anything");
+  assertStringIncludes(filed, "timings");
+
+  // A second fallback on the same PR appends rather than filing again, and the
+  // comment has to say which happened or the reader cannot tell.
+  const appended = buildFallbackFlagLinkComment(900, true);
+  assertStringIncludes(appended, "already open");
+  assertStringIncludes(appended, "one issue per PR");
+
+  // `gh` reported no number: the comment must not claim a link it cannot make.
+  const unknown = buildFallbackFlagLinkComment(0, false);
+  assertStringIncludes(unknown, "number could not be read");
+  assertEquals(unknown.includes("#0"), false);
+});
+
+Deno.test("findConflictingPr - a flag filed with no readable number is said out loud (Issue #2310)", async () => {
+  // The record exists and nothing can link to it. Omitting `flagIssueNumber`
+  // silently would read exactly like a filing that never happened.
+  const fake = makeFakeGh(exhaustedState());
+
+  const { log } = await scanWith(fake, {
+    fileFallbackFlag: () =>
+      Promise.resolve({
+        ok: true,
+        value: { issueNumber: 0, url: "", appended: false },
+      }),
+  });
+
+  assertEquals(reasonFor(log, 48), "abandoned-restarted");
+  assertEquals(recordFor(log, 48).context?.flagIssueNumber, undefined);
+  const warned = log.entries.find((entry) =>
+    entry.level === "warn" && entry.message.includes("no issue number")
+  );
+  assert(warned, "an unreadable flag number was not warned about");
+});
+
+Deno.test("findConflictingPr - a flag that cannot be filed warns and leaves the abandon standing (Issue #2310)", async () => {
+  // The PR is already closed and the issue already re-queued by the time the
+  // flag is filed, so a filing failure must not undo either — it is said out
+  // loud and the fallback stands.
+  const fake = makeFakeGh(exhaustedState());
+
+  const { log } = await scanWith(fake, {
+    fileFallbackFlag: () =>
+      Promise.resolve({ ok: false, error: new Error("gh: 503") }),
+  });
+
+  assertEquals(reasonFor(log, 48), "abandoned-restarted");
+  assertEquals(recordFor(log, 48).context?.issueNumber, 16);
+  assertEquals(recordFor(log, 48).context?.flagIssueNumber, undefined);
+  assertEquals(
+    fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
+    1,
+    "the close must stand",
+  );
+  const warned = log.entries.find((entry) =>
+    entry.level === "warn" && entry.message.includes("could not be filed")
+  );
+  assert(warned, "a flag that could not be filed was not warned about");
+  assertNoNeedsHumanWrites(fake);
+});
+
+Deno.test("findConflictingPr - the flag filer is handed both runs' analyses, timings and hosts (Issue #2310)", async () => {
+  const filings: MergeFallbackFiling[] = [];
+  const timed = exhaustedComments().map((comment) =>
+    comment.body.includes(CONFLICT_FAILED_MARKER)
+      ? {
+        ...comment,
+        body: `${comment.body}\n\nTimings (host \`mel-01\`): agent 212s`,
+      }
+      : comment
+  );
+  const fake = makeFakeGh(exhaustedState({ comments: { 48: timed } }));
+
+  await scanWith(fake, {
+    fileFallbackFlag: (filing) => {
+      filings.push(filing);
+      return Promise.resolve({
+        ok: true,
+        value: { issueNumber: 900, url: "", appended: false },
+      });
+    },
+  });
+
+  assertEquals(filings.length, 1);
+  const filing = filings[0];
+  assertEquals(filing?.requestIdleTask, undefined);
+  assertEquals(filing?.runs?.length, DEFAULT_MAX_CONFLICT_ATTEMPTS);
+  assertEquals(filing?.runs?.[0]?.host, "mel-01");
+  assertEquals(filing?.runs?.[0]?.timings, [{ stage: "agent", seconds: 212 }]);
+  assertEquals(filing?.behindBy, 41);
+  assertEquals(filing?.conflictedFiles, ["worker/deno/lib/limits.ts"]);
+  // The PR path's own flag is a record, not the re-do item, so no diff summary
+  // is read for it — that read is the no-originating-issue route's.
+  assertEquals(filing?.diffSummary, undefined);
+});
+
+Deno.test("findConflictingPr - an exhausted PR with no originating issue is closed and flagged (Issue #2310)", async () => {
+  // This used to fall through to a human, and nobody came: the PR sat
+  // conflicting, out of budget and unowned. It is closed now, and the
+  // `merge-fallback` flag — `idle-task`, with the PR's diff summary — is the
+  // re-do item the fleet picks up instead.
   const fake = makeFakeGh(exhaustedState({
     prs: [{ number: 48, headRefName: "hotfix/no-issue", baseRefName: "main" }],
     issues: {},
+    prFiles: {
+      48: [{ path: "worker/deno/lib/limits.ts", additions: 9, deletions: 2 }],
+    },
   }));
 
   const { result, log } = await scanWith(fake);
 
   assertEquals(result.value.selected, null);
-  assertEquals(reasonFor(log, 48), "budget-spent");
-  assertEquals(escalatedToHuman(fake, 48), true);
+  assertEquals(reasonFor(log, 48), "abandoned-restarted");
+  assertEquals(recordFor(log, 48).context?.issueNumber, 900);
+  assertEquals(escalatedToHuman(fake, 48), false);
   assertEquals(
     fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
-    0,
+    1,
   );
 
-  const escalation = fake.commentsPosted.find((c) =>
-    c.prNumber === 48 && c.body.includes("Next step")
+  // Exactly one flag, carrying `idle-task` and the diff summary.
+  assertEquals(fake.issuesCreated.length, 1);
+  const flag = fake.issuesCreated[0];
+  assertEquals(flag?.labels, ["merge-fallback", "idle-task"]);
+  assertStringIncludes(flag?.title ?? "", "PR #48");
+  assertStringIncludes(flag?.body ?? "", "What the PR changed");
+  assertStringIncludes(flag?.body ?? "", "worker/deno/lib/limits.ts");
+  assertStringIncludes(flag?.body ?? "", "(+9/-2)");
+  assertStringIncludes(flag?.body ?? "", "41");
+
+  // The close comment points at it.
+  const closeComment = fake.commentsPosted.find((c) =>
+    c.prNumber === 48 && c.body.includes("#900")
   );
-  assert(escalation, "no escalation comment was posted");
-  assertStringIncludes(escalation.body, "names no originating issue");
+  assert(closeComment, "the close comment does not name the flag issue");
+  assertNoNeedsHumanWrites(fake);
 });
 
-Deno.test("findConflictingPr - a restarted issue exhausting again goes to a human", async () => {
+Deno.test("findConflictingPr - a restarted issue exhausting again asks no human (Issue #2310)", async () => {
   // The bound: one abandon per originating issue. The marker is on the issue
   // because the PR that replaced the abandoned one is a different PR.
   const state = exhaustedState({
@@ -1339,34 +1575,34 @@ Deno.test("findConflictingPr - a restarted issue exhausting again goes to a huma
   const { log } = await scanWith(fake);
 
   assertEquals(reasonFor(log, 61), "budget-spent");
-  assertEquals(escalatedToHuman(fake, 61), true);
-  // The replacement PR is left open for the human, not closed as well.
+  // The bound still holds — one restart per originating issue — but it no
+  // longer ends at a person (Issue #2310): the replacement PR is left open,
+  // and what happens to it next is the following rung's business.
+  assertEquals(escalatedToHuman(fake, 61), false);
   assertEquals(
     fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
     0,
   );
-
-  const escalation = fake.commentsPosted.find((c) =>
-    c.prNumber === 61 && c.body.includes("Next step")
-  );
-  assert(escalation, "no escalation comment was posted");
-  assertStringIncludes(escalation.body, "already been restarted once");
+  assertNoNeedsHumanWrites(fake);
 });
 
-Deno.test("findConflictingPr - a failed abandon step escalates naming that step", async () => {
-  // A partial abandon must never be the resting state.
+Deno.test("findConflictingPr - a failed abandon step is recorded, not escalated (Issue #2310)", async () => {
+  // A partial abandon must never be silent — but it is no longer a person's
+  // problem either. The step lands in the structured record, not in a
+  // `needs-human` comment.
   const fake = makeFakeGh(exhaustedState({ failOn: "pr close" }));
 
   const { log } = await scanWith(fake);
 
   assertEquals(reasonFor(log, 48), "budget-spent");
-  assertEquals(escalatedToHuman(fake, 48), true);
+  assertEquals(escalatedToHuman(fake, 48), false);
+  assertNoNeedsHumanWrites(fake);
 
-  const escalation = fake.commentsPosted.find((c) =>
-    c.prNumber === 48 && c.body.includes("Next step")
+  const warned = log.entries.find((entry) =>
+    entry.level === "warn" && entry.context?.step === "pr-close"
   );
-  assert(escalation, "no escalation comment was posted");
-  assertStringIncludes(escalation.body, "`pr-close` step");
+  assert(warned, "the failing step was not recorded in the log");
+  assertEquals(warned.context?.route, "abandon-failed");
 });
 
 Deno.test("findConflictingPr - the abandon seam receives the PR's failure thread", async () => {
@@ -1393,11 +1629,11 @@ Deno.test("findConflictingPr - the abandon seam receives the PR's failure thread
   assertEquals(seen[0]?.prComments?.length, exhaustedComments().length);
 });
 
-Deno.test("findConflictingPr - a failure at any abandon step rests at needs-human, named", async () => {
-  // The Failure Detection clause of Issue #1115: inject a failure at each step
-  // in turn, and the resting state is always a human owning the PR with the
-  // step named. The dangerous state — PR closed, issue not re-queued — is a
-  // late step, so the late steps matter most here.
+Deno.test("findConflictingPr - a failure at any abandon step is named in the record, never escalated (Issue #2310)", async () => {
+  // The Failure Detection clause of Issue #1115, as Issue #2310 leaves it:
+  // every step still names itself, and none of them asks a person. The
+  // dangerous state — PR closed, issue not re-queued — is a late step, so the
+  // late steps matter most here.
   const steps: AbandonStep[] = [
     "originating-issue",
     "issue-state",
@@ -1409,6 +1645,7 @@ Deno.test("findConflictingPr - a failure at any abandon step rests at needs-huma
     "pr-close",
     "issue-reopen",
     "issue-label",
+    "fallback-flag",
   ];
 
   for (const step of steps) {
@@ -1423,12 +1660,12 @@ Deno.test("findConflictingPr - a failure at any abandon step rests at needs-huma
     });
 
     assertEquals(reasonFor(log, 48), "budget-spent", `${step} record`);
-    assertEquals(escalatedToHuman(fake, 48), true, `${step} needs-human`);
-    const escalation = fake.commentsPosted.find((c) =>
-      c.prNumber === 48 && c.body.includes("Next step")
+    assertEquals(escalatedToHuman(fake, 48), false, `${step} needs-human`);
+    assertNoNeedsHumanWrites(fake);
+    const warned = log.entries.find((entry) =>
+      entry.level === "warn" && entry.context?.step === step
     );
-    assert(escalation, `${step}: no escalation comment`);
-    assertStringIncludes(escalation.body, `\`${step}\` step`);
+    assert(warned, `${step}: the step was not recorded`);
   }
 });
 

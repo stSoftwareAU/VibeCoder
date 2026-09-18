@@ -15,6 +15,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildMergeFallbackBody,
+  createFallbackFlagFiler,
   fileMergeFallbackIssue,
   MERGE_FALLBACK_LABEL,
   type MergeFallbackFiling,
@@ -217,6 +218,52 @@ Deno.test("buildMergeFallbackBody - an empty timing list is not recorded", () =>
   });
   assertStringIncludes(body, "**Stage timings**: not recorded");
   assertStringIncludes(body, "**Analysis**: not recorded");
+});
+
+Deno.test("buildMergeFallbackBody - an unfinished stage renders as unfinished (Issue #2310)", () => {
+  // The stage that never stopped is the case the timings exist to show, so it
+  // must not render as `nulls` or vanish from the line.
+  const body = buildMergeFallbackBody({
+    target: { kind: "pr", repo: "org/repo", prNumber: 4 },
+    runs: [{
+      run: 1,
+      host: "host-a",
+      timings: [{ stage: "deepen", seconds: 3 }, {
+        stage: "agent",
+        seconds: null,
+      }],
+    }],
+  });
+  assertStringIncludes(body, "**Stage timings**: deepen 3s, agent unfinished");
+});
+
+Deno.test("buildMergeFallbackBody - the diff summary names the paths it read (Issue #2310)", () => {
+  const body = buildMergeFallbackBody({
+    target: { kind: "pr", repo: "org/repo", prNumber: 4 },
+    diffSummary: [{ path: "lib/a.ts", additions: 9, deletions: 2 }],
+    diffSummaryOmitted: 3,
+  });
+  assertStringIncludes(body, "### What the PR changed");
+  assertStringIncludes(body, "`lib/a.ts` (+9/-2)");
+  assertStringIncludes(body, "3 further path(s) are not listed");
+});
+
+Deno.test("buildMergeFallbackBody - a diff nobody read renders no section at all (Issue #2310)", () => {
+  // The route that re-queues an originating issue does not read the diff, and
+  // `not recorded` there would claim a measurement failure that never happened.
+  const body = buildMergeFallbackBody({
+    target: { kind: "pr", repo: "org/repo", prNumber: 4 },
+  });
+  assertEquals(body.includes("What the PR changed"), false);
+});
+
+Deno.test("buildMergeFallbackBody - a diff read as empty says so in words (Issue #2310)", () => {
+  const body = buildMergeFallbackBody({
+    target: { kind: "pr", repo: "org/repo", prNumber: 4 },
+    diffSummary: [],
+  });
+  assertStringIncludes(body, "### What the PR changed");
+  assertStringIncludes(body, "GitHub reported no changed file");
 });
 
 Deno.test("buildMergeFallbackBody - unicode survives the render", () => {
@@ -468,6 +515,30 @@ Deno.test("fileMergeFallbackIssue - a label that cannot be created is said out l
     warnings.some((w) => w.includes("labels API refused")),
     "a refused label creation must be logged, not swallowed",
   );
+});
+
+Deno.test("createFallbackFlagFiler - routes the label creation through the caller's gh (Issue #2310)", async () => {
+  // The whole point of the factory: the default `ensureLabelExists` reaches the
+  // real CLI, so both fallback routes have to bind it to their own `gh` — and
+  // one definition of that wiring is what keeps them from drifting.
+  const { gh, calls } = fakeGh();
+  const filer = createFallbackFlagFiler({ gh, fleetAuthors: [FLEET_AUTHOR] });
+
+  const result = await filer(PR_FILING);
+
+  assert(result.ok);
+  assertEquals(result.value.issueNumber, 900);
+  const labelCreate = calls.find((c) =>
+    c[0] === "api" && c.includes("POST") &&
+    c.some((arg) => arg.endsWith("/labels"))
+  );
+  assert(
+    labelCreate,
+    `the label creation did not go through the given gh: ${
+      JSON.stringify(calls)
+    }`,
+  );
+  assert(labelCreate.includes(`name=${MERGE_FALLBACK_LABEL}`));
 });
 
 Deno.test("mergeFallbackMarker - a quote in a branch cannot close an attribute", () => {

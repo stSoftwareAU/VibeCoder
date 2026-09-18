@@ -261,21 +261,29 @@ automatic ladder is the whole answer:
    back** the PRs that introduced the conflict and reopen their issues for the
    fleet to redo (Issue #1781). A run the worker itself cuts short is not one
    of the two: only a run that judged the conflict is charged.
-5. **Flag the fallback, ask nobody** (Issues #2304, #2311). Every fallback
-   files or appends exactly one `merge-fallback` issue — both spent runs, the
-   conflicted files, what was reverted — and that flag is the only issue a
-   conflict ever files. A milestone roll-back that could not merge records the
-   default-branch tip it answered for and is offered its two runs again once
-   that tip moves, so no conflict outcome needs a person to release it.
+5. **Flag the fallback, ask nobody** (Issues #2304, #2310, #2311). Every
+   fallback files or appends exactly one `merge-fallback` issue — both spent
+   runs, the conflicted files, what was reverted — and that flag is the only
+   issue a conflict ever files, so the conflict that undid the work is written
+   down where the next attempt can read it: both runs' analyses, their stage
+   timings and hosts, the conflicted files, how far behind the base the branch
+   was and since when, and what was closed. A conflicting PR whose originating
+   issue cannot be found is closed too, and its flag carries `idle-task` and
+   the PR's diff summary so it *is* the re-do item. A milestone roll-back that
+   could not merge records the default-branch tip it answered for and is
+   offered its two runs again once that tip moves, so no conflict outcome
+   needs a person to release it.
 
 Every comment the sync or the conflict processor posts is a **record** of what
 the ladder did and will do next, on the thread as it stands. It never reopens a
 planning issue, never applies `needs-human`, and never asks a person to merge
-(Issues #2214, #2226, #2311). The streak escalation that survives on the
-milestone path answers a **non-conflict** failure — a fetch, a push, an
-ordinary git error — never a conflict. A path that hands a conflict to a human
-is a bug to fix the same day, not a design choice. The canonical operator
-manual is
+(Issues #2214, #2226, #2310, #2311) — a hand-applied `needs-human` is still
+honoured as a veto, because a human who labels a PR owns it, and the
+resolution processor's own last escalation was removed under the remaining
+sub-issue of #2298. The streak escalation that survives on the milestone path
+answers a **non-conflict** failure — a fetch, a push, an ordinary git error —
+never a conflict. A path that hands a conflict to a human is a bug to fix the
+same day, not a design choice. The canonical operator manual is
 [docs/INTERNALS.md § Milestone and dependency handling](docs/INTERNALS.md).
 
 ### Milestone independence
@@ -1978,7 +1986,7 @@ sections, then deletes the now-obsolete summaries**. A summary is only ever
 deleted **after** its learnings demonstrably land elsewhere, so no learning is
 lost; the deletion happens in the *fix* issue's PR, never during the scan.
 
-**Thirteen checks (Phase 2 of `prompts/documentation_audit/`).** (1) unabsorbed
+**Fourteen checks (Phase 2 of `prompts/documentation_audit/`).** (1) unabsorbed
 PR-summary learnings, (2) stale/obsolete content, (3) contradictions and
 inconsistencies, (4) duplicate/redundant content — including, from v4 onward,
 prose that paraphrases an external tool's docs instead of linking to them, (5)
@@ -2027,6 +2035,24 @@ comment that says something untrue is this scan's. `TODO`/`FIXME` notes,
 commented-out code, licence headers, and comments explaining *why* rather than
 what are all silent.
 
+**Agent instructions against the published guidance (check 14, Issue #2321).**
+Checks 5 and 9 decide **how many** agent instruction files a repo keeps; check
+14 reads **what the surviving one says**, measuring it — plus every file it
+imports with an `@path` line, and `README.md` as part of the same assessed unit
+— against Anthropic's published **Claude Code guidance**. It reports a stage
+command an agent cannot guess (test always; build and lint only when a fixed
+signal shows the repo has that stage, and one documented gate command such as
+`./quality.sh` satisfies every stage it runs) at `severity:medium`, a file over
+the published 200-line budget at `severity:medium` (counted as `wc -l` physical
+lines, per file, never on `README.md`), and — at `severity:low` — content the
+guidance says to exclude plus five conditional items (style rules, etiquette,
+architectural decisions, environment quirks, gotchas) each gated on a fixed
+repo signal rather than judgement. The check never asks a repo to create a
+`CLAUDE.md` (check 9's end-state stands) and is held while check 5 or 9 is
+outstanding, since content review is moot mid-consolidation. All of a repo's
+gaps collapse into **one** finding per run under a fixed title, so its stable id
+does not move as the gap list changes.
+
 **Meaningful grouping.** Findings must be a coherent, approvable unit of work —
 **never** one issue per typo, **never** one unreviewable mega-issue.
 
@@ -2047,7 +2073,7 @@ grammar (a `<!-- … -->` Markdown comment) suppresses a finding on future runs.
 wired into the claim handler, idle-task filer, wrapper-seeder, and backfill title
 map. Tests: `worker/deno/tests/documentation_audit_template_test.ts`. See
 [`docs/DOCUMENTATION-AUDIT-SCAN.md`](docs/DOCUMENTATION-AUDIT-SCAN.md) for the
-operator manual (thirteen-check catalogue, idle-trigger diagram, severity table,
+operator manual (fourteen-check catalogue, idle-trigger diagram, severity table,
 id recipe, suppression syntax, no-PR rule, weekly cadence).
 
 ### Workflow-annotation scans (template #15)
