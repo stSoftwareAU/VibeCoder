@@ -216,3 +216,24 @@ Deno.test("execute_claude_phase - a screenshot run keeps its browser grant besid
   assertEquals(mcp.playwright, true);
   assertEquals(mcp.servers?.graft?.command, "graft");
 });
+
+Deno.test("execute_claude_phase - the summary pass is threaded to the collector when configured (Issue #2315)", async () => {
+  const observed: Observed = { collected: [], logs: [] };
+  const deep = {
+    provider: "anthropic" as const,
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    timeoutSeconds: 900,
+  };
+  await runExecuteClaudePhase(
+    options({ graftContextEnabled: true, graftContextDeep: deep }),
+    createDeps(observed, okCollection()),
+  );
+  assertEquals(observed.collected[0]?.deep, deep);
+
+  const plain: Observed = { collected: [], logs: [] };
+  await runExecuteClaudePhase(
+    options({ graftContextEnabled: true }),
+    createDeps(plain, okCollection()),
+  );
+  assertEquals(plain.collected[0]?.deep, undefined);
+});

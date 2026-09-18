@@ -65,6 +65,7 @@ import {
   prepareCodegraphRun,
 } from "./codegraph_run.ts";
 import { bindGraftRun } from "./graft_run.ts";
+import type { GraftDeepConfig } from "./graft_context_config.ts";
 import type { ProgressExtensionOptions } from "./progress_extension.ts";
 import {
   buildTimeoutFailureReason,
@@ -290,6 +291,12 @@ export interface ExecuteClaudePhaseOptions {
    * exactly as it does today.
    */
   graftContextEnabled?: boolean;
+  /**
+   * The Graft summary pass to build with (Issue #2315), threaded from
+   * `config.graftContext.deep` through `graftDeepConfig()`. Absent, the
+   * collector builds the structural graph exactly as before.
+   */
+  graftContextDeep?: GraftDeepConfig;
   /**
    * Whether to index the checkout with CodeGraph and offer the agent that
    * index (Issue #2159, part of #2145, default: false).
@@ -931,6 +938,7 @@ async function executeClaudePhaseBody(
     includeCodebaseMap = OPERATIONAL_DEFAULTS.includeCodebaseMap,
     codebaseMapCacheDir,
     graftContextEnabled = false,
+    graftContextDeep,
     codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     sessionResumeState,
     contextBudgetWarningPercent =
@@ -1095,6 +1103,7 @@ async function executeClaudePhaseBody(
     repoDir,
     query: graftQueryFor(issueTitle, issueBody),
     enabled: graftContextEnabled,
+    ...(graftContextDeep ? { deep: graftContextDeep } : {}),
     logger,
   });
   collected.result = graftContext;

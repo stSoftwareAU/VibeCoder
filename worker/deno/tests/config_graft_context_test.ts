@@ -13,7 +13,11 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import { loadConfig } from "../lib/config.ts";
 import {
   assertGraftContextConfig,
+  GRAFT_DEEP_DEFAULT_API_KEY_ENV,
+  GRAFT_DEEP_DEFAULT_TIMEOUT_SECONDS,
+  GRAFT_DEEP_PROVIDERS,
   graftContextOff,
+  graftDeepConfig,
   isGraftContextEnabled,
   parseGraftContextConfig,
 } from "../lib/graft_context_config.ts";
@@ -205,4 +209,138 @@ Deno.test("graft_context_config - isGraftContextEnabled reads the loaded switch"
 
 Deno.test("graft_context_config - isGraftContextEnabled is false on the default config", () => {
   assertEquals(isGraftContextEnabled(buildDefaultWorkerConfig()), false);
+});
+
+// ---------------------------------------------------------------------------
+// The summary pass — `graft_context.deep` (Issue #2315)
+// ---------------------------------------------------------------------------
+
+Deno.test("config graft_context.deep - a provider alone loads with that provider's defaults", async () => {
+  await withConfig(async (path, write) => {
+    await write({
+      repos: ["org/repo"],
+      graft_context: { enabled: true, deep: { provider: "anthropic" } },
+    });
+    const config = await loadConfig(path);
+    assertEquals(config.graftContext.deep, {
+      provider: "anthropic",
+      apiKeyEnv: "ANTHROPIC_API_KEY",
+      timeoutSeconds: GRAFT_DEEP_DEFAULT_TIMEOUT_SECONDS,
+    });
+    assertEquals(graftDeepConfig(config)?.provider, "anthropic");
+  });
+});
+
+Deno.test("config graft_context.deep - every optional key is carried through", () => {
+  const parsed = parseGraftContextConfig({
+    enabled: true,
+    deep: {
+      provider: "openai",
+      model: "openai/gpt-4o-mini",
+      base_url: "https://openrouter.ai/api/v1",
+      api_key_env: "OPENROUTER_API_KEY",
+      timeout_seconds: 600,
+      concurrency: 3,
+    },
+  }, { warn: () => {} });
+  assert(parsed.ok, parsed.ok ? "" : parsed.error);
+  assertEquals(parsed.value.deep, {
+    provider: "openai",
+    model: "openai/gpt-4o-mini",
+    baseUrl: "https://openrouter.ai/api/v1",
+    apiKeyEnv: "OPENROUTER_API_KEY",
+    timeoutSeconds: 600,
+    concurrency: 3,
+  });
+});
+
+Deno.test("config graft_context.deep - each provider has a default key variable", () => {
+  for (const provider of GRAFT_DEEP_PROVIDERS) {
+    const parsed = parseGraftContextConfig({ deep: { provider } }, {
+      warn: () => {},
+    });
+    assert(parsed.ok);
+    assertEquals(
+      parsed.value.deep?.apiKeyEnv,
+      GRAFT_DEEP_DEFAULT_API_KEY_ENV[provider],
+    );
+  }
+});
+
+Deno.test("config graft_context.deep - a missing or unknown provider fails naming the key", () => {
+  for (const deep of [{}, { provider: "gemini" }, { provider: 3 }]) {
+    const parsed = parseGraftContextConfig({ enabled: true, deep }, {
+      warn: () => {},
+    });
+    assert(!parsed.ok, "must be rejected");
+    assert(
+      parsed.error.includes("graft_context.deep.provider") &&
+        parsed.error.includes("anthropic, openai, litellm, orcarouter"),
+      parsed.error,
+    );
+  }
+});
+
+Deno.test("config graft_context.deep - a key pasted where a name belongs stops the worker", () => {
+  const parsed = parseGraftContextConfig({
+    deep: {
+      provider: "anthropic",
+      api_key_env: "sk-ant-not-a-name-0123456789",
+    },
+  }, { warn: () => {} });
+  assert(!parsed.ok);
+  assert(parsed.error.includes("graft_context.deep.api_key_env"), parsed.error);
+  assert(
+    !parsed.error.includes("sk-ant-"),
+    "the rejected value must not be echoed back",
+  );
+});
+
+Deno.test("config graft_context.deep - limits must be positive whole numbers", () => {
+  for (
+    const [key, value] of [
+      ["timeout_seconds", 0],
+      ["timeout_seconds", "30"],
+      ["concurrency", 1.5],
+      ["concurrency", -2],
+    ] as const
+  ) {
+    const parsed = parseGraftContextConfig({
+      deep: { provider: "anthropic", [key]: value },
+    }, { warn: () => {} });
+    assert(!parsed.ok, `${key}=${String(value)} must be rejected`);
+    assert(parsed.error.includes(`graft_context.deep.${key}`), parsed.error);
+  }
+});
+
+Deno.test("config graft_context.deep - a non-object block fails and an unknown key warns", () => {
+  const rejected = parseGraftContextConfig({ deep: "yes" }, { warn: () => {} });
+  assert(!rejected.ok);
+  assert(rejected.error.includes("graft_context.deep"), rejected.error);
+
+  const warnings: string[] = [];
+  const parsed = parseGraftContextConfig({
+    deep: { provider: "anthropic", modle: "x" },
+  }, { warn: (m) => warnings.push(m) });
+  assert(parsed.ok);
+  assertEquals(parsed.value.deep?.model, undefined);
+  assert(
+    warnings.some((w) => w.includes("graft_context.deep.modle")),
+    warnings.join("\n"),
+  );
+});
+
+Deno.test("config graft_context.deep - the pass is not read while the switch is off", () => {
+  const config = buildDefaultWorkerConfig();
+  config.graftContext = {
+    enabled: false,
+    deep: {
+      provider: "anthropic",
+      apiKeyEnv: "ANTHROPIC_API_KEY",
+      timeoutSeconds: 10,
+    },
+  };
+  assertEquals(graftDeepConfig(config), undefined);
+  config.graftContext.enabled = true;
+  assertEquals(graftDeepConfig(config)?.provider, "anthropic");
 });

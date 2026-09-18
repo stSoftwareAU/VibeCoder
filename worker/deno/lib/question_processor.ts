@@ -50,7 +50,10 @@ import {
   graftQueryFor,
   withGraftContext,
 } from "./graft_context.ts";
-import { isGraftContextEnabled } from "./graft_context_config.ts";
+import {
+  graftDeepConfig,
+  isGraftContextEnabled,
+} from "./graft_context_config.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
 import { releaseClaim } from "./claim_release.ts";
 import { reportPhaseDegradation } from "./phase_run_stats.ts";
@@ -380,6 +383,7 @@ async function _processQuestionWithHeartbeat(
     repoDir,
     query: graftQueryFor(issueTitle, issueBody),
     enabled: isGraftContextEnabled(config),
+    ...(graftDeepConfig(config) ? { deep: graftDeepConfig(config) } : {}),
     logger,
   });
   graftSlot.result = graftContext;

@@ -36,7 +36,10 @@ import {
   getCustomInstructions,
 } from "../lib/repo_config.ts";
 import type { CommentType } from "../lib/pr_comments.ts";
-import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
+import {
+  graftDeepConfig,
+  isGraftContextEnabled,
+} from "../lib/graft_context_config.ts";
 
 // Re-export library functions for external use
 export { buildFeedbackCommitMessage, decodeCommentBody, summariseLargeComment };
@@ -194,6 +197,9 @@ export const prFeedbackProcessorCommand: Command = {
           workerId,
           // Issue #2103: the host switch for the Graft repo-context bundle.
           graftContextEnabled: isGraftContextEnabled(config),
+          ...(graftDeepConfig(config)
+            ? { graftContextDeep: graftDeepConfig(config) }
+            : {}),
         };
 
         const result = await processPrFeedback(input, processorDeps);
