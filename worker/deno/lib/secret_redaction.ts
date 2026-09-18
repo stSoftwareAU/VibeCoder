@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!\*\*\*REDACTED)(?![{[])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|\S+)/gi;
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -516,13 +516,39 @@ const RULES: readonly RedactionRule[] = [
   // substitution: Markdown structure is never a credential, and a value the
   // separator reached across a line break must look like one. An inline
   // assignment is unaffected, so the label side stays as blunt as it was.
+  //
+  // JSON structure survives the mask (Issue #4169's transcript tee is the
+  // sink that showed it). Every stream-json line the agent emits carries a
+  // `"usage":{"input_tokens":50,...}` block — a key that merely *contains*
+  // TOKEN followed by a number — and the `init` line carries
+  // `"apiKeySource":"none"`. The bare-value branch was `\S+`, and compact JSON
+  // has no whitespace, so the number *and everything after it to the end of
+  // the line* became the placeholder; the quoted branch dropped the quotes it
+  // matched, leaving a bare word where JSON needs a string. Both left the
+  // archived transcript unparsable past its first assistant message, and the
+  // per-message usage figures were gone. Three bounded refinements:
+  //   - a JSON scalar — a number, `true`, `false` or `null` — followed by the
+  //     `,`, `}` or `]` that ends a JSON member is structure, not a credential
+  //     (a count under a `*_tokens` key is the everyday case). The scalar's
+  //     runs are bounded and the trailing whitespace run is bounded, so the
+  //     lookahead is constant work per candidate (Issue #3942). An inline
+  //     `PASSWORD=12345` with nothing after it is still masked as before.
+  //   - the bare-value branch stops at a double quote, so a real assignment
+  //     inside a JSON string — `"text":"export TOKEN=abc"}` — is masked
+  //     without eating the string's closing quote and the members after it.
+  //   - a value matched *with* its quotes keeps them around the placeholder,
+  //     so `"password":"hunter2"` becomes `"password":"***REDACTED***"` and
+  //     still parses. The already-redacted lookahead tolerates that opening
+  //     quote, so the pass stays idempotent and `containsSecret` stays false
+  //     on its own output.
   {
     name: "secret-assignment",
     pattern: SECRET_ASSIGNMENT_PATTERN,
-    replace: (match: string, key: string, sep: string, value: string) =>
-      assignmentIsMasked(sep, value)
-        ? `${key}${sep}${REDACTION_PLACEHOLDER}`
-        : match,
+    replace: (match: string, key: string, sep: string, value: string) => {
+      if (!assignmentIsMasked(sep, value)) return match;
+      const quote = QUOTED_VALUE.test(value) ? value.charAt(0) : "";
+      return `${key}${sep}${quote}${REDACTION_PLACEHOLDER}${quote}`;
+    },
   },
   // Space-separated CLI flag carrying a secret (Issue #3648). The
   // `secret-assignment` rule above requires an `=` or `:` separator, so a

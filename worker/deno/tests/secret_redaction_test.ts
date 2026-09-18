@@ -559,7 +559,9 @@ Deno.test("redactSecrets - leaves a JSON array value under a secret-ish key alon
 Deno.test("redactSecrets - still masks a scalar value under a secret-ish key (Issue #1254)", () => {
   assertEquals(
     redactSecrets('{"api_key":"abc123def456"}'),
-    `{"api_key":${REDACTION_PLACEHOLDER}}`,
+    // The quotes the value was matched with stay around the placeholder, so
+    // the line is still JSON (see secret_redaction_json_structure_test.ts).
+    `{"api_key":"${REDACTION_PLACEHOLDER}"}`,
   );
   assertEquals(
     redactSecrets("secret_scanning: enabled").includes(
