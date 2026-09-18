@@ -15,7 +15,6 @@ import {
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
   conflictPrKey,
-  type ConflictSkipReasonKind,
   countDisruptedAttempts,
   DEFAULT_MAX_CONFLICT_ATTEMPTS,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,

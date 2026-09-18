@@ -1,11 +1,12 @@
 /**
- * The claim scan skips a milestone whose branch ledger paces it (Issue #1780).
+ * The claim scan skips a milestone whose branch ledger paces it
+ * (Issues #1780, #2305).
  *
  * A child run brings the milestone branch level with the default branch before
- * it cuts its issue branch. A charged conflict failure writes `deferUntil`, and
- * until it passes no child of that milestone can start — so the scan must not
- * offer one. Without this gate the loop claimed, deferred and commented on one
- * of the milestone's issues every 30 seconds.
+ * it cuts its issue branch, and it cannot while an attempt is open on this
+ * host or the branch's conflict budget is spent — so the scan must not offer
+ * one of that milestone's issues. Without this gate the loop claimed, deferred
+ * and commented on one of them every 30 seconds.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

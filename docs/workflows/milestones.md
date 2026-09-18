@@ -448,7 +448,8 @@ To disable milestone branch sync entirely, set `sync_milestone_branches: false` 
 
 - The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
 - The cadence state is the `lastSyncedDefaultSha` in `milestone_sync_failures.json`, so it survives a worker restart — there is no in-memory cooldown to lose (Issue #1776).
-- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out (subject to the branch's conflict-attempt pacing).
+- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out — there is no wait between a branch's two conflict attempts (Issue #2305), and the budget itself is what bounds the retrying.
+- A branch's conflict budget is **two concluded failures**, the same constant a conflicting PR spends, and the second spent failure hands the branch to the roll-back rather than to a third merge. An attempt this host opened and never concluded reads as `disrupted` on the next cycle and is charged nothing; while it is open, and while the budget is spent, the claim scan skips that milestone's issues rather than claiming a child that could only defer.
 - A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
 - This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 
