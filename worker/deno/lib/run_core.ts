@@ -3840,6 +3840,17 @@ async function runSlot(
       // go on to run, and in the run's `finally` on every path that does.
       // Nothing awaits between taking the hold and entering that `try`, so
       // there is no window in which a throw could leak it.
+      //
+      // Keyed on the stream rather than on the run kind. `STREAM_JOIN_POLICY`
+      // (`stream_session.ts`) says an `idle-task` run keeps a per-issue
+      // session and joins no conversation, and the claim scan does serve that
+      // kind — but `DiscoveredIssue` carries no labels, so the kind is not
+      // knowable here without a `gh` read this lock must not make. The hold
+      // is redundant rather than wrong for such a run: an idle-task issue
+      // carries no milestone, so the slot registry below already occupies the
+      // same `(repo, blank)` stream and excludes the sibling either way. What
+      // this costs is a refusal logged in the stream's terms instead of the
+      // registry's; what it must never cost is a claim, and it does not.
       const blankStream = config.enableSessionResume
         ? pool.blankStreamLocks.tryAcquire({
           repo: issue.repo,
