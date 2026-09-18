@@ -5314,11 +5314,11 @@ async function syncMilestoneBranchesFn(
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
     syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
-      // Issue #1778: the cycle grants the agent rung to at most one branch,
-      // and only while the handler's budget covers a whole run. A branch
-      // that was not granted it is handed no agent at all, so the ladder
-      // stops after the deterministic rules rather than starting a run the
-      // watchdog would kill mid-edit (#1693).
+      // Issue #2309: every behind branch is offered the agent rung, and only
+      // the handler's remaining budget refuses one. A branch that was not
+      // granted it is handed no agent at all, so the ladder stops after the
+      // deterministic rules rather than starting a run the watchdog would
+      // kill mid-edit (Issues #1778, #1693).
       // Issue #1780: bound once, in `milestone_conflict_agent_binding.ts`, so
       // this sweep and a child run's pre-cut sync hand the ladder exactly the
       // same rung — including the grant's own timeout.

@@ -1707,11 +1707,90 @@ Deno.test("syncMilestoneBranches - every conflicting branch gets the agent rung 
   }
 });
 
+Deno.test("syncMilestoneBranches - a deadline covering two runs grants both, and only the conflicting one logs the deferral (Issue #2309)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2309-two-runs-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const grants: Record<string, { allowed: boolean; seconds?: number }> = {};
+    const lines: string[] = [];
+    // A bounded cycle wide enough for two whole runs — the case the issue
+    // names, which an unbounded pass cannot exercise.
+    const agentRunMs = DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT;
+    const start = 10_000;
+    await syncMilestoneBranches(ledgerDeps([], {
+      milestones: [
+        { title: LEDGER_TITLE, branch: LEDGER_BRANCH, failure: "conflict" },
+        { title: SECOND_TITLE, branch: SECOND_BRANCH, failure: "conflict" },
+      ],
+      streakPath,
+      nowMs: start,
+      advanceMsPerSync: agentRunMs,
+      deadlineEpochMs: start +
+        2 * (agentRunMs + DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS),
+      agentTimeoutMs: agentRunMs,
+      grants,
+      log: (message) => lines.push(message),
+    }));
+
+    assertEquals(grants[LEDGER_BRANCH]?.allowed, true);
+    assertEquals(
+      grants[SECOND_BRANCH]?.allowed,
+      true,
+      "a deadline that covers two runs grants two",
+    );
+    // Both climbed a rung they were offered, so neither was deferred.
+    assertEquals(
+      lines.filter((line) => line.includes("agent deferred: cycle budget")),
+      [],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a clean merge late in the cycle is not reported as a deferred agent (Issue #2309)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2309-clean-late-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const grants: Record<string, { allowed: boolean; seconds?: number }> = {};
+    const lines: string[] = [];
+    const agentRunMs = DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT;
+    const start = 10_000;
+    await syncMilestoneBranches(ledgerDeps([], {
+      milestones: [
+        // The first branch conflicts and spends the cycle's one run; the
+        // second merges cleanly with no rung left — and asked for none.
+        { title: LEDGER_TITLE, branch: LEDGER_BRANCH, failure: "conflict" },
+        { title: SECOND_TITLE, branch: SECOND_BRANCH, failure: "success" },
+      ],
+      streakPath,
+      nowMs: start,
+      advanceMsPerSync: agentRunMs,
+      deadlineEpochMs: start + agentRunMs +
+        DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
+      agentTimeoutMs: agentRunMs,
+      grants,
+      log: (message) => lines.push(message),
+    }));
+
+    assertEquals(grants[SECOND_BRANCH]?.allowed, false);
+    // Nothing collided, so there was nothing to defer: reporting one would
+    // send a reader looking for a conflict that never happened.
+    assertEquals(
+      lines.filter((line) => line.includes("agent deferred: cycle budget")),
+      [],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("syncMilestoneBranches - the second branch is refused only once the deadline no longer covers a run (Issue #2309)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "issue-2309-floor-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
     const grants: Record<string, { allowed: boolean; seconds?: number }> = {};
+    const lines: string[] = [];
     // The cycle holds one agent run plus its overhead, and the first branch
     // spends it: a moving clock is what the floor reads, not a latch.
     const agentRunMs = DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT;
@@ -1730,10 +1809,17 @@ Deno.test("syncMilestoneBranches - the second branch is refused only once the de
       deadlineEpochMs,
       agentTimeoutMs: agentRunMs,
       grants,
+      log: (message) => lines.push(message),
     }));
 
     assertEquals(grants[LEDGER_BRANCH]?.allowed, true);
     assertEquals(grants[SECOND_BRANCH]?.allowed, false);
+    // The refused branch conflicted, so the refusal is said out loud once.
+    const deferrals = lines.filter((line) =>
+      line.includes("agent deferred: cycle budget")
+    );
+    assertEquals(deferrals.length, 1);
+    assertStringIncludes(deferrals[0]!, SECOND_BRANCH);
     const deferred = await readLedger(streakPath, SECOND_BRANCH);
     assertEquals(deferred?.conflictAttempts, 0);
     assertEquals(deferred?.lastAttempt?.outcome, "not-charged");
@@ -1770,6 +1856,57 @@ Deno.test("syncMilestoneBranches - a repository's branches are synced longest be
     }));
 
     assertEquals(order, [SECOND_BRANCH, LEDGER_BRANCH]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a branch already at the default tip is not measured (Issue #2309)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2309-cheap-path-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    // The ledger already records this branch against the current tip, so it
+    // takes the cadence guard's cheap path — its order cannot matter.
+    await Deno.writeTextFile(
+      streakPath,
+      JSON.stringify({
+        [`owner/repo|${LEDGER_BRANCH}`]: {
+          count: 0,
+          escalated: false,
+          lastSyncedDefaultSha: LEDGER_SHA,
+        },
+      }),
+    );
+    const measured: string[] = [];
+    const deps = ledgerDeps([], {
+      milestones: [
+        {
+          title: LEDGER_TITLE,
+          branch: LEDGER_BRANCH,
+          failure: "success",
+          behindBy: 0,
+        },
+        {
+          title: SECOND_TITLE,
+          branch: SECOND_BRANCH,
+          failure: "success",
+          behindBy: 5,
+        },
+      ],
+      streakPath,
+      nowMs: 10_000,
+    });
+    const measure = deps.behindCountFn!;
+    deps.behindCountFn = (repo, milestoneBranch, defaultBranch) => {
+      measured.push(milestoneBranch);
+      return measure(repo, milestoneBranch, defaultBranch);
+    };
+
+    await syncMilestoneBranches(deps);
+
+    // An idle branch must not cost a fetch every cycle to order a pass that
+    // is about to skip it.
+    assertEquals(measured, [SECOND_BRANCH]);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

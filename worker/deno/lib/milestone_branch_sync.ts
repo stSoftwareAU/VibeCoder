@@ -483,6 +483,11 @@ export function orderMilestonesByBehind(
  * a repository with one milestone is handed straight back unmeasured, as is
  * a caller that injected no measurement.
  *
+ * A branch the ledger already records against this default tip is level by
+ * construction, so it is not measured at all: the cheap cadence path below
+ * skips it a moment later, and an idle cycle must not pay a fetch per branch
+ * to decide an order that will not be used.
+ *
  * A count that cannot be read is said out loud and the branch sorts as level,
  * so it is still visited — ordering must never be the reason a branch is not
  * synced.
@@ -491,6 +496,7 @@ async function orderRepoMilestones(
   repo: string,
   milestones: readonly ActiveMilestone[],
   behindCountFn: MilestoneBranchSyncDeps["behindCountFn"],
+  atDefaultTip: (milestone: ActiveMilestone) => boolean,
   log: (message: string) => void,
 ): Promise<ActiveMilestone[]> {
   if (!behindCountFn || milestones.length < 2) return [...milestones];
@@ -498,6 +504,10 @@ async function orderRepoMilestones(
   const measured: MeasuredMilestone[] = [];
   for (const milestone of milestones) {
     let behindBy: number | undefined;
+    if (atDefaultTip(milestone)) {
+      measured.push({ milestone, behindBy: 0 });
+      continue;
+    }
     /** Says what went wrong and that the order is the poorer for it. */
     const unmeasured = (reason: string): void =>
       log(
@@ -1380,6 +1390,11 @@ export async function syncMilestoneBranches(
         repo,
         milestonesResult.value,
         deps.behindCountFn,
+        // Already recorded against this tip: level, and not worth a fetch.
+        (milestone) =>
+          defaultSha !== undefined &&
+          streaks[syncStreakKey(repo, milestone.milestoneBranch)]
+              ?.lastSyncedDefaultSha === defaultSha,
         log,
       );
 
@@ -1561,14 +1576,6 @@ export async function syncMilestoneBranches(
             : {}),
         });
         const agentAllowed = grant.agentAllowed;
-        if (!agentAllowed) {
-          log(
-            `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
-              `agent deferred: cycle budget — too little of the cycle is ` +
-              `left to cover a run, so this sync stops after the rules ` +
-              `(Issue #2309)`,
-          );
-        }
         // Issue #2215: named before it starts, so a slow merge or check is
         // never a silent gap in the log.
         log(
@@ -1708,6 +1715,19 @@ export async function syncMilestoneBranches(
           const conflictError = isConflictEscalation(syncResult.error)
             ? syncResult.error
             : undefined;
+
+          // Issue #2309: the refusal is said out loud where it actually cost
+          // something — a branch that conflicted with no rung left to climb.
+          // A branch that merged cleanly was refused nothing worth reporting,
+          // which is why this is here and not beside the grant.
+          if (!agentAllowed && conflictError) {
+            log(
+              `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
+                `agent deferred: cycle budget — too little of the cycle was ` +
+                `left to cover a run, so this sync stopped after the rules ` +
+                `(Issue #2309)`,
+            );
+          }
 
           // A reason that has not changed since the previous cycle is a
           // reason no retry will change (Issue #1964). Read before the

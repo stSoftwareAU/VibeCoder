@@ -3774,9 +3774,11 @@ branch order, the order matters: before a repository's branches are synced, each
 one's behind count is measured against the default tip the pass just fetched
 (one `git rev-list --count origin/<milestone>..origin/<default>`, the same
 measurement `milestone_presync.ts` makes) and they are synced behind-count
-descending. A branch whose count cannot be read sorts as level and is still
-synced, only later in the pass — ordering must never be the reason a branch is
-not synced — and a branch that is genuinely level still
+descending. A branch the ledger already records against this tip is level by
+construction and is not measured at all, so an idle cycle pays nothing for an
+order it will not use. A branch whose count cannot be read sorts as level and is
+still synced, only later in the pass — ordering must never be the reason a
+branch is not synced — and a branch that is genuinely level still
 takes today's cheap path through the cadence guard. The cross-repo cursor
 (Issue #2215) and the per-repo lease (Issue #2030) are unchanged: the order is
 decided **within** each repository's pass, which is where the fetch and the
