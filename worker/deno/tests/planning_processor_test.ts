@@ -5192,6 +5192,115 @@ Deno.test("processIssuePlanning - a fully covered plan closes the parent (Issue 
   assertEquals(labels.includes("needs-human"), false);
 });
 
+// Live incident (stSoftwareAU/VibeCoder#2319, 2026-09-18): the publish turn
+// created nine sound sub-issues and posted no coverage table, and the parent
+// was parked behind `needs-human` for a person to write the table by hand.
+Deno.test("processIssuePlanning - a missing coverage table is drafted by the worker, not handed to a human", async () => {
+  const ctx = makeContext();
+  const claudeOutput = `Created the following sub-issues:
+- https://github.com/org/repo/issues/101 — Auth module`;
+
+  let closedIssue = false;
+  const labels: string[] = [];
+  // The parent's comments as GitHub holds them: the repair's own comment
+  // lands here, so the re-gate reads what was really posted.
+  const parentComments: Array<{ author: { login: string }; body: string }> = [{
+    author: { login: FLEET_LOGIN },
+    body: "## Plan published\n\n1. #101 — Auth module (`enhancement`)",
+  }];
+  const repairPrompts: string[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (opts: { prompt: string }) => {
+        if (opts.prompt.includes("did not publish the `## Plan Coverage`")) {
+          repairPrompts.push(opts.prompt);
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: [
+                "| Ask | Covered by | Notes |",
+                "| --- | --- | --- |",
+                "| Add the auth module | #101 | |",
+              ].join("\n"),
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: { output: claudeOutput, exitCode: 0, timedOut: false },
+        });
+      },
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(
+            JSON.stringify({ body: "Parent", comments: parentComments }),
+          );
+        }
+        if (args[0] === "issue" && args[1] === "view") {
+          return Promise.resolve(JSON.stringify({
+            number: Number(args[2]),
+            title: "Auth module",
+            body:
+              "Add the auth module.\n\n## Failure Detection\n\nA unit test in `tests/auth_test.ts` fails.",
+          }));
+        }
+        if (args.includes("close")) closedIssue = true;
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: () =>
+      Promise.resolve({
+        number: 100,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: (_r: string, _n: number, label: string) => {
+      labels.push(label);
+      return Promise.resolve();
+    },
+    removeLabel: () => Promise.resolve(),
+    postComment: (_r: string, _n: number, body: string) => {
+      parentComments.push({ author: { login: FLEET_LOGIN }, body });
+      return Promise.resolve(undefined);
+    },
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    promptsDir: PROMPTS_DIR,
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.uncoveredAsks, undefined);
+  assertEquals(repairPrompts.length, 1);
+  assertEquals(
+    parentComments.some((c) => c.body.includes("## Plan Coverage")),
+    true,
+  );
+  assertEquals(labels.includes("needs-human"), false);
+  assertEquals(closedIssue, true);
+});
+
 // ============================================================================
 // No MVP-slice requirement in the publish path (Issue #1120)
 //
