@@ -166,6 +166,25 @@ Deno.test("quality gate - a bypassed pre-existing failure is never reported as a
   assertEquals(state.qualityGateOutcome, { status: "failed" });
 });
 
+Deno.test("quality gate - a later recovery re-run cannot relabel the implementation gate", async () => {
+  // The security-fix and summary-rule recoveries call this phase again before
+  // the stats comment is posted (Issues #1575, #2189). The implementation gate
+  // needed remediation, so the run must keep reporting attempt 2 even though
+  // the recovery's own gate went green first time.
+  const state = makeState({ baselineFailedChecks: [] });
+
+  await workOnIssueQualityGate(
+    makeContext(),
+    state,
+    makeDeps([failedGate, passedGate]),
+  );
+  assertEquals(state.qualityGateOutcome, { status: "passed", attempt: 2 });
+
+  await workOnIssueQualityGate(makeContext(), state, makeDeps([passedGate]));
+
+  assertEquals(state.qualityGateOutcome, { status: "passed", attempt: 2 });
+});
+
 Deno.test("quality gate - a gate that could not run at all records failed", async () => {
   const state = makeState();
   const deps = createMockDeps({

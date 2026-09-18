@@ -134,12 +134,25 @@ ${integrity}`;
  * after the retry has been exhausted (or was not applicable), so a
  * transient infrastructure blip on the first attempt does not apply the
  * `failed-once` label.
+ *
+ * Issue #2345: records `state.qualityGateOutcome` **once per run** — the first
+ * call's outcome stands, so a recovery path that re-runs this phase cannot
+ * relabel an implementation gate that needed remediation as a first-attempt
+ * pass. Within one call the infrastructure retry's own gate result is the one
+ * recorded, since that retry replaces the blipped run rather than following it.
  */
 export async function workOnIssueQualityGate(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  // Issue #2345: the gate this phase ran first is the implementation gate the
+  // pilot's pass rate is read from. The in-run recovery paths
+  // (`recoverFromSecurityGateBlock`, `recoverFromSummaryRuleBlock`) call this
+  // phase again before the stats comment is posted, so an already-recorded
+  // outcome is restored below rather than overwritten by a later gate.
+  const recordedOutcome = state.qualityGateOutcome;
+
   let { phaseResult, qualityFailureMessage } = await runQualityGateBody(
     ctx,
     state,
@@ -211,6 +224,7 @@ export async function workOnIssueQualityGate(
     state.failureLadderApplied = true;
   }
 
+  if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;
   return phaseResult;
 }
 
