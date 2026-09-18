@@ -1798,6 +1798,18 @@
       "paths": [
         "worker/deno/lib/plan_coverage_repair.ts"
       ]
+    },
+    {
+      "issue": 2331,
+      "chunk": "top-up-2331",
+      "title": "top-up: the stream identity seam",
+      "ledger": "docs/audits/security-sweep-2331-stream-identity.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_identity.ts (#2331)",
+      "status": "swept",
+      "sweptAt": "5d51a0c56a60ed763712b77b691049a7f50bee59",
+      "paths": [
+        "worker/deno/lib/stream_identity.ts"
+      ]
     }
   ],
   "roots": [
