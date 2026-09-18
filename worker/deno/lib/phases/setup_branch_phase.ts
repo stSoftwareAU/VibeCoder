@@ -664,7 +664,14 @@ export async function workOnIssueSetupBranch(
     });
     if (adoption) {
       state.sessionResumeState = adoption.state;
-      state.streamSession = { stream: adoption.stream, providerId };
+      // `holderHost` is what the run records on the milestone's tracking issue
+      // when it finishes (Issue #2336): the conversation ends up on this
+      // machine's disk, so this machine gets the stream's next issue first.
+      state.streamSession = {
+        stream: adoption.stream,
+        providerId,
+        holderHost: machineId,
+      };
     }
   }
 

@@ -3319,6 +3319,42 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   shared conversation and are never checked, and with
   `enable_session_resume` off the check — and its one extra `gh issue list` —
   never runs at all.
+- **The host holding a stream gets its next issue first** (Issue #2336). The
+  conversation lives on one host's disk, so when a stream run finishes it
+  records itself as the holder — a hidden
+  `<!-- vibe-stream-holder stream=<streamKey> host=<machineId> at=<epoch> -->`
+  marker on the milestone's **tracking issue**, the planning issue named by the
+  milestone title's `#<N>` head. The marker is rewritten in place on every run,
+  so a stream keeps exactly one live marker however long it lasts. A host that
+  is **not** the recorded holder defers that stream's eligible issue for
+  `STREAM_AFFINITY_GRACE_SECONDS` (300 s — ten scans at the 30-second default),
+  measured from its own first sighting of the issue, and logs the countdown
+  once as `stream affinity: deferring <stream> to <host> (<n>s left)`. After
+  the grace the first other host to scan claims it, logs
+  `stream session reset: affinity grace expired` and becomes the new holder. As
+  with the stream lock this is a **skip, not a failure** (`stream_affinity`),
+  and it never applies where there is nothing to hold: no marker recorded, the
+  holder being this host, a milestone with no resolvable tracking issue, or a
+  blank-stream issue. Affinity is an optimisation, never a lock — a `gh`
+  failure is logged and the claim proceeds.
+
+  ```mermaid
+  sequenceDiagram
+      participant A as Host A (holder)
+      participant GH as Tracking issue #N
+      participant B as Host B
+      A->>GH: run ends → write vibe-stream-holder host=A
+      B->>GH: scan → read holder
+      GH-->>B: host=A
+      B--xB: defer (300s head start)
+      alt A returns inside the grace
+          A->>GH: read holder = A → claim, resume the conversation
+      else A stays silent
+          B->>B: grace expired → claim, start the stream afresh
+          B->>GH: rewrite vibe-stream-holder host=B
+      end
+  ```
+
 - A branch carrying **only** WIP markers does not become a PR: when a claim
   resumed a checkpoint and added no commit of its own, the completion phase
   refuses to raise a half-done PR from parked work and the issue returns to
@@ -3336,6 +3372,8 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
 **Reference:** `worker/deno/lib/session_resume.ts` (implementation),
 `worker/deno/lib/issue_branch_resume.ts` (issue-number branch lookup),
 `worker/deno/lib/stream_session.ts` (which run kinds join a stream, and how),
+`worker/deno/lib/stream_lock.ts` (one run per stream at a time),
+`worker/deno/lib/stream_holder.ts` (the holder marker and its head start),
 `worker/deno/lib/config_defaults.ts` (default value).
 
 ## 📦 Session Compaction

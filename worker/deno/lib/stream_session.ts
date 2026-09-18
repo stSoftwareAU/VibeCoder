@@ -324,6 +324,13 @@ export interface JoinedStream {
   stream: StreamId;
   /** Provider anticipated when the stream was joined. */
   providerId: string;
+  /**
+   * Machine id of the host whose disk holds this conversation (Issue #2336).
+   * Recorded on the milestone's tracking issue when the run finishes, so the
+   * stream's next issue goes to this host first. Absent means the run does not
+   * claim the stream's affinity.
+   */
+  holderHost?: string;
 }
 
 /**
