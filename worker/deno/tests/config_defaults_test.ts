@@ -662,6 +662,35 @@ Deno.test("config_defaults - loadConfig defaults phaseModelOverrides to empty ob
 });
 
 // =============================================================================
+// Issue-executor split (Issue #2341)
+// =============================================================================
+
+Deno.test("config_defaults - loadConfig defaults issueExecutorSplit to false (Issue #2341)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.issueExecutorSplit, false);
+  });
+});
+
+Deno.test("config_defaults - loadConfig loads issue_executor_split from config (Issue #2341)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    issue_executor_split: true,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.issueExecutorSplit, true);
+  });
+});
+
+// =============================================================================
 // Effort Level Constants (Issue #1402)
 // =============================================================================
 

@@ -446,6 +446,12 @@ export interface WorkerConfig {
   geminiPhaseModelOverrides: Record<string, string>;
   /** Per-phase DeepSeek model overrides from .config.json (Issue #413) */
   deepseekPhaseModelOverrides: Record<string, string>;
+  /**
+   * Whether `issue`-phase runs use the split executor (Issue #2341).
+   * Host-wide; a `repo_config` entry of the same name overrides it per
+   * repository. Default `false` — an unconfigured host is unchanged.
+   */
+  issueExecutorSplit: boolean;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -1001,6 +1007,13 @@ export interface RepoConfig {
    */
   phaseModelOverrides?: Record<string, string>;
   /**
+   * Per-repo issue-executor split (Issue #2341). Same meaning as the global
+   * `issue_executor_split` key, but scoped to this repo — set, it wins over
+   * the host-wide value; omitted, the host-wide value stands. Operator-only —
+   * configured in `.config.json` (no in-repo config mechanism — Issue #2626).
+   */
+  issueExecutorSplit?: boolean;
+  /**
    * Per-repo per-phase effort overrides (Issue #2625). Same shape as the global
    * `phase_effort_overrides` key, but scoped to this repo. Operator-only —
    * configured in `.config.json` (no in-repo config mechanism — Issue #2626).
@@ -1325,6 +1338,8 @@ export interface ConfigFile {
   gemini_phase_model_overrides?: Record<string, string>;
   /** Per-phase DeepSeek model overrides (Issue #413) */
   deepseek_phase_model_overrides?: Record<string, string>;
+  /** Whether `issue`-phase runs use the split executor (Issue #2341) */
+  issue_executor_split?: boolean;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */
