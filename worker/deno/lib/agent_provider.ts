@@ -108,6 +108,7 @@ import {
   deepSeekServedModelSatisfies,
   resolveDeepSeekEffort,
   resolveDeepSeekModel,
+  warnDeepSeekAgentsUnsupported,
   warnDeepSeekEffortUnsupported,
 } from "./deepseek_executor.ts";
 import {
@@ -312,6 +313,31 @@ export interface AgentProviderInstall {
   fragment: string;
 }
 
+/**
+ * One sub-agent the Claude CLI may delegate to, as `--agents` defines it
+ * (Issue #2342).
+ *
+ * The CLI takes a JSON object keyed by sub-agent name; this is one value in
+ * that object. Naming a `model` here is what lets a run split its work across
+ * two tiers — an advisor on the phase's model delegating to cheaper
+ * executors — instead of every sub-agent inheriting the phase's model, which
+ * is what an invocation carrying no `--agents` gets.
+ */
+export interface AgentDefinition {
+  /** What the sub-agent is for; the CLI shows it when routing work. */
+  description: string;
+  /** The sub-agent's own system prompt. */
+  prompt: string;
+  /** Model id or tier alias the sub-agent runs on; absent → it inherits. */
+  model?: string;
+  /** Reasoning effort the sub-agent runs at; absent → the CLI's default. */
+  effort?: string;
+  /** The only tools the sub-agent may use; absent → it inherits the set. */
+  tools?: readonly string[];
+  /** Tools the sub-agent must not use, whatever `tools` grants. */
+  disallowedTools?: readonly string[];
+}
+
 /** One invocation of the provider's CLI. */
 export interface AgentInvocationRequest {
   /** The user prompt. */
@@ -332,6 +358,16 @@ export interface AgentInvocationRequest {
   effort?: string;
   /** Tools the agent must not use. */
   disallowedTools?: readonly string[];
+  /**
+   * Sub-agent definitions handed to the CLI as `--agents` (Issue #2342),
+   * keyed by sub-agent name.
+   *
+   * **Absent — the default — emits no argument at all**, so an invocation
+   * that does not ask for the split is byte-for-byte the argv the worker has
+   * always built and every sub-agent inherits the phase's model. Only the
+   * Claude CLI takes the flag; the other providers keep single-model routing.
+   */
+  agents?: Readonly<Record<string, AgentDefinition>>;
   /** Session continuity state, when session resume is enabled. */
   sessionResumeState?: SessionResumeState;
   /**
@@ -538,6 +574,14 @@ function buildClaudeCliArgs(
   const disallowed = request.disallowedTools ?? [];
   if (disallowed.length > 0) {
     args.push("--disallowed-tools", disallowed.join(","));
+  }
+  // Sub-agent definitions (Issue #2342), beside the tool policy they extend.
+  // Absent — every invocation that has not opted into the split — pushes
+  // nothing, so the argv below it is unchanged. There is no fallback if the
+  // CLI rejects the flag: an older binary fails the run with its own error
+  // rather than quietly reverting to single-model routing.
+  if (request.agents) {
+    args.push("--agents", JSON.stringify(request.agents));
   }
   args.push("--verbose");
   args.push("--output-format", "stream-json");
@@ -1010,9 +1054,16 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     if (routing.effort) {
       warnDeepSeekEffortUnsupported(routing.effort, request.phase);
     }
+    // The same treatment for sub-agent definitions (Issue #2342): they name
+    // Anthropic tier aliases this endpoint cannot resolve, so DeepSeek keeps
+    // today's single-model routing. Dropped from the argv — but stated, never
+    // in silence, so a split configured under DeepSeek is visible rather than
+    // a run that looks split and is not.
+    const { agents, ...deepSeekRequest } = request;
+    if (agents) warnDeepSeekAgentsUnsupported(request.phase);
     return buildClaudeCliArgs(
       {
-        ...request,
+        ...deepSeekRequest,
         sessionResumeState: sessionResumeForProvider(
           request.sessionResumeState,
           this.id,

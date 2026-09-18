@@ -145,6 +145,7 @@ import { selectModelForLargeInput } from "./phase_model_escalation.ts";
 import type { SessionResumeState } from "./session_resume.ts";
 import {
   activeAgentProvider,
+  type AgentDefinition,
   type AgentProviderSelector,
   CLAUDE_PROVIDER_ID,
   selectAgentProvider,
@@ -521,6 +522,16 @@ export interface RunClaudeOptions {
   logger?: Logger;
   /** Disallowed tools (default: ["EnterPlanMode", "ExitPlanMode"]). */
   disallowedTools?: string[];
+  /**
+   * Sub-agent definitions for this run (Issue #2342), handed to the Claude
+   * CLI as `--agents`.
+   *
+   * Absent — every run that has not opted into the issue-executor split —
+   * emits no argument, so each sub-agent inherits the phase's model exactly
+   * as it does today. No fallback: a CLI that rejects the flag fails the run
+   * with its own error rather than being re-invoked without it.
+   */
+  agents?: Readonly<Record<string, AgentDefinition>>;
   /**
    * Hand the agent the Playwright MCP server for this run (Issue #4355),
    * narrowed to an explicit need signal by Issue #192.
@@ -1086,6 +1097,9 @@ export async function runClaudeWithTimeout(
     ...(options.env ? { env: options.env } : {}),
     effort: options.effort,
     disallowedTools,
+    // Issue #2342: absent unless the caller resolved the split on, and an
+    // absent value emits no `--agents` argument.
+    ...(options.agents ? { agents: options.agents } : {}),
     sessionResumeState: options.sessionResumeState,
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
   };
