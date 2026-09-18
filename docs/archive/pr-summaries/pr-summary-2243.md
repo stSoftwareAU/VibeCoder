@@ -60,7 +60,15 @@ FAILED | 10 passed | 2 failed
 
 After the fix, `deno test tests/implementation_comments_test.ts
 tests/comment_trust_filter_test.ts tests/comment_rate_limiter_test.ts` reports
-`ok | 62 passed | 0 failed`.
+`ok | 62 passed | 0 failed`. The full `./quality.sh` gate reports `PASSED`.
+
+### Branch note
+
+An earlier attempt checkpointed this work as an orphan root commit with no
+merge base to `main`, which is why it raised no PR. The same four-file change is
+re-based onto `main` here and force-pushed over that orphan tip — the only way
+to give the branch a merge base. The content is unchanged; it is the commit's
+parentage that was wrong.
 
 ### Original trigger closed, with no trivial bypass
 
