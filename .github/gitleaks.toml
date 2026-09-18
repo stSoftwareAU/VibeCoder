@@ -34,6 +34,9 @@
 #  - secret_redaction_markdown_1727_test.ts (Issue #1727): a fake
 #    generic credential and a fake 40-hex ImgBB key asserting a Markdown
 #    fence cannot smuggle a secret past the assignment rule.
+#  - secret_redaction_json_structure_test.ts: a fake passphrase and a
+#    fake TOKEN= value inside stream-json lines asserting the assignment
+#    rule masks them without breaking the line's JSON.
 #
 # None of these are real credentials. An inline `gitleaks:allow` comment
 # could not clear the findings because gitleaks scans every commit in a
@@ -118,4 +121,10 @@ paths = [
   # Earlier commits in the PR range carry the literals in one piece, so only
   # a path allowlist clears the range scan.
   '''worker/deno/tests/secret_redaction_markdown_1727_test\.ts''',
+  # Fake passphrase and TOKEN= value (assembled from parts at run time) inside
+  # stream-json lines fed to `redactSecrets()` to prove the assignment rule
+  # keeps the line valid JSON. The commit that introduced the fixtures carries
+  # the literals in one piece, and the range scan covers it, so only a path
+  # allowlist clears it.
+  '''worker/deno/tests/secret_redaction_json_structure_test\.ts''',
 ]
