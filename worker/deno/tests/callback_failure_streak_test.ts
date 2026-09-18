@@ -18,9 +18,14 @@ import * as streakModule from "../lib/callback_failure_streak.ts";
 import {
   CALLBACK_FAILURE_ESCALATION_THRESHOLD,
   CALLBACK_FAILURE_STREAK_FILE,
-  type CallbackFailureStreaks,
   recordCallbackOutcomes,
 } from "../lib/callback_failure_streak.ts";
+import {
+  callbackFailureStreakCounts,
+  type CallbackFailureStreaks,
+  type CallbackFailureStreakSnapshot,
+  emptyCallbackFailureSnapshot,
+} from "../lib/callback_failure_publication.ts";
 import {
   CALLBACK_SCHEMA_VERSION,
   type CallbackInvocation,
@@ -44,16 +49,28 @@ function invocation(
   };
 }
 
-/** An in-memory streak store, so no test touches the host's work directory. */
-function memoryStore(initial: CallbackFailureStreaks = {}) {
-  let streaks: CallbackFailureStreaks = { ...initial };
+/**
+ * An in-memory streak store, so no test touches the host's work directory.
+ *
+ * Issue #2297 widened the persisted state from a bare count per event to the
+ * published snapshot (the count plus the facts the record carries), so the
+ * store holds a snapshot; `read()` still answers in counts, which is what
+ * every assertion below is written against.
+ */
+function memoryStore(initial: CallbackFailureStreakSnapshot = {
+  ...emptyCallbackFailureSnapshot(),
+}) {
+  let snapshot: CallbackFailureStreakSnapshot = initial;
   return {
-    readStreaks: () => Promise.resolve({ ...streaks }),
-    writeStreaks: (_workDir: string, next: CallbackFailureStreaks) => {
-      streaks = { ...next };
+    readStreaks: () => Promise.resolve(snapshot),
+    writeStreaks: (
+      _workDir: string,
+      next: CallbackFailureStreakSnapshot,
+    ) => {
+      snapshot = next;
       return Promise.resolve();
     },
-    read: () => streaks,
+    read: (): CallbackFailureStreaks => callbackFailureStreakCounts(snapshot),
   };
 }
 
@@ -293,7 +310,7 @@ Deno.test(
       ...deps,
       readStreaks: () => {
         touched = true;
-        return Promise.resolve({});
+        return Promise.resolve(emptyCallbackFailureSnapshot());
       },
       writeStreaks: () => {
         touched = true;
@@ -318,10 +335,13 @@ Deno.test(
       await recordCallbackOutcomes(workDir, [invocation()], RUN, deps);
       assertEquals(errors.length, 0);
 
+      // Issue #2297 widened the file from `{"always": 2}` to the published
+      // snapshot; the property under test — the count survives the run
+      // boundary — is unchanged.
       const persisted = JSON.parse(
         await Deno.readTextFile(`${workDir}/${CALLBACK_FAILURE_STREAK_FILE}`),
       );
-      assertEquals(persisted.always, 2);
+      assertEquals(persisted.events.always.streak, 2);
 
       // Run 2 of the host, a fresh process: the third failure tips it over.
       await recordCallbackOutcomes(workDir, [invocation()], RUN, deps);

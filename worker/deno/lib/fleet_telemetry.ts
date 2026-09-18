@@ -133,6 +133,14 @@ export interface FleetTelemetrySnapshot extends FleetTelemetryTotals {
    * sidecar can tell "another write in this run" from "a new run".
    */
   runToken: number;
+  /**
+   * Post-run callback invocations that did not exit 0 this run (Issue #2297).
+   *
+   * Deliberately on the snapshot rather than {@link FleetTelemetryTotals}: it
+   * describes this host's hook deployment right now, not work the fleet did,
+   * and the durable sidecar accumulates the latter across runs.
+   */
+  hookFailures: number;
   /** `successes / (successes + failures)`, or `null` before any run ends. */
   successRate: number | null;
   /** `busySeconds / wallSeconds` per stream. */
@@ -186,6 +194,7 @@ interface FleetState {
   failures: number;
   skips: number;
   failuresByClass: Map<string, number>;
+  hookFailures: number;
 }
 
 function emptyState(runToken: number): FleetState {
@@ -207,6 +216,7 @@ function emptyState(runToken: number): FleetState {
     failures: 0,
     skips: 0,
     failuresByClass: new Map(),
+    hookFailures: 0,
   };
 }
 
@@ -354,6 +364,20 @@ export function recordClaim(): void {
 }
 
 /**
+ * Record post-run callback invocations that did not exit 0 (Issue #2297).
+ *
+ * `claims=3 successes=2 failures=0` read as a healthy run on GRQ-25 while
+ * every heartbeat the host published was being lost — the hook failed on each
+ * of those runs and the summary had nowhere to say so.
+ *
+ * @param count - Failing invocations to add; defaults to one
+ */
+export function recordHookFailure(count = 1): void {
+  if (!Number.isFinite(count) || count <= 0) return;
+  state.hookFailures += Math.floor(count);
+}
+
+/**
  * Record the terminal outcome of a claimed issue. `failureClass` is the
  * failing phase (`setup`, `execute`, `quality_gate`, …) or `timeout`.
  */
@@ -431,6 +455,7 @@ export function getFleetTelemetry(
     failures: state.failures,
     skips: state.skips,
     failuresByClass: Object.fromEntries(state.failuresByClass),
+    hookFailures: state.hookFailures,
     successRate: completed > 0 ? state.successes / completed : null,
     utilisation,
   };
@@ -485,6 +510,9 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `successes=${s.successes}`,
     `failures=${s.failures}`,
     `skips=${s.skips}`,
+    // Issue #2297: a run whose every heartbeat hook failed no longer reads as
+    // a clean `successes=2 failures=0`.
+    `hook_failures=${s.hookFailures}`,
     `success_rate=${s.successRate === null ? "n/a" : s.successRate.toFixed(2)}`,
     `idle_by_reason=${joinCounts(s.idleByReason, "s")}`,
     `failures_by_class=${joinCounts(s.failuresByClass, "")}`,

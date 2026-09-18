@@ -80,6 +80,7 @@
         "worker/deno/lib/bash_ci_gate_scanner.ts",
         "worker/deno/lib/branch_cleanup.ts",
         "worker/deno/lib/callback_conformance.ts",
+        "worker/deno/lib/callback_failure_publication.ts",
         "worker/deno/lib/callback_failure_streak.ts",
         "worker/deno/lib/checkout_update.ts",
         "worker/deno/lib/codebase_map.ts",

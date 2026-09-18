@@ -272,7 +272,7 @@ import {
 } from "./rate_limit_signal.ts";
 import { isHostRateLimitPauseActive } from "./provider_quota_scope.ts";
 import { fallbackPolicyFromWorkerConfig } from "./provider_fallback_policy.ts";
-import { deriveIdleReason } from "./fleet_telemetry.ts";
+import { deriveIdleReason, recordHookFailure } from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
 import { heldProviderCredentialLabel } from "./credential_preflight.ts";
@@ -325,6 +325,12 @@ import {
   invokeRunCallbacks,
 } from "./run_callbacks.ts";
 import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
+import {
+  callbackFailureStreakCounts,
+  formatHookFailureFields,
+  hostLogDirectory,
+  readCallbackFailureSnapshot,
+} from "./callback_failure_publication.ts";
 import { hasAnyRunCallback, hasCycleCallback } from "./run_callbacks_config.ts";
 import {
   buildCycleCallbackContext,
@@ -4347,18 +4353,32 @@ export async function createProductionRunCoreDeps(
         log: (message) => logger.info(message),
         logError: (message) => logger.error(message),
       });
+      // Issue #2297: the fleet summary says how many hook invocations failed
+      // this run, so `claims=3 successes=2 failures=0` cannot read as healthy
+      // while every heartbeat the host published was lost.
+      const failedHooks = invocations.filter((i) => i.status !== "ok").length;
+      if (failedHooks > 0) recordHookFailure(failedHooks);
       // Issues #1092, #2111: a hook that fails on every issue costs slot time
       // on every issue and, until now, raised nothing across days of runs. The
       // streak crossing the threshold writes exactly one error record to this
       // host's own log; a success clears it. Nothing is filed on GitHub, and
       // it never throws.
+      //
+      // Issue #2297: the count is also published to the host log directory —
+      // the one directory that survives a `vibe-work` reset, and the one the
+      // host's own health reporting can read.
+      const hostLogDir = hostLogDirectory(env);
       await recordCallbackOutcomes(
         config.workDir,
         invocations,
         { repository: run.repo, issueNumber: run.issueNumber },
         {
+          ...(hostLogDir === null ? {} : { hostLogDir }),
           log: (message) => logger.info(message),
           logError: (message) => logger.error(message),
+          // A streak copy that could not be read or written degrades the
+          // record without stopping the run — a warning, not a fault.
+          logWarn: (message) => logger.warn(message),
         },
       );
     },
@@ -5127,13 +5147,32 @@ export async function createProductionRunCoreDeps(
         });
         if (result.ok) {
           const v = result.value;
+          // Issue #2297: the one line per cycle a host-side reader already
+          // parses also carries each run hook's consecutive-failure streak, so
+          // GRQ-health reports `hooks failing` rather than `dead` while the
+          // worker is working and only its heartbeat hook is broken. Read from
+          // the published file (work volume, else the host copy), so a reset
+          // volume does not read as a healthy zero.
+          const hostLogDir = hostLogDirectory(env);
+          const hookFields = formatHookFailureFields(
+            callbackFailureStreakCounts(
+              await readCallbackFailureSnapshot({
+                // `config.workDir`, the directory `runIssueCallbacks` writes
+                // the streak to — the two must name the same file.
+                workDir: config.workDir,
+                ...(hostLogDir === null ? {} : { hostLogDir }),
+                warn: (message: string) => logger.warn(message),
+              }),
+            ),
+          );
           // Per-tick decision line so operators can confirm from the log
           // alone that the guard ran this cadence tick and what it saw.
           logger.info(
             `[liveness] tick=${tick} alerted=${v.alerted} ` +
               `live_epoch=${v.liveEpoch ?? "none"} ` +
               `last_idle_claimed=${v.lastIdleClaimedEpoch ?? "none"} ` +
-              `last_productive=${v.lastProductiveEpoch ?? "none"}`,
+              `last_productive=${v.lastProductiveEpoch ?? "none"} ` +
+              hookFields,
           );
         } else {
           logger.warn("Liveness guard write failed (continuing)", {

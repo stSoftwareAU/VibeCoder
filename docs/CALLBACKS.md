@@ -319,6 +319,13 @@ counts the streak and writes one record the operator of the host can act on.
 - The worker keeps a consecutive-failure count **per event** in
   `$WORK_DIR/callback-failure-streaks.json`. It survives the run boundary,
   because the condition does.
+- **The same file is published to the host log directory** — `~/logs`, the
+  mount `worker.log` already goes to (Issue #2297). The work volume does not
+  survive a launcher reset of `vibe-work` and the host log directory does, so
+  the count is read back from the host copy whenever the work-volume copy is
+  missing. On GRQ-25 that is the difference between one record saying *failing
+  since 16 Sep 08:58Z* and four records each claiming a fresh three-issue
+  streak.
 - On the **third** consecutive failing issue, the worker writes **one** `ERROR`
   record to its own log, naming the hook path, the streak, the last
   `owner/repo#issue`, the status, the exit code, the duration, the hook's
@@ -336,6 +343,41 @@ counts the streak and writes one record the operator of the host can act on.
   threshold crossing, none is closed on recovery, and no `host_failure` hook is
   invoked from inside the container. The log record and the count file are the
   host's own record, and nothing about either alters the run's own result.
+- **A copy that cannot be read or written is said out loud**, at `WARNING` —
+  the run carries on, and someone should fix the mount. Each directory is
+  attempted independently and the line names the file and the reason, so a host
+  whose log mount is read-only learns it instead of quietly publishing nothing.
+  A copy that is simply not there yet is silent: that is the first run.
+
+### What the host can read (Issue #2297)
+
+A record only `worker.log` holds is a record nobody reads until the board has
+been red for a day. The streak therefore reaches host-side health reporting by
+three routes, none of which needs a new file format or a GitHub write:
+
+```mermaid
+flowchart LR
+    H["Hook fails on every run"] --> S["recordCallbackOutcomes"]
+    S --> W["$WORK_DIR/callback-failure-streaks.json"]
+    S --> L["~/logs/callback-failure-streaks.json<br/>(survives a vibe-work reset)"]
+    S --> R["ERROR record in worker.log"]
+    L --> G["Host health reporting<br/>reads 'hooks failing', not 'dead'"]
+    S --> F["fleet-summary: hook_failures=N"]
+    L --> V["[liveness] … hook_fail_success=N"]
+```
+
+- **`~/logs/callback-failure-streaks.json`** carries, per run hook: the event,
+  the hook path, the streak, `firstFailureAt` / `lastFailureAt`, the last
+  status, exit code and duration, and the redacted head of its stderr. A hook
+  that has succeeded stays in the file at `"streak": 0` — "this hook ran and is
+  healthy" is a fact a reader needs, and absence cannot state it.
+- **The per-cycle liveness line** carries the same counts:
+  `[liveness] tick=… live_epoch=… last_productive=… hook_fail_success=0
+  hook_fail_failure=0 hook_fail_always=0`. All three hooks are always named, so
+  a host-side parser reads a fixed set of fields.
+- **`fleet-summary:` carries `hook_failures=N`** — failing hook invocations
+  this run — beside `claims=`, `successes=` and `failures=`, so a run whose
+  every heartbeat was lost cannot read as clean.
 
 **What a hook author owes in return.** The worker bounds a hook's wall clock and
 reports its outcome; it cannot see inside it. A hook that retries must classify
