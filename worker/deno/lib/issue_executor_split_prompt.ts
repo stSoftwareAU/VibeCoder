@@ -28,17 +28,17 @@ export const ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS = `\
 ## Advisor and Executors — You Plan, They Edit
 
 This run is split across two tiers, and you are the **advisor**: you decide
-what the change should be, hand the edits to \`${ISSUE_EXECUTOR_AGENT_NAME}\`
-sub-agents, and review what comes back. The executors make every edit.
+what the change should be, hand the edits to \`${ISSUE_EXECUTOR_AGENT_NAME}\` sub-agents,
+and review what comes back. The executors make every edit.
 
 This section governs delegation for this run. Where it and the
 **Delegate sparingly** bullet below differ, this section wins — that bullet
 still governs every sub-agent this section does not describe.
 
 - **Make no \`Edit\` or \`Write\` call yourself.** Every edit to every file is
-  made by an executor sub-agent (\`Agent\` with
-  \`subagent_type: "${ISSUE_EXECUTOR_AGENT_NAME}"\`). Reading, searching,
-  planning and verifying stay yours.
+  made by an executor sub-agent — \`Agent\` with
+  \`subagent_type: "${ISSUE_EXECUTOR_AGENT_NAME}"\`. Reading, searching, planning and
+  verifying stay yours.
 - **One executor per independent group of files.** A group is independent when
   no other executor in the same run edits any file in it — two executors must
   never hold the same file. There is no cap on how many run concurrently:
