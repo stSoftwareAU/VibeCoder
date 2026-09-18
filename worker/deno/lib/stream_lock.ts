@@ -1,5 +1,14 @@
 /**
- * Fleet-wide milestone stream lock (Issue #2334).
+ * Stream locks — one run per conversation.
+ *
+ * Two locks live here, and exactly one of them applies to any given issue:
+ *
+ * - {@link checkMilestoneStreamBusy} — the **fleet-wide** milestone lock
+ *   (Issue #2334), which reads GitHub.
+ * - {@link BlankStreamLockRegistry} — the **host-local** blank-stream lock
+ *   (Issue #2335), which reads nothing.
+ *
+ * ## Fleet-wide milestone stream lock (Issue #2334)
  *
  * One run per milestone stream at a time, across the whole fleet. A stream
  * owns one agent conversation (Issue #2331), so two hosts working two
@@ -36,6 +45,29 @@
  * milestone's issues, or of one sibling's comments — is logged too, because
  * "not read" must never be reported as "nothing there".
  *
+ * ## Host-local blank-stream lock (Issue #2335)
+ *
+ * The blank stream — a repository's issues carrying no milestone — has no
+ * fleet-wide conversation to collide in: each host keeps its **own** blank
+ * conversation per repository (`stream_session.ts`), so two hosts working two
+ * of that repository's non-milestone issues at once are two conversations,
+ * which is correct. Two *slots on one host* doing it are two runs inside one
+ * conversation, which is not.
+ *
+ * So the blank lock is in-process and reads no GitHub state at all —
+ * {@link BlankStreamLockRegistry}, keyed by
+ * {@link streamKey}. Keying it by the conversation's own key is the point: the
+ * slot exclusion already in place (`in_flight_repos.ts`) keys by
+ * `(repo, milestone-title-as-given)`, which is a *coarser* partition than the
+ * conversation store's — a title that differs only in surrounding whitespace
+ * is two work-stream keys but one conversation. Where the two disagree, the
+ * conversation is what matters, so this lock asks `streamKey` and nothing
+ * else. It only ever adds a refusal, never permits one the slot registry
+ * refuses, so the registry stays the hard guarantee it always was.
+ *
+ * A milestone issue takes no hold here — {@link checkMilestoneStreamBusy}
+ * covers it — so the two locks never both apply to one issue.
+ *
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
@@ -53,6 +85,7 @@ import {
   isBlankStream,
   resolveStreamId,
   type StreamId,
+  streamKey,
   streamLabel,
 } from "./stream_identity.ts";
 
@@ -330,4 +363,161 @@ export async function checkMilestoneStreamBusy(
   }
 
   return { busy: false };
+}
+
+// ---------------------------------------------------------------------------
+// Host-local blank-stream lock (Issue #2335)
+// ---------------------------------------------------------------------------
+
+/** A slot's host-local hold on one repository's blank stream. */
+export interface BlankStreamHold {
+  /** The conversation's key — {@link streamKey} of the blank stream. */
+  streamKey: string;
+  /** Human label of the stream, as {@link streamLabel} renders it. */
+  streamLabel: string;
+  /** Slot holding it, for log attribution — `s0`, `s1`, … */
+  slotId: string;
+  /** The issue the holding slot is running. */
+  issueNumber: number;
+  /** Epoch-ms the hold was taken. */
+  sinceMs: number;
+}
+
+/**
+ * Outcome of asking for a blank stream.
+ *
+ * `acquired: true, locked: false` is the milestone case and the fail-open
+ * case: the caller may proceed and holds nothing, so its release is a no-op.
+ */
+export type BlankStreamLockResult =
+  | { acquired: true; locked: boolean }
+  | { acquired: false; holder: BlankStreamHold };
+
+/** Which stream a lock call is about. */
+export interface BlankStreamRef {
+  /** `owner/name` the issue lives in. */
+  repo: string;
+  /** The issue's milestone title; absent or blank means the blank stream. */
+  milestoneTitle?: string;
+}
+
+/** Everything {@link BlankStreamLockRegistry.tryAcquire} needs. */
+export interface BlankStreamAcquireOptions extends BlankStreamRef {
+  /** The issue being claimed. */
+  issueNumber: number;
+  /** Stable slot id, for log attribution. */
+  slotId: string;
+}
+
+/**
+ * The blank stream of `ref`, or `undefined` when it is a milestone stream or
+ * an unresolvable repository.
+ *
+ * Fails open, loudly: `resolveStreamId` throws on a repository that is not
+ * `owner/name`, and a lock must never turn a claim into a run failure — but
+ * the refusal is reported, never swallowed.
+ */
+function blankStreamOf(ref: BlankStreamRef): StreamId | undefined {
+  let stream: StreamId;
+  try {
+    stream = resolveStreamId(ref.repo, ref.milestoneTitle);
+  } catch (err) {
+    console.warn(
+      `[stream_lock] repo=${ref.repo} stream_unresolved error=${
+        err instanceof Error ? err.message : String(err)
+      } — no host-local blank-stream lock is taken (Issue #2335)`,
+    );
+    return undefined;
+  }
+  return isBlankStream(stream) ? stream : undefined;
+}
+
+/**
+ * The line a blank-stream refusal logs.
+ *
+ * Exported so the slot pool, the tests and a log grep share one wording. The
+ * `stream busy:` stem matches {@link formatStreamBusy} on purpose — one grep
+ * finds both locks' refusals — while the tail names a slot rather than a host,
+ * because that is what a host-local lock can tell you.
+ */
+export function formatBlankStreamBusy(hold: BlankStreamHold): string {
+  return `stream busy: ${hold.streamLabel} held by slot ${hold.slotId} ` +
+    `on #${hold.issueNumber}`;
+}
+
+/**
+ * In-process registry of the blank streams this host's slots hold.
+ *
+ * One hold per repository's blank stream: the slot that takes it runs that
+ * repository's non-milestone issue, and a sibling slot finding the stream held
+ * is refused and looks for other work. Deliberately host-local — it consults
+ * no GitHub state, so another host holds the same repository's blank stream in
+ * parallel with its own conversation.
+ *
+ * Acquisition is atomic against concurrent slot starts by construction: Deno
+ * is single-threaded and {@link tryAcquire} is synchronous, so two slots
+ * racing on one stream interleave at await points, never inside the
+ * check-and-set. Every terminal exit — success, skip, failure, throw, timeout,
+ * kill — must {@link release}; the caller holds that in a `finally`.
+ */
+export class BlankStreamLockRegistry {
+  readonly #held = new Map<string, BlankStreamHold>();
+  readonly #now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+  }
+
+  /**
+   * Try to take a repository's blank stream for a slot.
+   *
+   * A milestone issue takes nothing and always wins: the fleet-wide lock of
+   * Issue #2334 is what gates it, and the two never both apply.
+   *
+   * @param options - The issue being claimed and the slot claiming it
+   * @returns Whether the caller may proceed, and who holds it if not
+   */
+  tryAcquire(options: BlankStreamAcquireOptions): BlankStreamLockResult {
+    const stream = blankStreamOf(options);
+    if (stream === undefined) return { acquired: true, locked: false };
+    const key = streamKey(stream);
+    const holder = this.#held.get(key);
+    if (holder !== undefined) return { acquired: false, holder };
+    this.#held.set(key, {
+      streamKey: key,
+      streamLabel: streamLabel(stream),
+      slotId: options.slotId,
+      issueNumber: options.issueNumber,
+      sinceMs: this.#now(),
+    });
+    return { acquired: true, locked: true };
+  }
+
+  /**
+   * Release a slot's hold on a repository's blank stream.
+   *
+   * Idempotent, and a no-op for a milestone issue or an unresolvable
+   * repository — so the run-end `finally` is safe to call on every path.
+   */
+  release(ref: BlankStreamRef): void {
+    const stream = blankStreamOf(ref);
+    if (stream === undefined) return;
+    this.#held.delete(streamKey(stream));
+  }
+
+  /** The hold on this repository's blank stream, or `undefined` when free. */
+  holder(ref: BlankStreamRef): BlankStreamHold | undefined {
+    const stream = blankStreamOf(ref);
+    return stream === undefined ? undefined : this.#held.get(streamKey(stream));
+  }
+
+  /** Every blank stream held right now, for status rendering. */
+  holds(): ReadonlyArray<BlankStreamHold> {
+    return [...this.#held.values()];
+  }
+
+  /** Number of blank streams held. */
+  get size(): number {
+    return this.#held.size;
+  }
 }

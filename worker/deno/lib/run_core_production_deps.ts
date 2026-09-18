@@ -1204,6 +1204,10 @@ export async function createProductionRunCoreDeps(
     // budget with it rather than being clipped by the flat 600 s.
     planningTimeoutSeconds: config.planningTimeout ??
       runCoreConfig.planningTimeoutSeconds,
+    // Issue #2335: the pool's host-local blank-stream lock applies only when
+    // runs join a stream's shared conversation.
+    enableSessionResume: config.enableSessionResume ??
+      runCoreConfig.enableSessionResume,
     // Issue #966: the loop's lane-rotation cursor lives on the work volume.
     // The resolved directory travels in the config rather than being read
     // back out of `WORK_DIR` at the point of use.
