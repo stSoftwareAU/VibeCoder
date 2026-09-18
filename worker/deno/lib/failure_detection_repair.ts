@@ -425,7 +425,9 @@ export function applyFailureDetectionSection(
 }
 
 /** Build a planning-phase invocation record from a Claude repair result. */
-function invocationFrom(value: RepairClaudeResult): PlanningInvocationStats {
+export function invocationFrom(
+  value: RepairClaudeResult,
+): PlanningInvocationStats {
   return {
     phase: "planning",
     ...(value.runStats ? { runStats: value.runStats } : {}),

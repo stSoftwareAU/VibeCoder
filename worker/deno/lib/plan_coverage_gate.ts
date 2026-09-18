@@ -17,8 +17,13 @@
  * explicit out-of-scope reason — mirroring how the Failure-Detection gate
  * rejects a bracketed placeholder.
  *
- * **No second escalation path.** An uncovered ask is a plan defect a human must
- * resolve (add the missing sub-issue, or accept the ask as out of scope), so
+ * **Self-repair first.** A failing verdict goes to `plan_coverage_repair.ts`,
+ * which drafts and posts the table and re-runs this gate, before anyone is
+ * asked — a publish turn that merely forgot the table is not a human's job.
+ *
+ * **No second escalation path.** An ask still uncovered after the repair is a
+ * plan defect a human must resolve (add the missing sub-issue, or accept the
+ * ask as out of scope), so
  * the gate routes through the existing `escalateToHuman()` chokepoint rather
  * than inventing a new label or a new resume pass. It deliberately does **not**
  * borrow `needs-failure-detection-repair`: that label's resume pass re-gates

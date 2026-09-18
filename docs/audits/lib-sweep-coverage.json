@@ -1801,6 +1801,18 @@
       "paths": [
         "worker/deno/lib/graft_run.ts"
       ]
+    },
+    {
+      "issue": 2319,
+      "chunk": "top-up-2319",
+      "title": "top-up: the plan-coverage self-repair",
+      "ledger": "docs/audits/security-sweep-2319-plan-coverage-repair.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: plan_coverage_repair.ts (#2319)",
+      "status": "swept",
+      "sweptAt": "18d6898055bfcf06795a9139fcf57899c5bf27f8",
+      "paths": [
+        "worker/deno/lib/plan_coverage_repair.ts"
+      ]
     }
   ],
   "roots": [
