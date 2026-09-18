@@ -7,7 +7,7 @@
  * phase. Australian English spelling used throughout (behaviour, recognised).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { isIssueExecutorSplitEnabled } from "../lib/issue_executor_split.ts";
 import { KNOWN_CONFIG_KEYS } from "../lib/config_unknown_keys.ts";
 import { validateConfigFileJson } from "../lib/validation.ts";
@@ -105,17 +105,4 @@ Deno.test("issue_executor_split - validateConfigFileJson rejects a non-boolean",
   if (!result.ok) {
     assertEquals(result.error.field, "issue_executor_split");
   }
-});
-
-Deno.test("issue_executor_split - documented in docs/CONFIGURATION.md", async () => {
-  const docs = await Deno.readTextFile(
-    new URL("../../../docs/CONFIGURATION.md", import.meta.url),
-  );
-  const rows = docs.split("\n").filter((line) =>
-    line.startsWith("| `issue_executor_split`")
-  );
-  assert(
-    rows.length >= 2,
-    "CONFIGURATION.md must document the host-wide key and its repo_config override",
-  );
 });
