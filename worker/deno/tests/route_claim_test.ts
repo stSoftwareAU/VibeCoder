@@ -265,6 +265,12 @@ Deno.test("isRouteClaimUnavailable - held-or-unclaimable versus fault", () => {
       "fleet_pr_exists",
       "blocking_label",
       "already_closed",
+      // Issue #2334: a sibling of the same milestone stream is being run
+      // elsewhere in the fleet — the issue is not this host's right now.
+      "stream_busy",
+      // Issue #2336: another host holds this milestone stream's conversation
+      // and its head start has not run out — claimed on a later scan.
+      "stream_affinity",
       // Issue #1757: declined by the route itself for this cycle — a skip.
       "insufficient_runway",
     ] as const

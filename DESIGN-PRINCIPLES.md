@@ -255,15 +255,35 @@ automatic ladder is the whole answer:
 3. **The resolution agent** on the residue, bounded by the cycle's budget
    (Issue #1778), and its merged tree verified with the repository's own check
    before anything is pushed — a red tree is rolled back, never pushed.
-4. **Retry across cycles** within a bounded attempt budget, and when the budget
-   is spent, **roll back** the PRs that introduced the conflict and reopen
-   their issues for the fleet to redo (Issue #1781).
+4. **Retry on the next cycle** within a bounded attempt budget — **two**
+   judged runs per conflict, PR branch and milestone branch alike, with no
+   wait between them (Issue #2305) — and when the budget is spent, **roll
+   back** the PRs that introduced the conflict and reopen their issues for the
+   fleet to redo (Issue #1781). A run the worker itself cuts short is not one
+   of the two: only a run that judged the conflict is charged.
+5. **Flag the fallback, ask nobody** (Issues #2304, #2310, #2311). Every
+   fallback files or appends exactly one `merge-fallback` issue — both spent
+   runs, the conflicted files, what was reverted — and that flag is the only
+   issue a conflict ever files, so the conflict that undid the work is written
+   down where the next attempt can read it: both runs' analyses, their stage
+   timings and hosts, the conflicted files, how far behind the base the branch
+   was and since when, and what was closed. A conflicting PR whose originating
+   issue cannot be found is closed too, and its flag carries `idle-task` and
+   the PR's diff summary so it *is* the re-do item. A milestone roll-back that
+   could not merge records the default-branch tip it answered for and is
+   offered its two runs again once that tip moves, so no conflict outcome
+   needs a person to release it.
 
 Every comment the sync or the conflict processor posts is a **record** of what
 the ladder did and will do next, on the thread as it stands. It never reopens a
 planning issue, never applies `needs-human`, and never asks a person to merge
-(Issues #2214, #2226). A path that does is a bug to fix the same day, not a
-design choice. The canonical operator manual is
+(Issues #2214, #2226, #2310, #2311) — a hand-applied `needs-human` is still
+honoured as a veto, because a human who labels a PR owns it, and the
+resolution processor's own last escalation was removed under the remaining
+sub-issue of #2298. The streak escalation that survives on the milestone path
+answers a **non-conflict** failure — a fetch, a push, an ordinary git error —
+never a conflict. A path that hands a conflict to a human is a bug to fix the
+same day, not a design choice. The canonical operator manual is
 [docs/INTERNALS.md § Milestone and dependency handling](docs/INTERNALS.md).
 
 ### Milestone independence

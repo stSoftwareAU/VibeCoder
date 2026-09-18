@@ -411,9 +411,9 @@ export async function findOldestIssue(
   ): IssueCandidate[] => {
     if (!options.milestonePacedUntil) return candidates;
     return candidates.filter((c) => {
-      const pacedUntil = options.milestonePacedUntil!(c.repo, c.milestone);
-      if (pacedUntil === undefined) return true;
-      noteCooldown(c, "milestone-behind", `paced until ${pacedUntil}`);
+      const paced = options.milestonePacedUntil!(c.repo, c.milestone);
+      if (paced === undefined) return true;
+      noteCooldown(c, "milestone-behind", `paced: ${paced}`);
       return false;
     });
   };

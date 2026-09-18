@@ -3,8 +3,9 @@
  *
  * After the mechanics revert the children that were in the way, this module
  * reopens those issues, posts the roll-back marker, closes their open PRs
- * and the summary PR, and posts exactly one notice. A roll-back that could
- * not merge escalates once, with `needs-human`, and never files an issue.
+ * and the summary PR, and posts exactly one notice. Both outcomes link the
+ * one `merge-fallback` flag the caller filed, and neither writes
+ * `needs-human` (Issue #2311).
  *
  * Every test injects `gh`. No live GitHub, no live git.
  *
@@ -77,15 +78,42 @@ Deno.test("buildRollbackNotice - names the reverted PRs, reopened issues and the
   assert(!body.toLowerCase().includes("needs-human"));
 });
 
-Deno.test("buildRollbackFailedComment - names the reason and asks for a human", () => {
+Deno.test("buildRollbackFailedComment - names the reason and the flag, and asks nothing of anyone (Issue #2311)", () => {
+  const body = buildRollbackFailedComment({
+    milestoneBranch: BRANCH,
+    defaultBranch: "main",
+    reason: "nothing left to revert",
+    flagIssue: 4242,
+  });
+  assertStringIncludes(body, "nothing left to revert");
+  assertStringIncludes(body, "merge-fallback` flag #4242");
+  assertStringIncludes(body, BRANCH);
+  assert(!body.toLowerCase().includes("needs-human"));
+});
+
+Deno.test("buildRollbackFailedComment - a flag that could not be filed is said out loud (Issue #2311)", () => {
   const body = buildRollbackFailedComment({
     milestoneBranch: BRANCH,
     defaultBranch: "main",
     reason: "nothing left to revert",
   });
-  assertStringIncludes(body, "nothing left to revert");
-  assertStringIncludes(body, "needs-human");
-  assertStringIncludes(body, BRANCH);
+  assertStringIncludes(body, "could not be filed");
+  assert(!body.toLowerCase().includes("needs-human"));
+});
+
+Deno.test("buildRollbackNotice - links the merge-fallback flag (Issue #2311)", () => {
+  const body = buildRollbackNotice({
+    milestoneBranch: BRANCH,
+    defaultBranch: "main",
+    rollbacks: 1,
+    attempts: 2,
+    reverted: [{ prNumber: 12, issueNumber: 45, revertSha: REVERT_SHA }],
+    reopened: [45],
+    needsTrustedRelabel: [],
+    flagIssue: 4242,
+  });
+  assertStringIncludes(body, "merge-fallback` flag #4242");
+  assert(!body.toLowerCase().includes("needs-human"));
 });
 
 Deno.test("requeueRolledBackChildren - reopens a closed child, posts the marker, closes its PR and the summary, one notice (Issue #1781)", async () => {
@@ -273,7 +301,7 @@ Deno.test("requeueRolledBackChildren - an untouched sibling is never reopened or
   );
 });
 
-Deno.test("escalateRollbackFailure - one needs-human comment on the parent, and a second call posts nothing (Issue #1781)", async () => {
+Deno.test("escalateRollbackFailure - one notice on the parent naming the flag, and no needs-human (Issues #1781, #2311)", async () => {
   const calls: string[][] = [];
   const script = (args: string[]): string => {
     const key = args.join(" ");
@@ -287,39 +315,26 @@ Deno.test("escalateRollbackFailure - one needs-human comment on the parent, and 
     milestoneBranch: BRANCH,
     defaultBranch: "main",
     reason: "nothing left to revert",
-    alreadyEscalated: false,
+    flagIssue: 4242,
     ghCommandFn: ghStub(calls, script),
     log: () => undefined,
   });
   assertEquals(first.posted, true);
   assertEquals(first.issue, 1730);
 
-  const second = await escalateRollbackFailure({
-    repo: REPO,
-    milestoneTitle: "#1730 Ledger",
-    milestoneNumber: 52,
-    milestoneBranch: BRANCH,
-    defaultBranch: "main",
-    reason: "nothing left to revert",
-    alreadyEscalated: true,
-    ghCommandFn: ghStub(calls, script),
-    log: () => undefined,
-  });
-  assertEquals(second.posted, false);
-
   const comments = calls.filter((c) => c[0] === "issue" && c[1] === "comment");
-  assertEquals(comments.length, 1, "exactly one comment across both cycles");
+  assertEquals(comments.length, 1, "one notice for one fallback");
   assertStringIncludes(
     comments[0]![comments[0]!.length - 1] ?? "",
-    "needs-human",
+    "merge-fallback` flag #4242",
   );
   assert(
-    calls.some((c) => c.includes("--add-label") && c.includes("needs-human")),
-    "the parent is labelled needs-human",
+    !calls.some((c) => c.includes("needs-human")),
+    "nothing on this path reaches a human (Issue #2311)",
   );
   assert(
     !calls.some((c) => c[0] === "issue" && c[1] === "create"),
-    "no new issue is filed",
+    "the flag is the caller's filing, not this one's",
   );
 });
 
@@ -333,7 +348,6 @@ Deno.test("escalateRollbackFailure - nowhere to post is one log line and counts 
     milestoneBranch: BRANCH,
     defaultBranch: "main",
     reason: "nothing left to revert",
-    alreadyEscalated: false,
     ghCommandFn: ghStub(calls, (args) => {
       if (args[0] === "issue" && args[1] === "list") return "[]";
       return "";

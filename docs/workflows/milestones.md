@@ -238,16 +238,19 @@ Long-running milestones can drift significantly from the default branch, causing
        M -- failure --> W["WARNING, record nothing<br/>→ retried next cycle"]
    ```
 
-3. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
-4. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
-5. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). What the triage cannot decide climbs the rest of the ladder (Issue #1777): the deterministic dependency rules, then the resolution agent. Only a file **every** rung leaves undecided aborts the merge and escalates with both sides prepared, without blocking other work.
-6. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
+3. **Pass order — longest behind first (Issue #2309):** Before a repository's branches are synced, each one's behind count is measured against the default tip just fetched (one `git rev-list --count origin/<milestone>..origin/<default>`) and they are synced behind-count descending, because the branch carrying the most drift is the one most likely to conflict and the one whose conflict is cheapest to settle today. A branch the ledger already records against this tip is level by construction and is not measured at all, so an idle cycle pays nothing for an order it will not use; a branch whose count cannot be read sorts as level and is still synced, only later in the pass. A level branch still takes the cheap cadence path above. The order is decided within each repository's pass, so the cross-repo cursor (Issue #2215) and the per-repo lease (Issue #2030) are untouched.
+4. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
+5. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
+6. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). What the triage cannot decide climbs the rest of the ladder (Issue #1777): the deterministic dependency rules, then the resolution agent. Only a file **every** rung leaves undecided aborts the merge and escalates with both sides prepared, without blocking other work.
+7. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
 
 ### Running beside issue work, one host per branch (Issue #2030)
 
 The sync's agent rung takes minutes to an hour. Until Issue #2030 it ran in the sequential pass list, so every issue slot on the host waited for it. It now runs in the **maintenance lane** (Issue #213) beside the issue pool, leasing each repository's shared clone for the duration of that repository's pass so an issue slot never resets the clone mid-merge; a repository a slot already holds is deferred to the next cycle with a log line. The self-heal that runs before the sync leases the same way.
 
 Two hosts used to spend the same rung on the same branch — the sync's attempt ledger is host-local. Before a branch is synced the host now takes a **claim**: a hidden ref `refs/vibe/sync-claims/<milestone-branch>` on the remote (no branch, no PR, no ruleset), pushed with `--force-with-lease` expecting the ref to be absent. A sibling's claim younger than two hours skips the branch this cycle without opening an attempt; an older one belongs to a host that died mid-sync and is taken over, still atomically. The claim is released when the sync concludes. A claim that cannot be read or written is logged and ignored: duplicate work is the cost of a claim outage, a stalled sync is not.
+
+**Every behind branch is offered the agent rung, and a running attempt says so (Issue #2309).** The rung used to be latched to one branch a cycle: whichever branch conflicted first spent it, and every other behind branch was refused a rung the cycle could still have covered. The latch is gone — `grantAgentRun` is asked per branch against the deadline that is actually left, so a second branch is refused only by the 24-minute floor (`DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT` plus `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS`), and a refused branch concludes `agent deferred: cycle budget` rather than a charged failure. When a branch genuinely **enters** the rung, the worker logs one line and posts one comment on the milestone's escalation target naming the host and the ISO start time, keyed on the ledger's `attemptOpenedAt` so one opened attempt is announced once; a merge the deterministic rules settle announces nothing. The lock and the claim ref below are still the duplicate-work guard — the announcement is a record, not a claim.
 
 And because a sibling may still land the same sync while this host is resolving it, the sync re-fetches the milestone branch **right before** the gate and push: if the default tip is already an ancestor of the remote branch, the local merge is discarded, the remote branch adopted, and the outcome is a success with nothing pushed.
 
@@ -347,13 +350,16 @@ as an unexplained `git commit` exit 1.
 Every git failure on the sync path quotes git's **stdout as well as its
 stderr**, because `git commit` explains "nothing to commit, working tree
 clean" on stdout, and a push that fails for anything but a repository rule is
-now a **failed sync** rather than a note on a success. A sync whose reason is
-identical to the previous cycle's escalates on that **second** occurrence,
-carrying the previous conclusion, instead of spending four cycles and four
-agent runs repeating it.
+now a **failed sync** rather than a note on a success. The second-occurrence
+escalation Issue #1964 added for an identical repeated reason was removed by
+Issue #2311: a conflict is answered by the two-run budget, the roll-back and
+the `merge-fallback` flag, and a **non-conflict** failure escalates on the
+ordinary streak threshold.
 
-Only a file every rung leaves undecided aborts the merge and reaches a human,
-and the escalation then names the rung that failed (`agent: …`). An agent that
+Only a file every rung leaves undecided aborts the merge, and the refusal then
+names the rung that failed (`agent: …`). It charges one of the branch's two
+runs and reaches no human (Issue #2311) — the second spent run hands the branch
+to the roll-back and its `merge-fallback` flag. An agent that
 fails, is ended by the worker, leaves a path unmerged or leaves a conflict
 marker behind is a failed rung: nothing is pushed and the branch stands exactly
 at its pre-merge commit. The escalation carries the preparation: what each side
@@ -378,6 +384,30 @@ pre-merge commit and escalated — with both halves: what the verification said
 *and* both sides prepared. A tree with no type check or no unit suite is
 *unverifiable*, and a resolution that cannot be verified is not a resolution —
 it is refused the same way.
+
+### Every sync says where its minutes went
+
+The sync merge runs the same ladder the PR path does, and it can take just as
+long. Issue #2308 gives each conflicting sync that lands the wall-clock
+seconds of its stages — `deepen`, `rules`, `agent`, `gate`, `push` — and the
+host it ran on, rendered as one line at the bottom of the sync report comment
+(both the "resolved a conflict automatically" notice and the older
+check-what-was-overwritten report) and emitted as one structured log record
+with the same fields:
+
+```text
+Timings (host `mel-01`): deepen 2s · rules 1s · agent 212s · gate 94s · push 5s
+```
+
+A repair round runs the resolution agent from inside the verification, and
+those minutes are counted as `agent`, not as `gate` — the gate's own slices
+either side of the repair accumulate into one `gate` entry. A stage started
+and never stopped renders as `unfinished` rather than vanishing from the line.
+
+A sync that refuses or escalates emits the same log record. It posts no
+"resolved a conflict automatically" notice to carry the line, but it spent the
+same minutes, and a twenty-minute sync that concluded in a refusal is exactly
+the attempt the breakdown was built to explain.
 
 ### The sync must record the default branch as an ancestor
 
@@ -448,8 +478,12 @@ To disable milestone branch sync entirely, set `sync_milestone_branches: false` 
 
 - The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
 - The cadence state is the `lastSyncedDefaultSha` in `milestone_sync_failures.json`, so it survives a worker restart — there is no in-memory cooldown to lose (Issue #1776).
-- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out (subject to the branch's conflict-attempt pacing).
+- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out — there is no wait between a branch's two conflict attempts (Issue #2305), and the budget itself is what bounds the retrying.
+- A branch's conflict budget is **two concluded failures**, the same constant a conflicting PR spends, and the second spent failure hands the branch to the roll-back rather than to a third merge. An attempt this host opened and never concluded reads as `disrupted` on the next cycle and is charged nothing; while it is open, and while the budget is spent, the claim scan skips that milestone's issues rather than claiming a child that could only defer.
 - A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
+- **A spent budget rolls the branch back and files one `merge-fallback` flag** (Issue #2311). Both outcomes file or append it — the roll-back that merged cleanly and the one that could not — and the roll-back notice on the escalation target links it by number. The flag names both spent runs (host, stage timings and what each made of the conflict), the conflicted files, how far behind the branch had fallen and what was reverted; a field nothing recorded renders as `not recorded`.
+- **No conflict outcome applies `needs-human` or asks anyone anything.** A roll-back that could not merge posts the notice and stops; it records the default tip it answered for, and when the default branch moves past that tip the branch is offered its two runs again. The repeated-identical-failure escalation of Issue #1964 went with it; the streak escalation (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) survives only for a **non-conflict** failure — a fetch, a push or an ordinary git error.
+- The filing emits a `fallback_flagged` self-heal event carrying the flag's issue number. A `sync_failed` event with a roll-back and no `fallback_flagged` beside it means the record was not written.
 - This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 
 ### Which PRs the self-heal may retarget (Issue #2022)

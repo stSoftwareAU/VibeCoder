@@ -24,8 +24,8 @@
  *   is *not* abandoned. Fail-open on {@link ConflictCommentTrust.unattributable}
  *   is the harmless direction there.
  * - A restart marker **suppresses** that same destructive action: it is what
- *   bounds the fleet to one abandon per originating issue. Discarding one that
- *   cannot be attributed would relax the bound, so the caller must refuse the
+ *   bounds how often the fleet abandons one originating issue. Discarding one
+ *   that cannot be attributed would relax the bound, so the caller must refuse the
  *   abandon instead — the bound has to rest on an authenticated marker, not on
  *   the absence of an unauthenticated one.
  *

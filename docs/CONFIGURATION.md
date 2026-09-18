@@ -1726,7 +1726,7 @@ unless explicitly overridden.
 | Circuit breaker threshold | `circuit_breaker_threshold` | `3` | Consecutive zero-progress scan cycles before exponential backoff |
 | CI check max retries | `ci_check_max_retries` | `3` | Maximum retries per CI (Continuous Integration) check failure before skipping |
 | Security log file              | `security_log_file`              | _(empty)_  | Path to a dedicated security event log file                                                                                                                                                          |
-| Enable session resume          | `enable_session_resume`          | `false`    | Enable CLI-level session continuity across phases of the same issue. See [Session Resume](#-session-resume).                                                                              |
+| Enable session resume          | `enable_session_resume`          | `true`     | Per-stream conversations, the stream locks and the per-issue compaction. See [Session Resume](#-session-resume).                                                                          |
 | Max session size (bytes)       | `max_session_size_bytes`         | `52428800` | Maximum session store size per repository before compaction (50 MB). See [Session Compaction](#-session-compaction).                                                                      |
 | Max session age (days)         | `max_session_age_days`           | `7`        | Maximum age for session files before cleanup. See [Session Compaction](#-session-compaction).                                                                                             |
 | Context budget warning %       | `context_budget_warning_percent` | `50`       | Usage percentage that triggers a budget warning. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                            |
@@ -3197,40 +3197,117 @@ are unchanged.
 
 ## 🔄 Session Resume
 
-Session resume enables CLI-level session continuity across phases of the same
-issue. When enabled, subsequent phases (e.g. clarification → planning →
-implementation) resume the same Claude session rather than starting fresh. This
-preserves context learnt during earlier phases, reducing redundant token usage
-and improving coherence.
+Session resume enables CLI-level session continuity — across the phases of one
+issue, and across the successive issues of a **stream**. When enabled,
+subsequent phases (e.g. clarification → planning → implementation) resume the
+same Claude session rather than starting fresh, and the conversation itself
+belongs to the stream rather than to the issue. This preserves context learnt
+earlier, reducing redundant token usage and improving coherence.
 
 **Configuration:**
 
-| Setting               | Config Key              | Default | Description                                       |
-| --------------------- | ----------------------- | ------- | ------------------------------------------------- |
-| Enable session resume | `enable_session_resume` | `false` | Enable CLI-level session continuity across phases |
+| Setting               | Config Key              | Default | Description                                                             |
+| --------------------- | ----------------------- | ------- | ----------------------------------------------------------------------- |
+| Enable session resume | `enable_session_resume` | `true`  | Per-stream conversations, the stream locks, and the per-issue compaction |
 
 ```json
 {
-  "enable_session_resume": true
+  "enable_session_resume": false
 }
 ```
 
+### The stream model
+
+A **stream** is the unit that owns one agent conversation per provider
+(`worker/deno/lib/stream_identity.ts`):
+
+- **One stream per (repository, milestone)**, plus **one blank stream per
+  repository** holding that repository's issues with no milestone.
+- The repository is always part of the stream identity, so **two repositories
+  never share a conversation**, even when they use the same milestone title. A
+  milestone key also carries the first 8 hex of a SHA-256 of the raw title, so
+  two titles that slug alike cannot silently merge into one conversation.
+- **Implementation and planning runs join the stream**; idle-task, grill-me,
+  question, PR-feedback and CI-fix runs each keep a per-issue session and touch
+  no stream record. That split is one exhaustive table —
+  `STREAM_JOIN_POLICY` in `worker/deno/lib/stream_session.ts` — so a run kind
+  added later cannot join a stream by omission.
+- **Two locks, never both on one issue.** A milestone issue takes the
+  **fleet-wide** stream lock: a claim is refused as `stream_busy` while another
+  open issue of that milestone is live anywhere in the fleet. A blank-stream
+  issue takes the **per-host** lock instead — an in-process registry keyed by
+  `streamKey`, so one non-milestone issue per repository per host, with no
+  `gh` call and no cross-host coordination. Both are skips, not failures.
+- **Affinity with a five-minute grace.** The conversation lives on one host's
+  disk, so the host that ran a stream last records itself as the holder on the
+  milestone's tracking issue. Another host defers that stream's eligible issue
+  for `STREAM_AFFINITY_GRACE_SECONDS` (300 s) from its own first sighting; after
+  the grace the first host to scan claims it and becomes the new holder.
+  Affinity is an optimisation, never a lock.
+- **Compaction before each new issue.** A resumed conversation has carried every
+  issue of the stream so far, so it is compacted before the issue's first phase
+  — see [Compaction behaviour by provider](MODEL-AND-CACHING.md#compaction-behaviour-by-provider).
+- **Milestone-close housekeeping.** When a milestone closes, every host sweeps
+  its worktrees, its local branches and that stream's session record. The sweep
+  runs **regardless of this flag**: with resume off there is simply no stream
+  session on disk to remove, and the worktree and branch halves still run.
+
+```mermaid
+flowchart LR
+    subgraph RA["Repository A"]
+      MA1["Stream: milestone #100"]
+      MA2["Stream: milestone #200"]
+      BA["Blank stream (no milestone)"]
+    end
+    subgraph RB["Repository B"]
+      MB1["Stream: milestone #100<br/>(same title, separate conversation)"]
+      BB["Blank stream (no milestone)"]
+    end
+    MA1 --- CA1["one conversation per provider"]
+    MA2 --- CA2["one conversation per provider"]
+    BA --- CA3["one conversation per provider"]
+    MB1 --- CB1["one conversation per provider"]
+    BB --- CB2["one conversation per provider"]
+    style MA1 fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style MB1 fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+**What the flag controls:**
+
+- **On (default).** Implementation and planning runs join their stream's
+  conversation and replay it with `--resume`; the fleet-wide milestone lock and
+  the host-local blank lock both apply; stream affinity gives the holding host
+  its five-minute head start; and a resumed conversation is compacted before
+  each new issue.
+- **Off (`enable_session_resume: false`).** Every run keeps a **per-issue**
+  session, no stream record is read or written, **no stream lock** is taken
+  (and the milestone lock's extra `gh issue list` never runs), no affinity
+  deferral applies, and there is no stream conversation to compact.
+  Milestone-close housekeeping still sweeps worktrees and branches, and picking
+  up pushed WIP is unaffected — that never depended on this flag (Issue #220).
+
 **How it works:**
 
-1. On the first phase of an issue, the worker generates a deterministic session
-   ID combining the repository, issue number, and timestamp.
-2. Claude is invoked with `--session-id <id>` to start a new named session.
-3. On subsequent phases for the same issue, Claude is invoked with `--resume` to
-   continue the existing session.
+1. An implementation or planning run resolves its **stream** and loads the
+   session recorded there for the provider it is about to spawn. A run kind that
+   does not join a stream instead generates a per-issue session ID combining the
+   repository, issue number, and timestamp.
+2. With no session to continue, Claude is invoked with `--session-id <id>` to
+   start a new named session — which then becomes the stream's session.
+3. With a session to continue — the stream's, or the issue's own checkpoint,
+   which wins where it has one — Claude is invoked with `--resume`.
 4. Each phase completion is recorded so the worker knows whether to start or
-   resume.
+   resume, and the execute phase writes back the session the run ended on.
 
-**When to enable:**
+**When to turn it off:**
 
-- Enable when issues frequently go through multiple phases (clarification,
-  planning, implementation) and you want Claude to retain context between them.
-- Leave disabled (default) if your workflow is predominantly single-phase or if
-  you prefer each phase to start with a clean slate.
+- Turn it off when every issue must start from a clean slate — a host debugging
+  a context-sensitive failure, or one where the per-stream conversation would
+  carry work you do not want inherited.
+- Turning it off gives up the per-stream conversation, both stream locks and the
+  per-issue compaction — the **What the flag controls** list in
+  [The stream model](#the-stream-model) above. It does **not** turn off
+  milestone-close housekeeping or pushed-WIP resume.
 
 **Resume-on-reclaim:** a killed session (reboot, OOM, container death) resumes
 instead of restarting from zero. **Picking up pushed WIP does not depend on
@@ -3273,6 +3350,141 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   exception is a release whose run **preserved WIP** on the issue branch
   (a deadline timeout with a dirty tree): the commit is the durable work and
   the resume file is the pointer to it, so it is kept for the next claim.
+- The **conversation** itself is keyed by stream, not by issue (Issue #2332).
+  Its session id lives in a separate record,
+  `${WORK_DIR}/.claude-sessions/resume/stream-<streamKey>.json`, holding one
+  session per provider — a sub-issue that falls back to another provider opens
+  that provider's own stream session and leaves the others untouched. Because
+  the conversation outlives every issue that runs on it, the stream record has
+  **no 24-hour window**, is **not** deleted at PR creation or claim release,
+  and is never swept with the per-issue files. It is removed only by
+  milestone-close housekeeping, or when a session proves unresumable and the
+  stream is reset. No migration is involved: a pre-existing per-issue record
+  keeps loading exactly as before, and a host with no stream record starts the
+  stream fresh.
+- **Implementation and planning runs join that conversation** (Issue #2333).
+  With `enable_session_resume` on, the setup phase resolves the issue's stream,
+  loads the session recorded for the provider it is about to spawn, and primes
+  `--resume` on it; the execute phase writes back the session the run ended on,
+  naming this host as the holder. So the second issue of a milestone continues
+  where the first left off instead of starting empty, and a planning run
+  continues the repository's blank-stream conversation. A **new milestone
+  starts fresh at its first sub-issue** — the planning run's own conversation
+  is never forked into the milestone it created.
+- **Every other run kind keeps a per-issue session** and reads and writes no
+  stream record at all: grill-me, question, idle-task, PR-feedback and CI-fix.
+  That exclusion is one list — `STREAM_JOIN_POLICY` in
+  `worker/deno/lib/stream_session.ts` — and it is exhaustive by type, so a run
+  kind added later cannot join a stream by omission.
+- The issue's **own** checkpoint still wins where it has one: a re-claim that
+  resumed a WIP branch replays that branch's interrupted conversation, which is
+  closer to the work than the stream's, and leaves the stream record alone.
+- A stream record naming a session this provider cannot resume is **reset**,
+  never fatal: the dead entry is dropped, a fresh session opens in its place,
+  and the run logs `stream session reset: <reason>` before continuing. Every
+  run logs one line naming what it joined —
+  `stream <label> session <id> (resumed|new|reset)`.
+- **A resumed conversation is compacted before the issue's first phase**
+  (Issue #2337), because it has carried every issue of the stream so far and
+  left alone it is the *next* issue that fills the context window. Claude and
+  DeepSeek — one CLI, so one pair of levers — send `/compact` as the prompt of
+  a `--resume` print run, then **measure** the session's transcript file under
+  `CLAUDE_CONFIG_DIR`: smaller means it worked, and the run logs
+  `compaction: /compact`. Anything short of that proof — an unchanged or larger
+  transcript, a non-zero `/compact` run, a transcript that cannot be measured,
+  a spawn that failed — is treated as uncompacted, and every agent run of the
+  issue instead carries `--autocompact 100000` (the smallest window the CLI
+  accepts, so its own compaction happens earliest), logged as
+  `compaction: autocompact 100000`. A `new` or `reset` stream session has no
+  conversation to compact and logs `compaction skipped: new stream session`
+  without spending a CLI call, and Codex and Gemini expose no compaction
+  control at all, so they carry the full transcript and log
+  `compaction unavailable` naming the provider. Every run logs **exactly one**
+  compaction line, and no compaction outcome can fail an issue.
+- **One run per milestone stream at a time, fleet-wide** (Issue #2334). With
+  the flag on, a claim on a milestone issue first asks whether any **other
+  open** issue of that milestone is live — a heartbeat that beat inside the
+  live window, or a `CLAIM_LOCK` posted in the last minute, from a fleet
+  account. If one is, the claim is refused as `stream_busy` before the
+  assignee and the claim comment are written, and the worker logs
+  `stream busy: <stream> held by #<issue> on <host>`. It is a **skip, not a
+  failure**: no `failed-once` label, no churn record and no cooldown beyond
+  the normal scan interval, so the issue is claimed on a later scan once the
+  holder's heartbeat goes stale. Blank-stream issues (no milestone) own no
+  shared conversation and are never checked, and with
+  `enable_session_resume` off the check — and its one extra `gh issue list` —
+  never runs at all.
+- **One non-milestone issue per repository per host** (Issue #2335). The blank
+  stream has no fleet-wide conversation to collide in — each host keeps its
+  **own** blank conversation per repository — so it is locked **host-locally**
+  instead: an in-process registry, keyed by the conversation's own `streamKey`,
+  that a slot takes when it claims a non-milestone issue and gives back when
+  the run ends, on every terminal path (success, skip, failure, throw, timeout,
+  kill). A sibling slot finding the stream held logs
+  `stream busy: <stream> held by slot <slot> on #<issue>` and takes the next
+  eligible issue rather than idling the scan. The refused issue leaves that
+  slot's scan only while the stream stays busy: the exclusion lifts the moment
+  the holder releases, so the issue is claimable on the very next scan.
+  The lock consults **no GitHub state and makes no `gh` call**, so two hosts
+  run that repository's non-milestone issues in parallel, each with its own
+  conversation — which is correct, because they are two conversations. The two
+  locks never both apply to one issue: a milestone issue takes no host-local
+  hold, and a blank-stream issue skips the fleet-wide check entirely. With
+  `enable_session_resume` off there is no shared conversation, so no
+  host-local lock is taken.
+
+  ```mermaid
+  flowchart TD
+      A["Slot claims an issue"] --> B{"enable_session_resume?"}
+      B -- off --> R["Claim — no stream lock"]
+      B -- on --> C{"Has a milestone?"}
+      C -- yes --> D["Fleet-wide check<br/>(one gh issue list)"]
+      D -- "sibling live" --> E["stream_busy — retry on a later scan"]
+      D -- free --> R
+      C -- "no (blank stream)" --> F{"Held by a sibling slot<br/>on this host?"}
+      F -- yes --> G["stream busy: … held by slot …<br/>skip, take the next eligible issue"]
+      F -- no --> H["Take the host-local hold"] --> R
+      R --> I["Run ends — release in finally"]
+      style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+      style F fill:#1d3557,stroke:#14213d,color:#fff
+  ```
+
+- **The host holding a stream gets its next issue first** (Issue #2336). The
+  conversation lives on one host's disk, so when a stream run finishes it
+  records itself as the holder — a hidden
+  `<!-- vibe-stream-holder stream=<streamKey> host=<machineId> at=<epoch> -->`
+  marker on the milestone's **tracking issue**, the planning issue named by the
+  milestone title's `#<N>` head. The marker is rewritten in place on every run,
+  so a stream keeps exactly one live marker however long it lasts. A host that
+  is **not** the recorded holder defers that stream's eligible issue for
+  `STREAM_AFFINITY_GRACE_SECONDS` (300 s — ten scans at the 30-second default),
+  measured from its own first sighting of the issue, and logs the countdown
+  once as `stream affinity: deferring <stream> to <host> (<n>s left)`. After
+  the grace the first other host to scan claims it, logs
+  `stream session reset: affinity grace expired` and becomes the new holder. As
+  with the stream lock this is a **skip, not a failure** (`stream_affinity`),
+  and it never applies where there is nothing to hold: no marker recorded, the
+  holder being this host, a milestone with no resolvable tracking issue, or a
+  blank-stream issue. Affinity is an optimisation, never a lock — a `gh`
+  failure is logged and the claim proceeds.
+
+  ```mermaid
+  sequenceDiagram
+      participant A as Host A (holder)
+      participant GH as Tracking issue #N
+      participant B as Host B
+      A->>GH: run ends → write vibe-stream-holder host=A
+      B->>GH: scan → read holder
+      GH-->>B: host=A
+      B--xB: defer (300s head start)
+      alt A returns inside the grace
+          A->>GH: read holder = A → claim, resume the conversation
+      else A stays silent
+          B->>B: grace expired → claim, start the stream afresh
+          B->>GH: rewrite vibe-stream-holder host=B
+      end
+  ```
+
 - A branch carrying **only** WIP markers does not become a PR: when a claim
   resumed a checkpoint and added no commit of its own, the completion phase
   refuses to raise a half-done PR from parked work and the issue returns to
@@ -3283,12 +3495,16 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   the session sweeper's age/size caps so it cannot grow unbounded.
 
 > **📝 Note:** Session resume is independent of
-> [session compaction](#-session-compaction) — resume controls
-> within-issue continuity, while compaction manages the on-disk session store
-> size.
+> [session compaction](#-session-compaction) — resume controls conversation
+> continuity (within an issue, and across the issues of a stream), while
+> compaction manages the on-disk session store size.
 
 **Reference:** `worker/deno/lib/session_resume.ts` (implementation),
 `worker/deno/lib/issue_branch_resume.ts` (issue-number branch lookup),
+`worker/deno/lib/stream_session.ts` (which run kinds join a stream, and how),
+`worker/deno/lib/stream_lock.ts` (the fleet-wide milestone lock and the
+host-local blank-stream lock),
+`worker/deno/lib/stream_holder.ts` (the holder marker and its head start),
 `worker/deno/lib/config_defaults.ts` (default value).
 
 ## 📦 Session Compaction
@@ -4289,9 +4505,8 @@ schedule. Three rules keep this watchdog out of its way (Issue #1213):
 
 `NEAT-AI-Ockham#119` is why. It was escalated at 09:57 as "green and unmerged …
 or close it", was labelled `merge-conflict` at 10:00, and a human — acting on
-the fleet's own thirteen-minute-old comment — closed it at 10:10, inside the
-ladder's cooldown and before its first attempt ever ran. The work was redone by
-hand two hours later.
+the fleet's own thirteen-minute-old comment — closed it at 10:10, before the
+ladder's first attempt ever ran. The work was redone by hand two hours later.
 
 On a trip it posts **one** escalation comment per PR per stall reason (deduped
 by the `needs-human-escalation` HTML marker, so a long stall never accrues a

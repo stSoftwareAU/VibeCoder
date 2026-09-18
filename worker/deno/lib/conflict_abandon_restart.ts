@@ -20,11 +20,22 @@
  * **Preconditions are checked before anything is destroyed.** The order below
  * is the safety property, not an implementation detail:
  *
- * 1. the PR's originating issue is known — **no issue, no abandon**, because
- *    closing a PR the fleet cannot re-raise loses the work outright;
- * 2. the issue has not already been restarted once — **one abandon per
- *    originating issue**, so a restarted issue whose fresh PR also exhausts
- *    its budget goes to `needs-human` rather than round the loop again. The
+ * 1. the PR's originating issue is known — and when it is not, the PR is still
+ *    closed, but only after the `merge-fallback` flag issue has been filed as
+ *    the re-do item, carrying `idle-task` and the PR's diff summary
+ *    (Issue #2310). The rule this replaces was "no issue, no abandon", on the
+ *    grounds that closing a PR the fleet cannot re-raise loses the work; the
+ *    reasoning holds, and the flag is what the fleet re-raises from. What is
+ *    forbidden is closing with **no findable record**, so a flag that could not
+ *    be filed leaves the PR open naming the `fallback-flag` step;
+ * 2. the issue has not already been restarted twice — **two abandons per
+ *    originating issue** (Issue #2312). One restart was too few: the first
+ *    fresh PR is raised off a base that has often moved again by the time it
+ *    conflicts, and a second redo settles a useful share of those. A *third*
+ *    is declined, and the caller then parks that PR on `merge-conflict` rather
+ *    than sending it round the loop again. A claim naming **this** PR declines
+ *    whatever the count: it means an earlier abandon of this very PR claimed
+ *    the restart and did not finish, and closing it twice is not a retry. The
  *    claim counts only when a **fleet account** wrote it (Issue #1247): a
  *    comment body is text any GitHub account may write, and both directions
  *    were exploitable — an outsider's restart marker stalled the rung for
@@ -48,9 +59,9 @@
  * the merge — it is the claim two hosts race for, and the loser must lose
  * before anything is closed.
  *
- * Every step that fails returns the step's name. The caller's resting state is
- * then `needs-human` naming that step: a partial abandon — worst of all "PR
- * closed, issue not re-queued" — must never be where this stops.
+ * Every step that fails returns the step's name, and the caller records it: a
+ * partial abandon — worst of all "PR closed, issue not re-queued" — must be
+ * visible rather than where this quietly stops.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -66,7 +77,20 @@ import {
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
+  MERGE_CONFLICT_LABEL,
 } from "./merge_conflict_markers.ts";
+import {
+  type ParsedStageTimings,
+  parseStageTimingsLine,
+  readPrDiffSummary,
+  readPrDivergence,
+} from "./conflict_fallback_context.ts";
+import {
+  createFallbackFlagFiler,
+  type MergeFallbackFiling,
+  type MergeFallbackOutcome,
+  type MergeFallbackRun,
+} from "./merge_fallback_issue.ts";
 import { CONSULTED_ISSUES_HEADING } from "./conflict_intent_audit.ts";
 import { DISCOVERY_LABELS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -88,10 +112,23 @@ import { partitionConflictComments } from "./conflict_marker_trust.ts";
  * beside it are frozen only because they are already in live comment threads;
  * a new marker has no such data to stay compatible with.
  *
- * Its presence is what bounds the rung to one abandon per issue, and what
- * makes two hosts scanning the same exhausted PR produce one abandon.
+ * Its presence is what bounds the rung to {@link MAX_RESTARTS_PER_ISSUE}
+ * abandons per issue, and what makes two hosts scanning the same exhausted PR
+ * produce one abandon.
  */
 export const CONFLICT_RESTART_MARKER = "<!-- vibe-merge-conflict-restart";
+
+/**
+ * Restarts the fleet will run for one originating issue (Issue #2312).
+ *
+ * Two. The first restart redoes the work off whatever the base has become; the
+ * second covers the case where the base moved again while that fresh PR was
+ * being written, which is the common shape on a busy default branch. Past
+ * that, another redo of the same work against the same base is not a different
+ * experiment — so the third exhaustion parks the PR instead of closing it, and
+ * the base tip moving is what offers it again.
+ */
+export const MAX_RESTARTS_PER_ISSUE = 2;
 
 /** The marker comment line for one abandoned PR. */
 export function conflictRestartMarker(repo: string, prNumber: number): string {
@@ -116,7 +153,7 @@ export function carriesRestartMarker(raw: unknown): boolean {
  *
  * **Author-blind by construction** (Issue #1247): this marker *suppresses* the
  * destructive step, so discarding one that cannot be attributed would relax
- * the "one restart per originating issue" bound rather than tighten it.
+ * the {@link MAX_RESTARTS_PER_ISSUE} bound rather than tighten it.
  * {@link abandonAndRestart} therefore attributes the thread first and refuses
  * outright when a claim cannot be attributed, instead of quietly proceeding.
  * Pass the trusted comments only.
@@ -155,6 +192,13 @@ export interface FailedAttemptSummary {
   attempt: number | null;
   /** The recorded reason, bounded for comment use. */
   detail: string;
+  /**
+   * The stage timings and host the same comment carried (Issue #2308), when it
+   * carried them. Read here rather than in a second pass over the thread: two
+   * passes paired by index attribute one run's minutes to another the moment
+   * either filter changes, and nothing fails when they do.
+   */
+  timings?: ParsedStageTimings;
 }
 
 /** What the attempts on a PR recorded. */
@@ -240,7 +284,12 @@ export function summariseFailedAttempts(
       .join("\n")
       .trim()
       .slice(0, MAX_ATTEMPT_DETAIL_CHARS);
-    attempts.push({ attempt: attemptNumberFrom(body), detail });
+    const timings = parseStageTimingsLine(body);
+    attempts.push({
+      attempt: attemptNumberFrom(body),
+      detail,
+      ...(timings !== undefined ? { timings } : {}),
+    });
   }
 
   return {
@@ -248,6 +297,34 @@ export function summariseFailedAttempts(
     conflictedPaths: conflictedPaths.slice(0, MAX_CONFLICTED_PATHS),
     consultedIssues,
   };
+}
+
+/**
+ * Both runs as the `merge-fallback` flag issue records them (Issue #2310).
+ *
+ * Every field comes off one {@link FailedAttemptSummary} — the agent's own
+ * words, and the stage timings and host the same comment carried — so a run's
+ * minutes can never be attributed to a different run. The run that measured
+ * them is long gone by the time a fallback runs, so the thread is the only
+ * surviving source for either.
+ *
+ * @param history - What {@link summariseFailedAttempts} read off the PR's
+ *   thread, which the callers have already reduced to the fleet's own comments
+ * @returns One run per concluded failure, in the order the thread records them
+ */
+export function mergeFallbackRunsFromHistory(
+  history: FailedAttemptHistory,
+): MergeFallbackRun[] {
+  return history.attempts.map((attempt, index) => ({
+    run: attempt.attempt ?? index + 1,
+    ...(attempt.detail.length > 0 ? { analysis: attempt.detail } : {}),
+    ...(attempt.timings !== undefined && attempt.timings.timings.length > 0
+      ? { timings: attempt.timings.timings }
+      : {}),
+    ...(attempt.timings?.host !== undefined
+      ? { host: attempt.timings.host }
+      : {}),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -327,14 +404,31 @@ export function describeConcludedAttempts(
 
 /** Why the abandon was declined before anything was changed. */
 export type AbandonDeclineReason =
-  /** No originating issue: the fleet could not re-raise what it closed. */
+  /**
+   * No originating issue.
+   *
+   * **No longer produced by {@link abandonAndRestart}** (Issue #2310): a PR
+   * whose originating issue cannot be found is now closed, and the
+   * `merge-fallback` flag issue — carrying the PR's diff summary and
+   * `idle-task` — becomes the re-do item in its place. The member is kept
+   * because it is still the shape a caller may be handed by an injected rung,
+   * and {@link describeExhaustedRoute} must keep an answer for it.
+   */
   | { kind: "no-originating-issue"; detail: PrUnresolvedReason }
   /**
-   * The issue has already been restarted once — the bound (#1115).
-   * `samePr` is true when the recorded claim names *this* PR, i.e. an earlier
-   * abandon of it started and did not finish.
+   * The issue has spent its restarts — {@link MAX_RESTARTS_PER_ISSUE} of them
+   * (#1115, raised to two by #2312). `samePr` is true when a recorded claim
+   * names *this* PR, i.e. an earlier abandon of it started and did not finish,
+   * which declines whatever `restartCount` says. The caller parks the PR on
+   * `merge-conflict` from here; nobody is asked.
    */
-  | { kind: "already-restarted"; issueNumber: number; samePr: boolean }
+  | {
+    kind: "already-restarted";
+    issueNumber: number;
+    samePr: boolean;
+    /** Fleet-authored restart claims already on the issue. */
+    restartCount: number;
+  }
   /**
    * A restart claim is on the issue but its author cannot be established, so
    * the one-abandon-per-issue bound cannot be evaluated (Issue #1247).
@@ -363,16 +457,33 @@ export type AbandonStep =
   | "pr-comment"
   | "pr-close"
   | "issue-reopen"
-  | "issue-label";
+  | "issue-label"
+  /**
+   * Filing the `merge-fallback` flag for a PR with no originating issue
+   * (Issue #2310). Only that route can fail here, and it fails *before* the
+   * close: the flag is the re-do item, so closing the PR without one would
+   * lose the work outright — the same harm the old decline avoided.
+   */
+  | "fallback-flag";
 
 /** What {@link abandonAndRestart} did. */
 export type AbandonRestartOutcome =
   /**
-   * The PR was closed and its issue re-queued. {@link label} says how: the
-   * pickup label it already carried was kept, or `idle-task` was applied
-   * because it carried none (Issue #2277).
+   * The PR was closed and the work re-queued. {@link label} says how: the
+   * pickup label the originating issue already carried was kept, or
+   * `idle-task` was applied because it carried none (Issue #2277).
+   *
+   * When {@link flagIssueNumber} is set, the PR named no originating issue and
+   * this rung filed the `merge-fallback` flag as the re-do item in its place
+   * (Issue #2310); {@link issueNumber} is then that flag issue, which is the
+   * issue the work comes back through. The caller must not file a second flag.
    */
-  | { outcome: "abandoned"; issueNumber: number; label: RequeueLabel }
+  | {
+    outcome: "abandoned";
+    issueNumber: number;
+    label: RequeueLabel;
+    flagIssueNumber?: number;
+  }
   /** A precondition refused the abandon; nothing was changed. */
   | { outcome: "declined"; reason: AbandonDeclineReason }
   /** A step failed; the caller must escalate naming {@link step}. */
@@ -394,16 +505,21 @@ export type AbandonRestartOutcome =
  * it and `needs-human`, so the record must say which of the rung's exits
  * produced the outcome — a reader who cannot tell "the fleet could not find
  * the issue" from "the fleet already restarted this once" cannot act on
- * either. The spent-budget caller turns this into a `needs-human` comment; the
- * stale-verdict ladder records it on the PR and asks nobody (Issue #2280).
+ * either. The stale-verdict ladder records it on the PR and asks nobody
+ * (Issue #2280).
+ *
+ * There is no longer a `restart-exhausted` member (Issue #2312). A spent
+ * restart budget was the one route here that ended at `needs-human`, and it no
+ * longer ends anywhere a person is: the caller parks the PR on
+ * `merge-conflict` and re-attempts it when the base tip moves. Callers detect
+ * that outcome from the decline reason itself (`already-restarted`) before
+ * they ever reach a route.
  */
 export type ExhaustedEscalationRoute =
   /** A precondition refused the abandon; nothing was closed. */
   | { kind: "abandon-declined"; detail: string }
   /** The abandon started and a step failed; the state may be partial. */
-  | { kind: "abandon-failed"; step: AbandonStep; detail: string }
-  /** This issue was already restarted once; the fresh PR exhausted too. */
-  | { kind: "restart-exhausted"; issueNumber: number; samePr: boolean };
+  | { kind: "abandon-failed"; step: AbandonStep; detail: string };
 
 /**
  * Which escalation route an abandon that did not happen produced.
@@ -435,10 +551,20 @@ export function exhaustedEscalationRoute(
           "outright, so it was left open.",
       };
     case "already-restarted":
+      // Issue #2312: no route of its own any more, because no caller escalates
+      // it. A caller that must act on this outcome reads the decline reason and
+      // parks the PR; one that only has to *record* it gets these words.
       return {
-        kind: "restart-exhausted",
-        issueNumber: reason.issueNumber,
-        samePr: reason.samePr,
+        kind: "abandon-declined",
+        detail: reason.samePr
+          ? `An earlier abandon of this PR claimed issue ` +
+            `#${reason.issueNumber} and did not finish. The restart claim is ` +
+            "on the issue, so this PR is not closed a second time — it is " +
+            "left open on `merge-conflict`."
+          : `Issue #${reason.issueNumber} has spent its ` +
+            `${MAX_RESTARTS_PER_ISSUE} restarts (${reason.restartCount} ` +
+            "recorded), so this PR is left open on `merge-conflict` rather " +
+            "than closed and re-raised again.",
       };
     case "restart-claim-unverifiable":
       return {
@@ -489,20 +615,6 @@ export function describeExhaustedRoute(
         "PR may already carry the abandon comment, and its issue may already " +
         "be re-queued.",
       ];
-    case "restart-exhausted":
-      return route.samePr
-        ? [
-          `**An earlier abandon of this PR claimed issue #${route.issueNumber} ` +
-          "and did not finish.** The restart claim is on the issue, so the " +
-          "fleet will not try again — it restarts once and then stops rather " +
-          "than closing and re-raising PRs in a loop. This PR was left open.",
-        ]
-        : [
-          `**This work has already been restarted once** — issue ` +
-          `#${route.issueNumber} was re-queued after an earlier PR ` +
-          "conflicted irreconcilably, and the PR that replaced it has reached " +
-          "the end of the ladder too. The fleet restarts once and then stops.",
-        ];
   }
   const unhandled: never = route;
   throw new Error(
@@ -591,6 +703,13 @@ export interface AbandonRestartDeps {
     issueNumber: number,
     label: string,
   ) => Promise<Result<void>>;
+  /**
+   * Flag-issue filer for the no-originating-issue route (Issue #2310) —
+   * defaults to {@link fileMergeFallbackIssue} over {@link gh}.
+   */
+  fileFallbackFlag?: (
+    filing: MergeFallbackFiling,
+  ) => Promise<Result<MergeFallbackOutcome>>;
 }
 
 /**
@@ -873,8 +992,16 @@ export function buildRestartIssueComment(args: {
   history: FailedAttemptHistory;
   /** The pickup label this issue carries once it is re-queued (#2277). */
   label: RequeueLabel;
+  /**
+   * Which of the issue's {@link MAX_RESTARTS_PER_ISSUE} restarts this is,
+   * counting from one (Issue #2312). The closing paragraph is what a reader
+   * months later uses to know what happens if the fresh PR conflicts too, and
+   * that answer differs between the first restart and the last.
+   */
+  restartNumber?: number;
 }): string {
   const { request, history } = args;
+  const restartNumber = args.restartNumber ?? 1;
   const labelName = requeueLabelName(args.label);
   const paths = conflictedPathLines(history);
   // Which label, and why it is that one: an issue that already carried a
@@ -906,9 +1033,59 @@ export function buildRestartIssueComment(args: {
     "",
     whatHappensNow,
     "",
-    "This is the fleet's **one** restart for this issue: if the fresh PR " +
-    "also spends its merge-conflict budget, the conflict goes to a human " +
-    "instead of round the loop again.",
+    restartNumber >= MAX_RESTARTS_PER_ISSUE
+      ? `This is restart **${restartNumber} of ${MAX_RESTARTS_PER_ISSUE}** — ` +
+        "the last one for this issue. If the fresh PR spends its " +
+        "merge-conflict budget too, that PR is left open carrying " +
+        `\`${MERGE_CONFLICT_LABEL}\` and is re-attempted only when its base ` +
+        "branch moves. Nobody is asked for anything either way."
+      : `This is restart **${restartNumber} of ${MAX_RESTARTS_PER_ISSUE}** ` +
+        "for this issue: if the fresh PR also spends its merge-conflict " +
+        "budget, the work is redone once more, and after that the PR is left " +
+        "open until its base branch moves.",
+  ].join("\n");
+}
+
+/**
+ * The comment posted on a PR closed with no originating issue (Issue #2310).
+ *
+ * Until now that PR was left open and handed to a human. Nobody came: it sat
+ * conflicting, out of budget and unowned. So it is closed too — and because
+ * there is no issue to re-queue, the `merge-fallback` flag issue is the re-do
+ * item, which is what this comment has to make findable.
+ */
+export function buildNoIssueAbandonPrComment(args: {
+  request: AbandonRestartRequest;
+  history: FailedAttemptHistory;
+  /** Why no originating issue could be resolved. */
+  reason: PrUnresolvedReason;
+  /** The flag issue that now carries the work. */
+  flagIssueNumber: number;
+}): string {
+  const { request, history, flagIssueNumber } = args;
+  const branch = sanitiseIssueText(request.branchName);
+  const base = sanitiseIssueText(request.baseBranch);
+  return [
+    `♻️ **Abandoning this PR — the work comes back as #${flagIssueNumber}**`,
+    "",
+    `${describeConcludedAttempts(history)}, and GitHub still will not merge ` +
+    `\`${branch}\` into \`${base}\`.`,
+    "",
+    `This PR names **no originating issue** (${args.reason}): neither its ` +
+    "branch name, nor a closing keyword in its body, nor GitHub's own linkage " +
+    "points at one. Leaving it open used to be the safe answer, but nobody " +
+    "came — it stayed conflicting, out of budget and unowned. So the fallback " +
+    `records the work as issue #${flagIssueNumber} instead: a ` +
+    "`merge-fallback` flag carrying `idle-task` and this PR's diff summary, " +
+    "which makes it the re-do item the fleet picks up.",
+    "",
+    "**Conflicted paths**",
+    "",
+    ...conflictedPathLines(history),
+    "",
+    `The branch \`${branch}\` is **not** deleted and has **not** been ` +
+    "force-pushed: every commit on it stays exactly as its author pushed it, " +
+    "so the abandoned work remains readable and linked from here.",
   ].join("\n");
 }
 
@@ -957,6 +1134,175 @@ async function fetchIssueSnapshot(
   return { state: parsed.state, labels };
 }
 
+/** The step reporter {@link abandonAndRestart} and its branches share. */
+type FailedReporter = (
+  step: AbandonStep,
+  error: unknown,
+  issueNumber?: number,
+) => AbandonRestartOutcome;
+
+/**
+ * Close a conflicting PR that names no originating issue, filing the
+ * `merge-fallback` flag as the re-do item (Issue #2310).
+ *
+ * The old answer was to decline: closing a PR the fleet cannot re-raise loses
+ * the work outright. That reasoning still holds — what changed is that the flag
+ * issue *is* something the fleet can re-raise from. It carries `idle-task` and
+ * the PR's diff summary, so the work is queued rather than parked on a human
+ * who never came.
+ *
+ * **The flag is filed before anything is closed.** A close with no findable
+ * record is the loss the decline existed to prevent, so a filing failure —
+ * including one that files an issue whose number cannot be read — leaves the PR
+ * open and names the `fallback-flag` step.
+ */
+async function abandonWithoutOriginatingIssue(
+  request: AbandonRestartRequest,
+  deps: AbandonRestartDeps,
+  reason: PrUnresolvedReason,
+  failed: FailedReporter,
+): Promise<AbandonRestartOutcome> {
+  const { repo, prNumber } = request;
+  const gh = deps.gh;
+  const logger = deps.logger;
+
+  let comments: readonly unknown[];
+  try {
+    // Attributed like every other read of this thread (Issue #1247): the flag
+    // issue quotes it, so an outsider's text must never be filed as the
+    // fleet's own record of what the runs found.
+    comments = partitionConflictComments(
+      request.prComments ?? await fetchIssueCommentPages(repo, prNumber, gh),
+      deps.trustedAuthors,
+    ).trusted;
+  } catch (error) {
+    return failed("pr-thread", error);
+  }
+  const history = summariseFailedAttempts(comments);
+
+  // Best-effort context: a read that failed renders as `not recorded` in the
+  // flag body rather than as a guess, and never stops the fallback.
+  const divergence = await readPrDivergence({
+    repo,
+    prNumber,
+    baseBranch: request.baseBranch,
+    headBranch: request.branchName,
+    queueLabel: MERGE_CONFLICT_LABEL,
+    gh,
+    ...(logger !== undefined ? { logger } : {}),
+  });
+  const diff = await readPrDiffSummary({
+    repo,
+    prNumber,
+    gh,
+    ...(logger !== undefined ? { logger } : {}),
+  });
+
+  const filing: MergeFallbackFiling = {
+    target: {
+      kind: "pr",
+      repo,
+      prNumber,
+      headBranch: request.branchName,
+      baseBranch: request.baseBranch,
+    },
+    conflictedFiles: history.conflictedPaths,
+    runs: mergeFallbackRunsFromHistory(history),
+    ...divergence,
+    ...(diff !== undefined
+      ? { diffSummary: diff.files, diffSummaryOmitted: diff.omitted }
+      : {}),
+    fallbackAction: `Closed ${repo}#${prNumber} (\`${request.branchName}\`). ` +
+      `No originating issue could be found (${reason}), so this issue carries ` +
+      "`idle-task` and is the re-do item for that work.",
+    requestIdleTask: true,
+  };
+
+  const filer = deps.fileFallbackFlag ?? createFallbackFlagFiler({
+    gh,
+    ...(logger !== undefined ? { logger } : {}),
+    fleetAuthors: deps.trustedAuthors,
+  });
+
+  const filed = await filer(filing);
+  if (!filed.ok) return failed("fallback-flag", filed.error);
+  const flagIssueNumber = filed.value.issueNumber;
+  if (!Number.isSafeInteger(flagIssueNumber) || flagIssueNumber <= 0) {
+    return failed(
+      "fallback-flag",
+      new Error(
+        "the merge-fallback flag was filed but its number could not be read, " +
+          "so nothing can link to the re-do item — this PR is left open " +
+          "rather than closed against a record nobody can find",
+      ),
+    );
+  }
+
+  // An appended event lands as a comment on an existing flag, and the filer
+  // labels only the issues it creates — so the pickup label has to be applied
+  // here or a second fallback on the same PR would close it against a flag
+  // nobody picks up. Failing to apply it leaves the PR open: an unqueued re-do
+  // item is the work lost, which is the whole point of filing first.
+  if (filed.value.appended) {
+    try {
+      const labelled = deps.addLabel
+        ? await deps.addLabel(repo, flagIssueNumber, IDLE_TASK_LABEL)
+        : await addLabelToIssue(repo, flagIssueNumber, IDLE_TASK_LABEL, {
+          ghCommandFn: gh,
+        });
+      if (!labelled.ok) return failed("fallback-flag", labelled.error);
+    } catch (error) {
+      return failed("fallback-flag", error, flagIssueNumber);
+    }
+  }
+
+  try {
+    await gh([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      buildNoIssueAbandonPrComment({
+        request,
+        history,
+        reason,
+        flagIssueNumber,
+      }),
+    ]);
+  } catch (error) {
+    return failed("pr-comment", error, flagIssueNumber);
+  }
+
+  try {
+    // No `--delete-branch`: the abandoned commits must stay readable (#1076).
+    await gh(["pr", "close", String(prNumber), "--repo", repo]);
+  } catch (error) {
+    return failed("pr-close", error, flagIssueNumber);
+  }
+
+  logger?.warn?.(
+    `PR #${prNumber} named no originating issue (${reason}) — closed it and ` +
+      `filed merge-fallback issue #${flagIssueNumber} (\`${IDLE_TASK_LABEL}\`) ` +
+      `as the re-do item — ${describeConcludedAttempts(history)}`,
+    {
+      repo,
+      prNumber,
+      issueNumber: flagIssueNumber,
+      flagIssueNumber,
+      label: IDLE_TASK_LABEL,
+      appended: filed.value.appended,
+    },
+  );
+  return {
+    outcome: "abandoned",
+    issueNumber: flagIssueNumber,
+    label: { applied: IDLE_TASK_LABEL },
+    flagIssueNumber,
+  };
+}
+
 /**
  * Close the conflicting PR and re-queue its originating issue.
  *
@@ -992,7 +1338,10 @@ export async function abandonAndRestart(
     };
   };
 
-  // --- Precondition 1: the originating issue. No issue, no abandon. --------
+  // --- Precondition 1: the originating issue. No issue, no *re-queue* — the
+  // PR is still closed, against a flag issue filed as the re-do item in its
+  // place (Issue #2310).
+
   let context: ConflictIssueContext;
   try {
     context = deps.resolveContext
@@ -1008,17 +1357,20 @@ export async function abandonAndRestart(
     return failed("originating-issue", error);
   }
   if (!context.prSide.resolved) {
-    return {
-      outcome: "declined",
-      reason: {
-        kind: "no-originating-issue",
-        detail: context.prSide.reason,
-      },
-    };
+    // Issue #2310: no longer a decline. The PR is closed and the
+    // `merge-fallback` flag issue — `idle-task`, with this PR's diff summary —
+    // becomes the re-do item, because a PR parked for a human who never comes
+    // loses the work just as surely as closing one with no record.
+    return await abandonWithoutOriginatingIssue(
+      request,
+      deps,
+      context.prSide.reason,
+      failed,
+    );
   }
   const issueNumber = context.prSide.issue.number;
 
-  // --- Precondition 2: one restart per originating issue. -----------------
+  // --- Precondition 2: MAX_RESTARTS_PER_ISSUE restarts per issue. ---------
   let issueComments: unknown[];
   try {
     issueComments = await fetchIssueCommentPages(repo, issueNumber, gh);
@@ -1055,16 +1407,18 @@ export async function abandonAndRestart(
     );
   }
   const claimed = restartMarkerPrNumbers(attribution.trusted);
-  if (claimed.length > 0) {
+  // A claim naming this PR means an earlier abandon of *it* did not finish —
+  // a different story to tell than "the replacement failed too", and closing
+  // the same PR twice is not a retry, so it declines whatever the count says.
+  const samePr = claimed.includes(prNumber);
+  if (samePr || claimed.length >= MAX_RESTARTS_PER_ISSUE) {
     return {
       outcome: "declined",
       reason: {
         kind: "already-restarted",
         issueNumber,
-        // A claim naming this PR means an earlier abandon of it did not
-        // finish — a different story to tell than "the replacement failed
-        // too", and the escalation says so.
-        samePr: claimed.includes(prNumber),
+        samePr,
+        restartCount: claimed.length,
       },
     };
   }
@@ -1131,7 +1485,14 @@ export async function abandonAndRestart(
       "--repo",
       repo,
       "--body",
-      buildRestartIssueComment({ request, history, label: requeueLabel }),
+      buildRestartIssueComment({
+        request,
+        history,
+        label: requeueLabel,
+        // Read off the thread, never assumed: the comment is permanent, and
+        // "this is your last restart" must be true when it says so.
+        restartNumber: claimed.length + 1,
+      }),
     ]);
   } catch (error) {
     return failed("issue-comment", error, issueNumber);

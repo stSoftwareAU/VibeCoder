@@ -431,7 +431,16 @@ export const OPERATIONAL_DEFAULTS = {
    * label itself.
    */
   timelineCacheTtlSeconds: 300,
-  enableSessionResume: false,
+  /**
+   * CLI-level session continuity (Issue #2339). On by default: the stream
+   * machinery (Issues #2333–#2338) is in place, so an unconfigured host runs
+   * one conversation per (repository, milestone) plus one blank stream per
+   * repository, takes the stream locks, and compacts the conversation before
+   * each new issue. Setting `enable_session_resume: false` returns the host
+   * to per-issue sessions with no stream lock; the milestone-close
+   * housekeeping sweep runs either way.
+   */
+  enableSessionResume: true,
   /**
    * Whether `issue`-phase runs use the split executor (Issue #2341).
    * Off until an operator turns it on, so an unconfigured host invokes the

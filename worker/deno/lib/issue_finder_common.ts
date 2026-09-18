@@ -99,18 +99,18 @@ export interface FindIssuesOptions {
   /** Optional function to check if issue is in cooldown */
   isIssueInCooldown?: (repo: string, issueNumber: number) => boolean;
   /**
-   * Whether a milestone's branch is paced by its conflict ledger, and until
-   * when (Issue #1780).
+   * Whether a milestone's branch is paced by its conflict ledger, and why
+   * (Issues #1780, #2305).
    *
    * A child run brings the milestone branch level with the default branch
-   * before it cuts its issue branch; a charged conflict failure writes
-   * `deferUntil` and the branch cannot take the default branch down until it
-   * passes. Claiming that milestone's issues meanwhile would claim, defer and
-   * comment on one of them every 30 seconds, so they are skipped here — a
-   * local ledger read, no API call.
+   * before it cuts its issue branch, and it cannot while an attempt is open on
+   * this host or the branch's conflict budget is spent. Claiming that
+   * milestone's issues meanwhile would claim, defer and comment on one of them
+   * every 30 seconds, so they are skipped here — a local ledger read, no API
+   * call.
    *
-   * Returns the `deferUntil` still in the future, or undefined when the
-   * milestone is not paced.
+   * Returns a short reason the milestone is paced, or undefined when it is
+   * not.
    */
   milestonePacedUntil?: (repo: string, milestone: string) => string | undefined;
   /**

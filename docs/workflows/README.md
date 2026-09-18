@@ -57,8 +57,8 @@ loop that checks work in **priority order**: PR (Pull Request) feedback (1),
 spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
 merge-conflict resolution (1.61), CI nudges
 and the blocking-PR watchdog (1.62, 1.63), auto-merge (1.65), issue closure
-(1.67), closed-PR recovery (1.68), milestone completion and branch sync (1.7,
-1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
+(1.67), closed-PR recovery (1.68), milestone completion (1.7),
+closed-milestone housekeeping (1.71) and branch sync (1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
 the Failure-Detection repair resume (1.81), questions (1.85), configured
 custom-label prompts (1.86) and their PR-phase twin (1.87, both only when an
 operator configured a mapping of that phase),
@@ -126,7 +126,7 @@ Each workflow or topic is assigned to a dedicated document:
 | **Issue → PR implementation**                      | [issue-processing.md](issue-processing.md)                     | Flow from issue discovery through branch, Claude, quality gate, and PR creation                                                                          |
 | **PR feedback and upkeep**                         | [pr-feedback.md](pr-feedback.md)                               | Review feedback loop, spelling fixes, branch updates, auto-merge catch-up                                                                                |
 | **CI fix**                                         | [ci-fix.md](ci-fix.md)                                         | Automatic diagnosis and fix of CI check failures on open PRs                                                                                             |
-| **Merge-conflict resolution** | [merge-conflicts.md](merge-conflicts.md) | Real merge of the base into a `CONFLICTING` PR — both sides survive unless an originating issue explicitly supersedes the other — with the `merge-conflict` label, attempt bounds, abandon-and-restart, and `needs-human` escalation |
+| **Merge-conflict resolution** | [merge-conflicts.md](merge-conflicts.md) | Real merge of the base into a `CONFLICTING` PR — both sides survive unless an originating issue explicitly supersedes the other — with the `merge-conflict` label, attempt bounds, abandon-and-restart, and the `merge-fallback` flag every fallback leaves behind |
 | **Planning, questions, refinement, clarification** | [planning-and-questions.md](planning-and-questions.md)         | Clarification phase (clear? small enough? too large → planning): question label, planning label, refine-issue                                            |
 | **Grill-me clarification (vague issues)**          | [grill-me.md](grill-me.md)                                     | Iterative, mobile-friendly back-and-forth that scopes vague issues into a clean requirement, then recommends the developer apply `planning` or `work-on` |
 | **Resilience and concurrency**                     | [resilience-and-concurrency.md](resilience-and-concurrency.md) | Self-healing, restart model, issue claiming, multi-worker coexistence, one PR per target branch                                                          |
@@ -157,7 +157,8 @@ flowchart TD
   P165 --> P167["1.67: Issue closure"]
   P167 --> P168["1.68: Closed-PR recovery"]
   P168 --> P17["1.7: Milestone completion"]
-  P17 --> P172["1.72: Milestone branch sync"]
+  P17 --> P171["1.71: Closed-milestone housekeeping"]
+  P171 --> P172["1.72: Milestone branch sync"]
   P172 --> P175["1.75: Refinement"]
   P175 --> P178["1.78: Grill-me"]
   P178 --> P179["1.79: Quorum plan-off"]
@@ -203,6 +204,7 @@ flowchart TD
 | 1.67     | Issue closure                                         | Close issues for merged PRs via GH CLI                                                                                                   |
 | 1.68 | Closed-PR recovery | Recover assigned issues with closed-without-merge PRs |
 | 1.7      | Milestone completion                                  | Final consolidation PR                                                                                                                   |
+| 1.71     | Closed-milestone housekeeping                         | Drop a closed milestone's worktrees, local branches and stream session on this host                                                      |
 | 1.72     | Milestone branch sync                                 | Merge the default branch into open `milestone/*` branches; claims nothing                                                                |
 | 1.75     | Issue refinement                                      | `refine-issue` label                                                                                                                     |
 | 1.78 | Grill-me clarification | `grill-me` label — runs before planning so a freshly-grilled issue is not also planned in the same pass |

@@ -44,7 +44,6 @@ async function conflictPrompt(
       target: { kind: "pr", prNumber: 4321 },
       baseBranch: HOSTILE_BRANCH,
       conflictedFiles: [HOSTILE_PATH],
-      qualityInstructions: "Run ./quality.sh",
       promptsDir: PROMPTS_DIR,
       ...overrides,
     }),

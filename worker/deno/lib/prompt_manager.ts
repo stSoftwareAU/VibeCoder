@@ -93,9 +93,12 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
   // required.
   // Issue #1767: the target is a PR *or* a milestone branch, so the opening is
   // `TARGET_DESCRIPTION` rather than a bare PR number.
+  // Issue #2306: the agent no longer runs the repository's quality gate in
+  // the run, so the template carries no `QUALITY_INSTRUCTIONS` block. CI on
+  // the pushed merge is the gate on a PR; the worker's type-check gate is the
+  // gate on a milestone branch.
   merge_conflict: [
     "TARGET_DESCRIPTION",
-    "QUALITY_INSTRUCTIONS",
     "BASE_BRANCH",
     "CONFLICTED_FILES",
   ],

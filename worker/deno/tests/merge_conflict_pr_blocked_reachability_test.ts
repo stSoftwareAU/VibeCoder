@@ -136,7 +136,6 @@ function scanOckham(mergeable: string, labels: string[]) {
     // allowlist, and nothing about claimability.
     isRepoAllowed: (repo: string) => isRepoAllowed(MONITORED, repo),
     ghCommandFn: makeGh(mergeable, labels),
-    nowMs: () => Date.parse("2026-09-05T00:08:36Z"),
   });
 }
 
@@ -175,7 +174,8 @@ Deno.test(
     const resolved: number[] = [];
     const drain = await drainConflictingPrs({
       // Issue #1774: this PR is still open at the claim point.
-      prLiveState: () => Promise.resolve({ open: true }),
+      prLiveState: () =>
+        Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
       logger: makeSilentLogger(),
       findNext: async (exclude) => {
         const scan = await scanOckham("CONFLICTING", []);
@@ -225,7 +225,8 @@ Deno.test(
   async () => {
     const drain = await drainConflictingPrs({
       // Issue #1774: this PR is still open at the claim point.
-      prLiveState: () => Promise.resolve({ open: true }),
+      prLiveState: () =>
+        Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
       logger: makeSilentLogger(),
       findNext: async () => {
         const scan = await scanOckham("BEHIND", [MERGE_CONFLICT_LABEL]);

@@ -371,6 +371,17 @@ export interface AgentInvocationRequest {
   /** Session continuity state, when session resume is enabled. */
   sessionResumeState?: SessionResumeState;
   /**
+   * Context window (in tokens) at which the CLI compacts the conversation of
+   * its own accord (Issue #2337).
+   *
+   * Set only when the stream's conversation could **not** be verifiably
+   * compacted before the issue started, so the CLI's own autocompaction is the
+   * remaining lever. Absent — the usual case — no flag is emitted and the
+   * CLI's default window stands. Only the Claude Code CLI carries it; Codex
+   * and Gemini expose no such control and ignore the field.
+   */
+  autocompactTokens?: number;
+  /**
    * MCP server configuration for this run (Issue #4355) — the Playwright
    * headless browser. Claude takes the path as `--mcp-config`. Codex has
    * no such flag: the descriptor turns the same JSON into `-c mcp_servers.*`
@@ -596,6 +607,14 @@ function buildClaudeCliArgs(
   // Static content passed separately so the CLI caches it (Issue #1262).
   if (request.systemPrompt) {
     args.push("--system-prompt", request.systemPrompt);
+  }
+
+  // The CLI's own autocompaction, pulled forward (Issue #2337): passed only
+  // when this run's stream conversation could not be verifiably compacted
+  // before the issue started, so the window the CLI compacts at is the
+  // remaining defence against filling it.
+  if (request.autocompactTokens) {
+    args.push("--autocompact", String(request.autocompactTokens));
   }
 
   // Session continuity across phases of one issue (Issue #1324).

@@ -73,6 +73,11 @@ import {
 } from "./fleet_telemetry.ts";
 import type { HeartbeatLiveKey } from "./heartbeat.ts";
 import { formatInFlightHold, InFlightRepoRegistry } from "./in_flight_repos.ts";
+import {
+  BlankStreamLockRegistry,
+  type BlankStreamRef,
+  formatBlankStreamBusy,
+} from "./stream_lock.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import type {
   ProcessedIssueReason,
@@ -228,6 +233,15 @@ export interface RunCoreConfig {
    * state in memory.
    */
   workDir?: string;
+  /**
+   * Whether runs join their stream's shared conversation (Issue #2335;
+   * mirrors `WorkerConfig.enableSessionResume`).
+   *
+   * The pool's host-local blank-stream lock exists to keep two slots out of
+   * one conversation, so with resume off there is no conversation to protect
+   * and no lock is taken.
+   */
+  enableSessionResume: boolean;
 }
 
 /** Result of a single priority handler execution. */
@@ -616,6 +630,15 @@ export interface RunCoreDeps {
   // Priority 1.7: Milestone completions
   checkMilestoneCompletions: () => Promise<Result<void>>;
 
+  /**
+   * Priority 1.71: milestone-close housekeeping (Issue #2338).
+   *
+   * A closed milestone's stream is over, so this host drops the worktrees,
+   * local branches and stream session it still holds for it. Optional: a
+   * deps set that does not wire it leaves the sweep unrun, exactly as before.
+   */
+  sweepClosedMilestones?: () => Promise<Result<void>>;
+
   // Priority 1.75: Refinement
   findAndProcessRefinement: () => Promise<Result<PriorityHandlerResult>>;
 
@@ -857,6 +880,12 @@ export interface RunCoreDeps {
    * status rendering and heartbeat sweeps see the same holds.
    */
   inFlightRepos?: InFlightRepoRegistry;
+  /**
+   * Host-local registry of the blank streams slots hold (Issue #2335). The
+   * pool creates one when absent; injecting one lets a caller observe that
+   * every terminal path releases its hold.
+   */
+  blankStreamLocks?: BlankStreamLockRegistry;
   /**
    * Per-run record of issues already finished this run (Issue #181). Every
    * terminal outcome — success, skip, failure — is recorded here, and the
@@ -1511,6 +1540,9 @@ export function createDefaultRunCoreConfig(): RunCoreConfig {
     // Issue #62: mirrors `OPERATIONAL_DEFAULTS.planningTimeout` so Planning
     // Mode's watchdog floor tracks the agent timeout it wraps.
     planningTimeoutSeconds: OPERATIONAL_DEFAULTS.planningTimeout,
+    // Issue #2335: follows the shipped default — on since Issue #2339 —
+    // unless the operator turned session resume off.
+    enableSessionResume: OPERATIONAL_DEFAULTS.enableSessionResume,
   };
 }
 
@@ -1769,6 +1801,22 @@ export function buildPriorityDispatchTable(
             ? { ok: true as const, value: { processed: false } }
             : { ok: false as const, error: r.error }
         ),
+    },
+    {
+      // Issue #2338: a closed milestone's stream is over — sweep this host's
+      // worktrees, local branches and stream session for it. Placed straight
+      // after the completion pass that closes milestones, so a milestone
+      // closed this cycle is swept on the next scan rather than waiting for
+      // the time-based cleanups at the next startup.
+      priority: 1.71,
+      name: "Closed Milestone Housekeeping",
+      execute: () =>
+        (deps.sweepClosedMilestones?.() ??
+          Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
+            r.ok
+              ? { ok: true as const, value: { processed: false } }
+              : { ok: false as const, error: r.error }
+          ),
     },
     {
       priority: 1.72,
@@ -3154,6 +3202,13 @@ interface SlotPoolState {
   draining: boolean;
   /** Repositories currently held by a slot (Issue #4176). */
   registry: InFlightRepoRegistry;
+  /**
+   * The blank streams this host's slots hold (Issue #2335) — one
+   * non-milestone issue per repository per host, so two slots never run two
+   * runs inside one blank conversation. Consulted only when
+   * `config.enableSessionResume` is on.
+   */
+  blankStreamLocks: BlankStreamLockRegistry;
   /** Set when the pre-claim spend-ceiling gate tripped (Issue #4180). */
   spendCeilingReached: boolean;
   /** Set once the host-disk guard tripped, so it is logged once (Issue #226). */
@@ -3287,6 +3342,7 @@ async function runIssueScanPool(
     exitOuterLoop: false,
     draining: false,
     registry: deps.inFlightRepos ?? new InFlightRepoRegistry(),
+    blankStreamLocks: deps.blankStreamLocks ?? new BlankStreamLockRegistry(),
     spendCeilingReached: false,
     shouldShutdown,
     claimFloor: poolRunwayFloor,
@@ -3507,6 +3563,41 @@ async function settleLiveSlotTails(
 }
 
 /** One slot's claim → process → release loop. Never throws. */
+/**
+ * The issues one slot's next scan must not be offered.
+ *
+ * The pool's adaptive-floor deferrals (Issue #245), plus the issues this slot
+ * refused for a busy blank stream (Issue #2335) **whose stream is still
+ * busy**. Entries whose holder has released are dropped here rather than
+ * lingering: the whole point of a host-local lock is that the stream frees the
+ * moment the sibling's run ends, so the issue behind it must become claimable
+ * on the very next scan.
+ *
+ * Exported for its own test: the self-healing is the whole behaviour, and
+ * observing it through the pool would depend on run timing.
+ *
+ * @param deferredClaims - The pool's adaptive-floor deferrals (Issue #245)
+ * @param blankStreamLocks - The host's blank-stream holds (Issue #2335)
+ * @param streamBusyIssues - This slot's blank-stream refusals, pruned in place
+ * @returns The union to hand `findNextIssue` as `excludeIssues`
+ */
+export function scanExcludedIssues(
+  deferredClaims: ReadonlySet<string>,
+  blankStreamLocks: BlankStreamLockRegistry,
+  streamBusyIssues: Map<string, BlankStreamRef>,
+): ReadonlySet<string> {
+  if (streamBusyIssues.size === 0) return deferredClaims;
+  const union = new Set(deferredClaims);
+  for (const [key, ref] of streamBusyIssues) {
+    if (blankStreamLocks.holder(ref) === undefined) {
+      streamBusyIssues.delete(key);
+      continue;
+    }
+    union.add(key);
+  }
+  return union;
+}
+
 async function runSlot(
   slotIndex: number,
   config: RunCoreConfig,
@@ -3523,6 +3614,17 @@ async function runSlot(
   const rescanMs = Math.max(1, config.sleepInterval) * 1000;
   /** Consecutive scans that re-offered an issue the pool already deferred. */
   let reofferedDeferred = 0;
+  /**
+   * Issues this slot refused because a sibling slot holds their blank stream
+   * (Issue #2335), keyed `owner/repo#number` and carrying the stream to
+   * re-check.
+   *
+   * Slot-local and self-healing rather than added to
+   * {@link SlotPoolState.deferredClaims}: that set is cycle-scoped, so
+   * deferring there would strand the issue for the rest of the run even after
+   * the holder released seconds later. See {@link scanExcludedIssues}.
+   */
+  const streamBusyIssues = new Map<string, BlankStreamRef>();
   // Issue #925: a live slot is idle until it claims. The `finally` below
   // closes the span on every exit path, so a slot that stops for the
   // deadline, a drain or a find error cannot leave an idle span open and
@@ -3596,8 +3698,14 @@ async function runSlot(
         // occupancy check sees it even when the issue cache predates the
         // sibling's claim.
         inFlightClaims: pool.registry.heldIssues(),
-        // Issues this cycle already deferred for the adaptive floor (#245).
-        excludeIssues: pool.deferredClaims,
+        // Issues this cycle already deferred for the adaptive floor (#245),
+        // plus any this slot refused for a busy blank stream (#2335) that is
+        // still busy — see {@link scanExcludedIssues}.
+        excludeIssues: scanExcludedIssues(
+          pool.deferredClaims,
+          pool.blankStreamLocks,
+          streamBusyIssues,
+        ),
         onScanSummary: (summary) => {
           scanSummary = summary;
         },
@@ -3746,6 +3854,64 @@ async function runSlot(
         continue;
       }
 
+      // Host-local blank-stream lock (Issue #2335): a repository's
+      // non-milestone issues share one conversation *per host*, so at most
+      // one of them runs here at a time. A milestone issue takes nothing —
+      // the fleet-wide lock of Issue #2334 gates that one — and with session
+      // resume off there is no shared conversation, so no lock at all.
+      //
+      // Taken before the slot registry's hold so the refusal is reported in
+      // the stream's own terms; released below on the one path that does not
+      // go on to run, and in the run's `finally` on every path that does.
+      // Nothing awaits between taking the hold and entering that `try`, so
+      // there is no window in which a throw could leak it.
+      //
+      // Keyed on the stream rather than on the run kind. `STREAM_JOIN_POLICY`
+      // (`stream_session.ts`) says an `idle-task` run keeps a per-issue
+      // session and joins no conversation, and the claim scan does serve that
+      // kind — but `DiscoveredIssue` carries no labels, so the kind is not
+      // knowable here without a `gh` read this lock must not make. The hold
+      // is redundant rather than wrong for such a run: an idle-task issue
+      // carries no milestone, so the slot registry below already occupies the
+      // same `(repo, blank)` stream and excludes the sibling either way. What
+      // this costs is a refusal logged in the stream's terms instead of the
+      // registry's; what it must never cost is a claim, and it does not.
+      const blankStream = config.enableSessionResume
+        ? pool.blankStreamLocks.tryAcquire({
+          repo: issue.repo,
+          milestoneTitle: issue.milestoneTitle,
+          issueNumber: issue.issueNumber,
+          slotId,
+        })
+        : undefined;
+      if (blankStream !== undefined && !blankStream.acquired) {
+        log(
+          `${formatBlankStreamBusy(blankStream.holder)} — skipping ` +
+            `${issue.repo}#${issue.issueNumber} and looking for other ` +
+            `eligible work (Issue #2335).`,
+        );
+        // Held out of this slot's next scan so it offers the next candidate
+        // rather than the same refused one — but only while the stream stays
+        // busy. `scanExcludedIssues` drops the entry the moment the holder
+        // releases, so the issue is claimable on the very next scan instead
+        // of being stranded for the cycle.
+        streamBusyIssues.set(issueClaimKey(issue.repo, issue.issueNumber), {
+          repo: issue.repo,
+          milestoneTitle: issue.milestoneTitle,
+        });
+        await yieldToEventLoop();
+        continue;
+      }
+      /** Release this slot's blank-stream hold, if it took one. */
+      const releaseBlankStream = () => {
+        if (blankStream?.acquired === true && blankStream.locked) {
+          pool.blankStreamLocks.release({
+            repo: issue.repo,
+            milestoneTitle: issue.milestoneTitle,
+          });
+        }
+      };
+
       // Atomic against sibling starts (Issue #4176): exactly one slot wins a
       // repository; a loser looks again.
       if (
@@ -3756,6 +3922,7 @@ async function runSlot(
           milestone: issue.milestoneTitle,
         })
       ) {
+        releaseBlankStream();
         // Issue #219: the ranking this scan produced has already lost, so
         // drop the repository's cached issue list before looking again —
         // otherwise the next scan can be served the same stale list.
@@ -3767,12 +3934,6 @@ async function runSlot(
         await yieldToEventLoop();
         continue;
       }
-
-      // This slot found work and took it, so it is not starved: end its own
-      // disagreement run (Issue #1051). Only its own — a sibling still being
-      // refused keeps counting, which is the whole point of keying the run
-      // per slot.
-      await pool.idleHooks?.disagreement.clear(slotId);
 
       /** Set by a successful claim so the settle sleep runs holding no repo. */
       let claimSucceeded = false;
@@ -3788,6 +3949,17 @@ async function runSlot(
        */
       const runStarted = { value: false };
       try {
+        // This slot found work and took it, so it is not starved: end its own
+        // disagreement run (Issue #1051). Only its own — a sibling still being
+        // refused keeps counting, which is the whole point of keying the run
+        // per slot.
+        //
+        // Inside the `try` (Issue #2335): it is the one await between taking
+        // the holds and this block, so a throw here used to leak both the
+        // registry hold and the blank-stream hold for the life of the process,
+        // and no later scan could claim that stream again.
+        await pool.idleHooks?.disagreement.clear(slotId);
+
         // Every claim gets its OWN write-repo allowlist (Issue #183). The
         // per-slot context exists (#4175) but nothing wired it up here, so
         // both slots fell through to the process-wide default context:
@@ -3906,6 +4078,10 @@ async function runSlot(
         }
       } finally {
         pool.registry.release(issue.repo, issue.milestoneTitle);
+        // Issue #2335: the blank stream goes back with the claim, on every
+        // terminal path — success, skip, failure, throw, timeout, kill — so a
+        // crashed run can never hold this host's conversation shut.
+        releaseBlankStream();
       }
 
       // Settle sleep after a success (Issue #178): the same `sleepInterval`

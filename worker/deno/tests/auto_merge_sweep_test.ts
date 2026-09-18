@@ -86,7 +86,9 @@ function harness(
       state.stateReads.push({ repo, prNumber: pr.number });
       return overrides.prLiveState
         ? overrides.prLiveState(repo, pr)
-        : Promise.resolve({ open: true } as PrLiveStateReading);
+        : Promise.resolve(
+          { open: true, mergeable: "MERGEABLE" } as PrLiveStateReading,
+        );
     },
     attemptMerge: (repo: string, pr: SweepablePr) => {
       state.attempted.push({ repo, prNumber: pr.number });

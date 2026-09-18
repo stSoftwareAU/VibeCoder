@@ -14,10 +14,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
+import { buildConflictEscalationComment } from "../lib/milestone_sync_conflict.ts";
 
 async function git(
   args: string[],
@@ -216,5 +217,102 @@ Deno.test(
     } finally {
       await fx.cleanup();
     }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - the sync report comment carries the stage timings and the host (Issue #2308)",
+  async () => {
+    const fx = await setupFixture(true, { subsumes: true });
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1558",
+        "main",
+        { cwd: fx.clone },
+        undefined,
+        passingGate,
+      );
+
+      assert(
+        result.ok,
+        `expected the sync to land: ${!result.ok && result.error.message}`,
+      );
+      const conflict = result.value.conflict;
+      assert(conflict, "a resolved conflict is still reported");
+      const timings = conflict.timings ?? "";
+      assertStringIncludes(timings, "Timings (host ");
+      // The stages this sync ran, named on the line rather than left to a
+      // reader to infer from two log timestamps.
+      for (const stage of ["deepen", "gate", "push"]) {
+        assertStringIncludes(timings, stage);
+      }
+
+      // And the line reaches the comment a human actually reads.
+      const comment = buildConflictEscalationComment({
+        repo: "org/repo",
+        milestoneBranch: "milestone/1558",
+        defaultBranch: "main",
+        conflict,
+        tips: [],
+      });
+      assertStringIncludes(comment, timings);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "buildConflictEscalationComment - both reports carry the timings line, and omit it when there is none (Issue #2308)",
+  () => {
+    const line = "Timings (host `mel-01`): deepen 3s · rules 1s · agent 212s";
+    const base = {
+      repo: "org/repo",
+      milestoneBranch: "milestone/1558",
+      defaultBranch: "main",
+      tips: [],
+    };
+
+    // The success notice — every file settled by a rung of the ladder.
+    const auto = buildConflictEscalationComment({
+      ...base,
+      conflict: {
+        files: ["scan.ts"],
+        milestoneSha: "aaa",
+        defaultSha: "bbb",
+        resolution: "auto",
+        decisions: [],
+        timings: line,
+      },
+    });
+    assertStringIncludes(auto, "resolved a conflict automatically");
+    assertStringIncludes(auto, line);
+
+    // The older check-what-was-overwritten report.
+    const theirs = buildConflictEscalationComment({
+      ...base,
+      conflict: {
+        files: ["scan.ts"],
+        milestoneSha: "aaa",
+        defaultSha: "bbb",
+        resolution: "theirs",
+        timings: line,
+      },
+    });
+    assertStringIncludes(theirs, "check what was overwritten");
+    assertStringIncludes(theirs, line);
+
+    // Nothing timed renders no line at all, rather than an empty one.
+    const untimed = buildConflictEscalationComment({
+      ...base,
+      conflict: {
+        files: ["scan.ts"],
+        milestoneSha: "aaa",
+        defaultSha: "bbb",
+        resolution: "auto",
+        decisions: [],
+      },
+    });
+    assertEquals(untimed.includes("Timings (host"), false);
   },
 );

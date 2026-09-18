@@ -44,6 +44,11 @@ import type { IssueContext } from "../lib/issue_worker.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubComment, WorkerConfig } from "../types.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import {
+  loadStreamSession,
+  saveStreamSession,
+} from "../lib/resume_state_store.ts";
+import { resolveStreamId } from "../lib/stream_identity.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -5678,4 +5683,136 @@ Deno.test("fallback publish prompts carry the shared milestones-table requiremen
   // shared constant that sits beside the gate implementing it.
   assertStringIncludes(singleInvocation, MILESTONES_TABLE_REQUIREMENT);
   assertStringIncludes(critiqueFallback, MILESTONES_TABLE_REQUIREMENT);
+});
+
+// ============================================================================
+// Planning joins its stream's conversation (Issue #2333)
+// ============================================================================
+
+/** A session id the Claude CLI would accept — the stream's own (#204). */
+const STREAM_SESSION_ID = "0199fd1e-2a4b-4c3d-8e5f-000000002333";
+
+/**
+ * Run planning under `enable_session_resume`, capturing the session state each
+ * invocation was handed.
+ */
+async function runPlanningWithStream(
+  workDir: string,
+  ctxOverrides: Partial<IssueContext> = {},
+): Promise<{ handed: Array<Record<string, unknown> | undefined> }> {
+  const ctx = makeContext({
+    config: makeConfig({ workDir, enableSessionResume: true }),
+    ...ctxOverrides,
+  });
+  const handed: Array<Record<string, unknown> | undefined> = [];
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: ((options: Record<string, unknown>) => {
+        handed.push(
+          options.sessionResumeState as Record<string, unknown> | undefined,
+        );
+        return Promise.resolve({
+          ok: true,
+          value: {
+            output: "Created https://github.com/org/repo/issues/131",
+            exitCode: 0,
+            timedOut: false,
+            provider: "claude",
+          },
+        });
+      }) as never,
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
+        if (args[0] === "search") return Promise.resolve("[]");
+        return Promise.resolve("");
+      },
+    },
+  });
+  const ghClient = {
+    getIssue: () =>
+      Promise.resolve({
+        number: 100,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([] as GitHubComment[]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: () => Promise.resolve(undefined),
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+  await processIssuePlanning(ctx, {
+    promptsDir: PROMPTS_DIR,
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+  return { handed };
+}
+
+Deno.test("#2333 - planning resumes its stream's session and records the one it ends on", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "planning-stream-" });
+  try {
+    // A planning issue carries no milestone, so it runs on the blank stream.
+    const stream = resolveStreamId("org/repo", undefined);
+    await saveStreamSession(workDir, stream, {
+      providerId: "claude",
+      sessionId: STREAM_SESSION_ID,
+    });
+
+    const { handed } = await runPlanningWithStream(workDir);
+
+    // The draft turn resumes the stream rather than opening a session.
+    assertEquals(handed[0]?.sessionId, STREAM_SESSION_ID);
+    assertEquals((handed[0]?.phaseCount as number) >= 1, true);
+    // And the record still names it afterwards.
+    assertEquals(
+      (await loadStreamSession(workDir, stream, "claude"))?.sessionId,
+      STREAM_SESSION_ID,
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("#2333 - a milestone the plan creates is not forked from the planning session", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "planning-stream-new-" });
+  try {
+    const { handed } = await runPlanningWithStream(workDir);
+    const planningSessionId = handed[0]?.sessionId as string;
+    assertEquals(typeof planningSessionId, "string");
+    // The planning conversation lands on the blank stream…
+    assertEquals(
+      (await loadStreamSession(
+        workDir,
+        resolveStreamId("org/repo", undefined),
+        "claude",
+      ))?.sessionId,
+      planningSessionId,
+    );
+    // …and nothing was written for the milestone it planned, so that stream's
+    // first sub-issue starts a conversation of its own.
+    assertEquals(
+      await loadStreamSession(
+        workDir,
+        resolveStreamId("org/repo", "#100 auth refactor"),
+        "claude",
+      ),
+      null,
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
 });

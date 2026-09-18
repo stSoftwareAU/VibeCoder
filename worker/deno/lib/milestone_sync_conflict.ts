@@ -125,6 +125,23 @@ export interface MilestoneSyncConflict {
    * from a semantic one.
    */
   repair?: GateRepairRecord;
+  /**
+   * The resolution agent's own reply (Issue #2306), naming each judgement
+   * call file by file.
+   *
+   * There is no PR comment on this path, so the sync report is where those
+   * `Judgement:` lines become auditable. Absent when no agent rung ran or it
+   * wrote nothing.
+   */
+  agentReply?: string;
+  /**
+   * The attempt's stage timings and the host it ran on (Issue #2308), already
+   * rendered by `formatStageTimings`.
+   *
+   * A sync merge routinely runs for twenty minutes or more; this line is what
+   * says which rung spent them. Absent when nothing was timed.
+   */
+  timings?: string;
 }
 
 /** Outcome of a milestone sync merge. */
@@ -264,10 +281,18 @@ export interface ConflictEscalation {
  * files and both sides' commits, so the reader can diff each side; and it
  * says plainly what has to be checked — that the branch's own work survived
  * a resolution that favoured the default branch.
+ *
+ * Either report ends with the stage timings and the host (Issue #2308), so
+ * the minutes the sync spent are accounted for wherever it is read.
  */
 export function buildConflictEscalationComment(
   e: ConflictEscalation,
 ): string {
+  // One suffix, both reports: the success notice above and the
+  // check-what-was-overwritten report below must not drift apart.
+  const timings = e.conflict.timings && e.conflict.timings.trim().length > 0
+    ? `\n\n${e.conflict.timings.trim()}`
+    : "";
   // A triaged resolution is a different report (Issue #1559): every file was
   // decided on its own and the merged tree was verified before the push, so
   // the reader is told what was decided and why, not asked to check what was
@@ -287,6 +312,16 @@ export function buildConflictEscalationComment(
     const repairNote = e.conflict.repair
       ? `\n\n${describeGateRepair(e.conflict.repair)}`
       : "";
+    // Issue #2306: the agent names every judgement call file by file in its
+    // reply, and this comment is the only place that record surfaces on the
+    // milestone path. It is agent-authored text, so it is reproduced as a
+    // quoted block rather than folded into the worker's own prose.
+    const judgements = e.conflict.agentReply
+      ? `\n\n**The resolution agent's own account:**\n\n${
+        e.conflict.agentReply.split("\n").map((line) => `> ${line}`.trimEnd())
+          .join("\n")
+      }`
+      : "";
     return `## Milestone sync resolved a conflict automatically\n\n` +
       `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
       `\`${e.repo}\` conflicted, and every conflicted file was settled by a ` +
@@ -294,12 +329,14 @@ export function buildConflictEscalationComment(
       `resolution agent (Issues #1559, #1777). The merged tree passed the ` +
       `repository's own check, its manifest check and its unit suite before ` +
       `it was pushed — a red tree would have been rolled back instead.\n\n` +
-      `${decisions || "- (no decision was recorded)"}${repairNote}\n\n` +
+      `${
+        decisions || "- (no decision was recorded)"
+      }${judgements}${repairNote}\n\n` +
       `${describeBranchTips(e.tips)}\n\n` +
       `No conflicted test file was resolved by taking a side that drops ` +
       `cases: a test file resolves only when one side keeps every case and ` +
       `every line of the other. Nothing here needs a human, but the reasoning ` +
-      `is on the merge commit if you want to check it.`;
+      `is on the merge commit if you want to check it.${timings}`;
   }
 
   // A conflict git could not itself name still has to reach a human — an
@@ -322,5 +359,5 @@ export function buildConflictEscalationComment(
     `sides changed the same code, the branch's version was replaced by ` +
     `\`${e.defaultBranch}\`'s. Reconcile it now, while the divergence is one ` +
     `day wide — at rollup time the two sides will have solved the same ` +
-    `problem twice and the merge becomes a research project.`;
+    `problem twice and the merge becomes a research project.${timings}`;
 }
